@@ -1,0 +1,1183 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/legacy/transform-logical-properties-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs only — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "upstream/legacy-logical-properties-borderblockcolor-001",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderBlockColor: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderblockstartcolor-002",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderBlockStartColor: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderblockendcolor-003",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderBlockEndColor: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderinlinecolor-004",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderInlineColor: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderinlinestartcolor-005",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderInlineStartColor: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderinlineendcolor-006",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderInlineEndColor: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderblockstyle-007",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderBlockStyle: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderblockstartstyle-008",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderBlockStartStyle: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderblockendstyle-009",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderBlockEndStyle: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderinlinestyle-010",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderInlineStyle: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderinlinestartstyle-011",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderInlineStartStyle: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderinlineendstyle-012",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderInlineEndStyle: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderblockwidth-013",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderBlockWidth: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderblockstartwidth-014",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderBlockStartWidth: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderblockendwidth-015",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderBlockEndWidth: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderinlinewidth-016",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderInlineWidth: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderinlinestartwidth-017",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderInlineStartWidth: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderinlineendwidth-018",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderInlineEndWidth: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-bordertopstartradius-019",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderTopStartRadius: 5 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderbottomstartradius-020",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderBottomStartRadius: 5 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-bordertopendradius-021",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderTopEndRadius: 5 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderbottomendradius-022",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { borderBottomEndRadius: 5 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-cornershape-023",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { cornerShape: 'squircle' } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-cornerstartstartshape-024",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { cornerStartStartShape: 'bevel' } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-cornertopleftshape-025",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { cornerTopLeftShape: 'notch' } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-insetblock-026",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { insetBlock: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-insetblockend-027",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { insetBlockEnd: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-insetblockstart-028",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { insetBlockStart: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-insetinline-029",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { insetInline: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-insetinlineend-030",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { insetInlineEnd: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-insetinlinestart-031",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { insetInlineStart: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-marginblock-032",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { marginBlock: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-marginblockend-033",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { marginBlockEnd: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-marginblockstart-034",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { marginBlockStart: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-margininline-035",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { marginInline: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-margininlineend-036",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { marginInlineEnd: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-margininlinestart-037",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { marginInlineStart: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-paddingblock-038",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { paddingBlock: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-paddingblockend-039",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { paddingBlockEnd: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-paddingblockstart-040",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { paddingBlockStart: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-paddinginline-041",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { paddingInline: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-paddinginlineend-042",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { paddingInlineEnd: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-paddinginlinestart-043",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { paddingInlineStart: 0 } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-legacy-short-form-property-v-044",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            four: {\n              margin: '1 2 3 4',\n            }\n          });\n          stylex(styles.four);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-margininline-045",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { marginInline: '10px' } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-margininlinestart-046",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { marginInlineStart: '10px' } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-margininlineend-047",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { marginInlineEnd: '10px' } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-paddinginline-048",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { paddingInline: '10px' } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-paddinginlinestart-049",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { paddingInlineStart: '10px' } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-paddinginlineend-050",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { paddingInlineEnd: '10px' } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderinlinecolor-051",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderInlineColor: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderinlinestartcolor-052",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderInlineStartColor: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderinlinestyle-053",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderInlineStyle: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderinlinewidth-054",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderInlineWidth: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderblockcolor-055",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderBlockColor: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderblockstyle-056",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderBlockStyle: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderblockwidth-057",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderBlockWidth: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-insetblock-058",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { insetBlock: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-insetblockstart-059",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { insetBlockStart: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-insetblockend-060",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { insetBlockEnd: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-insetinline-061",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { insetInline: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-insetinlinestart-062",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { insetInlineStart: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-insetinlineend-063",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { insetInlineEnd: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-bordertopstartradius-064",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderTopStartRadius: 5 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderbottomstartradius-065",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderBottomStartRadius: 5 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-bordertopendradius-066",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderTopEndRadius: 5 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderbottomendradius-067",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderBottomEndRadius: 5 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-margininline-068",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { marginInline: '10px' } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-margininlinestart-069",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { marginInlineStart: '10px' } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-margininlineend-070",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { marginInlineEnd: '10px' } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-paddinginline-071",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { paddingInline: '10px' } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-paddinginlinestart-072",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { paddingInlineStart: '10px' } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-paddinginlineend-073",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { paddingInlineEnd: '10px' } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderinlinecolor-074",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderInlineColor: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderinlinestartcolor-075",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderInlineStartColor: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderinlinestyle-076",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderInlineStyle: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderinlinewidth-077",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderInlineWidth: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderblockcolor-078",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderBlockColor: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderblockstyle-079",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderBlockStyle: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderblockwidth-080",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderBlockWidth: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-insetblock-081",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { insetBlock: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-insetblockstart-082",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { insetBlockStart: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-insetblockend-083",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { insetBlockEnd: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-insetinline-084",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { insetInline: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-insetinlinestart-085",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { insetInlineStart: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-insetinlineend-086",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { insetInlineEnd: 0 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-bordertopstartradius-087",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderTopStartRadius: 5 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderbottomstartradius-088",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderBottomStartRadius: 5 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-bordertopendradius-089",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderTopEndRadius: 5 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-logical-properties-borderbottomendradius-090",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({ x: { borderBottomEndRadius: 5 } });\n            const classnames = stylex(styles.x);\n          ",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-properties", "legacy", "create"],
+      "expect": "ok"
+    }
+  ]
+}

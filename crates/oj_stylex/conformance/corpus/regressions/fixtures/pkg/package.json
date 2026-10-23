@@ -1,0 +1,10 @@
+{
+  "name": "pkg-fixture",
+  "exports": {
+    "./self.stylex": "./src/self-theme.stylex.js"
+  },
+  "imports": {
+    "#hash/*.stylex": "./src/hashed/*.stylex.js",
+    "#tok/*": "./src/hashed/*.js"
+  }
+}

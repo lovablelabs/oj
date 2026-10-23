@@ -1,0 +1,61 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/transform-stylex-keyframes-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs only — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "upstream/keyframes-keyframes-object-001",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const name = stylex.keyframes({\n          from: {\n            color: 'red',\n          },\n          to: {\n            color: 'blue',\n          }\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["keyframes"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/keyframes-local-variables-used-in-keyf-002",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const COLOR = 'red';\n        export const name = stylex.keyframes({\n          from: {\n            color: COLOR,\n          },\n          to: {\n            color: 'blue',\n          }\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["keyframes"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/keyframes-template-literals-used-in-ke-003",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const COLOR = 'red';\n        const name = stylex.keyframes({\n          from: {\n            color: COLOR,\n          },\n          to: {\n            color: 'blue',\n          }\n        });\n        export const styles = stylex.create({\n          root: {\n            animationName: `${name}`,\n          }\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["keyframes", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/keyframes-keyframes-object-used-inline-004",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({\n          root: {\n            animationName: stylex.keyframes({\n              from: {\n                color: 'red',\n              },\n              to: {\n                color: 'blue',\n              },\n            }),\n          },\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["keyframes", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/keyframes-legacy-keyframes-object-rtl-005",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const name = stylex.keyframes({\n          from: {\n            insetBlockStart: 0,\n          },\n          to: {\n            insetBlockStart: 100,\n          }\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["keyframes"],
+      "expect": "ok"
+    }
+  ]
+}

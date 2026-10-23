@@ -1,0 +1,144 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/validation-import-export-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs and upstream's own expected values — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "assertions/validation-import-export-valid-import-non-stylex-001-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import classnames from 'classnames';\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-import-export", "validation", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-import-export-test.js",
+          "test": "valid import: non-stylex",
+          "line": 31
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-import-export-valid-import-named-export-of-002-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const styles = stylex.create({});\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-import-export", "validation", "create", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-import-export-test.js",
+          "test": "valid import: named export of stylex.create()",
+          "line": 39
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-import-export-valid-import-default-export-003-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export default stylex.create({});\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-import-export", "validation", "create", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-import-export-test.js",
+          "test": "valid import: default export of stylex.create()",
+          "line": 48
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-import-export-valid-import-positiontry-nam-004-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import { positionTry } from '@stylexjs/stylex';\n          const positionName = positionTry({});\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-import-export", "validation", "positionTry", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-import-export-test.js",
+          "test": "valid import: positionTry named import",
+          "line": 57
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-import-export-valid-import-positiontry-fro-005-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const positionName = stylex.positionTry({});\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-import-export", "validation", "positionTry", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-import-export-test.js",
+          "test": "valid import: positionTry from namespace import",
+          "line": 66
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-import-export-valid-import-viewtransitionc-006-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import { viewTransitionClass } from '@stylexjs/stylex';\n          const transitionCls = viewTransitionClass({});\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-import-export", "validation", "viewTransitionClass", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-import-export-test.js",
+          "test": "valid import: viewTransitionClass named import",
+          "line": 75
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-import-export-valid-import-viewtransitionc-007-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const transitionCls = stylex.viewTransitionClass({});\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-import-export", "validation", "viewTransitionClass", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-import-export-test.js",
+          "test": "valid import: viewTransitionClass from namespace import",
+          "line": 84
+        }
+      }
+    }
+  ]
+}

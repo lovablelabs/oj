@@ -1,0 +1,2508 @@
+{
+ "namespaces": {
+  "prod": {
+   "$obj": [
+    [
+     "a",
+     {
+      "$obj": [
+       [
+        "kMwMTN",
+        "x1e2nbdu"
+       ],
+       [
+        "keTefX",
+        "xdwrcjd"
+       ],
+       [
+        "$$css",
+        true
+       ]
+      ]
+     }
+    ],
+    [
+     "b",
+     {
+      "$obj": [
+       [
+        "kMwMTN",
+        "xju2f9n"
+       ],
+       [
+        "kzqmXN",
+        "x1fsd2vl"
+       ],
+       [
+        "$$css",
+        true
+       ]
+      ]
+     }
+    ],
+    [
+     "c",
+     {
+      "$obj": [
+       [
+        "kMwMTN",
+        null
+       ],
+       [
+        "kzqmXN",
+        "xw4jnvo"
+       ],
+       [
+        "$$css",
+        true
+       ]
+      ]
+     }
+    ],
+    [
+     "d",
+     {
+      "$obj": [
+       [
+        "--x",
+        "x1kp0skd"
+       ],
+       [
+        "kWkggS",
+        "x1u857p9"
+       ],
+       [
+        "$$css",
+        true
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "dev": {
+   "$obj": [
+    [
+     "a",
+     {
+      "$obj": [
+       [
+        "pins__styles.a",
+        "pins__styles.a"
+       ],
+       [
+        "color-kMwMTN",
+        "x1e2nbdu"
+       ],
+       [
+        "marginInlineStart-keTefX",
+        "xdwrcjd"
+       ],
+       [
+        "$$css",
+        "root/pins.ts:3"
+       ]
+      ]
+     }
+    ],
+    [
+     "b",
+     {
+      "$obj": [
+       [
+        "pins__styles.b",
+        "pins__styles.b"
+       ],
+       [
+        "color-kMwMTN",
+        "xju2f9n"
+       ],
+       [
+        "width-kzqmXN",
+        "x1fsd2vl"
+       ],
+       [
+        "$$css",
+        "root/pins.ts:4"
+       ]
+      ]
+     }
+    ],
+    [
+     "c",
+     {
+      "$obj": [
+       [
+        "pins__styles.c",
+        "pins__styles.c"
+       ],
+       [
+        "color-kMwMTN",
+        null
+       ],
+       [
+        "width-kzqmXN",
+        "xw4jnvo"
+       ],
+       [
+        "$$css",
+        "root/pins.ts:5"
+       ]
+      ]
+     }
+    ],
+    [
+     "d",
+     {
+      "$obj": [
+       [
+        "pins__styles.d",
+        "pins__styles.d"
+       ],
+       [
+        "--x",
+        "x1kp0skd"
+       ],
+       [
+        "backgroundColor-kWkggS",
+        "x1u857p9"
+       ],
+       [
+        "$$css",
+        "root/pins.ts:6"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "debug": {
+   "$obj": [
+    [
+     "a",
+     {
+      "$obj": [
+       [
+        "color-kMwMTN",
+        "x1e2nbdu"
+       ],
+       [
+        "marginInlineStart-keTefX",
+        "xdwrcjd"
+       ],
+       [
+        "$$css",
+        "root/pins.ts:3"
+       ]
+      ]
+     }
+    ],
+    [
+     "b",
+     {
+      "$obj": [
+       [
+        "color-kMwMTN",
+        "xju2f9n"
+       ],
+       [
+        "width-kzqmXN",
+        "x1fsd2vl"
+       ],
+       [
+        "$$css",
+        "root/pins.ts:4"
+       ]
+      ]
+     }
+    ],
+    [
+     "c",
+     {
+      "$obj": [
+       [
+        "color-kMwMTN",
+        null
+       ],
+       [
+        "width-kzqmXN",
+        "xw4jnvo"
+       ],
+       [
+        "$$css",
+        "root/pins.ts:5"
+       ]
+      ]
+     }
+    ],
+    [
+     "d",
+     {
+      "$obj": [
+       [
+        "--x",
+        "x1kp0skd"
+       ],
+       [
+        "backgroundColor-kWkggS",
+        "x1u857p9"
+       ],
+       [
+        "$$css",
+        "root/pins.ts:6"
+       ]
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ "native": [
+  {
+   "name": "props two statics",
+   "mode": "props",
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "ns",
+     "ns": "a"
+    },
+    {
+     "kind": "ns",
+     "ns": "b"
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "className",
+      "xdwrcjd xju2f9n x1fsd2vl"
+     ]
+    ]
+   }
+  },
+  {
+   "name": "props null deletes",
+   "mode": "props",
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "ns",
+     "ns": "a"
+    },
+    {
+     "kind": "ns",
+     "ns": "c"
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "className",
+      "xdwrcjd xw4jnvo"
+     ]
+    ]
+   }
+  },
+  {
+   "name": "props null-only namespace",
+   "mode": "props",
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "ns",
+     "ns": "c"
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "className",
+      "xw4jnvo"
+     ]
+    ]
+   }
+  },
+  {
+   "name": "props custom prop namespace",
+   "mode": "props",
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "ns",
+     "ns": "d"
+    },
+    {
+     "kind": "ns",
+     "ns": "c"
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "className",
+      "x1kp0skd x1u857p9 xw4jnvo"
+     ]
+    ]
+   }
+  },
+  {
+   "name": "props skips null undefined false",
+   "mode": "props",
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "ns",
+     "ns": "a"
+    },
+    {
+     "kind": "null"
+    },
+    {
+     "kind": "undefined"
+    },
+    {
+     "kind": "false"
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "className",
+      "x1e2nbdu xdwrcjd"
+     ]
+    ]
+   }
+  },
+  {
+   "name": "props true is noop",
+   "mode": "props",
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "ns",
+     "ns": "a"
+    },
+    {
+     "kind": "true"
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "className",
+      "x1e2nbdu xdwrcjd"
+     ]
+    ]
+   }
+  },
+  {
+   "name": "props array flattens",
+   "mode": "props",
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "array",
+     "items": [
+      {
+       "kind": "ns",
+       "ns": "a"
+      },
+      {
+       "kind": "ns",
+       "ns": "b"
+      }
+     ]
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "className",
+      "xdwrcjd xju2f9n x1fsd2vl"
+     ]
+    ]
+   }
+  },
+  {
+   "name": "props nested arrays flatten",
+   "mode": "props",
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "array",
+     "items": [
+      {
+       "kind": "array",
+       "items": [
+        {
+         "kind": "ns",
+         "ns": "a"
+        }
+       ]
+      },
+      {
+       "kind": "ns",
+       "ns": "b"
+      }
+     ]
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "className",
+      "xdwrcjd xju2f9n x1fsd2vl"
+     ]
+    ]
+   }
+  },
+  {
+   "name": "props duplicate namespace",
+   "mode": "props",
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "ns",
+     "ns": "a"
+    },
+    {
+     "kind": "ns",
+     "ns": "a"
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "className",
+      "x1e2nbdu xdwrcjd"
+     ]
+    ]
+   }
+  },
+  {
+   "name": "props inline style",
+   "mode": "props",
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "ns",
+     "ns": "a"
+    },
+    {
+     "kind": "value",
+     "value": {
+      "$obj": [
+       [
+        "color",
+        "green"
+       ],
+       [
+        "width",
+        5
+       ]
+      ]
+     }
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "className",
+      "x1e2nbdu xdwrcjd"
+     ],
+     [
+      "style",
+      {
+       "$obj": [
+        [
+         "color",
+         "green"
+        ],
+        [
+         "width",
+         5
+        ]
+       ]
+      }
+     ]
+    ]
+   }
+  },
+  {
+   "name": "props inline shadows minkey",
+   "mode": "props",
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "ns",
+     "ns": "a"
+    },
+    {
+     "kind": "value",
+     "value": {
+      "$obj": [
+       [
+        "kMwMTN",
+        "z"
+       ]
+      ]
+     }
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "className",
+      "xdwrcjd"
+     ],
+     [
+      "style",
+      {
+       "$obj": [
+        [
+         "kMwMTN",
+         "z"
+        ]
+       ]
+      }
+     ]
+    ]
+   }
+  },
+  {
+   "name": "props two inline objects",
+   "mode": "props",
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "value",
+     "value": {
+      "$obj": [
+       [
+        "color",
+        "x"
+       ],
+       [
+        "width",
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "kind": "value",
+     "value": {
+      "$obj": [
+       [
+        "color",
+        "y"
+       ],
+       [
+        "height",
+        2
+       ]
+      ]
+     }
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "style",
+      {
+       "$obj": [
+        [
+         "width",
+         1
+        ],
+        [
+         "color",
+         "y"
+        ],
+        [
+         "height",
+         2
+        ]
+       ]
+      }
+     ]
+    ]
+   }
+  },
+  {
+   "name": "props empty",
+   "mode": "props",
+   "nsSet": "prod",
+   "args": [],
+   "expected": {
+    "$obj": []
+   }
+  },
+  {
+   "name": "props debug namespaces",
+   "mode": "props",
+   "nsSet": "debug",
+   "args": [
+    {
+     "kind": "ns",
+     "ns": "a"
+    },
+    {
+     "kind": "ns",
+     "ns": "b"
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "className",
+      "xdwrcjd xju2f9n x1fsd2vl"
+     ],
+     [
+      "data-style-src",
+      "root/pins.ts:3; root/pins.ts:4"
+     ]
+    ]
+   }
+  },
+  {
+   "name": "props dev namespaces",
+   "mode": "props",
+   "nsSet": "dev",
+   "args": [
+    {
+     "kind": "ns",
+     "ns": "a"
+    },
+    {
+     "kind": "ns",
+     "ns": "c"
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "className",
+      "pins__styles.a xdwrcjd pins__styles.c xw4jnvo"
+     ],
+     [
+      "data-style-src",
+      "root/pins.ts:3; root/pins.ts:5"
+     ]
+    ]
+   }
+  },
+  {
+   "name": "attrs two statics",
+   "mode": "attrs",
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "ns",
+     "ns": "a"
+    },
+    {
+     "kind": "ns",
+     "ns": "b"
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "class",
+      "xdwrcjd xju2f9n x1fsd2vl"
+     ]
+    ]
+   }
+  },
+  {
+   "name": "attrs null deletes",
+   "mode": "attrs",
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "ns",
+     "ns": "a"
+    },
+    {
+     "kind": "ns",
+     "ns": "c"
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "class",
+      "xdwrcjd xw4jnvo"
+     ]
+    ]
+   }
+  },
+  {
+   "name": "attrs null-only namespace",
+   "mode": "attrs",
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "ns",
+     "ns": "c"
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "class",
+      "xw4jnvo"
+     ]
+    ]
+   }
+  },
+  {
+   "name": "attrs custom prop namespace",
+   "mode": "attrs",
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "ns",
+     "ns": "d"
+    },
+    {
+     "kind": "ns",
+     "ns": "c"
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "class",
+      "x1kp0skd x1u857p9 xw4jnvo"
+     ]
+    ]
+   }
+  },
+  {
+   "name": "attrs skips null undefined false",
+   "mode": "attrs",
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "ns",
+     "ns": "a"
+    },
+    {
+     "kind": "null"
+    },
+    {
+     "kind": "undefined"
+    },
+    {
+     "kind": "false"
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "class",
+      "x1e2nbdu xdwrcjd"
+     ]
+    ]
+   }
+  },
+  {
+   "name": "attrs true is noop",
+   "mode": "attrs",
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "ns",
+     "ns": "a"
+    },
+    {
+     "kind": "true"
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "class",
+      "x1e2nbdu xdwrcjd"
+     ]
+    ]
+   }
+  },
+  {
+   "name": "attrs array flattens",
+   "mode": "attrs",
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "array",
+     "items": [
+      {
+       "kind": "ns",
+       "ns": "a"
+      },
+      {
+       "kind": "ns",
+       "ns": "b"
+      }
+     ]
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "class",
+      "xdwrcjd xju2f9n x1fsd2vl"
+     ]
+    ]
+   }
+  },
+  {
+   "name": "attrs nested arrays flatten",
+   "mode": "attrs",
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "array",
+     "items": [
+      {
+       "kind": "array",
+       "items": [
+        {
+         "kind": "ns",
+         "ns": "a"
+        }
+       ]
+      },
+      {
+       "kind": "ns",
+       "ns": "b"
+      }
+     ]
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "class",
+      "xdwrcjd xju2f9n x1fsd2vl"
+     ]
+    ]
+   }
+  },
+  {
+   "name": "attrs duplicate namespace",
+   "mode": "attrs",
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "ns",
+     "ns": "a"
+    },
+    {
+     "kind": "ns",
+     "ns": "a"
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "class",
+      "x1e2nbdu xdwrcjd"
+     ]
+    ]
+   }
+  },
+  {
+   "name": "attrs inline style",
+   "mode": "attrs",
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "ns",
+     "ns": "a"
+    },
+    {
+     "kind": "value",
+     "value": {
+      "$obj": [
+       [
+        "color",
+        "green"
+       ],
+       [
+        "width",
+        5
+       ]
+      ]
+     }
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "class",
+      "x1e2nbdu xdwrcjd"
+     ],
+     [
+      "style",
+      "color:green;width:5"
+     ]
+    ]
+   }
+  },
+  {
+   "name": "attrs inline shadows minkey",
+   "mode": "attrs",
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "ns",
+     "ns": "a"
+    },
+    {
+     "kind": "value",
+     "value": {
+      "$obj": [
+       [
+        "kMwMTN",
+        "z"
+       ]
+      ]
+     }
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "class",
+      "xdwrcjd"
+     ],
+     [
+      "style",
+      "k-mw-m-t-n:z"
+     ]
+    ]
+   }
+  },
+  {
+   "name": "attrs two inline objects",
+   "mode": "attrs",
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "value",
+     "value": {
+      "$obj": [
+       [
+        "color",
+        "x"
+       ],
+       [
+        "width",
+        1
+       ]
+      ]
+     }
+    },
+    {
+     "kind": "value",
+     "value": {
+      "$obj": [
+       [
+        "color",
+        "y"
+       ],
+       [
+        "height",
+        2
+       ]
+      ]
+     }
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "style",
+      "width:1;color:y;height:2"
+     ]
+    ]
+   }
+  },
+  {
+   "name": "attrs empty",
+   "mode": "attrs",
+   "nsSet": "prod",
+   "args": [],
+   "expected": {
+    "$obj": []
+   }
+  },
+  {
+   "name": "attrs debug namespaces",
+   "mode": "attrs",
+   "nsSet": "debug",
+   "args": [
+    {
+     "kind": "ns",
+     "ns": "a"
+    },
+    {
+     "kind": "ns",
+     "ns": "b"
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "class",
+      "xdwrcjd xju2f9n x1fsd2vl"
+     ],
+     [
+      "data-style-src",
+      "root/pins.ts:3; root/pins.ts:4"
+     ]
+    ]
+   }
+  },
+  {
+   "name": "attrs dev namespaces",
+   "mode": "attrs",
+   "nsSet": "dev",
+   "args": [
+    {
+     "kind": "ns",
+     "ns": "a"
+    },
+    {
+     "kind": "ns",
+     "ns": "c"
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "class",
+      "pins__styles.a xdwrcjd pins__styles.c xw4jnvo"
+     ],
+     [
+      "data-style-src",
+      "root/pins.ts:3; root/pins.ts:5"
+     ]
+    ]
+   }
+  },
+  {
+   "name": "props marker object",
+   "mode": "props",
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "ns",
+     "ns": "a"
+    },
+    {
+     "kind": "value",
+     "value": {
+      "$obj": [
+       [
+        "x-default-marker",
+        "x-default-marker"
+       ],
+       [
+        "$$css",
+        true
+       ]
+      ]
+     }
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "className",
+      "x1e2nbdu xdwrcjd x-default-marker"
+     ]
+    ]
+   }
+  },
+  {
+   "name": "props css-string inline",
+   "mode": "props",
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "value",
+     "value": {
+      "$obj": [
+       [
+        "$$css",
+        "src.ts:1"
+       ],
+       [
+        "foo",
+        "bar"
+       ]
+      ]
+     }
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "className",
+      "bar"
+     ],
+     [
+      "data-style-src",
+      "src.ts:1"
+     ]
+    ]
+   }
+  },
+  {
+   "name": "props css-false inline",
+   "mode": "props",
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "value",
+     "value": {
+      "$obj": [
+       [
+        "$$css",
+        false
+       ],
+       [
+        "foo",
+        "bar"
+       ]
+      ]
+     }
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "className",
+      "bar"
+     ],
+     [
+      "data-style-src",
+      false
+     ]
+    ]
+   }
+  },
+  {
+   "name": "props inline null and undefined values",
+   "mode": "props",
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "value",
+     "value": {
+      "$obj": [
+       [
+        "width",
+        null
+       ],
+       [
+        "height",
+        {
+         "$undefined": true
+        }
+       ],
+       [
+        "color",
+        "x"
+       ]
+      ]
+     }
+    },
+    {
+     "kind": "ns",
+     "ns": "a"
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "className",
+      "x1e2nbdu xdwrcjd"
+     ],
+     [
+      "style",
+      {
+       "$obj": [
+        [
+         "color",
+         "x"
+        ]
+       ]
+      }
+     ]
+    ]
+   }
+  },
+  {
+   "name": "props whole map",
+   "mode": "props",
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "value",
+     "value": {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "keTefX",
+           "xdwrcjd"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ],
+       [
+        "b",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "xju2f9n"
+          ],
+          [
+           "kzqmXN",
+           "x1fsd2vl"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ],
+       [
+        "c",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           null
+          ],
+          [
+           "kzqmXN",
+           "xw4jnvo"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ],
+       [
+        "d",
+        {
+         "$obj": [
+          [
+           "--x",
+           "x1kp0skd"
+          ],
+          [
+           "kWkggS",
+           "x1u857p9"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "style",
+      {
+       "$obj": [
+        [
+         "a",
+         {
+          "$obj": [
+           [
+            "kMwMTN",
+            "x1e2nbdu"
+           ],
+           [
+            "keTefX",
+            "xdwrcjd"
+           ],
+           [
+            "$$css",
+            true
+           ]
+          ]
+         }
+        ],
+        [
+         "b",
+         {
+          "$obj": [
+           [
+            "kMwMTN",
+            "xju2f9n"
+           ],
+           [
+            "kzqmXN",
+            "x1fsd2vl"
+           ],
+           [
+            "$$css",
+            true
+           ]
+          ]
+         }
+        ],
+        [
+         "c",
+         {
+          "$obj": [
+           [
+            "kMwMTN",
+            null
+           ],
+           [
+            "kzqmXN",
+            "xw4jnvo"
+           ],
+           [
+            "$$css",
+            true
+           ]
+          ]
+         }
+        ],
+        [
+         "d",
+         {
+          "$obj": [
+           [
+            "--x",
+            "x1kp0skd"
+           ],
+           [
+            "kWkggS",
+            "x1u857p9"
+           ],
+           [
+            "$$css",
+            true
+           ]
+          ]
+         }
+        ]
+       ]
+      }
+     ]
+    ]
+   }
+  },
+  {
+   "name": "attrs whole map coerces objects",
+   "mode": "attrs",
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "value",
+     "value": {
+      "$obj": [
+       [
+        "a",
+        {
+         "$obj": [
+          [
+           "kMwMTN",
+           "x1e2nbdu"
+          ],
+          [
+           "keTefX",
+           "xdwrcjd"
+          ],
+          [
+           "$$css",
+           true
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "style",
+      "a:[object Object]"
+     ]
+    ]
+   }
+  },
+  {
+   "name": "props numeric inline values",
+   "mode": "props",
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "value",
+     "value": {
+      "$obj": [
+       [
+        "width",
+        5
+       ],
+       [
+        "opacity",
+        0.5
+       ],
+       [
+        "zIndex",
+        -1.25
+       ]
+      ]
+     }
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "style",
+      {
+       "$obj": [
+        [
+         "width",
+         5
+        ],
+        [
+         "opacity",
+         0.5
+        ],
+        [
+         "zIndex",
+         -1.25
+        ]
+       ]
+      }
+     ]
+    ]
+   }
+  },
+  {
+   "name": "attrs numeric inline values",
+   "mode": "attrs",
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "value",
+     "value": {
+      "$obj": [
+       [
+        "width",
+        5
+       ],
+       [
+        "opacity",
+        0.5
+       ],
+       [
+        "WebkitBoxOrient",
+        "vertical"
+       ],
+       [
+        "--myVar",
+        1
+       ]
+      ]
+     }
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "style",
+      "width:5;opacity:0.5;-webkit-box-orient:vertical;--my-var:1"
+     ]
+    ]
+   }
+  },
+  {
+   "name": "props debug plus inline",
+   "mode": "props",
+   "nsSet": "debug",
+   "args": [
+    {
+     "kind": "ns",
+     "ns": "a"
+    },
+    {
+     "kind": "value",
+     "value": {
+      "$obj": [
+       [
+        "color",
+        "x"
+       ]
+      ]
+     }
+    }
+   ],
+   "expected": {
+    "$obj": [
+     [
+      "className",
+      "x1e2nbdu xdwrcjd"
+     ],
+     [
+      "style",
+      {
+       "$obj": [
+        [
+         "color",
+         "x"
+        ]
+       ]
+      }
+     ],
+     [
+      "data-style-src",
+      "root/pins.ts:3"
+     ]
+    ]
+   }
+  }
+ ],
+ "plan": [
+  {
+   "name": "props two statics",
+   "mode": "props",
+   "options": {},
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "static",
+     "ns": "a"
+    },
+    {
+     "kind": "static",
+     "ns": "b"
+    }
+   ],
+   "expected": {
+    "kind": "inlined",
+    "object": {
+     "$obj": [
+      [
+       "className",
+       "xdwrcjd xju2f9n x1fsd2vl"
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "name": "props undefined arg",
+   "mode": "props",
+   "options": {},
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "static",
+     "ns": "a"
+    },
+    {
+     "kind": "staticNull"
+    }
+   ],
+   "expected": {
+    "kind": "inlined",
+    "object": {
+     "$obj": [
+      [
+       "className",
+       "x1e2nbdu xdwrcjd"
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "name": "attrs two statics",
+   "mode": "attrs",
+   "options": {},
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "static",
+     "ns": "a"
+    },
+    {
+     "kind": "static",
+     "ns": "b"
+    }
+   ],
+   "expected": {
+    "kind": "inlined",
+    "object": {
+     "$obj": [
+      [
+       "class",
+       "xdwrcjd xju2f9n x1fsd2vl"
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "name": "props array arg flattens",
+   "mode": "props",
+   "options": {},
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "static",
+     "ns": "a"
+    },
+    {
+     "kind": "static",
+     "ns": "b"
+    }
+   ],
+   "expected": {
+    "kind": "inlined",
+    "object": {
+     "$obj": [
+      [
+       "className",
+       "xdwrcjd xju2f9n x1fsd2vl"
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "name": "props one conditional",
+   "mode": "props",
+   "options": {},
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "static",
+     "ns": "a"
+    },
+    {
+     "kind": "cond",
+     "primary": "b",
+     "fallback": null
+    }
+   ],
+   "expected": {
+    "kind": "table",
+    "entries": [
+     [
+      0,
+      {
+       "$obj": [
+        [
+         "className",
+         "x1e2nbdu xdwrcjd"
+        ]
+       ]
+      }
+     ],
+     [
+      1,
+      {
+       "$obj": [
+        [
+         "className",
+         "xdwrcjd xju2f9n x1fsd2vl"
+        ]
+       ]
+      }
+     ]
+    ]
+   }
+  },
+  {
+   "name": "props logical and",
+   "mode": "props",
+   "options": {},
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "static",
+     "ns": "a"
+    },
+    {
+     "kind": "and",
+     "left": "other",
+     "right": "b"
+    }
+   ],
+   "expected": {
+    "kind": "table",
+    "entries": [
+     [
+      0,
+      {
+       "$obj": [
+        [
+         "className",
+         "x1e2nbdu xdwrcjd"
+        ]
+       ]
+      }
+     ],
+     [
+      1,
+      {
+       "$obj": [
+        [
+         "className",
+         "xdwrcjd xju2f9n x1fsd2vl"
+        ]
+       ]
+      }
+     ]
+    ]
+   }
+  },
+  {
+   "name": "props two conditionals",
+   "mode": "props",
+   "options": {},
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "cond",
+     "primary": "a",
+     "fallback": null
+    },
+    {
+     "kind": "and",
+     "left": "other",
+     "right": "b"
+    }
+   ],
+   "expected": {
+    "kind": "table",
+    "entries": [
+     [
+      0,
+      {
+       "$obj": []
+      }
+     ],
+     [
+      2,
+      {
+       "$obj": [
+        [
+         "className",
+         "x1e2nbdu xdwrcjd"
+        ]
+       ]
+      }
+     ],
+     [
+      1,
+      {
+       "$obj": [
+        [
+         "className",
+         "xju2f9n x1fsd2vl"
+        ]
+       ]
+      }
+     ],
+     [
+      3,
+      {
+       "$obj": [
+        [
+         "className",
+         "xdwrcjd xju2f9n x1fsd2vl"
+        ]
+       ]
+      }
+     ]
+    ]
+   }
+  },
+  {
+   "name": "attrs conditional",
+   "mode": "attrs",
+   "options": {},
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "static",
+     "ns": "a"
+    },
+    {
+     "kind": "cond",
+     "primary": "b",
+     "fallback": null
+    }
+   ],
+   "expected": {
+    "kind": "table",
+    "entries": [
+     [
+      0,
+      {
+       "$obj": [
+        [
+         "class",
+         "x1e2nbdu xdwrcjd"
+        ]
+       ]
+      }
+     ],
+     [
+      1,
+      {
+       "$obj": [
+        [
+         "class",
+         "xdwrcjd xju2f9n x1fsd2vl"
+        ]
+       ]
+      }
+     ]
+    ]
+   }
+  },
+  {
+   "name": "props three conditionals",
+   "mode": "props",
+   "options": {},
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "cond",
+     "primary": "a",
+     "fallback": null
+    },
+    {
+     "kind": "cond",
+     "primary": "b",
+     "fallback": null
+    },
+    {
+     "kind": "cond",
+     "primary": "c",
+     "fallback": null
+    }
+   ],
+   "expected": {
+    "kind": "table",
+    "entries": [
+     [
+      0,
+      {
+       "$obj": []
+      }
+     ],
+     [
+      4,
+      {
+       "$obj": [
+        [
+         "className",
+         "x1e2nbdu xdwrcjd"
+        ]
+       ]
+      }
+     ],
+     [
+      2,
+      {
+       "$obj": [
+        [
+         "className",
+         "xju2f9n x1fsd2vl"
+        ]
+       ]
+      }
+     ],
+     [
+      6,
+      {
+       "$obj": [
+        [
+         "className",
+         "xdwrcjd xju2f9n x1fsd2vl"
+        ]
+       ]
+      }
+     ],
+     [
+      1,
+      {
+       "$obj": [
+        [
+         "className",
+         "xw4jnvo"
+        ]
+       ]
+      }
+     ],
+     [
+      5,
+      {
+       "$obj": [
+        [
+         "className",
+         "xdwrcjd xw4jnvo"
+        ]
+       ]
+      }
+     ],
+     [
+      3,
+      {
+       "$obj": [
+        [
+         "className",
+         "xw4jnvo"
+        ]
+       ]
+      }
+     ],
+     [
+      7,
+      {
+       "$obj": [
+        [
+         "className",
+         "xdwrcjd xw4jnvo"
+        ]
+       ]
+      }
+     ]
+    ]
+   }
+  },
+  {
+   "name": "props four conditionals",
+   "mode": "props",
+   "options": {},
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "cond",
+     "primary": "a",
+     "fallback": null
+    },
+    {
+     "kind": "cond",
+     "primary": "b",
+     "fallback": null
+    },
+    {
+     "kind": "cond",
+     "primary": "a",
+     "fallback": null
+    },
+    {
+     "kind": "cond",
+     "primary": "c",
+     "fallback": null
+    }
+   ],
+   "expected": {
+    "kind": "table",
+    "entries": [
+     [
+      0,
+      {
+       "$obj": []
+      }
+     ],
+     [
+      8,
+      {
+       "$obj": [
+        [
+         "className",
+         "x1e2nbdu xdwrcjd"
+        ]
+       ]
+      }
+     ],
+     [
+      4,
+      {
+       "$obj": [
+        [
+         "className",
+         "xju2f9n x1fsd2vl"
+        ]
+       ]
+      }
+     ],
+     [
+      12,
+      {
+       "$obj": [
+        [
+         "className",
+         "xdwrcjd xju2f9n x1fsd2vl"
+        ]
+       ]
+      }
+     ],
+     [
+      2,
+      {
+       "$obj": [
+        [
+         "className",
+         "x1e2nbdu xdwrcjd"
+        ]
+       ]
+      }
+     ],
+     [
+      10,
+      {
+       "$obj": [
+        [
+         "className",
+         "x1e2nbdu xdwrcjd"
+        ]
+       ]
+      }
+     ],
+     [
+      6,
+      {
+       "$obj": [
+        [
+         "className",
+         "x1fsd2vl x1e2nbdu xdwrcjd"
+        ]
+       ]
+      }
+     ],
+     [
+      14,
+      {
+       "$obj": [
+        [
+         "className",
+         "x1fsd2vl x1e2nbdu xdwrcjd"
+        ]
+       ]
+      }
+     ],
+     [
+      1,
+      {
+       "$obj": [
+        [
+         "className",
+         "xw4jnvo"
+        ]
+       ]
+      }
+     ],
+     [
+      9,
+      {
+       "$obj": [
+        [
+         "className",
+         "xdwrcjd xw4jnvo"
+        ]
+       ]
+      }
+     ],
+     [
+      5,
+      {
+       "$obj": [
+        [
+         "className",
+         "xw4jnvo"
+        ]
+       ]
+      }
+     ],
+     [
+      13,
+      {
+       "$obj": [
+        [
+         "className",
+         "xdwrcjd xw4jnvo"
+        ]
+       ]
+      }
+     ],
+     [
+      3,
+      {
+       "$obj": [
+        [
+         "className",
+         "xdwrcjd xw4jnvo"
+        ]
+       ]
+      }
+     ],
+     [
+      11,
+      {
+       "$obj": [
+        [
+         "className",
+         "xdwrcjd xw4jnvo"
+        ]
+       ]
+      }
+     ],
+     [
+      7,
+      {
+       "$obj": [
+        [
+         "className",
+         "xdwrcjd xw4jnvo"
+        ]
+       ]
+      }
+     ],
+     [
+      15,
+      {
+       "$obj": [
+        [
+         "className",
+         "xdwrcjd xw4jnvo"
+        ]
+       ]
+      }
+     ]
+    ]
+   }
+  },
+  {
+   "name": "props cond both null",
+   "mode": "props",
+   "options": {},
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "cond",
+     "primary": null,
+     "fallback": null
+    },
+    {
+     "kind": "static",
+     "ns": "a"
+    }
+   ],
+   "expected": {
+    "kind": "table",
+    "entries": [
+     [
+      0,
+      {
+       "$obj": [
+        [
+         "className",
+         "x1e2nbdu xdwrcjd"
+        ]
+       ]
+      }
+     ],
+     [
+      1,
+      {
+       "$obj": [
+        [
+         "className",
+         "x1e2nbdu xdwrcjd"
+        ]
+       ]
+      }
+     ]
+    ]
+   }
+  },
+  {
+   "name": "props debug conditional",
+   "mode": "props",
+   "options": {
+    "debug": true
+   },
+   "nsSet": "debug",
+   "args": [
+    {
+     "kind": "static",
+     "ns": "a"
+    },
+    {
+     "kind": "cond",
+     "primary": "b",
+     "fallback": null
+    }
+   ],
+   "expected": {
+    "kind": "table",
+    "entries": [
+     [
+      0,
+      {
+       "$obj": [
+        [
+         "className",
+         "x1e2nbdu xdwrcjd"
+        ],
+        [
+         "data-style-src",
+         "root/pins.ts:3"
+        ]
+       ]
+      }
+     ],
+     [
+      1,
+      {
+       "$obj": [
+        [
+         "className",
+         "xdwrcjd xju2f9n x1fsd2vl"
+        ],
+        [
+         "data-style-src",
+         "root/pins.ts:3; root/pins.ts:4"
+        ]
+       ]
+      }
+     ]
+    ]
+   }
+  },
+  {
+   "name": "props five conditionals bail",
+   "mode": "props",
+   "options": {},
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "cond",
+     "primary": "a",
+     "fallback": null
+    },
+    {
+     "kind": "cond",
+     "primary": "b",
+     "fallback": null
+    },
+    {
+     "kind": "cond",
+     "primary": "a",
+     "fallback": null
+    },
+    {
+     "kind": "cond",
+     "primary": "b",
+     "fallback": null
+    },
+    {
+     "kind": "cond",
+     "primary": "c",
+     "fallback": null
+    }
+   ],
+   "expected": {
+    "kind": "bail"
+   }
+  },
+  {
+   "name": "props nonstatic bail",
+   "mode": "props",
+   "options": {},
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "static",
+     "ns": "a"
+    },
+    {
+     "kind": "other"
+    }
+   ],
+   "expected": {
+    "kind": "bail"
+   }
+  },
+  {
+   "name": "props null literal bail",
+   "mode": "props",
+   "options": {},
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "static",
+     "ns": "a"
+    },
+    {
+     "kind": "unsupported"
+    }
+   ],
+   "expected": {
+    "kind": "bail"
+   }
+  },
+  {
+   "name": "props bool literal bail",
+   "mode": "props",
+   "options": {},
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "static",
+     "ns": "a"
+    },
+    {
+     "kind": "unsupported"
+    }
+   ],
+   "expected": {
+    "kind": "bail"
+   }
+  },
+  {
+   "name": "props spread bail",
+   "mode": "props",
+   "options": {},
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "unsupported"
+    }
+   ],
+   "expected": {
+    "kind": "bail"
+   }
+  },
+  {
+   "name": "props nested array bail",
+   "mode": "props",
+   "options": {},
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "static",
+     "ns": "a"
+    },
+    {
+     "kind": "unsupported"
+    }
+   ],
+   "expected": {
+    "kind": "bail"
+   }
+  },
+  {
+   "name": "props or bail",
+   "mode": "props",
+   "options": {},
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "nonAndLogical"
+    }
+   ],
+   "expected": {
+    "kind": "bail"
+   }
+  },
+  {
+   "name": "props static-left and bail",
+   "mode": "props",
+   "options": {},
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "and",
+     "left": "a",
+     "right": "b"
+    }
+   ],
+   "expected": {
+    "kind": "bail"
+   }
+  },
+  {
+   "name": "props cond nonstatic branch bail",
+   "mode": "props",
+   "options": {},
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "cond",
+     "primary": "other",
+     "fallback": "a"
+    }
+   ],
+   "expected": {
+    "kind": "bail"
+   }
+  },
+  {
+   "name": "props flag off bail",
+   "mode": "props",
+   "options": {
+    "enableInlinedConditionalMerge": false
+   },
+   "nsSet": "prod",
+   "args": [
+    {
+     "kind": "static",
+     "ns": "a"
+    },
+    {
+     "kind": "cond",
+     "primary": "b",
+     "fallback": null
+    }
+   ],
+   "expected": {
+    "kind": "bail"
+   }
+  }
+ ]
+}

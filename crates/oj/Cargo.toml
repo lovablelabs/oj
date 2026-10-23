@@ -21,6 +21,7 @@ oj_config.workspace = true
 oj_resolver.workspace = true
 oj_server.workspace = true
 oj_js.workspace = true
+oj_stylex.workspace = true
 url = "2"
 regex = "1.11"
 anyhow.workspace = true

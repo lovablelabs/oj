@@ -1,0 +1,2523 @@
+{
+  "header": {
+    "corpus": "regressions/aliases",
+    "description": "The `aliases` option and its `rewriteAliases` sibling, mined from @stylexjs/babel-plugin 0.19.0 run live: option shapes, declaration-order precedence with first-that-resolves-on-disk winning, the extension outer loop interleaved with the alias inner loop, the /ROOT/ and absolute existsSync branches (directories resolve, symlinks are not realpathed), relative specifiers bypassing aliases, the theme-file gate on the raw specifier, and rewriteAliases' hardcoded .stylex suffix. The three experimental_crossFileParsing probes of the source corpus are excluded: that resolution mode is a separate open gap. Nine probes numbered 4xx cover edges the source spec left unexecuted (treeshakeCompensation interaction, a literal-percent absolute target, dot-leading specifiers, a non-boolean rewriteAliases, before/after overlap in a star key, /ROOT/ join normalization) and were executed against the same oracle.",
+    "oracle": "@stylexjs/babel-plugin@0.19.0",
+    "written": "2026-08-29"
+  },
+  "jobs": [
+    {
+      "id": "aliases/001-shape-string-value",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/002-shape-array-value",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": [
+            "<ROOT>/lib/*"
+          ]
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/003-shape-array-fallback",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": [
+            "<ROOT>/nope/*",
+            "<ROOT>/lib/*"
+          ]
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/004-shape-null",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": null
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "error",
+      "pinnedError": "Could not resolve the path to the imported file."
+    },
+    {
+      "id": "aliases/005-shape-undefined-absent",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "error",
+      "pinnedError": "Could not resolve the path to the imported file."
+    },
+    {
+      "id": "aliases/006-shape-empty-object",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {}
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "error",
+      "pinnedError": "Could not resolve the path to the imported file."
+    },
+    {
+      "id": "aliases/007-shape-number-value",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": 42
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "error",
+      "pinnedError": "Could not resolve the path to the imported file."
+    },
+    {
+      "id": "aliases/008-shape-array-of-string-in-value",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": [
+            "<ROOT>/lib/*",
+            7
+          ]
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "error",
+      "pinnedError": "Could not resolve the path to the imported file."
+    },
+    {
+      "id": "aliases/009-shape-top-level-string",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": "nonsense"
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "error",
+      "pinnedError": "Could not resolve the path to the imported file."
+    },
+    {
+      "id": "aliases/010-shape-top-level-array",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": [
+          "<ROOT>/lib/colors.stylex.ts"
+        ]
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "error",
+      "pinnedError": "Could not resolve the path to the imported file."
+    },
+    {
+      "id": "aliases/011-shape-nested-object-value",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": {
+            "a": 1
+          }
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "error",
+      "pinnedError": "Could not resolve the path to the imported file."
+    },
+    {
+      "id": "aliases/012-match-exact-no-star",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@colors';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@colors": "<ROOT>/lib/colors.stylex.ts"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "error",
+      "pinnedError": "Could not resolve the path to the imported file."
+    },
+    {
+      "id": "aliases/013-match-exact-gate-blocks",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@colors-nostylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@colors-nostylex": "<ROOT>/lib/colors.stylex.ts"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "error",
+      "pinnedError": "Could not resolve the path to the imported file."
+    },
+    {
+      "id": "aliases/014-match-exact-key-with-suffix",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@colors.stylex": "<ROOT>/lib/colors.stylex.ts"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/015-match-exact-key-needs-extension-variant",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@colors.stylex.ts": "<ROOT>/lib/colors.stylex.ts"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/016-match-exact-key-needs-js-variant",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@colors.stylex.js": "<ROOT>/lib/colors.stylex.ts"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/017-match-exact-no-prefix-semantics",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib": "<ROOT>/lib"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "error",
+      "pinnedError": "Could not resolve the path to the imported file."
+    },
+    {
+      "id": "aliases/018-match-star-prefix",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/019-match-star-prefix-deep",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/deep/nested.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/020-match-star-bare-star-key",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "*": "<ROOT>/lib/colors.stylex.ts"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/021-match-star-suffixed-key",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '~colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "~*.stylex": "<ROOT>/lib/*.stylex.ts"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/022-match-star-two-in-key",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@a/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@a/*.stylex*": "<ROOT>/lib/*.stylex.ts"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/023-match-star-two-in-value",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@dup/dup';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@dup/*": "<ROOT>/lib/*/*.stylex.ts"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "error",
+      "pinnedError": "Could not resolve the path to the imported file."
+    },
+    {
+      "id": "aliases/024-match-star-value-without-star",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@any/whatever.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@any/*": "<ROOT>/lib/colors.stylex.ts"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/025-match-star-empty-capture",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/colors.stylex.ts"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "error",
+      "pinnedError": "Could not resolve the path to the imported file."
+    },
+    {
+      "id": "aliases/026-match-order-wildcard-first",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/alt/*",
+          "@lib/colors.stylex": "<ROOT>/lib/colors.stylex.ts"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/027-match-order-exact-first",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/colors.stylex": "<ROOT>/lib/colors.stylex.ts",
+          "@lib/*": "<ROOT>/alt/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/028-match-order-first-missing-second-hit",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/does-not-exist/*",
+          "@x/*": "<ROOT>/alt/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "error",
+      "pinnedError": "Could not resolve the path to the imported file."
+    },
+    {
+      "id": "aliases/029-match-order-two-wildcards-both-exist",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@l*": "<ROOT>/alt/colors.stylex.ts",
+          "@lib/*": "<ROOT>/lib/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/030-match-relative-import-ignores-alias",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from './rel-missing.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "./rel-missing.stylex": "<ROOT>/lib/colors.stylex.ts"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "error",
+      "pinnedError": "Could not resolve the path to the imported file."
+    },
+    {
+      "id": "aliases/031-match-relative-import-real",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from './rel.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/032-match-raw-specifier-beats-alias",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'realpkg/theme.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "realpkg/*": "<ROOT>/alt/colors.stylex.ts"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/033-match-bare-specifier-no-alias",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'realpkg/theme.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/034-subst-absolute-target",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@abs';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@abs": "<ROOT>/lib/colors.stylex.ts"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "error",
+      "pinnedError": "Could not resolve the path to the imported file."
+    },
+    {
+      "id": "aliases/035-subst-absolute-target-no-ext",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@abs';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@abs": "<ROOT>/lib/colors.stylex"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "error",
+      "pinnedError": "Could not resolve the path to the imported file."
+    },
+    {
+      "id": "aliases/036-subst-relative-target-from-source-file",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@rel/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@rel/*": "./lib/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/037-subst-relative-dotdot-target",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@up/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@up/*": "../lib/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/038-subst-bare-specifier-target",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@pkg/theme.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@pkg/*": "realpkg/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/039-subst-root-placeholder-direct-import",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '/ROOT/lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/040-subst-root-placeholder-via-alias",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@r/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@r/*": "/ROOT/lib/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/041-subst-root-placeholder-no-rootdir",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@r/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        },
+        "aliases": {
+          "@r/*": "/ROOT/lib/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "error",
+      "pinnedError": "Could not resolve the path to the imported file."
+    },
+    {
+      "id": "aliases/042-subst-rootdir-elsewhere",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@r/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>/lib"
+        },
+        "aliases": {
+          "@r/*": "/ROOT/colors.stylex.ts"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/043-subst-target-missing-on-disk",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@gone/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@gone/*": "<ROOT>/nowhere/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "error",
+      "pinnedError": "Could not resolve the path to the imported file."
+    },
+    {
+      "id": "aliases/044-subst-target-is-directory",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@dir.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@dir.stylex": "<ROOT>/lib"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/045-ext-precedence-js-before-ts",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@e/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@e/*": "<ROOT>/lib2/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/046-ext-precedence-relative-ref",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '../lib2/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/047-canon-alias-vs-relative-same-file-alias",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/048-canon-alias-vs-relative-same-file-relative",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '../lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/049-canon-srclib-relative-ref",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from './lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/050-canon-nested-package",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@sub/theme.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@sub/*": "<ROOT>/sub/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/051-canon-outside-any-package",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@out/theme.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@out/*": "<ROOT>/../aliases-outside/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/052-canon-outside-any-package-no-rootdir",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@out/theme.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        },
+        "aliases": {
+          "@out/*": "<ROOT>/../aliases-outside/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/053-canon-rootdir-variation",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>/src"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/054-canon-importer-position",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/deeper/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/055-mr-absent",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "error",
+      "pinnedError": "Could not resolve the path to the imported file."
+    },
+    {
+      "id": "aliases/056-mr-haste",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/057-mr-haste-nonexistent-target",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@nope/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "aliases": {
+          "@nope/*": "<ROOT>/nowhere/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/059-mr-themefileextension-custom",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".vars"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "error",
+      "pinnedError": "Could not resolve the path to the imported file."
+    },
+    {
+      "id": "aliases/060-rw-basic",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        },
+        "rewriteAliases": true
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/061-rw-no-module-resolution",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import { vars } from '@lib/colors.stylex';\nexport const x = vars;\n",
+      "options": {
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        },
+        "rewriteAliases": true
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/062-rw-unused-import",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import '@lib/colors.stylex';\nexport const x = 1;\n",
+      "options": {
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        },
+        "rewriteAliases": true
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/063-rw-relative-normalized",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import './rel.stylex.ts';\nexport const x = 1;\n",
+      "options": {
+        "rewriteAliases": true
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/064-rw-unresolvable-left-alone",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import '@gone/colors.stylex';\nexport const x = 1;\n",
+      "options": {
+        "aliases": {
+          "@gone/*": "<ROOT>/nowhere/*"
+        },
+        "rewriteAliases": true
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/065-rw-root-placeholder-no-rootdir-passed",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import '/ROOT/lib/colors.stylex';\nexport const x = 1;\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "rewriteAliases": true
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/066-rw-themefileextension-ignored",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import '@lib/colors.stylex';\nexport const x = 1;\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".vars"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        },
+        "rewriteAliases": true
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/067-rw-non-stylex-import-untouched",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import '@lib/plain';\nexport const x = 1;\n",
+      "options": {
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        },
+        "rewriteAliases": true
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/068-rw-false-explicit",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        },
+        "rewriteAliases": false
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/069-rw-require-not-rewritten",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "const { vars } = require('@lib/colors.stylex');\nexport const x = vars;\n",
+      "options": {
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        },
+        "rewriteAliases": true
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/070-stylexsrc-aliased",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@sx';\nexport const styles = stylex.create({ root: { color: 'red' } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@sx": "@stylexjs/stylex",
+          "@lib/*": "<ROOT>/lib/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/071-stylexsrc-aliased-with-importsources",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@sx';\nexport const styles = stylex.create({ root: { color: 'red' } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@sx": "@stylexjs/stylex"
+        },
+        "importSources": [
+          "@stylexjs/stylex",
+          "@sx"
+        ]
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/072-suffix-consts-file",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/consts.stylex.const';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/073-suffix-transformed-file",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/t.transformed';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/101-star-two-in-value",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@dup/dup.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@dup/*": "<ROOT>/lib/*/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/102-star-empty-capture",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*.stylex": "<ROOT>/lib/colors.stylex.ts"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/103-star-capture-includes-slashes",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/deep/nested.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/104-star-key-only-star-plus-after",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@x/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "*.stylex": "<ROOT>/lib/*.stylex.ts"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "error",
+      "pinnedError": "Could not resolve the path to the imported file."
+    },
+    {
+      "id": "aliases/105-crosskey-fallback",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/nope/*",
+          "@l*": "<ROOT>/alt/colors.stylex.ts"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/106-crosskey-both-exist-first-wins",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/alt/colors.stylex.ts",
+          "@l*": "<ROOT>/lib/colors.stylex.ts"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/107-value-array-order-first-wins",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": [
+            "<ROOT>/alt/colors.stylex.ts",
+            "<ROOT>/lib/colors.stylex.ts"
+          ]
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/108-raw-with-extension-beats-alias",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'realpkg/theme.stylex.ts';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "realpkg/*": "<ROOT>/alt/colors.stylex.ts"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/109-raw-with-extension-ref",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'realpkg/theme.stylex.ts';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/110-raw-relative-with-extension-vs-alias",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from './rel.stylex.ts';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "./rel.stylex.ts": "<ROOT>/alt/colors.stylex.ts"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/111-target-not-a-theme-filename",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@plain/x.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@plain/x.stylex": "<ROOT>/plainfiles/notatheme.ts"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/112-ext-mjs-target",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@ex/a.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@ex/*": "<ROOT>/exts/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/113-ext-jsx-target",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@ex/b.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@ex/*": "<ROOT>/exts/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/114-ext-unsupported-mts",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@ex/c.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@ex/*": "<ROOT>/exts/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "error",
+      "pinnedError": "Could not resolve the path to the imported file."
+    },
+    {
+      "id": "aliases/115-symlink-absolute-alias",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@sym/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@sym/*": "<ROOT>/linked/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/116-symlink-relative-import",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '../linked/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/117-symlink-relative-alias-target",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@sym/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@sym/*": "../linked/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/118-export-from-not-rewritten",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "export { vars } from '@lib/colors.stylex';\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        },
+        "rewriteAliases": true
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/119-export-star-from-not-rewritten",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "export * from '@lib/colors.stylex';\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        },
+        "rewriteAliases": true
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/120-import-type-only",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import type { vars } from '@lib/colors.stylex';\nexport const x = 1;\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        },
+        "rewriteAliases": true
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/121-selfhash-theme-file",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "lib/colors.stylex.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ c: 'red' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/122-selfhash-importer-ref",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/123-devprod-invariance",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        }
+      },
+      "mode": "dev",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/124-importer-at-root-relative-target",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@rel/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@rel/*": "./lib/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/125-key-star-vs-exact-same-prefix",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/colors.stylex*": "<ROOT>/alt/colors.stylex.ts",
+          "@lib/colors.stylex": "<ROOT>/lib/colors.stylex.ts"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/126-haste-consts-suffix",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/consts.stylex.const';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/127-haste-source-ext-drives-name",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.tsx",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/128-alias-to-nested-pkg-dir",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@sub.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@sub.stylex": "<ROOT>/sub"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/201-value-two-stars-clean",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@dup/dup.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@dup/*": "<ROOT>/lib/*/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/202-ext-mts-not-supported",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@ex/c.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@ex/*": "<ROOT>/exts/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "error",
+      "pinnedError": "Could not resolve the path to the imported file."
+    },
+    {
+      "id": "aliases/203-target-with-dotdot-segments",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@dd/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@dd/*": "<ROOT>/src/../lib/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/204-target-trailing-slash",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@ts.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@ts.stylex": "<ROOT>/lib/"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/205-mixed-imports-one-file",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars as a } from '@lib/colors.stylex';\nimport { vars as b } from './rel.stylex';\nexport const styles = stylex.create({ root: { color: a.c, backgroundColor: b.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/206-rw-target-is-directory",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@dir.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@dir.stylex": "<ROOT>/lib"
+        },
+        "rewriteAliases": true
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/207-rw-target-outside-root",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@out/theme.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@out/*": "<ROOT>/../aliases-outside/*"
+        },
+        "rewriteAliases": true
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/208-rw-same-dir-target",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@here/rel.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@here/*": "<ROOT>/src/*"
+        },
+        "rewriteAliases": true
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/211-custom-themefileext-alias-works",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.vars';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".vars"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/212-dupe-key-last-wins",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/213-alias-key-empty-string",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "": "<ROOT>/lib/colors.stylex.ts"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "error",
+      "pinnedError": "Could not resolve the path to the imported file."
+    },
+    {
+      "id": "aliases/214-alias-value-empty-string",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": ""
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "error",
+      "pinnedError": "Could not resolve the path to the imported file."
+    },
+    {
+      "id": "aliases/215-alias-value-empty-array",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": []
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "error",
+      "pinnedError": "Could not resolve the path to the imported file."
+    },
+    {
+      "id": "aliases/301-custom-themefileext-alias-works",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.vars';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        },
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".vars"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/302-custom-themefileext-consts",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.vars.const';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        },
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>",
+          "themeFileExtension": ".vars"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "error",
+      "pinnedError": "Could not resolve the path to the imported file."
+    },
+    {
+      "id": "aliases/303-root-placeholder-midpath-no-trigger",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@m/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "aliases": {
+          "@m/*": "<ROOT>/lib/../lib/*"
+        },
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/304-rootdir-only-no-alias-relative-outside",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '../../aliases-outside/theme.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/401-treeshake-and-rewrite",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        },
+        "rewriteAliases": true,
+        "treeshakeCompensation": true
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/402-treeshake-without-rewrite",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        },
+        "treeshakeCompensation": true
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/403-absolute-percent-literal",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@pct/x.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@pct/*": "<ROOT>/lib/pct%20*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/404-dot-leading-specifier-skips-aliases",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '.hidden/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          ".hidden/*": "<ROOT>/lib/*"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "error"
+    },
+    {
+      "id": "aliases/405-rewrite-non-boolean-is-off",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import '@lib/colors.stylex';\nexport const x = 1;\n",
+      "options": {
+        "aliases": {
+          "@lib/*": "<ROOT>/lib/*"
+        },
+        "rewriteAliases": "yes"
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/406-star-key-before-after-overlap",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {
+          "@lib/colors.stylex*colors.stylex": "<ROOT>/alt/*colors.stylex"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/407-root-placeholder-absolute-rest",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '/ROOT//lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/408-root-placeholder-dotdot",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '/ROOT/lib/deep/../colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "aliases/409-empty-alias-map-is-inert",
+      "root": "corpus/regressions/fixtures/aliases",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from './rel.stylex';\nexport const styles = stylex.create({ root: { color: vars.c } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        },
+        "aliases": {}
+      },
+      "mode": "prod",
+      "tags": [
+        "aliases"
+      ],
+      "expect": "ok"
+    }
+  ]
+}

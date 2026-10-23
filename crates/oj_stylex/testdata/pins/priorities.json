@@ -1,0 +1,2937 @@
+{
+ "oracle": "@stylexjs/babel-plugin@0.19.0",
+ "node": "v22.22.3",
+ "skipped_tier_probes": [
+  "sos:animation(0)",
+  "sos:background(0)",
+  "sos:border(0)",
+  "sos:border-block(0)",
+  "sos:border-inline(0)",
+  "sos:all(0)",
+  "sol:border-block-start(0)",
+  "sol:border-top(0)",
+  "sol:border-block-end(0)",
+  "sol:border-bottom(0)",
+  "sol:border-inline-start(0)",
+  "sol:border-left(0)",
+  "sol:border-inline-end(0)",
+  "sol:border-right(0)"
+ ],
+ "cases": [
+  {
+   "name": "tier:sos:margin",
+   "key": "margin",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 1000,
+   "ltr": ".xk44xe2{margin:red}"
+  },
+  {
+   "name": "tier:sos:padding",
+   "key": "padding",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 1000,
+   "ltr": ".x1d6q7af{padding:red}"
+  },
+  {
+   "name": "tier:sos:font",
+   "key": "font",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 1000,
+   "ltr": ".x1x0qlg4{font:red}"
+  },
+  {
+   "name": "tier:sos:grid",
+   "key": "grid",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 1000,
+   "ltr": ".xpy1sk0{grid:red}"
+  },
+  {
+   "name": "tier:sos:grid-template",
+   "key": "grid-template",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 1000,
+   "ltr": ".xknssbp{grid-template:red}"
+  },
+  {
+   "name": "tier:sos:grid-area",
+   "key": "grid-area",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 1000,
+   "ltr": ".xqyoef5{grid-area:red}"
+  },
+  {
+   "name": "tier:sos:inset",
+   "key": "inset",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 1000,
+   "ltr": ".x1dswdiz{inset:red}"
+  },
+  {
+   "name": "tier:sos:scroll-margin",
+   "key": "scroll-margin",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 1000,
+   "ltr": ".xds09y7{scroll-margin:red}"
+  },
+  {
+   "name": "tier:sos:scroll-padding",
+   "key": "scroll-padding",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 1000,
+   "ltr": ".xe47vf7{scroll-padding:red}"
+  },
+  {
+   "name": "tier:sol:animation-range",
+   "key": "animation-range",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".x1i0sh2p{animation-range:red}"
+  },
+  {
+   "name": "tier:sol:scroll-timeline",
+   "key": "scroll-timeline",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".xnvqvhz{scroll-timeline:red}"
+  },
+  {
+   "name": "tier:sol:view-timeline",
+   "key": "view-timeline",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".xvbbyhr{view-timeline:red}"
+  },
+  {
+   "name": "tier:sol:background-position",
+   "key": "background-position",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".xnayr6m{background-position:red}"
+  },
+  {
+   "name": "tier:sol:border-color",
+   "key": "border-color",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".x71xlcl{border-color:red}"
+  },
+  {
+   "name": "tier:sol:border-style",
+   "key": "border-style",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".xj6irh2{border-style:red}"
+  },
+  {
+   "name": "tier:sol:border-width",
+   "key": "border-width",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".xerxr3d{border-width:red}"
+  },
+  {
+   "name": "tier:sol:border-inline-color",
+   "key": "border-inline-color",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".xocqyrc{border-inline-color:red}"
+  },
+  {
+   "name": "tier:sol:border-inline-style",
+   "key": "border-inline-style",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".x64nx1o{border-inline-style:red}"
+  },
+  {
+   "name": "tier:sol:border-inline-width",
+   "key": "border-inline-width",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".x1sqqsbw{border-inline-width:red}"
+  },
+  {
+   "name": "tier:sol:border-image",
+   "key": "border-image",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".x1va5gwy{border-image:red}"
+  },
+  {
+   "name": "tier:sol:border-radius",
+   "key": "border-radius",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".x1kluoll{border-radius:red}"
+  },
+  {
+   "name": "tier:sol:corner-shape",
+   "key": "corner-shape",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".x1vbpuo9{corner-shape:red}"
+  },
+  {
+   "name": "tier:sol:caret",
+   "key": "caret",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".x13icohe{caret:red}"
+  },
+  {
+   "name": "tier:sol:outline",
+   "key": "outline",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".x1g35f34{outline:red}"
+  },
+  {
+   "name": "tier:sol:grid-gap",
+   "key": "grid-gap",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".xwj4kro{grid-gap:red}"
+  },
+  {
+   "name": "tier:sol:gap",
+   "key": "gap",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".xqa17pu{gap:red}"
+  },
+  {
+   "name": "tier:sol:place-content",
+   "key": "place-content",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".xv0x221{place-content:red}"
+  },
+  {
+   "name": "tier:sol:place-items",
+   "key": "place-items",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".x12qt9ov{place-items:red}"
+  },
+  {
+   "name": "tier:sol:place-self",
+   "key": "place-self",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".x1rqt6j6{place-self:red}"
+  },
+  {
+   "name": "tier:sol:margin-block",
+   "key": "margin-block",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".x1q1kxll{margin-block:red}"
+  },
+  {
+   "name": "tier:sol:margin-inline",
+   "key": "margin-inline",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".xtaeut2{margin-inline:red}"
+  },
+  {
+   "name": "tier:sol:overscroll-behavior",
+   "key": "overscroll-behavior",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".x1q2saor{overscroll-behavior:red}"
+  },
+  {
+   "name": "tier:sol:padding-block",
+   "key": "padding-block",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".x1ah7bop{padding-block:red}"
+  },
+  {
+   "name": "tier:sol:padding-inline",
+   "key": "padding-inline",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".x1kdp9gz{padding-inline:red}"
+  },
+  {
+   "name": "tier:sol:columns",
+   "key": "columns",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".x1j6v8a4{columns:red}"
+  },
+  {
+   "name": "tier:sol:column-rule",
+   "key": "column-rule",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".xj0dhbm{column-rule:red}"
+  },
+  {
+   "name": "tier:sol:contain-intrinsic-size",
+   "key": "contain-intrinsic-size",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".x1ds8bq8{contain-intrinsic-size:red}"
+  },
+  {
+   "name": "tier:sol:container",
+   "key": "container",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".xm5dtid{container:red}"
+  },
+  {
+   "name": "tier:sol:flex",
+   "key": "flex",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".xiqvnpm{flex:red}"
+  },
+  {
+   "name": "tier:sol:flex-flow",
+   "key": "flex-flow",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".x5b1sfs{flex-flow:red}"
+  },
+  {
+   "name": "tier:sol:font-variant",
+   "key": "font-variant",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".xdatj0u{font-variant:red}"
+  },
+  {
+   "name": "tier:sol:grid-template-areas",
+   "key": "grid-template-areas",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".x19xe1u{grid-template-areas:red}"
+  },
+  {
+   "name": "tier:sol:grid-row",
+   "key": "grid-row",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".xq4v49e{grid-row:red}"
+  },
+  {
+   "name": "tier:sol:grid-column",
+   "key": "grid-column",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".x1b7o17s{grid-column:red}"
+  },
+  {
+   "name": "tier:sol:list-style",
+   "key": "list-style",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".xhqrgis{list-style:red}"
+  },
+  {
+   "name": "tier:sol:mask",
+   "key": "mask",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".xul6fdx{mask:red}"
+  },
+  {
+   "name": "tier:sol:mask-border",
+   "key": "mask-border",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".x1vqzj3y{mask-border:red}"
+  },
+  {
+   "name": "tier:sol:offset",
+   "key": "offset",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".x1y65sco{offset:red}"
+  },
+  {
+   "name": "tier:sol:overflow",
+   "key": "overflow",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".x1d3525f{overflow:red}"
+  },
+  {
+   "name": "tier:sol:inset-block",
+   "key": "inset-block",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".x1dalugh{inset-block:red}"
+  },
+  {
+   "name": "tier:sol:inset-inline",
+   "key": "inset-inline",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".x1sd1iya{inset-inline:red}"
+  },
+  {
+   "name": "tier:sol:scroll-margin-block",
+   "key": "scroll-margin-block",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".xwo3w6g{scroll-margin-block:red}"
+  },
+  {
+   "name": "tier:sol:scroll-margin-inline",
+   "key": "scroll-margin-inline",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".x1itw0yb{scroll-margin-inline:red}"
+  },
+  {
+   "name": "tier:sol:scroll-padding-block",
+   "key": "scroll-padding-block",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".x1k461h9{scroll-padding-block:red}"
+  },
+  {
+   "name": "tier:sol:scroll-padding-inline",
+   "key": "scroll-padding-inline",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".xib8ijt{scroll-padding-inline:red}"
+  },
+  {
+   "name": "tier:sol:scroll-snap-type",
+   "key": "scroll-snap-type",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".x1muspo9{scroll-snap-type:red}"
+  },
+  {
+   "name": "tier:sol:text-decoration",
+   "key": "text-decoration",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".x1m6tcqy{text-decoration:red}"
+  },
+  {
+   "name": "tier:sol:text-emphasis",
+   "key": "text-emphasis",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".xp3neyt{text-emphasis:red}"
+  },
+  {
+   "name": "tier:sol:transition",
+   "key": "transition",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 2000,
+   "ltr": ".xiole9a{transition:red}"
+  },
+  {
+   "name": "tier:physical:border-top-color",
+   "key": "border-top-color",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x1uu1fcu{border-top-color:red}"
+  },
+  {
+   "name": "tier:physical:border-top-style",
+   "key": "border-top-style",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x1184d09{border-top-style:red}"
+  },
+  {
+   "name": "tier:physical:border-top-width",
+   "key": "border-top-width",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x1h0q59e{border-top-width:red}"
+  },
+  {
+   "name": "tier:physical:border-bottom-color",
+   "key": "border-bottom-color",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".xud65wk{border-bottom-color:red}"
+  },
+  {
+   "name": "tier:physical:border-bottom-style",
+   "key": "border-bottom-style",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".xynfaxl{border-bottom-style:red}"
+  },
+  {
+   "name": "tier:physical:border-bottom-width",
+   "key": "border-bottom-width",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x1xs9lt8{border-bottom-width:red}"
+  },
+  {
+   "name": "tier:physical:border-left-color",
+   "key": "border-left-color",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".xcjsghf{border-left-color:red}"
+  },
+  {
+   "name": "tier:physical:border-left-style",
+   "key": "border-left-style",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x2j5kdz{border-left-style:red}"
+  },
+  {
+   "name": "tier:physical:border-left-width",
+   "key": "border-left-width",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x1pc8x73{border-left-width:red}"
+  },
+  {
+   "name": "tier:physical:border-right-color",
+   "key": "border-right-color",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".xbb4r5{border-right-color:red}"
+  },
+  {
+   "name": "tier:physical:border-right-style",
+   "key": "border-right-style",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".xza2mf8{border-right-style:red}"
+  },
+  {
+   "name": "tier:physical:border-right-width",
+   "key": "border-right-width",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x16i3u44{border-right-width:red}"
+  },
+  {
+   "name": "tier:physical:border-top-left-radius",
+   "key": "border-top-left-radius",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x1tjg2gv{border-top-left-radius:red}"
+  },
+  {
+   "name": "tier:physical:border-top-right-radius",
+   "key": "border-top-right-radius",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x1widc9v{border-top-right-radius:red}"
+  },
+  {
+   "name": "tier:physical:border-bottom-left-radius",
+   "key": "border-bottom-left-radius",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x16x6i9h{border-bottom-left-radius:red}"
+  },
+  {
+   "name": "tier:physical:border-bottom-right-radius",
+   "key": "border-bottom-right-radius",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x1km1lzu{border-bottom-right-radius:red}"
+  },
+  {
+   "name": "tier:physical:corner-top-left-shape",
+   "key": "corner-top-left-shape",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x14t3wma{corner-top-left-shape:red}"
+  },
+  {
+   "name": "tier:physical:corner-top-right-shape",
+   "key": "corner-top-right-shape",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x8e3pax{corner-top-right-shape:red}"
+  },
+  {
+   "name": "tier:physical:corner-bottom-left-shape",
+   "key": "corner-bottom-left-shape",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x1lmgaov{corner-bottom-left-shape:red}"
+  },
+  {
+   "name": "tier:physical:corner-bottom-right-shape",
+   "key": "corner-bottom-right-shape",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x1thfeey{corner-bottom-right-shape:red}"
+  },
+  {
+   "name": "tier:physical:height",
+   "key": "height",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x1ijfqxy{height:red}"
+  },
+  {
+   "name": "tier:physical:width",
+   "key": "width",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".xjjn65j{width:red}"
+  },
+  {
+   "name": "tier:physical:max-height",
+   "key": "max-height",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x13ga019{max-height:red}"
+  },
+  {
+   "name": "tier:physical:max-width",
+   "key": "max-width",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".xhm5hb8{max-width:red}"
+  },
+  {
+   "name": "tier:physical:min-height",
+   "key": "min-height",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x2bvd4p{min-height:red}"
+  },
+  {
+   "name": "tier:physical:min-width",
+   "key": "min-width",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x1w5ftu0{min-width:red}"
+  },
+  {
+   "name": "tier:physical:margin-top",
+   "key": "margin-top",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".xscbr0b{margin-top:red}"
+  },
+  {
+   "name": "tier:physical:margin-bottom",
+   "key": "margin-bottom",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".xnk92kx{margin-bottom:red}"
+  },
+  {
+   "name": "tier:physical:margin-left",
+   "key": "margin-left",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x17ti63e{margin-left:red}"
+  },
+  {
+   "name": "tier:physical:margin-right",
+   "key": "margin-right",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x1lqzmlh{margin-right:red}"
+  },
+  {
+   "name": "tier:physical:overscroll-behavior-y",
+   "key": "overscroll-behavior-y",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x1yf5g06{overscroll-behavior-y:red}"
+  },
+  {
+   "name": "tier:physical:overscroll-behavior-x",
+   "key": "overscroll-behavior-x",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x95uy8d{overscroll-behavior-x:red}"
+  },
+  {
+   "name": "tier:physical:padding-top",
+   "key": "padding-top",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x1kscioe{padding-top:red}"
+  },
+  {
+   "name": "tier:physical:padding-bottom",
+   "key": "padding-bottom",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x1e1f78j{padding-bottom:red}"
+  },
+  {
+   "name": "tier:physical:padding-left",
+   "key": "padding-left",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x5l8gnl{padding-left:red}"
+  },
+  {
+   "name": "tier:physical:padding-right",
+   "key": "padding-right",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".xf2nsig{padding-right:red}"
+  },
+  {
+   "name": "tier:physical:overflow-y",
+   "key": "overflow-y",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x11mg25{overflow-y:red}"
+  },
+  {
+   "name": "tier:physical:overflow-x",
+   "key": "overflow-x",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x1bcmt8h{overflow-x:red}"
+  },
+  {
+   "name": "tier:physical:top",
+   "key": "top",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x1odgbqd{top:red}"
+  },
+  {
+   "name": "tier:physical:bottom",
+   "key": "bottom",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x1xt1gzv{bottom:red}"
+  },
+  {
+   "name": "tier:physical:left",
+   "key": "left",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x17sp7sz{left:red}"
+  },
+  {
+   "name": "tier:physical:right",
+   "key": "right",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x11z17yp{right:red}"
+  },
+  {
+   "name": "tier:physical:scroll-margin-top",
+   "key": "scroll-margin-top",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".xdt0tky{scroll-margin-top:red}"
+  },
+  {
+   "name": "tier:physical:scroll-margin-bottom",
+   "key": "scroll-margin-bottom",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x3gty65{scroll-margin-bottom:red}"
+  },
+  {
+   "name": "tier:physical:scroll-margin-left",
+   "key": "scroll-margin-left",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x1435gx0{scroll-margin-left:red}"
+  },
+  {
+   "name": "tier:physical:scroll-margin-right",
+   "key": "scroll-margin-right",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x13mrlt0{scroll-margin-right:red}"
+  },
+  {
+   "name": "tier:physical:scroll-padding-top",
+   "key": "scroll-padding-top",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x1jqi2qp{scroll-padding-top:red}"
+  },
+  {
+   "name": "tier:physical:scroll-padding-bottom",
+   "key": "scroll-padding-bottom",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x1kv6zw2{scroll-padding-bottom:red}"
+  },
+  {
+   "name": "tier:physical:scroll-padding-left",
+   "key": "scroll-padding-left",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".xshwzg0{scroll-padding-left:red}"
+  },
+  {
+   "name": "tier:physical:scroll-padding-right",
+   "key": "scroll-padding-right",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x1jlhxin{scroll-padding-right:red}"
+  },
+  {
+   "name": "tier:logical:background-blend-mode",
+   "key": "background-blend-mode",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".x1qmq4wy{background-blend-mode:red}"
+  },
+  {
+   "name": "tier:logical:animation-fill-mode",
+   "key": "animation-fill-mode",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".x17k9mfl{animation-fill-mode:red}"
+  },
+  {
+   "name": "tier:logical:animation-timeline",
+   "key": "animation-timeline",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".x3mp1hk{animation-timeline:red}"
+  },
+  {
+   "name": "tier:logical:background-attachment",
+   "key": "background-attachment",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".x1w8odl5{background-attachment:red}"
+  },
+  {
+   "name": "tier:logical:background-position-x",
+   "key": "background-position-x",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".xlen9yj{background-position-x:red}"
+  },
+  {
+   "name": "tier:logical:border-block-start-width",
+   "key": "border-top-width",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x1h0q59e{border-top-width:red}"
+  },
+  {
+   "name": "tier:logical:border-inline-end-color",
+   "key": "border-inline-end-color",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".x9cubbk{border-inline-end-color:red}"
+  },
+  {
+   "name": "tier:logical:border-image-width",
+   "key": "border-image-width",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".xlrdq49{border-image-width:red}"
+  },
+  {
+   "name": "tier:logical:corner-end-start-shape",
+   "key": "corner-end-start-shape",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".xxg6oee{corner-end-start-shape:red}"
+  },
+  {
+   "name": "tier:logical:caret-shape",
+   "key": "caret-shape",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".x1dr2or2{caret-shape:red}"
+  },
+  {
+   "name": "tier:logical:outline-width",
+   "key": "outline-width",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".xdkt92f{outline-width:red}"
+  },
+  {
+   "name": "tier:logical:grid-column-gap",
+   "key": "grid-column-gap",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".xthfvar{grid-column-gap:red}"
+  },
+  {
+   "name": "tier:logical:justify-self",
+   "key": "justify-self",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".xe5qmq5{justify-self:red}"
+  },
+  {
+   "name": "tier:logical:min-inline-size",
+   "key": "min-width",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x1w5ftu0{min-width:red}"
+  },
+  {
+   "name": "tier:logical:overscroll-behavior-inline",
+   "key": "overscroll-behavior-inline",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".xy9wui5{overscroll-behavior-inline:red}"
+  },
+  {
+   "name": "tier:logical:color-scheme",
+   "key": "color-scheme",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".x1i7iqap{color-scheme:red}"
+  },
+  {
+   "name": "tier:logical:column-span",
+   "key": "column-span",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".x12dth0l{column-span:red}"
+  },
+  {
+   "name": "tier:logical:contain-intrinsic-height",
+   "key": "contain-intrinsic-height",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".x1r4khgu{contain-intrinsic-height:red}"
+  },
+  {
+   "name": "tier:logical:counter-set",
+   "key": "counter-set",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".x1ae63xk{counter-set:red}"
+  },
+  {
+   "name": "tier:logical:order",
+   "key": "order",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".x1gha7p3{order:red}"
+  },
+  {
+   "name": "tier:logical:font-variant-alternates",
+   "key": "font-variant-alternates",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".xr1ib2h{font-variant-alternates:red}"
+  },
+  {
+   "name": "tier:logical:font-feature-settings",
+   "key": "font-feature-settings",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".x18xl0pf{font-feature-settings:red}"
+  },
+  {
+   "name": "tier:logical:font-smooth",
+   "key": "font-smooth",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".xic8cm4{font-smooth:red}"
+  },
+  {
+   "name": "tier:logical:break-after",
+   "key": "break-after",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".x1dycz1v{break-after:red}"
+  },
+  {
+   "name": "tier:logical:grid-auto-flow",
+   "key": "grid-auto-flow",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".xq2dbd8{grid-auto-flow:red}"
+  },
+  {
+   "name": "tier:logical:grid-column-start",
+   "key": "grid-column-start",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".x1yoe6br{grid-column-start:red}"
+  },
+  {
+   "name": "tier:logical:image-resolution",
+   "key": "image-resolution",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".x197crl3{image-resolution:red}"
+  },
+  {
+   "name": "tier:logical:list-style-type",
+   "key": "list-style-type",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".x4ap0rx{list-style-type:red}"
+  },
+  {
+   "name": "tier:logical:mask-origin",
+   "key": "mask-origin",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".x1jwjl2c{mask-origin:red}"
+  },
+  {
+   "name": "tier:logical:mask-border-repeat",
+   "key": "mask-border-repeat",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".xw6zy16{mask-border-repeat:red}"
+  },
+  {
+   "name": "tier:logical:offset-path",
+   "key": "offset-path",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".x17ei87g{offset-path:red}"
+  },
+  {
+   "name": "tier:logical:overflow-clip-margin",
+   "key": "overflow-clip-margin",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".x1oflnnz{overflow-clip-margin:red}"
+  },
+  {
+   "name": "tier:logical:inset-block-start",
+   "key": "top",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 4000,
+   "ltr": ".x1odgbqd{top:red}"
+  },
+  {
+   "name": "tier:logical:z-index",
+   "key": "z-index",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".x9wchm6{z-index:red}"
+  },
+  {
+   "name": "tier:logical:scroll-margin-inline-start",
+   "key": "scroll-margin-inline-start",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".x1n0xko5{scroll-margin-inline-start:red}"
+  },
+  {
+   "name": "tier:logical:scroll-snap-stop",
+   "key": "scroll-snap-stop",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".xpx9et1{scroll-snap-stop:red}"
+  },
+  {
+   "name": "tier:logical:border-collapse",
+   "key": "border-collapse",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".x17ur6ba{border-collapse:red}"
+  },
+  {
+   "name": "tier:logical:text-decoration-line",
+   "key": "text-decoration-line",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".x1jxgyf2{text-decoration-line:red}"
+  },
+  {
+   "name": "tier:logical:text-emphasis-style",
+   "key": "text-emphasis-style",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".xg2o3ac{text-emphasis-style:red}"
+  },
+  {
+   "name": "tier:logical:hyphens",
+   "key": "hyphens",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".x1122c7n{hyphens:red}"
+  },
+  {
+   "name": "tier:logical:text-align-last",
+   "key": "text-align-last",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".x1g56apn{text-align-last:red}"
+  },
+  {
+   "name": "tier:logical:white-space-collapse",
+   "key": "white-space-collapse",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".x1geaus4{white-space-collapse:red}"
+  },
+  {
+   "name": "tier:logical:rotate",
+   "key": "rotate",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".x1gpkdqc{rotate:red}"
+  },
+  {
+   "name": "tier:logical:transition-delay",
+   "key": "transition-delay",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".x1szl8e7{transition-delay:red}"
+  },
+  {
+   "name": "tier:logical:text-combine-upright",
+   "key": "text-combine-upright",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".x1ngu45u{text-combine-upright:red}"
+  },
+  {
+   "name": "tier:logical:math-shift",
+   "key": "math-shift",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".xshra1{math-shift:red}"
+  },
+  {
+   "name": "tier:unknown:notARealProp",
+   "key": "not-areal-prop",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 3000,
+   "ltr": ".x1x0eqa1{not-areal-prop:red}"
+  },
+  {
+   "name": "custom-prop",
+   "key": "--fooBar",
+   "pseudos": [],
+   "at_rules": [],
+   "priority": 1,
+   "ltr": ".x1n8ler1{--fooBar:red}"
+  },
+  {
+   "name": "pseudo::hover",
+   "key": "color",
+   "pseudos": [
+    ":hover"
+   ],
+   "at_rules": [],
+   "priority": 3130,
+   "ltr": ".x17z2mba:hover{color:blue}"
+  },
+  {
+   "name": "pseudo::active",
+   "key": "color",
+   "pseudos": [
+    ":active"
+   ],
+   "at_rules": [],
+   "priority": 3170,
+   "ltr": ".x4oye9d:active{color:blue}"
+  },
+  {
+   "name": "pseudo::focus",
+   "key": "color",
+   "pseudos": [
+    ":focus"
+   ],
+   "at_rules": [],
+   "priority": 3150,
+   "ltr": ".x1cg8fzh:focus{color:blue}"
+  },
+  {
+   "name": "pseudo::focus-visible",
+   "key": "color",
+   "pseudos": [
+    ":focus-visible"
+   ],
+   "at_rules": [],
+   "priority": 3040,
+   "ltr": ".x18k6y43:focus-visible{color:blue}"
+  },
+  {
+   "name": "pseudo::focusVisible",
+   "key": "color",
+   "pseudos": [
+    ":focusVisible"
+   ],
+   "at_rules": [],
+   "priority": 3160,
+   "ltr": ".x19l5ire:focusVisible{color:blue}"
+  },
+  {
+   "name": "pseudo::focus-within",
+   "key": "color",
+   "pseudos": [
+    ":focus-within"
+   ],
+   "at_rules": [],
+   "priority": 3040,
+   "ltr": ".x1b629na:focus-within{color:blue}"
+  },
+  {
+   "name": "pseudo::focusWithin",
+   "key": "color",
+   "pseudos": [
+    ":focusWithin"
+   ],
+   "at_rules": [],
+   "priority": 3140,
+   "ltr": ".x9szaac:focusWithin{color:blue}"
+  },
+  {
+   "name": "pseudo::first-child",
+   "key": "color",
+   "pseudos": [
+    ":first-child"
+   ],
+   "at_rules": [],
+   "priority": 3052,
+   "ltr": ".xqg7tyl:first-child{color:blue}"
+  },
+  {
+   "name": "pseudo::last-of-type",
+   "key": "color",
+   "pseudos": [
+    ":last-of-type"
+   ],
+   "at_rules": [],
+   "priority": 3055,
+   "ltr": ".xmb6al7:last-of-type{color:blue}"
+  },
+  {
+   "name": "pseudo::checked",
+   "key": "color",
+   "pseudos": [
+    ":checked"
+   ],
+   "at_rules": [],
+   "priority": 3101,
+   "ltr": ".x1219efx:checked{color:blue}"
+  },
+  {
+   "name": "pseudo::disabled",
+   "key": "color",
+   "pseudos": [
+    ":disabled"
+   ],
+   "at_rules": [],
+   "priority": 3092,
+   "ltr": ".x1adb08o:disabled{color:blue}"
+  },
+  {
+   "name": "pseudo::visited",
+   "key": "color",
+   "pseudos": [
+    ":visited"
+   ],
+   "at_rules": [],
+   "priority": 3085,
+   "ltr": ".x15d10uu:visited{color:blue}"
+  },
+  {
+   "name": "pseudo::empty",
+   "key": "color",
+   "pseudos": [
+    ":empty"
+   ],
+   "at_rules": [],
+   "priority": 3070,
+   "ltr": ".xf1tbyu:empty{color:blue}"
+  },
+  {
+   "name": "pseudo::foo-bar",
+   "key": "color",
+   "pseudos": [
+    ":foo-bar"
+   ],
+   "at_rules": [],
+   "priority": 3040,
+   "ltr": ".xkbvc53:foo-bar{color:blue}"
+  },
+  {
+   "name": "pseudo-fn::nth-child(2n)",
+   "key": "color",
+   "pseudos": [
+    ":nth-child(2n)"
+   ],
+   "at_rules": [],
+   "priority": 3060,
+   "ltr": ".x1vf7o4b:nth-child(2n){color:blue}"
+  },
+  {
+   "name": "pseudo-fn::dir(rtl)",
+   "key": "color",
+   "pseudos": [
+    ":dir(rtl)"
+   ],
+   "at_rules": [],
+   "priority": 3050,
+   "ltr": ".xlpp1gk:dir(rtl){color:blue}"
+  },
+  {
+   "name": "pseudo-fn::lang(en)",
+   "key": "color",
+   "pseudos": [
+    ":lang(en)"
+   ],
+   "at_rules": [],
+   "priority": 3051,
+   "ltr": ".xjp8l3u:lang(en){color:blue}"
+  },
+  {
+   "name": "pseudo-fn::not(.x)",
+   "key": "color",
+   "pseudos": [
+    ":not(.x)"
+   ],
+   "at_rules": [],
+   "priority": 3040,
+   "ltr": ".x4yb4zs:not(.x){color:blue}"
+  },
+  {
+   "name": "pseudo-fn::is(.a)",
+   "key": "color",
+   "pseudos": [
+    ":is(.a)"
+   ],
+   "at_rules": [],
+   "priority": 3040,
+   "ltr": ".x5e9i39:is(.a){color:blue}"
+  },
+  {
+   "name": "pseudo-fn::has(.b)",
+   "key": "color",
+   "pseudos": [
+    ":has(.b)"
+   ],
+   "at_rules": [],
+   "priority": 3045,
+   "ltr": ".x17zgvnc:has(.b){color:blue}"
+  },
+  {
+   "name": "compound::hover:active",
+   "key": "color",
+   "pseudos": [
+    ":hover:active"
+   ],
+   "at_rules": [],
+   "priority": 3300,
+   "ltr": ".x1w0kxpu:hover:active{color:blue}"
+  },
+  {
+   "name": "compound::active:hover",
+   "key": "color",
+   "pseudos": [
+    ":active:hover"
+   ],
+   "at_rules": [],
+   "priority": 3300,
+   "ltr": ".x1nkz3uh:active:hover{color:blue}"
+  },
+  {
+   "name": "compound::first-child:last-child",
+   "key": "color",
+   "pseudos": [
+    ":first-child:last-child"
+   ],
+   "at_rules": [],
+   "priority": 3106,
+   "ltr": ".x1ajzwwt:first-child:last-child{color:blue}"
+  },
+  {
+   "name": "compound::hover:focus:active",
+   "key": "color",
+   "pseudos": [
+    ":hover:focus:active"
+   ],
+   "at_rules": [],
+   "priority": 3450,
+   "ltr": ".x1wfa2k7:hover:focus:active{color:blue}"
+  },
+  {
+   "name": "compound::hover:nth-child(2n)",
+   "key": "color",
+   "pseudos": [
+    ":hover:nth-child(2n)"
+   ],
+   "at_rules": [],
+   "priority": 3040,
+   "ltr": ".xzpoi4u:hover:nth-child(2n){color:blue}"
+  },
+  {
+   "name": "compound::nth-child(2n):hover",
+   "key": "color",
+   "pseudos": [
+    ":nth-child(2n):hover"
+   ],
+   "at_rules": [],
+   "priority": 3060,
+   "ltr": ".xxvxdls:nth-child(2n):hover{color:blue}"
+  },
+  {
+   "name": "compound:::before:hover",
+   "key": "color",
+   "pseudos": [
+    "::before:hover"
+   ],
+   "at_rules": [],
+   "priority": 8130,
+   "ltr": ".xeb2lg0::before:hover{color:blue}"
+  },
+  {
+   "name": "compound::hover::before",
+   "key": "color",
+   "pseudos": [
+    ":hover::before"
+   ],
+   "at_rules": [],
+   "priority": 8130,
+   "ltr": ".xzzpreb:hover::before{color:blue}"
+  },
+  {
+   "name": "attr:[data-open]",
+   "key": "color",
+   "pseudos": [
+    "[data-open]"
+   ],
+   "at_rules": [],
+   "priority": 6000,
+   "ltr": ".x15pb5n6[data-open]{color:blue}"
+  },
+  {
+   "name": "element:::before",
+   "key": "color",
+   "pseudos": [
+    "::before"
+   ],
+   "at_rules": [],
+   "priority": 8000,
+   "ltr": ".xvg9oe5::before{color:blue}"
+  },
+  {
+   "name": "element:::after",
+   "key": "color",
+   "pseudos": [
+    "::after"
+   ],
+   "at_rules": [],
+   "priority": 8000,
+   "ltr": ".xdaarc3::after{color:blue}"
+  },
+  {
+   "name": "element:::placeholder",
+   "key": "color",
+   "pseudos": [
+    "::placeholder"
+   ],
+   "at_rules": [],
+   "priority": 8000,
+   "ltr": ".xjmw1np::placeholder{color:blue}"
+  },
+  {
+   "name": "element:::-webkit-slider-thumb",
+   "key": "color",
+   "pseudos": [
+    "::-webkit-slider-thumb"
+   ],
+   "at_rules": [],
+   "priority": 8000,
+   "ltr": ".x4e4owy::-webkit-slider-thumb{color:blue}"
+  },
+  {
+   "name": "element:::thumb",
+   "key": "color",
+   "pseudos": [
+    "::thumb"
+   ],
+   "at_rules": [],
+   "priority": 8000,
+   "ltr": ".xpef7zr::-webkit-slider-thumb, .xpef7zr::-moz-range-thumb, .xpef7zr::-ms-thumb{color:blue}"
+  },
+  {
+   "name": "at:media",
+   "key": "color",
+   "pseudos": [],
+   "at_rules": [
+    "@media (min-width: 600px)"
+   ],
+   "priority": 3200,
+   "ltr": "@media (min-width: 600px){.x1cmrb8e.x1cmrb8e{color:blue}}"
+  },
+  {
+   "name": "at:supports",
+   "key": "color",
+   "pseudos": [],
+   "at_rules": [
+    "@supports (display: grid)"
+   ],
+   "priority": 3030,
+   "ltr": "@supports (display: grid){.x1olr1cd.x1olr1cd{color:blue}}"
+  },
+  {
+   "name": "at:container",
+   "key": "color",
+   "pseudos": [],
+   "at_rules": [
+    "@container (min-width: 100px)"
+   ],
+   "priority": 3300,
+   "ltr": "@container (min-width: 100px){.x1g1o2s3.x1g1o2s3{color:blue}}"
+  },
+  {
+   "name": "at:supports+media",
+   "key": "color",
+   "pseudos": [],
+   "at_rules": [
+    "@supports (display: grid)",
+    "@media (min-width: 600px)"
+   ],
+   "priority": 3230,
+   "ltr": "@supports (display: grid){@media (min-width: 600px){.x1fm8o0y.x1fm8o0y.x1fm8o0y{color:blue}}}"
+  },
+  {
+   "name": "mix:hover-media",
+   "key": "color",
+   "pseudos": [
+    ":hover"
+   ],
+   "at_rules": [
+    "@media (min-width: 600px)"
+   ],
+   "priority": 3330,
+   "ltr": "@media (min-width: 600px){.x16mkhpy.x16mkhpy:hover{color:blue}}"
+  },
+  {
+   "name": "mix:media-hover",
+   "key": "color",
+   "pseudos": [
+    ":hover"
+   ],
+   "at_rules": [
+    "@media (min-width: 600px)"
+   ],
+   "priority": 3330,
+   "ltr": "@media (min-width: 600px){.x16mkhpy.x16mkhpy:hover{color:blue}}"
+  },
+  {
+   "name": "mix:element-hover",
+   "key": "color",
+   "pseudos": [
+    "::before",
+    ":hover"
+   ],
+   "at_rules": [],
+   "priority": 8130,
+   "ltr": ".xeb2lg0:hover::before{color:blue}"
+  },
+  {
+   "name": "multi:hover-active",
+   "key": "color",
+   "pseudos": [
+    ":hover",
+    ":active"
+   ],
+   "at_rules": [],
+   "priority": 3300,
+   "ltr": ".x1nkz3uh:active:hover{color:blue}"
+  },
+  {
+   "name": "multi:focus-hover-active",
+   "key": "color",
+   "pseudos": [
+    ":focus",
+    ":hover",
+    ":active"
+   ],
+   "at_rules": [],
+   "priority": 3450,
+   "ltr": ".xa049i:active:focus:hover{color:blue}"
+  },
+  {
+   "name": "tier-mix:margin-hover",
+   "key": "margin",
+   "pseudos": [
+    ":hover"
+   ],
+   "at_rules": [],
+   "priority": 1130,
+   "ltr": ".x1ekr0rh:hover{margin:1px}"
+  },
+  {
+   "name": "tier-mix:margin-top-media",
+   "key": "margin-top",
+   "pseudos": [],
+   "at_rules": [
+    "@media (min-width: 600px)"
+   ],
+   "priority": 4200,
+   "ltr": "@media (min-width: 600px){.xs54pbp.xs54pbp{margin-top:1px}}"
+  },
+  {
+   "name": "when:ancestor::hover",
+   "key": "color",
+   "pseudos": [
+    ":where(.x-default-marker:hover *)"
+   ],
+   "at_rules": [],
+   "priority": 3011.3,
+   "ltr": ".xobp4yc.xobp4yc:where(.x-default-marker:hover *){color:blue}"
+  },
+  {
+   "name": "when:ancestor::focus-within",
+   "key": "color",
+   "pseudos": [
+    ":where(.x-default-marker:focus-within *)"
+   ],
+   "at_rules": [],
+   "priority": 3010.4,
+   "ltr": ".xqu0sou.xqu0sou:where(.x-default-marker:focus-within *){color:blue}"
+  },
+  {
+   "name": "when:ancestor:[data-open]",
+   "key": "color",
+   "pseudos": [
+    ":where(.x-default-marker[data-open] *)"
+   ],
+   "at_rules": [],
+   "priority": 3040,
+   "ltr": ".x16xlm80.x16xlm80:where(.x-default-marker[data-open] *){color:blue}"
+  },
+  {
+   "name": "when:ancestor::checked",
+   "key": "color",
+   "pseudos": [
+    ":where(.x-default-marker:checked *)"
+   ],
+   "at_rules": [],
+   "priority": 3011.01,
+   "ltr": ".x99vrl0.x99vrl0:where(.x-default-marker:checked *){color:blue}"
+  },
+  {
+   "name": "when:descendant::checked",
+   "key": "color",
+   "pseudos": [
+    ":where(:has(.x-default-marker:checked))"
+   ],
+   "at_rules": [],
+   "priority": 3016.01,
+   "ltr": ".x191rjyi.x191rjyi:where(:has(.x-default-marker:checked)){color:blue}"
+  },
+  {
+   "name": "when:descendant::hover",
+   "key": "color",
+   "pseudos": [
+    ":where(:has(.x-default-marker:hover))"
+   ],
+   "at_rules": [],
+   "priority": 3016.3,
+   "ltr": ".xepvv76.xepvv76:where(:has(.x-default-marker:hover)){color:blue}"
+  },
+  {
+   "name": "when:siblingBefore::focus",
+   "key": "color",
+   "pseudos": [
+    ":where(.x-default-marker:focus ~ *)"
+   ],
+   "at_rules": [],
+   "priority": 3031.5,
+   "ltr": ".xesqvbg.xesqvbg:where(.x-default-marker:focus ~ *){color:blue}"
+  },
+  {
+   "name": "when:siblingBefore::hover",
+   "key": "color",
+   "pseudos": [
+    ":where(.x-default-marker:hover ~ *)"
+   ],
+   "at_rules": [],
+   "priority": 3031.3,
+   "ltr": ".xv62x24.xv62x24:where(.x-default-marker:hover ~ *){color:blue}"
+  },
+  {
+   "name": "when:siblingAfter::active",
+   "key": "color",
+   "pseudos": [
+    ":where(:has(~ .x-default-marker:active))"
+   ],
+   "at_rules": [],
+   "priority": 3041.7,
+   "ltr": ".x1pc1gki.x1pc1gki:where(:has(~ .x-default-marker:active)){color:blue}"
+  },
+  {
+   "name": "when:siblingAfter::hover",
+   "key": "color",
+   "pseudos": [
+    ":where(:has(~ .x-default-marker:hover))"
+   ],
+   "at_rules": [],
+   "priority": 3041.3,
+   "ltr": ".xsven0o.xsven0o:where(:has(~ .x-default-marker:hover)){color:blue}"
+  },
+  {
+   "name": "when:anySibling::hover",
+   "key": "color",
+   "pseudos": [
+    ":where(.x-default-marker:hover ~ *, :has(~ .x-default-marker:hover))"
+   ],
+   "at_rules": [],
+   "priority": 3021.3,
+   "ltr": ".x1065icj.x1065icj:where(.x-default-marker:hover ~ *, :has(~ .x-default-marker:hover)){color:blue}"
+  },
+  {
+   "name": "when:anySibling::focus-visible",
+   "key": "color",
+   "pseudos": [
+    ":where(.x-default-marker:focus-visible ~ *, :has(~ .x-default-marker:focus-visible))"
+   ],
+   "at_rules": [],
+   "priority": 3020.4,
+   "ltr": ".x1mlude4.x1mlude4:where(.x-default-marker:focus-visible ~ *, :has(~ .x-default-marker:focus-visible)){color:blue}"
+  }
+ ],
+ "pseudo_sort_cases": [
+  {
+   "input": [],
+   "expected": []
+  },
+  {
+   "input": [
+    ":hover"
+   ],
+   "expected": [
+    ":hover"
+   ]
+  },
+  {
+   "input": [
+    ":hover",
+    ":active"
+   ],
+   "expected": [
+    ":active",
+    ":hover"
+   ]
+  },
+  {
+   "input": [
+    ":active",
+    ":hover"
+   ],
+   "expected": [
+    ":active",
+    ":hover"
+   ]
+  },
+  {
+   "input": [
+    "::before",
+    ":hover"
+   ],
+   "expected": [
+    "::before",
+    ":hover"
+   ]
+  },
+  {
+   "input": [
+    ":hover",
+    "::before"
+   ],
+   "expected": [
+    ":hover",
+    "::before"
+   ]
+  },
+  {
+   "input": [
+    ":hover",
+    "::before",
+    ":active"
+   ],
+   "expected": [
+    ":hover",
+    "::before",
+    ":active"
+   ]
+  },
+  {
+   "input": [
+    ":b",
+    ":a",
+    "::x",
+    ":d",
+    ":c"
+   ],
+   "expected": [
+    ":a",
+    ":b",
+    "::x",
+    ":c",
+    ":d"
+   ]
+  },
+  {
+   "input": [
+    "default",
+    ":hover",
+    ":active"
+   ],
+   "expected": [
+    "default",
+    ":active",
+    ":hover"
+   ]
+  },
+  {
+   "input": [
+    ":hover",
+    "default"
+   ],
+   "expected": [
+    "default",
+    ":hover"
+   ]
+  },
+  {
+   "input": [
+    "default",
+    "default",
+    ":a"
+   ],
+   "expected": [
+    "default",
+    "default",
+    ":a"
+   ]
+  },
+  {
+   "input": [
+    ":Hover",
+    ":hover"
+   ],
+   "expected": [
+    ":hover",
+    ":Hover"
+   ]
+  },
+  {
+   "input": [
+    ":focus-visible",
+    ":focusVisible",
+    ":focus"
+   ],
+   "expected": [
+    ":focus",
+    ":focus-visible",
+    ":focusVisible"
+   ]
+  },
+  {
+   "input": [
+    "[data-open]",
+    ":hover"
+   ],
+   "expected": [
+    ":hover",
+    "[data-open]"
+   ]
+  },
+  {
+   "input": [
+    "[aria-expanded=\"true\"]",
+    "[data-open]",
+    ":focus"
+   ],
+   "expected": [
+    ":focus",
+    "[aria-expanded=\"true\"]",
+    "[data-open]"
+   ]
+  },
+  {
+   "input": [
+    ":nth-child(2n)",
+    ":nth-child(10n)"
+   ],
+   "expected": [
+    ":nth-child(10n)",
+    ":nth-child(2n)"
+   ]
+  },
+  {
+   "input": [
+    "::after",
+    "::before"
+   ],
+   "expected": [
+    "::after",
+    "::before"
+   ]
+  },
+  {
+   "input": [
+    ":where(.a:hover *)",
+    ":active"
+   ],
+   "expected": [
+    ":active",
+    ":where(.a:hover *)"
+   ]
+  },
+  {
+   "input": [
+    ":hover:active",
+    ":focus"
+   ],
+   "expected": [
+    ":focus",
+    ":hover:active"
+   ]
+  },
+  {
+   "input": [
+    ":hover",
+    ":Hover",
+    ":HOVER"
+   ],
+   "expected": [
+    ":hover",
+    ":Hover",
+    ":HOVER"
+   ]
+  },
+  {
+   "input": [
+    ":a",
+    "::b",
+    ":c",
+    "::d",
+    ":e",
+    ":a"
+   ],
+   "expected": [
+    ":a",
+    "::b",
+    ":c",
+    "::d",
+    ":a",
+    ":e"
+   ]
+  },
+  {
+   "input": [
+    "[data-z]",
+    "[data-é]"
+   ],
+   "expected": [
+    "[data-é]",
+    "[data-z]"
+   ]
+  },
+  {
+   "input": [
+    ":étoile",
+    ":active",
+    ":Étoile"
+   ],
+   "expected": [
+    ":active",
+    ":étoile",
+    ":Étoile"
+   ]
+  },
+  {
+   "input": [
+    "[data-état]",
+    "[data-etat]",
+    "[data-àtat]"
+   ],
+   "expected": [
+    "[data-àtat]",
+    "[data-etat]",
+    "[data-état]"
+   ]
+  },
+  {
+   "input": [
+    "[über]",
+    "[uber]",
+    "[año]",
+    "[ano]",
+    "[öl]",
+    "[ål]",
+    "[Ål]"
+   ],
+   "expected": [
+    "[ål]",
+    "[Ål]",
+    "[ano]",
+    "[año]",
+    "[öl]",
+    "[uber]",
+    "[über]"
+   ]
+  },
+  {
+   "input": [
+    ":checked",
+    ":FOCUS-visible",
+    ":active",
+    ":nth-child(2n)",
+    "[data-open]",
+    ":first-child"
+   ],
+   "expected": [
+    ":active",
+    ":checked",
+    ":first-child",
+    ":FOCUS-visible",
+    ":nth-child(2n)",
+    "[data-open]"
+   ]
+  },
+  {
+   "input": [
+    "::after",
+    ":first-child",
+    ":FOCUS-visible"
+   ],
+   "expected": [
+    "::after",
+    ":first-child",
+    ":FOCUS-visible"
+   ]
+  },
+  {
+   "input": [
+    "[data-open]",
+    ":nth-child(2n)",
+    ":checked",
+    "::after"
+   ],
+   "expected": [
+    ":checked",
+    ":nth-child(2n)",
+    "[data-open]",
+    "::after"
+   ]
+  },
+  {
+   "input": [
+    "default",
+    ":focus",
+    ":focus-visible",
+    ":first-child",
+    ":first-child",
+    ":hover",
+    ":checked"
+   ],
+   "expected": [
+    "default",
+    ":checked",
+    ":first-child",
+    ":first-child",
+    ":focus",
+    ":focus-visible",
+    ":hover"
+   ]
+  },
+  {
+   "input": [
+    ":first-child",
+    "::after"
+   ],
+   "expected": [
+    ":first-child",
+    "::after"
+   ]
+  },
+  {
+   "input": [
+    ":FOCUS-visible",
+    ":hover",
+    "[aria-expanded=\"true\"]"
+   ],
+   "expected": [
+    ":FOCUS-visible",
+    ":hover",
+    "[aria-expanded=\"true\"]"
+   ]
+  },
+  {
+   "input": [
+    "[aria-expanded=\"true\"]",
+    ":Focus"
+   ],
+   "expected": [
+    ":Focus",
+    "[aria-expanded=\"true\"]"
+   ]
+  },
+  {
+   "input": [
+    "::placeholder",
+    ":focus-visible",
+    ":where(.x-default-marker:hover *)",
+    "default",
+    ":focus",
+    ":active"
+   ],
+   "expected": [
+    "::placeholder",
+    "default",
+    ":active",
+    ":focus",
+    ":focus-visible",
+    ":where(.x-default-marker:hover *)"
+   ]
+  },
+  {
+   "input": [
+    "::placeholder",
+    "::placeholder",
+    "[data-open]"
+   ],
+   "expected": [
+    "::placeholder",
+    "::placeholder",
+    "[data-open]"
+   ]
+  },
+  {
+   "input": [
+    "[aria-expanded=\"true\"]",
+    ":FOCUS-visible",
+    ":active",
+    ":focus",
+    ":nth-child(2n)"
+   ],
+   "expected": [
+    ":active",
+    ":focus",
+    ":FOCUS-visible",
+    ":nth-child(2n)",
+    "[aria-expanded=\"true\"]"
+   ]
+  },
+  {
+   "input": [
+    "[data-open]",
+    ":active",
+    "[data-open]",
+    ":nth-child(2n)",
+    ":active",
+    ":checked",
+    "default"
+   ],
+   "expected": [
+    "default",
+    ":active",
+    ":active",
+    ":checked",
+    ":nth-child(2n)",
+    "[data-open]",
+    "[data-open]"
+   ]
+  },
+  {
+   "input": [
+    ":first-child",
+    ":Focus",
+    "default",
+    "::placeholder"
+   ],
+   "expected": [
+    "default",
+    ":first-child",
+    ":Focus",
+    "::placeholder"
+   ]
+  },
+  {
+   "input": [
+    "::before",
+    ":nth-child(2n)",
+    ":first-child",
+    "[aria-expanded=\"true\"]",
+    ":FOCUS-visible",
+    ":checked"
+   ],
+   "expected": [
+    "::before",
+    ":checked",
+    ":first-child",
+    ":FOCUS-visible",
+    ":nth-child(2n)",
+    "[aria-expanded=\"true\"]"
+   ]
+  },
+  {
+   "input": [
+    ":Focus",
+    ":checked",
+    ":nth-child(2n)",
+    ":focus-visible",
+    "::after"
+   ],
+   "expected": [
+    ":checked",
+    ":Focus",
+    ":focus-visible",
+    ":nth-child(2n)",
+    "::after"
+   ]
+  },
+  {
+   "input": [
+    "::placeholder",
+    ":first-child"
+   ],
+   "expected": [
+    "::placeholder",
+    ":first-child"
+   ]
+  },
+  {
+   "input": [
+    ":checked",
+    "[data-open]",
+    "[data-open]",
+    ":checked",
+    ":focus-visible",
+    "::placeholder",
+    ":Focus"
+   ],
+   "expected": [
+    ":checked",
+    ":checked",
+    ":focus-visible",
+    "[data-open]",
+    "[data-open]",
+    "::placeholder",
+    ":Focus"
+   ]
+  },
+  {
+   "input": [
+    ":nth-child(2n)",
+    ":first-child"
+   ],
+   "expected": [
+    ":first-child",
+    ":nth-child(2n)"
+   ]
+  },
+  {
+   "input": [
+    "default",
+    "::before",
+    ":FOCUS-visible"
+   ],
+   "expected": [
+    "default",
+    "::before",
+    ":FOCUS-visible"
+   ]
+  },
+  {
+   "input": [
+    ":hover",
+    ":focus",
+    "::placeholder",
+    ":focus-visible",
+    "::after",
+    ":focus"
+   ],
+   "expected": [
+    ":focus",
+    ":hover",
+    "::placeholder",
+    ":focus-visible",
+    "::after",
+    ":focus"
+   ]
+  },
+  {
+   "input": [
+    ":active",
+    ":first-child",
+    ":FOCUS-visible",
+    ":Focus",
+    ":nth-child(2n)",
+    ":checked"
+   ],
+   "expected": [
+    ":active",
+    ":checked",
+    ":first-child",
+    ":Focus",
+    ":FOCUS-visible",
+    ":nth-child(2n)"
+   ]
+  },
+  {
+   "input": [
+    "default",
+    "[data-open]",
+    ":FOCUS-visible"
+   ],
+   "expected": [
+    "default",
+    ":FOCUS-visible",
+    "[data-open]"
+   ]
+  },
+  {
+   "input": [
+    ":where(.x-default-marker:hover *)",
+    "::after",
+    ":checked"
+   ],
+   "expected": [
+    ":where(.x-default-marker:hover *)",
+    "::after",
+    ":checked"
+   ]
+  },
+  {
+   "input": [
+    ":focus-visible",
+    ":where(.x-default-marker:hover *)",
+    ":where(.x-default-marker:hover *)",
+    ":hover",
+    ":where(.x-default-marker:hover *)",
+    ":nth-child(2n)",
+    ":first-child"
+   ],
+   "expected": [
+    ":first-child",
+    ":focus-visible",
+    ":hover",
+    ":nth-child(2n)",
+    ":where(.x-default-marker:hover *)",
+    ":where(.x-default-marker:hover *)",
+    ":where(.x-default-marker:hover *)"
+   ]
+  },
+  {
+   "input": [
+    ":where(.x-default-marker:hover *)",
+    ":active",
+    "default",
+    ":focus-visible",
+    ":where(.x-default-marker:hover *)",
+    ":FOCUS-visible"
+   ],
+   "expected": [
+    "default",
+    ":active",
+    ":focus-visible",
+    ":FOCUS-visible",
+    ":where(.x-default-marker:hover *)",
+    ":where(.x-default-marker:hover *)"
+   ]
+  },
+  {
+   "input": [
+    ":FOCUS-visible",
+    "::placeholder",
+    ":first-child",
+    "::placeholder",
+    ":checked",
+    ":first-child",
+    ":active"
+   ],
+   "expected": [
+    ":FOCUS-visible",
+    "::placeholder",
+    ":first-child",
+    "::placeholder",
+    ":active",
+    ":checked",
+    ":first-child"
+   ]
+  },
+  {
+   "input": [
+    ":focus",
+    ":Focus",
+    ":FOCUS-visible",
+    "[aria-expanded=\"true\"]"
+   ],
+   "expected": [
+    ":focus",
+    ":Focus",
+    ":FOCUS-visible",
+    "[aria-expanded=\"true\"]"
+   ]
+  },
+  {
+   "input": [
+    "::after",
+    ":hover",
+    ":Focus"
+   ],
+   "expected": [
+    "::after",
+    ":Focus",
+    ":hover"
+   ]
+  },
+  {
+   "input": [
+    "::after",
+    ":hover",
+    ":FOCUS-visible",
+    ":active",
+    "[data-open]",
+    ":checked"
+   ],
+   "expected": [
+    "::after",
+    ":active",
+    ":checked",
+    ":FOCUS-visible",
+    ":hover",
+    "[data-open]"
+   ]
+  },
+  {
+   "input": [
+    ":hover",
+    "::placeholder",
+    ":active",
+    "::placeholder",
+    ":FOCUS-visible",
+    ":checked"
+   ],
+   "expected": [
+    ":hover",
+    "::placeholder",
+    ":active",
+    "::placeholder",
+    ":checked",
+    ":FOCUS-visible"
+   ]
+  },
+  {
+   "input": [
+    ":checked",
+    ":FOCUS-visible",
+    ":active",
+    ":where(.x-default-marker:hover *)"
+   ],
+   "expected": [
+    ":active",
+    ":checked",
+    ":FOCUS-visible",
+    ":where(.x-default-marker:hover *)"
+   ]
+  },
+  {
+   "input": [
+    "default",
+    "::before",
+    ":nth-child(2n)",
+    ":nth-child(2n)",
+    ":active"
+   ],
+   "expected": [
+    "default",
+    "::before",
+    ":active",
+    ":nth-child(2n)",
+    ":nth-child(2n)"
+   ]
+  },
+  {
+   "input": [
+    ":focus",
+    ":where(.x-default-marker:hover *)",
+    "::after",
+    ":first-child"
+   ],
+   "expected": [
+    ":focus",
+    ":where(.x-default-marker:hover *)",
+    "::after",
+    ":first-child"
+   ]
+  },
+  {
+   "input": [
+    "[aria-expanded=\"true\"]",
+    ":focus-visible",
+    ":active"
+   ],
+   "expected": [
+    ":active",
+    ":focus-visible",
+    "[aria-expanded=\"true\"]"
+   ]
+  },
+  {
+   "input": [
+    "default",
+    "[data-open]"
+   ],
+   "expected": [
+    "default",
+    "[data-open]"
+   ]
+  },
+  {
+   "input": [
+    ":where(.x-default-marker:hover *)",
+    ":nth-child(2n)"
+   ],
+   "expected": [
+    ":nth-child(2n)",
+    ":where(.x-default-marker:hover *)"
+   ]
+  },
+  {
+   "input": [
+    ":checked",
+    ":Focus",
+    "default",
+    "default",
+    ":where(.x-default-marker:hover *)",
+    ":FOCUS-visible",
+    "default"
+   ],
+   "expected": [
+    "default",
+    "default",
+    "default",
+    ":checked",
+    ":Focus",
+    ":FOCUS-visible",
+    ":where(.x-default-marker:hover *)"
+   ]
+  },
+  {
+   "input": [
+    "::placeholder",
+    ":first-child",
+    ":FOCUS-visible",
+    ":first-child"
+   ],
+   "expected": [
+    "::placeholder",
+    ":first-child",
+    ":first-child",
+    ":FOCUS-visible"
+   ]
+  },
+  {
+   "input": [
+    ":nth-child(2n)",
+    ":FOCUS-visible"
+   ],
+   "expected": [
+    ":FOCUS-visible",
+    ":nth-child(2n)"
+   ]
+  },
+  {
+   "input": [
+    ":active",
+    ":checked"
+   ],
+   "expected": [
+    ":active",
+    ":checked"
+   ]
+  },
+  {
+   "input": [
+    ":checked",
+    ":hover"
+   ],
+   "expected": [
+    ":checked",
+    ":hover"
+   ]
+  }
+ ],
+ "at_rule_sort_cases": [
+  {
+   "input": [],
+   "expected": []
+  },
+  {
+   "input": [
+    "@media (min-width: 600px)"
+   ],
+   "expected": [
+    "@media (min-width: 600px)"
+   ]
+  },
+  {
+   "input": [
+    "@supports (display: grid)",
+    "@media (min-width: 600px)"
+   ],
+   "expected": [
+    "@media (min-width: 600px)",
+    "@supports (display: grid)"
+   ]
+  },
+  {
+   "input": [
+    "@media b",
+    "@media a",
+    "@container c"
+   ],
+   "expected": [
+    "@container c",
+    "@media a",
+    "@media b"
+   ]
+  },
+  {
+   "input": [
+    "@media (min-width: 1000px)",
+    "@media (min-width: 600px)"
+   ],
+   "expected": [
+    "@media (min-width: 1000px)",
+    "@media (min-width: 600px)"
+   ]
+  },
+  {
+   "input": [
+    "@Media",
+    "@media"
+   ],
+   "expected": [
+    "@Media",
+    "@media"
+   ]
+  },
+  {
+   "input": [
+    "@media 😀",
+    "@media ￿"
+   ],
+   "expected": [
+    "@media 😀",
+    "@media ￿"
+   ]
+  },
+  {
+   "input": [
+    "@container x",
+    "@supports y",
+    "@media z"
+   ],
+   "expected": [
+    "@container x",
+    "@media z",
+    "@supports y"
+   ]
+  },
+  {
+   "input": [
+    "@media a",
+    "@media a",
+    "@MEDIA A"
+   ],
+   "expected": [
+    "@MEDIA A",
+    "@media a",
+    "@media a"
+   ]
+  }
+ ],
+ "dashify_cases": [
+  {
+   "input": "color",
+   "expected": "color"
+  },
+  {
+   "input": "backgroundColor",
+   "expected": "background-color"
+  },
+  {
+   "input": "marginInlineStart",
+   "expected": "margin-inline-start"
+  },
+  {
+   "input": "MozAppearance",
+   "expected": "-moz-appearance"
+  },
+  {
+   "input": "WebkitTransform",
+   "expected": "-webkit-transform"
+  },
+  {
+   "input": "backgroundURL",
+   "expected": "background-url"
+  },
+  {
+   "input": "notARealProp",
+   "expected": "not-areal-prop"
+  },
+  {
+   "input": "borderTopLeftRadius",
+   "expected": "border-top-left-radius"
+  },
+  {
+   "input": "--customProp",
+   "expected": "--custom-prop"
+  },
+  {
+   "input": "ABC",
+   "expected": "-abc"
+  },
+  {
+   "input": "aB",
+   "expected": "a-b"
+  },
+  {
+   "input": "a1B",
+   "expected": "a1b"
+  },
+  {
+   "input": "B2b",
+   "expected": "-b2b"
+  },
+  {
+   "input": "::beforeHover",
+   "expected": "::before-hover"
+  },
+  {
+   "input": ":focusVisible",
+   "expected": ":focus-visible"
+  },
+  {
+   "input": "already-dashed",
+   "expected": "already-dashed"
+  },
+  {
+   "input": "",
+   "expected": ""
+  },
+  {
+   "input": "A",
+   "expected": "-a"
+  },
+  {
+   "input": "aBC",
+   "expected": "a-bc"
+  },
+  {
+   "input": "aBcD",
+   "expected": "a-bc-d"
+  },
+  {
+   "input": "grid-Template",
+   "expected": "grid-template"
+  },
+  {
+   "input": "fooBar Baz",
+   "expected": "foo-bar baz"
+  }
+ ],
+ "sanitize_cases": [
+  {
+   "input": "My File__s.a b?c→d",
+   "expected": "MyFile__s.abcd"
+  },
+  {
+   "input": "probe__ns",
+   "expected": "probe__ns"
+  },
+  {
+   "input": "foo/bar.baz",
+   "expected": "foobar.baz"
+  },
+  {
+   "input": "x[1]",
+   "expected": "x1"
+  },
+  {
+   "input": "a b\tc\nd",
+   "expected": "abcd"
+  },
+  {
+   "input": "élève__key",
+   "expected": "lve__key"
+  },
+  {
+   "input": "UnknownFile__s.default",
+   "expected": "UnknownFile__s.default"
+  },
+  {
+   "input": "",
+   "expected": ""
+  }
+ ]
+}

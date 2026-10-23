@@ -1,0 +1,512 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/validation-stylex-defineConsts-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs and upstream's own expected values — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "assertions/validation-defineConsts-invalid-export-not-bound-001-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const constants = stylex.defineConsts({});\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "The return value of defineConsts() must be bound to a named export.",
+        "site": {
+          "file": "validation-stylex-defineConsts-test.js",
+          "test": "invalid export: not bound",
+          "line": 44
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineConsts-invalid-export-not-bound-002-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          stylex.defineConsts({});\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "defineConsts() calls must be bound to a bare variable.",
+        "site": {
+          "file": "validation-stylex-defineConsts-test.js",
+          "test": "invalid export: not bound",
+          "line": 51
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineConsts-invalid-argument-none-003-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const constants = stylex.defineConsts();\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "defineConsts() should have 1 argument.",
+        "site": {
+          "file": "validation-stylex-defineConsts-test.js",
+          "test": "invalid argument: none",
+          "line": 60
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineConsts-invalid-argument-too-many-004-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const constants = stylex.defineConsts({}, {});\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "defineConsts() should have 1 argument.",
+        "site": {
+          "file": "validation-stylex-defineConsts-test.js",
+          "test": "invalid argument: too many",
+          "line": 69
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineConsts-invalid-argument-number-005-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const constants = stylex.defineConsts(1);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "defineConsts() can only accept an object.",
+        "site": {
+          "file": "validation-stylex-defineConsts-test.js",
+          "test": "invalid argument: number",
+          "line": 78
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineConsts-invalid-argument-string-006-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const constants = stylex.defineConsts('1');\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "defineConsts() can only accept an object.",
+        "site": {
+          "file": "validation-stylex-defineConsts-test.js",
+          "test": "invalid argument: string",
+          "line": 87
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineConsts-invalid-argument-non-static-007-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const constants = stylex.defineConsts(genStyles());\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Only static values are allowed inside of a defineConsts() call.",
+        "site": {
+          "file": "validation-stylex-defineConsts-test.js",
+          "test": "invalid argument: non-static",
+          "line": 96
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineConsts-valid-argument-object-008-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const constants = stylex.defineConsts({});\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-defineConsts-test.js",
+          "test": "valid argument: object",
+          "line": 105
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineConsts-valid-export-separate-const-009-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const constants = stylex.defineConsts({});\n          export { constants };\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-defineConsts-test.js",
+          "test": "valid export: separate const and export statement",
+          "line": 114
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineConsts-invalid-export-re-export-fro-010-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const constants = stylex.defineConsts({});\n          export { constants } from './other.stylex.js';\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "The return value of defineConsts() must be bound to a named export.",
+        "site": {
+          "file": "validation-stylex-defineConsts-test.js",
+          "test": "invalid export: re-export from another file does not count",
+          "line": 124
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineConsts-invalid-export-renamed-re-ex-011-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const constants = stylex.defineConsts({});\n          export { constants as otherConstants } from './other.stylex.js';\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "The return value of defineConsts() must be bound to a named export.",
+        "site": {
+          "file": "validation-stylex-defineConsts-test.js",
+          "test": "invalid export: renamed re-export from another file does not count",
+          "line": 134
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineConsts-invalid-export-default-expor-012-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const constants = stylex.defineConsts({});\n          export default constants;\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "The return value of defineConsts() must be bound to a named export.",
+        "site": {
+          "file": "validation-stylex-defineConsts-test.js",
+          "test": "invalid export: default export does not count",
+          "line": 144
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineConsts-invalid-export-renamed-expor-013-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const constants = stylex.defineConsts({});\n          export { constants as themeConstants };\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "The return value of defineConsts() must be bound to a named export.",
+        "site": {
+          "file": "validation-stylex-defineConsts-test.js",
+          "test": "invalid export: renamed export with as syntax",
+          "line": 154
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineConsts-valid-key-starts-with-014-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const constants = stylex.defineConsts({\n            '--small': '8px'\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-defineConsts-test.js",
+          "test": "valid key: starts with \"--\"",
+          "line": 166
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineConsts-invalid-key-non-static-015-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const constants = stylex.defineConsts({\n            [labelColor]: 'red',\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Only static values are allowed inside of a defineConsts() call.",
+        "site": {
+          "file": "validation-stylex-defineConsts-test.js",
+          "test": "invalid key: non-static",
+          "line": 177
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineConsts-invalid-value-non-static-016-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const constants = stylex.defineConsts({\n            labelColor: labelColor,\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Only static values are allowed inside of a defineConsts() call.",
+        "site": {
+          "file": "validation-stylex-defineConsts-test.js",
+          "test": "invalid value: non-static",
+          "line": 190
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineConsts-invalid-value-non-static-017-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const constants = stylex.defineConsts({\n            labelColor: labelColor(),\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Only static values are allowed inside of a defineConsts() call.",
+        "site": {
+          "file": "validation-stylex-defineConsts-test.js",
+          "test": "invalid value: non-static",
+          "line": 199
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineConsts-valid-value-number-018-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const constants = stylex.defineConsts({\n            small: 5,\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-defineConsts-test.js",
+          "test": "valid value: number",
+          "line": 210
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineConsts-valid-value-string-019-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const constants = stylex.defineConsts({\n            small: '5px',\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineConsts", "validation", "defineConsts", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-defineConsts-test.js",
+          "test": "valid value: string",
+          "line": 221
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineConsts-valid-value-keyframes-020-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const constants = stylex.defineConsts({\n            fadeIn: stylex.keyframes({\n              '0%': { opacity: 0 },\n              '100%': { opacity: 1}\n            }),\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "validation-defineConsts",
+        "validation",
+        "defineConsts",
+        "keyframes",
+        "assert-noThrow",
+        "upstream-skipped"
+      ],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-defineConsts-test.js",
+          "test": "valid value: keyframes",
+          "line": 232
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,89 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/validation-stylex-keyframes-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs only — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "upstream/validation-keyframes-local-variable-keyframes-obj-001",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const keyframes = {\n          from: {\n            color: 'red',\n          },\n          to: {\n            color: 'blue',\n          }\n        };\n        export const name = stylex.keyframes(keyframes);\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-keyframes", "validation", "keyframes"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-keyframes-only-argument-must-be-an-obj-002",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const name = stylex.keyframes(null);\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-keyframes", "validation", "keyframes"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-keyframes-only-argument-must-be-an-obj-003",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const name = stylex.keyframes({\n            from: false\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-keyframes", "validation", "keyframes"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-keyframes-only-argument-must-be-an-obj-004",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const name = stylex.keyframes({\n            '0%': {\n              opacity: 0\n            },\n            '50%': {\n              opacity: 0.5\n            },\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-keyframes", "validation", "keyframes"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-keyframes-only-argument-must-be-an-obj-005",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const name = stylex.keyframes({\n            from: {},\n            to: {},\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-keyframes", "validation", "keyframes"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-keyframes-allow-defined-css-variables-006",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.keyframes({\n              from: {\n                backgroundColor: 'var(--bar)',\n              },\n            });\n          ",
+      "options": {
+        "definedStylexCSSVariables": {
+          "bar": 1
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-keyframes", "validation", "keyframes"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-keyframes-allow-undefined-css-variable-007",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.keyframes({\n              from: {\n                backgroundColor: 'var(--foobar)',\n              },\n            });\n          ",
+      "options": {
+        "definedStylexCSSVariables": {
+          "bar": 1
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-keyframes", "validation", "keyframes"],
+      "expect": "ok"
+    }
+  ]
+}

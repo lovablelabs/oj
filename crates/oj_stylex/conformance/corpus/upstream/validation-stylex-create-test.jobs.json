@@ -1,0 +1,1182 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/validation-stylex-create-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs only — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "upstream/validation-create-invalid-use-not-bound-001",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          stylex.create({});\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-create-invalid-argument-none-002",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const styles = stylex.create();\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-create-invalid-argument-too-many-003",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const styles = stylex.create({}, {});\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-create-invalid-argument-non-static-004",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const styles = stylex.create(genStyles());\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-create-valid-argument-object-005",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const styles = stylex.create({});\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-key-non-static-006",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const styles = stylex.create({\n            [root]: {\n              backgroundColor: 'red',\n            }\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-create-invalid-rule-non-object-007",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            namespace: false,\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-create-invalid-rule-spread-008",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const shared = { foo: { color: 'red' } };\n          const styles = stylex.create({\n            ...shared,\n            bar: { color: 'blue' }\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-create-valid-rule-object-009",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          const styles = stylex.create({\n            namespace: {},\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-dynamic-rule-default-010",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            dynamic: (props = {}) => ({\n              color: props.color,\n            }),\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-create-invalid-dynamic-rule-default-011",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            dynamic: (color = 'red') => ({\n              color,\n            }),\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-create-invalid-dynamic-rule-destruc-012",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            dynamic: ({ color }) => ({\n              color,\n            }),\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-create-invalid-dynamic-rule-rest-pa-013",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            dynamic: (...rest) => ({\n              color: rest[0],\n            }),\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-create-valid-dynamic-rule-014",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            dynamic: (backgroundColor) => ({\n              backgroundColor,\n            }),\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-property-non-static-015",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              [backgroundColor]: 'red',\n            }\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-boolean-016",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            default: {\n              color: true,\n            },\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-non-static-017",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                backgroundColor: backgroundColor,\n              }\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-non-static-018",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                backgroundColor: generateBg(),\n              }\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-non-static-019",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            import {generateBg} from './other-file';\n            const styles = stylex.create({\n              root: {\n                backgroundColor: generateBg(),\n              }\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-non-static-020",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            import generateBg from './other-file';\n            const styles = stylex.create({\n              root: {\n                backgroundColor: generateBg(),\n              }\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-empty-object-021",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              color: {},\n            },\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-array-of-objec-022",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              transitionDuration: [[], {}],\n            },\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-create-valid-value-number-023",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              padding: 5,\n            }\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-valid-value-string-024",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              backgroundColor: 'red',\n            }\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-valid-value-array-of-numbers-025",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              transitionDuration: [500],\n            },\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-valid-value-array-of-strings-026",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              transitionDuration: ['0.5s'],\n            },\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-valid-value-single-expr-func-027",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const generateBg = () => 'red';\n          export const styles = stylex.create({\n            root: {\n              backgroundColor: generateBg(),\n            }\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-valid-value-single-expr-func-028",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const fns = {\n              generateBg: () => 'red',\n            };\n            export const styles = stylex.create({\n              root: {\n                backgroundColor: fns.generateBg(),\n              }\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-valid-value-local-variable-029",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const bg = '#eee';\n          const styles = stylex.create({\n            root: {\n              backgroundColor: bg,\n            }\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-valid-value-pure-complex-exp-030",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const borderRadius = 2;\n          const styles = stylex.create({\n            root: {\n              borderRadius: borderRadius * 2,\n            }\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-valid-value-template-literal-031",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const borderSize = 2;\n          const styles = stylex.create({\n            root: {\n              borderRadius: `${borderSize * 2}px`,\n            }\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-object-value-contain-032",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                'color': {\n                  '::before': 'blue'\n                },\n              },\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-object-value-contain-033",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                'color': {\n                  '&:hover': 'blue'\n                },\n              },\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-create-invalid-object-value-contain-034",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                'color': {\n                  '@media not ((not (min-width: 400px))': 'blue'\n                },\n              },\n            });\n          ",
+      "options": {
+        "enableMediaQueryOrder": true
+      },
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-create-invalid-object-value-contain-035",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                'color': {\n                  '(min-width:320px)': 'blue'\n                },\n              },\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-create-valid-object-value-key-is-de-036",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                color: {\n                  default: 'red'\n                }\n              },\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-valid-object-value-key-start-037",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                color: {\n                  ':hover': 'green'\n                }\n              },\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-valid-object-value-multiple-038",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                color: {\n                  default: 'red',\n                  ':hover': 'green'\n                }\n              },\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-valid-object-value-nested-ps-039",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                ':hover': {\n                  ':active': 'red'\n                },\n              },\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-css-variable-unclose-040",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                color: 'var(--foo'\n              }\n            });\n          ",
+      "options": {
+        "definedStylexCSSVariables": {
+          "foo": 1
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-unclosed-doubl-041",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                fontFamily: '\"Helvetica Neue'\n              }\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-unclosed-singl-042",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                fontFamily: \"'Helvetica Neue\"\n              }\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-unclosed-strin-043",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                fontFamily: '\"Helvetica Neue, sans-serif'\n              }\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-stray-apostrop-044",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                fontFamily: \"'SF Pro Text', 'SF Pro Icons', Helvetica Neue', 'Helvetica', sans-serif\",\n              }\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-create-valid-value-properly-closed-045",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                fontFamily: '\"Helvetica Neue\", sans-serif',\n              }\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-valid-value-properly-closed-046",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                fontFamily: \"'Helvetica Neue', sans-serif\",\n              }\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-css-variable-unprefi-047",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                color: 'var(foo'\n              }\n            });\n          ",
+      "options": {
+        "definedStylexCSSVariables": {
+          "foo": 1
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-create-valid-css-variable-defined-c-048",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                backgroundColor: 'var(--foo)',\n                color: 'var(--bar)'\n              }\n            });\n          ",
+      "options": {
+        "definedStylexCSSVariables": {
+          "foo": 1,
+          "bar": 1
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-valid-css-variable-undefined-049",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              color: 'var(--bar)'\n            }\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-valid-css-variable-undefined-050",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              color: 'var(--bar)'\n            }\n          });\n        ",
+      "options": {
+        "definedStylexCSSVariables": null
+      },
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-valid-css-variable-undefined-051",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              color: 'var(--bar)'\n            }\n          });\n        ",
+      "options": {
+        "definedStylexCSSVariables": {
+          "foo": 1
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-legacy-pseudo-classes-must-s-052",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              ':hover': {},\n            },\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-property-053",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { animation: \"anim 1s\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-property-054",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { background: \"red\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-property-055",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { border: \"1px solid red\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-property-056",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { borderBlock: \"1px solid red\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-property-057",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { borderBlockEnd: \"1px solid red\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-property-058",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { borderBlockStart: \"1px solid red\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-property-059",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { borderBottom: \"1px solid red\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-property-060",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { borderImage: \"url(./img.jpg) 30 space\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-property-061",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { borderInline: \"1px solid red\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-property-062",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { borderInlineEnd: \"1px solid red\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-property-063",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { borderInlineStart: \"1px solid red\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-property-064",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { borderLeft: \"1px solid red\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-property-065",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { borderRight: \"1px solid red\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-property-066",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { borderTop: \"1px solid red\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-property-067",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { flexFlow: \"row wrap\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-property-068",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { font: \"16px/16 Arial\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-property-069",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { listStyle: \"square inside\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-property-070",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { textDecoration: \"1px solid underline\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-property-071",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transition: \"opacity 1s\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-072",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { display: \"block !important\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-073",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { backgroundPosition: \"top left\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-074",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { borderColor: \"red blue\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-075",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { borderRadius: \"1px 2px\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-076",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { borderStyle: \"solid dashed\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-077",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { borderWidth: \"1px 2px\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-078",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { inset: \"1px 2px\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-079",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { insetBlock: \"1px 2px\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-080",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { insetInline: \"1px 2px\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-081",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { flex: \"1 1 0\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-082",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { grid: \"1 1 0\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-083",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { margin: \"1px 2px\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-084",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { marginBlock: \"1px 2px\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-085",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { marginInline: \"1px 2px\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-086",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { outline: \"1px solid red\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-087",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { overflow: \"hidden visible\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-088",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { padding: \"1px 2px\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-089",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { paddingBlock: \"1px 2px\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-090",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { paddingInline: \"1px 2px\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-091",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"all\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-092",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"bottom\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-093",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"end\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-094",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"height\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-095",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"inset\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-096",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"inset-block\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-097",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"inset-inline\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-098",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"inset-block-end\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-099",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"inset-block-start\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-100",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"inset-inline-end\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-101",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"inset-inline-start\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-102",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"margin\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-103",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"left\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-104",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"padding\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-105",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"right\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-106",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"start\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-107",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"top\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-invalid-value-for-108",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"width\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-does-not-throw-by-default-fo-109",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              border: '1px solid red',\n            },\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-throws-error-when-propertyva-110",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              border: '1px solid red',\n            },\n          });\n        ",
+      "options": {
+        "propertyValidationMode": "throw"
+      },
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/validation-create-does-not-throw-when-property-111",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              border: '1px solid red',\n            },\n          });\n        ",
+      "options": {
+        "propertyValidationMode": "warn"
+      },
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-does-not-throw-when-property-112",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              border: '1px solid red',\n            },\n          });\n        ",
+      "options": {
+        "propertyValidationMode": "silent"
+      },
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-works-with-background-proper-113",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              background: 'red',\n            },\n          });\n        ",
+      "options": {
+        "propertyValidationMode": "silent"
+      },
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-create-works-with-animation-propert-114",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              animation: 'spin 1s',\n            },\n          });\n        ",
+      "options": {
+        "propertyValidationMode": "silent"
+      },
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create"],
+      "expect": "ok"
+    }
+  ]
+}

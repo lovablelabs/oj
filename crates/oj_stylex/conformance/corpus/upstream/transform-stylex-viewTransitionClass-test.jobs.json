@@ -1,0 +1,61 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/transform-stylex-viewTransitionClass-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs only — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "upstream/viewTransitionClass-basic-object-001",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const cls = stylex.viewTransitionClass({\n          group: {\n            transitionProperty: 'none',\n          },\n          imagePair: {\n            borderRadius: 16,\n          },\n          old: {\n            animationDuration: '0.5s',\n          },\n          new: {\n            animationTimingFunction: 'ease-out',\n          },\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["viewTransitionClass"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/viewTransitionClass-local-variables-used-in-view-002",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const animationDuration = '1s';\n        const cls = stylex.viewTransitionClass({\n          old: { animationDuration },\n          new: { animationDuration },\n          group: { animationDuration },\n          imagePair: { animationDuration },\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["viewTransitionClass"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/viewTransitionClass-using-keyframes-003",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const fadeIn = stylex.keyframes({\n          from: {opacity: 0},\n          to: {opacity: 1},\n        });\n        const fadeOut = stylex.keyframes({\n          from: {opacity: 1},\n          to: {opacity: 0},\n        });\n        const cls = stylex.viewTransitionClass({\n          old: {\n            animationName: fadeOut,\n            animationDuration: '1s',\n          },\n          new: {\n            animationName: fadeIn,\n            animationDuration: '1s',\n          },\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["viewTransitionClass", "keyframes"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/viewTransitionClass-using-inline-keyframes-004",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const cls = stylex.viewTransitionClass({\n          old: {\n            animationName: stylex.keyframes({\n              from: {opacity: 1},\n              to: {opacity: 0},\n            }),\n            animationDuration: '1s',\n          },\n          new: {\n            animationName: stylex.keyframes({\n              from: {opacity: 0},\n              to: {opacity: 1},\n            }),\n            animationDuration: '1s',\n          },\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["viewTransitionClass", "keyframes"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/viewTransitionClass-using-contextual-styles-005",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from 'stylex';\n        const cls = stylex.viewTransitionClass({\n          group: {\n            animationDuration: {\n              default: '1s',\n              '@media (min-width: 800px)': '2s'\n            }\n          },\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["viewTransitionClass", "upstream-skipped"],
+      "expect": "ok"
+    }
+  ]
+}

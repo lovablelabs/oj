@@ -1,0 +1,1808 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/transform-stylex-defineVars-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs and upstream's own expected values — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "assertions/defineVars-tokens-as-null-001-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: null,\n          nextColor: {\n            default: null\n          },\n          otherColor: {\n            default: null,\n            '@media (prefers-color-scheme: dark)': null,\n            '@media print': null,\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  nextColor: \"var(--xk6xtqk)\",\n  otherColor: \"var(--xaaua2w)\",\n  __varGroupHash__: \"xop34xu\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "tokens as null",
+          "line": 56
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-tokens-as-null-002-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: null,\n          nextColor: {\n            default: null\n          },\n          otherColor: {\n            default: null,\n            '@media (prefers-color-scheme: dark)': null,\n            '@media print': null,\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [],
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "tokens as null",
+          "line": 66
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-tokens-object-003-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: 'red',\n          nextColor: {\n            default: 'green'\n          },\n          otherColor: {\n            default: 'blue',\n            '@media (prefers-color-scheme: dark)': 'lightblue',\n            '@media print': 'white',\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  nextColor: \"var(--xk6xtqk)\",\n  otherColor: \"var(--xaaua2w)\",\n  __varGroupHash__: \"xop34xu\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "tokens object",
+          "line": 89
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-tokens-object-004-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: 'red',\n          nextColor: {\n            default: 'green'\n          },\n          otherColor: {\n            default: 'blue',\n            '@media (prefers-color-scheme: dark)': 'lightblue',\n            '@media print': 'white',\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--xwx8imx:red;--xk6xtqk:green;--xaaua2w:blue;}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "xop34xu-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){:root, .xop34xu{--xaaua2w:lightblue;}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "xop34xu-bdddrq",
+            {
+              "ltr": "@media print{:root, .xop34xu{--xaaua2w:white;}}",
+              "rtl": null
+            },
+            0.2
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "tokens object",
+          "line": 99
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-tokens-object-haste-005-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "stylex/packages/vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: 'red',\n          nextColor: {\n            default: 'green'\n          },\n          otherColor: {\n            default: 'blue',\n            '@media (prefers-color-scheme: dark)': 'lightblue',\n            '@media print': 'white',\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  nextColor: \"var(--xk6xtqk)\",\n  otherColor: \"var(--xaaua2w)\",\n  __varGroupHash__: \"xop34xu\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "tokens object (haste)",
+          "line": 154
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-tokens-object-haste-006-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "stylex/packages/vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: 'red',\n          nextColor: {\n            default: 'green'\n          },\n          otherColor: {\n            default: 'blue',\n            '@media (prefers-color-scheme: dark)': 'lightblue',\n            '@media print': 'white',\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--xwx8imx:red;--xk6xtqk:green;--xaaua2w:blue;}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "xop34xu-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){:root, .xop34xu{--xaaua2w:lightblue;}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "xop34xu-bdddrq",
+            {
+              "ltr": "@media print{:root, .xop34xu{--xaaua2w:white;}}",
+              "rtl": null
+            },
+            0.2
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "tokens object (haste)",
+          "line": 164
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-tokens-object-deep-in-file-t-007-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "src/css/vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: 'red'\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xt4ziaz)\",\n  __varGroupHash__: \"x1xohuxq\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "tokens object deep in file tree",
+          "line": 210
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-tokens-object-deep-in-file-t-008-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "src/css/vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: 'red'\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x1xohuxq",
+            {
+              "ltr": ":root, .x1xohuxq{--xt4ziaz:red;}",
+              "rtl": null
+            },
+            0.1
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "tokens object deep in file tree",
+          "line": 218
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-tokens-object-with-nested-ru-009-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: {\n            default: 'blue',\n            '@media (prefers-color-scheme: dark)': {\n              default: 'lightblue',\n              '@supports (color: oklab(0 0 0))': 'oklab(0.7 -0.3 -0.4)',\n            }\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  __varGroupHash__: \"xop34xu\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "tokens object with nested @-rules",
+          "line": 248
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-tokens-object-with-nested-ru-010-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: {\n            default: 'blue',\n            '@media (prefers-color-scheme: dark)': {\n              default: 'lightblue',\n              '@supports (color: oklab(0 0 0))': 'oklab(0.7 -0.3 -0.4)',\n            }\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--xwx8imx:blue;}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "xop34xu-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){:root, .xop34xu{--xwx8imx:lightblue;}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "xop34xu-1e6ryz3",
+            {
+              "ltr": "@supports (color: oklab(0 0 0)){@media (prefers-color-scheme: dark){:root, .xop34xu{--xwx8imx:oklab(0.7 -0.3 -0.4);}}}",
+              "rtl": null
+            },
+            0.3
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "tokens object with nested @-rules",
+          "line": 256
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-literal-tokens-object-011-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          '--color': 'red',\n          '--otherColor': {\n            default: 'blue',\n            ':hover': 'lightblue',\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  \"--color\": \"var(--color)\",\n  \"--otherColor\": \"var(--otherColor)\",\n  __varGroupHash__: \"xop34xu\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "literal tokens object",
+          "line": 300
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-literal-tokens-object-012-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          '--color': 'red',\n          '--otherColor': {\n            default: 'blue',\n            ':hover': 'lightblue',\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--color:red;--otherColor:blue;}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "xop34xu-1tdxo4z",
+            {
+              "ltr": ":hover{:root, .xop34xu{--otherColor:lightblue;}}",
+              "rtl": null
+            },
+            0.2
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "literal tokens object",
+          "line": 309
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-local-variable-tokens-object-013-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const tokens = {\n          '--color': 'red',\n          '--nextColor': {\n            default: 'green'\n          },\n          '--otherColor': {\n            default: 'blue',\n            '@media (prefers-color-scheme: dark)': 'lightblue',\n            '@media print': 'white',\n          },\n        };\n        export const vars = stylex.defineVars(tokens)\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nconst tokens = {\n  '--color': 'red',\n  '--nextColor': {\n    default: 'green'\n  },\n  '--otherColor': {\n    default: 'blue',\n    '@media (prefers-color-scheme: dark)': 'lightblue',\n    '@media print': 'white'\n  }\n};\nexport const vars = {\n  \"--color\": \"var(--color)\",\n  \"--nextColor\": \"var(--nextColor)\",\n  \"--otherColor\": \"var(--otherColor)\",\n  __varGroupHash__: \"xop34xu\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "local variable tokens object",
+          "line": 350
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-local-variable-tokens-object-014-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const tokens = {\n          '--color': 'red',\n          '--nextColor': {\n            default: 'green'\n          },\n          '--otherColor': {\n            default: 'blue',\n            '@media (prefers-color-scheme: dark)': 'lightblue',\n            '@media print': 'white',\n          },\n        };\n        export const vars = stylex.defineVars(tokens)\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--color:red;--nextColor:green;--otherColor:blue;}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "xop34xu-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){:root, .xop34xu{--otherColor:lightblue;}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "xop34xu-bdddrq",
+            {
+              "ltr": "@media print{:root, .xop34xu{--otherColor:white;}}",
+              "rtl": null
+            },
+            0.2
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "local variable tokens object",
+          "line": 371
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-local-variables-used-in-toke-015-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const COLOR = 'red';\n        export const vars = stylex.defineVars({\n          color: COLOR\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nconst COLOR = 'red';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  __varGroupHash__: \"xop34xu\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "local variables used in tokens objects",
+          "line": 412
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-local-variables-used-in-toke-016-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const COLOR = 'red';\n        export const vars = stylex.defineVars({\n          color: COLOR\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--xwx8imx:red;}",
+              "rtl": null
+            },
+            0.1
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "local variables used in tokens objects",
+          "line": 421
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-template-literals-used-in-to-017-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const NUMBER = 10;\n        export const vars = stylex.defineVars({\n          size: `${NUMBER}rem`\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nconst NUMBER = 10;\nexport const vars = {\n  size: \"var(--xu6xznv)\",\n  __varGroupHash__: \"xop34xu\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "template literals used in tokens objects",
+          "line": 446
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-template-literals-used-in-to-018-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const NUMBER = 10;\n        export const vars = stylex.defineVars({\n          size: `${NUMBER}rem`\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--xu6xznv:10rem;}",
+              "rtl": null
+            },
+            0.1
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "template literals used in tokens objects",
+          "line": 455
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-expressions-used-in-tokens-o-019-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const NUMBER = 10;\n        export const vars = stylex.defineVars({\n          radius: NUMBER * 2\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nconst NUMBER = 10;\nexport const vars = {\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "expressions used in tokens objects",
+          "line": 480
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-expressions-used-in-tokens-o-020-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const NUMBER = 10;\n        export const vars = stylex.defineVars({\n          radius: NUMBER * 2\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--xbbre8:20;}",
+              "rtl": null
+            },
+            0.1
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "expressions used in tokens objects",
+          "line": 489
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-stylex-types-used-in-tokens-021-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: stylex.types.color({\n            default: 'red',\n            '@media (prefers-color-scheme: dark)': 'white',\n            '@media print': 'black',\n          })\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  __varGroupHash__: \"xop34xu\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "stylex.types used in tokens object",
+          "line": 517
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-stylex-types-used-in-tokens-022-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: stylex.types.color({\n            default: 'red',\n            '@media (prefers-color-scheme: dark)': 'white',\n            '@media print': 'black',\n          })\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xwx8imx",
+            {
+              "ltr": "@property --xwx8imx { syntax: \"<color>\"; inherits: true; initial-value: red }",
+              "rtl": null
+            },
+            0
+          ],
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--xwx8imx:red;}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "xop34xu-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){:root, .xop34xu{--xwx8imx:white;}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "xop34xu-bdddrq",
+            {
+              "ltr": "@media print{:root, .xop34xu{--xwx8imx:black;}}",
+              "rtl": null
+            },
+            0.2
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "stylex.types used in tokens object",
+          "line": 525
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-same-group-references-inside-023-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const colors = stylex.defineVars({\n          text: 'black',\n          textMuted: () => `color-mix(${colors.text}, transparent 50%)`,\n          textSubtle: () => `color-mix(${colors.textMuted}, white 10%)`,\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const colors = {\n  text: \"var(--x16qwlje)\",\n  textMuted: \"var(--xdqjk6h)\",\n  textSubtle: \"var(--x1d8pfhh)\",\n  __varGroupHash__: \"xbqm7bo\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "same-group references inside function values",
+          "line": 575
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-same-group-references-inside-024-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const colors = stylex.defineVars({\n          text: 'black',\n          textMuted: () => `color-mix(${colors.text}, transparent 50%)`,\n          textSubtle: () => `color-mix(${colors.textMuted}, white 10%)`,\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xbqm7bo",
+            {
+              "ltr": ":root, .xbqm7bo{--x16qwlje:black;--xdqjk6h:color-mix(var(--x16qwlje), transparent 50%);--x1d8pfhh:color-mix(var(--xdqjk6h), white 10%);}",
+              "rtl": null
+            },
+            0.1
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "same-group references inside function values",
+          "line": 584
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-same-group-references-can-po-025-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const colors = stylex.defineVars({\n          textMuted: () => `color-mix(${colors.text}, transparent 50%)`,\n          text: 'black',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const colors = {\n  textMuted: \"var(--xdqjk6h)\",\n  text: \"var(--x16qwlje)\",\n  __varGroupHash__: \"xbqm7bo\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "same-group references can point to later keys",
+          "line": 609
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-same-group-references-can-po-026-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const colors = stylex.defineVars({\n          textMuted: () => `color-mix(${colors.text}, transparent 50%)`,\n          text: 'black',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xbqm7bo",
+            {
+              "ltr": ":root, .xbqm7bo{--xdqjk6h:color-mix(var(--x16qwlje), transparent 50%);--x16qwlje:black;}",
+              "rtl": null
+            },
+            0.1
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "same-group references can point to later keys",
+          "line": 617
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-nested-function-leaves-resol-027-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const colors = stylex.defineVars({\n          text: 'black',\n          textMuted: () => ({\n            default: `color-mix(${colors.text}, transparent 50%)`,\n            '@media (prefers-color-scheme: dark)': `color-mix(${colors.text}, white 20%)`,\n          }),\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const colors = {\n  text: \"var(--x16qwlje)\",\n  textMuted: \"var(--xdqjk6h)\",\n  __varGroupHash__: \"xbqm7bo\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "nested function leaves resolve same-group refs inside at-rules",
+          "line": 645
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-nested-function-leaves-resol-028-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const colors = stylex.defineVars({\n          text: 'black',\n          textMuted: () => ({\n            default: `color-mix(${colors.text}, transparent 50%)`,\n            '@media (prefers-color-scheme: dark)': `color-mix(${colors.text}, white 20%)`,\n          }),\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xbqm7bo",
+            {
+              "ltr": ":root, .xbqm7bo{--x16qwlje:black;--xdqjk6h:color-mix(var(--x16qwlje), transparent 50%);}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "xbqm7bo-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){:root, .xbqm7bo{--xdqjk6h:color-mix(var(--x16qwlje), white 20%);}}",
+              "rtl": null
+            },
+            0.2
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "nested function leaves resolve same-group refs inside at-rules",
+          "line": 653
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-function-values-can-mix-same-029-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n\n          export const base = stylex.defineVars({\n            overlay: 'rgba(0 0 0 / 0.3)',\n          });\n\n          export const colors = stylex.defineVars({\n            text: 'black',\n            textMuted: () =>\n              `color-mix(${colors.text}, ${base.overlay} 20%)`,\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const base = {\n  overlay: \"var(--x7fhb9m)\",\n  __varGroupHash__: \"xxudsav\"\n};\nexport const colors = {\n  text: \"var(--x16qwlje)\",\n  textMuted: \"var(--xdqjk6h)\",\n  __varGroupHash__: \"xbqm7bo\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "function values can mix same-group and same-file references",
+          "line": 694
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-function-values-can-mix-same-030-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n\n          export const base = stylex.defineVars({\n            overlay: 'rgba(0 0 0 / 0.3)',\n          });\n\n          export const colors = stylex.defineVars({\n            text: 'black',\n            textMuted: () =>\n              `color-mix(${colors.text}, ${base.overlay} 20%)`,\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xxudsav",
+            {
+              "ltr": ":root, .xxudsav{--x7fhb9m:rgba(0 0 0 / 0.3);}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "xbqm7bo",
+            {
+              "ltr": ":root, .xbqm7bo{--x16qwlje:black;--xdqjk6h:color-mix(var(--x16qwlje), var(--x7fhb9m) 20%);}",
+              "rtl": null
+            },
+            0.1
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "function values can mix same-group and same-file references",
+          "line": 706
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-function-values-can-referenc-031-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const colors = stylex.defineVars({\n          accent: stylex.types.color('red'),\n          accentGlow: () => `color-mix(${colors.accent}, white 15%)`,\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const colors = {\n  accent: \"var(--xgpbgsq)\",\n  accentGlow: \"var(--x1ntk1pn)\",\n  __varGroupHash__: \"xbqm7bo\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "function values can reference typed vars",
+          "line": 739
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-function-values-can-referenc-032-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const colors = stylex.defineVars({\n          accent: stylex.types.color('red'),\n          accentGlow: () => `color-mix(${colors.accent}, white 15%)`,\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xgpbgsq",
+            {
+              "ltr": "@property --xgpbgsq { syntax: \"<color>\"; inherits: true; initial-value: red }",
+              "rtl": null
+            },
+            0
+          ],
+          [
+            "xbqm7bo",
+            {
+              "ltr": ":root, .xbqm7bo{--xgpbgsq:red;--x1ntk1pn:color-mix(var(--xgpbgsq), white 15%);}",
+              "rtl": null
+            },
+            0.1
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "function values can reference typed vars",
+          "line": 747
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-function-values-can-return-s-033-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const colors = stylex.defineVars({\n          accent: () => stylex.types.color('red'),\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const colors = {\n  accent: \"var(--xgpbgsq)\",\n  __varGroupHash__: \"xbqm7bo\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "function values can return stylex.types",
+          "line": 779
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-function-values-can-return-s-034-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const colors = stylex.defineVars({\n          accent: () => stylex.types.color('red'),\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xgpbgsq",
+            {
+              "ltr": "@property --xgpbgsq { syntax: \"<color>\"; inherits: true; initial-value: red }",
+              "rtl": null
+            },
+            0
+          ],
+          [
+            "xbqm7bo",
+            {
+              "ltr": ":root, .xbqm7bo{--xgpbgsq:red;}",
+              "rtl": null
+            },
+            0.1
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "function values can return stylex.types",
+          "line": 786
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-function-values-can-return-n-035-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const colors = stylex.defineVars({\n          accent: () => ({\n            default: 'red',\n            '@media (prefers-color-scheme: dark)': 'blue',\n          }),\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const colors = {\n  accent: \"var(--xgpbgsq)\",\n  __varGroupHash__: \"xbqm7bo\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "function values can return nested objects",
+          "line": 821
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-function-values-can-return-n-036-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const colors = stylex.defineVars({\n          accent: () => ({\n            default: 'red',\n            '@media (prefers-color-scheme: dark)': 'blue',\n          }),\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xbqm7bo",
+            {
+              "ltr": ":root, .xbqm7bo{--xgpbgsq:red;}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "xbqm7bo-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){:root, .xbqm7bo{--xgpbgsq:blue;}}",
+              "rtl": null
+            },
+            0.2
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "function values can return nested objects",
+          "line": 828
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-multiple-variables-objects-s-037-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: 'red'\n        });\n        export const otherVars = stylex.defineVars({\n          otherColor: 'orange'\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  __varGroupHash__: \"xop34xu\"\n};\nexport const otherVars = {\n  otherColor: \"var(--xnjepv0)\",\n  __varGroupHash__: \"x1pfrffu\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "multiple variables objects (same file)",
+          "line": 863
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-multiple-variables-objects-s-038-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: 'red'\n        });\n        export const otherVars = stylex.defineVars({\n          otherColor: 'orange'\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--xwx8imx:red;}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "x1pfrffu",
+            {
+              "ltr": ":root, .x1pfrffu{--xnjepv0:orange;}",
+              "rtl": null
+            },
+            0.1
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "multiple variables objects (same file)",
+          "line": 875
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-multiple-variables-objects-d-039-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: 'red'\n        });\n        export const otherVars = stylex.defineVars({\n          otherColor: vars.color\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  __varGroupHash__: \"xop34xu\"\n};\nexport const otherVars = {\n  otherColor: \"var(--xnjepv0)\",\n  __varGroupHash__: \"x1pfrffu\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "multiple variables objects (dependency)",
+          "line": 910
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-multiple-variables-objects-d-040-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: 'red'\n        });\n        export const otherVars = stylex.defineVars({\n          otherColor: vars.color\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--xwx8imx:red;}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "x1pfrffu",
+            {
+              "ltr": ":root, .x1pfrffu{--xnjepv0:var(--xwx8imx);}",
+              "rtl": null
+            },
+            0.1
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "multiple variables objects (dependency)",
+          "line": 922
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-multiple-variables-objects-d-041-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: 'red'\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  __varGroupHash__: \"xop34xu\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "multiple variables objects (different files)",
+          "line": 961
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-multiple-variables-objects-d-042-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const otherVars = stylex.defineVars({\n          otherColor: 'orange'\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const otherVars = {\n  otherColor: \"var(--xnjepv0)\",\n  __varGroupHash__: \"x1pfrffu\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "multiple variables objects (different files)",
+          "line": 968
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-multiple-variables-objects-d-043-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: 'red'\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--xwx8imx:red;}",
+              "rtl": null
+            },
+            0.1
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "multiple variables objects (different files)",
+          "line": 976
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-multiple-variables-objects-d-044-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const otherVars = stylex.defineVars({\n          otherColor: 'orange'\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x1pfrffu",
+            {
+              "ltr": ":root, .x1pfrffu{--xnjepv0:orange;}",
+              "rtl": null
+            },
+            0.1
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "multiple variables objects (different files)",
+          "line": 990
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-tokens-object-includes-debug-045-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({\n            color: {\n              default: 'blue',\n              '@media (prefers-color-scheme: dark)': {\n                default: 'lightblue',\n                '@supports (color: oklab(0 0 0))': 'oklab(0.7 -0.3 -0.4)',\n              }\n            },\n            otherColor: 'green'\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "debug": true,
+        "enableDebugClassNames": true
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--color-xwx8imx)\",\n  otherColor: \"var(--otherColor-xaaua2w)\",\n  __varGroupHash__: \"xop34xu\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "tokens object includes debug data",
+          "line": 1026
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-tokens-object-includes-debug-046-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({\n            color: {\n              default: 'blue',\n              '@media (prefers-color-scheme: dark)': {\n                default: 'lightblue',\n                '@supports (color: oklab(0 0 0))': 'oklab(0.7 -0.3 -0.4)',\n              }\n            },\n            otherColor: 'green'\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "debug": true,
+        "enableDebugClassNames": true
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--color-xwx8imx:blue;--otherColor-xaaua2w:green;}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "xop34xu-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){:root, .xop34xu{--color-xwx8imx:lightblue;}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "xop34xu-1e6ryz3",
+            {
+              "ltr": "@supports (color: oklab(0 0 0)){@media (prefers-color-scheme: dark){:root, .xop34xu{--color-xwx8imx:oklab(0.7 -0.3 -0.4);}}}",
+              "rtl": null
+            },
+            0.3
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "tokens object includes debug data",
+          "line": 1035
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-tokens-object-includes-debug-047-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({\n            '10': 'green',\n            '1.5 pixels': 'blue',\n            'corner#radius': 'purple',\n            '@@primary': 'pink'\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "debug": true,
+        "enableDebugClassNames": true
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  \"10\": \"var(--_10-x187fpdw)\",\n  \"1.5 pixels\": \"var(--_1_5_pixels-x15ahj5d)\",\n  \"corner#radius\": \"var(--corner_radius-x2ajqv2)\",\n  \"@@primary\": \"var(--__primary-x13tvx0f)\",\n  __varGroupHash__: \"xop34xu\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "tokens object includes debug data (keys with special characters)",
+          "line": 1082
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-tokens-object-includes-debug-048-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({\n            '10': 'green',\n            '1.5 pixels': 'blue',\n            'corner#radius': 'purple',\n            '@@primary': 'pink'\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "debug": true,
+        "enableDebugClassNames": true
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--_10-x187fpdw:green;--_1_5_pixels-x15ahj5d:blue;--corner_radius-x2ajqv2:purple;--__primary-x13tvx0f:pink;}",
+              "rtl": null
+            },
+            0.1
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "tokens object includes debug data (keys with special characters)",
+          "line": 1093
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-tokens-object-049-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({\n            color: 'red',\n            nextColor: 'green',\n            otherColor: 'blue'\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "dev": true,
+        "enableDebugClassNames": true
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--color-xwx8imx)\",\n  nextColor: \"var(--nextColor-xk6xtqk)\",\n  otherColor: \"var(--otherColor-xaaua2w)\",\n  __varGroupHash__: \"xop34xu\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "tokens object",
+          "line": 1125
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-tokens-object-050-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({\n            color: 'red',\n            nextColor: 'green',\n            otherColor: 'blue'\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "dev": true,
+        "enableDebugClassNames": true
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--color-xwx8imx:red;--nextColor-xk6xtqk:green;--otherColor-xaaua2w:blue;}",
+              "rtl": null
+            },
+            0.1
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "tokens object",
+          "line": 1135
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-tokens-object-051-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({\n            color: 'red',\n            nextColor: 'green',\n            otherColor: 'blue'\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport * as stylex from '@stylexjs/stylex';\n_inject2({\n  ltr: \":root, .xop34xu{--xwx8imx:red;--xk6xtqk:green;--xaaua2w:blue;}\",\n  priority: 0.1\n});\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  nextColor: \"var(--xk6xtqk)\",\n  otherColor: \"var(--xaaua2w)\",\n  __varGroupHash__: \"xop34xu\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "tokens object",
+          "line": 1167
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-tokens-object-052-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({\n            color: 'red',\n            nextColor: 'green',\n            otherColor: 'blue'\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--xwx8imx:red;--xk6xtqk:green;--xaaua2w:blue;}",
+              "rtl": null
+            },
+            0.1
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "tokens object",
+          "line": 1183
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-processes-tokens-in-files-wi-053-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "src/vars/default.cssvars.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({\n            color: 'red'\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "themeFileExtension": "cssvars",
+          "type": "commonJS"
+        },
+        "debug": true,
+        "enableDebugClassNames": true
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--color-x1lzcbr1)\",\n  __varGroupHash__: \"x1bxutiz\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "processes tokens in files with configured extension",
+          "line": 1222
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVars-processes-tokens-in-files-wi-054-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "src/vars/default.cssvars.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({\n            color: 'red'\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "themeFileExtension": "cssvars",
+          "type": "commonJS"
+        },
+        "debug": true,
+        "enableDebugClassNames": true
+      },
+      "mode": "prod",
+      "tags": ["defineVars", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x1bxutiz",
+            {
+              "ltr": ":root, .x1bxutiz{--color-x1lzcbr1:red;}",
+              "rtl": null
+            },
+            0.1
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineVars-test.js",
+          "test": "processes tokens in files with configured extension",
+          "line": 1230
+        }
+      }
+    }
+  ]
+}

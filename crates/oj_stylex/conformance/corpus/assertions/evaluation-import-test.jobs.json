@@ -1,0 +1,592 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/evaluation-import-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs and upstream's own expected values — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "assertions/evaluation-import-importing-file-with-stylex-s-001-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import stylex from 'stylex';\n        import { MyTheme } from 'otherFile.stylex';\n        const styles = stylex.create({\n          red: {\n            color: MyTheme.foreground,\n          }\n        });\n        stylex(styles.red);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "runtimeInjection": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "classNamePrefix": "__hashed_var__"
+      },
+      "mode": "prod",
+      "tags": ["evaluation-import", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nimport 'otherFile.stylex';\nimport { MyTheme } from 'otherFile.stylex';\n_inject2({\n  ltr: \".__hashed_var__1r7rkhg{color:var(--__hashed_var__1jqb1tb)}\",\n  priority: 3000\n});\n\"__hashed_var__1r7rkhg\";",
+        "site": {
+          "file": "evaluation-import-test.js",
+          "test": "Importing file with \".stylex\" suffix works",
+          "line": 68
+        }
+      }
+    },
+    {
+      "id": "assertions/evaluation-import-importing-file-with-stylex-s-002-rules",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import stylex from 'stylex';\n        import { MyTheme } from 'otherFile.stylex';\n        const styles = stylex.create({\n          red: {\n            color: MyTheme.foreground,\n          }\n        });\n        stylex(styles.red);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "runtimeInjection": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "classNamePrefix": "__hashed_var__"
+      },
+      "mode": "prod",
+      "tags": ["evaluation-import", "create", "assert-rules"],
+      "assert": {
+        "kind": "rules",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata.stylex",
+        "expected": [
+          [
+            "__hashed_var__1r7rkhg",
+            {
+              "ltr": ".__hashed_var__1r7rkhg{color:var(--__hashed_var__1jqb1tb)}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "evaluation-import-test.js",
+          "test": "Importing file with \".stylex\" suffix works",
+          "line": 80
+        }
+      }
+    },
+    {
+      "id": "assertions/evaluation-import-importing-file-with-stylex-a-003-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import stylex from 'stylex';\n        import { MyTheme } from 'otherFile.stylex';\n        const styles = stylex.create({\n          red: {\n            color: MyTheme.__varGroupHash__,\n          }\n        });\n        stylex(styles.red);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "runtimeInjection": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "classNamePrefix": "__hashed_var__"
+      },
+      "mode": "prod",
+      "tags": ["evaluation-import", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nimport 'otherFile.stylex';\nimport { MyTheme } from 'otherFile.stylex';\n_inject2({\n  ltr: \".__hashed_var__1yh36a2{color:__hashed_var__jvfbhb}\",\n  priority: 3000\n});\n\"__hashed_var__1yh36a2\";",
+        "site": {
+          "file": "evaluation-import-test.js",
+          "test": "Importing file with \".stylex\" and reading __varGroupHash__ returns a className",
+          "line": 109
+        }
+      }
+    },
+    {
+      "id": "assertions/evaluation-import-importing-file-with-stylex-a-004-rules",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import stylex from 'stylex';\n        import { MyTheme } from 'otherFile.stylex';\n        const styles = stylex.create({\n          red: {\n            color: MyTheme.__varGroupHash__,\n          }\n        });\n        stylex(styles.red);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "runtimeInjection": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "classNamePrefix": "__hashed_var__"
+      },
+      "mode": "prod",
+      "tags": ["evaluation-import", "create", "assert-rules"],
+      "assert": {
+        "kind": "rules",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata.stylex",
+        "expected": [
+          [
+            "__hashed_var__1yh36a2",
+            {
+              "ltr": ".__hashed_var__1yh36a2{color:__hashed_var__jvfbhb}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "evaluation-import-test.js",
+          "test": "Importing file with \".stylex\" and reading __varGroupHash__ returns a className",
+          "line": 121
+        }
+      }
+    },
+    {
+      "id": "assertions/evaluation-import-maintains-variable-names-tha-005-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import stylex from 'stylex';\n        import { MyTheme } from 'otherFile.stylex';\n        const styles = stylex.create({\n          red: {\n            color: MyTheme['--foreground'],\n          }\n        });\n        stylex(styles.red);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "runtimeInjection": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "classNamePrefix": "__hashed_var__"
+      },
+      "mode": "prod",
+      "tags": ["evaluation-import", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toContain",
+        "match": "substring",
+        "expected": "var(--foreground)",
+        "site": {
+          "file": "evaluation-import-test.js",
+          "test": "Maintains variable names that start with -- from \"*.stylex\" files",
+          "line": 148
+        }
+      }
+    },
+    {
+      "id": "assertions/evaluation-import-maintains-variable-names-tha-006-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import stylex from 'stylex';\n        import { MyTheme } from 'otherFile.stylex';\n        const styles = stylex.create({\n          red: {\n            color: MyTheme['--foreground'],\n          }\n        });\n        stylex(styles.red);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "runtimeInjection": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "classNamePrefix": "__hashed_var__"
+      },
+      "mode": "prod",
+      "tags": ["evaluation-import", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nimport 'otherFile.stylex';\nimport { MyTheme } from 'otherFile.stylex';\n_inject2({\n  ltr: \".__hashed_var__11jfisy{color:var(--foreground)}\",\n  priority: 3000\n});\n\"__hashed_var__11jfisy\";",
+        "site": {
+          "file": "evaluation-import-test.js",
+          "test": "Maintains variable names that start with -- from \"*.stylex\" files",
+          "line": 149
+        }
+      }
+    },
+    {
+      "id": "assertions/evaluation-import-maintains-variable-names-tha-007-rules",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import stylex from 'stylex';\n        import { MyTheme } from 'otherFile.stylex';\n        const styles = stylex.create({\n          red: {\n            color: MyTheme['--foreground'],\n          }\n        });\n        stylex(styles.red);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "runtimeInjection": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "classNamePrefix": "__hashed_var__"
+      },
+      "mode": "prod",
+      "tags": ["evaluation-import", "create", "assert-rules"],
+      "assert": {
+        "kind": "rules",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata.stylex",
+        "expected": [
+          [
+            "__hashed_var__11jfisy",
+            {
+              "ltr": ".__hashed_var__11jfisy{color:var(--foreground)}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "evaluation-import-test.js",
+          "test": "Maintains variable names that start with -- from \"*.stylex\" files",
+          "line": 161
+        }
+      }
+    },
+    {
+      "id": "assertions/evaluation-import-importing-file-with-stylex-s-008-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import stylex from 'stylex';\n        import { MyTheme } from 'otherFile.stylex';\n        const fade = stylex.keyframes({\n          from: {\n            color: MyTheme.foreground,\n          }\n        });\n        const styles = stylex.create({\n          red: {\n            animationName: fade,\n          }\n        });\n        stylex(styles.red);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "runtimeInjection": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "classNamePrefix": "__hashed_var__"
+      },
+      "mode": "prod",
+      "tags": ["evaluation-import", "keyframes", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nimport 'otherFile.stylex';\nimport { MyTheme } from 'otherFile.stylex';\n_inject2({\n  ltr: \"@keyframes __hashed_var__1cb153o-B{from{color:var(--__hashed_var__1jqb1tb);}}\",\n  priority: 0\n});\nconst fade = \"__hashed_var__1cb153o-B\";\n_inject2({\n  ltr: \".__hashed_var__1xwo6t1{animation-name:__hashed_var__1cb153o-B}\",\n  priority: 3000\n});\n\"__hashed_var__1xwo6t1\";",
+        "site": {
+          "file": "evaluation-import-test.js",
+          "test": "Importing file with \".stylex\" suffix works with keyframes",
+          "line": 198
+        }
+      }
+    },
+    {
+      "id": "assertions/evaluation-import-importing-file-with-stylex-s-009-rules",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import stylex from 'stylex';\n        import { MyTheme } from 'otherFile.stylex';\n        const fade = stylex.keyframes({\n          from: {\n            color: MyTheme.foreground,\n          }\n        });\n        const styles = stylex.create({\n          red: {\n            animationName: fade,\n          }\n        });\n        stylex(styles.red);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "runtimeInjection": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "classNamePrefix": "__hashed_var__"
+      },
+      "mode": "prod",
+      "tags": ["evaluation-import", "keyframes", "create", "assert-rules"],
+      "assert": {
+        "kind": "rules",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata.stylex",
+        "expected": [
+          [
+            "__hashed_var__1cb153o-B",
+            {
+              "ltr": "@keyframes __hashed_var__1cb153o-B{from{color:var(--__hashed_var__1jqb1tb);}}",
+              "rtl": null
+            },
+            0
+          ],
+          [
+            "__hashed_var__1xwo6t1",
+            {
+              "ltr": ".__hashed_var__1xwo6t1{animation-name:__hashed_var__1cb153o-B}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "evaluation-import-test.js",
+          "test": "Importing file with \".stylex\" suffix works with keyframes",
+          "line": 215
+        }
+      }
+    },
+    {
+      "id": "assertions/evaluation-import-importing-file-with-stylex-j-010-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import stylex from 'stylex';\n        import { MyTheme } from 'otherFile.stylex.js';\n        const styles = stylex.create({\n          red: {\n            color: MyTheme.foreground,\n          }\n        });\n        stylex(styles.red);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "runtimeInjection": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "classNamePrefix": "__hashed_var__"
+      },
+      "mode": "prod",
+      "tags": ["evaluation-import", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nimport 'otherFile.stylex.js';\nimport { MyTheme } from 'otherFile.stylex.js';\n_inject2({\n  ltr: \".__hashed_var__1r7rkhg{color:var(--__hashed_var__1jqb1tb)}\",\n  priority: 3000\n});\n\"__hashed_var__1r7rkhg\";",
+        "site": {
+          "file": "evaluation-import-test.js",
+          "test": "Importing file with \".stylex.js\" suffix works",
+          "line": 255
+        }
+      }
+    },
+    {
+      "id": "assertions/evaluation-import-importing-file-with-stylex-j-011-rules",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import stylex from 'stylex';\n        import { MyTheme } from 'otherFile.stylex.js';\n        const styles = stylex.create({\n          red: {\n            color: MyTheme.foreground,\n          }\n        });\n        stylex(styles.red);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "runtimeInjection": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "classNamePrefix": "__hashed_var__"
+      },
+      "mode": "prod",
+      "tags": ["evaluation-import", "create", "assert-rules"],
+      "assert": {
+        "kind": "rules",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata.stylex",
+        "expected": [
+          [
+            "__hashed_var__1r7rkhg",
+            {
+              "ltr": ".__hashed_var__1r7rkhg{color:var(--__hashed_var__1jqb1tb)}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "evaluation-import-test.js",
+          "test": "Importing file with \".stylex.js\" suffix works",
+          "line": 267
+        }
+      }
+    },
+    {
+      "id": "assertions/evaluation-import-importing-file-with-stylex-j-012-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import stylex from 'stylex';\n        import { MyTheme as mt } from 'otherFile.stylex.js';\n        const styles = stylex.create({\n          red: {\n            color: mt.foreground,\n          }\n        });\n        stylex(styles.red);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "runtimeInjection": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "classNamePrefix": "__hashed_var__"
+      },
+      "mode": "prod",
+      "tags": ["evaluation-import", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nimport 'otherFile.stylex.js';\nimport { MyTheme as mt } from 'otherFile.stylex.js';\n_inject2({\n  ltr: \".__hashed_var__1r7rkhg{color:var(--__hashed_var__1jqb1tb)}\",\n  priority: 3000\n});\n\"__hashed_var__1r7rkhg\";",
+        "site": {
+          "file": "evaluation-import-test.js",
+          "test": "Importing file with \".stylex.js\" with an alias suffix works",
+          "line": 298
+        }
+      }
+    },
+    {
+      "id": "assertions/evaluation-import-importing-file-with-stylex-j-013-rules",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import stylex from 'stylex';\n        import { MyTheme as mt } from 'otherFile.stylex.js';\n        const styles = stylex.create({\n          red: {\n            color: mt.foreground,\n          }\n        });\n        stylex(styles.red);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "runtimeInjection": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "classNamePrefix": "__hashed_var__"
+      },
+      "mode": "prod",
+      "tags": ["evaluation-import", "create", "assert-rules"],
+      "assert": {
+        "kind": "rules",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata.stylex",
+        "expected": [
+          [
+            "__hashed_var__1r7rkhg",
+            {
+              "ltr": ".__hashed_var__1r7rkhg{color:var(--__hashed_var__1jqb1tb)}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "evaluation-import-test.js",
+          "test": "Importing file with \".stylex.js\" with an alias suffix works",
+          "line": 310
+        }
+      }
+    },
+    {
+      "id": "assertions/evaluation-import-imported-vars-with-stylex-su-014-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import stylex from 'stylex';\n        import { MyTheme } from 'otherFile.stylex';\n        const styles = stylex.create({\n          red: {\n            [MyTheme.foreground]: 'red',\n          }\n        });\n        stylex(styles.red);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "runtimeInjection": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "classNamePrefix": "__hashed_var__"
+      },
+      "mode": "prod",
+      "tags": ["evaluation-import", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nimport 'otherFile.stylex';\nimport { MyTheme } from 'otherFile.stylex';\n_inject2({\n  ltr: \".__hashed_var__1g7q0my{--__hashed_var__1jqb1tb:red}\",\n  priority: 1\n});\n\"__hashed_var__1g7q0my\";",
+        "site": {
+          "file": "evaluation-import-test.js",
+          "test": "Imported vars with \".stylex\" suffix can be used as style keys",
+          "line": 351
+        }
+      }
+    },
+    {
+      "id": "assertions/evaluation-import-imported-vars-with-stylex-su-015-rules",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import stylex from 'stylex';\n        import { MyTheme } from 'otherFile.stylex';\n        const styles = stylex.create({\n          red: {\n            [MyTheme.foreground]: 'red',\n          }\n        });\n        stylex(styles.red);\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "runtimeInjection": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "classNamePrefix": "__hashed_var__"
+      },
+      "mode": "prod",
+      "tags": ["evaluation-import", "create", "assert-rules"],
+      "assert": {
+        "kind": "rules",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata.stylex",
+        "expected": [
+          [
+            "__hashed_var__1g7q0my",
+            {
+              "ltr": ".__hashed_var__1g7q0my{--__hashed_var__1jqb1tb:red}",
+              "rtl": null
+            },
+            1
+          ]
+        ],
+        "site": {
+          "file": "evaluation-import-test.js",
+          "test": "Imported vars with \".stylex\" suffix can be used as style keys",
+          "line": 363
+        }
+      }
+    },
+    {
+      "id": "assertions/evaluation-import-imported-vars-with-stylex-su-016-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import stylex from 'stylex';\n        import { MyTheme } from 'otherFile.stylex';\n        const styles = stylex.create({\n          color: (color) => ({\n            [MyTheme.foreground]: color,\n          })\n        });\n        stylex.props(styles.color('red'));\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "runtimeInjection": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "classNamePrefix": "__hashed_var__"
+      },
+      "mode": "prod",
+      "tags": ["evaluation-import", "props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nimport 'otherFile.stylex';\nimport { MyTheme } from 'otherFile.stylex';\n_inject2({\n  ltr: \".__hashed_var__1w8wjxo{--__hashed_var__1jqb1tb:var(--x---__hashed_var__1jqb1tb)}\",\n  priority: 1\n});\n_inject2({\n  ltr: \"@property --x---__hashed_var__1jqb1tb { syntax: \\\"*\\\"; inherits: false;}\",\n  priority: 0\n});\nconst styles = {\n  color: color => [{\n    \"--__hashed_var__1jqb1tb\": color != null ? \"__hashed_var__1w8wjxo\" : color,\n    $$css: true\n  }, {\n    \"--x---__hashed_var__1jqb1tb\": color != null ? color : undefined\n  }]\n};\nstylex.props(styles.color('red'));",
+        "site": {
+          "file": "evaluation-import-test.js",
+          "test": "Imported vars with \".stylex\" suffix can be used as style keys dynamically",
+          "line": 389
+        }
+      }
+    },
+    {
+      "id": "assertions/evaluation-import-imported-vars-with-stylex-su-017-rules",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import stylex from 'stylex';\n        import { MyTheme } from 'otherFile.stylex';\n        const styles = stylex.create({\n          color: (color) => ({\n            [MyTheme.foreground]: color,\n          })\n        });\n        stylex.props(styles.color('red'));\n      ",
+      "options": {
+        "treeshakeCompensation": true,
+        "runtimeInjection": true,
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "classNamePrefix": "__hashed_var__"
+      },
+      "mode": "prod",
+      "tags": ["evaluation-import", "props", "create", "assert-rules"],
+      "assert": {
+        "kind": "rules",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata.stylex",
+        "expected": [
+          [
+            "__hashed_var__1w8wjxo",
+            {
+              "ltr": ".__hashed_var__1w8wjxo{--__hashed_var__1jqb1tb:var(--x---__hashed_var__1jqb1tb)}",
+              "rtl": null
+            },
+            1
+          ],
+          [
+            "--x---__hashed_var__1jqb1tb",
+            {
+              "ltr": "@property --x---__hashed_var__1jqb1tb { syntax: \"*\"; inherits: false;}",
+              "rtl": null
+            },
+            0
+          ]
+        ],
+        "site": {
+          "file": "evaluation-import-test.js",
+          "test": "Imported vars with \".stylex\" suffix can be used as style keys dynamically",
+          "line": 413
+        }
+      }
+    },
+    {
+      "id": "assertions/evaluation-import-recognizes-ts-stylex-imports-018-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import stylex from 'stylex';\n        import { MyTheme } from './otherFile.stylex.js';\n        const styles = stylex.create({\n          red: {\n            color: MyTheme.__varGroupHash__,\n          }\n        });\n        stylex(styles.red);\n        ",
+      "options": {
+        "treeshakeCompensation": true,
+        "runtimeInjection": true,
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["evaluation-import", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nimport './otherFile.stylex.js';\nimport { MyTheme } from './otherFile.stylex.js';\n_inject2({\n  ltr: \".xoh8dld{color:xb897f7}\",\n  priority: 3000\n});\n\"xoh8dld\";",
+        "site": {
+          "file": "evaluation-import-test.js",
+          "test": "Recognizes .ts stylex imports when resolving .js relative imports",
+          "line": 465
+        }
+      }
+    }
+  ]
+}

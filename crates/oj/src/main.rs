@@ -181,6 +181,12 @@ enum Command {
         #[arg(long)]
         base: Option<String>,
     },
+    /// StyleX compiler: transform files, compile a project's sheet, or serve
+    /// the resident compiler protocol (the standalone `fru` command set).
+    Stylex {
+        #[command(subcommand)]
+        command: oj_stylex::cli::Command,
+    },
 }
 
 /// Self-reap when the parent dev server dies. The one-shot child subcommands
@@ -436,6 +442,15 @@ fn main() -> anyhow::Result<()> {
     // The parsed CLI is the single source for the app root: a second argv
     // parser would drift from clap the moment a flag is added.
     let cli = Cli::parse();
+    // Synchronous and self-contained (its own worker threads, no engine), so
+    // it runs before any runtime or env snapshot exists.
+    let cli = match cli.command {
+        Command::Stylex { command } => {
+            oj_stylex::cli::run(command);
+            return Ok(());
+        }
+        command => Cli { command },
+    };
     // An EMPTY agent counts as unset: Vite's lockfile-preference sort treats
     // "" exactly like a missing agent (falsy), so leaving it would keep the
     // reversal this preset exists to fix.
@@ -589,6 +604,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             println!("{}", output.code);
             Ok(())
         }
+        Command::Stylex { .. } => unreachable!("`oj stylex` runs before the runtime starts"),
         Command::Build {
             root,
             out,

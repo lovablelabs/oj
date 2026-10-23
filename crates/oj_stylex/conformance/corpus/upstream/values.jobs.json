@@ -1,0 +1,4561 @@
+{
+  "header": {
+    "upstreamPath": "packages/style-value-parser/src/**/__tests__",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs only — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "upstream/value-token-parser-001",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"foo\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "token-parser"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-token-parser-002",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"123\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "token-parser"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-token-parser-003",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"baz\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "token-parser"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-token-parser-004",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"foo baz\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "token-parser"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-token-parser-005",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"foo bar baz\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "token-parser"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-token-parser-006",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"foo, bar, baz\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "token-parser"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-token-parser-007",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"baz foo\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "token-parser"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-token-parser-008",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"foo,baz\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "token-parser"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-token-parser-009",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"foo, baz\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "token-parser"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-token-parser-010",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"foo   , baz\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "token-parser"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-token-parser-011",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"foo   ,baz\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "token-parser"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-token-parser-012",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"baz,foo\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "token-parser"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-token-parser-013",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"baz, foo\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "token-parser"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-token-parser-014",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"baz   , foo\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "token-parser"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-token-parser-015",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"baz   ,foo\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "token-parser"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-token-parser-016",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"foo baz bar\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "token-parser"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-token-parser-017",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"bar foo baz\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "token-parser"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-token-parser-018",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"bar baz foo\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "token-parser"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-token-parser-019",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"baz bar foo\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "token-parser"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-token-parser-020",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"baz foo bar\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "token-parser"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-token-parser-021",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"foo foo\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "token-parser"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-token-parser-022",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"foo foo foo\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "token-parser"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-token-parser-023",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"foo foo foo foo\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "token-parser"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-token-parser-024",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"foo foo foo foo foo\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "token-parser"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-token-parser-025",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"bar\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "token-parser"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-token-parser-026",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "token-parser"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/value-token-parser-027",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"foo foo foo bar\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "token-parser"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-token-parser-028",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"foo foo foo for\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "token-parser"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-alpha-value-029",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { opacity: \"0.5\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "alpha-value"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-alpha-value-030",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { opacity: \".5\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "alpha-value"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-alpha-value-031",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { opacity: \"0.25\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "alpha-value"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-alpha-value-032",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { opacity: \".25\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "alpha-value"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-alpha-value-033",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { opacity: \"0.75\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "alpha-value"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-alpha-value-034",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { opacity: \".75\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "alpha-value"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-alpha-value-035",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { opacity: \"1\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "alpha-value"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-alpha-value-036",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { opacity: \"0\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "alpha-value"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-alpha-value-037",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { opacity: \"50%\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "alpha-value"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-alpha-value-038",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { opacity: \"25%\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "alpha-value"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-alpha-value-039",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { opacity: \"75%\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "alpha-value"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-alpha-value-040",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { opacity: \"75.5%\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "alpha-value"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-alpha-value-041",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { opacity: \"0.25%\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "alpha-value"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-alpha-value-042",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { opacity: \".25%\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "alpha-value"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-alpha-value-043",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { opacity: \"0%\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "alpha-value"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-alpha-value-044",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { opacity: \"100%\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "alpha-value"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-alpha-value-045",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { opacity: \"invalid\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "alpha-value"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-alpha-value-046",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { opacity: \"red\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "alpha-value"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-alpha-value-047",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { opacity: \"initial\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "alpha-value"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-angle-percentage-048",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { rotate: \"45deg\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "angle-percentage"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-angle-percentage-049",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { rotate: \"1rad\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "angle-percentage"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-angle-percentage-050",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { rotate: \"0.5turn\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "angle-percentage"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-angle-percentage-051",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { rotate: \"100grad\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "angle-percentage"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-angle-percentage-052",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { rotate: \"50%\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "angle-percentage"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-angle-percentage-053",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { rotate: \"100%\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "angle-percentage"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-angle-percentage-054",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { rotate: \"0%\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "angle-percentage"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-angle-percentage-055",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { rotate: \"25%\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "angle-percentage"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-angle-percentage-056",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { rotate: \"abc\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "angle-percentage"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-angle-percentage-057",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { rotate: \"50\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "angle-percentage"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-angle-percentage-058",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { rotate: \"10abc\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "angle-percentage"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-angle-059",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { rotate: \"0deg\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "angle"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-angle-060",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { rotate: \"45deg\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "angle"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-angle-061",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { rotate: \"90deg\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "angle"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-angle-062",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { rotate: \"180deg\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "angle"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-angle-063",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { rotate: \"270deg\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "angle"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-angle-064",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { rotate: \"-90deg\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "angle"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-angle-065",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { rotate: \"0.5turn\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "angle"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-angle-066",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { rotate: \"2rad\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "angle"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-angle-067",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { rotate: \"100grad\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "angle"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-angle-068",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { rotate: \"1.5deg\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "angle"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-angle-069",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { rotate: \"invalid\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "angle"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-angle-070",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { rotate: \"red\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "angle"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-angle-071",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { rotate: \"initial\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "angle"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-blend-mode-072",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { mixBlendMode: \"normal\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "blend-mode"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-blend-mode-073",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { mixBlendMode: \"multiply\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "blend-mode"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-blend-mode-074",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { mixBlendMode: \"screen\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "blend-mode"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-blend-mode-075",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { mixBlendMode: \"overlay\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "blend-mode"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-blend-mode-076",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { mixBlendMode: \"darken\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "blend-mode"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-blend-mode-077",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { mixBlendMode: \"lighten\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "blend-mode"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-blend-mode-078",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { mixBlendMode: \"color-dodge\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "blend-mode"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-blend-mode-079",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { mixBlendMode: \"color-burn\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "blend-mode"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-blend-mode-080",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { mixBlendMode: \"hard-light\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "blend-mode"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-blend-mode-081",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { mixBlendMode: \"soft-light\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "blend-mode"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-blend-mode-082",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { mixBlendMode: \"difference\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "blend-mode"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-blend-mode-083",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { mixBlendMode: \"exclusion\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "blend-mode"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-blend-mode-084",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { mixBlendMode: \"hue\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "blend-mode"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-blend-mode-085",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { mixBlendMode: \"saturation\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "blend-mode"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-blend-mode-086",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { mixBlendMode: \"color\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "blend-mode"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-blend-mode-087",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { mixBlendMode: \"luminosity\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "blend-mode"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-blend-mode-088",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { mixBlendMode: \"invalid\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "blend-mode"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-blend-mode-089",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { mixBlendMode: \"blend\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "blend-mode"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-blend-mode-090",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { mixBlendMode: \"123\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "blend-mode"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-091",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc(10)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-092",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc(3.14)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-093",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc(-5)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-094",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc(50%)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-095",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc(100%)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-096",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc(-25%)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-097",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc(20px)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-098",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc(2em)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-099",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc(1.5rem)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-100",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc(10 + 5)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-101",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc(20px + 10%)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-102",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc(10 - 5)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-103",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc(100% - 20px)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-104",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc(10 * 5)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-105",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc(2 * 50%)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-106",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc(10 / 2)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-107",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc(100% / 4)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-108",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc((10 + 5) * 2)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-109",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc(100% - (30px / 2))\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-110",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc(100% - 20px * 2 + 10px)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-111",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc(10+pi)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-112",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc(10*5)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-113",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc( 10*5 )\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-114",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc( 10* 5 )\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-115",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc( 10 *5 )\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-116",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc( 10 * 5 )\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-117",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc()\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-118",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc(10 + )\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-119",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc(10 +5 )\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-120",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc(10+5 )\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-121",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc(10 @ 5)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-122",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc(10px + 5em)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-123",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"notcalc(10 + 5)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-calc-124",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"calc(10+ 5 )\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "calc"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-color-125",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { color: \"red\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "color"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-color-126",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { color: \"blue\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "color"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-color-127",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { color: \"green\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "color"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-color-128",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { color: \"transparent\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "color"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-color-129",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { color: \"#ff0000\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "color"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-color-130",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { color: \"#00ff00\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "color"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-color-131",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { color: \"#0000ff\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "color"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-color-132",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { color: \"#ffffff\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "color"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-color-133",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { color: \"rgb(255, 0, 0)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "color"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-color-134",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { color: \"rgb(0, 255, 0)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "color"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-color-135",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { color: \"rgb(0, 0, 255)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "color"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-color-136",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { color: \"rgb(255 0 0)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "color"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-color-137",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { color: \"rgb(0 255 0)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "color"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-color-138",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { color: \"rgb(0 0 255)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "color"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-color-139",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { color: \"rgba(255, 0, 0, 0.5)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "color"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-color-140",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { color: \"rgba(0, 255, 0, 0.5)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "color"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-color-141",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { color: \"rgba(0, 0, 255, 0.5)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "color"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-color-142",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { color: \"rgb(255 0 0 / 0.5)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "color"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-color-143",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { color: \"rgb(0 255 0 / 0.5)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "color"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-color-144",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { color: \"rgb(0 0 255 / 0.5)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "color"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-color-145",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { color: \"rgb(255 0 0 / 50%)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "color"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-color-146",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { color: \"rgb(0 255 0 / 50%)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "color"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-color-147",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { color: \"rgb(0 0 255 / 50%)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "color"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-color-148",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { color: \"lch(50% 100 270deg)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "color"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-color-149",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { color: \"invalid\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "color"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-color-150",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { color: \"#gggggg\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "color"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-color-151",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { color: \"rgb(256, 0, 0)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "color"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-custom-ident-152",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { willChange: \"myIdentifier\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "custom-ident"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-custom-ident-153",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { willChange: \"custom-name\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "custom-ident"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-custom-ident-154",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { willChange: \"_private\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "custom-ident"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-custom-ident-155",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { willChange: \"identifier123\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "custom-ident"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-custom-ident-156",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { willChange: \"unset\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "custom-ident"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-custom-ident-157",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { willChange: \"initial\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "custom-ident"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-custom-ident-158",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { willChange: \"inherit\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "custom-ident"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-custom-ident-159",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { willChange: \"default\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "custom-ident"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-custom-ident-160",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { willChange: \"none\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "custom-ident"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-custom-ident-161",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { willChange: \"auto\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "custom-ident"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-custom-ident-162",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { willChange: \"normal\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "custom-ident"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-custom-ident-163",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { willChange: \"hidden\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "custom-ident"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-custom-ident-164",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { willChange: \"visible\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "custom-ident"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-custom-ident-165",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { willChange: \"revert\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "custom-ident"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-custom-ident-166",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { willChange: \"revert-layer\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "custom-ident"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-custom-ident-167",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { willChange: \"123invalid\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "custom-ident"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-custom-ident-168",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { willChange: \"invalid!\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "custom-ident"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-custom-ident-169",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { willChange: \"invalid space\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "custom-ident"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-dashed-ident-170",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionProperty: \"--custom-property\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "dashed-ident"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-dashed-ident-171",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionProperty: \"--theme-color\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "dashed-ident"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-dashed-ident-172",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionProperty: \"--123\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "dashed-ident"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-dashed-ident-173",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionProperty: \"--_private\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "dashed-ident"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-dashed-ident-174",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionProperty: \"custom-property\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "dashed-ident"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-dashed-ident-175",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionProperty: \"-custom-property\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "dashed-ident"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-dashed-ident-176",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionProperty: \"property\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "dashed-ident"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-dashed-ident-177",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionProperty: \"--\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "dashed-ident"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-easing-function-178",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionTimingFunction: \"linear(1, 2)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "easing-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-easing-function-179",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionTimingFunction: \"linear(1.5, 2  ,   3)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "easing-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-easing-function-180",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionTimingFunction: \"linear(  .5  , 2, 3,4  )\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "easing-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-easing-function-181",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionTimingFunction: \"ease-in\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "easing-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-easing-function-182",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionTimingFunction: \"ease-out\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "easing-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-easing-function-183",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionTimingFunction: \"ease-in-out\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "easing-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-easing-function-184",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionTimingFunction: \"ease\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "easing-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-easing-function-185",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionTimingFunction: \"step-start\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "easing-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-easing-function-186",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionTimingFunction: \"step-end\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "easing-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-easing-function-187",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionTimingFunction: \"steps(1, start)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "easing-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-easing-function-188",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionTimingFunction: \"steps(1   ,     start)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "easing-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-easing-function-189",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionTimingFunction: \"steps(1,end)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "easing-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-easing-function-190",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionTimingFunction: \"cubic-bezier(1,1,1,1)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "easing-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-easing-function-191",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionTimingFunction: \"cubic-bezier( 1.5 ,    1 ,    .1 , 1 )\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "easing-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-easing-function-192",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionTimingFunction: \"linear(1 2 3)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "easing-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-easing-function-193",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionTimingFunction: \"cubic-bezier(1, 2, 3)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "easing-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-easing-function-194",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionTimingFunction: \"cubic-bezier(1, 2, 3, 4, 5)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "easing-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-easing-function-195",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionTimingFunction: \"cubic-bezier(1 .25 1 .25)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "easing-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-easing-function-196",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionTimingFunction: \"out-ease\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "easing-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-easing-function-197",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionTimingFunction: \"linear()\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "easing-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-easing-function-198",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionTimingFunction: \"steps(1, 2)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "easing-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-filter-function-199",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { filter: \"blur(5px)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "filter-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-filter-function-200",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { filter: \"brightness(150%)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "filter-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-filter-function-201",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { filter: \"contrast(200%)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "filter-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-filter-function-202",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { filter: \"grayscale(50%)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "filter-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-filter-function-203",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { filter: \"hue-rotate(90deg)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "filter-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-filter-function-204",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { filter: \"invert(100%)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "filter-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-filter-function-205",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { filter: \"opacity(75%)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "filter-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-filter-function-206",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { filter: \"saturate(120%)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "filter-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-filter-function-207",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { filter: \"sepia(30%)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "filter-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-filter-function-208",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { filter: \"invalid()\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "filter-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-filter-function-209",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { filter: \"blur()\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "filter-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-filter-function-210",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { filter: \"brightness(abc)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "filter-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-flex-211",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { flex: \"1fr\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "flex"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-flex-212",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { flex: \"2.5fr\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "flex"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-flex-213",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { flex: \"0fr\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "flex"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-flex-214",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { flex: \"-1fr\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "flex"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-flex-215",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { flex: \"1 fr\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "flex"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-flex-216",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { flex: \"1px\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "flex"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-frequency-217",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"1Hz\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "frequency"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-frequency-218",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"1000KHz\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "frequency"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-frequency-219",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"0Hz\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "frequency"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-frequency-220",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"0KHz\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "frequency"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-frequency-221",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"1.5Hz\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "frequency"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-frequency-222",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"1.5KHz\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "frequency"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-frequency-223",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"1 Hz\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "frequency"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-frequency-224",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"1KHz \" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "frequency"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-frequency-225",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"1\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "frequency"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-frequency-226",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"Hz\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "frequency"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-frequency-227",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"KHz\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "frequency"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-percentage-228",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"10px\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length-percentage"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-percentage-229",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"5em\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length-percentage"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-percentage-230",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"2rem\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length-percentage"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-percentage-231",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"1in\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length-percentage"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-percentage-232",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"50%\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length-percentage"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-percentage-233",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"100%\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length-percentage"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-percentage-234",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"0%\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length-percentage"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-percentage-235",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"25%\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length-percentage"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-percentage-236",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"abc\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length-percentage"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-percentage-237",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"50\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length-percentage"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-percentage-238",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"10abc\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length-percentage"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-239",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"10ch\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-240",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"2em\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-241",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"1.5ex\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-242",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"3ic\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-243",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"1.2lh\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-244",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"2rem\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-245",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"1rlh\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-246",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"50vh\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-247",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"100vw\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-248",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"80svh\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-249",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"90lvw\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-250",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"70dvh\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-251",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"60vmin\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-252",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"85vmax\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-253",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"30cqw\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-254",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"40cqi\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-255",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"50cqh\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-256",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"60cqb\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-257",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"45cqmin\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-258",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"75cqmax\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-259",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"16px\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-260",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"2cm\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-261",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"10mm\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-262",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"1in\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-263",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"12pt\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-264",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"10abc\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-265",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"20pc\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-266",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"30\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-length-267",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"xyz\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "length"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-position-268",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { backgroundPosition: \"left\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "position"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-position-269",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { backgroundPosition: \"right\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "position"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-position-270",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { backgroundPosition: \"center\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "position"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-position-271",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { backgroundPosition: \"top\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "position"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-position-272",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { backgroundPosition: \"bottom\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "position"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-position-273",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { backgroundPosition: \"left top\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "position"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-position-274",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { backgroundPosition: \"right bottom\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "position"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-position-275",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { backgroundPosition: \"center center\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "position"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-position-276",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { backgroundPosition: \"left bottom\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "position"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-position-277",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { backgroundPosition: \"right top\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "position"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-position-278",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { backgroundPosition: \"left 50% top 20px\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "position"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-position-279",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { backgroundPosition: \"right 20px\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "position"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-position-280",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { backgroundPosition: \"50% top\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "position"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-position-281",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { backgroundPosition: \"30px bottom\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "position"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-position-282",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { backgroundPosition: \"50% 50%\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "position"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-position-283",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { backgroundPosition: \"20px 30px\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "position"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-position-284",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { backgroundPosition: \"25% 40px\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "position"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-position-285",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { backgroundPosition: \"left 20% top 30%\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "position"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-position-286",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { backgroundPosition: \"right 10px bottom 15px\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "position"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-position-287",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { backgroundPosition: \"invalid\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "position"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-position-288",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { backgroundPosition: \"left left\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "position"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-position-289",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { backgroundPosition: \"top right bottom\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "position"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-position-290",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { backgroundPosition: \"20\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "position"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-resolution-291",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"300dpi\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "resolution"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-resolution-292",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"118.11dpcm\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "resolution"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-resolution-293",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"96dppx\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "resolution"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-resolution-294",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"invalid\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "resolution"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-resolution-295",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"10abc\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "resolution"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-resolution-296",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { width: \"10\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "resolution"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-time-297",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionDuration: \"1s\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "time"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-time-298",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionDuration: \"1000ms\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "time"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-time-299",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionDuration: \"0s\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "time"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-time-300",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionDuration: \"0ms\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "time"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-time-301",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionDuration: \"1.5s\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "time"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-time-302",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionDuration: \"1.5ms\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "time"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-time-303",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionDuration: \"1 s\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "time"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-time-304",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionDuration: \"1ms \" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "time"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-time-305",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionDuration: \"1\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "time"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-time-306",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionDuration: \"s\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "time"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-time-307",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transitionDuration: \"ms\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "time"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-308",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"matrix(1, 0, 0, 1, 0, 0)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-309",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"matrix(1.2,0.2,  -1, 0.9, 0, 20 )\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-310",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"matrix(\\n.4,0,0.5,1.200,60,10   )\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-311",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"matrix(0.1, 1, -0.3, 1, 0, 0)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-312",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"matrix(1, 0, 0, 1, 0)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-313",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"matrix(1, 0, 0, 1, 0, 0, 0)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-314",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"matrix(1, 0, 0, 1, 0, foo)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-315",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"matrix(1px, 0, 0, 1, 0, 0)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-316",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"matrix(1 0 0 1 0 0)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-317",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"matrix3d(\\n            1,  0, 0, 0, \\n            0,  1, 0, 0,\\n            0, .5, 1, 0,\\n            0, 0, 0, 1\\n          )\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-318",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"matrix3d(-0.6,1.34788,0,0,-2.34788,-.6,0, 0,0,0,1,0,0,0,10,1)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-319",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"matrix3d(\\n            1,  0, 0, 0, \\n            0,  1, 0, 0,\\n            0, .5, 1, 0,\\n            0, 0, 0\\n          )\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-320",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"matrix3d(\\n            1,  0, 0, 0, \\n            0,  1, 0, 0,\\n            0, .5, 1, 0,\\n            0, 0, 0, 1, 0\\n          )\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-321",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"matrix3d(\\n            1,  0, 0, 0, \\n            0,  1, 0, 0,\\n            0, .5, 1, 0,\\n            0, 0, 0, foo\\n          )\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-322",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"matrix3d(\\n            1px,  0, 0, 0, \\n            0,  1, 0, 0,\\n            0, .5, 1, 0,\\n            0, 0, 0, 1\\n          )\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-323",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"perspective(0)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-324",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"perspective(100px)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-325",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"perspective(1.5em)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-326",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"perspective(foo)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-327",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"perspective(1)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-328",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"perspective(1%)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-329",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"perspective(1deg)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-330",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotate(0)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-331",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotate(45deg)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-332",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotate(90deg)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-333",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotate(180deg)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-334",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotate(270deg)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-335",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotate(-90deg)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-336",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotate(0.5turn)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-337",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotate(2rad)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-338",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotate(100grad)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-339",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotate(1.5deg)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-340",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotate(360deg)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-341",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotate(1turn)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-342",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotate(-1turn)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-343",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotate(foo)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-344",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotate(1)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-345",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotate(1%)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-346",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotate(1px)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-347",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotate3d(0, 0, 1, 0)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-348",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotate3d(0, 0, 1, 45deg)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-349",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotate3d(0, 0, .1, 90deg)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-350",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotate3d(0, 0.5, 1, 180rad)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-351",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotate3d(0, 0, 1)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-352",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotate3d(0, 0, 1, 0, 0)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-353",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotate3d(0, 0, 1, foo)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-354",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotate3d(0, 0, 1, 1)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-355",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotate3d(0, 0, 1, 1%)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-356",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotate3d(0, 0, 1, 1px)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-357",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotateX(0)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-358",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotateX(  0   )\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-359",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotateY( 45deg\\n)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-360",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotateZ(   90deg     )\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-361",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotateZ( 90rad )\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-362",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotateX(foo)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-363",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotateX(1)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-364",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotateX(1%)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-365",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"rotateX(1px)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-366",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"scale(0)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-367",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"scale(1.5)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-368",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"scale(1.5, 2)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-369",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"scale(150%, 2.5)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-370",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"scale(1.5, 2.5)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-371",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"scale()\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-372",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"scale(1, 2, 3)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-373",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"scale(foo)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-374",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"scale(1px)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-375",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"scale(1, 1px)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-376",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"scale(1px, 1)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-377",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"scale3d(0, 0, 1)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-378",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"scale3d(1.5, 2, 0.5)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-379",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"scale3d(150%, 2.5, 1)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-380",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"scale3d(0, 0)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-381",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"scale3d(1, 2, 3, 4)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-382",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"scale3d(foo, 0, 1)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-383",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"scale3d(1px, 0, 1)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-384",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"scale3d(1, 0, 1px)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-385",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"scaleX(0)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-386",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"scaleX(  0   )\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-387",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"scaleY( 45\\n)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-388",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"scaleY( 45%\\n)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-389",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"scaleZ(   90     )\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-390",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"scaleX(foo)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-391",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"scaleX(1px)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-392",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"scaleX(1, 2)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-393",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"skew(0)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-394",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"skew( 0   \\n)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-395",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"skew(15deg)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-396",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"skew(\\n15deg\\n)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-397",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"skew(15deg, 2turn)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-398",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"skew(15deg,2turn)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-399",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"skew(   150deg,\\n2.5rad)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-400",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"skew()\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-401",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"skew(1deg, 2deg, 3rad)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-402",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"skew(foo)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-403",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"skew(1px)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-404",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"skew(1, 1)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-405",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"skew(1)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-406",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"skewX(0)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-407",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"skewX(  0   )\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-408",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"skewY( 45deg\\n)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-409",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"skewX(foo)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-410",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"skewX(1px)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-411",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"skewX(1)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-412",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"skewX(1ms)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-413",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"skewX(.1)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-414",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"skewX(1, 2)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-415",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translate(0)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-416",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translate( 0   \\n)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-417",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translate(15px)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-418",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translate(\\n15px\\n)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-419",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translate(15px, 2em)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-420",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translate(15px,2em)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-421",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translate(   150%,\\n2.5px)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-422",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translate()\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-423",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translate(1px, 2px, 3px)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-424",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translate(foo)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-425",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translate(1)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-426",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translate(1deg)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-427",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translate(1, 1px)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-428",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translate(1px, 1)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-429",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translate3d(  0,0, 1px)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-430",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translate3d(1.5px, 2em,\\n.5px)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-431",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translate3d(1.5px, 2em,\\n0.5px)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-432",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translate3d(\\n\\n\\n150%,\\n2.5em, 1px    )\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-433",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translate3d(0, 0)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-434",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translate3d(1, 2, 3, 4)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-435",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translate3d(foo, 0, 1)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-436",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translate3d(1px, 0, 1)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-437",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translate3d(1, 0, 1px)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-438",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translateX(  0   )\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-439",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translateX(15px)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-440",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translateX(\\n15px\\n)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-441",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translateX(150%)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-442",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translateX(foo)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-443",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translateX(1)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-444",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translateX(20)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-445",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translateX(20s)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-446",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translateX(1deg)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-447",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translateY(  0   )\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-448",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translateY(15px)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-449",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translateY(\\n15px\\n)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-450",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translateY(150%)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-451",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translateY(foo)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-452",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translateY(1)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-453",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translateY(20)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-454",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translateY(20s)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/value-transform-function-455",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "input.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { transform: \"translateY(1deg)\" } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": ["values", "transform-function"],
+      "expect": "ok"
+    }
+  ]
+}

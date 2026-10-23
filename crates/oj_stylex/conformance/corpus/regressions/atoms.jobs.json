@@ -1,0 +1,1809 @@
+{
+  "header": {
+    "corpus": "atoms",
+    "description": "Semantics of the @stylexjs/atoms compile-time package, pinned against @stylexjs/babel-plugin 0.19.0. Covers import/require recognition forms, static property-access atoms, dynamic call atoms, props()/attrs() merging, rule ordering vs create(), hoisting, dev/prod differences, and option interactions. The atoms package itself need not be installed: the babel plugin bundles @stylexjs/atoms/babel-transform and never resolves the specifier on disk.",
+    "oracle": "@stylexjs/babel-plugin@0.19.0",
+    "written": "2026-08-28",
+    "notes": "Jobs carrying an explicit options.dev run in that mode regardless of --mode. The remainder are mode-agnostic; run with --mode both to cover the dev/prod split.",
+    "note": "The Flow `import typeof` probe was replaced by its TypeScript `import type` equivalents: the plugin handles both in one branch (index.js:795), and oxc parses TypeScript, not Flow."
+  },
+  "jobs": [
+    {
+      "id": "atoms/default-import-static",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.display.flex;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/namespace-import-static",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as x from '@stylexjs/atoms';\nexport const a = x.display.flex;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/named-import-static",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import { color } from '@stylexjs/atoms';\nexport const a = color.red;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/named-import-two-level",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import { color } from '@stylexjs/atoms';\nexport const a = color.foo.red;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/underscore-value",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.padding._16px;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/underscore-numeric",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.zIndex._1;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/computed-string-value",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.width['calc(100% - 20cqi)'];\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/computed-numeric-value",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.zIndex[1];\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/computed-both-levels",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x['display']['flex'];\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/single-level-member",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.display;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/triple-level-member",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.display.flex.bar;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/dynamic-call",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = (c) => x.color(c);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/dynamic-call-named-import",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import { color } from '@stylexjs/atoms';\nexport const a = (c) => color.foo(c);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/dynamic-call-two-level",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = (c) => x.color.something(c);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/dynamic-call-zero-args",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = () => x.color();\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/dynamic-call-two-args",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = (c) => x.color(c, c);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/dynamic-call-literal-arg",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.color('red');\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/props-atom-only",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport x from '@stylexjs/atoms';\nexport const p = stylex.props(x.display.flex);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/props-atom-and-create",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport x from '@stylexjs/atoms';\nconst styles = stylex.create({ r: { color: 'blue' } });\nexport const p = stylex.props(styles.r, x.color.red);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/props-create-after-atom",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport x from '@stylexjs/atoms';\nconst styles = stylex.create({ r: { color: 'blue' } });\nexport const p = stylex.props(x.color.red, styles.r);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/props-two-atoms-same-prop",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport x from '@stylexjs/atoms';\nexport const p = stylex.props(x.color.red, x.color.blue);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/props-atom-dynamic-mix",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport x from '@stylexjs/atoms';\nexport const p = (c) => stylex.props(x.display.flex, x.color(c));\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/props-conditional-atom",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport x from '@stylexjs/atoms';\nexport const p = (b) => stylex.props(b ? x.color.red : null);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/attrs-atom",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport x from '@stylexjs/atoms';\nexport const p = stylex.attrs(x.display.flex);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/shadowed-identifier",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport function f() { const x = { display: { flex: 1 } }; return x.display.flex; }\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/shadowed-param",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const f = (x) => x.display.flex;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/no-atoms-import",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "export const a = x.display.flex;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/other-source-import",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from 'not-atoms';\nexport const a = x.display.flex;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/require-default",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "const x = require('@stylexjs/atoms');\nexport const a = x.display.flex;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/require-destructure",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "const { color } = require('@stylexjs/atoms');\nexport const a = color.red;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/import-type-only",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import type x from '@stylexjs/atoms';\nexport const a = 1;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/string-named-import",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import { 'color' as c } from '@stylexjs/atoms';\nexport const a = c.red;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/unknown-property",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.notARealProperty.foo;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/banned-shorthand-atom",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.margin._10px;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/atom-inside-create",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport x from '@stylexjs/atoms';\nexport const styles = stylex.create({ r: { color: x.color.red } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "error"
+    },
+    {
+      "id": "atoms/atom-inside-create-value",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport x from '@stylexjs/atoms';\nexport const styles = stylex.create({ r: x.display.flex });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "error"
+    },
+    {
+      "id": "atoms/two-dynamics-same-prop",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = (c) => [x.color(c), x.color(c)];\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/dynamic-in-nested-fn",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport function f(c) { function g() { return x.color(c); } return g; }\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/atom-at-program-level",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nconst a = x.display.flex;\nexport default a;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/pilot-options-static",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.display.flex;\n",
+      "options": {
+        "runtimeInjection": false,
+        "treeshakeCompensation": true,
+        "styleResolution": "property-specificity",
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/pilot-options-dynamic",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = (c) => x.color(c);\n",
+      "options": {
+        "runtimeInjection": false,
+        "treeshakeCompensation": true,
+        "styleResolution": "property-specificity",
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/pilot-options-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport x from '@stylexjs/atoms';\nconst styles = stylex.create({ r: { color: 'blue' } });\nexport const p = stylex.props(styles.r, x.color.red);\n",
+      "options": {
+        "runtimeInjection": false,
+        "treeshakeCompensation": true,
+        "styleResolution": "property-specificity",
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/classname-prefix",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.display.flex;\n",
+      "options": {
+        "classNamePrefix": "zz-"
+      },
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/dev-classnames-off",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.display.flex;\n",
+      "options": {
+        "dev": true,
+        "enableDevClassNames": false
+      },
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/dev-classnames-on",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.display.flex;\n",
+      "options": {
+        "dev": true,
+        "enableDevClassNames": true
+      },
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/debug-on",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.display.flex;\n",
+      "options": {
+        "debug": true
+      },
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/runtime-injection-true",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.display.flex;\n",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/runtime-injection-dynamic",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = (c) => x.color(c);\n",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/style-resolution-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.margin._10px;\n",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/import-sources-custom",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from 'my-atoms';\nexport const a = x.display.flex;\n",
+      "options": {
+        "importSources": [
+          "my-atoms",
+          "@stylexjs/stylex"
+        ]
+      },
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/prop-validation-throw",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.margin._10px;\n",
+      "options": {
+        "propertyValidationMode": "throw"
+      },
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/enable-logical-styles",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.marginLeft._10px;\n",
+      "options": {
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/create-margin-throw",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ r: { margin: '10px' } });\n",
+      "options": {
+        "propertyValidationMode": "throw"
+      },
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/create-margin-default",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({ r: { margin: '10px' } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/custom-property",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x['--myVar'].red;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/custom-property-dynamic",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = (v) => x['--myVar'](v);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/same-atom-twice",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = [x.display.flex, x.display.flex];\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/value-with-underscore-only",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.content._;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/value-double-underscore",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.content.__x;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/padding-no-underscore-str",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.padding['16px'];\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/template-literal-value",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.color[`red`];\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/numeric-first-level",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x[0].flex;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/optional-chain",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x?.display?.flex;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/computed-callee",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = (v) => x['color'](v);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/assignment-target",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport function f(){ x.display.flex = 1; }\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "error"
+    },
+    {
+      "id": "atoms/jsx-spread",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport x from '@stylexjs/atoms';\nexport const C = () => <div {...stylex.props(x.display.flex)} />;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/sx-prop",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport x from '@stylexjs/atoms';\nexport const C = () => <div sx={x.display.flex} />;\n",
+      "options": {
+        "sxPropName": "sx"
+      },
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/atom-before-create-source",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport x from '@stylexjs/atoms';\nexport const a = x.color.red;\nexport const s = stylex.create({ r: { display: 'block' } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/in-stylex-file",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.display.flex;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/treeshake-comp",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport x from '@stylexjs/atoms';\nconst styles = stylex.create({ r: { color: 'blue' } });\nexport const p = stylex.props(styles.r, x.color.red);\n",
+      "options": {
+        "treeshakeCompensation": true
+      },
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/hoist-in-block",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport function f(c){ if (c) { const y = x.color(c); return y; } }\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/hoist-two-statements",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = (c) => x.color(c);\nexport const b = (c) => x.backgroundColor(c);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/firstThatWorks-value",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport x from '@stylexjs/atoms';\nexport const a = x.color.red;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/props-spread-array",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport x from '@stylexjs/atoms';\nexport const p = stylex.props([x.color.red]);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/dev-default",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.display.flex;\n",
+      "options": {},
+      "mode": "dev",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/dynamic-dev",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = (c) => x.color(c);\n",
+      "options": {
+        "dev": true,
+        "enableDevClassNames": true
+      },
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/empty-computed-value",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.color[''];\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "error"
+    },
+    {
+      "id": "atoms/prop-default",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.default.red;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/base-is-call",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = (c) => x.color(c).red;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/atom-key-vs-create-key",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport x from '@stylexjs/atoms';\nconst s = stylex.create({ r: { color: 'red' } });\nexport const p = stylex.props(s.r);\nexport const q = x.color.red;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/stylex-file",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/tokens.stylex.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.display.flex;\n",
+      "options": {
+        "dev": true
+      },
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/dashed-filename",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/my-file.tsx",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.display.flex;\n",
+      "options": {
+        "dev": true
+      },
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/dotted-filename",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/a.b.c.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.display.flex;\n",
+      "options": {
+        "dev": true
+      },
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/atom-vs-create-same-rule",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport x from '@stylexjs/atoms';\nconst s = stylex.create({ r: { color: 'red' } });\nexport const p = stylex.props(s.r);\nexport const q = x.color.red;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/create-var-named-x",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nconst x = stylex.create({ r: { color: 'red' } });\nexport const p = stylex.props(x.r);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/atoms-and-create-var-named-x",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport x from '@stylexjs/atoms';\nconst x2 = stylex.create({ r: { color: 'red' } });\nexport const p = stylex.props(x2.r, x.display.flex);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/props-dynamic-create-and-atom",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport x from '@stylexjs/atoms';\nconst s = stylex.create({ r: (c) => ({ color: c }) });\nexport const p = (c) => stylex.props(s.r(c), x.color.blue);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/props-atom-then-dynamic-create",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport x from '@stylexjs/atoms';\nconst s = stylex.create({ r: (c) => ({ color: c }) });\nexport const p = (c) => stylex.props(x.color.blue, s.r(c));\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/animation-name-atom",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.animationName.foo;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/atom-value-var-function",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.color['var(--tok)'];\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/atom-unitless-number-like",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.lineHeight._1.5;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "error"
+    },
+    {
+      "id": "atoms/atom-computed-negative",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.marginTop['-4px'];\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/atom-in-object-literal",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const o = { s: x.display.flex };\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/atom-as-fn-arg",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\ndeclare function f(v: unknown): void;\nf(x.display.flex);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/atom-spread-in-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport x from '@stylexjs/atoms';\nconst arr = [x.color.red];\nexport const p = stylex.props(...arr);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/import-both-forms",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import y, * as z from '@stylexjs/atoms';\nexport const a = [y.display.flex, z.color.red];\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/import-named-and-default",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import y, { color } from '@stylexjs/atoms';\nexport const a = [y.display.flex, color.red];\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/reassigned-binding",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport function f(){ let y = x; return y.display.flex; }\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/atoms-source-trailing-slash",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms/';\nexport const a = x.display.flex;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/atoms-babel-transform-source",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms/babel-transform';\nexport const a = x.display.flex;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/export-from-atoms",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "export { color } from '@stylexjs/atoms';\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/dynamic-arg-is-atom",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.color(x.display.flex);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/nested-dynamic-in-static",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = (c) => x.color(c).display;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/type-import-used-two-level",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import type x from '@stylexjs/atoms';\nexport const a = x.display.flex;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/type-import-used-one-level",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import type x from '@stylexjs/atoms';\nexport const a = x.display;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/type-import-dynamic",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import type x from '@stylexjs/atoms';\nexport const a = (c) => x.color(c);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/inline-type-specifier",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import { type color } from '@stylexjs/atoms';\nexport const a = color.red;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/default-as-named",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import { default as d } from '@stylexjs/atoms';\nexport const a = d.red;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/default-as-named-two-level",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import { default as d } from '@stylexjs/atoms';\nexport const a = d.color.red;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/require-member",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "const x = require('@stylexjs/atoms').default;\nexport const a = x.display.flex;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/require-nested-destructure",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "const { color: c } = require('@stylexjs/atoms');\nexport const a = c.red;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/let-require",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "let x = require('@stylexjs/atoms');\nexport const a = x.display.flex;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/require-in-function",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "export function f(){ const x = require('@stylexjs/atoms'); return x.display.flex; }\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/named-import-single-level",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import { color } from '@stylexjs/atoms';\nexport const a = color;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/two-atoms-imports-same-local",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nimport * as x2 from '@stylexjs/atoms';\nexport const a = [x.display.flex, x2.display.block];\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/test-mode",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.display.flex;\n",
+      "options": {
+        "test": true
+      },
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/test-mode-dev",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.display.flex;\n",
+      "options": {
+        "test": true,
+        "dev": true
+      },
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/test-mode-dynamic",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = (c) => x.color(c);\n",
+      "options": {
+        "test": true
+      },
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/debug-data-prop-off",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.display.flex;\n",
+      "options": {
+        "debug": true,
+        "enableDebugDataProp": true,
+        "dev": true
+      },
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/dynamic-legacy-margin",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = (c) => x.margin(c);\n",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/dynamic-legacy-margin-dev",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = (c) => x.margin(c);\n",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands",
+        "dev": true
+      },
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/dynamic-logical-polyfill",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = (c) => x.marginInlineStart(c);\n",
+      "options": {
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/static-rtl-prop",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.marginInlineStart._4px;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/dynamic-rtl-prop",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = (c) => x.marginInlineStart(c);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/static-value-with-quotes",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.content['\"hi\"'];\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/static-value-unclosed-fn",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.width['calc(100% - '];\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "error"
+    },
+    {
+      "id": "atoms/static-value-null-word",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.color.null;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/prop-css-var-value",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.color['var(--a, red)'];\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/dynamic-prop-name-with-dash",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = (c) => x['background-color'](c);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/static-prop-name-with-dash",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x['background-color'].red;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/enable-minified-keys-off",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.display.flex;\n",
+      "options": {
+        "enableMinifiedKeys": false
+      },
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/class-name-prefix-dynamic",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = (c) => x.color(c);\n",
+      "options": {
+        "classNamePrefix": "zz-"
+      },
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/uid-collision",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nconst _temp = 1;\nexport const a = (c) => x.color(c);\nexport const b = _temp;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/uid-collision-scoped",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = (c) => { const _temp = 1; return [x.color(c), _temp]; };\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/atom-inside-props-arg-nested",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport x from '@stylexjs/atoms';\nexport const p = (b) => stylex.props(b && x.color.red);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/rule-order-mixed",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport x from '@stylexjs/atoms';\nexport const a = x.color.red;\nconst s = stylex.create({ r: { display: 'block' } });\nexport const b = x.color.blue;\nexport const p = stylex.props(s.r);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/atom-then-keyframes",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport x from '@stylexjs/atoms';\nexport const a = x.color.red;\nconst k = stylex.keyframes({ from: { opacity: 0 } });\nexport const s = stylex.create({ r: { animationName: k } });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/dynamic-hoist-before-import-stmt",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nconst y = (c) => x.color(c);\nimport 'side-effect';\nexport default y;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/atoms-treeshake-compensation",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.display.flex;\n",
+      "options": {
+        "treeshakeCompensation": true
+      },
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/runtime-inject-custom-from",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import x from '@stylexjs/atoms';\nexport const a = x.display.flex;\n",
+      "options": {
+        "runtimeInjection": {
+          "from": "my-inject",
+          "as": "inj"
+        }
+      },
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/type-import-default-used",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import type x from '@stylexjs/atoms';\nexport const a = x.display.flex;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "atoms/type-import-named-used",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import type { display } from '@stylexjs/atoms';\nexport const a = display.flex;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "atoms"
+      ],
+      "expect": "ok"
+    }
+  ]
+}
