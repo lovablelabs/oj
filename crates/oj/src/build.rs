@@ -2266,7 +2266,7 @@ fn rendered_modules(modules: &rolldown_common::Modules) -> serde_json::Value {
                     .iter()
                     .map(|e| e.to_string())
                     .collect::<Vec<_>>(),
-                "renderedLength": rm.rendered_length(),
+                "renderedLength": rm.code().map_or(0, |c| c.encode_utf16().count()),
             }),
         );
     }
