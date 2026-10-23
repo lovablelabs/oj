@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `oj build` writes pages as Vite does. The entry `<script>`, its modulepreload links and its stylesheets go into `<head>`, serialized the way Vite writes them, and the module scripts leave the body. A page's local `<link rel="stylesheet">` is now imported by its entry and lands in the entry's stylesheet in document order, instead of becoming a hashed file of its own. A `media` or `disabled` one stays a plain asset. With `cssCodeSplit: false` the single sheet ends in Vite's hash marker, as Vite's does.
+
 ### Removed
 
 - Unused and debug-only environment knobs: `OJ_V8_COMPILE_CACHE` and `NODE_COMPILE_CACHE` (nothing read them anymore), `OJ_HMR_DEBOUNCE_MS` (the watcher debounce stays 10ms), `OJ_CACHE_VERIFY`, `OJ_PLUGIN_SYNTH_CONFIG`, `OJ_NO_DEPS_PRESEED` and `OJ_OBSERVED_READS_MAX`. `OJ_ENABLE_CACHE` and `OJ_NO_CACHE` are gone too; use `--enable-cache` and `--no-cache`.

@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Raphael Amorim
 
 //! HTML as a build entry, as Vite builds it: a `<link rel="stylesheet">` to a
-//! local file (relative or root-absolute, Sass included) is compiled, hashed
-//! and rewritten; an inline `<script type="module">` is bundled as its own
+//! local file (relative or root-absolute, Sass included) is imported by the
+//! page's entry, compiled into its stylesheet in document order; an inline `<script type="module">` is bundled as its own
 //! entry (relative imports resolve against the page) and replaced by a
 //! `src`; an external link stays untouched. Under preview the inline module
 //! runs with its import and both stylesheets apply.
@@ -48,20 +48,17 @@ async fn html_links_and_inline_modules_are_built_entries() {
 
     let dist = root.join("dist");
     let html = fs::read_to_string(dist.join("index.html")).unwrap();
-    let css_links: Vec<String> = Regex::new(r#"<link rel="stylesheet" href="([^"]+)""#)
-        .unwrap()
-        .captures_iter(&html)
-        .map(|c| c[1].to_string())
-        .collect();
-    let theme_re = Regex::new(r"^/assets/theme-[A-Za-z0-9_-]{8}\.css$").unwrap();
-    let base_re = Regex::new(r"^/assets/base-[A-Za-z0-9_-]{8}\.css$").unwrap();
-    assert!(
-        css_links.iter().any(|h| theme_re.is_match(h)),
-        "scss link hashed: {css_links:?}"
-    );
-    assert!(
-        css_links.iter().any(|h| base_re.is_match(h)),
-        "css link hashed: {css_links:?}"
+    let css_links: Vec<String> =
+        Regex::new(r#"<link rel="stylesheet"(?: crossorigin)? href="([^"]+)""#)
+            .unwrap()
+            .captures_iter(&html)
+            .map(|c| c[1].to_string())
+            .collect();
+    let entry_css_re = Regex::new(r"^/assets/index-[A-Za-z0-9_-]{8}\.css$").unwrap();
+    assert_eq!(
+        css_links.len(),
+        2,
+        "the entry's stylesheet and the external link: {css_links:?}\n{html}"
     );
     assert!(
         css_links
@@ -75,21 +72,29 @@ async fn html_links_and_inline_modules_are_built_entries() {
             .is_match(&html),
         "source paths left in the built html:\n{html}"
     );
-    let theme_href = css_links.iter().find(|h| h.contains("theme-")).unwrap();
-    let theme_css = fs::read_to_string(dist.join(theme_href.trim_start_matches('/'))).unwrap();
+    let entry_href = css_links
+        .iter()
+        .find(|h| entry_css_re.is_match(h))
+        .unwrap_or_else(|| panic!("linked stylesheets bundled into the entry's: {css_links:?}"));
+    let entry_css = fs::read_to_string(dist.join(entry_href.trim_start_matches('/'))).unwrap();
+    let theme_at = Regex::new(r"#010203|rgb\(1,\s*2,\s*3\)")
+        .unwrap()
+        .find(&entry_css)
+        .unwrap_or_else(|| panic!("scss compiled:\n{entry_css}"))
+        .start();
     assert!(
-        Regex::new(r"#010203|rgb\(1,\s*2,\s*3\)")
-            .unwrap()
-            .is_match(&theme_css),
-        "scss compiled:\n{theme_css}"
+        !entry_css.contains("$c"),
+        "sass variable shipped:\n{entry_css}"
     );
     assert!(
-        !theme_css.contains("$c"),
-        "sass variable shipped:\n{theme_css}"
+        entry_css
+            .find("margin:0")
+            .is_some_and(|base_at| theme_at < base_at),
+        "the linked css follows the scss, in document order:\n{entry_css}"
     );
 
     let scripts: Vec<String> =
-        Regex::new(r#"<script type="module" src="([^"]+)"(?: crossorigin)?></script>"#)
+        Regex::new(r#"<script type="module" crossorigin src="([^"]+)"></script>"#)
             .unwrap()
             .captures_iter(&html)
             .map(|c| c[1].to_string())

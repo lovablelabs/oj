@@ -10,7 +10,7 @@ use super::{build_app, scratch, write_files};
 /// The entry `<script type=module src>` and `<link rel=stylesheet href>` are
 /// found and rewritten whatever the attribute quoting (single, spaced,
 /// unquoted) and without matching `data-src` / `data-href` lookalikes. The
-/// stylesheet goes through the CSS pipeline (hashed, minified) instead of
+/// stylesheet is bundled into the entry's own (hashed, minified) instead of
 /// being copied verbatim, like Vite's HTML parser-based rewrite.
 #[tokio::test]
 async fn entry_script_and_stylesheet_are_rewritten_whatever_the_attribute_quoting() {
@@ -37,7 +37,7 @@ async fn entry_script_and_stylesheet_are_rewritten_whatever_the_attribute_quotin
         ),
     ];
     let entry_ref = Regex::new(r#"/assets/index-[^"'\s>]+\.js"#).unwrap();
-    let css_ref = Regex::new(r#"/assets/site-[^"'\s>]+\.css"#).unwrap();
+    let css_ref = Regex::new(r#"/assets/index-[^"'\s>]+\.css"#).unwrap();
     let red = Regex::new(r"color:\s*red").unwrap();
     for (name, stylesheet, entry) in fixtures {
         let root = scratch(&format!("html-attr-{name}"));
