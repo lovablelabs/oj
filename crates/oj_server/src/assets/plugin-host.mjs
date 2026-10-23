@@ -1186,6 +1186,9 @@ let allPlugins = [];
 // plugin), so compat probes for vite:react-babel / vite:react-swc find them.
 let nativePlugins = [];
 const enforceRank = (p) => (p.enforce === "pre" ? -1 : p.enforce === "post" ? 1 : 0);
+// Unsupported plugins already reported: every worker bundle hosts its
+// `worker.plugins` afresh, and one line per plugin is enough.
+const unsupportedReported = new Set();
 // The plugins of `list` this host runs, in enforce order: oj's native
 // reimplementations and the dev tooling it does not host left out, then
 // Vite's filterPlugin, `apply({ ...config, mode }, configEnv)` where config is
@@ -1195,6 +1198,8 @@ function hostedPlugins(list, userConfig) {
   let out = list.filter((p) => !OJ_NATIVE_PLUGIN_NAMES.has(p && p.name));
   out = out.filter((p) => {
     if (OJ_UNSUPPORTED_PLUGIN_NAMES.has(p && p.name)) {
+      if (unsupportedReported.has(p.name)) return false;
+      unsupportedReported.add(p.name);
       process.stderr.write(
         `${OJ} plugin host: skipping unsupported plugin "${p.name}" (dev-only tooling oj does not host; your app's output is unaffected)\n`,
       );
