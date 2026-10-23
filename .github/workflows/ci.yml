@@ -372,10 +372,10 @@ jobs:
           ls playground/dist/assets/*.js
           # publicDir assets are copied to the build output
           test -f playground/dist/robots.txt
-          # the html's <link rel="stylesheet"> is bundled like Vite: emitted as a
-          # hashed asset and the href rewritten to it
-          grep -qE 'href="/assets/tailwind-[A-Za-z0-9_-]+\.css"' playground/dist/index.html
-          grep -q underline playground/dist/assets/tailwind-*.css
+          # the html's <link rel="stylesheet"> is bundled like Vite: the page is
+          # the entry, so its linked sheet lands in the entry's hashed css asset
+          grep -qE 'href="/assets/index-[A-Za-z0-9_-]+\.css"' playground/dist/index.html
+          grep -q underline playground/dist/assets/index-*.css
           test -f playground/dist/.vite/manifest.json
           grep -q isEntry playground/dist/.vite/manifest.json
           grep -rq hello-from-env playground/dist/assets/*.js

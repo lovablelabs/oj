@@ -113,7 +113,9 @@ try {
   for (const [, rel] of icons.matchAll(/from "\.\/([^"]+)"/g)) {
     icons += await (await fetch(`http://localhost:${port}/@oj-deps/${rel}`)).text();
   }
-  assert.match(icons, /\/\/#region/, "bundled by rolldown");
+  // rolldown marks each bundled module with its path: `//#region <path>`
+  // before 1.2.15, `// <path>` since (what Vite 8.3.5's rolldown writes).
+  assert.match(icons, /\/\/ (#region )?node_modules\/icons\//, "bundled by rolldown");
   assert.match(icons, /function Icon39\b/, "the whole barrel is in one module");
 
   const manifest = JSON.parse(fs.readFileSync(path.join(app, ".oj-cache", "v1", "deps", "manifest.json"), "utf8"));
