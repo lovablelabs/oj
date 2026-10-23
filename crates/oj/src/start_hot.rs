@@ -41,11 +41,14 @@ pub(crate) struct HotUpdates {
     /// until an output generated after it is served.
     generation: std::sync::atomic::AtomicU64,
     stale: tokio::sync::watch::Sender<bool>,
+    /// Where pages fetch a patch: [`PATCH_PREFIX`] under the dev `base`.
+    patch_prefix: String,
 }
 
 impl HotUpdates {
-    pub(crate) fn new() -> HotUpdates {
+    pub(crate) fn new(url_base: &str) -> HotUpdates {
         HotUpdates {
+            patch_prefix: format!("{url_base}{PATCH_PREFIX}"),
             tx: broadcast::channel(64).0,
             patches: Mutex::new(VecDeque::new()),
             generation: std::sync::atomic::AtomicU64::new(0),
@@ -115,7 +118,7 @@ impl HotUpdates {
         }
         let text = serde_json::json!({
             "type": "oj:hmr",
-            "url": format!("{PATCH_PREFIX}{filename}"),
+            "url": format!("{}{filename}", self.patch_prefix),
             "seq": patch.seq,
             "changedIds": patch.changed_ids,
         })
@@ -197,7 +200,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_patch_goes_to_its_page_and_is_served_with_the_delivery_ack() {
-        let hot = HotUpdates::new();
+        let hot = HotUpdates::new("");
         let mut rx = hot.subscribe();
         hot.accept(&patch("c1", "hmr_patch_0.js", 1));
         let frame = rx.recv().await.unwrap();
@@ -210,6 +213,13 @@ mod tests {
 
         let resp = hot.serve("hmr_patch_0.js");
         assert_eq!(resp.status(), StatusCode::OK);
+
+        // Under a dev `base`, pages fetch the patch there.
+        let based = HotUpdates::new("/app");
+        let mut rx = based.subscribe();
+        based.accept(&patch("c1", "hmr_patch_1.js", 1));
+        let v: serde_json::Value = serde_json::from_str(&rx.recv().await.unwrap().text).unwrap();
+        assert_eq!(v["url"], "/app/@oj-start/hmr/hmr_patch_1.js");
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
@@ -222,7 +232,7 @@ mod tests {
 
     #[test]
     fn only_recent_patches_are_kept_and_escaping_names_are_dropped() {
-        let hot = HotUpdates::new();
+        let hot = HotUpdates::new("");
         for i in 0..(KEPT_PATCHES as u32 + 5) {
             hot.accept(&patch("c1", &format!("hmr_patch_{i}.js"), i + 1));
         }
@@ -238,7 +248,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_style_refresh_tells_every_page_what_to_relink_and_link() {
-        let hot = HotUpdates::new();
+        let hot = HotUpdates::new("");
         let mut rx = hot.subscribe();
         hot.refresh_styles(false, &["/@oj-start/fs/app/src/new.css".to_string()]);
         let frame = rx.recv().await.unwrap();

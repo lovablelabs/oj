@@ -53,6 +53,12 @@ pub(crate) struct StartConfig {
 }
 
 impl StartConfig {
+    /// The prefix the dev server's urls take under `base` (see
+    /// [`oj_server::start_dev_url_base`]).
+    pub fn dev_url_base(&self) -> String {
+        oj_server::start_dev_url_base(&self.base)
+    }
+
     pub fn node_env(&self) -> &str {
         self.app_env.node_env()
     }

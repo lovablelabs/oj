@@ -56,6 +56,12 @@ impl SsrBridge {
         style_file(&self.state, path, source).await
     }
 
+    /// The prefix Start's dev urls take under the server's `base` (see
+    /// [`crate::start_dev_url_base`]).
+    pub fn start_url_base(&self) -> String {
+        crate::start_dev_url_base(self.state.base.as_deref().unwrap_or("/"))
+    }
+
     /// A stylesheet's `?inline` module under Start dev (see
     /// [`start_dev_inline_style`]), on the server's engines.
     pub async fn start_dev_inline_style(&self, path: &Path) -> Result<String, String> {
@@ -73,7 +79,8 @@ impl SsrBridge {
             resolve: state.css_resolve.as_ref(),
         };
         let tailwind = async || lazy_engine(state, EngineKind::Tailwind).await.cloned();
-        start_dev_inline_style(&inputs, path, source, engine, tailwind).await
+        let url_base = crate::start_dev_url_base(state.base.as_deref().unwrap_or("/"));
+        start_dev_inline_style(&inputs, path, source, engine, tailwind, &url_base).await
     }
 
     pub async fn resolve(&self, importer: &str, spec: &str) -> Result<SsrResolution, String> {

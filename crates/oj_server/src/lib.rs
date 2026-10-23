@@ -83,7 +83,7 @@ pub mod stylex;
 pub use ssr::*;
 pub use style_file::{
     compile_style_file, needs_css_compile, needs_preprocess_engine, start_dev_inline_style,
-    StyleInputs, StyleModule,
+    start_dev_url_base, StyleInputs, StyleModule,
 };
 mod middleware;
 mod preview;

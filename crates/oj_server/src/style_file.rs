@@ -118,9 +118,21 @@ pub fn needs_css_compile(src: &str) -> bool {
         || src.contains("@apply")
 }
 
-/// Where Start's unbundled dev serves a file (the Start bundles' fsBase).
-pub fn start_dev_file_url(file: &Path) -> String {
-    format!("/@oj-start/fs{}", file.display())
+/// The prefix Start's dev urls take under Vite's `base` (`/app/` gives
+/// `/app`): empty at the root, and for a relative base, which dev serves at
+/// the root as Vite does.
+pub fn start_dev_url_base(base: &str) -> String {
+    if base.starts_with('/') {
+        base.trim_end_matches('/').to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// Where Start's unbundled dev serves a file (the Start bundles' fsBase),
+/// under `url_base` (see [`start_dev_url_base`]).
+pub fn start_dev_file_url(url_base: &str, file: &Path) -> String {
+    format!("{url_base}/@oj-start/fs{}", file.display())
 }
 
 /// Vite's `?inline` stylesheet under Start dev: the module whose default
@@ -135,6 +147,7 @@ pub async fn start_dev_inline_style(
     source: String,
     preprocess: Option<&CssEngine>,
     tailwind: impl AsyncFnOnce() -> Result<Arc<CssEngine>, String>,
+    url_base: &str,
 ) -> Result<String, String> {
     let mut css = compile_style_file(inputs, path, source, preprocess)
         .await?
@@ -146,7 +159,7 @@ pub async fn start_dev_inline_style(
             .await?;
     }
     let dir = path.parent().unwrap_or(Path::new("/"));
-    let css = rewrite_relative_urls(&css, dir, start_dev_file_url);
+    let css = rewrite_relative_urls(&css, dir, |file| start_dev_file_url(url_base, file));
     Ok(format!(
         "export default {};",
         serde_json::Value::String(css)

@@ -174,6 +174,8 @@ pub(crate) struct Styles {
     minify_client: bool,
     minify_ssr: bool,
     targets: Vec<String>,
+    /// The dev urls' prefix under `base`.
+    url_base: String,
 }
 
 impl Styles {
@@ -186,6 +188,7 @@ impl Styles {
             minify_client: oj_config::build_css_minify(&start.config, false),
             minify_ssr: oj_config::build_css_minify(&start.config, true),
             targets: oj_config::build_css_targets(&start.config),
+            url_base: start.dev_url_base(),
         }
     }
 
@@ -231,6 +234,7 @@ impl Styles {
             source,
             engine.as_deref(),
             async || engines.tailwind(&root).await,
+            &self.url_base,
         )
         .await
     }
@@ -716,6 +720,8 @@ pub(crate) enum AssetMode {
     Dev {
         css_urls: Arc<Mutex<Vec<String>>>,
         state: Arc<DevStyleState>,
+        /// The dev urls' prefix under `base`.
+        url_base: String,
     },
     /// The build's emitter; `server` for the server bundle (which links no
     /// stylesheet and minifies `?inline` sheets under ssr's cssMinify).
@@ -747,7 +753,9 @@ impl StartAssetsPlugin {
 
     async fn url_for(&self, path: &Path) -> Result<String, String> {
         match &self.mode {
-            AssetMode::Dev { .. } => Ok(format!("{DEV_FS_BASE}{}", path.display())),
+            AssetMode::Dev { url_base, .. } => {
+                Ok(format!("{url_base}{DEV_FS_BASE}{}", path.display()))
+            }
             AssetMode::Build { emitter, .. } => emitter.emit(path).await,
         }
     }
@@ -756,9 +764,9 @@ impl StartAssetsPlugin {
     /// root), or the build's emitted bundle.
     async fn worker_url_for(&self, path: &Path) -> Result<String, String> {
         match &self.mode {
-            AssetMode::Dev { .. } => Ok(match path.strip_prefix(&self.root) {
-                Ok(rel) => format!("/{}", rel.to_string_lossy().replace('\\', "/")),
-                Err(_) => format!("/@fs{}", path.display()),
+            AssetMode::Dev { url_base, .. } => Ok(match path.strip_prefix(&self.root) {
+                Ok(rel) => format!("{url_base}/{}", rel.to_string_lossy().replace('\\', "/")),
+                Err(_) => format!("{url_base}/@fs{}", path.display()),
             }),
             AssetMode::Build { emitter, .. } => emitter.worker(path).await,
         }

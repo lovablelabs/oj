@@ -99,6 +99,7 @@ fn dev_assets(app: &App, css_urls: &Arc<Mutex<Vec<String>>>) -> SharedPluginable
         AssetMode::Dev {
             css_urls: Arc::clone(css_urls),
             state: Arc::new(DevStyleState::default()),
+            url_base: String::new(),
         },
     ))
 }

@@ -877,7 +877,10 @@ fn asset_mime(ext: &str) -> &'static str {
     }
 }
 
-const RELOAD_CLIENT: &str = "<script type=\"module\" src=\"/@oj-start/live-reload.js\"></script>";
+/// The live-reload client's tag, under the dev `base` prefix.
+fn reload_client(url_base: &str) -> String {
+    format!("<script type=\"module\" src=\"{url_base}/@oj-start/live-reload.js\"></script>")
+}
 
 /// One rebundle run's inputs, handed from the watcher thread to the coalescing
 /// rebundle worker. Batches landing while a rebundle is in flight merge into
@@ -2645,13 +2648,14 @@ async fn forward_document(
         if let Some(resp) = oj_server::forward_get_to_plugin_mw(port, &raw, headers).await {
             // A worker-served document needs the live-reload client like the
             // runner-served ones, or edits never reload the page.
-            return inject_reload_client(resp);
+            return inject_reload_client(resp, &state.base);
         }
     }
     ensure_bundle_current(state).await;
     ensure_runner_fresh(state).await;
     forward(
         &state.engine,
+        &state.base,
         "GET".into(),
         document_url(&raw),
         headers,
@@ -2737,7 +2741,7 @@ async fn forward_with_body(state: &Arc<StartState>, req: Request) -> Response {
             Ok(body) => body,
             Err(resp) => return resp,
         };
-        return forward(&state.engine, method, url, &headers, body).await;
+        return forward(&state.engine, &state.base, method, url, &headers, body).await;
     };
     if let Ok(v) = header::HeaderValue::from_str(&state.loopback_port.to_string()) {
         headers.insert("x-oj-forward-to", v);
@@ -2756,7 +2760,7 @@ async fn forward_with_body(state: &Arc<StartState>, req: Request) -> Response {
             "oj start: request fell through the plugin middleware without reaching the app",
         )
             .into_response(),
-        Ok(resp) => inject_reload_client(resp),
+        Ok(resp) => inject_reload_client(resp, &state.base),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("oj start: {e}")).into_response(),
     }
 }
@@ -3040,6 +3044,7 @@ fn engine_response(resp: StartResponse) -> Response {
 
 async fn forward(
     engine: &StartEngine,
+    url_base: &str,
     method: String,
     url: String,
     req_headers: &header::HeaderMap,
@@ -3049,7 +3054,7 @@ async fn forward(
         .handle(engine_request(method, url, req_headers, body, false))
         .await
     {
-        Ok(resp) => inject_reload_client(engine_response(resp)),
+        Ok(resp) => inject_reload_client(engine_response(resp), url_base),
         Err(e) => {
             // The runner's 500 page shape (Vite's errorMiddleware): message +
             // stack in an HTML page the overlay can read.
@@ -3109,7 +3114,7 @@ async fn spawn_engine_loopback(engine: Arc<StartEngine>) -> anyhow::Result<u16> 
 /// passed through untouched (TanStack streams its dehydrated data into the
 /// page) and the script tag follows the final chunk; browsers parse a trailing
 /// `<script>` after `</html>` into the body.
-fn inject_reload_client(resp: Response) -> Response {
+fn inject_reload_client(resp: Response, url_base: &str) -> Response {
     use tokio_stream::StreamExt;
     let is_html = resp
         .headers()
@@ -3127,8 +3132,8 @@ fn inject_reload_client(resp: Response) -> Response {
         return resp;
     }
     let (parts, body) = resp.into_parts();
-    let tail = tokio_stream::once(Ok::<_, axum::Error>(axum::body::Bytes::from_static(
-        RELOAD_CLIENT.as_bytes(),
+    let tail = tokio_stream::once(Ok::<_, axum::Error>(axum::body::Bytes::from(
+        reload_client(url_base),
     )));
     let stream = body.into_data_stream().chain(tail);
     Response::from_parts(parts, axum::body::Body::from_stream(stream))
@@ -4271,17 +4276,17 @@ mod tests {
             }
             b.body(axum::body::Body::from("<html></html>")).unwrap()
         };
-        assert!(body_of(inject_reload_client(resp("text/html", None))).contains(RELOAD_CLIENT));
+        // Under the dev `base`, as Vite's urls are.
+        let tag = reload_client("/app");
         assert!(
-            !body_of(inject_reload_client(resp("text/html", Some("gzip")))).contains(RELOAD_CLIENT)
+            tag.contains("src=\"/app/@oj-start/live-reload.js\""),
+            "{tag}"
         );
-        assert!(
-            body_of(inject_reload_client(resp("text/html", Some("identity"))))
-                .contains(RELOAD_CLIENT)
-        );
-        assert!(
-            !body_of(inject_reload_client(resp("text/javascript", None))).contains(RELOAD_CLIENT)
-        );
+        let inject = |r| body_of(inject_reload_client(r, "/app"));
+        assert!(inject(resp("text/html", None)).contains(&tag));
+        assert!(!inject(resp("text/html", Some("gzip"))).contains(&tag));
+        assert!(inject(resp("text/html", Some("identity"))).contains(&tag));
+        assert!(!inject(resp("text/javascript", None)).contains(&tag));
     }
 
     // Vite's NODE_ENV rule for the dev server: the shell wins (so
