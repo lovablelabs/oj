@@ -4,8 +4,7 @@
 //! `oj build` writes the same files as `vite build`, byte for byte: each app
 //! here is built by the real Vite (8.3.5, from e2e/fixtures/stylex-app's
 //! install, whose react/vite/plugin-react they share) and by oj, and every
-//! JS chunk, stylesheet and asset must be identical under the same name.
-//! Pages are compared apart: Vite moves the entry `<script>` into `<head>`.
+//! page, JS chunk, stylesheet and asset must be identical under the same name.
 //!
 //! Without the fixture installed the tests skip, unless `OJ_REQUIRE_FIXTURES`.
 
@@ -88,8 +87,8 @@ fn files(dir: &Path) -> BTreeMap<String, Vec<u8>> {
     out
 }
 
-/// Builds `root` with Vite and with oj and asserts every non-page file is
-/// the same file, with the same bytes.
+/// Builds `root` with Vite and with oj and asserts every file is the same
+/// file, with the same bytes.
 fn assert_same_output(root: &Path) {
     run(Command::new("node")
         .arg(root.join("node_modules/vite/bin/vite.js"))
@@ -99,13 +98,14 @@ fn assert_same_output(root: &Path) {
         .args(["build", "--outDir", "oj-dist"])
         .arg(root)
         .current_dir(root));
-    let not_page = |(name, _): &(&String, &Vec<u8>)| !name.ends_with(".html");
-    let vite: BTreeMap<_, _> = files(&root.join("vite-dist")).into_iter().collect();
-    let oj: BTreeMap<_, _> = files(&root.join("oj-dist")).into_iter().collect();
-    let vite_names: Vec<&String> = vite.iter().filter(not_page).map(|(n, _)| n).collect();
-    let oj_names: Vec<&String> = oj.iter().filter(not_page).map(|(n, _)| n).collect();
-    assert_eq!(oj_names, vite_names, "the same files, named the same");
-    for name in vite_names {
+    let vite = files(&root.join("vite-dist"));
+    let oj = files(&root.join("oj-dist"));
+    assert_eq!(
+        oj.keys().collect::<Vec<_>>(),
+        vite.keys().collect::<Vec<_>>(),
+        "the same files, named the same"
+    );
+    for name in vite.keys() {
         assert!(
             oj[name] == vite[name],
             "{name} differs from Vite's:\n--- vite\n{}\n--- oj\n{}",
@@ -239,6 +239,113 @@ fn a_react_app_builds_vites_exact_files() {
             ("src/data.json", Some("{\"name\":\"corpus\",\"unused\":1}\n")),
             ("src/app.css", Some("h1 { color: rebeccapurple; }\n")),
             ("src/logo.png", None),
+        ],
+    ) else {
+        return;
+    };
+    assert_same_output(&root);
+}
+
+/// A formatted page: an inline module script, a linked stylesheet and an
+/// indented `<head>` the tags are written into, one step deeper.
+#[test]
+fn a_formatted_page_builds_vites_exact_files() {
+    let Some(root) = app(
+        "formatted",
+        &[
+            ("package.json", Some(r#"{"name":"parity","type":"module"}"#)),
+            ("vite.config.js", Some("export default {};\n")),
+            (
+                "index.html",
+                Some(
+                    "<!doctype html>\n<html lang=\"en\">\n  <head>\n    <meta charset=\"UTF-8\" />\n\
+                     \x20   <link rel=\"stylesheet\" href=\"/src/linked.css\" />\n    <title>f</title>\n  </head>\n\
+                     \x20 <body>\n    <div id=\"app\"></div>\n    <script type=\"module\">\n\
+                     \x20     import { shared } from \"./src/shared.js\";\n      document.title = shared(2);\n    </script>\n\
+                     \x20   <script type=\"module\" src=\"/src/main.js\"></script>\n  </body>\n</html>\n",
+                ),
+            ),
+            (
+                "src/main.js",
+                Some("import { shared } from \"./shared.js\";\nimport \"./main.css\";\nconsole.log(shared(1));\nimport(\"./lazy.js\");\n"),
+            ),
+            ("src/shared.js", Some("export const shared = (n) => `s${n}`;\n")),
+            ("src/lazy.js", Some("export const lazy = 1;\n")),
+            ("src/main.css", Some("body { margin: 0; }\n")),
+            ("src/linked.css", Some(".linked { color: red; }\n")),
+        ],
+    ) else {
+        return;
+    };
+    assert_same_output(&root);
+}
+
+/// Pages under a relative base: a nested page (`../` hrefs), a page of only
+/// a stylesheet link, a `media` stylesheet (a plain asset) and an image.
+#[test]
+fn relative_base_pages_build_vites_exact_files() {
+    let Some(root) = app(
+        "pages",
+        &[
+            ("package.json", Some(r#"{"name":"parity","type":"module"}"#)),
+            (
+                "vite.config.js",
+                Some("export default { base: \"./\", build: { rollupOptions: { input: { main: \"index.html\", deep: \"a/b/index.html\", styles: \"s.html\" } } } };\n"),
+            ),
+            (
+                "index.html",
+                Some("<!doctype html><html><head>\n  <link rel=\"stylesheet\" href=\"/src/print.css\" media=\"print\">\n</head><body><img src=\"/src/logo.png\"><script type=\"module\" src=\"/src/main.js\"></script></body></html>\n"),
+            ),
+            (
+                "a/b/index.html",
+                Some("<html><head><title>d</title></head><body><script type=\"module\" src=\"../../src/deep.js\"></script></body></html>\n"),
+            ),
+            (
+                "s.html",
+                Some("<html><head><link rel=\"stylesheet\" href=\"./src/s.css\"></head><body></body></html>\n"),
+            ),
+            ("src/main.js", Some("import { s } from \"./shared.js\";\nimport \"./m.css\";\nconsole.log(s);\n")),
+            ("src/deep.js", Some("import { s } from \"./shared.js\";\nimport \"./d.css\";\nconsole.log(s, 2);\n")),
+            ("src/shared.js", Some("import \"./sh.css\";\nexport const s = 1;\n")),
+            ("src/m.css", Some(".m { color: red; }\n")),
+            ("src/d.css", Some(".d { color: red; }\n")),
+            ("src/sh.css", Some(".sh { color: red; }\n")),
+            ("src/s.css", Some(".s { color: red; }\n")),
+            ("src/print.css", Some(".p { color: red; }\n")),
+            ("src/logo.png", None),
+        ],
+    ) else {
+        return;
+    };
+    assert_same_output(&root);
+}
+
+/// One stylesheet for the whole build, and an `async` entry on a page with
+/// no `<head>` (its tags go before `<body>`).
+#[test]
+fn without_css_code_split_vites_exact_files() {
+    let Some(root) = app(
+        "no-split",
+        &[
+            ("package.json", Some(r#"{"name":"parity","type":"module"}"#)),
+            (
+                "vite.config.js",
+                Some("export default { build: { cssCodeSplit: false } };\n"),
+            ),
+            (
+                "index.html",
+                Some("<body><script async type=\"module\" src=\"/src/main.js\"></script></body>\n"),
+            ),
+            (
+                "src/main.js",
+                Some("import \"./a.css\";\nimport(\"./lazy.js\");\n"),
+            ),
+            (
+                "src/lazy.js",
+                Some("import \"./b.css\";\nexport default 1;\n"),
+            ),
+            ("src/a.css", Some("a { color: red; }\n")),
+            ("src/b.css", Some("b { color: blue; }\n")),
         ],
     ) else {
         return;

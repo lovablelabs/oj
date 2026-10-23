@@ -150,7 +150,7 @@ async fn relative_base_urls_and_vite_preload_helper() {
     );
     assert_match(
         &rel.html,
-        r#"rel="stylesheet" href="\./assets/index-[^"]+\.css""#,
+        r#"rel="stylesheet" crossorigin href="\./assets/index-[^"]+\.css""#,
         "root page css is ./assets/...",
     );
     assert_match(
@@ -160,7 +160,7 @@ async fn relative_base_urls_and_vite_preload_helper() {
     );
     assert_match(
         &rel.nested,
-        r#"rel="modulepreload" href="\.\./assets/util-[^"]+\.js""#,
+        r#"rel="modulepreload" crossorigin href="\.\./assets/util-[^"]+\.js""#,
         "nested modulepreload is ../assets/...",
     );
     assert_match(
