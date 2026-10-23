@@ -261,6 +261,8 @@ struct OjCssPlugin {
     /// Source ids of `?worker` / `?worker&url` entries emitted as chunks, so the
     /// document-only build helpers can skip chunks that only a worker loads.
     worker_entries: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// The normalized `base` a public-file import's URL is built on.
+    base: String,
 }
 
 /// The app build settings an inline worker bundle shares with its importer:
@@ -725,6 +727,209 @@ fn b64(bytes: &[u8]) -> String {
     out
 }
 
+/// The id prefix of a public-dir file a JS module imports by its URL.
+const PUBLIC_FILE_ID: &str = "\0oj-public:/";
+
+/// `rest` (a root-absolute URL minus its `/`) as a file in the public dir.
+fn public_file(public_dir: &Path, rest: &str) -> Option<PathBuf> {
+    if public_dir.as_os_str().is_empty() {
+        return None;
+    }
+    let file = public_dir.join(rest);
+    file.is_file().then_some(file)
+}
+
+/// Vite's publicFileToBuiltUrl: a public file's module exports its URL under
+/// the base. A relative base has no fixed prefix, so the client's URL resolves
+/// against the importing chunk (rewritten when it renders); the server's URL
+/// is root-absolute, as Vite resolves a
+/// relative base to `/` for an SSR build. `?raw` is the file's text and
+/// `?inline` its data URL, read from the public dir (vite:asset's load).
+fn public_file_module(
+    public_dir: &Path,
+    id: &str,
+    base: &str,
+    client: bool,
+) -> anyhow::Result<String> {
+    let (rest, query) = id.split_once('?').unwrap_or((id, ""));
+    let file = || {
+        public_file(public_dir, rest).ok_or_else(|| anyhow::anyhow!("public file /{rest} is gone"))
+    };
+    let read = |file: &Path| {
+        std::fs::read(file).map_err(|e| anyhow::anyhow!("cannot read {}: {e}", file.display()))
+    };
+    let kind = split_asset_query(&format!("x?{query}")).map(|(_, q)| q);
+    match kind.as_deref() {
+        Some("raw") => {
+            let text = String::from_utf8_lossy(&read(&file()?)?).into_owned();
+            return Ok(export_default_url(&text));
+        }
+        Some("inline") => {
+            let bytes = read(&file()?)?;
+            let ext = Path::new(rest)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
+            return Ok(export_default_url(&if ext == "svg" {
+                svg_data_url(&String::from_utf8_lossy(&bytes))
+            } else {
+                format!("data:{};base64,{}", asset_mime(ext), b64(&bytes))
+            }));
+        }
+        _ => {}
+    }
+    if !is_relative_base(base) {
+        return Ok(export_default_url(&encode_uri_path(&with_base(rest, base))));
+    }
+    if !client {
+        return Ok(export_default_url(&encode_uri_path(&with_base(rest, "/"))));
+    }
+    // The chunk's own path is known only when it renders.
+    Ok(export_default_url(&public_asset_placeholder(rest)))
+}
+
+/// Vite's `__VITE_PUBLIC_ASSET__` marker: a public file's URL in a client
+/// chunk under a relative base, rewritten by `render_public_asset_urls`.
+const PUBLIC_ASSET_MARK: &str = "__OJ_PUBLIC_ASSET__";
+
+fn public_asset_placeholder(rest: &str) -> String {
+    let hex: String = rest.bytes().map(|b| format!("{b:02x}")).collect();
+    format!("{PUBLIC_ASSET_MARK}{hex}__")
+}
+
+/// Vite's renderAssetUrlInJS for public files under a relative base: each
+/// quoted marker becomes its format's relative-URL expression
+/// (`new URL('../vite.svg', import.meta.url).href` for es), resolved from the
+/// chunk's own directory. The file is the public-dir copy, never emitted.
+fn render_public_asset_urls(
+    code: &str,
+    chunk_file: &str,
+    format: OutputFormat,
+    sourcemap: bool,
+) -> Option<(String, Option<rolldown_sourcemap::SourceMap>)> {
+    if !code.contains(PUBLIC_ASSET_MARK) {
+        return None;
+    }
+    let mut s = string_wizard::MagicString::new(code);
+    let mut from = 0;
+    while let Some(at) = code[from..].find(PUBLIC_ASSET_MARK).map(|i| from + i) {
+        let hex_start = at + PUBLIC_ASSET_MARK.len();
+        let Some(len) = code[hex_start..].find("__") else {
+            break;
+        };
+        let end = hex_start + len + 2;
+        from = end;
+        let quoted = at > 0
+            && end < code.len()
+            && matches!(code.as_bytes()[at - 1], b'"' | b'\'' | b'`')
+            && code.as_bytes()[end] == code.as_bytes()[at - 1];
+        let bytes: Option<Vec<u8>> = (0..len)
+            .step_by(2)
+            .map(|i| u8::from_str_radix(code.get(hex_start + i..hex_start + i + 2)?, 16).ok())
+            .collect();
+        let (Some(rest), true) = (bytes.and_then(|b| String::from_utf8(b).ok()), quoted) else {
+            continue;
+        };
+        let expr = relative_url_mechanism(format, &relative_to_chunk(chunk_file, &rest));
+        if s.update((at - 1) as u32, (end + 1) as u32, expr).is_err() {
+            return None;
+        }
+    }
+    let map = sourcemap.then(|| {
+        s.source_map(string_wizard::SourceMapOptions {
+            hires: string_wizard::Hires::True,
+            ..Default::default()
+        })
+    });
+    Some((s.to_string(), map))
+}
+
+/// `target` (an outDir-relative path) relative to the directory of `chunk`,
+/// as `path.posix.relative(path.dirname(chunk), target)`.
+fn relative_to_chunk(chunk: &str, target: &str) -> String {
+    let dirs: Vec<&str> = chunk.split('/').collect();
+    let dirs = &dirs[..dirs.len() - 1];
+    let parts: Vec<&str> = target.split('/').collect();
+    let common = dirs
+        .iter()
+        .zip(&parts[..parts.len() - 1])
+        .take_while(|(a, b)| a == b)
+        .count();
+    let mut out = "../".repeat(dirs.len() - common);
+    out.push_str(&parts[common..].join("/"));
+    out
+}
+
+/// Vite's relativeUrlMechanisms (build.ts), per output format.
+fn relative_url_mechanism(format: OutputFormat, relative: &str) -> String {
+    let escaped = escape_id(&partial_encode_uri_path(relative));
+    let from_document = |umd: bool| {
+        format!(
+            "new URL('{escaped}', {}document.currentScript && document.currentScript.tagName.toUpperCase() === 'SCRIPT' && document.currentScript.src || document.baseURI).href",
+            if umd { "typeof document === 'undefined' ? location.href : " } else { "" }
+        )
+    };
+    let from_dirname = format!(
+        "require('u' + 'rl').pathToFileURL(__dirname + '/{}').href",
+        escape_id(relative)
+    );
+    match format {
+        OutputFormat::Cjs => format!(
+            "(typeof document === 'undefined' ? {from_dirname} : {})",
+            from_document(false)
+        ),
+        OutputFormat::Umd => format!(
+            "(typeof document === 'undefined' && typeof location === 'undefined' ? {from_dirname} : {})",
+            from_document(true)
+        ),
+        OutputFormat::Iife => from_document(false),
+        _ => format!("new URL('{escaped}', import.meta.url).href"),
+    }
+}
+
+/// Vite's escapeId: the id safe inside a single-quoted JS string.
+fn escape_id(id: &str) -> String {
+    let mut out = String::with_capacity(id.len());
+    for ch in id.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\\n"),
+            '\r' => out.push_str("\\\r"),
+            '\'' | '\u{2028}' | '\u{2029}' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// Vite's encodeURIPath: `encodeURI` on the path, the query kept as is.
+fn encode_uri_path(uri: &str) -> String {
+    if uri.starts_with("data:") {
+        return uri.to_string();
+    }
+    let cut = uri.find(['?', '#']).unwrap_or(uri.len());
+    let (path, postfix) = uri.split_at(cut);
+    let mut out = String::with_capacity(uri.len());
+    for b in path.bytes() {
+        if b.is_ascii_alphanumeric() || b";,/?:@&=+$-_.!~*'()#".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out + postfix
+}
+
+/// Vite's partialEncodeURIPath: only `%` becomes `%25`.
+fn partial_encode_uri_path(uri: &str) -> String {
+    let cut = uri.find(['?', '#']).unwrap_or(uri.len());
+    let (path, postfix) = uri.split_at(cut);
+    path.replace('%', "%25") + postfix
+}
+
 fn export_default_url(url: &str) -> String {
     format!(
         "export default {};",
@@ -1063,7 +1268,12 @@ async fn bundle_worker_inline(
 /// and handing that copy to rolldown as `Some(code)` makes it push
 /// `SourcemapChainElement::Omitted`, which empties the module's mappings when
 /// `build.sourcemap` is on.
-fn expand_import_meta(id: &str, code: &str, root: &Path) -> Option<String> {
+fn expand_import_meta(
+    id: &str,
+    code: &str,
+    root: &Path,
+    alias: &[(String, String)],
+) -> Option<String> {
     let has_glob = code.contains("import.meta.glob");
     // Vite's dynamicImportVarsOptions.exclude defaults to node_modules.
     let has_dynamic = code.contains("import(") && !id.contains("/node_modules/");
@@ -1077,7 +1287,8 @@ fn expand_import_meta(id: &str, code: &str, root: &Path) -> Option<String> {
     // be unreachable and could mask a future edit that makes it reachable).
     let mut expanded = code.to_string();
     if has_glob {
-        expanded = oj_compiler::glob::expand_source(&expanded, path, Some(root));
+        let alias = |spec: &str| oj_compiler::glob::string_alias(alias, spec);
+        expanded = oj_compiler::glob::expand_source_aliased(&expanded, path, Some(root), &alias);
     }
     if has_dynamic {
         expanded = oj_compiler::glob::expand_dynamic_import_vars_source(&expanded, path);
@@ -1101,6 +1312,30 @@ impl Plugin for OjCssPlugin {
         rolldown_plugin::HookUsage::ResolveId
             | rolldown_plugin::HookUsage::Load
             | rolldown_plugin::HookUsage::Transform
+            | rolldown_plugin::HookUsage::RenderChunk
+    }
+
+    /// vite:asset's renderChunk: public-file markers become URLs relative to
+    /// the chunk.
+    fn render_chunk(
+        &self,
+        _ctx: &PluginContext,
+        args: &HookRenderChunkArgs<'_>,
+    ) -> impl std::future::Future<Output = HookRenderChunkReturn> + Send {
+        let out = render_public_asset_urls(
+            &args.code,
+            &args.chunk.filename,
+            args.options.format,
+            args.options.is_sourcemap_enabled(),
+        )
+        .map(|(code, map)| HookRenderChunkOutput {
+            code,
+            map: match map {
+                Some(map) => map.into(),
+                None => HookTransformOutputMap::Omitted,
+            },
+        });
+        async move { Ok(out) }
     }
 
     fn resolve_id(
@@ -1116,6 +1351,19 @@ impl Plugin for OjCssPlugin {
             .into_owned();
         let asset_query = split_asset_query(args.specifier);
         let importer = args.importer.map(str::to_string);
+        // Vite's resolve plugin reads a root-absolute id (`/src/x`) as a file
+        // under the root first; one not under it can be a public file. The
+        // query rides along (`/vite.svg?url`, `/src/x.svg?raw`).
+        let (spec_path, spec_query) = match args.specifier.split_once('?') {
+            Some((path, query)) => (path, Some(query.to_string())),
+            None => (args.specifier, None),
+        };
+        let root_absolute = spec_path
+            .strip_prefix('/')
+            .filter(|rest| !rest.starts_with('/') && !Path::new(spec_path).starts_with(&self.root))
+            .map(str::to_string);
+        let root = self.root.clone();
+        let public_dir = self.resolve.public_dir.clone();
         let html_proxy = args.specifier.contains("?html-proxy&index=").then(|| {
             let spec = args.specifier.strip_prefix("./").unwrap_or(args.specifier);
             if Path::new(spec).is_absolute() {
@@ -1138,6 +1386,37 @@ impl Plugin for OjCssPlugin {
                     return Ok(Some(HookResolveIdOutput::from_id(id)));
                 }
             }
+            if let Some(rest) = root_absolute {
+                let with_query = |id: &str| match &spec_query {
+                    Some(q) => format!("{id}?{q}"),
+                    None => id.to_string(),
+                };
+                let in_root = root.join(&rest).to_string_lossy().into_owned();
+                if let Ok(Ok(resolved)) = ctx.resolve(&in_root, importer.as_deref(), None).await {
+                    return Ok(Some(HookResolveIdOutput::from_id(with_query(
+                        resolved.id.as_str(),
+                    ))));
+                }
+                // vite:asset's checkPublicFile: the file is served from the
+                // public dir at its own URL, never bundled or hashed. Only an
+                // asset type or a `?url` import is one (a public `/data.json`
+                // stays unresolved); a worker query is not an asset import.
+                let params: Vec<&str> = spec_query
+                    .as_deref()
+                    .map_or(vec![], |q| q.split('&').collect());
+                let worker = params
+                    .iter()
+                    .any(|p| *p == "worker" || *p == "sharedworker");
+                let asset = params.contains(&"url")
+                    || Path::new(&rest)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .is_some_and(oj_compiler::assets::is_asset_ext);
+                if asset && !worker && public_file(&public_dir, &rest).is_some() {
+                    let id = with_query(&format!("{PUBLIC_FILE_ID}{rest}"));
+                    return Ok(Some(HookResolveIdOutput::from_id(id)));
+                }
+            }
             Ok(None)
         }
     }
@@ -1152,12 +1431,14 @@ impl Plugin for OjCssPlugin {
         let id: &str = args.id;
         let code: &str = args.code;
         async move {
-            Ok(expand_import_meta(id, code, &self.root).map(|code| {
-                rolldown_plugin::HookTransformOutput {
-                    code: Some(code),
-                    ..Default::default()
-                }
-            }))
+            Ok(
+                expand_import_meta(id, code, &self.root, &self.resolve.alias).map(|code| {
+                    rolldown_plugin::HookTransformOutput {
+                        code: Some(code),
+                        ..Default::default()
+                    }
+                }),
+            )
         }
     }
 
@@ -1180,7 +1461,19 @@ impl Plugin for OjCssPlugin {
         let css_resolve = self.resolve.clone();
         let html_inline = Arc::clone(&self.html_inline);
         let worker = self.worker.clone();
+        let base = self.base.clone();
         let load = async move {
+            if let Some(rest) = id.strip_prefix(PUBLIC_FILE_ID) {
+                return public_file_module(&css_resolve.public_dir, rest, &base, client).map(
+                    |code| {
+                        Some(rolldown_plugin::HookLoadOutput {
+                            code: arcstr::ArcStr::from(code),
+                            module_type: Some(rolldown_common::ModuleType::Js),
+                            ..Default::default()
+                        })
+                    },
+                );
+            }
             if id.contains("?html-proxy&index=") {
                 if let Some(body) = html_inline.lock().unwrap().get(&id).cloned() {
                     return Ok(Some(rolldown_plugin::HookLoadOutput {
@@ -1395,6 +1688,7 @@ impl Plugin for OjCssPlugin {
                         worker: worker.clone(),
                         resolve: css_resolve.clone(),
                         worker_entries: Arc::clone(&worker_entries),
+                        base: base.clone(),
                     };
                     let code = bundle_worker_inline(&root, file, worker.as_ref(), nested).await?;
                     let literal = serde_json::Value::String(code).to_string();
@@ -2252,12 +2546,13 @@ impl Plugin for OjUserPlugin {
     }
 }
 
-pub(crate) fn serialize_rendered_chunk(chunk: &rolldown_common::RollupRenderedChunk) -> String {
-    // `chunk.modules` (keyed by module id) is read by renderChunk hooks such as
-    // UnoCSS's `unocss:global:build:generate` to find their virtual layer module.
-    let mut modules = serde_json::Map::new();
-    for (id, rm) in chunk.modules.keys.iter().zip(chunk.modules.values.iter()) {
-        modules.insert(
+/// Rollup's `chunk.modules`, `{ [id]: RenderedModule }`: plugins like @crxjs
+/// walk its keys (module ids) and read renderedExports; dependency reports
+/// read renderedLength to tell kept modules from tree-shaken ones.
+fn rendered_modules(modules: &rolldown_common::Modules) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    for (id, rm) in modules.keys.iter().zip(modules.values.iter()) {
+        map.insert(
             id.as_str().to_string(),
             serde_json::json!({
                 "renderedExports": rm
@@ -2265,9 +2560,17 @@ pub(crate) fn serialize_rendered_chunk(chunk: &rolldown_common::RollupRenderedCh
                     .iter()
                     .map(|e| e.to_string())
                     .collect::<Vec<_>>(),
+                "renderedLength": rm.code().map_or(0, |c| c.encode_utf16().count()),
             }),
         );
     }
+    serde_json::Value::Object(map)
+}
+
+pub(crate) fn serialize_rendered_chunk(chunk: &rolldown_common::RollupRenderedChunk) -> String {
+    // `chunk.modules` (keyed by module id) is read by renderChunk hooks such as
+    // UnoCSS's `unocss:global:build:generate` to find their virtual layer module.
+    let modules = rendered_modules(&chunk.modules);
     serde_json::json!({
         "type": "chunk",
         "fileName": chunk.filename.to_string(),
@@ -2276,7 +2579,7 @@ pub(crate) fn serialize_rendered_chunk(chunk: &rolldown_common::RollupRenderedCh
         "isDynamicEntry": chunk.is_dynamic_entry,
         "facadeModuleId": chunk.facade_module_id.as_ref().map(|f| f.as_str().to_string()),
         "moduleIds": chunk.module_ids.iter().map(|m| m.as_str().to_string()).collect::<Vec<_>>(),
-        "modules": serde_json::Value::Object(modules),
+        "modules": modules,
         "imports": chunk.imports.iter().map(|i| i.to_string()).collect::<Vec<_>>(),
         "dynamicImports": chunk.dynamic_imports.iter().map(|i| i.to_string()).collect::<Vec<_>>(),
         "exports": chunk.exports.iter().map(|e| e.to_string()).collect::<Vec<_>>(),
@@ -2290,21 +2593,7 @@ pub(crate) fn serialize_bundle(bundle: &[rolldown_common::Output]) -> String {
     for out in bundle {
         match out {
             Output::Chunk(c) => {
-                // Rollup's `chunk.modules` is `{ [id]: RenderedModule }`; plugins
-                // like @crxjs walk its keys (module ids) and read renderedExports.
-                let mut modules = serde_json::Map::new();
-                for (id, rm) in c.modules.keys.iter().zip(c.modules.values.iter()) {
-                    modules.insert(
-                        id.as_str().to_string(),
-                        serde_json::json!({
-                            "renderedExports": rm
-                                .rendered_exports
-                                .iter()
-                                .map(|e| e.to_string())
-                                .collect::<Vec<_>>(),
-                        }),
-                    );
-                }
+                let modules = rendered_modules(&c.modules);
                 map.insert(
                     c.filename.to_string(),
                     serde_json::json!({
@@ -2315,7 +2604,7 @@ pub(crate) fn serialize_bundle(bundle: &[rolldown_common::Output]) -> String {
                         "isDynamicEntry": c.is_dynamic_entry,
                         "facadeModuleId": c.facade_module_id.as_ref().map(|f| f.as_str().to_string()),
                         "moduleIds": c.module_ids.iter().map(|m| m.as_str().to_string()).collect::<Vec<_>>(),
-                        "modules": serde_json::Value::Object(modules),
+                        "modules": modules,
                         "imports": c.imports.iter().map(|i| i.to_string()).collect::<Vec<_>>(),
                         "dynamicImports": c.dynamic_imports.iter().map(|i| i.to_string()).collect::<Vec<_>>(),
                         "exports": c.exports.iter().map(|e| e.to_string()).collect::<Vec<_>>(),
@@ -2851,6 +3140,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
         client: true,
         css_code_split: css_split,
         resolve: css_resolve_of(&root, &config, "client", is_production),
+        base: normalize_base(config.base.as_deref().unwrap_or("/")),
         host: plugin_host.clone(),
         css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
         css: config.css.clone(),
@@ -4133,6 +4423,7 @@ pub(crate) async fn build_ssr(
         client: false,
         css_code_split: false,
         resolve: css_resolve_of(root, config, "ssr", is_production),
+        base: normalize_base(config.base.as_deref().unwrap_or("/")),
         host: plugin_host.clone(),
         css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
         css: config.css.clone(),
@@ -4315,6 +4606,7 @@ async fn build_server_fns(
                 inline_limit: 4096,
                 client: false,
                 resolve: css_resolve_of(root, config, "ssr", is_production),
+                base: normalize_base(config.base.as_deref().unwrap_or("/")),
                 css_code_split: false,
                 host: None,
                 css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
@@ -4723,6 +5015,7 @@ async fn build_client_entry(
         client: true,
         css_code_split: false,
         resolve: css_resolve_of(root, config, "client", is_production),
+        base: normalize_base(config.base.as_deref().unwrap_or("/")),
         host: plugin_host.clone(),
         css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
         css: config.css.clone(),
@@ -4995,6 +5288,7 @@ async fn build_library(
             inline_limit: u64::MAX,
             client: true,
             resolve: css_resolve_of(root, config, "client", is_production),
+            base: normalize_base(config.base.as_deref().unwrap_or("/")),
             css_code_split: false,
             host: None,
             css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
@@ -6428,11 +6722,39 @@ mod tests {
         }
     }
 
+    // `oj build` expands an aliased glob through `resolve.alias` (Vite's
+    // toAbsoluteGlob -> resolveId), with root-absolute keys.
+    #[test]
+    fn expand_import_meta_resolves_aliased_globs() {
+        let dir = scratch("expand-import-meta-alias");
+        fs::create_dir_all(dir.join("src/assets")).unwrap();
+        fs::write(dir.join("src/assets/hero.png"), "png").unwrap();
+        let id = dir.join("src/App.tsx").to_string_lossy().into_owned();
+        let alias = vec![("@".to_string(), dir.join("src").display().to_string())];
+        let out = expand_import_meta(
+            &id,
+            "const m = import.meta.glob(\"@/assets/*.png\");\n",
+            &dir,
+            &alias,
+        )
+        .expect("aliased glob expands");
+        assert!(
+            out.contains(r#""/src/assets/hero.png": () => import("./assets/hero.png")"#),
+            "{out}"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn expand_import_meta_reports_only_real_changes() {
         // No marker at all.
         assert_eq!(
-            expand_import_meta("/app/src/a.ts", "export const a = 1;\n", Path::new("/app")),
+            expand_import_meta(
+                "/app/src/a.ts",
+                "export const a = 1;\n",
+                Path::new("/app"),
+                &[]
+            ),
             None
         );
         // A plain string-literal dynamic import is left alone by the expander,
@@ -6441,7 +6763,8 @@ mod tests {
             expand_import_meta(
                 "/app/src/r.tsx",
                 "const P = lazy(() => import(\"./pages/P\"));\n",
-                Path::new("/app")
+                Path::new("/app"),
+                &[]
             ),
             None
         );
@@ -6450,7 +6773,8 @@ mod tests {
             expand_import_meta(
                 "/app/node_modules/x/index.js",
                 "export const c = (n) => import(`./c/${n}.js`);\n",
-                Path::new("/app")
+                Path::new("/app"),
+                &[]
             ),
             None
         );
@@ -6464,6 +6788,7 @@ mod tests {
             &id,
             "const load = (l) => import(`./locales/${l}.json`);\n",
             &dir,
+            &[],
         )
         .expect("matching variable dynamic import expands");
         assert!(
@@ -6482,6 +6807,7 @@ mod tests {
             "/app/src/main.js",
             "const w = new Worker(new URL(\"./w.ts\", import.meta.url), { type: \"module\" });\nconst s = new SharedWorker(new URL(\"./w.ts\", import.meta.url));\n",
             Path::new("/app"),
+            &[],
         )
         .expect("new URL asset expands");
         assert!(

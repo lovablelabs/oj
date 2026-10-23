@@ -83,6 +83,9 @@ pub struct CompileOptions {
     /// The app root (Vite's `config.root`) that `/`-led `import.meta.glob`
     /// patterns resolve against; `None` leaves them matching nothing.
     pub root: Option<PathBuf>,
+    /// The app's string `resolve.alias` entries (find, replacement), which an
+    /// aliased `import.meta.glob("@/x/*.ts")` pattern resolves through.
+    pub alias: Arc<[(String, String)]>,
     /// The config's `@stylexjs/unplugin`, run on the parsed source before any
     /// other transform (the plugin is `enforce: 'pre'`).
     pub stylex: Option<Arc<oj_stylex::plugin::StylexPlugin>>,
@@ -99,6 +102,7 @@ impl CompileOptions {
             class_field_set_semantics: None,
             env: None,
             root: None,
+            alias: Arc::from([]),
             stylex: None,
         }
     }
@@ -113,6 +117,7 @@ impl CompileOptions {
             class_field_set_semantics: None,
             env: None,
             root: None,
+            alias: Arc::from([]),
             stylex: None,
         }
     }
@@ -460,7 +465,8 @@ fn expand_synthesized<'a>(
     let dir = path.parent().unwrap_or(path);
     let mut synthesized = false;
     if scan(&F_IMPORT_META_GLOB, source_text) {
-        glob::expand(allocator, path, opts.root.as_deref(), program);
+        let alias = |id: &str| glob::string_alias(&opts.alias, id);
+        glob::expand(allocator, path, opts.root.as_deref(), &alias, program);
         synthesized = true;
     }
     if scan(&F_IMPORT_PAREN, source_text) {
@@ -728,6 +734,7 @@ import React from "react";
                 class_field_set_semantics: None,
                 env: None,
                 root: None,
+                alias: Arc::from([]),
                 stylex: None,
             },
             None,
@@ -818,6 +825,7 @@ import React from "react";
                 class_field_set_semantics: None,
                 env: None,
                 root: None,
+                alias: Arc::from([]),
                 stylex: None,
             },
             None,

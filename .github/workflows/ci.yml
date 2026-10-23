@@ -148,6 +148,10 @@ jobs:
         run: node e2e/plugin-server-process.mjs
       - name: json import edit reaches the boundary (stamped import)
         run: node e2e/hmr-json-update.mjs
+      - name: a non-root base serves the HMR client and refresh preamble
+        run: node e2e/dev-base-hmr.mjs
+      - name: build resolves /src and public-dir imports by URL
+        run: node e2e/build-root-imports.mjs
       - name: unresolved relative import errors, creating the file recovers
         run: node e2e/hmr-unresolved-import.mjs
       - name: an env-file edit restarts dev and the open page reloads
@@ -197,6 +201,8 @@ jobs:
         run: node e2e/plugin-hot-update-delete.mjs
       - name: start dev applies config define to the client bundle; --mode selects .env.<mode>
         run: node e2e/start-define-mode.mjs
+      - name: start server code reads every .env var from process.env
+        run: node e2e/start-dotenv-process-env.mjs
       - name: start dev runs @tanstack/devtools inject-source on SSR and client
         run: node e2e/start-devtools-source.mjs
       - name: start dev client chunks revalidate by ETag and gzip

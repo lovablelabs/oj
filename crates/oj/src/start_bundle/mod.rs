@@ -52,6 +52,22 @@ pub(crate) struct StartConfig {
     pub stylex: Option<std::sync::Arc<oj_stylex::plugin::StylexPlugin>>,
 }
 
+/// TanStack Start's load-env plugin: `Object.assign(process.env,
+/// loadEnv(mode, root, ""))`, so server code sees every var of the mode's
+/// `.env` files, not only `envPrefix` ones. A var the shell sets keeps the
+/// shell's value.
+pub(crate) fn dotenv_process_vars(
+    env: &oj_env::Env,
+    app_env: &oj_env::AppEnv,
+) -> Vec<(String, String)> {
+    app_env
+        .loaded()
+        .iter()
+        .filter(|(k, _)| env.var_os(k).is_none())
+        .cloned()
+        .collect()
+}
+
 impl StartConfig {
     /// The prefix the dev server's urls take under `base` (see
     /// [`oj_server::start_dev_url_base`]).

@@ -9,7 +9,6 @@
 //! napi addons a plugin host loads.
 
 mod assets;
-mod base_routes;
 mod browser;
 mod browser_errors;
 mod build_config_flag;
@@ -25,6 +24,7 @@ mod css_outside_root_deps;
 mod css_preprocessor_options;
 mod css_url_inline;
 mod dep_plugin_load;
+mod dev_base;
 mod dev_condition;
 mod dev_cors_host;
 mod dev_html_native;
@@ -33,6 +33,7 @@ mod dev_process_env;
 mod dunder_paths;
 mod dynamic_import;
 mod fs_allow_node_modules;
+mod glob_alias;
 mod hmr_client_behaviors;
 mod hmr_dep_update;
 mod hmr_disabled;

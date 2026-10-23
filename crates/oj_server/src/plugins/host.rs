@@ -1471,6 +1471,13 @@ impl PluginHost {
         self.call("load", &[id]).await
     }
 
+    /// The load hooks Vite runs before its core plugins (`enforce: "pre"`,
+    /// `order: "pre"`) for an id a Start bundle's own loader would claim.
+    #[inline]
+    pub async fn load_pre(&self, id: &str) -> Result<Option<String>, String> {
+        self.call("loadPhase", &[id, "pre"]).await
+    }
+
     #[inline]
     pub async fn handle_hot_update(
         &self,

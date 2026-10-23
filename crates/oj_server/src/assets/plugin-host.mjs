@@ -3429,6 +3429,18 @@ async function setupConfigureServer() {
       process.stderr.write(`${OJ} plugin host: failed to set up server.proxy: ${(e && e.stack) || e}\n`);
     }
   }
+  // Vite's baseMiddleware sits here, after the proxy and before the POST
+  // hooks: PRE middleware sees the browser's URL, POST middleware the URL
+  // with the base stripped. oj answers the root redirect and unbased
+  // requests itself, so only the strip runs (Vite's middleware mode).
+  const devBase = ownsServer ? ojDevBase(resolvedConfig ?? initial.config ?? {}) : "/";
+  if (devBase !== "/") {
+    middlewares.use(function viteBaseMiddleware(req, _res, next) {
+      const pathname = req.url.split(/[?#]/)[0];
+      if (pathname.startsWith(devBase)) req.url = ojStripBase(req.url, devBase);
+      next();
+    });
+  }
   for (const fn of post) {
     try {
       await fn();
@@ -3454,6 +3466,22 @@ async function setupConfigureServer() {
     // upgrade listeners; on this path no later announce re-checks.
     await ensureConfigureServerMiddleware();
   }
+}
+
+// Vite's resolveBaseUrl in serve: "", "./" and other relative bases are the
+// root, and a URL base keeps only its path.
+function ojDevBase(cfg) {
+  const raw = cfg.rawBase ?? cfg.base;
+  if (typeof raw !== "string" || raw === "" || raw[0] === ".") return "/";
+  const base = new URL(raw, "http://vite.dev").pathname;
+  return base[0] === "/" ? base : `/${base}`;
+}
+
+// Vite's stripBase.
+function ojStripBase(url, base) {
+  if (url === base) return "/";
+  const devBase = base.endsWith("/") ? base : `${base}/`;
+  return url.startsWith(devBase) ? url.slice(devBase.length - 1) : url;
 }
 
 function ojPushServeInfo() {
@@ -4306,10 +4334,13 @@ function withHtmlProxy(entries, hook, id) {
 
 // The load chain (Vite pluginContainer.load): `{ ssr }` options, the first
 // non-null result returned whole (code, map, meta) and its meta folded into
-// the module info.
-async function loadFull(id) {
+// the module info. `phase` "pre": only the hooks that run before Vite's core
+// plugins, which a Start bundle asks first for the assets its own loader owns
+// (vite-imagetools' `x.webp?w=768` comes before vite:asset).
+async function loadFull(id, phase) {
   const options = { ssr: environment.config?.consumer === "server" };
-  for (const { p, fn: handler } of withHtmlProxy(pluginsWithHook("load"), "load", id)) {
+  for (const { p, fn: handler, rank } of withHtmlProxy(pluginsWithHook("load"), "load", id)) {
+    if (phase === "pre" && !runsBeforeCoreResolver(p, rank)) continue;
     if (!hookIdMatches(p.load, id)) continue;
     let r;
     try {
@@ -4325,8 +4356,8 @@ async function loadFull(id) {
   }
   return null;
 }
-async function load(id) {
-  const r = await loadFull(id);
+async function load(id, phase) {
+  const r = await loadFull(id, phase);
   return r == null ? null : r.code;
 }
 
@@ -4672,6 +4703,7 @@ async function run(hook, args) {
   if (hook === "scanPluginHooks") return gateOnBuildStart().then(() => scanPluginHooks());
   if (hook === "scanPluginHook") return gateOnBuildStart().then(() => scanPluginHook(args[0], args[1]));
   if (hook === "load") return gateOnBuildStart().then(() => load(args[0]));
+  if (hook === "loadPhase") return gateOnBuildStart().then(() => load(args[0], args[1]));
   if (hook === "handleHotUpdate") return handleHotUpdate(args[0], args[1], args[2], args[3]);
   if (hook === "transformIndexHtml") return gateOnBuildStart().then(() => transformIndexHtml(args[0], args[1]));
   if (hook === "buildStart") return ensureBuildStart();

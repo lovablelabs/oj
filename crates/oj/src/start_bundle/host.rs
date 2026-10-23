@@ -470,13 +470,29 @@ impl Plugin for StartHostPlugin {
             let on_disk = !id.starts_with('\0')
                 && Path::new(&clean).is_absolute()
                 && Path::new(&clean).is_file();
-            // `?raw`, `?worker`, a stylesheet: oj's asset plugin loads those.
-            if on_disk && super::assets::asset_tag(&id, false).is_some() {
-                return Ok(None);
-            }
             let fail = |e: String| {
                 oj_server::load_error::load_failed(plugin.clone(), &id, anyhow::anyhow!(e))
             };
+            // `?raw`, `?worker`, an image, a stylesheet: oj's asset plugin
+            // loads those, as vite:asset does, after the hooks Vite runs
+            // before it (vite-imagetools' `x.webp?w=768`).
+            let asset = on_disk
+                .then(|| super::assets::asset_tag(&id, false))
+                .flatten();
+            if let Some(tag) = asset {
+                if !wants || matches!(tag, super::assets::AssetTag::Css) {
+                    return Ok(None);
+                }
+                return Ok(host
+                    .load_pre(&id)
+                    .await
+                    .map_err(fail)?
+                    .map(|code| HookLoadOutput {
+                        code: arcstr::ArcStr::from(code),
+                        module_type: Some(ModuleType::Js),
+                        ..Default::default()
+                    }));
+            }
             let mut code = None;
             if wants {
                 // The FULL id first: a plugin's load keys on its own query

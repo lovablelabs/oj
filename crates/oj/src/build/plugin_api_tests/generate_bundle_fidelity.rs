@@ -54,6 +54,7 @@ export default [{
           moduleCount: Object.keys(c.modules).length,
           hasEntry: Object.keys(c.modules).some((m) => m.endsWith("entry.js")),
           moduleIds: c.moduleIds,
+          lengths: Object.entries(c.modules).map(([id, m]) => [id.split("/").pop(), m.renderedLength]),
         };
       }
       if (c.type === "chunk" && c.name === "keepme") c.fileName = "assets/renamed-keepme.js";
@@ -107,6 +108,15 @@ export default [{
             .as_array()
             .is_some_and(|ids| !ids.is_empty()),
         "chunk.moduleIds is populated: {raw}"
+    );
+    let lengths = info["lengths"]
+        .as_array()
+        .unwrap_or_else(|| panic!("chunk.modules entries were read: {raw}"));
+    assert!(
+        lengths
+            .iter()
+            .any(|l| l[0] == "entry.js" && l[1].as_u64().is_some_and(|n| n > 0)),
+        "the entry module reports the length of its rendered code: {raw}"
     );
 
     // Rename side: the keepme chunk was written under its new name.

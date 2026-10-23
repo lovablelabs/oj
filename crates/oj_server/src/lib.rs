@@ -298,6 +298,9 @@ struct ServerState {
     /// `resolve.alias`, root and public dir as seen by `@import`/`@use`/`url()`
     /// specifiers inside stylesheets (Vite's CSS resolvers).
     css_resolve: oj_css::CssResolveConfig,
+    /// The client `resolve.alias`, which an aliased `import.meta.glob` pattern
+    /// resolves through.
+    glob_alias: Arc<[(String, String)]>,
     preload_snapshot: Vec<String>,
     proxy: Vec<(String, oj_config::ProxyEntry)>,
     /// Per `proxy` entry: the compiled pattern of a `^` (regex) context, `None`
@@ -1294,54 +1297,50 @@ fn build_router(
     server_cfg: &oj_config::ServerConfig,
     hmr_ws_path: &str,
 ) -> Router {
-    // Vite's base middleware strips `base` from every url its own routes see,
-    // so each of oj's answers under `base` too (its pages name the client
-    // there); the base-less paths stay for the urls compiled modules import.
-    let base = state
-        .base
-        .as_deref()
-        .map(|b| b.trim_end_matches('/').to_string())
-        .filter(|b| !b.is_empty());
-    let mut app = Router::new();
-    let mut route = |path: &str, handler: axum::routing::MethodRouter<Arc<ServerState>>| {
-        if let Some(base) = &base {
-            app = std::mem::take(&mut app).route(&format!("{base}{path}"), handler.clone());
-        }
-        app = std::mem::take(&mut app).route(path, handler);
-    };
-    route("/@oj/client.js", get(serve_client_js));
-    route(
-        "/@oj/refresh-runtime.js",
-        get(|| async { js(REFRESH_RUNTIME_JS) }),
-    );
-    route(
-        "/@oj/refresh-preamble.js",
-        get(|| async { js(REFRESH_PREAMBLE_JS) }),
-    );
-    route("/@oj/routes.js", get(serve_oj_routes));
-    // OJ_DEBUG_MEM=1: force a full V8 collection in every live engine so memory
-    // probes measure retained heap (issue #202). 404 unless enabled.
-    route("/@oj/debug/gc", get(debug_gc));
-    route("/@oj/debug/mem", get(debug_mem_stats));
-    route("/@oj/diagnostics", get(serve_diagnostics));
-    route("/@oj/server-fn.js", get(|| async { js(SERVER_FN_JS) }));
-    route(
-        "/@oj/lingui-macro-shim.js",
-        get(|| async { js(LINGUI_MACRO_SHIM_JS) }),
-    );
-    route(HMR_WS_PATH, get(ws_upgrade));
-    route(HMR_FLUSH_PATH, post(hmr_flush));
-    route(HMR_GATE_PATH, get(hmr_gate_status));
+    let mut app = Router::new()
+        .route("/@oj/client.js", get(serve_client_js))
+        .route(
+            "/@oj/refresh-runtime.js",
+            get(|| async { js(REFRESH_RUNTIME_JS) }),
+        )
+        .route(
+            "/@oj/refresh-preamble.js",
+            get(|| async { js(REFRESH_PREAMBLE_JS) }),
+        )
+        .route("/@oj/routes.js", get(serve_oj_routes))
+        // OJ_DEBUG_MEM=1: force a full V8 collection in every live engine so memory
+        // probes measure retained heap (issue #202). 404 unless enabled.
+        .route("/@oj/debug/gc", get(debug_gc))
+        .route("/@oj/debug/mem", get(debug_mem_stats))
+        .route("/@oj/diagnostics", get(serve_diagnostics))
+        .route("/@oj/server-fn.js", get(|| async { js(SERVER_FN_JS) }))
+        .route(
+            "/@oj/lingui-macro-shim.js",
+            get(|| async { js(LINGUI_MACRO_SHIM_JS) }),
+        )
+        .route("/@ssr-resolve", get(ssr_resolve))
+        .route("/@ssr-module", get(ssr_module))
+        .route(HMR_WS_PATH, get(ws_upgrade))
+        .route(HMR_FLUSH_PATH, post(hmr_flush))
+        .route(HMR_GATE_PATH, get(hmr_gate_status))
+        .fallback(serve_fallback);
     // `server.hmr.path`: the client dials this path instead of /__ws (Vite
     // serves its socket at base + hmr.path).
     if hmr_ws_path != HMR_WS_PATH && hmr_ws_path != "/" && !hmr_ws_path.starts_with("/@oj/") {
-        route(hmr_ws_path, get(ws_upgrade));
+        app = app.route(hmr_ws_path, get(ws_upgrade));
     }
-    // The SSR runner's own requests, never a page's: no base.
-    let mut app = app
-        .route("/@ssr-resolve", get(ssr_resolve))
-        .route("/@ssr-module", get(ssr_module))
-        .fallback(serve_fallback);
+    // The base strip must run before route matching. A layer runs after its
+    // router picked a route, so it sits on an outer router whose only route is
+    // the inner one, which then matches the stripped path.
+    if let Some(base) = state.base.clone() {
+        let routes = app.with_state(Arc::clone(&state));
+        app = Router::new()
+            .fallback_service(routes)
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::<str>::from(base),
+                base_middleware,
+            ));
+    }
     // Layer order is reversed at request time (last added runs first). Vite's
     // sequence is cors, host validation, proxy: proxied requests bypass neither gate.
     if !state.proxy.is_empty() {
@@ -1707,6 +1706,7 @@ impl DevServer {
             scss_additional_data: oj_config::css_additional_data(&config, "scss"),
             sass_additional_data: oj_config::css_additional_data(&config, "sass"),
             css_config: config.css.clone(),
+            glob_alias: Arc::from(css_resolve.alias.clone()),
             css_resolve,
             csp_nonce: oj_config::html_csp_nonce(&config),
             fs_allow: Arc::new(Mutex::new(fs_allow_list(&root, &server_cfg))),
@@ -1766,7 +1766,7 @@ impl DevServer {
             html_env: installed.html_env,
             parsed_fired: Mutex::new(std::collections::HashSet::new()),
             rt: tokio::runtime::Handle::current(),
-            base: config.base.clone().filter(|b| b != "/"),
+            base: dev_base(config.base.as_deref()),
             buffered_frame: Mutex::new(None),
             resolve_failed: Mutex::new(std::collections::HashSet::new()),
             client_js_etag: format!(
@@ -2013,6 +2013,7 @@ fn dev_compile_opts(state: &ServerState) -> oj_compiler::CompileOptions {
     opts.jsx = state.jsx.clone();
     opts.env = Some(Arc::clone(&state.import_meta_env));
     opts.root = Some(state.root.clone());
+    opts.alias = Arc::clone(&state.glob_alias);
     opts.stylex = state.stylex.clone();
     opts
 }

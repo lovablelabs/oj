@@ -202,10 +202,10 @@ fn client_plugins(
             .with_module_parsed(start.jsx_config()),
         ));
     }
-    plugins.push(Pluginable::new_shared(StartCodePlugin::new(
-        &start.root,
-        target,
-    )));
+    plugins.push(Pluginable::new_shared(
+        StartCodePlugin::new(&start.root, target)
+            .with_alias(host.map(|h| h.facts.alias.clone()).unwrap_or_default()),
+    ));
     plugins.push(Pluginable::new_shared(StartAssetsPlugin::new(
         &start.root,
         Arc::clone(styles),
@@ -526,10 +526,14 @@ pub(crate) async fn build(
                     .with_module_parsed(start.jsx_config()),
                 ));
             }
-            plugins.push(Pluginable::new_shared(StartCodePlugin::new(
-                &start.root,
-                CodeTarget::Server,
-            )));
+            plugins.push(Pluginable::new_shared(
+                StartCodePlugin::new(&start.root, CodeTarget::Server).with_alias(
+                    server_host
+                        .as_ref()
+                        .map(|h| h.facts.alias.clone())
+                        .unwrap_or_default(),
+                ),
+            ));
             plugins.push(Pluginable::new_shared(StartAssetsPlugin::new(
                 &start.root,
                 Arc::clone(&styles),
@@ -918,7 +922,7 @@ async fn prerender(
     routes: &[String],
 ) -> anyhow::Result<()> {
     let scripts = crate::start_host::ScriptEngine::new(&start.root)?;
-    let env = vec![
+    let mut env = vec![
         (
             "OJ_APP_ROOT".to_string(),
             start.root.to_string_lossy().into_owned(),
@@ -939,6 +943,7 @@ async fn prerender(
         ),
         ("NODE_ENV".to_string(), start.node_env().to_string()),
     ];
+    env.extend(super::dotenv_process_vars(oj_env::get(), &start.app_env));
     scripts
         .run_async(&start.cache.join("prerender.mjs"), &env, "prerender")
         .await

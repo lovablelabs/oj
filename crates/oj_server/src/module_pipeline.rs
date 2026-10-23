@@ -248,10 +248,9 @@ fn code_module(code: String) -> CachedModule {
 
 /// `export default "<url>"`: how a non-compiled asset import is served.
 fn url_asset_module(url: &str) -> CachedModule {
-    let clean = url.split('?').next().unwrap_or(url);
     code_module(format!(
         "export default {};\n",
-        serde_json::Value::String(clean.to_string())
+        serde_json::Value::String(asset_export_url(url))
     ))
 }
 
@@ -363,10 +362,12 @@ fn record_glob_importer(state: &ServerState, file: &Path, url: &str, source: &st
         return;
     }
     let patterns: Vec<oj_compiler::glob::GlobMatcher> =
-        oj_compiler::glob::glob_patterns(source, file, Some(&state.root))
-            .iter()
-            .map(|call| call.matcher())
-            .collect();
+        oj_compiler::glob::glob_patterns_aliased(source, file, Some(&state.root), &|id| {
+            oj_compiler::glob::string_alias(&state.glob_alias, id)
+        })
+        .iter()
+        .map(|call| call.matcher())
+        .collect();
     let clean = url.split('?').next().unwrap_or(url).to_string();
     let mut globs = state.glob_importers.lock().unwrap();
     if patterns.is_empty() {

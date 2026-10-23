@@ -19,7 +19,7 @@ use oxc_ast::ast::{ArrayExpressionElement, Expression, ObjectPropertyKind, Prope
 use oxc_parser::Parser;
 use oxc_span::SourceType;
 
-use crate::glob::{relative_import, to_absolute_glob, GlobCall};
+use crate::glob::{relative_import, to_absolute_glob, GlobAlias, GlobCall};
 
 /// A glob call that cannot be expanded as written, reported as Vite reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,13 +35,14 @@ impl std::error::Error for GlobError {}
 
 /// Expands every `import.meta.glob(...)` call of the module at `file` into
 /// the object Vite writes for it. `root` is the project root (`/` patterns
-/// and `/`-led keys). Each call's resolved patterns are pushed to `scopes`,
+/// and `/`-led keys), `alias` the app's `resolve.alias`. Each call's resolved patterns are pushed to `scopes`,
 /// what a dev rebundle gate matches created files against. Calls whose
 /// arguments are not static values are left as written.
 pub fn transform_glob(
     code: &str,
     file: &Path,
     root: &Path,
+    alias: GlobAlias,
     scopes: &mut Vec<GlobCall>,
 ) -> Result<String, GlobError> {
     const HEAD: &str = "import.meta.glob";
@@ -107,7 +108,7 @@ pub fn transform_glob(
             .all(|p| p.starts_with('.') || p.starts_with('!'));
         let resolved: Vec<String> = patterns
             .iter()
-            .map(|p| to_absolute_glob(p, file_dir, root, opts.base.as_deref()))
+            .map(|p| to_absolute_glob(p, file_dir, root, opts.base.as_deref(), alias))
             .collect();
         let call = GlobCall {
             patterns: resolved,

@@ -12,14 +12,44 @@ use oxc_ast_visit::{walk, walk_mut, Visit, VisitMut};
 use oxc_parser::Parser;
 use oxc_span::{SourceType, Span};
 
+/// The app's `resolve.alias` as a glob pattern reaches it: Vite's
+/// toAbsoluteGlob hands a pattern that is not `/`, `./`, `../` or `**`-led to
+/// resolveId, where the alias plugin rewrites it. The rewritten pattern, or
+/// `None` when no entry matches.
+pub type GlobAlias<'a> = &'a (dyn Fn(&str) -> Option<String> + Sync);
+
+/// No `resolve.alias`.
+pub fn no_alias(_: &str) -> Option<String> {
+    None
+}
+
+/// @rollup/plugin-alias over string `find`s: the first entry whose `find` is
+/// the id itself or a `find/` prefix of it.
+pub fn string_alias(entries: &[(String, String)], id: &str) -> Option<String> {
+    entries.iter().find_map(|(find, replacement)| {
+        let rest = id.strip_prefix(find.as_str())?;
+        (rest.is_empty() || rest.starts_with('/')).then(|| format!("{replacement}{rest}"))
+    })
+}
+
 /// `root` is the app root (Vite's `config.root`) that `/` patterns resolve
 /// against; see [`expand`].
 pub fn expand_source(source: &str, path: &Path, root: Option<&Path>) -> String {
+    expand_source_aliased(source, path, root, &no_alias)
+}
+
+/// [`expand_source`] with the app's `resolve.alias`.
+pub fn expand_source_aliased(
+    source: &str,
+    path: &Path,
+    root: Option<&Path>,
+    alias: GlobAlias,
+) -> String {
     if !source.contains("import.meta.glob") {
         return source.to_string();
     }
     rewrite_source(source, path, |allocator, _, program| {
-        expand(allocator, path, root, program);
+        expand(allocator, path, root, alias, program);
         true
     })
 }
@@ -30,6 +60,16 @@ pub fn expand_source(source: &str, path: &Path, root: Option<&Path>) -> String {
 /// one matches changes what the glob expands to, so the importer is updated as
 /// if it had been edited (Vite's importMetaGlob `hotUpdate`).
 pub fn glob_patterns(source: &str, path: &Path, root: Option<&Path>) -> Vec<GlobCall> {
+    glob_patterns_aliased(source, path, root, &no_alias)
+}
+
+/// [`glob_patterns`] with the app's `resolve.alias`.
+pub fn glob_patterns_aliased(
+    source: &str,
+    path: &Path,
+    root: Option<&Path>,
+    alias: GlobAlias,
+) -> Vec<GlobCall> {
     if !source.contains("import.meta.glob") {
         return Vec::new();
     }
@@ -40,6 +80,7 @@ pub fn glob_patterns(source: &str, path: &Path, root: Option<&Path>) -> Vec<Glob
     let mut collector = PatternCollector {
         dir: path.parent().unwrap_or(path),
         root,
+        alias,
         out: Vec::new(),
     };
     collector.visit_program(&program);
@@ -146,6 +187,7 @@ fn span_text(source: &str, span: Span) -> Option<&str> {
 struct PatternCollector<'d> {
     dir: &'d Path,
     root: Option<&'d Path>,
+    alias: GlobAlias<'d>,
     out: Vec<GlobCall>,
 }
 
@@ -159,7 +201,7 @@ impl<'a> Visit<'a> for PatternCollector<'_> {
             };
             if let Some(found) = patterns
                 .zip(opts)
-                .and_then(|(p, o)| GlobCall::resolve(&p, &o, self.dir, self.root))
+                .and_then(|(p, o)| GlobCall::resolve(&p, &o, self.dir, self.root, self.alias))
             {
                 self.out.push(found);
             }
@@ -187,6 +229,7 @@ impl GlobCall {
         opts: &GlobOptions,
         dir: &Path,
         root: Option<&Path>,
+        alias: GlobAlias,
     ) -> Option<GlobCall> {
         let base_dir = match opts.base.as_deref() {
             Some(b) => Some(match b.strip_prefix('/') {
@@ -200,7 +243,7 @@ impl GlobCall {
         Some(GlobCall {
             patterns: patterns
                 .iter()
-                .filter_map(|p| absolute_glob(p, &dir, root.as_deref()))
+                .filter_map(|p| absolute_glob(p, &dir, root.as_deref(), alias))
                 .collect(),
             exhaustive: opts.exhaustive,
             case_sensitive: opts.case_sensitive,
@@ -498,6 +541,7 @@ pub fn expand<'a>(
     allocator: &'a Allocator,
     importer: &Path,
     root: Option<&Path>,
+    alias: GlobAlias,
     program: &mut Program<'a>,
 ) {
     let mut expander = GlobExpander {
@@ -505,6 +549,7 @@ pub fn expand<'a>(
         importer,
         dir: importer.parent().unwrap_or(importer),
         root,
+        alias,
         hoisted: Vec::new(),
         uid: 0,
     };
@@ -519,6 +564,7 @@ struct GlobExpander<'a, 'd> {
     importer: &'d Path,
     dir: &'d Path,
     root: Option<&'d Path>,
+    alias: GlobAlias<'d>,
     hoisted: Vec<String>,
     uid: usize,
 }
@@ -619,8 +665,8 @@ fn slash(path: &Path) -> String {
 /// `/x` is project-root relative, `./x` and `../x` resolve against the
 /// importer's directory or, with `base`, against that base (itself
 /// root-relative when it starts with `/`), a `!**` negation stays as written,
-/// and anything else (an alias, a bare id, which Vite hands its resolver)
-/// joins the importer's directory. Path prefixes are glob-escaped (Vite's
+/// anything else goes through the app's `alias` (Vite hands it to resolveId)
+/// and, when no alias makes it absolute, joins the importer's directory. Path prefixes are glob-escaped (Vite's
 /// globSafePath), so a `(group)` or `[id]` directory matches literally. Like
 /// oj's dev server, a positive `**` pattern walks from the root, where Vite
 /// walks from `/`.
@@ -629,6 +675,7 @@ pub fn to_absolute_glob(
     importer_dir: &Path,
     root: &Path,
     base: Option<&str>,
+    alias: GlobAlias,
 ) -> String {
     let (pre, glob) = match pattern.strip_prefix('!') {
         Some(rest) => ("!", rest),
@@ -655,10 +702,34 @@ pub fn to_absolute_glob(
         } else {
             return format!("{pre}{glob}");
         }
+    } else if let Some(aliased) = aliased_glob(glob, alias) {
+        return format!("{pre}{aliased}");
     } else {
         join_normalized(&safe_dir, glob)
     };
     format!("{pre}{}", joined.to_string_lossy())
+}
+
+/// A pattern the app's alias rewrites to an absolute path, with only that
+/// path's static part escaped: Vite's globSafeResolvedPath walks both strings
+/// back to their first difference and keeps the user's glob suffix as written.
+fn aliased_glob(pattern: &str, alias: GlobAlias) -> Option<String> {
+    let resolved = alias(pattern)?;
+    if !Path::new(&resolved).is_absolute() {
+        return None;
+    }
+    let same = resolved
+        .bytes()
+        .rev()
+        .zip(pattern.bytes().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let split = resolved.len() - same;
+    let (head, tail) = (&resolved[..split], &resolved[split..]);
+    Some(format!(
+        "{}{tail}",
+        escaped(Path::new(head)).to_string_lossy()
+    ))
 }
 
 /// `to` as an import specifier relative to `from_dir`: `./x` inside it,
@@ -669,10 +740,15 @@ pub fn relative_import(from_dir: &Path, to: &Path) -> String {
 
 /// Vite's toAbsoluteGlob: a `/` pattern joins the root, `./` and `../` ones
 /// the directory they are relative to (the importer's, or `base`'s), and a
-/// `**` one is matched from the root as it stands. `None` for a root-led
-/// pattern without a root, or a form Vite hands to its resolver (an alias, a
-/// bare package path), which this compiler has none of.
-fn absolute_glob(pattern: &str, dir: &Path, root: Option<&Path>) -> Option<String> {
+/// `**` one is matched from the root as it stands, and anything else is what
+/// the app's alias rewrites it to. `None` for a root-led pattern without a
+/// root, or one no alias turns into an absolute path (a bare package path).
+fn absolute_glob(
+    pattern: &str,
+    dir: &Path,
+    root: Option<&Path>,
+    alias: GlobAlias,
+) -> Option<String> {
     let (pre, pattern) = match pattern.strip_prefix('!') {
         Some(p) => ("!", p),
         None => ("", pattern),
@@ -684,7 +760,7 @@ fn absolute_glob(pattern: &str, dir: &Path, root: Option<&Path>) -> Option<Strin
     } else if pattern.starts_with("./") || pattern.starts_with("../") {
         join_normalized(dir, pattern)
     } else {
-        return None;
+        return aliased_glob(pattern, alias).map(|a| format!("{pre}{a}"));
     };
     // Not `slash`: the prefix is already `/`-separated, and its backslashes
     // are glob escapes.
@@ -724,7 +800,7 @@ impl<'a> GlobExpander<'a, '_> {
             .iter()
             .all(|p| p.starts_with('.') || p.starts_with('!'));
         let mut entries: Vec<String> = Vec::new();
-        let files = GlobCall::resolve(&patterns, &opts, self.dir, self.root)?.files();
+        let files = GlobCall::resolve(&patterns, &opts, self.dir, self.root, self.alias)?.files();
         let importer = normalize(self.importer);
         for file in files.into_iter().filter(|f| *f != importer) {
             let import_path = relative_spec(self.dir, &file);
@@ -1506,7 +1582,13 @@ mod tests {
         let allocator = Allocator::default();
         let parsed = Parser::new(&allocator, src, SourceType::mjs()).parse();
         let mut program = parsed.program;
-        expand(&allocator, &dir.join("index.js"), None, &mut program);
+        expand(
+            &allocator,
+            &dir.join("index.js"),
+            None,
+            &no_alias,
+            &mut program,
+        );
         Codegen::new().build(&program).code
     }
 
@@ -1800,5 +1882,86 @@ mod tests {
         let dash = out.find("/src/a-b/x.ts").expect("a-b matched");
         let slash = out.find("/src/a/b.ts").expect("a/b matched");
         assert!(dash < slash, "a-b/x before a/b: {out}");
+    }
+
+    // Vite's toAbsoluteGlob hands `@/assets/*.png` to resolveId, where the
+    // alias plugin rewrites it; only the rewritten static prefix is escaped,
+    // so a `(group)` directory matches literally. Keys are root-absolute, as
+    // for any non-relative pattern; imports stay importer-relative.
+    #[test]
+    fn aliased_globs_resolve_through_resolve_alias() {
+        let root = app(
+            "alias",
+            &[
+                "src/(marketing)/assets/hero.png",
+                "src/(marketing)/assets/logo.png",
+                "src/(marketing)/assets/notes.txt",
+                "src/(marketing)/Gallery.tsx",
+            ],
+        );
+        let entries = vec![(
+            "@".to_string(),
+            root.join("src/(marketing)").display().to_string(),
+        )];
+        let alias = |id: &str| string_alias(&entries, id);
+        let importer = root.join("src/(marketing)/Gallery.tsx");
+        let expand = |src: &str| expand_source_aliased(src, &importer, Some(&root), &alias);
+
+        let lazy = expand("const m = import.meta.glob('@/assets/*.png');\n");
+        assert!(
+            lazy.contains(
+                r#""/src/(marketing)/assets/hero.png": () => import("./assets/hero.png")"#
+            ),
+            "{lazy}"
+        );
+        assert!(lazy.contains("/src/(marketing)/assets/logo.png"), "{lazy}");
+        assert!(!lazy.contains("notes.txt"), "{lazy}");
+
+        let eager = expand(
+            "const m = import.meta.glob('@/assets/*.png', { eager: true, import: 'default', query: '?url' });\n",
+        );
+        assert!(
+            eager.contains(r#"import { default as __oj_glob_0 } from "./assets/hero.png?url";"#),
+            "{eager}"
+        );
+
+        // The dev watcher's scope sees the same files.
+        let calls = glob_patterns_aliased(
+            "import.meta.glob('@/assets/*.png')",
+            &importer,
+            Some(&root),
+            &alias,
+        );
+        let matcher = calls[0].matcher();
+        assert!(matcher.is_match(
+            &root
+                .join("src/(marketing)/assets/new.png")
+                .display()
+                .to_string()
+        ));
+
+        // No alias, no files: `@/` is not a path.
+        let plain = super::expand_source(
+            "const m = import.meta.glob('@/assets/*.png');\n",
+            &importer,
+            Some(&root),
+        );
+        assert!(plain.contains("const m = {};"), "{plain}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn string_alias_matches_the_id_or_a_slash_prefix() {
+        let entries = vec![
+            ("@".to_string(), "/app/src".to_string()),
+            ("~lib".to_string(), "/app/lib".to_string()),
+        ];
+        assert_eq!(
+            string_alias(&entries, "@/a/*.ts").as_deref(),
+            Some("/app/src/a/*.ts")
+        );
+        assert_eq!(string_alias(&entries, "~lib").as_deref(), Some("/app/lib"));
+        assert_eq!(string_alias(&entries, "@scope/pkg/*.ts"), None);
+        assert_eq!(string_alias(&entries, "~library/*.ts"), None);
     }
 }

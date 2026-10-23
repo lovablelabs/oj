@@ -102,6 +102,75 @@ impl HostPolicy {
     }
 }
 
+/// The dev server's base, as Vite's resolveConfig gives it in serve: `""`,
+/// `"./"` and other relative bases are the root, and a URL base keeps only
+/// its path. `None` for the root, which needs no base handling.
+pub(crate) fn dev_base(raw: Option<&str>) -> Option<String> {
+    let raw = raw?;
+    if raw.is_empty() || raw.starts_with('.') {
+        return None;
+    }
+    let path = match raw.split_once("//") {
+        Some((scheme, rest)) if scheme.is_empty() || scheme.ends_with(':') => {
+            rest.find('/').map_or("/", |i| &rest[i..])
+        }
+        _ => raw,
+    };
+    let path = path.split(['?', '#']).next().unwrap_or("/");
+    let base = if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    };
+    (base != "/").then_some(base)
+}
+
+/// Vite's stripBase: the path past `base`, starting with `/`, or `None` when
+/// the path is not under it (`/apple.svg` is not under `/app/`).
+pub(crate) fn strip_base<'a>(path: &'a str, base: &str) -> Option<&'a str> {
+    let base = base.trim_end_matches('/');
+    if path == base {
+        return Some("/");
+    }
+    path.strip_prefix(base).filter(|rest| rest.starts_with('/'))
+}
+
+/// Vite's baseMiddleware: a request under `base` reaches the routes with the
+/// base stripped, so oj's own `/@oj/...` routes answer `/app/@oj/client.js`,
+/// and a page visit to `/` redirects to the base. Unbased requests pass
+/// through, as in Vite's middleware mode: oj's rewritten import URLs carry no
+/// base. Handlers that need the browser's URL read `OriginalUri`.
+pub(crate) async fn base_middleware(
+    State(base): State<Arc<str>>,
+    mut req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = req.uri().path();
+    if let Some(rest) = strip_base(path, &base) {
+        let pq = match req.uri().query() {
+            Some(q) => format!("{rest}?{q}"),
+            None => rest.to_string(),
+        };
+        if let Ok(uri) = pq.parse::<Uri>() {
+            *req.uri_mut() = uri;
+        }
+        return next.run(req).await;
+    }
+    if (path == "/" || path == "/index.html") && !is_websocket_upgrade(req.headers()) {
+        let query = req
+            .uri()
+            .query()
+            .map(|q| format!("?{q}"))
+            .unwrap_or_default();
+        return (
+            StatusCode::FOUND,
+            [(header::LOCATION, format!("{base}{query}"))],
+        )
+            .into_response();
+    }
+    next.run(req).await
+}
+
 pub(crate) async fn host_check_middleware(
     State(state): State<Arc<ServerState>>,
     req: axum::extract::Request,
@@ -309,4 +378,36 @@ pub(crate) async fn apply_dev_headers(
         h.insert(name.clone(), value.clone());
     }
     resp
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{dev_base, strip_base};
+
+    #[test]
+    fn dev_base_resolves_like_vite_serve() {
+        for root in [None, Some(""), Some("./"), Some("/"), Some("./app/")] {
+            assert_eq!(dev_base(root), None, "{root:?}");
+        }
+        assert_eq!(dev_base(Some("/app/")).as_deref(), Some("/app/"));
+        assert_eq!(dev_base(Some("app/")).as_deref(), Some("/app/"));
+        assert_eq!(
+            dev_base(Some("https://cdn.example.com/app/")).as_deref(),
+            Some("/app/")
+        );
+        assert_eq!(
+            dev_base(Some("//cdn.example.com/app/")).as_deref(),
+            Some("/app/")
+        );
+        assert_eq!(dev_base(Some("https://cdn.example.com")), None);
+    }
+
+    #[test]
+    fn strip_base_needs_a_segment_boundary() {
+        assert_eq!(strip_base("/app/x.js", "/app/"), Some("/x.js"));
+        assert_eq!(strip_base("/app/", "/app/"), Some("/"));
+        assert_eq!(strip_base("/app", "/app/"), Some("/"));
+        assert_eq!(strip_base("/apple.svg", "/app/"), None);
+        assert_eq!(strip_base("/x.js", "/app"), None);
+    }
 }
