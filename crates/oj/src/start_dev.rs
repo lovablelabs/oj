@@ -1782,22 +1782,11 @@ fn script_inputs(
     Ok(ScriptInputs { config, app_env })
 }
 
-/// The `.env` vars with an `envPrefix` that the shell does not already set
-/// (the scripts inherit the shell's own value).
-fn prefixed_dotenv_vars(env: &oj_env::Env, app_env: &oj_env::AppEnv) -> Vec<(String, String)> {
-    app_env
-        .loaded()
-        .iter()
-        .filter(|(k, _)| app_env.has_prefix(k) && env.var_os(k).is_none())
-        .cloned()
-        .collect()
-}
-
 /// The `.env` vars the Start scripts (route codegen, the SSR runtime's
-/// `process.env`) see: the mode's vars with an `envPrefix`, the shell winning,
-/// as in Vite's loadEnv.
+/// `process.env`) see: every var of the mode's files, the shell winning, as
+/// TanStack Start's load-env plugin assigns them to `process.env`.
 fn start_script_vars(env: &oj_env::Env, inputs: &ScriptInputs) -> Vec<(String, String)> {
-    prefixed_dotenv_vars(env, &inputs.app_env)
+    crate::start_bundle::dotenv_process_vars(env, &inputs.app_env)
 }
 
 /// [`start_script_vars`] for one command, resolved against the process snapshot.
@@ -4163,7 +4152,7 @@ mod tests {
     // Vite's loadEnv rule for the Start scripts: `.env.<mode>` vars with any
     // configured envPrefix (not just VITE_) pass, unprefixed ones never do.
     #[test]
-    fn start_script_env_honors_env_prefix() {
+    fn start_script_env_carries_every_dotenv_var() {
         let root = tmp("script-env");
         std::fs::write(
             root.join("oj.config.json"),
@@ -4175,14 +4164,15 @@ mod tests {
         let get = |k: &str| vars.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
         assert_eq!(get("VITE_X").as_deref(), Some("1"));
         assert_eq!(get("APP_Y").as_deref(), Some("2"));
-        assert_eq!(get("SECRET_Z"), None);
+        // Server code reads unprefixed secrets: envPrefix only gates what
+        // reaches `import.meta.env` on the client.
+        assert_eq!(get("SECRET_Z").as_deref(), Some("3"));
 
-        // Defaults: VITE_ only.
         let plain = tmp("script-env-plain");
-        std::fs::write(plain.join(".env"), "VITE_X=1\nAPP_Y=2\n").unwrap();
+        std::fs::write(plain.join(".env"), "VITE_X=1\nDATABASE_URL=postgres://x\n").unwrap();
         let vars = start_script_env(&plain, None, "serve", "development").unwrap();
         let names: Vec<&str> = vars.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(names, ["VITE_X"]);
+        assert_eq!(names, ["DATABASE_URL", "VITE_X"]);
     }
 
     // The static Cloudflare hint gates skipping the boot prewarm: true only
@@ -4274,7 +4264,7 @@ mod tests {
 
     // A `.env` value reaches the scripts only when the shell lacks the key.
     #[test]
-    fn prefixed_dotenv_vars_skip_keys_the_shell_sets() {
+    fn dotenv_process_vars_skip_keys_the_shell_sets() {
         let root = tmp("dotenv-shell");
         std::fs::write(root.join(".env"), "VITE_A=file\nVITE_B=file\nOTHER=x\n").unwrap();
         let env = oj_env::Env::from_vars([("VITE_B", "shell")]);
@@ -4285,8 +4275,14 @@ mod tests {
             vec!["VITE_".into()],
             "development",
         );
-        let vars = prefixed_dotenv_vars(&env, &app_env);
-        assert_eq!(vars, vec![("VITE_A".to_string(), "file".to_string())]);
+        let vars = crate::start_bundle::dotenv_process_vars(&env, &app_env);
+        assert_eq!(
+            vars,
+            vec![
+                ("OTHER".to_string(), "x".to_string()),
+                ("VITE_A".to_string(), "file".to_string()),
+            ]
+        );
     }
 
     #[test]

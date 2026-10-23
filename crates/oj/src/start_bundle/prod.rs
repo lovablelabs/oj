@@ -901,7 +901,7 @@ async fn prerender(
     routes: &[String],
 ) -> anyhow::Result<()> {
     let scripts = crate::start_host::ScriptEngine::new(&start.root)?;
-    let env = vec![
+    let mut env = vec![
         (
             "OJ_APP_ROOT".to_string(),
             start.root.to_string_lossy().into_owned(),
@@ -922,6 +922,7 @@ async fn prerender(
         ),
         ("NODE_ENV".to_string(), start.node_env().to_string()),
     ];
+    env.extend(super::dotenv_process_vars(oj_env::get(), &start.app_env));
     scripts
         .run_async(&start.cache.join("prerender.mjs"), &env, "prerender")
         .await

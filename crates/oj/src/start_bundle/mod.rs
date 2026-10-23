@@ -50,6 +50,22 @@ pub(crate) struct StartConfig {
     pub base: String,
 }
 
+/// TanStack Start's load-env plugin: `Object.assign(process.env,
+/// loadEnv(mode, root, ""))`, so server code sees every var of the mode's
+/// `.env` files, not only `envPrefix` ones. A var the shell sets keeps the
+/// shell's value.
+pub(crate) fn dotenv_process_vars(
+    env: &oj_env::Env,
+    app_env: &oj_env::AppEnv,
+) -> Vec<(String, String)> {
+    app_env
+        .loaded()
+        .iter()
+        .filter(|(k, _)| env.var_os(k).is_none())
+        .cloned()
+        .collect()
+}
+
 impl StartConfig {
     pub fn node_env(&self) -> &str {
         self.app_env.node_env()
