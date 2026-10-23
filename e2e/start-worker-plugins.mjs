@@ -8,8 +8,12 @@
 // lifecycle: buildStart, resolveId/load, moduleParsed (lowered JS),
 // generateBundle over the worker's output (what it emits ships with the
 // client, a chunk it rewrites ships rewritten), closeBundle. The app's own
-// plugins never see a worker's modules. oj ran the app plugins in the worker
-// bundle without their lifecycle and ignored `worker.plugins`.
+// plugins never see a worker's modules, but share module state with the
+// worker's: under Vite both sets live in one process, so a config-level
+// collector the worker plugins fill is what the app's plugins read at
+// closeBundle. oj ran the app plugins in the worker bundle without their
+// lifecycle and ignored `worker.plugins`, then ran the worker plugins on a
+// host of their own, a separate realm whose state the app never saw.
 //
 // The bundle also follows `worker.format` and `worker.rolldownOptions`. The
 // default format is iife: the worker inlines its dynamic imports, starts as a
@@ -78,6 +82,8 @@ config = config.replace(
   `import { writeFileSync } from "node:fs";
 
 let workerPluginCalls = 0;
+// Filled by the worker plugins, read by the app's: one realm, as in Vite.
+const sharedWithApp: string[] = [];
 function workerPlugins() {
   workerPluginCalls++;
   const seen: Record<string, string[]> = {};
@@ -102,7 +108,10 @@ function workerPlugins() {
       },
       moduleParsed(info: any) {
         const name = info.id.split("/").pop();
-        if (/^(worker|helper)\\.ts$/.test(name)) add("moduleParsed", name + ":" + !info.code.includes(": number"));
+        if (/^(worker|helper)\\.ts$/.test(name)) {
+          add("moduleParsed", name + ":" + !info.code.includes(": number"));
+          sharedWithApp.push(name);
+        }
       },
       generateBundle(_o: any, bundle: any) {
         for (const o of Object.values(bundle) as any[]) {
@@ -134,7 +143,7 @@ function appWatcher() {
       if (info.id.includes("/wk/") && !info.id.includes("?worker")) seen.push("moduleParsed " + info.id);
     },
     closeBundle() {
-      writeFileSync(${JSON.stringify(appSeen)}, JSON.stringify(seen));
+      writeFileSync(${JSON.stringify(appSeen)}, JSON.stringify({ seen, shared: [...sharedWithApp].sort() }));
     },
   };
 }
@@ -199,7 +208,11 @@ try {
   );
 
   const appHooks = JSON.parse(fs.readFileSync(appSeen, "utf8"));
-  must(appHooks.length === 0, `the app's plugins saw the worker's modules: ${JSON.stringify(appHooks)}`);
+  must(appHooks.seen.length === 0, `the app's plugins saw the worker's modules: ${JSON.stringify(appHooks.seen)}`);
+  must(
+    JSON.stringify(appHooks.shared) === JSON.stringify(["helper.ts", "worker.ts"]),
+    `the app's plugins do not share the worker plugins' module state: ${JSON.stringify(appHooks.shared)}`,
+  );
 
   must(
     fs.existsSync(path.join(client, "worker-plugin.txt")),

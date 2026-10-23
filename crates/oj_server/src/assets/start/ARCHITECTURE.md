@@ -57,7 +57,7 @@ The bundles (`crates/oj/src/start_bundle/`):
   out), driven from rolldown's hooks with Vite's order around its core
   resolver; a plugin's `this.resolve` ends in the bundle's own resolution
   through a reverse RPC. A build shares one host across its environments; a
-  worker bundle gets its own.
+  worker bundle gets a plugin container of its own on that host.
 - `alias.rs`: the app's `resolve.alias`, ahead of every plugin.
 - `assets.rs`: Vite's asset, stylesheet and worker conventions (`?raw`, `?url`,
   `?inline`, `?worker`, bare asset imports, CSS and CSS modules) and the
@@ -295,9 +295,14 @@ back, never copies.
   and the enforce:"pre" plugins' unordered ones) the bundle's assets and the
   files emitted so far are dropped.
 - A `?worker` entry is bundled with `worker.plugins` alone, as Vite's
-  `bundleWorkerEntry` does: a fresh host per worker bundle (the option is a
-  function), `configResolved` with `isWorker`, the whole bundle lifecycle,
-  and what its plugins emit shipped with the client. The bundle takes
+  `bundleWorkerEntry` does: a fresh plugin set per worker bundle (the option
+  is a function, called on the app's loaded config), `configResolved` with
+  `isWorker`, the whole bundle lifecycle, and what its plugins emit shipped
+  with the client. The set runs in a container of the app's own host
+  (`openWorkerContainer`), in the realm of the app's plugins, so the two share
+  module state as they do in Vite's one process; the container has its own
+  plugin list, resolved config, emitted files and module graph, and its
+  `this.resolve` ends in the worker's bundle. The bundle takes
   `worker.rolldownOptions` (not the app's `build.rolldownOptions`) and
   `worker.format`, iife by default: a classic script whose `import.meta.url`
   is `self.location.href`, started without `type: "module"`; "es" splits

@@ -1,25 +1,40 @@
 use super::*;
 use std::sync::Arc;
 
+/// The host's own plugin container: the environment it boots in.
+pub(crate) const MAIN_CONTAINER: u32 = 0;
+
+/// A handle on one plugin container of a plugin host: the host's own
+/// (MAIN_CONTAINER), or a worker bundle's ([`PluginHost::open_worker_container`]).
+/// Every container lives in the one engine and realm the host runs.
 pub struct PluginHost {
-    /// Engine hosting plugin-host.mjs; an Option so `declare_gone`/`shutdown` can
-    /// take + abandon it. A thread wedged in NATIVE code leaks with its isolate.
-    engine: Mutex<Option<std::sync::Arc<oj_js::JsEngine>>>,
-    /// The plugin-host.mjs path on disk, the module every hook call targets.
-    host_module: String,
+    pub(crate) core: std::sync::Arc<HostCore>,
+    /// The container this handle's hook calls address.
+    container: u32,
     /// Live hook plan: starts fail-open, overwritten only by a successful fetch,
     /// reverts to fail-open on engine respawn; a failed fetch is never cached.
     hook_plan: std::sync::RwLock<BuildHookPlan>,
     hook_plan_fetched: std::sync::atomic::AtomicBool,
     hook_plan_prime_started: std::sync::atomic::AtomicBool,
+}
+
+/// A plugin host's engine and its lifecycle (boot, pushes, revive), shared by
+/// every container on it.
+pub(crate) struct HostCore {
+    /// Engine hosting plugin-host.mjs; an Option so `declare_gone`/`shutdown` can
+    /// take + abandon it. A thread wedged in NATIVE code leaks with its isolate.
+    engine: Mutex<Option<std::sync::Arc<oj_js::JsEngine>>>,
+    /// The plugin-host.mjs path on disk, the module every hook call targets.
+    host_module: String,
     /// Wired once at server boot (the reader clones per push, lock-free).
     ws_out: std::sync::OnceLock<tokio::sync::broadcast::Sender<String>>,
     /// `{ ojServer: { action, ... } }` pushes from the host: a plugin invalidating
     /// a module via server.moduleGraph, or server.restart(). Wired once.
     server_events: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<serde_json::Value>>,
-    /// The host's async reverse RPC (`{ rpc, method, args }` pushes), answered
-    /// by the dev server with [`PluginHost::rpc_reply`]. Wired once.
-    rpc_requests: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<HostRpc>>,
+    /// The host's async reverse RPC (`{ rpc, method, args, container }`
+    /// pushes), routed to the asking container's handler, which answers with
+    /// [`PluginHost::rpc_reply`].
+    rpc_routes: Mutex<std::collections::HashMap<u32, tokio::sync::mpsc::UnboundedSender<HostRpc>>>,
     /// Host's `{ ojServeInfo }` push: None until top-level init completes; late
     /// subscribers can still activate the middleware path.
     serve_info_push: tokio::sync::watch::Sender<Option<ServeInfo>>,
@@ -57,7 +72,9 @@ pub struct PluginHost {
     /// Set by `shutdown()`: retired on purpose, must never be revived.
     shut_down: std::sync::atomic::AtomicBool,
     /// Weak self-handle so `&self` methods can hand a fresh generation's tasks their `Arc`s.
-    self_ref: std::sync::OnceLock<std::sync::Weak<PluginHost>>,
+    self_ref: std::sync::OnceLock<std::sync::Weak<HostCore>>,
+    /// The handle on the host's own container, whose hook plan a respawn resets.
+    main: std::sync::OnceLock<std::sync::Weak<PluginHost>>,
 }
 
 /// The dev listener's bound (port, interface): hosts booting after the bind
@@ -65,7 +82,7 @@ pub struct PluginHost {
 pub(crate) static DEV_LISTENER: Mutex<Option<(u16, String)>> = Mutex::new(None);
 /// Every spawned host, weakly: the bind-time announce must reach hosts booted
 /// before the listener existed (the normal boot order).
-pub(crate) static LIVE_HOSTS: Mutex<Vec<std::sync::Weak<PluginHost>>> = Mutex::new(Vec::new());
+pub(crate) static LIVE_HOSTS: Mutex<Vec<std::sync::Weak<HostCore>>> = Mutex::new(Vec::new());
 
 /// Dev listener bound: remember for hosts yet to boot, tell every live one.
 /// The stub `httpServer` emits "listening" only on this signal (Vite parity: the socket really accepts).
@@ -127,7 +144,7 @@ fn ensure_boot_module(root: &Path) -> Result<String, String> {
         .into_owned())
 }
 
-/// See [`PluginHost::boot`].
+/// See [`HostCore::boot`].
 pub(crate) struct BootContext {
     boot_seed: serde_json::Value,
     root: PathBuf,
@@ -141,7 +158,7 @@ pub(crate) struct BootContext {
     import_meta_env: Arc<std::sync::OnceLock<Arc<oj_compiler::ImportMetaEnv>>>,
 }
 
-/// See [`PluginHost::revive`].
+/// See [`HostCore::revive`].
 pub(crate) struct ReviveState {
     /// The live engine's generation; bumped by each revive.
     pub(crate) generation: u64,
@@ -410,9 +427,15 @@ impl std::fmt::Debug for PluginHost {
     }
 }
 
+impl std::fmt::Debug for HostCore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HostCore")
+    }
+}
+
 /// A host dropped without an explicit shutdown abandons its engine: the last
 /// `Arc<JsEngine>` drop must not JOIN a thread parked in a never-settling init.
-impl Drop for PluginHost {
+impl Drop for HostCore {
     fn drop(&mut self) {
         if let Some(engine) = self
             .engine
@@ -566,15 +589,12 @@ impl PluginHost {
             "initialJson": config_json,
             "cacheRoot": oj_cache::cache_root(root),
         });
-        let host = std::sync::Arc::new(PluginHost {
+        let core = std::sync::Arc::new(HostCore {
             engine: Mutex::new(None),
             host_module: script.to_string_lossy().into_owned(),
-            hook_plan: std::sync::RwLock::new(BuildHookPlan::fail_open()),
-            hook_plan_fetched: std::sync::atomic::AtomicBool::new(false),
-            hook_plan_prime_started: std::sync::atomic::AtomicBool::new(false),
             ws_out: std::sync::OnceLock::new(),
             server_events: std::sync::OnceLock::new(),
-            rpc_requests: std::sync::OnceLock::new(),
+            rpc_routes: Mutex::new(std::collections::HashMap::new()),
             serve_info_push: tokio::sync::watch::channel(None).0,
             initialized: tokio::sync::watch::channel(false).0,
             host_gone: tokio::sync::watch::channel(false).0,
@@ -606,690 +626,21 @@ impl PluginHost {
             }),
             shut_down: std::sync::atomic::AtomicBool::new(false),
             self_ref: std::sync::OnceLock::new(),
+            main: std::sync::OnceLock::new(),
         });
-        let _ = host.self_ref.set(std::sync::Arc::downgrade(&host));
+        let _ = core.self_ref.set(std::sync::Arc::downgrade(&core));
+        let host = std::sync::Arc::new(PluginHost::over(
+            std::sync::Arc::clone(&core),
+            MAIN_CONTAINER,
+        ));
+        let _ = core.main.set(std::sync::Arc::downgrade(&host));
         LIVE_HOSTS
             .lock()
             .unwrap()
-            .push(std::sync::Arc::downgrade(&host));
+            .push(std::sync::Arc::downgrade(&core));
         let warm = prewarm.take().map(|p| (p.engine, p.post_rx));
-        Self::ignite_with(&host, 0, warm).map_err(|e| anyhow::anyhow!("{e}"))?;
+        HostCore::ignite_with(&core, 0, warm).map_err(|e| anyhow::anyhow!("{e}"))?;
         Ok(host)
-    }
-
-    /// Boot one engine GENERATION onto `host` (initial spawn and every revive). A
-    /// superseded `generation` abandons the just-spawned engine: racing ignites must never leave a live loser.
-    fn ignite(host: &std::sync::Arc<PluginHost>, generation: u64) -> Result<(), String> {
-        Self::ignite_with(host, generation, None)
-    }
-
-    fn ignite_with(
-        host: &std::sync::Arc<PluginHost>,
-        generation: u64,
-        warm: Option<(
-            std::sync::Arc<oj_js::JsEngine>,
-            tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
-        )>,
-    ) -> Result<(), String> {
-        host.write_host_module()?;
-        // Pushes arrive as values on `post_rx`, so nothing a plugin prints can
-        // splice into the protocol.
-        let (engine, post_rx) = match warm {
-            Some(warm) => warm,
-            None => {
-                let (post_tx, post_rx) = tokio::sync::mpsc::unbounded_channel();
-                (std::sync::Arc::new(host.spawn_engine(post_tx)?), post_rx)
-            }
-        };
-        {
-            let revive = host.revive.lock().unwrap();
-            // A shutdown racing this boot must not gain a live engine it can no
-            // longer take, and a newer revive must not gain a live loser.
-            if revive.generation != generation
-                || host.shut_down.load(std::sync::atomic::Ordering::SeqCst)
-            {
-                drop(revive);
-                engine.abandon();
-                return Err("superseded by a newer respawn or a shutdown".into());
-            }
-            *host.engine.lock().unwrap() = Some(std::sync::Arc::clone(&engine));
-        }
-        Self::spawn_boot_task(host, engine, generation);
-        Self::spawn_push_dispatcher(host, post_rx, generation);
-        Self::spawn_stall_monitor(host);
-        Ok(())
-    }
-
-    /// Written atomically (tmp + rename): hosts spawn concurrently, and a
-    /// truncating write could hand a sibling engine a half-written module.
-    fn write_host_module(&self) -> Result<(), String> {
-        let script = PathBuf::from(&self.host_module);
-        if let Some(parent) = script.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        let _ = ensure_asset(
-            oj_cache::cache_root(&self.boot.root).as_path(),
-            "discovered-deps.mjs",
-            DISCOVERED_DEPS_JS,
-        );
-        ensure_asset(
-            oj_cache::cache_root(&self.boot.root).as_path(),
-            "vite-config-node.mjs",
-            VITE_CONFIG_NODE_JS,
-        )
-        .map_err(|e| e.to_string())?;
-        ensure_asset(
-            oj_cache::cache_root(&self.boot.root).as_path(),
-            "native-plugins.mjs",
-            NATIVE_PLUGINS_JS,
-        )
-        .map_err(|e| e.to_string())?;
-        ensure_asset(
-            oj_cache::cache_root(&self.boot.root).as_path(),
-            "vite-html.mjs",
-            VITE_HTML_JS,
-        )
-        .map_err(|e| e.to_string())?;
-        super::ensure_glob_assets(oj_cache::cache_root(&self.boot.root).as_path())
-            .map_err(|e| e.to_string())?;
-        if std::fs::read(&script).ok().as_deref() != Some(PLUGIN_HOST_JS.as_bytes()) {
-            let tmp = script.with_extension(format!("tmp-{}.mjs", std::process::id()));
-            std::fs::write(&tmp, PLUGIN_HOST_JS).map_err(|e| e.to_string())?;
-            std::fs::rename(&tmp, &script).map_err(|e| e.to_string())?;
-        }
-        Ok(())
-    }
-
-    /// A fresh engine whose pushes arrive on `post_tx` and whose reverse ctx-RPC
-    /// is answered by [`ctx_rpc`].
-    fn spawn_engine(
-        &self,
-        post_tx: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
-    ) -> Result<oj_js::JsEngine, String> {
-        new_host_engine(
-            &self.boot.root,
-            self.boot.memory_limit_bytes,
-            self.boot.registry.clone(),
-            Arc::clone(&self.boot.import_meta_env),
-            post_tx,
-        )
-    }
-
-    /// BOOT task: seed the host's identity, then trigger top-level init via a trivial
-    /// export. No deadline (the Rust-side watches own boot patience); a top-level throw declares the host gone.
-    fn spawn_boot_task(
-        host: &std::sync::Arc<PluginHost>,
-        engine: std::sync::Arc<oj_js::JsEngine>,
-        generation: u64,
-    ) {
-        let host = std::sync::Arc::clone(host);
-        let seed = host.boot.boot_seed.clone();
-        let host_module = host.host_module.clone();
-        tokio::spawn(async move {
-            let seeded = match ensure_boot_module(&host.boot.root) {
-                Ok(boot_module) => engine
-                    .call(boot_module, "seed", vec![seed], None)
-                    .await
-                    .map_err(|e| e.to_string()),
-                Err(e) => Err(e),
-            };
-            if let Err(e) = seeded {
-                host.declare_gone(&format!("plugin host boot prelude failed: {e}"), generation);
-                return;
-            }
-            match engine
-                .call(host_module, "ojHostReady", Vec::new(), None)
-                .await
-            {
-                // The `{ ojInit }` push already flipped `initialized`; the reply is
-                // the error path's carrier. Deliver a bind-time announce this host missed.
-                Ok(_) => {
-                    let listener = DEV_LISTENER.lock().unwrap().clone();
-                    if let Some((port, interface)) = listener {
-                        host.announce_dev_listener(port, &interface);
-                    }
-                }
-                Err(oj_js::EngineError::Closed) => {}
-                Err(e) => {
-                    host.declare_gone(
-                        &format!("plugin host failed to initialize: {e}"),
-                        generation,
-                    );
-                }
-            }
-        });
-    }
-
-    /// The PUSH DISPATCHER: control pushes arrive whole on the engine channel;
-    /// hook replies come back on their own call futures.
-    fn spawn_push_dispatcher(
-        host: &std::sync::Arc<PluginHost>,
-        mut post_rx: tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
-        generation: u64,
-    ) {
-        let host = std::sync::Arc::clone(host);
-        tokio::spawn(async move {
-            while let Some(msg) = post_rx.recv().await {
-                // Drain and drop pushes from a superseded or declared-dead generation:
-                // a stale `ojInit` would open the call gate before the NEW engine evaluated its module.
-                if *host.host_gone.borrow() || host.revive.lock().unwrap().generation != generation
-                {
-                    continue;
-                }
-                host.dispatch_push(&msg);
-            }
-            // Push channel closed = engine thread exited: fail future calls fast.
-            // Generation-guarded: an abandoned engine's late exit must not kill the fresh generation.
-            let revive = host.revive.lock().unwrap();
-            if revive.generation == generation {
-                drop(revive);
-                let _ = host.host_gone.send_replace(true);
-            }
-        });
-    }
-
-    fn dispatch_push(self: &std::sync::Arc<Self>, msg: &serde_json::Value) {
-        if let Some(id) = msg.get("rpc").and_then(|v| v.as_u64()) {
-            let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
-            let args = match msg.get("args") {
-                Some(serde_json::Value::Array(args)) => args.clone(),
-                _ => Vec::new(),
-            };
-            let rpc = HostRpc {
-                id,
-                method: method.to_string(),
-                args,
-            };
-            // Without a server to answer (`oj build`), fail the call: an
-            // unanswered one would leave its hook awaiting forever.
-            match self.rpc_requests.get() {
-                Some(tx) => {
-                    if let Err(e) = tx.send(rpc) {
-                        self.rpc_reply(id, Err(format!("no handler for {}", e.0.method)));
-                    }
-                }
-                None => self.rpc_reply(id, Err(format!("no handler for {method}"))),
-            }
-        } else if let Some(info) = msg.get("ojServeInfo") {
-            self.serve_info_push
-                .send_replace(Some(ServeInfo::from_json(info)));
-            self.mark_initialized();
-        } else if msg.get("ojInit").is_some() {
-            // Unconditional init-complete, sent in BOTH modes: build mode
-            // has no ojServeInfo push, and the gate must not wait for the first reply.
-            self.mark_initialized();
-        } else if msg.get("ojResyncDone").is_some() {
-            // An enqueued resync actually ran; see resync_done.
-            self.resync_done.send_modify(|c| *c += 1);
-        } else if msg.get("ojInitProgress").is_some() {
-            // Real init milestone: wedge evidence is stale, the stall monitor re-arms.
-            self.init_progress_seen.send_modify(|c| *c += 1);
-            let _ = self.init_failed.send_replace(false);
-        } else if let Some(ev) = msg.get("ojServer") {
-            if let Some(tx) = self.server_events.get() {
-                let _ = tx.send(ev.clone());
-            }
-        } else if let Some(ws) = msg.get("ojWs") {
-            if let Some(tx) = self.ws_out.get() {
-                let payload = ws_push_payload(ws);
-                if !payload.is_empty() {
-                    let _ = tx.send(payload);
-                }
-            }
-        }
-    }
-
-    /// Init completed (or a reply proved it): open the gate, clear the evidence.
-    fn mark_initialized(&self) {
-        let _ = self.initialized.send_replace(true);
-        let _ = self.init_failed.send_replace(false);
-    }
-
-    /// Init STALL MONITOR, wedge evidence independent of any caller's window: a
-    /// full RPC-scale window with NO milestone flips `init_failed`, progress clears it. Calls never consult it.
-    fn spawn_stall_monitor(host: &std::sync::Arc<PluginHost>) {
-        let host = std::sync::Arc::clone(host);
-        let stall_wait = host.boot.stall_wait;
-        tokio::spawn(async move {
-            let mut init_rx = host.initialized.subscribe();
-            let mut gone_rx = host.host_gone.subscribe();
-            let mut prog_rx = host.init_progress_seen.subscribe();
-            loop {
-                if *init_rx.borrow_and_update() || *gone_rx.borrow_and_update() {
-                    return;
-                }
-                let _ = prog_rx.borrow_and_update();
-                let deadline = tokio::time::Instant::now() + stall_wait;
-                let mut stalled = false;
-                tokio::select! {
-                    biased;
-                    changed = init_rx.changed() => { if changed.is_err() { return; } }
-                    changed = gone_rx.changed() => { if changed.is_err() { return; } }
-                    changed = prog_rx.changed() => { if changed.is_err() { return; } }
-                    _ = tokio::time::sleep_until(deadline) => { stalled = true; }
-                }
-                if stalled {
-                    let _ = host.init_failed.send_replace(true);
-                    // Window spent: re-arm only on new progress; the reader clears the evidence.
-                    loop {
-                        tokio::select! {
-                            biased;
-                            changed = init_rx.changed() => {
-                                if changed.is_err() || *init_rx.borrow() { return; }
-                            }
-                            changed = gone_rx.changed() => {
-                                if changed.is_err() || *gone_rx.borrow() { return; }
-                            }
-                            changed = prog_rx.changed() => {
-                                if changed.is_err() { return; }
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        });
-    }
-
-    /// Whether a dead host may still come back: budget left, and never after an
-    /// on-purpose `shutdown`.
-    pub fn can_revive(&self) -> bool {
-        !self.shut_down.load(std::sync::atomic::Ordering::SeqCst)
-            && self.revive.lock().unwrap().attempts < PLUGIN_HOST_RESPAWN_LIMIT
-    }
-
-    /// Revive a dead host with a fresh generation, bounded by lifetime budget and
-    /// spacing (see `ReviveState`). Returns whether the host is now (or already was) live.
-    fn try_revive(&self) -> bool {
-        if self.shut_down.load(std::sync::atomic::Ordering::SeqCst) {
-            return false;
-        }
-        let Some(host) = self.self_ref.get().and_then(std::sync::Weak::upgrade) else {
-            return false;
-        };
-        let mut revive = self.revive.lock().unwrap();
-        if !*self.host_gone.borrow() {
-            // A concurrent caller already revived it (or the report was stale).
-            return true;
-        }
-        if revive.attempts >= PLUGIN_HOST_RESPAWN_LIMIT {
-            return false;
-        }
-        if let Some(last) = revive.last {
-            if last.elapsed() < PLUGIN_HOST_RESPAWN_SPACING {
-                // Too soon: fail fast instead of stacking engines against a recurring wedge.
-                return false;
-            }
-        }
-        // Re-registering an addon whose every runtime is gone can crash the process
-        // (napi-rs pre-3.10): refuse only for addons this host's own teardown orphaned; no attempt is consumed.
-        let orphaned = oj_js::addons_pending_unsafe_reregistration();
-        if let Some(addon) = orphaned
-            .iter()
-            .find(|p| !revive.pending_before.contains(*p))
-        {
-            revive.last = Some(std::time::Instant::now());
-            eprintln!(
-                "oj: not respawning the plugin host: native addon {} was torn down with it and re-registering can crash (napi-rs before 3.10); restart the dev server to recover",
-                addon.display()
-            );
-            oj_diag::emit(
-                oj_diag::Event::new(
-                    oj_diag::Kind::HostExhausted,
-                    format!(
-                        "not respawning the plugin host: native addon {} was torn down with it",
-                        addon.display()
-                    ),
-                )
-                .source(oj_diag::Source::Host),
-            );
-            return false;
-        }
-        revive.attempts += 1;
-        revive.last = Some(std::time::Instant::now());
-        revive.generation += 1;
-        revive.reported = false;
-        eprintln!(
-            "oj: respawning the plugin host (attempt {} of {PLUGIN_HOST_RESPAWN_LIMIT})",
-            revive.attempts
-        );
-        oj_diag::emit(
-            oj_diag::Event::new(
-                oj_diag::Kind::HostRespawn,
-                format!(
-                    "respawning the plugin host (attempt {} of {PLUGIN_HOST_RESPAWN_LIMIT})",
-                    revive.attempts
-                ),
-            )
-            .source(oj_diag::Source::Host)
-            .warn(),
-        );
-        self.reset_generation_state();
-        let generation = revive.generation;
-        drop(revive);
-        match Self::ignite(&host, generation) {
-            Ok(()) => {
-                // Lift the death flag last: a caller sees a dead host or a fully re-armed one.
-                let _ = self.host_gone.send_replace(false);
-                if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                    let host = std::sync::Arc::clone(&host);
-                    handle.spawn(async move { host.ensure_hook_plan().await });
-                }
-                true
-            }
-            Err(e) => {
-                eprintln!("oj: plugin host respawn failed: {e}");
-                oj_diag::emit(
-                    oj_diag::Event::new(
-                        oj_diag::Kind::HostRespawn,
-                        format!("plugin host respawn failed: {e}"),
-                    )
-                    .source(oj_diag::Source::Host),
-                );
-                false
-            }
-        }
-    }
-
-    /// Reset per-generation state BEFORE the new engine can push: init pending
-    /// again, evidence cleared, stale serve info dropped. The fresh engine
-    /// re-evaluates the plugins file: hook plan fail-open now, the refetch restores precise gating.
-    fn reset_generation_state(&self) {
-        use std::sync::atomic::Ordering;
-        let _ = self.initialized.send_replace(false);
-        let _ = self.init_failed.send_replace(false);
-        self.serve_info_push.send_replace(None);
-        *self.hook_plan.write().unwrap() = BuildHookPlan::fail_open();
-        self.hook_plan_fetched.store(false, Ordering::Release);
-        self.hook_plan_prime_started.store(false, Ordering::Release);
-        *self.spawned.lock().unwrap() = tokio::time::Instant::now();
-    }
-
-    /// Fire-and-forget `serverListening` delivery (see [`dev_listener_bound`]):
-    /// a failure only means this host's plugins never see "listening".
-    fn announce_dev_listener(self: &std::sync::Arc<Self>, port: u16, interface: &str) {
-        let host = std::sync::Arc::clone(self);
-        let interface = interface.to_string();
-        tokio::spawn(async move {
-            let _ = host
-                .call("serverListening", &[&port.to_string(), &interface])
-                .await;
-        });
-    }
-
-    async fn call(&self, hook: &str, args: &[&str]) -> Result<Option<String>, String> {
-        if *self.host_gone.borrow() && !self.try_revive() {
-            return Err("plugin host exited".into());
-        }
-        self.wait_for_init().await?;
-        self.run_hook(hook, args).await
-    }
-
-    /// Init gate, BEFORE anything reaches the engine: the host answers hooks
-    /// only after top-level init, and a job submitted to a wedged mid-init
-    /// isolate would queue behind the wedge and be blamed on the hook.
-    /// Deliberately UNBOUNDED, like a Vite request (which can only exist
-    /// after `initServer` resolved): elapsed time is a slow boot, not a
-    /// wedge, so it only logs; the stall monitor owns wedge evidence, and
-    /// only host death (host_gone) fails the wait.
-    async fn wait_for_init(&self) -> Result<(), String> {
-        let mut init_rx = self.initialized.subscribe();
-        if *init_rx.borrow_and_update() {
-            return Ok(());
-        }
-        let mut host_gone_rx = self.host_gone.subscribe();
-        // A death flipped before this subscribe is already "seen" (changed()
-        // never fires for it): consult the value once after subscribing.
-        if *host_gone_rx.borrow_and_update() {
-            return Err("plugin host exited".into());
-        }
-        let mut progress = tokio::time::interval_at(
-            tokio::time::Instant::now() + std::time::Duration::from_secs(30),
-            std::time::Duration::from_secs(30),
-        );
-        loop {
-            tokio::select! {
-                biased;
-                changed = init_rx.changed() => {
-                    if changed.is_err() || *init_rx.borrow() {
-                        return Ok(());
-                    }
-                }
-                changed = host_gone_rx.changed() => {
-                    if changed.is_err() || *host_gone_rx.borrow() {
-                        return Err("plugin host exited".into());
-                    }
-                }
-                _ = progress.tick() => self.log_init_progress(),
-            }
-        }
-    }
-
-    /// One "still initializing" line per interval across concurrent waiters.
-    fn log_init_progress(&self) {
-        let elapsed = self.spawned.lock().unwrap().elapsed().as_secs();
-        let mut last = self
-            .init_progress
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if last.elapsed().as_secs() >= 29 {
-            *last = std::time::Instant::now();
-            eprintln!("oj: plugin host still initializing ({elapsed}s)…");
-        }
-    }
-
-    /// Runs one hook with NO deadline of its own: Vite runs plugin work
-    /// unbounded, so elapsed time alone never fails a call. Liveness is
-    /// PROBED instead: each probe window a no-op export is called, and a
-    /// parked event loop answers it instantly however long the hook has been
-    /// awaiting (that just logs progress). A probe met with total silence
-    /// for two windows means the isolate thread is wedged — blocked in
-    /// native code, or spinning in synchronous JS — so declare the host
-    /// gone; the next call revives a fresh one.
-    async fn run_hook(&self, hook: &str, args: &[&str]) -> Result<Option<String>, String> {
-        // Generation read before the engine: a racing revive makes the pair stale
-        // (probe verdict ignored), never a stale generation blaming a fresh engine.
-        let generation = self.revive.lock().unwrap().generation;
-        let engine = self
-            .engine
-            .lock()
-            .unwrap()
-            .clone()
-            .ok_or_else(|| "plugin host exited".to_string())?;
-        let call = engine.call(
-            self.host_module.clone(),
-            "ojRun",
-            vec![
-                serde_json::Value::String(hook.to_string()),
-                serde_json::Value::Array(
-                    args.iter()
-                        .map(|a| serde_json::Value::String((*a).to_string()))
-                        .collect(),
-                ),
-            ],
-            None,
-        );
-        tokio::pin!(call);
-        let started = tokio::time::Instant::now();
-        let mut probe = tokio::time::interval_at(started + self.probe_wait, self.probe_wait);
-        probe.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            tokio::select! {
-                biased;
-                r = &mut call => return self.finish_call(hook, generation, r),
-                _ = self.host_gone_wait() => return Err("plugin host exited".into()),
-                _ = probe.tick() => {
-                    // The probe is deliberately UNGUARDED (no engine deadline):
-                    // an armed watchdog terminates whatever executes on the
-                    // isolate, which could be someone else's healthy work.
-                    let ping = engine.call(self.host_module.clone(), "ojPing", Vec::new(), None);
-                    match tokio::time::timeout(2 * self.probe_wait, ping).await {
-                        Ok(Err(oj_js::EngineError::Closed)) => {
-                            return Err("plugin host exited".into());
-                        }
-                        Ok(_) => {
-                            eprintln!(
-                                "oj: {hook} has been running for {}s (the plugin host is responsive)…",
-                                started.elapsed().as_secs()
-                            );
-                        }
-                        Err(_) => {
-                            let msg = format!(
-                                "plugin host unresponsive for {}s running {hook} (the engine stopped scheduling)",
-                                (2 * self.probe_wait).as_secs()
-                            );
-                            self.declare_gone(&msg, generation);
-                            return Err(msg);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// Maps one engine reply to the hook result, latching init or death as it proves.
-    fn finish_call(
-        &self,
-        hook: &str,
-        generation: u64,
-        result: Result<serde_json::Value, oj_js::EngineError>,
-    ) -> Result<Option<String>, String> {
-        match result {
-            Ok(value) => {
-                // Any reply proves top-level init completed. Generation-guarded: a
-                // reply from a replaced engine must not open the gate for the new one.
-                if self.revive.lock().unwrap().generation == generation {
-                    self.mark_initialized();
-                }
-                Ok(match value {
-                    serde_json::Value::Null => None,
-                    serde_json::Value::String(s) => Some(s),
-                    other => Some(other.to_string()),
-                })
-            }
-            // Defensive: hook calls carry no deadline, so this arm is only
-            // reachable through an engine-internal termination.
-            Err(oj_js::EngineError::Deadline) => Err(format!(
-                "plugin host abandoned {hook} (execution terminated)"
-            )),
-            Err(oj_js::EngineError::Closed) => Err("plugin host exited".into()),
-            Err(oj_js::EngineError::MemoryLimit) => {
-                // A near-limit heap is a property of the isolate, not this call:
-                // declare it gone, the next call revives a fresh one.
-                let msg = format!(
-                    "plugin host exceeded its memory limit ({}MB; raise OJ_PLUGIN_MEMORY_MB) running {hook}",
-                    self.boot.memory_limit_bytes / (1024 * 1024)
-                );
-                self.declare_gone(&msg, generation);
-                Err(msg)
-            }
-            Err(oj_js::EngineError::Boot(e)) => Err(e),
-            Err(oj_js::EngineError::Js(e)) => {
-                // A throwing hook still proves the host is up and serving.
-                self.mark_initialized();
-                Err(e)
-            }
-        }
-    }
-
-    /// Treat the host as dead NOW: abandon the engine and flip `host_gone`; the next
-    /// call may revive it. A report about a since-replaced generation is stale and must not kill the replacement.
-    pub(crate) fn declare_gone(&self, why: &str, generation: u64) {
-        let mut revive = self.revive.lock().unwrap();
-        if !first_death_report(&mut revive, generation) {
-            return;
-        }
-        // Snapshot addons ALREADY orphaned before this death, so the revive gate
-        // can tell the dead generation's from someone else's (see `pending_before`).
-        revive.pending_before = oj_js::addons_pending_unsafe_reregistration()
-            .into_iter()
-            .collect();
-        let rss = process_rss_mb()
-            .map(|m| format!(" (process rss {m}MB)"))
-            .unwrap_or_default();
-        eprintln!("oj: {why}; treating the plugin host as gone{rss}");
-        oj_diag::emit(
-            oj_diag::Event::new(
-                oj_diag::Kind::HostGone,
-                format!("{why}; treating the plugin host as gone{rss}"),
-            )
-            .source(oj_diag::Source::Host),
-        );
-        if let Some(engine) = self.engine.lock().unwrap().take() {
-            self.retire_engine(engine, &mut revive);
-        }
-        drop(revive);
-        let _ = self.host_gone.send_replace(true);
-    }
-
-    /// KEEPER sequence: register live addons BEFORE the abandon (the open job
-    /// channel keeps their env alive until then); the spacing stamp defers the first revive past the keeper.
-    fn retire_engine(&self, engine: std::sync::Arc<oj_js::JsEngine>, revive: &mut ReviveState) {
-        let addons = oj_js::addons_with_live_registrations();
-        if addons.is_empty() {
-            engine.abandon();
-            return;
-        }
-        revive.last = Some(std::time::Instant::now());
-        let root = self.boot.root.clone();
-        let registry = self.boot.registry.clone();
-        let guard = AbandonOnDrop(Some(engine));
-        tokio::spawn(async move {
-            let _guard = guard;
-            if let Err(e) = keep_addons_alive(&root, &addons, registry).await {
-                eprintln!(
-                    "oj: native-addon keeper unavailable ({e}); a plugin host respawn that would re-register an orphaned addon will be refused"
-                );
-            }
-        });
-    }
-
-    /// Whether the host finished its top-level init (the serve-info push, or
-    /// any RPC reply, whichever came first).
-    pub fn is_initialized(&self) -> bool {
-        *self.initialized.borrow()
-    }
-
-    /// Live updates of the initialized flag, for waiters keyed on the init
-    /// transition itself (the watcher's SSR catch-up replay).
-    pub fn initialized_updates(&self) -> tokio::sync::watch::Receiver<bool> {
-        self.initialized.subscribe()
-    }
-
-    /// When an uninitialized boot turns loud, measured from spawn: the boot
-    /// warning and the Start prewarm hold anchor to THIS instant instead of
-    /// starting fresh periods. Reporting only — calls never gate on it.
-    pub fn init_warn_at(&self) -> tokio::time::Instant {
-        *self.spawned.lock().unwrap() + INIT_WARN
-    }
-
-    /// Live updates of the host-gone flag, for waiters selecting on wedge
-    /// evidence without holding the `Arc<PluginHost>`.
-    pub fn host_gone_updates(&self) -> tokio::sync::watch::Receiver<bool> {
-        self.host_gone.subscribe()
-    }
-
-    /// Init-failure evidence updates: true while a pre-init call burned its full
-    /// window, false again on progress. For health waiters, never a per-call gate.
-    pub fn init_failure_updates(&self) -> tokio::sync::watch::Receiver<bool> {
-        self.init_failed.subscribe()
-    }
-
-    /// Resync-executed counter updates: snapshot FIRST, then wait for it to move
-    /// past the baseline (the /__oj_invalidate ack only means "enqueued").
-    pub fn resync_done_updates(&self) -> tokio::sync::watch::Receiver<u64> {
-        self.resync_done.subscribe()
-    }
-
-    /// Resolves when the host is gone: a task holding an `Arc<PluginHost>` keeps
-    /// every sender alive, so `changed().is_err()` can never observe the death.
-    pub(crate) async fn host_gone_wait(&self) {
-        let mut rx = self.host_gone.subscribe();
-        while !*rx.borrow_and_update() {
-            if rx.changed().await.is_err() {
-                return;
-            }
-        }
     }
 
     pub async fn transform(
@@ -1672,12 +1023,12 @@ impl PluginHost {
     /// How the host serves requests. An already-pushed value returns without a round
     /// trip; only a host that blew the init deadline yields the default (watch `serve_info_updates` for the late push).
     pub async fn serve_info(&self) -> ServeInfo {
-        if let Some(info) = *self.serve_info_push.borrow() {
+        if let Some(info) = *self.core.serve_info_push.borrow() {
             return info;
         }
         let rpc = self.call("getServeInfo", &[]).await;
         // The push may have landed while the RPC ran; it is the definitive value.
-        if let Some(info) = *self.serve_info_push.borrow() {
+        if let Some(info) = *self.core.serve_info_push.borrow() {
             return info;
         }
         rpc.ok()
@@ -1690,7 +1041,7 @@ impl PluginHost {
     /// Subscribe to `{ ojServeInfo }`: `None` until init completes; lets the
     /// caller activate the plugin-middleware path late.
     pub fn serve_info_updates(&self) -> tokio::sync::watch::Receiver<Option<ServeInfo>> {
-        self.serve_info_push.subscribe()
+        self.core.serve_info_push.subscribe()
     }
 
     /// Plugins still active after oj filters out natively reimplemented ones.
@@ -1796,54 +1147,14 @@ impl PluginHost {
         (flag("watchChange"), flag("handleHotUpdate"))
     }
 
-    /// Retire the engine now. Abandon, not drop: dropping joins the thread; the
-    /// push dispatcher's channel-closed path then latches `host_gone`.
-    pub fn shutdown(&self) {
-        // Retired on purpose: never revived. The revive lock orders this against
-        // an in-flight ignite, so a racing revive can never leave a live engine behind.
-        self.shut_down
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-        let _revive = self.revive.lock().unwrap();
-        if let Some(engine) = self.engine.lock().unwrap().take() {
-            engine.abandon();
-        }
-    }
-
-    pub fn set_server_events_sender(
-        &self,
-        tx: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
-    ) {
-        let _ = self.server_events.set(tx);
-    }
-
-    /// The dev server's defines for `moduleInfo` compiles (`oj build` leaves it unset).
-    pub fn set_import_meta_env(&self, env: Arc<oj_compiler::ImportMetaEnv>) {
-        let _ = self.boot.import_meta_env.set(env);
-    }
-
+    /// Where this container's async reverse RPCs go (each container answers
+    /// its own: a worker bundle's `this.resolve` ends in that bundle).
     pub fn set_rpc_request_sender(&self, tx: tokio::sync::mpsc::UnboundedSender<HostRpc>) {
-        let _ = self.rpc_requests.set(tx);
-    }
-
-    /// Answers the host's async reverse RPC `id`.
-    pub fn rpc_reply(
-        self: &std::sync::Arc<Self>,
-        id: u64,
-        result: Result<serde_json::Value, String>,
-    ) {
-        let reply = match result {
-            Ok(result) => serde_json::json!({ "result": result }),
-            Err(error) => serde_json::json!({ "error": error }),
-        }
-        .to_string();
-        let host = std::sync::Arc::clone(self);
-        tokio::spawn(async move {
-            let _ = host.call("rpcReply", &[&id.to_string(), &reply]).await;
-        });
-    }
-
-    pub fn set_ws_sender(&self, tx: tokio::sync::broadcast::Sender<String>) {
-        let _ = self.ws_out.set(tx);
+        self.core
+            .rpc_routes
+            .lock()
+            .unwrap()
+            .insert(self.container, tx);
     }
 
     #[inline]
@@ -1898,6 +1209,11 @@ impl PluginHost {
             .unwrap_or_default()
     }
 
+    /// One hook call into this handle's container.
+    async fn call(&self, hook: &str, args: &[&str]) -> Result<Option<String>, String> {
+        self.core.call(self.container, hook, args).await
+    }
+
     async fn call_unit(&self, hook: &str, args: &[&str]) -> Result<(), String> {
         self.call(hook, args).await.map(|_| ())
     }
@@ -1918,6 +1234,873 @@ impl PluginHost {
             Ok(Some(s)) => s == "true",
             _ => default,
         }
+    }
+
+    /// A handle on `container` of `core`, its hook plan fail-open until fetched.
+    fn over(core: std::sync::Arc<HostCore>, container: u32) -> PluginHost {
+        PluginHost {
+            core,
+            container,
+            hook_plan: std::sync::RwLock::new(BuildHookPlan::fail_open()),
+            hook_plan_fetched: std::sync::atomic::AtomicBool::new(false),
+            hook_plan_prime_started: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// A worker entry's bundle (Vite's bundleWorkerEntry): a container of its
+    /// own on this host's engine, over `worker.plugins` called afresh, in the
+    /// realm of the app's plugins so the two share module state as under
+    /// Vite. Its resolved config is `isWorker` with `chain`, the bundle chain.
+    /// Close it with [`PluginHost::close_container`] once the bundle is done.
+    pub async fn open_worker_container(&self, chain: &[String]) -> Result<PluginHost, String> {
+        let chain = serde_json::to_string(chain).map_err(|e| e.to_string())?;
+        let id = self
+            .core
+            .call(MAIN_CONTAINER, "openWorkerContainer", &[&chain])
+            .await?
+            .and_then(|id| id.parse::<u32>().ok())
+            .ok_or("the plugin host opened no worker container")?;
+        Ok(PluginHost::over(std::sync::Arc::clone(&self.core), id))
+    }
+
+    /// Drops this handle's worker container from the host (its plugins answer
+    /// no more hooks); the host's own container is never closed.
+    pub async fn close_container(&self) -> Result<(), String> {
+        if self.container == MAIN_CONTAINER {
+            return Ok(());
+        }
+        self.core.rpc_routes.lock().unwrap().remove(&self.container);
+        self.call_unit("closeContainer", &[]).await
+    }
+
+    /// Fail-open gates until the plan is fetched again (a respawned engine).
+    fn reset_hook_plan(&self) {
+        use std::sync::atomic::Ordering;
+        *self.hook_plan.write().unwrap() = BuildHookPlan::fail_open();
+        self.hook_plan_fetched.store(false, Ordering::Release);
+        self.hook_plan_prime_started.store(false, Ordering::Release);
+    }
+
+    /// Whether the host finished its top-level init (the serve-info push, or
+    /// any RPC reply, whichever came first).
+    pub fn is_initialized(&self) -> bool {
+        self.core.is_initialized()
+    }
+
+    /// Live updates of the initialized flag, for waiters keyed on the init
+    /// transition itself (the watcher's SSR catch-up replay).
+    pub fn initialized_updates(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.core.initialized_updates()
+    }
+
+    /// When an uninitialized boot turns loud, measured from spawn.
+    pub fn init_warn_at(&self) -> tokio::time::Instant {
+        self.core.init_warn_at()
+    }
+
+    /// Live updates of the host-gone flag.
+    pub fn host_gone_updates(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.core.host_gone_updates()
+    }
+
+    /// Init-failure evidence updates.
+    pub fn init_failure_updates(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.core.init_failure_updates()
+    }
+
+    /// Resync-executed counter updates.
+    pub fn resync_done_updates(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.core.resync_done_updates()
+    }
+
+    /// Resolves when the host is gone.
+    pub(crate) async fn host_gone_wait(&self) {
+        self.core.host_gone_wait().await
+    }
+
+    /// Whether a dead host may still come back.
+    pub fn can_revive(&self) -> bool {
+        self.core.can_revive()
+    }
+
+    /// Retire the engine now, with every container on it.
+    pub fn shutdown(&self) {
+        self.core.shutdown()
+    }
+
+    pub fn set_server_events_sender(
+        &self,
+        tx: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
+    ) {
+        self.core.set_server_events_sender(tx)
+    }
+
+    /// The dev server's defines for `moduleInfo` compiles (`oj build` leaves it unset).
+    pub fn set_import_meta_env(&self, env: Arc<oj_compiler::ImportMetaEnv>) {
+        self.core.set_import_meta_env(env)
+    }
+
+    pub fn set_ws_sender(&self, tx: tokio::sync::broadcast::Sender<String>) {
+        self.core.set_ws_sender(tx)
+    }
+
+    /// Answers the host's async reverse RPC `id`.
+    pub fn rpc_reply(&self, id: u64, result: Result<serde_json::Value, String>) {
+        self.core.rpc_reply(id, result)
+    }
+}
+
+impl HostCore {
+    /// The host's own container, while a handle on it lives.
+    fn main_container(&self) -> Option<std::sync::Arc<PluginHost>> {
+        self.main.get().and_then(std::sync::Weak::upgrade)
+    }
+
+    /// Boot one engine GENERATION onto `host` (initial spawn and every revive). A
+    /// superseded `generation` abandons the just-spawned engine: racing ignites must never leave a live loser.
+    fn ignite(host: &std::sync::Arc<HostCore>, generation: u64) -> Result<(), String> {
+        Self::ignite_with(host, generation, None)
+    }
+
+    fn ignite_with(
+        host: &std::sync::Arc<HostCore>,
+        generation: u64,
+        warm: Option<(
+            std::sync::Arc<oj_js::JsEngine>,
+            tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
+        )>,
+    ) -> Result<(), String> {
+        host.write_host_module()?;
+        // Pushes arrive as values on `post_rx`, so nothing a plugin prints can
+        // splice into the protocol.
+        let (engine, post_rx) = match warm {
+            Some(warm) => warm,
+            None => {
+                let (post_tx, post_rx) = tokio::sync::mpsc::unbounded_channel();
+                (std::sync::Arc::new(host.spawn_engine(post_tx)?), post_rx)
+            }
+        };
+        {
+            let revive = host.revive.lock().unwrap();
+            // A shutdown racing this boot must not gain a live engine it can no
+            // longer take, and a newer revive must not gain a live loser.
+            if revive.generation != generation
+                || host.shut_down.load(std::sync::atomic::Ordering::SeqCst)
+            {
+                drop(revive);
+                engine.abandon();
+                return Err("superseded by a newer respawn or a shutdown".into());
+            }
+            *host.engine.lock().unwrap() = Some(std::sync::Arc::clone(&engine));
+        }
+        Self::spawn_boot_task(host, engine, generation);
+        Self::spawn_push_dispatcher(host, post_rx, generation);
+        Self::spawn_stall_monitor(host);
+        Ok(())
+    }
+
+    /// Written atomically (tmp + rename): hosts spawn concurrently, and a
+    /// truncating write could hand a sibling engine a half-written module.
+    fn write_host_module(&self) -> Result<(), String> {
+        let script = PathBuf::from(&self.host_module);
+        if let Some(parent) = script.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let _ = ensure_asset(
+            oj_cache::cache_root(&self.boot.root).as_path(),
+            "discovered-deps.mjs",
+            DISCOVERED_DEPS_JS,
+        );
+        ensure_asset(
+            oj_cache::cache_root(&self.boot.root).as_path(),
+            "vite-config-node.mjs",
+            VITE_CONFIG_NODE_JS,
+        )
+        .map_err(|e| e.to_string())?;
+        ensure_asset(
+            oj_cache::cache_root(&self.boot.root).as_path(),
+            "native-plugins.mjs",
+            NATIVE_PLUGINS_JS,
+        )
+        .map_err(|e| e.to_string())?;
+        ensure_asset(
+            oj_cache::cache_root(&self.boot.root).as_path(),
+            "vite-html.mjs",
+            VITE_HTML_JS,
+        )
+        .map_err(|e| e.to_string())?;
+        super::ensure_glob_assets(oj_cache::cache_root(&self.boot.root).as_path())
+            .map_err(|e| e.to_string())?;
+        if std::fs::read(&script).ok().as_deref() != Some(PLUGIN_HOST_JS.as_bytes()) {
+            let tmp = script.with_extension(format!("tmp-{}.mjs", std::process::id()));
+            std::fs::write(&tmp, PLUGIN_HOST_JS).map_err(|e| e.to_string())?;
+            std::fs::rename(&tmp, &script).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// A fresh engine whose pushes arrive on `post_tx` and whose reverse ctx-RPC
+    /// is answered by [`ctx_rpc`].
+    fn spawn_engine(
+        &self,
+        post_tx: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
+    ) -> Result<oj_js::JsEngine, String> {
+        new_host_engine(
+            &self.boot.root,
+            self.boot.memory_limit_bytes,
+            self.boot.registry.clone(),
+            Arc::clone(&self.boot.import_meta_env),
+            post_tx,
+        )
+    }
+
+    /// BOOT task: seed the host's identity, then trigger top-level init via a trivial
+    /// export. No deadline (the Rust-side watches own boot patience); a top-level throw declares the host gone.
+    fn spawn_boot_task(
+        host: &std::sync::Arc<HostCore>,
+        engine: std::sync::Arc<oj_js::JsEngine>,
+        generation: u64,
+    ) {
+        let host = std::sync::Arc::clone(host);
+        let seed = host.boot.boot_seed.clone();
+        let host_module = host.host_module.clone();
+        tokio::spawn(async move {
+            let seeded = match ensure_boot_module(&host.boot.root) {
+                Ok(boot_module) => engine
+                    .call(boot_module, "seed", vec![seed], None)
+                    .await
+                    .map_err(|e| e.to_string()),
+                Err(e) => Err(e),
+            };
+            if let Err(e) = seeded {
+                host.declare_gone(&format!("plugin host boot prelude failed: {e}"), generation);
+                return;
+            }
+            match engine
+                .call(host_module, "ojHostReady", Vec::new(), None)
+                .await
+            {
+                // The `{ ojInit }` push already flipped `initialized`; the reply is
+                // the error path's carrier. Deliver a bind-time announce this host missed.
+                Ok(_) => {
+                    let listener = DEV_LISTENER.lock().unwrap().clone();
+                    if let Some((port, interface)) = listener {
+                        host.announce_dev_listener(port, &interface);
+                    }
+                }
+                Err(oj_js::EngineError::Closed) => {}
+                Err(e) => {
+                    host.declare_gone(
+                        &format!("plugin host failed to initialize: {e}"),
+                        generation,
+                    );
+                }
+            }
+        });
+    }
+
+    /// The PUSH DISPATCHER: control pushes arrive whole on the engine channel;
+    /// hook replies come back on their own call futures.
+    fn spawn_push_dispatcher(
+        host: &std::sync::Arc<HostCore>,
+        mut post_rx: tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
+        generation: u64,
+    ) {
+        let host = std::sync::Arc::clone(host);
+        tokio::spawn(async move {
+            while let Some(msg) = post_rx.recv().await {
+                // Drain and drop pushes from a superseded or declared-dead generation:
+                // a stale `ojInit` would open the call gate before the NEW engine evaluated its module.
+                if *host.host_gone.borrow() || host.revive.lock().unwrap().generation != generation
+                {
+                    continue;
+                }
+                host.dispatch_push(&msg);
+            }
+            // Push channel closed = engine thread exited: fail future calls fast.
+            // Generation-guarded: an abandoned engine's late exit must not kill the fresh generation.
+            let revive = host.revive.lock().unwrap();
+            if revive.generation == generation {
+                drop(revive);
+                let _ = host.host_gone.send_replace(true);
+            }
+        });
+    }
+
+    fn dispatch_push(self: &std::sync::Arc<Self>, msg: &serde_json::Value) {
+        if let Some(id) = msg.get("rpc").and_then(|v| v.as_u64()) {
+            let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
+            let args = match msg.get("args") {
+                Some(serde_json::Value::Array(args)) => args.clone(),
+                _ => Vec::new(),
+            };
+            let rpc = HostRpc {
+                id,
+                method: method.to_string(),
+                args,
+            };
+            // The container whose bundle asks answers it. Without one to
+            // answer (`oj build`), fail the call: an unanswered one would
+            // leave its hook awaiting forever.
+            let container = msg
+                .get("container")
+                .and_then(|c| c.as_u64())
+                .and_then(|c| u32::try_from(c).ok())
+                .unwrap_or(MAIN_CONTAINER);
+            let route = self.rpc_routes.lock().unwrap().get(&container).cloned();
+            match route {
+                Some(tx) => {
+                    if let Err(e) = tx.send(rpc) {
+                        self.rpc_reply(id, Err(format!("no handler for {}", e.0.method)));
+                    }
+                }
+                None => self.rpc_reply(id, Err(format!("no handler for {method}"))),
+            }
+        } else if let Some(info) = msg.get("ojServeInfo") {
+            self.serve_info_push
+                .send_replace(Some(ServeInfo::from_json(info)));
+            self.mark_initialized();
+        } else if msg.get("ojInit").is_some() {
+            // Unconditional init-complete, sent in BOTH modes: build mode
+            // has no ojServeInfo push, and the gate must not wait for the first reply.
+            self.mark_initialized();
+        } else if msg.get("ojResyncDone").is_some() {
+            // An enqueued resync actually ran; see resync_done.
+            self.resync_done.send_modify(|c| *c += 1);
+        } else if msg.get("ojInitProgress").is_some() {
+            // Real init milestone: wedge evidence is stale, the stall monitor re-arms.
+            self.init_progress_seen.send_modify(|c| *c += 1);
+            let _ = self.init_failed.send_replace(false);
+        } else if let Some(ev) = msg.get("ojServer") {
+            if let Some(tx) = self.server_events.get() {
+                let _ = tx.send(ev.clone());
+            }
+        } else if let Some(ws) = msg.get("ojWs") {
+            if let Some(tx) = self.ws_out.get() {
+                let payload = ws_push_payload(ws);
+                if !payload.is_empty() {
+                    let _ = tx.send(payload);
+                }
+            }
+        }
+    }
+
+    /// Init completed (or a reply proved it): open the gate, clear the evidence.
+    fn mark_initialized(&self) {
+        let _ = self.initialized.send_replace(true);
+        let _ = self.init_failed.send_replace(false);
+    }
+
+    /// Init STALL MONITOR, wedge evidence independent of any caller's window: a
+    /// full RPC-scale window with NO milestone flips `init_failed`, progress clears it. Calls never consult it.
+    fn spawn_stall_monitor(host: &std::sync::Arc<HostCore>) {
+        let host = std::sync::Arc::clone(host);
+        let stall_wait = host.boot.stall_wait;
+        tokio::spawn(async move {
+            let mut init_rx = host.initialized.subscribe();
+            let mut gone_rx = host.host_gone.subscribe();
+            let mut prog_rx = host.init_progress_seen.subscribe();
+            loop {
+                if *init_rx.borrow_and_update() || *gone_rx.borrow_and_update() {
+                    return;
+                }
+                let _ = prog_rx.borrow_and_update();
+                let deadline = tokio::time::Instant::now() + stall_wait;
+                let mut stalled = false;
+                tokio::select! {
+                    biased;
+                    changed = init_rx.changed() => { if changed.is_err() { return; } }
+                    changed = gone_rx.changed() => { if changed.is_err() { return; } }
+                    changed = prog_rx.changed() => { if changed.is_err() { return; } }
+                    _ = tokio::time::sleep_until(deadline) => { stalled = true; }
+                }
+                if stalled {
+                    let _ = host.init_failed.send_replace(true);
+                    // Window spent: re-arm only on new progress; the reader clears the evidence.
+                    loop {
+                        tokio::select! {
+                            biased;
+                            changed = init_rx.changed() => {
+                                if changed.is_err() || *init_rx.borrow() { return; }
+                            }
+                            changed = gone_rx.changed() => {
+                                if changed.is_err() || *gone_rx.borrow() { return; }
+                            }
+                            changed = prog_rx.changed() => {
+                                if changed.is_err() { return; }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    /// Whether a dead host may still come back: budget left, and never after an
+    /// on-purpose `shutdown`.
+    pub fn can_revive(&self) -> bool {
+        !self.shut_down.load(std::sync::atomic::Ordering::SeqCst)
+            && self.revive.lock().unwrap().attempts < PLUGIN_HOST_RESPAWN_LIMIT
+    }
+
+    /// Revive a dead host with a fresh generation, bounded by lifetime budget and
+    /// spacing (see `ReviveState`). Returns whether the host is now (or already was) live.
+    fn try_revive(&self) -> bool {
+        if self.shut_down.load(std::sync::atomic::Ordering::SeqCst) {
+            return false;
+        }
+        let Some(host) = self.self_ref.get().and_then(std::sync::Weak::upgrade) else {
+            return false;
+        };
+        let mut revive = self.revive.lock().unwrap();
+        if !*self.host_gone.borrow() {
+            // A concurrent caller already revived it (or the report was stale).
+            return true;
+        }
+        if revive.attempts >= PLUGIN_HOST_RESPAWN_LIMIT {
+            return false;
+        }
+        if let Some(last) = revive.last {
+            if last.elapsed() < PLUGIN_HOST_RESPAWN_SPACING {
+                // Too soon: fail fast instead of stacking engines against a recurring wedge.
+                return false;
+            }
+        }
+        // Re-registering an addon whose every runtime is gone can crash the process
+        // (napi-rs pre-3.10): refuse only for addons this host's own teardown orphaned; no attempt is consumed.
+        let orphaned = oj_js::addons_pending_unsafe_reregistration();
+        if let Some(addon) = orphaned
+            .iter()
+            .find(|p| !revive.pending_before.contains(*p))
+        {
+            revive.last = Some(std::time::Instant::now());
+            eprintln!(
+                "oj: not respawning the plugin host: native addon {} was torn down with it and re-registering can crash (napi-rs before 3.10); restart the dev server to recover",
+                addon.display()
+            );
+            oj_diag::emit(
+                oj_diag::Event::new(
+                    oj_diag::Kind::HostExhausted,
+                    format!(
+                        "not respawning the plugin host: native addon {} was torn down with it",
+                        addon.display()
+                    ),
+                )
+                .source(oj_diag::Source::Host),
+            );
+            return false;
+        }
+        revive.attempts += 1;
+        revive.last = Some(std::time::Instant::now());
+        revive.generation += 1;
+        revive.reported = false;
+        eprintln!(
+            "oj: respawning the plugin host (attempt {} of {PLUGIN_HOST_RESPAWN_LIMIT})",
+            revive.attempts
+        );
+        oj_diag::emit(
+            oj_diag::Event::new(
+                oj_diag::Kind::HostRespawn,
+                format!(
+                    "respawning the plugin host (attempt {} of {PLUGIN_HOST_RESPAWN_LIMIT})",
+                    revive.attempts
+                ),
+            )
+            .source(oj_diag::Source::Host)
+            .warn(),
+        );
+        self.reset_generation_state();
+        let generation = revive.generation;
+        drop(revive);
+        match Self::ignite(&host, generation) {
+            Ok(()) => {
+                // Lift the death flag last: a caller sees a dead host or a fully re-armed one.
+                let _ = self.host_gone.send_replace(false);
+                if let (Ok(handle), Some(main)) =
+                    (tokio::runtime::Handle::try_current(), self.main_container())
+                {
+                    handle.spawn(async move { main.ensure_hook_plan().await });
+                }
+                true
+            }
+            Err(e) => {
+                eprintln!("oj: plugin host respawn failed: {e}");
+                oj_diag::emit(
+                    oj_diag::Event::new(
+                        oj_diag::Kind::HostRespawn,
+                        format!("plugin host respawn failed: {e}"),
+                    )
+                    .source(oj_diag::Source::Host),
+                );
+                false
+            }
+        }
+    }
+
+    /// Reset per-generation state BEFORE the new engine can push: init pending
+    /// again, evidence cleared, stale serve info dropped. The fresh engine
+    /// re-evaluates the plugins file: hook plan fail-open now, the refetch restores precise gating.
+    fn reset_generation_state(&self) {
+        let _ = self.initialized.send_replace(false);
+        let _ = self.init_failed.send_replace(false);
+        self.serve_info_push.send_replace(None);
+        // Worker containers died with the old engine; the host's own refetches.
+        if let Some(main) = self.main_container() {
+            main.reset_hook_plan();
+        }
+        *self.spawned.lock().unwrap() = tokio::time::Instant::now();
+    }
+
+    /// Fire-and-forget `serverListening` delivery (see [`dev_listener_bound`]):
+    /// a failure only means this host's plugins never see "listening".
+    fn announce_dev_listener(self: &std::sync::Arc<Self>, port: u16, interface: &str) {
+        let host = std::sync::Arc::clone(self);
+        let interface = interface.to_string();
+        tokio::spawn(async move {
+            let _ = host
+                .call(
+                    MAIN_CONTAINER,
+                    "serverListening",
+                    &[&port.to_string(), &interface],
+                )
+                .await;
+        });
+    }
+
+    /// One hook call into `container`.
+    async fn call(
+        &self,
+        container: u32,
+        hook: &str,
+        args: &[&str],
+    ) -> Result<Option<String>, String> {
+        if *self.host_gone.borrow() && !self.try_revive() {
+            return Err("plugin host exited".into());
+        }
+        self.wait_for_init().await?;
+        self.run_hook(container, hook, args).await
+    }
+
+    /// Init gate, BEFORE anything reaches the engine: the host answers hooks
+    /// only after top-level init, and a job submitted to a wedged mid-init
+    /// isolate would queue behind the wedge and be blamed on the hook.
+    /// Deliberately UNBOUNDED, like a Vite request (which can only exist
+    /// after `initServer` resolved): elapsed time is a slow boot, not a
+    /// wedge, so it only logs; the stall monitor owns wedge evidence, and
+    /// only host death (host_gone) fails the wait.
+    async fn wait_for_init(&self) -> Result<(), String> {
+        let mut init_rx = self.initialized.subscribe();
+        if *init_rx.borrow_and_update() {
+            return Ok(());
+        }
+        let mut host_gone_rx = self.host_gone.subscribe();
+        // A death flipped before this subscribe is already "seen" (changed()
+        // never fires for it): consult the value once after subscribing.
+        if *host_gone_rx.borrow_and_update() {
+            return Err("plugin host exited".into());
+        }
+        let mut progress = tokio::time::interval_at(
+            tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+            std::time::Duration::from_secs(30),
+        );
+        loop {
+            tokio::select! {
+                biased;
+                changed = init_rx.changed() => {
+                    if changed.is_err() || *init_rx.borrow() {
+                        return Ok(());
+                    }
+                }
+                changed = host_gone_rx.changed() => {
+                    if changed.is_err() || *host_gone_rx.borrow() {
+                        return Err("plugin host exited".into());
+                    }
+                }
+                _ = progress.tick() => self.log_init_progress(),
+            }
+        }
+    }
+
+    /// One "still initializing" line per interval across concurrent waiters.
+    fn log_init_progress(&self) {
+        let elapsed = self.spawned.lock().unwrap().elapsed().as_secs();
+        let mut last = self
+            .init_progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if last.elapsed().as_secs() >= 29 {
+            *last = std::time::Instant::now();
+            eprintln!("oj: plugin host still initializing ({elapsed}s)…");
+        }
+    }
+
+    /// Runs one hook with NO deadline of its own: Vite runs plugin work
+    /// unbounded, so elapsed time alone never fails a call. Liveness is
+    /// PROBED instead: each probe window a no-op export is called, and a
+    /// parked event loop answers it instantly however long the hook has been
+    /// awaiting (that just logs progress). A probe met with total silence
+    /// for two windows means the isolate thread is wedged — blocked in
+    /// native code, or spinning in synchronous JS — so declare the host
+    /// gone; the next call revives a fresh one.
+    async fn run_hook(
+        &self,
+        container: u32,
+        hook: &str,
+        args: &[&str],
+    ) -> Result<Option<String>, String> {
+        // Generation read before the engine: a racing revive makes the pair stale
+        // (probe verdict ignored), never a stale generation blaming a fresh engine.
+        let generation = self.revive.lock().unwrap().generation;
+        let engine = self
+            .engine
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| "plugin host exited".to_string())?;
+        let call = engine.call(
+            self.host_module.clone(),
+            "ojRun",
+            vec![
+                serde_json::Value::String(hook.to_string()),
+                serde_json::Value::Array(
+                    args.iter()
+                        .map(|a| serde_json::Value::String((*a).to_string()))
+                        .collect(),
+                ),
+                serde_json::Value::from(container),
+            ],
+            None,
+        );
+        tokio::pin!(call);
+        let started = tokio::time::Instant::now();
+        let mut probe = tokio::time::interval_at(started + self.probe_wait, self.probe_wait);
+        probe.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                biased;
+                r = &mut call => return self.finish_call(hook, generation, r),
+                _ = self.host_gone_wait() => return Err("plugin host exited".into()),
+                _ = probe.tick() => {
+                    // The probe is deliberately UNGUARDED (no engine deadline):
+                    // an armed watchdog terminates whatever executes on the
+                    // isolate, which could be someone else's healthy work.
+                    let ping = engine.call(self.host_module.clone(), "ojPing", Vec::new(), None);
+                    match tokio::time::timeout(2 * self.probe_wait, ping).await {
+                        Ok(Err(oj_js::EngineError::Closed)) => {
+                            return Err("plugin host exited".into());
+                        }
+                        Ok(_) => {
+                            eprintln!(
+                                "oj: {hook} has been running for {}s (the plugin host is responsive)…",
+                                started.elapsed().as_secs()
+                            );
+                        }
+                        Err(_) => {
+                            let msg = format!(
+                                "plugin host unresponsive for {}s running {hook} (the engine stopped scheduling)",
+                                (2 * self.probe_wait).as_secs()
+                            );
+                            self.declare_gone(&msg, generation);
+                            return Err(msg);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Maps one engine reply to the hook result, latching init or death as it proves.
+    fn finish_call(
+        &self,
+        hook: &str,
+        generation: u64,
+        result: Result<serde_json::Value, oj_js::EngineError>,
+    ) -> Result<Option<String>, String> {
+        match result {
+            Ok(value) => {
+                // Any reply proves top-level init completed. Generation-guarded: a
+                // reply from a replaced engine must not open the gate for the new one.
+                if self.revive.lock().unwrap().generation == generation {
+                    self.mark_initialized();
+                }
+                Ok(match value {
+                    serde_json::Value::Null => None,
+                    serde_json::Value::String(s) => Some(s),
+                    other => Some(other.to_string()),
+                })
+            }
+            // Defensive: hook calls carry no deadline, so this arm is only
+            // reachable through an engine-internal termination.
+            Err(oj_js::EngineError::Deadline) => Err(format!(
+                "plugin host abandoned {hook} (execution terminated)"
+            )),
+            Err(oj_js::EngineError::Closed) => Err("plugin host exited".into()),
+            Err(oj_js::EngineError::MemoryLimit) => {
+                // A near-limit heap is a property of the isolate, not this call:
+                // declare it gone, the next call revives a fresh one.
+                let msg = format!(
+                    "plugin host exceeded its memory limit ({}MB; raise OJ_PLUGIN_MEMORY_MB) running {hook}",
+                    self.boot.memory_limit_bytes / (1024 * 1024)
+                );
+                self.declare_gone(&msg, generation);
+                Err(msg)
+            }
+            Err(oj_js::EngineError::Boot(e)) => Err(e),
+            Err(oj_js::EngineError::Js(e)) => {
+                // A throwing hook still proves the host is up and serving.
+                self.mark_initialized();
+                Err(e)
+            }
+        }
+    }
+
+    /// Treat the host as dead NOW: abandon the engine and flip `host_gone`; the next
+    /// call may revive it. A report about a since-replaced generation is stale and must not kill the replacement.
+    pub(crate) fn declare_gone(&self, why: &str, generation: u64) {
+        let mut revive = self.revive.lock().unwrap();
+        if !first_death_report(&mut revive, generation) {
+            return;
+        }
+        // Snapshot addons ALREADY orphaned before this death, so the revive gate
+        // can tell the dead generation's from someone else's (see `pending_before`).
+        revive.pending_before = oj_js::addons_pending_unsafe_reregistration()
+            .into_iter()
+            .collect();
+        let rss = process_rss_mb()
+            .map(|m| format!(" (process rss {m}MB)"))
+            .unwrap_or_default();
+        eprintln!("oj: {why}; treating the plugin host as gone{rss}");
+        oj_diag::emit(
+            oj_diag::Event::new(
+                oj_diag::Kind::HostGone,
+                format!("{why}; treating the plugin host as gone{rss}"),
+            )
+            .source(oj_diag::Source::Host),
+        );
+        if let Some(engine) = self.engine.lock().unwrap().take() {
+            self.retire_engine(engine, &mut revive);
+        }
+        drop(revive);
+        let _ = self.host_gone.send_replace(true);
+    }
+
+    /// KEEPER sequence: register live addons BEFORE the abandon (the open job
+    /// channel keeps their env alive until then); the spacing stamp defers the first revive past the keeper.
+    fn retire_engine(&self, engine: std::sync::Arc<oj_js::JsEngine>, revive: &mut ReviveState) {
+        let addons = oj_js::addons_with_live_registrations();
+        if addons.is_empty() {
+            engine.abandon();
+            return;
+        }
+        revive.last = Some(std::time::Instant::now());
+        let root = self.boot.root.clone();
+        let registry = self.boot.registry.clone();
+        let guard = AbandonOnDrop(Some(engine));
+        tokio::spawn(async move {
+            let _guard = guard;
+            if let Err(e) = keep_addons_alive(&root, &addons, registry).await {
+                eprintln!(
+                    "oj: native-addon keeper unavailable ({e}); a plugin host respawn that would re-register an orphaned addon will be refused"
+                );
+            }
+        });
+    }
+
+    /// Whether the host finished its top-level init (the serve-info push, or
+    /// any RPC reply, whichever came first).
+    pub fn is_initialized(&self) -> bool {
+        *self.initialized.borrow()
+    }
+
+    /// Live updates of the initialized flag, for waiters keyed on the init
+    /// transition itself (the watcher's SSR catch-up replay).
+    pub fn initialized_updates(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.initialized.subscribe()
+    }
+
+    /// When an uninitialized boot turns loud, measured from spawn: the boot
+    /// warning and the Start prewarm hold anchor to THIS instant instead of
+    /// starting fresh periods. Reporting only — calls never gate on it.
+    pub fn init_warn_at(&self) -> tokio::time::Instant {
+        *self.spawned.lock().unwrap() + INIT_WARN
+    }
+
+    /// Live updates of the host-gone flag, for waiters selecting on wedge
+    /// evidence without holding the `Arc<PluginHost>`.
+    pub fn host_gone_updates(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.host_gone.subscribe()
+    }
+
+    /// Init-failure evidence updates: true while a pre-init call burned its full
+    /// window, false again on progress. For health waiters, never a per-call gate.
+    pub fn init_failure_updates(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.init_failed.subscribe()
+    }
+
+    /// Resync-executed counter updates: snapshot FIRST, then wait for it to move
+    /// past the baseline (the /__oj_invalidate ack only means "enqueued").
+    pub fn resync_done_updates(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.resync_done.subscribe()
+    }
+
+    /// Resolves when the host is gone: a task holding an `Arc<PluginHost>` keeps
+    /// every sender alive, so `changed().is_err()` can never observe the death.
+    pub(crate) async fn host_gone_wait(&self) {
+        let mut rx = self.host_gone.subscribe();
+        while !*rx.borrow_and_update() {
+            if rx.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+
+    /// Retire the engine now. Abandon, not drop: dropping joins the thread; the
+    /// push dispatcher's channel-closed path then latches `host_gone`.
+    pub(crate) fn shutdown(&self) {
+        // Retired on purpose: never revived. The revive lock orders this against
+        // an in-flight ignite, so a racing revive can never leave a live engine behind.
+        self.shut_down
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let _revive = self.revive.lock().unwrap();
+        if let Some(engine) = self.engine.lock().unwrap().take() {
+            engine.abandon();
+        }
+    }
+
+    pub fn set_server_events_sender(
+        &self,
+        tx: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
+    ) {
+        let _ = self.server_events.set(tx);
+    }
+
+    /// The dev server's defines for `moduleInfo` compiles (`oj build` leaves it unset).
+    pub fn set_import_meta_env(&self, env: Arc<oj_compiler::ImportMetaEnv>) {
+        let _ = self.boot.import_meta_env.set(env);
+    }
+
+    /// Answers the host's async reverse RPC `id`.
+    pub fn rpc_reply(
+        self: &std::sync::Arc<Self>,
+        id: u64,
+        result: Result<serde_json::Value, String>,
+    ) {
+        let reply = match result {
+            Ok(result) => serde_json::json!({ "result": result }),
+            Err(error) => serde_json::json!({ "error": error }),
+        }
+        .to_string();
+        let host = std::sync::Arc::clone(self);
+        tokio::spawn(async move {
+            let _ = host
+                .call(MAIN_CONTAINER, "rpcReply", &[&id.to_string(), &reply])
+                .await;
+        });
+    }
+
+    pub fn set_ws_sender(&self, tx: tokio::sync::broadcast::Sender<String>) {
+        let _ = self.ws_out.set(tx);
     }
 }
 

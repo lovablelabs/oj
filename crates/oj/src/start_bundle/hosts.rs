@@ -35,32 +35,6 @@ pub(crate) async fn spawn(
     config_file: Option<&Path>,
     env_name: &str,
 ) -> anyhow::Result<Option<BundleHost>> {
-    spawn_with(start, config_file, env_name, None).await
-}
-
-/// A worker entry's host (Vite's bundleWorkerEntry): `worker.plugins` alone,
-/// a fresh set for this bundle, its resolved config `isWorker` with `chain`.
-pub(crate) async fn spawn_worker(
-    start: &StartConfig,
-    config_file: Option<&Path>,
-    chain: &[&Path],
-) -> anyhow::Result<Option<BundleHost>> {
-    let chain: Vec<String> = chain.iter().map(|p| p.display().to_string()).collect();
-    spawn_with(
-        start,
-        config_file,
-        "client",
-        Some(serde_json::json!({ "chain": chain })),
-    )
-    .await
-}
-
-async fn spawn_with(
-    start: &StartConfig,
-    config_file: Option<&Path>,
-    env_name: &str,
-    worker_bundle: Option<serde_json::Value>,
-) -> anyhow::Result<Option<BundleHost>> {
     let Some(source) = oj_server::plugins::plugin_source(&start.root, config_file) else {
         return Ok(None);
     };
@@ -89,7 +63,6 @@ async fn spawn_with(
         "pluginsFormat": format,
         "ojStartMode": true,
         "ojBundleHost": true,
-        "ojWorkerBundle": worker_bundle,
     })
     .to_string();
     let host = PluginHost::spawn(&start.root, &file, &payload, None)
@@ -137,5 +110,36 @@ impl BundleHost {
             defines,
             env_delta,
         })
+    }
+
+    /// A worker entry's bundle on this host (Vite's bundleWorkerEntry): a
+    /// container of its own over `worker.plugins`, a fresh set beside the
+    /// app's plugins, its resolved config `isWorker` with `chain`. Its
+    /// `this.resolve` ends in the worker's own bundle. [`BundleHost::close_worker`]
+    /// ends it.
+    pub async fn worker(&self, chain: &[&Path]) -> anyhow::Result<BundleHost> {
+        let chain: Vec<String> = chain.iter().map(|p| p.display().to_string()).collect();
+        let host = Arc::new(
+            self.host
+                .open_worker_container(&chain)
+                .await
+                .map_err(|e| anyhow::anyhow!("the worker plugin container: {e}"))?,
+        );
+        let ctx = serve_bundler_resolve(&host);
+        let (facts, defines, env_delta) = read_facts(&host, "worker").await?;
+        Ok(BundleHost {
+            host,
+            ctx,
+            facts,
+            defines,
+            env_delta,
+        })
+    }
+
+    /// A worker bundle's closeBundle, then its container closed.
+    pub async fn close_worker(&self) -> Result<(), String> {
+        let closed = self.host.close_bundle().await;
+        let _ = self.host.close_container().await;
+        closed.map_err(|e| format!("plugin closeBundle failed:\n{e}"))
     }
 }

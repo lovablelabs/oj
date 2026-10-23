@@ -312,8 +312,9 @@ pub(crate) async fn build(
     // `?worker` / `?worker&url` in a build: Vite's bundleWorkerEntry bundles
     // the worker entry on its own (the client's transform and define) with
     // `worker.plugins` alone, a fresh set per bundle with their whole
-    // lifecycle (generate, no write): what their generateBundle emits ships
-    // with the client. The bundle takes `worker.rolldownOptions` (never the
+    // lifecycle (generate, no write), in a container of the app's own host:
+    // the two plugin sets share module state, as in Vite's one process. What
+    // their generateBundle emits ships with the client. The bundle takes `worker.rolldownOptions` (never the
     // app's build options) and `worker.format`, iife by default: a classic
     // script whose `import.meta.url` is its own URL (vite:worker-post). The
     // entry is emitted where it is imported, its chunks beside it.
@@ -322,7 +323,7 @@ pub(crate) async fn build(
         let start = Arc::clone(&start);
         let styles = Arc::clone(&styles);
         let weak_emitter = Arc::downgrade(&emitter);
-        let config_file = config_file.clone();
+        let app_host = client_host.clone();
         let client_dir = client_dir.clone();
         let mut defines = client_defines.clone();
         if !worker_options.is_module() {
@@ -337,7 +338,7 @@ pub(crate) async fn build(
             let start = Arc::clone(&start);
             let styles = Arc::clone(&styles);
             let emitter = weak_emitter.upgrade();
-            let config_file = config_file.clone();
+            let app_host = app_host.clone();
             let client_dir = client_dir.clone();
             let defines = defines.clone();
             let resolve = resolve.clone();
@@ -345,9 +346,10 @@ pub(crate) async fn build(
             let worker = worker.clone();
             Box::pin(async move {
                 let emitter = emitter.ok_or("the build is over")?;
-                let host = hosts::spawn_worker(&start, config_file.as_deref(), &[&file])
-                    .await
-                    .map_err(|e| e.to_string())?;
+                let host = match &app_host {
+                    Some(h) => Some(h.worker(&[&file]).await.map_err(|e| e.to_string())?),
+                    None => None,
+                };
                 let result = bundle_worker(
                     &start,
                     host.as_ref(),
@@ -365,9 +367,7 @@ pub(crate) async fn build(
                 )
                 .await;
                 if let Some(h) = &host {
-                    let closed = h.host.close_bundle().await;
-                    h.host.shutdown();
-                    closed.map_err(|e| format!("plugin closeBundle failed:\n{e}"))?;
+                    h.close_worker().await?;
                 }
                 result
             })
@@ -762,7 +762,7 @@ struct WorkerBundleOptions {
     sourcemap: oj_config::Sourcemap,
 }
 
-/// One worker entry's bundle (Vite's bundleWorkerEntry) on its own host's
+/// One worker entry's bundle (Vite's bundleWorkerEntry) on its container's
 /// `worker.plugins`: generated, its plugins' generateBundle and emitted files
 /// applied, every output but the entry written under the client.
 #[allow(clippy::too_many_arguments)]

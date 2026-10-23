@@ -256,10 +256,12 @@ test("buildApp runs the hooks around oj's environment builds", async () => {
 
 // Vite's bundleWorkerEntry: a worker bundle's plugins are `worker.plugins`
 // alone (the option called for a fresh set), its resolved config `isWorker`
-// with the bundle chain; the app's own plugins are not there.
+// with the bundle chain; the app's own plugins are not there. The worker's
+// container lives in the app's realm, so the two sets share module state as
+// they do under Vite, and a closed container answers no more hooks.
 const viteSrc = path.join(repo, "e2e/fixtures/start-app/node_modules/vite");
 test(
-  "a worker bundle host runs worker.plugins alone",
+  "a worker bundle's container runs worker.plugins alone, beside the app's",
   { skip: !fs.existsSync(viteSrc) && "fixture vite not installed" },
   async () => {
     const fx = tmpProject({ prefix: "oj-worker-host-" });
@@ -268,15 +270,20 @@ test(
       "vite.config.mjs",
       `${LOG}
      let calls = 0;
+     const shared = [];
      export default {
-       plugins: [{ name: "app", buildStart() { log("app buildStart"); } }],
+       plugins: [{
+         name: "app",
+         buildStart() { log("app buildStart " + this.environment.name); },
+         closeBundle() { log("app closeBundle shared=" + shared.join(",")); },
+       }],
        worker: {
          plugins: () => {
            calls++;
            return [[{
              name: "worker",
              configResolved(c) { log("worker configResolved isWorker=" + c.isWorker + " chain=" + c.bundleChain.join(",") + " calls=" + calls); },
-             buildStart() { log("worker buildStart " + this.environment.name); },
+             buildStart() { log("worker buildStart " + this.environment.name); shared.push("worker-" + calls); },
            }]];
          },
        },
@@ -292,19 +299,33 @@ test(
           environment: { name: "client", mode: "build" },
           ojStartMode: true,
           ojBundleHost: true,
-          ojWorkerBundle: { chain: ["/app/src/w.ts"] },
         }),
       ],
       env: { OJ_CACHE_ROOT: fx.root },
       cwd: fx.root,
     });
+    const call = async (id, hook, args, container) => {
+      const r = await host.send({ id, hook, args, container });
+      assert.equal(r.error, undefined, `${hook}: ${r.error}\n${host.stderr()}`);
+      return r.result;
+    };
     try {
-      const r = await host.send({ id: 1, hook: "buildStart", args: [] });
-      assert.equal(r.error, undefined, `${r.error}\n${host.stderr()}`);
+      await host.initSignal();
+      const worker = Number(await call(1, "openWorkerContainer", [JSON.stringify(["/app/src/w.ts"])]));
+      assert.ok(worker > 0, `a worker container id: ${worker}`);
+      await call(2, "buildStart", [], worker);
+      await call(3, "closeBundle", [], worker);
+      await call(4, "closeContainer", [], worker);
+      await call(5, "buildStart", []);
+      await call(6, "closeBundle", []);
       assert.deepEqual(events(fx), [
         "worker configResolved isWorker=true chain=/app/src/w.ts calls=1",
         "worker buildStart client",
+        "app buildStart client",
+        "app closeBundle shared=worker-1",
       ]);
+      const closed = await host.send({ id: 7, hook: "buildStart", args: [], container: worker });
+      assert.match(String(closed.error), /container \d+ is closed/, JSON.stringify(closed));
     } finally {
       host.close();
       fx.cleanup();
