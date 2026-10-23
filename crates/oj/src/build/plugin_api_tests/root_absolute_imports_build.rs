@@ -67,3 +67,59 @@ async fn public_import_resolves_against_the_chunk_under_a_relative_base() {
         "public file not written at its own path"
     );
 }
+
+#[tokio::test]
+async fn queried_public_imports_resolve_like_vite_asset() {
+    let root = app("root-abs-imports-queried", "/app/");
+    write_files(
+        &root,
+        &[(
+            "src/main.js",
+            "import url from '/vite.svg?url';\nimport raw from '/vite.svg?raw';\nimport inline from '/vite.svg?inline';\nconsole.log(url, raw, inline);\n",
+        )],
+    );
+    build_app(&root).await.expect("the app builds");
+    let js = js_under(&root.join("dist/assets"));
+    assert!(
+        js.contains("/app/vite.svg"),
+        "?url not the public URL:\n{js}"
+    );
+    assert!(
+        js.contains("http://www.w3.org/2000/svg"),
+        "?raw not the public file's text:\n{js}"
+    );
+    assert!(
+        js.contains("data:image/svg+xml"),
+        "?inline not a data URL:\n{js}"
+    );
+}
+
+/// Vite resolves a relative base to `/` for an SSR build: the server's public
+/// URL is root-absolute, never a `file://` URL off the server chunk.
+#[tokio::test]
+async fn ssr_public_import_is_root_absolute_under_a_relative_base() {
+    let root = app("root-abs-imports-ssr", "./");
+    write_files(
+        &root,
+        &[
+            (
+                "oj.config.json",
+                r#"{"base":"./","build":{"ssr":true,"rollupOptions":{"input":"src/entry-server.js"}}}"#,
+            ),
+            (
+                "src/entry-server.js",
+                "import logo from '/vite.svg';\nexport const url = logo;\n",
+            ),
+        ],
+    );
+    build_app(&root).await.expect("the app builds");
+    let server = std::fs::read_to_string(root.join("dist/entry-server.mjs")).unwrap();
+    assert!(
+        server.contains("\"/vite.svg\"") || server.contains("`/vite.svg`"),
+        "server public URL not root-absolute:\n{server}"
+    );
+    assert!(
+        !server.contains("import.meta.url"),
+        "chunk-relative:\n{server}"
+    );
+}

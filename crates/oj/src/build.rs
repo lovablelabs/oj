@@ -740,21 +740,52 @@ fn public_file(public_dir: &Path, rest: &str) -> Option<PathBuf> {
 }
 
 /// Vite's publicFileToBuiltUrl: a public file's module exports its URL under
-/// the base. A relative base has no fixed prefix, so the file is emitted at
-/// its own path, unhashed, and the URL resolves against the importing chunk.
+/// the base. A relative base has no fixed prefix, so the client's file is
+/// emitted at its own path, unhashed, and the URL resolves against the
+/// importing chunk; the server's URL is root-absolute, as Vite resolves a
+/// relative base to `/` for an SSR build. `?raw` is the file's text and
+/// `?inline` its data URL, read from the public dir (vite:asset's load).
 fn public_file_module(
     ctx: &rolldown_plugin::SharedLoadPluginContext,
     public_dir: &Path,
-    rest: &str,
+    id: &str,
     base: &str,
+    client: bool,
 ) -> anyhow::Result<String> {
+    let (rest, query) = id.split_once('?').unwrap_or((id, ""));
+    let file = || {
+        public_file(public_dir, rest).ok_or_else(|| anyhow::anyhow!("public file /{rest} is gone"))
+    };
+    let read = |file: &Path| {
+        std::fs::read(file).map_err(|e| anyhow::anyhow!("cannot read {}: {e}", file.display()))
+    };
+    let kind = split_asset_query(&format!("x?{query}")).map(|(_, q)| q);
+    match kind.as_deref() {
+        Some("raw") => {
+            let text = String::from_utf8_lossy(&read(&file()?)?).into_owned();
+            return Ok(export_default_url(&text));
+        }
+        Some("inline") => {
+            let bytes = read(&file()?)?;
+            let ext = Path::new(rest)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
+            return Ok(export_default_url(&if ext == "svg" {
+                svg_data_url(&String::from_utf8_lossy(&bytes))
+            } else {
+                format!("data:{};base64,{}", asset_mime(ext), b64(&bytes))
+            }));
+        }
+        _ => {}
+    }
     if !is_relative_base(base) {
         return Ok(export_default_url(&with_base(rest, base)));
     }
-    let file = public_file(public_dir, rest)
-        .ok_or_else(|| anyhow::anyhow!("public file /{rest} is gone"))?;
-    let bytes =
-        std::fs::read(&file).map_err(|e| anyhow::anyhow!("cannot read {}: {e}", file.display()))?;
+    if !client {
+        return Ok(export_default_url(&with_base(rest, "/")));
+    }
+    let bytes = read(&file()?)?;
     let reference = ctx
         .emit_file(
             rolldown_common::EmittedAsset {
@@ -1163,15 +1194,15 @@ impl Plugin for OjCssPlugin {
         let asset_query = split_asset_query(args.specifier);
         let importer = args.importer.map(str::to_string);
         // Vite's resolve plugin reads a root-absolute id (`/src/x`) as a file
-        // under the root first; one not under it can be a public file.
-        let root_absolute = args
-            .specifier
+        // under the root first; one not under it can be a public file. The
+        // query rides along (`/vite.svg?url`, `/src/x.svg?raw`).
+        let (spec_path, spec_query) = match args.specifier.split_once('?') {
+            Some((path, query)) => (path, Some(query.to_string())),
+            None => (args.specifier, None),
+        };
+        let root_absolute = spec_path
             .strip_prefix('/')
-            .filter(|rest| {
-                !rest.starts_with('/')
-                    && !args.specifier.contains('?')
-                    && !Path::new(args.specifier).starts_with(&self.root)
-            })
+            .filter(|rest| !rest.starts_with('/') && !Path::new(spec_path).starts_with(&self.root))
             .map(str::to_string);
         let root = self.root.clone();
         let public_dir = self.resolve.public_dir.clone();
@@ -1198,14 +1229,24 @@ impl Plugin for OjCssPlugin {
                 }
             }
             if let Some(rest) = root_absolute {
+                let with_query = |id: &str| match &spec_query {
+                    Some(q) => format!("{id}?{q}"),
+                    None => id.to_string(),
+                };
                 let in_root = root.join(&rest).to_string_lossy().into_owned();
                 if let Ok(Ok(resolved)) = ctx.resolve(&in_root, importer.as_deref(), None).await {
-                    return Ok(Some(HookResolveIdOutput::from_id(resolved.id.to_string())));
+                    return Ok(Some(HookResolveIdOutput::from_id(with_query(
+                        resolved.id.as_str(),
+                    ))));
                 }
                 // vite:asset's checkPublicFile: the file is served from the
-                // public dir at its own URL, never bundled or hashed.
-                if public_file(&public_dir, &rest).is_some() {
-                    let id = format!("{PUBLIC_FILE_ID}{rest}");
+                // public dir at its own URL, never bundled or hashed. A worker
+                // query is not an asset import.
+                let worker = spec_query
+                    .as_deref()
+                    .is_some_and(|q| q.split('&').any(|p| p == "worker" || p == "sharedworker"));
+                if !worker && public_file(&public_dir, &rest).is_some() {
+                    let id = with_query(&format!("{PUBLIC_FILE_ID}{rest}"));
                     return Ok(Some(HookResolveIdOutput::from_id(id)));
                 }
             }
@@ -1254,7 +1295,7 @@ impl Plugin for OjCssPlugin {
         let base = self.base.clone();
         let load = async move {
             if let Some(rest) = id.strip_prefix(PUBLIC_FILE_ID) {
-                return public_file_module(&ctx, &css_resolve.public_dir, rest, &base).map(
+                return public_file_module(&ctx, &css_resolve.public_dir, rest, &base, client).map(
                     |code| {
                         Some(rolldown_plugin::HookLoadOutput {
                             code: arcstr::ArcStr::from(code),
