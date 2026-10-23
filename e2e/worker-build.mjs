@@ -58,7 +58,7 @@ try {
   const main = fs.readFileSync(
     path.join(
       assets,
-      files.find((f) => f.startsWith("main-") && f.endsWith(".js")),
+      files.find((f) => f.startsWith("index-") && f.endsWith(".js")),
     ),
     "utf8",
   );

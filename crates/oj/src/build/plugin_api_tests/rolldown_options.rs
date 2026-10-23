@@ -9,7 +9,7 @@ use super::{build_app, files_under, scratch, write_files};
 
 const INDEX_HTML: &str = r#"<!doctype html><html><head><title>t</title></head><body><script type="module" src="/src/main.js"></script></body></html>"#;
 
-/// The `main-*.js` entry under `dist/assets`, panicking with the listing.
+/// The `index-*.js` entry under `dist/assets`, panicking with the listing.
 fn main_entry(root: &std::path::Path) -> (Vec<String>, String) {
     let names: Vec<String> = fs::read_dir(root.join("dist/assets"))
         .expect("dist/assets exists")
@@ -18,8 +18,8 @@ fn main_entry(root: &std::path::Path) -> (Vec<String>, String) {
         .collect();
     let main = names
         .iter()
-        .find(|f| f.starts_with("main-") && f.ends_with(".js"))
-        .unwrap_or_else(|| panic!("entry main-*.js under assets/: {names:?}"))
+        .find(|f| f.starts_with("index-") && f.ends_with(".js"))
+        .unwrap_or_else(|| panic!("entry index-*.js under assets/: {names:?}"))
         .clone();
     let code = fs::read_to_string(root.join("dist/assets").join(&main)).unwrap();
     (names, code)
@@ -51,7 +51,7 @@ async fn rolldown_options_rename_entries_and_keep_externals_bare() {
 
     let dist = root.join("dist");
     assert!(
-        dist.join("custom/main.js").exists(),
+        dist.join("custom/index.js").exists(),
         "entryFileNames template applied: {:?}",
         files_under(&dist)
             .into_iter()
@@ -61,10 +61,10 @@ async fn rolldown_options_rename_entries_and_keep_externals_bare() {
     assert!(!dist.join("assets").exists(), "default assets dir not used");
     let html = fs::read_to_string(dist.join("index.html")).unwrap();
     assert!(
-        html.contains(r#"src="/custom/main.js""#),
+        html.contains(r#"src="/custom/index.js""#),
         "html references the custom entry path:\n{html}"
     );
-    let entry = fs::read_to_string(dist.join("custom/main.js")).unwrap();
+    let entry = fs::read_to_string(dist.join("custom/index.js")).unwrap();
     assert!(
         entry.contains("\"cdn-lib\"") || entry.contains("'cdn-lib'"),
         "external module left as a bare import, not bundled:\n{entry}"

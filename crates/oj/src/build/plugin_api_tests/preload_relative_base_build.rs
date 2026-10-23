@@ -76,13 +76,16 @@ fn asset_names(dist: &Path) -> Vec<String> {
         .collect()
 }
 
-fn read_asset(dist: &Path, prefix: &str, ext: &str) -> String {
+/// The `prefix*ext` asset whose text contains `needle`: both pages' entry
+/// chunks are `index-*.js`, as each page is an `index` input in Vite.
+fn read_asset(dist: &Path, prefix: &str, ext: &str, needle: &str) -> String {
     let assets = asset_names(dist);
-    let f = assets
+    assets
         .iter()
-        .find(|a| a.starts_with(prefix) && a.ends_with(ext))
-        .unwrap_or_else(|| panic!("{prefix}*{ext} emitted: {assets:?}"));
-    fs::read_to_string(dist.join("assets").join(f)).unwrap()
+        .filter(|a| a.starts_with(prefix) && a.ends_with(ext))
+        .map(|f| fs::read_to_string(dist.join("assets").join(f)).unwrap())
+        .find(|text| text.contains(needle))
+        .unwrap_or_else(|| panic!("{prefix}*{ext} with {needle:?} emitted: {assets:?}"))
 }
 
 async fn build_with(root: &Path, config: &str) -> Built {
@@ -92,9 +95,9 @@ async fn build_with(root: &Path, config: &str) -> Built {
     Built {
         html: fs::read_to_string(dist.join("index.html")).unwrap(),
         nested: fs::read_to_string(dist.join("nested/index.html")).unwrap(),
-        main: read_asset(&dist, "main-", ".js"),
-        lazy: read_asset(&dist, "lazy-", ".js"),
-        main_css: read_asset(&dist, "main-", ".css"),
+        main: read_asset(&dist, "index-", ".js", "__LAZY_DONE"),
+        lazy: read_asset(&dist, "lazy-", ".js", ""),
+        main_css: read_asset(&dist, "index-", ".css", ""),
     }
 }
 
@@ -136,18 +139,18 @@ async fn relative_base_urls_and_vite_preload_helper() {
     let rel = build_with(&root, &base_config("./")).await;
     assert_match(
         &rel.html,
-        r#"src="\./assets/main-[^"]+\.js""#,
+        r#"src="\./assets/index-[^"]+\.js""#,
         "root page script is ./assets/...",
     );
     assert_match(
         &rel.html,
-        r#"rel="stylesheet" href="\./assets/main-[^"]+\.css""#,
+        r#"rel="stylesheet" href="\./assets/index-[^"]+\.css""#,
         "root page css is ./assets/...",
     );
     assert_match(
         &rel.nested,
-        r#"src="\.\./assets/nested-[^"]+\.js""#,
-        "nested page script is ../assets/...",
+        r#"src="\.\./assets/index-[^"]+\.js""#,
+        "nested page script is ../assets/... (an array input page is `index` too)",
     );
     assert_match(
         &rel.nested,
@@ -220,7 +223,7 @@ async fn relative_base_urls_and_vite_preload_helper() {
     let abs = build_with(&root, &base_config("/app/")).await;
     assert_match(
         &abs.html,
-        r#"src="/app/assets/main-[^"]+\.js""#,
+        r#"src="/app/assets/index-[^"]+\.js""#,
         "absolute base kept",
     );
     assert_match(

@@ -36,7 +36,7 @@ async fn entry_script_and_stylesheet_are_rewritten_whatever_the_attribute_quotin
             "<script data-type='module' data-src='/ignored.js' type='module' src='/main.js'></script>",
         ),
     ];
-    let entry_ref = Regex::new(r#"/assets/main-[^"'\s>]+\.js"#).unwrap();
+    let entry_ref = Regex::new(r#"/assets/index-[^"'\s>]+\.js"#).unwrap();
     let css_ref = Regex::new(r#"/assets/site-[^"'\s>]+\.css"#).unwrap();
     let red = Regex::new(r"color:\s*red").unwrap();
     for (name, stylesheet, entry) in fixtures {

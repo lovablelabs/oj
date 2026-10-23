@@ -63,7 +63,7 @@ fn main_chunk(out_dir: &Path) -> (String, PathBuf) {
         .collect();
     let js = names
         .iter()
-        .find(|f| f.starts_with("main-") && f.ends_with(".js"))
+        .find(|f| f.starts_with("index-") && f.ends_with(".js"))
         .unwrap_or_else(|| panic!("main chunk emitted: {names:?}"));
     (
         fs::read_to_string(assets.join(js)).unwrap(),

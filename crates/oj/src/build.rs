@@ -3053,14 +3053,12 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
                     HtmlScript { src, abs }
                 })
                 .collect();
+            // The page is Vite's rollup input, so its entry chunk (and that
+            // chunk's stylesheet) takes the input's name: `index` for the
+            // default index.html, the key of an object `input`, never the
+            // script's own file name.
             for s in &scripts {
-                let stem = s
-                    .abs
-                    .file_stem()
-                    .and_then(|x| x.to_str())
-                    .unwrap_or("entry")
-                    .to_string();
-                push_input(&s.abs, stem, &mut inputs, &mut seen_imports);
+                push_input(&s.abs, name.clone(), &mut inputs, &mut seen_imports);
             }
             let out_rel = if rel_path.is_absolute() {
                 abs.strip_prefix(&root)
@@ -6869,9 +6867,9 @@ mod tests {
             .filter_map(|e| e.ok().map(|e| e.path()))
             .find(|p| {
                 let name = p.file_name().unwrap().to_string_lossy();
-                name.starts_with("main-") && name.ends_with(".map")
+                name.starts_with("index-") && name.ends_with(".map")
             })
-            .expect("main-*.map emitted");
+            .expect("index-*.map emitted");
         let map: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&map_path).unwrap()).unwrap();
         let sources: Vec<&str> = map["sources"]

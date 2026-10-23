@@ -60,7 +60,7 @@ async fn imports_inline_limit_and_asset_file_names_in_build() {
         .find(|f| f.ends_with(".css"))
         .unwrap_or_else(|| panic!("chunk stylesheet named by assetFileNames: {files:?}"));
     assert!(
-        Regex::new(r"^main\.[0-9a-f]{8}\.css$")
+        Regex::new(r"^index\.[0-9a-f]{8}\.css$")
             .unwrap()
             .is_match(css_file),
         "stylesheet name follows [name].[hash][extname]: {css_file}"

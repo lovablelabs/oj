@@ -27,6 +27,7 @@ mod dynamic_import_build;
 mod emit_chunk;
 mod emit_chunk_buildstart;
 mod emit_html_chunk;
+mod entry_names_build;
 mod generate_bundle_fidelity;
 mod html_attribute_quotes;
 mod html_entries_build;

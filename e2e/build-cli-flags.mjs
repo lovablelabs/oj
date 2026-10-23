@@ -81,12 +81,12 @@ function files(dir) {
   return out.sort();
 }
 function readMain(dir, assetsDir = "assets") {
-  const js = files(dir).filter((f) => f.startsWith(`${assetsDir}/main-`) && f.endsWith(".js"));
+  const js = files(dir).filter((f) => f.startsWith(`${assetsDir}/index-`) && f.endsWith(".js"));
   assert.equal(js.length, 1, `one main chunk under ${assetsDir}/: ${files(dir).join(", ")}`);
   return fs.readFileSync(path.join(dir, js[0]), "utf8");
 }
 function readCss(dir, assetsDir = "assets") {
-  const css = files(dir).filter((f) => f.startsWith(`${assetsDir}/main-`) && f.endsWith(".css"));
+  const css = files(dir).filter((f) => f.startsWith(`${assetsDir}/index-`) && f.endsWith(".css"));
   assert.equal(css.length, 1, `one main stylesheet under ${assetsDir}/`);
   return fs.readFileSync(path.join(dir, css[0]), "utf8");
 }
@@ -105,12 +105,12 @@ try {
   const html0 = fs.readFileSync(path.join(dist, "index.html"), "utf8");
   assert.match(
     html0,
-    /<script type="module" src="\/assets\/main-[^"]+\.js" crossorigin>/,
+    /<script type="module" src="\/assets\/index-[^"]+\.js" crossorigin>/,
     "entry script carries crossorigin (Vite)",
   );
   assert.match(
     html0,
-    /<link rel="stylesheet" href="\/assets\/main-[^"]+\.css" crossorigin \/>/,
+    /<link rel="stylesheet" href="\/assets\/index-[^"]+\.css" crossorigin \/>/,
     "injected stylesheet link carries crossorigin",
   );
   console.log("ok: defaults (no manifest, minified js + css, import.meta.hot gone, crossorigin tags)");
@@ -118,7 +118,7 @@ try {
   // Reporter: every output file with a gzip column; a low chunkSizeWarningLimit
   // triggers Vite's code-splitting hint, reportCompressedSize: false drops the column.
   const rep = ok([], { build: { chunkSizeWarningLimit: 0.1 } });
-  assert.match(rep.stdout, /assets\/main-[^ ]+\.js\s+│ gzip: /, `gzip column: ${rep.stdout}`);
+  assert.match(rep.stdout, /assets\/index-[^ ]+\.js\s+│ gzip: /, `gzip column: ${rep.stdout}`);
   assert.match(rep.stdout, /index\.html/, "html pages are listed too");
   assert.match(rep.stderr, /Some chunks are larger than 0.1 kB after minification/, "chunkSizeWarningLimit warning");
   const quiet = ok([], { build: { chunkSizeWarningLimit: 0.1, minify: false, reportCompressedSize: false } });
@@ -145,12 +145,12 @@ try {
   ]);
   const list = files(out1);
   assert.ok(
-    list.some((f) => f.startsWith("static/main-") && f.endsWith(".js")),
+    list.some((f) => f.startsWith("static/index-") && f.endsWith(".js")),
     `--assetsDir static: ${list.join(", ")}`,
   );
   assert.ok(!list.some((f) => f.startsWith("assets/")), "nothing lands under the default assets/ dir");
   const html = fs.readFileSync(path.join(out1, "index.html"), "utf8");
-  assert.match(html, /src="\/app\/static\/main-[^"]+\.js"/, "--base prefixes the script src");
+  assert.match(html, /src="\/app\/static\/index-[^"]+\.js"/, "--base prefixes the script src");
   assert.match(html, /href="\/app\/static\/linked-[^"]+\.css"/, "--base prefixes the linked stylesheet");
   const main1 = readMain(out1, "static");
   assert.ok(main1.includes("usedFunction"), "--minify false keeps identifiers");
@@ -162,7 +162,7 @@ try {
   const manifest = JSON.parse(fs.readFileSync(path.join(out1, ".vite", "manifest.json"), "utf8"));
   const entry = manifest["src/main.js"];
   assert.ok(entry && entry.isEntry, "entry row keyed by source path");
-  assert.match(entry.file, /^static\/main-/);
+  assert.match(entry.file, /^static\/index-/);
   assert.deepEqual(entry.css.length, 1, "entry lists its stylesheet");
   assert.ok(
     Array.isArray(entry.assets) && entry.assets.length === 1 && /^static\/big-.*\.png$/.test(entry.assets[0]),
@@ -208,7 +208,7 @@ try {
   ok([], { build: { manifest: "meta/manifest.json", assetsDir: "s/t" } });
   assert.ok(fs.existsSync(path.join(dist, "meta", "manifest.json")), "build.manifest string names the file");
   assert.ok(
-    files(dist).some((f) => f.startsWith("s/t/main-")),
+    files(dist).some((f) => f.startsWith("s/t/index-")),
     "build.assetsDir nests output directories",
   );
   console.log("ok: build.manifest / build.assetsDir from config");
