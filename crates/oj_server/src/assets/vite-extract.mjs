@@ -1518,29 +1518,6 @@ async function activePluginCount(raw) {
   }
 }
 
-// @stylexjs/unplugin keeps its options in a closure, and oj runs the plugin
-// natively (native-plugins.mjs), so the options are recorded where the config
-// passes them: its documented `stylex.vite(options)` call goes through the
-// package's default export object, the same instance the config imports.
-async function captureStylexOptions() {
-  const resolved = resolvePkg("@stylexjs/unplugin");
-  if (!resolved) return;
-  try {
-    const api = (await import(pathToFileURL(esmEntry(resolved, "@stylexjs/unplugin")).href)).default;
-    if (!api || typeof api.vite !== "function" || api.vite.__ojStylex) return;
-    const vite = api.vite;
-    const recording = function (options) {
-      const plugin = vite.call(this, options);
-      for (const p of [plugin].flat()) {
-        if (p && typeof p === "object") p.__ojStylexOptions = jsonOptions(options ?? {});
-      }
-      return plugin;
-    };
-    recording.__ojStylex = true;
-    api.vite = recording;
-  } catch {}
-}
-
 // The option values that cross to Rust: functions (cssInjectionTarget) and
 // other non-JSON values are dropped.
 function jsonOptions(value) {
@@ -1551,8 +1528,8 @@ function jsonOptions(value) {
   }
 }
 
-// The config's @stylexjs/unplugin, for oj's native StyleX: its recorded
-// options and dev mode, or null when the config has none.
+// The config's @stylexjs/unplugin, for oj's native StyleX: the options it was
+// given, or null when the config has none.
 async function stylexPlugin(raw) {
   if (!raw) return null;
   try {
@@ -1562,19 +1539,19 @@ async function stylexPlugin(raw) {
     } while (list.some((v) => v && typeof v.then === "function"));
     const plugin = list.find((p) => p && p.name === "@stylexjs/unplugin");
     if (!plugin) return null;
+    // oj's stand-in for the package (oj_js stand_ins) records them; a config
+    // that require()s the package loads the real one, whose options stay
+    // in its closure.
     let options = plugin.__ojStylexOptions;
     if (!options) {
-      warn(
-        "@stylexjs/unplugin options are read from `stylex.vite(options)` (the package's default export); " +
-          "this config builds the plugin another way, so oj compiles StyleX with the default options",
-      );
+      warn("@stylexjs/unplugin was loaded with require(), so oj compiles StyleX with the default options");
       options = {};
     }
     const babel = options.babelConfig;
     if (babel && ((babel.plugins ?? []).length || (babel.presets ?? []).length)) {
       warn("@stylexjs/unplugin babelConfig plugins and presets are not applied (oj compiles StyleX natively)");
     }
-    return { options };
+    return { options: jsonOptions(options) };
   } catch {
     return null;
   }
@@ -1604,7 +1581,6 @@ export async function extract(input) {
   observedReadsTruncated = false;
   try {
     installConfigReadRecorder();
-    await captureStylexOptions();
     const { config, raw, deps, runnerBacked, merge } = (await loadConfig()) ?? {};
     const c = config ?? {};
     warnUnsupported(raw ?? c, input.spaBuild === true);

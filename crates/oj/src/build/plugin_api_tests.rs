@@ -100,17 +100,8 @@ pub(super) async fn preview(dist: &Path, base: &str) -> Preview {
 
 /// The start-app fixture's installed package, or None when it is missing.
 pub(super) fn fixture(pkg: &str) -> Option<PathBuf> {
-    // The StyleX packages are an install of their own: their plugin's
-    // `unplugin` peer conflicts with the one TanStack's packages need.
-    let app = if pkg.starts_with("@stylexjs/") {
-        "stylex-app"
-    } else {
-        "start-app"
-    };
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../e2e/fixtures")
-        .join(app)
-        .join("node_modules")
+        .join("../../e2e/fixtures/start-app/node_modules")
         .join(pkg);
     path.exists().then(|| path.canonicalize().unwrap())
 }

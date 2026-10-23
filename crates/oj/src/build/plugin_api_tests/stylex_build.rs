@@ -7,6 +7,27 @@
 
 use super::{build_app, files_under, link_fixtures, scratch, write_files};
 
+/// The StyleX packages as an app installs them, minus their code: oj serves
+/// its stand-in for the plugin, and `@stylexjs/stylex` is compiled away.
+const STYLEX_PACKAGES: &[(&str, &str)] = &[
+    (
+        "node_modules/@stylexjs/unplugin/package.json",
+        r#"{"name":"@stylexjs/unplugin","version":"0.19.0","exports":{".":{"import":"./lib/es/index.mjs"}}}"#,
+    ),
+    (
+        "node_modules/@stylexjs/unplugin/lib/es/index.mjs",
+        "throw new Error(\"the real @stylexjs/unplugin ran\");\n",
+    ),
+    (
+        "node_modules/@stylexjs/stylex/package.json",
+        r#"{"name":"@stylexjs/stylex","version":"0.19.0","type":"module","main":"index.js"}"#,
+    ),
+    (
+        "node_modules/@stylexjs/stylex/index.js",
+        "export const create = () => { throw new Error(\"uncompiled StyleX\"); };\n",
+    ),
+];
+
 const CONFIG: &str = "import stylex from \"@stylexjs/unplugin\";\n\
 export default { plugins: [stylex.vite({ useCSSLayers: true })] };\n";
 
@@ -16,9 +37,10 @@ document.body.className = stylex.props(styles.title).className;\n";
 
 fn app(name: &str, files: &[(&str, &str)]) -> Option<std::path::PathBuf> {
     let root = scratch(name);
-    if !link_fixtures(&root, &["vite", "@stylexjs/unplugin", "@stylexjs/stylex"]) {
+    if !link_fixtures(&root, &["vite"]) {
         return None;
     }
+    write_files(&root, STYLEX_PACKAGES);
     write_files(
         &root,
         &[

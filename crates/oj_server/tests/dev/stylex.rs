@@ -36,15 +36,40 @@ fn app(options: &str) -> App {
         ("src/tokens.stylex.ts", TOKENS),
         ("src/main.ts", &main_ts("red")),
     ]);
-    for pkg in ["vite", "@stylexjs/unplugin", "@stylexjs/stylex"] {
-        app.link_fixture(pkg);
-    }
+    app.link_fixture("vite");
+    app.write(STYLEX_PACKAGES);
     app
 }
 
+/// The StyleX packages as an app installs them, minus their code: the
+/// plugin's modules throw if anything runs them (oj serves its stand-in), and
+/// `@stylexjs/stylex` is only ever compiled away.
+pub(crate) const STYLEX_PACKAGES: &[(&str, &str)] = &[
+    (
+        "node_modules/@stylexjs/unplugin/package.json",
+        r#"{"name":"@stylexjs/unplugin","version":"0.19.0","exports":{".":{"import":"./lib/es/index.mjs","require":"./lib/index.js"},"./vite":{"import":"./lib/es/vite.mjs","require":"./lib/vite.js"}}}"#,
+    ),
+    (
+        "node_modules/@stylexjs/unplugin/lib/es/index.mjs",
+        "throw new Error(\"the real @stylexjs/unplugin ran\");\n",
+    ),
+    (
+        "node_modules/@stylexjs/unplugin/lib/es/vite.mjs",
+        "throw new Error(\"the real @stylexjs/unplugin ran\");\n",
+    ),
+    (
+        "node_modules/@stylexjs/stylex/package.json",
+        r#"{"name":"@stylexjs/stylex","version":"0.19.0","type":"module","main":"index.js"}"#,
+    ),
+    (
+        "node_modules/@stylexjs/stylex/index.js",
+        "export const create = () => { throw new Error(\"uncompiled StyleX\"); };\nexport const props = create;\nexport const defineVars = create;\n",
+    ),
+];
+
 #[tokio::test(flavor = "multi_thread")]
 async fn config_options_drive_the_compile_and_the_sheet() {
-    require_fixture!("vite", "@stylexjs/unplugin", "@stylexjs/stylex");
+    require_fixture!("vite");
     let app = app("{ useCSSLayers: true, classNamePrefix: \"q\" }");
     let server = app.serve().await;
 
@@ -87,7 +112,7 @@ async fn config_options_drive_the_compile_and_the_sheet() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_edit_replaces_the_modules_rules_and_notifies() {
-    require_fixture!("vite", "@stylexjs/unplugin", "@stylexjs/stylex");
+    require_fixture!("vite");
     let app = app("{}");
     let server = app.serve().await;
     server.text("/src/main.ts").await;
@@ -123,7 +148,7 @@ async fn an_edit_replaces_the_modules_rules_and_notifies() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn css_only_mode_serves_its_shim_and_no_page_tags() {
-    require_fixture!("vite", "@stylexjs/unplugin", "@stylexjs/stylex");
+    require_fixture!("vite");
     let app = app("{ devMode: \"css-only\" }");
     let server = app.serve().await;
     let html = server.text("/").await;
@@ -146,7 +171,7 @@ async fn css_only_mode_serves_its_shim_and_no_page_tags() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_mode_off_does_not_apply_under_serve() {
-    require_fixture!("vite", "@stylexjs/unplugin", "@stylexjs/stylex");
+    require_fixture!("vite");
     let app = app("{ devMode: \"off\" }");
     let server = app.serve().await;
     let main = server.text("/src/main.ts").await;
@@ -166,7 +191,7 @@ async fn dev_mode_off_does_not_apply_under_serve() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ssr_compiles_feed_the_same_sheet() {
-    require_fixture!("vite", "@stylexjs/unplugin", "@stylexjs/stylex");
+    require_fixture!("vite");
     let app = app("{}");
     app.write(&[(
         "src/server-only.ts",
@@ -185,7 +210,7 @@ async fn ssr_compiles_feed_the_same_sheet() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_disk_cache_carries_each_modules_rules() {
-    require_fixture!("vite", "@stylexjs/unplugin", "@stylexjs/stylex");
+    require_fixture!("vite");
     let app = app("{}");
     let dev = || oj_server::DevServer {
         enable_cache: true,
@@ -234,7 +259,7 @@ async fn the_runtime_restyles_the_page_on_an_edit() {
     if crate::browser::skip() {
         return;
     }
-    require_fixture!("vite", "@stylexjs/unplugin", "@stylexjs/stylex");
+    require_fixture!("vite");
     let page_main = |color: &str| {
         format!(
             "import * as stylex from \"@stylexjs/stylex\";\n\
@@ -300,7 +325,7 @@ pub(crate) const STYLEX_DEPS: &[(&str, &str)] = &[
 
 #[tokio::test(flavor = "multi_thread")]
 async fn dependencies_on_stylex_compile_like_app_modules() {
-    require_fixture!("vite", "@stylexjs/unplugin", "@stylexjs/stylex");
+    require_fixture!("vite");
     let app = app("{}");
     app.write(STYLEX_DEPS);
     app.write(&[
@@ -340,4 +365,19 @@ async fn dependencies_on_stylex_compile_like_app_modules() {
         css.contains("color: maroon"),
         "the CJS dependency's rules:\n{css}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_import_form_hands_its_options_over() {
+    require_fixture!("vite");
+    for config in [
+        "import { vite } from \"@stylexjs/unplugin\";\nexport default { plugins: [vite({ classNamePrefix: \"q\" })] };\n",
+        "import stylexPlugin from \"@stylexjs/unplugin/vite\";\nexport default { plugins: [stylexPlugin({ classNamePrefix: \"q\" })] };\n",
+    ] {
+        let app = app("{}");
+        app.write(&[("vite.config.js", config)]);
+        let server = app.serve().await;
+        let main = server.text("/src/main.ts").await;
+        assert!(main.contains("main__styles.title q"), "{config}\n{main}");
+    }
 }

@@ -295,6 +295,112 @@ impl StylexPlugin {
     }
 }
 
+/// The plugin's `config` hook list: the app's dependencies whose manifests
+/// depend on an import source's package (or `@stylexjs/stylex`), plus
+/// `externalPackages`. Vite keeps them out of dependency pre-bundling, so the
+/// transform reaches their modules. Found from the package.json nearest
+/// `root`, each dependency where Node's `require.resolve("<dep>/package.json")`
+/// would find it.
+pub fn dependency_packages(user: &Value, root: &Path) -> Vec<String> {
+    let mut found: Vec<String> = user
+        .get("externalPackages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect();
+    let import_sources = user
+        .get("importSources")
+        .cloned()
+        .unwrap_or_else(|| json!(["stylex", "@stylexjs/stylex"]));
+    let mut targets: Vec<String> = source_names(&import_sources)
+        .iter()
+        .filter_map(|s| package_of(s))
+        .collect();
+    targets.push("@stylexjs/stylex".to_string());
+    let Some(app) = root.ancestors().find(|d| d.join("package.json").is_file()) else {
+        return found;
+    };
+    let Some(manifest) = read_json(&app.join("package.json")) else {
+        return found;
+    };
+    let mut deps: Vec<&str> = Vec::new();
+    for field in [
+        "dependencies",
+        "devDependencies",
+        "peerDependencies",
+        "optionalDependencies",
+    ] {
+        for name in manifest
+            .get(field)
+            .and_then(Value::as_object)
+            .into_iter()
+            .flat_map(|m| m.keys())
+        {
+            if !deps.contains(&name.as_str()) {
+                deps.push(name);
+            }
+        }
+    }
+    for dep in deps {
+        let Some(dep_manifest) = app
+            .ancestors()
+            .map(|d| d.join("node_modules").join(dep).join("package.json"))
+            .find(|p| p.is_file())
+            .and_then(|p| read_json(&p))
+        else {
+            continue;
+        };
+        if !exports_package_json(dep_manifest.get("exports")) {
+            continue;
+        }
+        let depends = ["dependencies", "peerDependencies", "optionalDependencies"]
+            .iter()
+            .any(|field| {
+                dep_manifest
+                    .get(*field)
+                    .and_then(Value::as_object)
+                    .is_some_and(|m| m.keys().any(|k| targets.contains(k)))
+            });
+        if depends && !found.iter().any(|f| f == dep) {
+            found.push(dep.to_string());
+        }
+    }
+    found
+}
+
+fn read_json(path: &Path) -> Option<Value> {
+    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+}
+
+/// The package a module specifier names (`@scope/name/sub` -> `@scope/name`);
+/// none for a relative or absolute one.
+fn package_of(source: &str) -> Option<String> {
+    if source.is_empty() || source.starts_with('.') || source.starts_with('/') {
+        return None;
+    }
+    let mut parts = source.split('/');
+    let first = parts.next()?;
+    if first.starts_with('@') {
+        let name = parts.next().filter(|n| !n.is_empty())?;
+        return Some(format!("{first}/{name}"));
+    }
+    Some(first.to_string())
+}
+
+/// Whether Node can resolve `<pkg>/package.json` past an `exports` map: no
+/// map, or one whose subpaths expose it (`./package.json` or a `./*` pattern).
+fn exports_package_json(exports: Option<&Value>) -> bool {
+    match exports {
+        None | Some(Value::Null) => true,
+        Some(Value::Object(map)) if map.keys().any(|k| k.starts_with('.')) => map
+            .keys()
+            .any(|k| k == "./package.json" || k == "./*" || k == "./*.json"),
+        // A string, an array or a conditions object maps "." alone.
+        Some(_) => false,
+    }
+}
+
 /// `importSources` entries as module names (`{ from, as }` keeps `from`).
 fn source_names(sources: &Value) -> Vec<String> {
     sources
@@ -419,6 +525,55 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(!out.code.contains("a__styles.root"), "{}", out.code);
+    }
+
+    #[test]
+    fn dependency_packages_are_the_apps_stylex_dependents() {
+        let dir = std::env::temp_dir().join(format!("oj-stylex-deps-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let write = |rel: &str, body: &str| {
+            let path = dir.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, body).unwrap();
+        };
+        write(
+            "package.json",
+            r#"{"dependencies":{"ui":"1","plain":"1","sealed":"1","peer-ui":"1"},"devDependencies":{"custom":"1"}}"#,
+        );
+        write(
+            "node_modules/ui/package.json",
+            r#"{"dependencies":{"@stylexjs/stylex":"0.19.0"}}"#,
+        );
+        write(
+            "node_modules/plain/package.json",
+            r#"{"dependencies":{"react":"19"}}"#,
+        );
+        // An exports map hiding package.json: Node's resolve fails, so the
+        // plugin never sees this one.
+        write(
+            "node_modules/sealed/package.json",
+            r#"{"exports":{".":"./i.js"},"dependencies":{"@stylexjs/stylex":"0.19.0"}}"#,
+        );
+        write(
+            "node_modules/peer-ui/package.json",
+            r#"{"peerDependencies":{"@stylexjs/stylex":"*"}}"#,
+        );
+        write(
+            "node_modules/custom/package.json",
+            r#"{"dependencies":{"my-sx":"1"}}"#,
+        );
+        let app = dir.join("src");
+        std::fs::create_dir_all(&app).unwrap();
+
+        assert_eq!(dependency_packages(&json!({}), &app), ["ui", "peer-ui"]);
+        assert_eq!(
+            dependency_packages(
+                &json!({ "importSources": [{ "from": "my-sx/sub", "as": "css" }], "externalPackages": ["extra"] }),
+                &dir
+            ),
+            ["extra", "ui", "peer-ui", "custom"]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

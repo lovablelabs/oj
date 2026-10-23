@@ -18,6 +18,7 @@ mod host;
 mod isolate;
 mod loader;
 mod scheduler;
+mod stand_ins;
 mod watchdog;
 mod worker;
 
