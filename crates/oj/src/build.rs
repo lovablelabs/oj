@@ -267,6 +267,10 @@ struct OjCssPlugin {
     /// Vite's html proxy, importing the modulepreload polyfill and then the
     /// page's module scripts in order.
     pages: Arc<std::collections::HashMap<String, String>>,
+    /// Where split chunk stylesheets go and how they are named, so a chunk's
+    /// hash covers its stylesheet's name (vite:css-post's augmentChunkHash);
+    /// None for builds that emit no split CSS.
+    chunk_css_hashing: Option<(PathBuf, String)>,
 }
 
 /// The app build settings an inline worker bundle shares with its importer:
@@ -563,6 +567,25 @@ fn process_env_defines(node_env: &str) -> Vec<(String, String)> {
     pairs
 }
 
+/// Vite's output `comments`: a minified build keeps none (no annotation,
+/// JSDoc or legal comments), an unminified one keeps them all, and an ES
+/// library keeps its annotations so a consumer can still tree-shake it.
+fn vite_output_comments(minify: bool, es_lib: bool) -> rolldown_common::CommentsOptions {
+    rolldown_common::CommentsOptions {
+        legal: !minify,
+        annotation: !minify || es_lib,
+        jsdoc: !minify,
+    }
+}
+
+/// Vite builds every environment with rolldown's `experimental.viteMode`.
+fn vite_mode_experimental() -> rolldown_common::ExperimentalOptions {
+    rolldown_common::ExperimentalOptions {
+        vite_mode: Some(true),
+        ..Default::default()
+    }
+}
+
 /// Vite maps `build.minify: false` to rolldown's `'dce-only'`: no mangling or
 /// whitespace removal, but dead code is still dropped (rolldown's `false` would
 /// keep it).
@@ -850,6 +873,80 @@ fn render_public_asset_urls(
         })
     });
     Some((s.to_string(), map))
+}
+
+/// Vite 8's JSON transform (rolldown's `builtin:vite-json`, Vite's defaults
+/// `namedExports: true`, `stringify: 'auto'`, minified in the build): an
+/// object becomes named exports and a default object of them; a large
+/// non-object becomes `JSON.parse(...)`.
+fn vite_json_module(id: &str, code: &str) -> rolldown_plugin::HookTransformReturn {
+    let special = rolldown_plugin_utils::is_special_query(id);
+    let json_ext = id.ends_with(".json")
+        || id.rfind(".json?").is_some_and(|i| {
+            let post = &id[i + 6..];
+            post != "commonjs-proxy" && post != "commonjs-external"
+        });
+    if !json_ext || special {
+        return Ok(None);
+    }
+    let code = rolldown_plugin_utils::strip_bom(code);
+    let named_exports = code.trim_start().starts_with('{');
+    let stringify = code.len() > rolldown_plugin_utils::constants::THRESHOLD_SIZE;
+    let value: serde_json::Value = serde_json::from_str(code)?;
+    let js = if !named_exports && stringify {
+        let minified = serde_json::to_string(&value)?;
+        format!(
+            "export default /*#__PURE__*/ JSON.parse({})",
+            serde_json::Value::String(minified)
+        )
+    } else {
+        rolldown_plugin_utils::data_to_esm(&value, true)
+    };
+    Ok(Some(rolldown_plugin::HookTransformOutput {
+        code: Some(js),
+        map: rolldown_sourcemap::SourceMap::default().into(),
+        module_type: Some(rolldown_common::ModuleType::Js),
+        ..Default::default()
+    }))
+}
+
+/// Vite's unescapeHashPlaceholders: rolldown's `!~{id}~` hash placeholders
+/// back from their `encodeURI` form, so rolldown still fills them in.
+fn unescape_hash_placeholders(uri: &str) -> String {
+    let mut out = String::with_capacity(uri.len());
+    let mut rest = uri;
+    while let Some(start) = rest.find("!~%7B") {
+        let after = &rest[start + 5..];
+        let id_len = after
+            .bytes()
+            .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'$')
+            .count();
+        if (1..=17).contains(&id_len) && after[id_len..].starts_with("%7D~") {
+            out.push_str(&rest[..start]);
+            out.push_str("!~{");
+            out.push_str(&after[..id_len]);
+            out.push_str("}~");
+            rest = &after[id_len + 4..];
+        } else {
+            out.push_str(&rest[..start + 5]);
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Vite's joinUrlSegments.
+fn join_url_segments(a: &str, b: &str) -> String {
+    if a.is_empty() || b.is_empty() {
+        return format!("{a}{b}");
+    }
+    let a = a.strip_suffix('/').unwrap_or(a);
+    if b.starts_with('/') {
+        format!("{a}{b}")
+    } else {
+        format!("{a}/{b}")
+    }
 }
 
 /// `target` (an outDir-relative path) relative to the directory of `chunk`,
@@ -1321,6 +1418,71 @@ impl Plugin for OjCssPlugin {
             | rolldown_plugin::HookUsage::Load
             | rolldown_plugin::HookUsage::Transform
             | rolldown_plugin::HookUsage::RenderChunk
+            | rolldown_plugin::HookUsage::ResolveFileUrl
+            | rolldown_plugin::HookUsage::AugmentChunkHash
+    }
+
+    /// vite:css-post's augmentChunkHash: a chunk's hash also covers the name of
+    /// the stylesheet it imports, so the chunk is renamed when only its CSS
+    /// changes.
+    fn augment_chunk_hash(
+        &self,
+        _ctx: &PluginContext,
+        chunk: Arc<rolldown_common::RollupRenderedChunk>,
+    ) -> impl std::future::Future<Output = rolldown_plugin::HookAugmentChunkHashReturn> + Send {
+        let name = self
+            .chunk_css_hashing
+            .as_ref()
+            .and_then(|(out_dir, asset_names)| {
+                let css_map: std::collections::HashMap<String, String> =
+                    self.collected.lock().unwrap().iter().cloned().collect();
+                let module_ids: Vec<String> =
+                    chunk.modules.keys.iter().map(|m| m.to_string()).collect();
+                let resolve = self.resolve.as_ref();
+                let opts = CssAssetOpts {
+                    inline_limit: self.inline_limit,
+                    asset_names: Some(asset_names.as_str()),
+                    resolve,
+                };
+                chunk_stylesheet(
+                    &chunk.name,
+                    &module_ids,
+                    &css_map,
+                    &self.root,
+                    out_dir,
+                    &self.base,
+                    opts,
+                    &mut Vec::new(),
+                    &mut std::collections::HashMap::new(),
+                )
+                .ok()
+                .flatten()
+                .map(|sheet| sheet.name)
+            });
+        async move { Ok(name) }
+    }
+
+    /// vite:asset's resolveFileUrl: an emitted asset's URL in JS is
+    /// `base + file` (a string), or under a relative base the chunk-relative
+    /// runtime expression (toOutputFilePathInJS).
+    fn resolve_file_url(
+        &self,
+        _ctx: &PluginContext,
+        args: &rolldown_plugin::HookResolveFileUrlArgs<'_>,
+    ) -> impl std::future::Future<Output = rolldown_plugin::HookResolveFileUrlReturn> + Send {
+        let relative = self.client && (self.base.is_empty() || self.base == "./");
+        let code = if relative {
+            relative_url_mechanism(
+                args.format,
+                &relative_to_chunk(args.chunk_id, args.file_name),
+            )
+        } else {
+            serde_json::Value::String(unescape_hash_placeholders(&encode_uri_path(
+                &join_url_segments(&self.base, args.file_name),
+            )))
+            .to_string()
+        };
+        async move { Ok(Some(code)) }
     }
 
     /// vite:asset's renderChunk: public-file markers become URLs relative to
@@ -1444,7 +1606,11 @@ impl Plugin for OjCssPlugin {
         // the lifetime of `args`, so the source is probed in place.
         let id: &str = args.id;
         let code: &str = args.code;
+        let json = *args.module_type == rolldown_common::ModuleType::Json;
         async move {
+            if json {
+                return vite_json_module(id, code);
+            }
             Ok(
                 expand_import_meta(id, code, &self.root, &self.resolve.alias).map(|code| {
                     rolldown_plugin::HookTransformOutput {
@@ -1489,7 +1655,7 @@ impl Plugin for OjCssPlugin {
                 return js(proxy);
             }
             if id == MODULEPRELOAD_POLYFILL_ID {
-                return js(MODULEPRELOAD_POLYFILL_JS.to_string());
+                return js(vite_preload::MODULEPRELOAD_POLYFILL_JS.to_string());
             }
             if let Some(rest) = id.strip_prefix(PUBLIC_FILE_ID) {
                 return public_file_module(&css_resolve.public_dir, rest, &base, client).map(
@@ -1718,6 +1884,7 @@ impl Plugin for OjCssPlugin {
                         worker_entries: Arc::clone(&worker_entries),
                         base: base.clone(),
                         pages: Default::default(),
+                        chunk_css_hashing: None,
                     };
                     let code = bundle_worker_inline(&root, file, worker.as_ref(), nested).await?;
                     let literal = serde_json::Value::String(code).to_string();
@@ -3200,12 +3367,25 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
         })),
         worker_entries: Arc::clone(&worker_entries),
         pages: Arc::new(pages),
+        chunk_css_hashing: css_split.then(|| (out_dir.clone(), asset_names_pattern.clone())),
     }));
     let out_ov = ro_output_overrides(ro_opts);
     // Vite's build import analysis (preload wrapping, polyfill) only applies to
     // es output; umd/iife/cjs bundles cannot use `import.meta.url`.
     let es_output = out_ov.format.is_none();
-    let out_banner = out_ov.banner.clone();
+    if es_output {
+        let relative = is_relative_base(&base);
+        oj_plugins.push(Pluginable::new_shared(
+            vite_preload::BuildImportAnalysisPlugin {
+                preload_code: arcstr::ArcStr::from(vite_preload::preload_code(
+                    &base,
+                    oj_config::module_preload_polyfill(&config),
+                    relative,
+                )),
+                is_relative_base: relative,
+            },
+        ));
+    }
     let mut bundler = BundlerBuilder::default()
         .with_plugins(oj_plugins)
         .with_options(BundlerOptions {
@@ -3254,6 +3434,9 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
             minify: Some(rolldown_minify(client_minify)),
             sourcemap: env_sourcemap(&config, "client", sourcemap),
             define: Some(client_define.into_iter().collect()),
+            comments: Some(vite_output_comments(client_minify, false)),
+            top_level_var: Some(true),
+            experimental: Some(vite_mode_experimental()),
             ..Default::default()
         })
         .build()
@@ -3775,10 +3958,9 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
     emitted.retain(|(name, _)| !inlined_entries.contains(name));
     manifest_entries.retain(|e| !inlined_entries.contains(&e.file));
 
-    // Vite's build import analysis: wrap dynamic imports in `__vitePreload` so a
-    // lazy chunk's own dependencies and stylesheets load in parallel (and its
-    // CSS is applied before it runs), and give async-only chunks a stylesheet
-    // fallback. The modulepreload polyfill is a module each page imports.
+    // Vite's build import analysis: each wrapped `import()` gets its preload
+    // list, so a lazy chunk's own dependencies and stylesheets load in
+    // parallel (and its CSS is applied before it runs).
     if es_output {
         apply_preload_helper(
             &output,
@@ -3786,8 +3968,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
             &base,
             &imports_map,
             &chunk_css,
-            &all_sync_chunks,
-            out_banner.as_deref(),
+            oj_config::module_preload_links(&config),
             &worker_entries.lock().unwrap().clone(),
         )?;
     }
@@ -4631,6 +4812,7 @@ pub(crate) async fn build_ssr(
         worker: None,
         worker_entries: Arc::new(Mutex::new(std::collections::HashSet::new())),
         pages: Default::default(),
+        chunk_css_hashing: None,
     }));
     let mut bundler = BundlerBuilder::default()
         .with_plugins(oj_plugins)
@@ -4816,6 +4998,7 @@ async fn build_server_fns(
                 worker: None,
                 worker_entries: Arc::new(Mutex::new(std::collections::HashSet::new())),
                 pages: Default::default(),
+                chunk_css_hashing: None,
             })])
             .with_options(BundlerOptions {
                 input: Some(vec![InputItem {
@@ -5225,6 +5408,7 @@ async fn build_client_entry(
         worker: None,
         worker_entries: Arc::new(Mutex::new(std::collections::HashSet::new())),
         pages: Default::default(),
+        chunk_css_hashing: None,
     }));
 
     let mut bundler = BundlerBuilder::default()
@@ -5497,6 +5681,7 @@ async fn build_library(
             worker: None,
             worker_entries: Arc::new(Mutex::new(std::collections::HashSet::new())),
             pages: Default::default(),
+            chunk_css_hashing: None,
         }));
         let mut bundler = BundlerBuilder::default()
             .with_plugins(plugins)
@@ -5721,48 +5906,6 @@ fn ordered_sync_chunks(
     for e in entries {
         visit(e, map, &mut seen, &mut out);
     }
-    out
-}
-
-/// The `__vitePreload` deps of a dynamic import of `target`, in Vite's
-/// `addDeps` order (importAnalysisBuild.ts): each chunk as it is reached, its
-/// static imports' deps, then its own stylesheet, so a lazy chunk's CSS lands
-/// after the shared CSS it imports. Chunks in `own` (the importer's) are left out.
-fn preload_deps(
-    target: &str,
-    map: &std::collections::HashMap<String, Vec<String>>,
-    css_of: &std::collections::HashMap<&str, &str>,
-    own: &std::collections::BTreeSet<String>,
-) -> Vec<String> {
-    fn visit(
-        f: &str,
-        map: &std::collections::HashMap<String, Vec<String>>,
-        css_of: &std::collections::HashMap<&str, &str>,
-        own: &std::collections::BTreeSet<String>,
-        seen: &mut std::collections::HashSet<String>,
-        out: &mut Vec<String>,
-    ) {
-        if own.contains(f) || !seen.insert(f.to_string()) {
-            return;
-        }
-        out.push(f.to_string());
-        for dep in map.get(f).into_iter().flatten() {
-            visit(dep, map, css_of, own, seen, out);
-        }
-        if let Some(css) = css_of.get(f) {
-            out.push(css.to_string());
-        }
-    }
-
-    let mut out = Vec::new();
-    visit(
-        target,
-        map,
-        css_of,
-        own,
-        &mut std::collections::HashSet::new(),
-        &mut out,
-    );
     out
 }
 
@@ -6026,45 +6169,31 @@ fn emit_split_css_files(
         let rolldown_common::Output::Chunk(chunk) = asset else {
             continue;
         };
-        let mut css = String::new();
-        let mut sources: Vec<String> = Vec::new();
-        for module_id in &chunk.modules.keys {
-            let mid = module_id.to_string();
-            if let Some(src) = css_map.get(&mid) {
-                sources.push(mid.clone());
-                let dir = Path::new(&mid)
-                    .parent()
-                    .map(Path::to_path_buf)
-                    .unwrap_or_else(|| root.to_path_buf());
-                css.push_str(&rebase_css_urls(
-                    src,
-                    &dir,
-                    out_dir,
-                    base,
-                    opts,
-                    emitted,
-                    &mut seen_assets,
-                ));
-            }
-        }
-        if css.is_empty() {
+        let module_ids: Vec<String> = chunk.modules.keys.iter().map(|m| m.to_string()).collect();
+        let Some(sheet) = chunk_stylesheet(
+            &chunk.name,
+            &module_ids,
+            &css_map,
+            root,
+            out_dir,
+            base,
+            opts,
+            emitted,
+            &mut seen_assets,
+        )?
+        else {
             continue;
-        }
-        let css = chunk_css_asset(&css, &opts.resolve)?;
-        // Named before the StyleX sheet joins it, as Vite names the asset
-        // before the plugin's generateBundle appends to it.
-        let hash = css_asset_hash(&css);
+        };
+        let ChunkStylesheet {
+            css,
+            name: css_name,
+            sources,
+        } = sheet;
         let css = if stylex_chunk.as_deref() == Some(chunk.filename.as_str()) {
             append_stylex(css, stylex_css.take())
         } else {
             css
         };
-        let css_name = render_asset_name(
-            opts.asset_names,
-            &sanitize_asset_name(&chunk.name),
-            &hash,
-            "css",
-        );
         if let Some(parent) = out_dir.join(&css_name).parent() {
             fs::create_dir_all(parent)?;
         }
@@ -6083,6 +6212,54 @@ fn emit_split_css_files(
         chunk_css.push((chunk.filename.to_string(), css_name));
     }
     Ok(chunk_css)
+}
+
+/// A chunk's stylesheet asset: its CSS modules' sheets in the chunk's module
+/// order, `url()`s emitted, finished as one sheet, and named by its hash
+/// before anything (StyleX) joins it, as Vite names the asset it emits.
+struct ChunkStylesheet {
+    css: String,
+    name: String,
+    sources: Vec<String>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn chunk_stylesheet(
+    chunk_name: &str,
+    module_ids: &[String],
+    css_map: &std::collections::HashMap<String, String>,
+    root: &Path,
+    out_dir: &Path,
+    base: &str,
+    opts: CssAssetOpts<'_>,
+    emitted: &mut Vec<(String, usize)>,
+    seen: &mut std::collections::HashMap<PathBuf, String>,
+) -> anyhow::Result<Option<ChunkStylesheet>> {
+    let mut css = String::new();
+    let mut sources: Vec<String> = Vec::new();
+    for mid in module_ids {
+        if let Some(src) = css_map.get(mid) {
+            sources.push(mid.clone());
+            let dir = Path::new(mid)
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| root.to_path_buf());
+            css.push_str(&rebase_css_urls(
+                src, &dir, out_dir, base, opts, emitted, seen,
+            ));
+        }
+    }
+    if css.is_empty() {
+        return Ok(None);
+    }
+    let css = chunk_css_asset(&css, &opts.resolve)?;
+    let name = render_asset_name(
+        opts.asset_names,
+        &sanitize_asset_name(chunk_name),
+        &css_asset_hash(&css),
+        "css",
+    );
+    Ok(Some(ChunkStylesheet { css, name, sources }))
 }
 
 /// Render-blocking `<link rel=stylesheet>` tags for a page: the CSS of its entry
@@ -6115,34 +6292,24 @@ fn split_css_links(
     links
 }
 
-/// Vite's `__vitePreload` helper (importAnalysisBuild.ts), ES2015 so it survives
-/// any `build.target`. `__vite__assetsURL` is generated per base: a relative base
-/// resolves deps against the importing chunk, an absolute base is prefixed.
-const PRELOAD_HELPER_JS: &str = r#"const __vite__scriptRel=(function(){var r=typeof document!=="undefined"&&document.createElement("link").relList;return r&&r.supports&&r.supports("modulepreload")?"modulepreload":"preload"})();const __vite__seen={};function __vitePreload(baseModule,deps,importerUrl){var promise=Promise.resolve();if(deps&&deps.length>0){var links=document.getElementsByTagName("link");var cspNonceMeta=document.querySelector("meta[property=csp-nonce]");var cspNonce=cspNonceMeta&&(cspNonceMeta.nonce||cspNonceMeta.getAttribute("nonce"));var allSettled=function(ps){return Promise.all(ps.map(function(p){return Promise.resolve(p).then(function(value){return{status:"fulfilled",value:value}},function(reason){return{status:"rejected",reason:reason}})}))};promise=allSettled(deps.map(function(dep){dep=new URL(__vite__assetsURL(dep,importerUrl),import.meta.url).href;if(dep in __vite__seen)return;__vite__seen[dep]=true;var isCss=dep.endsWith(".css");for(var i=links.length-1;i>=0;i--){var l=links[i];if(l.href===dep&&(!isCss||l.rel==="stylesheet"))return}var link=document.createElement("link");link.rel=isCss?"stylesheet":__vite__scriptRel;if(!isCss){link.as="script"}link.crossOrigin="";link.href=dep;if(cspNonce)link.setAttribute("nonce",cspNonce);document.head.appendChild(link);if(isCss){return new Promise(function(res,rej){link.addEventListener("load",res);link.addEventListener("error",function(){rej(new Error("Unable to preload CSS for "+dep))})})}}))}function handlePreloadError(err){var e=new Event("vite:preloadError",{cancelable:true});e.payload=err;window.dispatchEvent(e);if(!e.defaultPrevented)throw err}return promise.then(function(res){for(var i=0;i<(res||[]).length;i++){var item=res[i];if(item.status!=="rejected")continue;handlePreloadError(item.reason)}return baseModule().catch(handlePreloadError)})}"#;
-
 /// The polyfill's specifier, imported first by each page proxy, and the id it
 /// resolves to (Vite's, whose chunk is named `modulepreload-polyfill`).
 const MODULEPRELOAD_POLYFILL_SPEC: &str = "vite/modulepreload-polyfill";
 const MODULEPRELOAD_POLYFILL_ID: &str = "\0vite/modulepreload-polyfill.js";
 
-/// Vite's `vite/modulepreload-polyfill` (fetches `<link rel=modulepreload>` on
-/// browsers without native support), injected into page entry chunks.
-const MODULEPRELOAD_POLYFILL_JS: &str = r#"(function(){var relList=document.createElement("link").relList;if(relList&&relList.supports&&relList.supports("modulepreload"))return;for(var i=0,ls=document.querySelectorAll('link[rel="modulepreload"]');i<ls.length;i++)processPreload(ls[i]);new MutationObserver(function(mutations){for(var m=0;m<mutations.length;m++){var mutation=mutations[m];if(mutation.type!=="childList")continue;for(var n=0;n<mutation.addedNodes.length;n++){var node=mutation.addedNodes[n];if(node.tagName==="LINK"&&node.rel==="modulepreload")processPreload(node)}}}).observe(document,{childList:true,subtree:true});function getFetchOpts(link){var fetchOpts={};if(link.integrity)fetchOpts.integrity=link.integrity;if(link.referrerPolicy)fetchOpts.referrerPolicy=link.referrerPolicy;if(link.crossOrigin==="use-credentials")fetchOpts.credentials="include";else if(link.crossOrigin==="anonymous")fetchOpts.credentials="omit";else fetchOpts.credentials="same-origin";return fetchOpts}function processPreload(link){if(link.ep)return;link.ep=true;var fetchOpts=getFetchOpts(link);fetch(link.href,fetchOpts)}})();"#;
-
-/// Wrap each `import("./chunk.js")` in a chunk with `__vitePreload`, passing the
-/// dependency list Vite would (the lazy chunk, its statically imported chunks
-/// and their stylesheets, minus what the importer already has), and give
-/// async-only chunks that own CSS a self-injecting fallback link. Everything is prepended on the chunk's
-/// first line so existing sourcemap line numbers stay valid.
-#[allow(clippy::too_many_arguments)]
+/// Vite's build import analysis, once the chunks are written: each
+/// `__VITE_PRELOAD__` marker the import analysis plugin left becomes the
+/// import's preload list (the lazy chunk, what it imports and their
+/// stylesheets, when that is more than the chunk itself), with the chunk's
+/// `__vite__mapDeps` table prepended, as Vite's generateBundle does after the
+/// file names are fixed. Its sourcemap follows the edits.
 fn apply_preload_helper(
     output: &rolldown::BundleOutput,
     out_dir: &Path,
     base: &str,
     imports_map: &std::collections::HashMap<String, Vec<String>>,
     chunk_css: &[(String, String)],
-    sync_chunks: &std::collections::BTreeSet<String>,
-    banner: Option<&str>,
+    module_preload: bool,
     worker_entries: &std::collections::HashSet<String>,
 ) -> anyhow::Result<()> {
     let css_of: std::collections::HashMap<&str, &str> = chunk_css
@@ -6150,9 +6317,8 @@ fn apply_preload_helper(
         .map(|(c, css)| (c.as_str(), css.as_str()))
         .collect();
     let relative = is_relative_base(base);
-    // Chunks only a worker ever loads run without a `document`: no preload
-    // wrapping, no stylesheet self-injection (Vite builds workers without its
-    // import analysis, `isWorker`).
+    // Chunks only a worker ever loads run without a `document`: they preload
+    // nothing (Vite builds workers without its import analysis, `isWorker`).
     let worker_only = {
         let mut entries: Vec<(String, bool)> = Vec::new();
         let mut dynamic_map: std::collections::HashMap<String, Vec<String>> =
@@ -6184,105 +6350,48 @@ fn apply_preload_helper(
             continue;
         };
         let file = chunk.filename.to_string();
-        if worker_only.contains(&file) {
-            continue;
-        }
         let path = out_dir.join(&file);
-        let Ok(mut code) = fs::read_to_string(&path) else {
+        let Ok(code) = fs::read_to_string(&path) else {
             continue;
         };
-        let mut prefix = String::new();
-
-        let mut dep_list: Vec<String> = Vec::new();
-        let mut wrapped = false;
-        if !chunk.dynamic_imports.is_empty() {
-            let own: std::collections::BTreeSet<String> = std::iter::once(file.clone())
-                .chain(transitive_imports(&file, imports_map))
-                .collect();
-            for target in &chunk.dynamic_imports {
-                let target = target.to_string();
-                let rel = relative_chunk_path(&file, &target);
-                let mut deps = preload_deps(&target, imports_map, &css_of, &own);
-                // Only the chunk itself: `import()` fetches it anyway.
-                if deps.len() <= 1 {
-                    deps.clear();
-                }
-                let mut idx: Vec<String> = Vec::new();
-                for d in deps {
-                    let d = if relative {
-                        relative_chunk_path(&file, &d)
-                    } else {
-                        d
-                    };
-                    let i = match dep_list.iter().position(|x| x == &d) {
-                        Some(i) => i,
-                        None => {
-                            dep_list.push(d);
-                            dep_list.len() - 1
-                        }
-                    };
-                    idx.push(i.to_string());
-                }
-                // rolldown's minifier may emit the specifier in any quote style.
-                for quote in ['"', '\'', '`'] {
-                    let needle = format!("import({quote}{rel}{quote})");
-                    if code.contains(&needle) {
-                        let replacement = format!(
-                            "__vitePreload(function(){{return import({quote}{rel}{quote})}},__vite__mapDeps([{}]),import.meta.url)",
-                            idx.join(",")
-                        );
-                        code = code.replace(&needle, &replacement);
-                        wrapped = true;
-                    }
-                }
+        let in_worker = worker_only.contains(&file);
+        let dependency = |f: &str| -> Option<vite_preload::Dependency<'_>> {
+            if in_worker {
+                return None;
+            }
+            let (name, imports) = imports_map.get_key_value(f)?;
+            Some(vite_preload::Dependency {
+                js: Some(name.as_str()),
+                imports: imports.as_slice(),
+                css: css_of.get(f).copied(),
+            })
+        };
+        let Some(vite_preload::FilledChunk {
+            code: filled,
+            table,
+            spans,
+        }) =
+            vite_preload::fill_preload_markers(&code, &file, relative, module_preload, &dependency)
+        else {
+            continue;
+        };
+        // The table goes first, after a hashbang line when there is one.
+        let insert_at = if filled.starts_with("#!") {
+            filled.find('\n').map_or(filled.len(), |i| i + 1)
+        } else {
+            0
+        };
+        let table = table.unwrap_or_default();
+        let written = format!("{}{table}{}", &filled[..insert_at], &filled[insert_at..]);
+        let map_path = out_dir.join(format!("{file}.map"));
+        if let Ok(map) = fs::read_to_string(&map_path) {
+            let from_line = u32::from(insert_at > 0);
+            let inserted = (!table.is_empty()).then_some(from_line);
+            if let Some(shifted) = vite_preload::shift_sourcemap(&map, &code, &spans, inserted) {
+                fs::write(&map_path, shifted)?;
             }
         }
-        if wrapped {
-            let assets_url = if relative {
-                "function(dep,importerUrl){return new URL(dep,importerUrl).href}".to_string()
-            } else {
-                format!(
-                    "function(dep){{return {}+dep}}",
-                    serde_json::Value::String(base.to_string())
-                )
-            };
-            prefix.push_str(&format!(
-                "const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f={})))=>i.map(i=>d[i]);const __vite__assetsURL={assets_url};{PRELOAD_HELPER_JS}",
-                serde_json::Value::Array(
-                    dep_list
-                        .iter()
-                        .map(|d| serde_json::Value::String(d.clone()))
-                        .collect()
-                )
-            ));
-        }
-
-        // Async-only chunks with CSS: a fallback for dynamic imports the rewrite
-        // above could not see (variable specifiers), idempotent against preload.
-        if !sync_chunks.contains(&file) {
-            if let Some(css_name) = css_of.get(file.as_str()) {
-                let href = serde_json::Value::String(if relative {
-                    relative_chunk_path(&file, css_name)
-                } else {
-                    with_base(css_name, base)
-                });
-                // Compare resolved URLs (`link.href` is absolute), so a link the
-                // preload helper or the page already added is recognized.
-                prefix.push_str(&format!(
-                    "(function(){{var u=new URL({href},import.meta.url).href;var ls=document.getElementsByTagName('link');for(var i=0;i<ls.length;i++){{if(ls[i].rel==='stylesheet'&&ls[i].href===u)return}}var l=document.createElement('link');l.rel='stylesheet';l.href=u;document.head.appendChild(l)}})();"
-                ));
-            }
-        }
-
-        if !prefix.is_empty() {
-            // `output.banner` stays the first thing in the file (a license
-            // header, a `"use client"` directive) ahead of oj's helpers.
-            let (head, body) = match banner {
-                Some(b) if !b.is_empty() && code.starts_with(b) => (b, &code[b.len()..]),
-                _ => ("", code.as_str()),
-            };
-            fs::write(&path, format!("{head}{prefix}{body}"))?;
-        }
+        fs::write(&path, written)?;
     }
     Ok(())
 }
@@ -6675,6 +6784,8 @@ fn build_manifest(entries: &[ManifestEntry], assets: &[ManifestAsset]) -> serde_
     }
     serde_json::Value::Object(map)
 }
+
+mod vite_preload;
 
 // The plugin-API build contract (emitFile, generateBundle, hook gating, ...)
 // end to end through `build`: real plugins in the in-process host, assertions
@@ -8445,40 +8556,6 @@ mod tests {
 
     // Vite's addDeps: a lazy chunk's own stylesheet after the CSS of the chunks
     // it imports, and nothing the importer already has.
-    #[test]
-    fn preload_deps_put_a_lazy_chunks_css_after_its_imports() {
-        let imports: std::collections::HashMap<String, Vec<String>> = [
-            ("lazy.js", vec!["shared.js", "vendor.js"]),
-            ("shared.js", vec!["vendor.js"]),
-        ]
-        .into_iter()
-        .map(|(k, v)| (k.to_string(), v.into_iter().map(String::from).collect()))
-        .collect();
-        let css_of: std::collections::HashMap<&str, &str> = [
-            ("lazy.js", "lazy.css"),
-            ("shared.js", "shared.css"),
-            ("vendor.js", "vendor.css"),
-        ]
-        .into_iter()
-        .collect();
-        let none = std::collections::BTreeSet::new();
-        assert_eq!(
-            preload_deps("lazy.js", &imports, &css_of, &none),
-            [
-                "lazy.js",
-                "shared.js",
-                "vendor.js",
-                "vendor.css",
-                "shared.css",
-                "lazy.css"
-            ]
-        );
-        let own = std::collections::BTreeSet::from(["vendor.js".to_string()]);
-        assert_eq!(
-            preload_deps("lazy.js", &imports, &css_of, &own),
-            ["lazy.js", "shared.js", "shared.css", "lazy.css"]
-        );
-    }
 
     #[test]
     fn asset_names_are_sanitized_without_collapsing_to_nothing() {

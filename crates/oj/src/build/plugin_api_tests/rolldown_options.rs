@@ -168,12 +168,16 @@ async fn rolldown_output_paths_rewrite_externals_in_es_output() {
             || es_main.contains("'https://cdn.example.test/lib.js'"),
         "output.paths rewrites the external specifier:\n{es_main}"
     );
+    // A minified build keeps no legal comments (Vite's `comments.legal`), a
+    // banner's included, so the chunk opens on its imports, as Vite's does.
     assert!(
-        es_main.starts_with("/*! license */"),
-        "banner precedes oj's preload helper in es output:\n{es_main}"
+        !es_main.contains("/*! license */"),
+        "the minified es output drops the legal banner:\n{es_main}"
     );
     assert!(
-        es_main.contains("__vitePreload"),
-        "es output keeps the preload helper:\n{es_main}"
+        Regex::new(r#"\(\(\)=>import\(`\./lazy-[^`]+\.js`\),\[\]\)"#)
+            .unwrap()
+            .is_match(&es_main),
+        "the dynamic import goes through the preload helper, its list empty:\n{es_main}"
     );
 }

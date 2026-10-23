@@ -8,6 +8,7 @@
     "e2e/fixtures/**",
     "crates/oj_stylex/conformance/**",
     "crates/oj_stylex/testdata/**",
+    "crates/oj/src/build/vite_preload/**",
     "**/node_modules/**",
     "**/dist/**",
     "**/*.gen.ts",

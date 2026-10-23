@@ -168,9 +168,11 @@ async fn relative_base_urls_and_vite_preload_helper() {
         r#"url\(\./bg-[A-Za-z0-9_-]{8}\.png\)"#,
         "css url() is a sibling reference",
     );
+    // Vite's preload helper, minified: the factory, the table entries and
+    // the importer's url under a relative base.
     assert_match(
         &rel.main,
-        r#"__vitePreload\(function\(\)\{return import\([`"']\./lazy-[^`"']+\.js[`"']\)\},__vite__mapDeps\(\[[\d,]+\]\),import\.meta\.url\)"#,
+        r#"\(\(\)=>import\(`\./lazy-[^`]+\.js`\)[^;]*,__vite__mapDeps\(\[0,1,2\]\),import\.meta\.url\)"#,
         "dynamic import wrapped",
     );
     assert_match(
@@ -180,7 +182,7 @@ async fn relative_base_urls_and_vite_preload_helper() {
     );
     assert_match(
         &rel.main,
-        r"new URL\(dep,importerUrl\)",
+        r"function\(e,t\)\{return new URL\(e,t\)\.href\}",
         "relative base resolves deps against the importer",
     );
     assert_match(
@@ -227,6 +229,8 @@ async fn relative_base_urls_and_vite_preload_helper() {
         problems.extend(nested.errors());
         problems.extend(nested.console());
         nested.close().await;
+        // Chrome's favicon probe is not the page's.
+        problems.retain(|p| !p.contains("/favicon.ico"));
         assert_eq!(
             problems,
             Vec::<String>::new(),
@@ -247,7 +251,7 @@ async fn relative_base_urls_and_vite_preload_helper() {
     );
     assert_match(
         &abs.main,
-        r#"function\(dep\)\{return "/app/"\+dep\}"#,
+        r#"function\(e\)\{return`/app/`\+e\}"#,
         "absolute base is prefixed in the helper",
     );
 
