@@ -317,6 +317,7 @@ export function runExtract(fx, { prefix = "oj-extract-run-" } = {}) {
     const script = path.join(runDir, "vite-extract.mjs");
     fs.copyFileSync(asset("vite-extract.mjs"), script);
     fs.copyFileSync(asset("vite-config-node.mjs"), path.join(runDir, "vite-config-node.mjs"));
+    fs.copyFileSync(asset("native-plugins.mjs"), path.join(runDir, "native-plugins.mjs"));
     const r = spawnSync(
       process.execPath,
       ["--input-type=module", "-e", EXTRACT_WRAPPER, script, fx.configPath, fx.appRoot],
@@ -347,6 +348,7 @@ export function bootHost(fx, { prefix = "oj-host-run-" } = {}) {
   // ./vite-html.mjs) are materialized next to it by oj the same way.
   fs.copyFileSync(asset("discovered-deps.mjs"), path.join(runDir, "discovered-deps.mjs"));
   fs.copyFileSync(asset("vite-config-node.mjs"), path.join(runDir, "vite-config-node.mjs"));
+  fs.copyFileSync(asset("native-plugins.mjs"), path.join(runDir, "native-plugins.mjs"));
   fs.copyFileSync(asset("vite-html.mjs"), path.join(runDir, "vite-html.mjs"));
   fs.mkdirSync(path.join(runDir, "start"));
   for (const name of ["vite-globs.mjs", "glob-libs.mjs"]) {

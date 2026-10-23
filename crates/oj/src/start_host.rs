@@ -912,6 +912,13 @@ impl StartHost {
                 .strip_prefix(&format!("{}/", self.root.to_string_lossy()))
                 .unwrap_or(&clean)
                 .to_string();
+            let raw = oj_compiler::env_fns::rewrite_env_fns(
+                &raw,
+                &clean,
+                oj_compiler::env_fns::Env::Server,
+            )
+            .map_err(|e| format!("{clean}: {e}"))?
+            .unwrap_or(raw);
             oj_compiler::server_fns::rewrite_server(&raw, &rel).unwrap_or(raw)
         } else {
             raw

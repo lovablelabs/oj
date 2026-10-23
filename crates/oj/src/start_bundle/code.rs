@@ -169,6 +169,22 @@ impl Plugin for StartCodePlugin {
             }
         }
 
+        // TanStack's start-compiler compiles the environment functions per
+        // environment in every module, its own packages included, so the
+        // other side's code is not bundled (a worker runs in the browser).
+        let env = match self.target {
+            CodeTarget::Server => oj_compiler::env_fns::Env::Server,
+            CodeTarget::Client | CodeTarget::Worker { .. } => oj_compiler::env_fns::Env::Client,
+        };
+        let path = file.to_string_lossy();
+        let reexported = self.reexported_factories(&ctx, &code, &path, id).await?;
+        if let Some(out) =
+            oj_compiler::env_fns::rewrite_env_fns_with(&code, &path, env, &reexported)
+                .map_err(|e| anyhow::anyhow!("{id}: {e}"))?
+        {
+            code = Cow::Owned(out);
+        }
+
         if app && code.contains("createServerFn") {
             let rel = file
                 .strip_prefix(&self.root)
@@ -213,25 +229,7 @@ impl StartCodePlugin {
             let abs = self.root.join(rest);
             return Ok(abs.is_file().then_some(abs));
         }
-        let resolve = |spec: String| async move {
-            let r = ctx
-                .inner
-                .resolve(
-                    &spec,
-                    Some(importer),
-                    Some(PluginContextResolveOptions {
-                        skip_self: true,
-                        ..Default::default()
-                    }),
-                )
-                .await?;
-            anyhow::Ok(r.ok().and_then(|r| {
-                let id = r.id.as_str();
-                (!id.starts_with('\0')
-                    && matches!(r.external, rolldown_common::ResolvedExternal::Bool(false)))
-                .then(|| PathBuf::from(id.split(['?', '#']).next().unwrap_or(id)))
-            }))
-        };
+        let resolve = |spec: String| self.resolve_file(ctx, spec, importer);
         if file.starts_with('.') {
             return resolve(file.to_string()).await;
         }
@@ -239,6 +237,76 @@ impl StartCodePlugin {
             return Ok(Some(found));
         }
         resolve(file.to_string()).await
+    }
+
+    /// The file `spec` resolves to from `importer`, when it is one on disk.
+    async fn resolve_file(
+        &self,
+        ctx: &SharedTransformPluginContext,
+        spec: String,
+        importer: &str,
+    ) -> anyhow::Result<Option<PathBuf>> {
+        let r = ctx
+            .inner
+            .resolve(
+                &spec,
+                Some(importer),
+                Some(PluginContextResolveOptions {
+                    skip_self: true,
+                    ..Default::default()
+                }),
+            )
+            .await?;
+        Ok(r.ok().and_then(|r| {
+            let id = r.id.as_str();
+            (!id.starts_with('\0')
+                && matches!(r.external, rolldown_common::ResolvedExternal::Bool(false)))
+            .then(|| PathBuf::from(id.split(['?', '#']).next().unwrap_or(id)))
+        }))
+    }
+
+    /// The imports of a factory name from outside `@tanstack/*` whose module
+    /// re-exports TanStack's, followed module to module as TanStack resolves
+    /// them.
+    async fn reexported_factories(
+        &self,
+        ctx: &SharedTransformPluginContext,
+        code: &str,
+        file: &str,
+        importer: &str,
+    ) -> anyhow::Result<Vec<(String, String)>> {
+        use oj_compiler::env_fns::{foreign_factory_imports, reexport_of, ReExport};
+        let mut out = Vec::new();
+        for (source, name) in foreign_factory_imports(code, file) {
+            let mut queue = vec![(source.clone(), name.clone(), importer.to_string())];
+            let mut seen = HashSet::new();
+            while let Some((spec, export, from)) = queue.pop() {
+                if seen.len() >= 32 || !seen.insert((spec.clone(), export.clone(), from.clone())) {
+                    continue;
+                }
+                let Some(path) = self.resolve_file(ctx, spec, &from).await? else {
+                    continue;
+                };
+                let Ok(text) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                let path = path.to_string_lossy().into_owned();
+                match reexport_of(&text, &path, &export) {
+                    Some(ReExport::TanStack) => {
+                        out.push((source, name));
+                        break;
+                    }
+                    Some(ReExport::From { source, name }) => queue.push((source, name, path)),
+                    Some(ReExport::Stars(sources)) => queue.extend(
+                        sources
+                            .into_iter()
+                            .map(|s| (s, export.clone(), path.clone())),
+                    ),
+                    None => {}
+                }
+            }
+        }
+        Ok(out)
     }
 }
 

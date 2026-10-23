@@ -258,6 +258,14 @@ async fn a_failed_asset_load_says_why() {
         err.message
     );
     assert!(err.message.contains("[oj:start-assets]"), "{}", err.message);
+    // The overlay names the plugin and the module, as Vite's does.
+    assert_eq!(err.plugin.as_deref(), Some("oj:start-assets"));
+    let id = err.id.clone().unwrap_or_default();
+    assert!(id.ends_with("src/b.styl"), "{id:?}");
+    assert!(
+        err.loc.is_none() && err.frame.is_empty(),
+        "a load has no spot"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -484,4 +492,154 @@ async fn the_server_bundle_never_takes_a_packages_browser_build() {
         client.contains("browser-build"),
         "the client keeps its browser build:\n{client}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn environment_functions_compile_per_bundle_in_app_and_dep_code() {
+    // A dep compiled the same way: TanStack's own packages call the factories.
+    let app = App::new(&[
+        (
+            "src/entry.ts",
+            "import { who, secret } from \"./env\";\nimport { router } from \"tanstack-dep\";\nconsole.log(who(), secret, router());\n",
+        ),
+        (
+            "src/env.ts",
+            "import { createIsomorphicFn, createServerOnlyFn } from \"@tanstack/start-fn-stubs\";\nexport const who = createIsomorphicFn().server(() => \"app-server-side\").client(() => \"app-client-side\");\nexport const secret = createServerOnlyFn(() => \"app-server-only\");\n",
+        ),
+        (
+            "node_modules/tanstack-dep/package.json",
+            r#"{"name":"tanstack-dep","type":"module","main":"index.js"}"#,
+        ),
+        (
+            "node_modules/tanstack-dep/index.js",
+            "import { createIsomorphicFn } from \"@tanstack/start-fn-stubs\";\nexport const router = createIsomorphicFn().client(() => \"dep-client-side\").server(() => \"dep-server-side\");\n",
+        ),
+        (
+            "node_modules/@tanstack/start-fn-stubs/package.json",
+            r#"{"name":"@tanstack/start-fn-stubs","type":"module","main":"index.js"}"#,
+        ),
+        (
+            "node_modules/@tanstack/start-fn-stubs/index.js",
+            "export const createIsomorphicFn = () => ({});\nexport const createServerOnlyFn = (f) => f;\n",
+        ),
+    ]);
+    let build = |target: CodeTarget| {
+        bundle(
+            &app,
+            "src/entry.ts",
+            vec![Pluginable::new_shared(StartCodePlugin::new(
+                &app.dir, target,
+            ))],
+        )
+    };
+    let client = build(CodeTarget::Client).await.unwrap();
+    for gone in ["app-server-side", "app-server-only", "dep-server-side"] {
+        assert!(
+            !client.contains(gone),
+            "{gone} in the client bundle:\n{client}"
+        );
+    }
+    for kept in [
+        "app-client-side",
+        "dep-client-side",
+        "can only be called on the server!",
+    ] {
+        assert!(
+            client.contains(kept),
+            "{kept} missing from the client bundle:\n{client}"
+        );
+    }
+    let server = build(CodeTarget::Server).await.unwrap();
+    for gone in ["app-client-side", "dep-client-side"] {
+        assert!(
+            !server.contains(gone),
+            "{gone} in the server bundle:\n{server}"
+        );
+    }
+    for kept in ["app-server-side", "app-server-only", "dep-server-side"] {
+        assert!(
+            server.contains(kept),
+            "{kept} missing from the server bundle:\n{server}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dropped_sides_imports_leave_the_bundle() {
+    // Plain JS has no TypeScript import elision: the unused import stays
+    // unless the env-fn compile drops it, as TanStack's dead-code pass does.
+    let app = App::new(&[
+        ("src/entry.ts", "import { who } from \"./env\";\nconsole.log(who());\n"),
+        (
+            "src/env.js",
+            "import { createIsomorphicFn } from \"@tanstack/start-fn-stubs\";\nimport { db } from \"./db\";\nexport const who = createIsomorphicFn().server(() => db.q()).client(() => \"client-side\");\n",
+        ),
+        (
+            "src/db.ts",
+            "import net from \"node:net\";\nconsole.log(\"db-module\", net);\nexport const db = { q: () => 1 };\n",
+        ),
+        (
+            "node_modules/@tanstack/start-fn-stubs/package.json",
+            r#"{"name":"@tanstack/start-fn-stubs","type":"module","main":"index.js"}"#,
+        ),
+        (
+            "node_modules/@tanstack/start-fn-stubs/index.js",
+            "export const createIsomorphicFn = () => ({});\n",
+        ),
+    ]);
+    let client = bundle(
+        &app,
+        "src/entry.ts",
+        vec![Pluginable::new_shared(StartCodePlugin::new(
+            &app.dir,
+            CodeTarget::Client,
+        ))],
+    )
+    .await
+    .unwrap_or_else(|e| panic!("the client bundle: {}", e.message));
+    assert!(client.contains("client-side"), "{client}");
+    assert!(
+        !client.contains("db-module"),
+        "the server side's import in the client bundle:\n{client}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_factory_reexported_by_app_modules_compiles() {
+    // TanStack follows an import through the modules that re-export it.
+    let app = App::new(&[
+        (
+            "src/entry.ts",
+            "import { who } from \"./env\";\nconsole.log(who());\n",
+        ),
+        (
+            "src/env.ts",
+            "import { createIsomorphicFn } from \"./lib/start\";\nexport const who = createIsomorphicFn().server(() => \"server-side\").client(() => \"client-side\");\n",
+        ),
+        ("src/lib/start.ts", "export * from \"./inner\";\n"),
+        (
+            "src/lib/inner.ts",
+            "export { createIsomorphicFn } from \"@tanstack/start-fn-stubs\";\n",
+        ),
+        (
+            "node_modules/@tanstack/start-fn-stubs/package.json",
+            r#"{"name":"@tanstack/start-fn-stubs","type":"module","main":"index.js"}"#,
+        ),
+        (
+            "node_modules/@tanstack/start-fn-stubs/index.js",
+            "export const createIsomorphicFn = () => ({});\n",
+        ),
+    ]);
+    let client = bundle(
+        &app,
+        "src/entry.ts",
+        vec![Pluginable::new_shared(StartCodePlugin::new(
+            &app.dir,
+            CodeTarget::Client,
+        ))],
+    )
+    .await
+    .unwrap_or_else(|e| panic!("the client bundle: {}", e.message));
+    assert!(client.contains("client-side"), "{client}");
+    assert!(!client.contains("server-side"), "{client}");
 }

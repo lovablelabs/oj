@@ -48,6 +48,10 @@ pub struct OjConfig {
     /// Vite's `html` block (`cspNonce`).
     pub html: Option<HtmlConfig>,
     pub legacy: Option<LegacyConfig>,
+    /// How many of a vite.config's plugins the plugin host would run, from
+    /// extraction (not a config key). `Some(0)`: no host is needed.
+    #[serde(skip)]
+    pub vite_active_plugins: Option<usize>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]

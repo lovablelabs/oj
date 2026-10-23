@@ -1499,9 +1499,10 @@ impl Plugin for OjCssPlugin {
                 ..Default::default()
             }))
         };
+        let (plugin, failed) = (self.name(), args.id.to_string());
         async move {
             load.await
-                .map_err(|e| oj_server::plugins::load_failed("oj:build", e))
+                .map_err(|e| oj_server::load_error::load_failed(plugin, &failed, e))
         }
     }
 }
@@ -2004,6 +2005,7 @@ impl Plugin for OjUserPlugin {
         }
         let host = Arc::clone(&self.host);
         let id = args.id.to_string();
+        let plugin = self.name();
         async move {
             if !pass {
                 return Ok(None);
@@ -2012,12 +2014,7 @@ impl Plugin for OjUserPlugin {
             // bundling the raw source instead would ship wrong output silently.
             host.load(&id)
                 .await
-                .map_err(|e| {
-                    oj_server::plugins::load_failed(
-                        "oj:user-plugins",
-                        anyhow::anyhow!("plugin load failed for {id}:\n{e}"),
-                    )
-                })
+                .map_err(|e| oj_server::load_error::load_failed(plugin, &id, anyhow::anyhow!(e)))
                 .map(|loaded| {
                     loaded.map(|code| {
                         let path = id.split(['?', '#']).next().unwrap_or(&id);

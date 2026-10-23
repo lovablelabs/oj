@@ -53,6 +53,7 @@ test("the extractor emits ssr.runnerBacked and rawResolve", () => {
   try {
     copyFileSync(asset("vite-extract.mjs"), join(base, "vite-extract.mjs"));
     copyFileSync(asset("vite-config-node.mjs"), join(base, "vite-config-node.mjs"));
+    copyFileSync(asset("native-plugins.mjs"), join(base, "native-plugins.mjs"));
     writeFileSync(join(base, "package.json"), JSON.stringify({ name: "rb-app", type: "module" }));
     // A raw plugin list nests, as a plugin factory's return does.
     writeFileSync(
@@ -92,6 +93,7 @@ function extractorDir(prefix) {
   const base = mkdtempSync(join(tmpdir(), prefix));
   copyFileSync(asset("vite-extract.mjs"), join(base, "vite-extract.mjs"));
   copyFileSync(asset("vite-config-node.mjs"), join(base, "vite-config-node.mjs"));
+  copyFileSync(asset("native-plugins.mjs"), join(base, "native-plugins.mjs"));
   writeFileSync(
     join(base, "package.json"),
     JSON.stringify({ name: "fx", type: "module", dependencies: { vite: "*" } }),
@@ -116,6 +118,7 @@ test("extract() resolves even when a hook keeps the event loop alive", () => {
   try {
     copyFileSync(asset("vite-extract.mjs"), join(base, "vite-extract.mjs"));
     copyFileSync(asset("vite-config-node.mjs"), join(base, "vite-config-node.mjs"));
+    copyFileSync(asset("native-plugins.mjs"), join(base, "native-plugins.mjs"));
     writeFileSync(join(base, "package.json"), JSON.stringify({ name: "fx", type: "module" }));
     writeFileSync(
       join(base, "vite.config.mjs"),
@@ -144,6 +147,7 @@ test("config hooks see isSsrBuild false even when the file sets build.ssr under 
   try {
     copyFileSync(asset("vite-extract.mjs"), join(base, "vite-extract.mjs"));
     copyFileSync(asset("vite-config-node.mjs"), join(base, "vite-config-node.mjs"));
+    copyFileSync(asset("native-plugins.mjs"), join(base, "native-plugins.mjs"));
     writeFileSync(join(base, "package.json"), JSON.stringify({ name: "fx", type: "module" }));
     writeFileSync(
       join(base, "vite.config.mjs"),
@@ -352,6 +356,7 @@ function realViteDir(prefix) {
   const base = mkdtempSync(join(tmpdir(), prefix));
   copyFileSync(asset("vite-extract.mjs"), join(base, "vite-extract.mjs"));
   copyFileSync(asset("vite-config-node.mjs"), join(base, "vite-config-node.mjs"));
+  copyFileSync(asset("native-plugins.mjs"), join(base, "native-plugins.mjs"));
   writeFileSync(
     join(base, "package.json"),
     JSON.stringify({ name: "fx", type: "module", dependencies: { vite: "*" } }),
@@ -559,6 +564,7 @@ test("config-shaped files the evaluation reads travel in __deps, custom names an
   try {
     copyFileSync(asset("vite-extract.mjs"), join(base, "vite-extract.mjs"));
     copyFileSync(asset("vite-config-node.mjs"), join(base, "vite-config-node.mjs"));
+    copyFileSync(asset("native-plugins.mjs"), join(base, "native-plugins.mjs"));
     writeFileSync(join(base, "package.json"), JSON.stringify({ name: "fx", type: "module" }));
     mkdirSync(join(base, "config"));
     mkdirSync(join(base, "node_modules"));
@@ -646,6 +652,7 @@ test("recorder overflow sets __depsTruncated; re-reads at the cap do not", () =>
   try {
     copyFileSync(asset("vite-extract.mjs"), join(base, "vite-extract.mjs"));
     copyFileSync(asset("vite-config-node.mjs"), join(base, "vite-config-node.mjs"));
+    copyFileSync(asset("native-plugins.mjs"), join(base, "native-plugins.mjs"));
     writeFileSync(join(base, "package.json"), JSON.stringify({ name: "fx", type: "module" }));
     writeFileSync(join(base, "a.json"), "{}");
     writeFileSync(join(base, "b.json"), "{}");
@@ -692,6 +699,7 @@ test("a config branching on NODE_ENV during module evaluation sees the command's
   try {
     copyFileSync(asset("vite-extract.mjs"), join(base, "vite-extract.mjs"));
     copyFileSync(asset("vite-config-node.mjs"), join(base, "vite-config-node.mjs"));
+    copyFileSync(asset("native-plugins.mjs"), join(base, "native-plugins.mjs"));
     writeFileSync(join(base, "package.json"), JSON.stringify({ name: "fx", type: "module" }));
     writeFileSync(
       join(base, "vite.config.mjs"),
@@ -825,6 +833,7 @@ test("Vite server and optimizer settings survive actual config loading", () => {
   try {
     copyFileSync(asset("vite-extract.mjs"), join(base, "vite-extract.mjs"));
     copyFileSync(asset("vite-config-node.mjs"), join(base, "vite-config-node.mjs"));
+    copyFileSync(asset("native-plugins.mjs"), join(base, "native-plugins.mjs"));
     writeFileSync(join(base, "package.json"), JSON.stringify({ name: "fx", type: "module" }));
     writeFileSync(
       join(base, "vite.config.mjs"),

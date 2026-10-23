@@ -746,7 +746,7 @@ pub(crate) async fn build(
 }
 
 /// A failed bundle's error: a worker bundle's own when one failed under it
-/// (rolldown reports that load only as "plugin threw an error").
+/// (the parent bundle reports it as its own failed load of the worker).
 fn bundle_failed(emitter: &Emitter, errs: Vec<rolldown_error::BuildDiagnostic>) -> anyhow::Error {
     match emitter.worker_error() {
         Some(e) => anyhow::anyhow!("{e}"),

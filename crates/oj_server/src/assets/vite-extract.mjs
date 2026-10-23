@@ -7,6 +7,7 @@ import { dirname, isAbsolute, resolve, sep } from "node:path";
 import fs, { writeFileSync, readFileSync, existsSync, unlinkSync } from "node:fs";
 import { format } from "node:util";
 import { asNode, esmEntry } from "./vite-config-node.mjs";
+import { OJ_NATIVE_PLUGIN_NAMES, OJ_UNSUPPORTED_PLUGIN_NAMES } from "./native-plugins.mjs";
 
 // The slice of Vite's mergeConfigRecursively these assets need (twin copies:
 // one in vite-extract.mjs, one in plugin-host.mjs — keep them byte-identical):
@@ -1500,6 +1501,23 @@ export {
 /// broken config is not an empty config), `__deps`/`__depsTruncated` feed the
 /// extraction cache, and `__stderr` carries everything the run would have
 /// printed to stderr.
+// How many of the config's own plugins oj's plugin host would run: every one
+// outside oj's native and unsupported sets. `apply` is not applied, so this
+// can only over-count, which keeps a host. null when the list cannot be read.
+async function activePluginCount(raw) {
+  if (!raw) return null;
+  try {
+    let list = Array.isArray(raw.plugins) ? raw.plugins : raw.plugins ? [raw.plugins] : [];
+    do {
+      list = (await Promise.all(list)).flat(Infinity);
+    } while (list.some((v) => v && typeof v.then === "function"));
+    return list.filter((p) => p && !OJ_NATIVE_PLUGIN_NAMES.has(p.name) && !OJ_UNSUPPORTED_PLUGIN_NAMES.has(p.name))
+      .length;
+  } catch {
+    return null;
+  }
+}
+
 export async function extract(input) {
   configPath = String(input.vite);
   appRoot = String(input.root);
@@ -1623,6 +1641,7 @@ export async function extract(input) {
       preview: extractPreview(c.preview),
       appType: typeof c.appType === "string" ? c.appType : null,
       html: typeof c.html?.cspNonce === "string" ? { cspNonce: c.html.cspNonce } : null,
+      activePlugins: await activePluginCount(raw),
     };
   } catch (e) {
     emitStderr(`oj: could not extract vite.config values: ${(e && e.stack) || e}\n`);

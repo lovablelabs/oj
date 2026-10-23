@@ -28,7 +28,13 @@ async fn a_stylesheet_that_cannot_compile_says_why() {
         .expect_err("the sheet uses an undefined variable");
     let msg = format!("{err:#}");
     assert!(msg.contains("Undefined variable"), "{msg}");
-    assert!(msg.contains("[oj:build]"), "{msg}");
+    // Sass names the sheet `./stdin`; the error's first line names the file.
+    let sheet = root.join("src/b.scss").canonicalize().unwrap();
+    assert!(
+        msg.contains(&format!("[oj:build] Could not load {}", sheet.display())),
+        "{msg}"
+    );
+    assert!(!msg.contains("╭─["), "no empty source box: {msg}");
 }
 
 #[tokio::test]
@@ -55,4 +61,5 @@ async fn a_throwing_plugin_load_says_why() {
     let msg = format!("{err:#}");
     assert!(msg.contains("load exploded"), "{msg}");
     assert!(msg.contains("bad-load"), "{msg}");
+    assert!(msg.contains("Could not load \\0boom"), "{msg}");
 }

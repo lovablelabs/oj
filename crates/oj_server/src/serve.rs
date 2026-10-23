@@ -169,20 +169,31 @@ async fn serve_html_proxy(
     id: &str,
     url: &str,
 ) -> Response {
-    let Some(host) = &state.plugins else {
-        return (StatusCode::NOT_FOUND, "oj: no plugin host").into_response();
-    };
-    let id = match host.resolve_id(id, "").await {
-        Ok(Some(resolved)) => resolved,
-        Ok(None) => id.to_string(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-    };
-    let source = match host.load(&id).await {
-        Ok(Some(source)) => source,
-        Ok(None) => {
-            return (StatusCode::NOT_FOUND, format!("oj: no plugin loaded {id}")).into_response()
+    // A page the native transform served keeps its modules here.
+    let (id, source) = match state.html_proxy.load(id, &state.root) {
+        Some(source) => (id.to_string(), source),
+        None => {
+            let Some(host) = &state.plugins else {
+                return (
+                    StatusCode::NOT_FOUND,
+                    format!("oj: no matching HTML proxy module found from {id}"),
+                )
+                    .into_response();
+            };
+            let id = match host.resolve_id(id, "").await {
+                Ok(Some(resolved)) => resolved,
+                Ok(None) => id.to_string(),
+                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+            };
+            match host.load(&id).await {
+                Ok(Some(source)) => (id, source),
+                Ok(None) => {
+                    return (StatusCode::NOT_FOUND, format!("oj: no plugin loaded {id}"))
+                        .into_response()
+                }
+                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+            }
         }
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     };
     let (page, query) = id.split_once('?').unwrap_or((&id, ""));
     let page = page.trim_start_matches('\0').trim_start_matches('/');
@@ -440,12 +451,6 @@ fn js_module_response(js: Result<String, String>) -> Response {
 /// Whether the query has the bare `flag` key (`?direct`, `?import`, `?react`).
 fn has_query_flag(query: Option<&str>, flag: &str) -> bool {
     query.is_some_and(|q| q.split('&').any(|kv| kv == flag))
-}
-
-pub(crate) fn inject_dev_scripts(html: String) -> String {
-    let tags = "<script type=\"module\" src=\"/@oj/refresh-preamble.js\"></script>\n\
-                <script type=\"module\" src=\"/@oj/client.js\"></script>";
-    insert_after_head(&html, tags)
 }
 
 pub(crate) async fn serve_compiled(

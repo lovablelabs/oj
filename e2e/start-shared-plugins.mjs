@@ -30,8 +30,9 @@
 //    plugin context (`this.meta` with the Vite and rolldown versions, no
 //    `this.environment`), config with the full configEnv, configEnvironment
 //    once per environment. oj called them with the plugin as `this`.
+// 8. A throwing plugin load fails the build with the module and the cause.
 
-import { execSync } from "node:child_process";
+import { execSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -125,6 +126,12 @@ const collectors = () => {
         order.push("buildApp:post " + built.sort().join(","));
         writeFileSync(${JSON.stringify(events)}, JSON.stringify(order));
         if (process.env.OJ_E2E_BUILDAPP_THROW) this.error("post buildApp refused the build");
+      },
+    },
+    load: {
+      filter: { id: /about\\.tsx$/ },
+      handler() {
+        if (process.env.OJ_E2E_LOAD_THROW) throw new Error("e2e load refused about");
       },
     },
   };
@@ -251,6 +258,19 @@ try {
     }
   })();
   if (!failed) throw new Error("a throwing buildApp hook did not fail the build");
+
+  // 8. A plugin load that throws fails the build naming the module and the
+  //    cause. rolldown printed only "plugin `oj:start-plugins` threw an error".
+  const load = spawnSync(oj, ["build", app, "--config", config, "--out", out], {
+    cwd: repo,
+    encoding: "utf8",
+    env: { ...process.env, OJ_E2E_LOAD_THROW: "1" },
+  });
+  const said = `${load.stdout}\n${load.stderr}`;
+  if (load.status === 0) throw new Error("a throwing plugin load did not fail the build");
+  for (const want of ["[oj:start-plugins] Could not load ", "about.tsx", "e2e load refused about"]) {
+    if (!said.includes(want)) throw new Error(`the failed load's error lacks ${want}:\n${said}`);
+  }
   console.log(
     "start-shared-plugins: shared instances, moduleParsed, generateBundle, buildApp, emitAssets, config context",
   );

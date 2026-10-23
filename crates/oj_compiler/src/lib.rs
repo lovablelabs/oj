@@ -6,6 +6,7 @@ pub mod bundle;
 pub mod cjs;
 mod compile;
 mod env;
+pub mod env_fns;
 pub mod glob;
 mod hot;
 pub mod html;

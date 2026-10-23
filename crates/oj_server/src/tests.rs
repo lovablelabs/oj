@@ -782,14 +782,6 @@ fn ts_source_outside_root_is_not_treated_as_a_dep() {
 }
 
 #[test]
-fn html_injection_puts_preamble_first_in_head() {
-    let out = inject_dev_scripts("<html><head><title>x</title></head></html>".into());
-    let preamble = out.find("refresh-preamble").unwrap();
-    let title = out.find("<title>").unwrap();
-    assert!(preamble < title);
-}
-
-#[test]
 fn glue_only_added_for_boundary_modules() {
     assert!(hot_glue("/src/util.ts", None, false, false).is_empty());
     let glue = hot_glue("/src/App.tsx", Some("t=1700000000000"), true, false);

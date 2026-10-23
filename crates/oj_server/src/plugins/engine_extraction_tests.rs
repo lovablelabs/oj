@@ -345,3 +345,29 @@ fn engine_job_envelope_round_trips_every_outcome() {
         }
     }
 }
+
+/// Extraction counts the config's plugins the host would run (every one
+/// outside oj's native set, `apply` ignored, async and nested factories
+/// flattened), and a later boot reads the count from the cache.
+#[test]
+fn extraction_counts_the_plugins_a_host_would_run() {
+    let _g = lock();
+    let native = r#"[{ name: "vite:react-babel" }, { name: "vite:react:config-post" }, [Promise.resolve({ name: "vite:react-refresh-fbm" })], { name: "vite:react-virtual-preamble" }]"#;
+    let dir = app(&format!("export default {{ plugins: {native} }};"));
+    let v = extract_vite_values_with(dir.path(), None, "serve", "development", true).unwrap();
+    assert_eq!(v.active_plugins, Some(0), "only native plugins");
+    assert_eq!(
+        cached_active_plugins(dir.path(), None, "development"),
+        Some(0)
+    );
+
+    let dir = app(&format!(
+        "export default {{ plugins: [...{native}, {{ name: \"mine\", apply: \"build\" }}] }};"
+    ));
+    let v = extract_vite_values_with(dir.path(), None, "serve", "development", true).unwrap();
+    assert_eq!(
+        v.active_plugins,
+        Some(1),
+        "an app plugin, even build-only, counts"
+    );
+}
