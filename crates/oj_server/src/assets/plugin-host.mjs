@@ -3429,6 +3429,18 @@ async function setupConfigureServer() {
       process.stderr.write(`${OJ} plugin host: failed to set up server.proxy: ${(e && e.stack) || e}\n`);
     }
   }
+  // Vite's baseMiddleware sits here, after the proxy and before the POST
+  // hooks: PRE middleware sees the browser's URL, POST middleware the URL
+  // with the base stripped. oj answers the root redirect and unbased
+  // requests itself, so only the strip runs (Vite's middleware mode).
+  const devBase = ownsServer ? ojDevBase(resolvedConfig ?? initial.config ?? {}) : "/";
+  if (devBase !== "/") {
+    middlewares.use(function viteBaseMiddleware(req, _res, next) {
+      const pathname = req.url.split(/[?#]/)[0];
+      if (pathname.startsWith(devBase)) req.url = ojStripBase(req.url, devBase);
+      next();
+    });
+  }
   for (const fn of post) {
     try {
       await fn();
@@ -3454,6 +3466,22 @@ async function setupConfigureServer() {
     // upgrade listeners; on this path no later announce re-checks.
     await ensureConfigureServerMiddleware();
   }
+}
+
+// Vite's resolveBaseUrl in serve: "", "./" and other relative bases are the
+// root, and a URL base keeps only its path.
+function ojDevBase(cfg) {
+  const raw = cfg.rawBase ?? cfg.base;
+  if (typeof raw !== "string" || raw === "" || raw[0] === ".") return "/";
+  const base = new URL(raw, "http://vite.dev").pathname;
+  return base[0] === "/" ? base : `/${base}`;
+}
+
+// Vite's stripBase.
+function ojStripBase(url, base) {
+  if (url === base) return "/";
+  const devBase = base.endsWith("/") ? base : `${base}/`;
+  return url.startsWith(devBase) ? url.slice(devBase.length - 1) : url;
 }
 
 function ojPushServeInfo() {

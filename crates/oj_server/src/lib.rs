@@ -1770,7 +1770,7 @@ impl DevServer {
             html_env: installed.html_env,
             parsed_fired: Mutex::new(std::collections::HashSet::new()),
             rt: tokio::runtime::Handle::current(),
-            base: config.base.clone().filter(|b| b != "/"),
+            base: dev_base(config.base.as_deref()),
             buffered_frame: Mutex::new(None),
             resolve_failed: Mutex::new(std::collections::HashSet::new()),
             client_js_etag: format!(

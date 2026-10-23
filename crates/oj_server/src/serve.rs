@@ -8,7 +8,7 @@ pub(crate) async fn serve_path(
     let path = state
         .base
         .as_deref()
-        .and_then(|b| uri.path().strip_prefix(b.trim_end_matches('/')))
+        .and_then(|b| strip_base(uri.path(), b))
         .unwrap_or_else(|| uri.path());
     let decoded = urldecode(path.trim_start_matches('/'));
     let rel = if decoded.is_empty() {
