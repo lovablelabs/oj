@@ -1294,38 +1294,54 @@ fn build_router(
     server_cfg: &oj_config::ServerConfig,
     hmr_ws_path: &str,
 ) -> Router {
-    let mut app = Router::new()
-        .route("/@oj/client.js", get(serve_client_js))
-        .route(
-            "/@oj/refresh-runtime.js",
-            get(|| async { js(REFRESH_RUNTIME_JS) }),
-        )
-        .route(
-            "/@oj/refresh-preamble.js",
-            get(|| async { js(REFRESH_PREAMBLE_JS) }),
-        )
-        .route("/@oj/routes.js", get(serve_oj_routes))
-        // OJ_DEBUG_MEM=1: force a full V8 collection in every live engine so memory
-        // probes measure retained heap (issue #202). 404 unless enabled.
-        .route("/@oj/debug/gc", get(debug_gc))
-        .route("/@oj/debug/mem", get(debug_mem_stats))
-        .route("/@oj/diagnostics", get(serve_diagnostics))
-        .route("/@oj/server-fn.js", get(|| async { js(SERVER_FN_JS) }))
-        .route(
-            "/@oj/lingui-macro-shim.js",
-            get(|| async { js(LINGUI_MACRO_SHIM_JS) }),
-        )
-        .route("/@ssr-resolve", get(ssr_resolve))
-        .route("/@ssr-module", get(ssr_module))
-        .route(HMR_WS_PATH, get(ws_upgrade))
-        .route(HMR_FLUSH_PATH, post(hmr_flush))
-        .route(HMR_GATE_PATH, get(hmr_gate_status))
-        .fallback(serve_fallback);
+    // Vite's base middleware strips `base` from every url its own routes see,
+    // so each of oj's answers under `base` too (its pages name the client
+    // there); the base-less paths stay for the urls compiled modules import.
+    let base = state
+        .base
+        .as_deref()
+        .map(|b| b.trim_end_matches('/').to_string())
+        .filter(|b| !b.is_empty());
+    let mut app = Router::new();
+    let mut route = |path: &str, handler: axum::routing::MethodRouter<Arc<ServerState>>| {
+        if let Some(base) = &base {
+            app = std::mem::take(&mut app).route(&format!("{base}{path}"), handler.clone());
+        }
+        app = std::mem::take(&mut app).route(path, handler);
+    };
+    route("/@oj/client.js", get(serve_client_js));
+    route(
+        "/@oj/refresh-runtime.js",
+        get(|| async { js(REFRESH_RUNTIME_JS) }),
+    );
+    route(
+        "/@oj/refresh-preamble.js",
+        get(|| async { js(REFRESH_PREAMBLE_JS) }),
+    );
+    route("/@oj/routes.js", get(serve_oj_routes));
+    // OJ_DEBUG_MEM=1: force a full V8 collection in every live engine so memory
+    // probes measure retained heap (issue #202). 404 unless enabled.
+    route("/@oj/debug/gc", get(debug_gc));
+    route("/@oj/debug/mem", get(debug_mem_stats));
+    route("/@oj/diagnostics", get(serve_diagnostics));
+    route("/@oj/server-fn.js", get(|| async { js(SERVER_FN_JS) }));
+    route(
+        "/@oj/lingui-macro-shim.js",
+        get(|| async { js(LINGUI_MACRO_SHIM_JS) }),
+    );
+    route(HMR_WS_PATH, get(ws_upgrade));
+    route(HMR_FLUSH_PATH, post(hmr_flush));
+    route(HMR_GATE_PATH, get(hmr_gate_status));
     // `server.hmr.path`: the client dials this path instead of /__ws (Vite
     // serves its socket at base + hmr.path).
     if hmr_ws_path != HMR_WS_PATH && hmr_ws_path != "/" && !hmr_ws_path.starts_with("/@oj/") {
-        app = app.route(hmr_ws_path, get(ws_upgrade));
+        route(hmr_ws_path, get(ws_upgrade));
     }
+    // The SSR runner's own requests, never a page's: no base.
+    let mut app = app
+        .route("/@ssr-resolve", get(ssr_resolve))
+        .route("/@ssr-module", get(ssr_module))
+        .fallback(serve_fallback);
     // Layer order is reversed at request time (last added runs first). Vite's
     // sequence is cors, host validation, proxy: proxied requests bypass neither gate.
     if !state.proxy.is_empty() {

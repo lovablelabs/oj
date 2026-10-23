@@ -91,6 +91,11 @@ impl DevBundler {
         self.start.stylex.as_ref()
     }
 
+    /// Vite's `base`, normalized (`/`, `/x/` or `./`).
+    pub(crate) fn base(&self) -> &str {
+        &self.start.base
+    }
+
     pub(crate) fn root(&self) -> &Path {
         &self.start.root
     }

@@ -9,6 +9,7 @@
 //! napi addons a plugin host loads.
 
 mod assets;
+mod base_routes;
 mod browser;
 mod browser_errors;
 mod build_config_flag;

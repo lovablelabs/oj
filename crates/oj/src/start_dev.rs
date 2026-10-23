@@ -27,6 +27,8 @@ struct StartState {
     /// The session's client bundler, shared by the boot bundle and rebundles.
     bundler: Arc<ClientBundler>,
     proxy_prefixes: Vec<String>,
+    /// Vite's `base` without its trailing slash; empty at the root.
+    base: String,
     /// Live plugin-middleware state, shared with oj_server: the middleware port
     /// and whether worker environments serve the documents. A slow plugin host
     /// (many plugins, Miniflare) activates it after boot, so every read goes
@@ -532,10 +534,16 @@ pub async fn start_dev(
     // The resolved gate (the knob or `server.hmrGate`): a gate on drops the
     // boot's engine at the next rebundle.
     bundler.set_hot_enabled(built.hmr_gate.is_none());
+    // Vite's `base` without its trailing slash; empty at the root (or `./`).
+    let base = match bundler.base().trim_end_matches('/') {
+        base if base.starts_with('/') => base.to_string(),
+        _ => String::new(),
+    };
     let state = Arc::new(StartState {
         script_env: Arc::clone(&script_vars),
         bundler,
         proxy_prefixes: built.proxy_prefixes.clone(),
+        base,
         plugin_serve: Arc::clone(&built.plugin_serve),
         engine,
         loopback_port,
@@ -2310,14 +2318,25 @@ enum Route {
 }
 
 fn classify(req: &Request, proxy_prefixes: &[String]) -> Route {
-    let path = req.uri().path();
+    classify_path(
+        req.uri().path(),
+        req.uri().path(),
+        req.method(),
+        proxy_prefixes,
+    )
+}
+
+/// [`classify`] with `path` the request's path past the dev `base` (what
+/// oj's own routes see) and `raw` the path as sent (what `server.proxy`
+/// matches, as Vite's proxy runs ahead of its base middleware).
+fn classify_path(path: &str, raw: &str, method: &Method, proxy_prefixes: &[String]) -> Route {
     // Only oj's own `/__` endpoints are the dev server's: Vite reserves no
     // `/__` prefix, so an app route or a plugin middleware page under it
     // goes through the middleware and SSR like any document.
     if path.starts_with("/@") || oj_server::is_dev_server_path(path) {
         return Route::Pass;
     }
-    if proxy_prefixes.iter().any(|p| path.starts_with(p.as_str())) {
+    if proxy_prefixes.iter().any(|p| raw.starts_with(p.as_str())) {
         return Route::Pass;
     }
     // A dotted non-GET (`POST /api/export.csv`, `PUT /files/a.b`) can only be
@@ -2325,16 +2344,16 @@ fn classify(req: &Request, proxy_prefixes: &[String]) -> Route {
     // to the SSR handler like every other request nothing else owns.
     let last = path.rsplit('/').next().unwrap_or("");
     if last != "index.html" && last.contains('.') {
-        return if *req.method() == Method::GET {
+        return if *method == Method::GET {
             Route::StaticOrDocument
         } else {
             Route::Api
         };
     }
-    if proxy_prefixes.iter().any(|p| path.starts_with(p.as_str())) {
+    if proxy_prefixes.iter().any(|p| raw.starts_with(p.as_str())) {
         return Route::Pass;
     }
-    match *req.method() {
+    match *method {
         Method::GET => Route::Document,
         _ => Route::Api,
     }
@@ -2352,8 +2371,21 @@ fn document_url(url: &str) -> String {
     format!("{path}{query}")
 }
 
+/// `path` with the dev `base` stripped (Vite's base middleware); a path
+/// outside it is left as it is.
+fn strip_base<'a>(base: &str, path: &'a str) -> &'a str {
+    match path.strip_prefix(base) {
+        Some(rest) if !base.is_empty() && rest.starts_with('/') => rest,
+        _ => path,
+    }
+}
+
 async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: Next) -> Response {
-    if req.uri().path() == "/@oj-start/hmr" {
+    // oj's own urls answer under `base` too, as Vite's do; a document or a
+    // server function is forwarded with its full url.
+    let path = strip_base(&state.base, req.uri().path()).to_string();
+    let path = path.as_str();
+    if path == "/@oj-start/hmr" {
         let (mut parts, _) = req.into_parts();
         return match WebSocketUpgrade::from_request_parts(&mut parts, &()).await {
             Ok(ws) => {
@@ -2395,7 +2427,7 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
             Err(e) => e.into_response(),
         };
     }
-    if req.uri().path() == "/@oj-start/live-reload.js" {
+    if path == "/@oj-start/live-reload.js" {
         return match tokio::fs::read_to_string(&state.live_reload).await {
             Ok(js) => (
                 [
@@ -2414,24 +2446,20 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
     }
     // The overlay element the live-reload client shows build errors in,
     // written beside it by write_start_assets.
-    if req.uri().path() == "/@oj-start/error-overlay.js" {
+    if path == "/@oj-start/error-overlay.js" {
         let overlay = state.live_reload.with_file_name("error-overlay.js");
         return serve_js(&overlay, "error overlay").await;
     }
-    if let Some(name) = req
-        .uri()
-        .path()
-        .strip_prefix(crate::start_hot::PATCH_PREFIX)
-    {
+    if let Some(name) = path.strip_prefix(crate::start_hot::PATCH_PREFIX) {
         return state.bundler.hot.serve(name);
     }
-    if let Some(rest) = req.uri().path().strip_prefix("/@oj-start/fs/") {
+    if let Some(rest) = path.strip_prefix("/@oj-start/fs/") {
         return serve_fs_asset(&state, &format!("/{rest}")).await;
     }
-    if let Some(name) = req.uri().path().strip_prefix("/@oj-start/") {
+    if let Some(name) = path.strip_prefix("/@oj-start/") {
         return serve_client_chunk(&state, req.headers(), name).await;
     }
-    if req.uri().path().starts_with("/_serverFn/") {
+    if path.starts_with("/_serverFn/") {
         return forward_with_body(&state, req).await;
     }
     // A WebSocket upgrade is never a document: the inner app owns them all
@@ -2439,7 +2467,7 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
     if oj_server::is_websocket_upgrade(req.headers()) {
         return next.run(req).await;
     }
-    match classify(&req, &state.proxy_prefixes) {
+    match classify_path(path, req.uri().path(), req.method(), &state.proxy_prefixes) {
         Route::Document => {
             let raw = path_and_query(&req);
             forward_document(&state, raw, req.headers()).await
@@ -4432,6 +4460,33 @@ mod tests {
         assert!(!app_uses_tailwind(&base));
         let none = tmp("tw-none");
         assert!(!app_uses_tailwind(&none));
+    }
+
+    #[test]
+    fn oj_routes_classify_past_the_base_and_proxies_on_the_raw_path() {
+        assert_eq!(strip_base("/app", "/app/@oj-start/hmr"), "/@oj-start/hmr");
+        assert_eq!(strip_base("/app", "/application"), "/application");
+        assert_eq!(strip_base("", "/@oj-start/hmr"), "/@oj-start/hmr");
+        let get = Method::GET;
+        let no_proxy: Vec<String> = vec![];
+        assert!(matches!(
+            classify_path("/@id/x", "/app/@id/x", &get, &no_proxy),
+            Route::Pass
+        ));
+        assert!(matches!(
+            classify_path("/about", "/app/about", &get, &no_proxy),
+            Route::Document
+        ));
+        // Vite's proxy matches the url as sent, ahead of the base middleware.
+        let proxy = vec!["/api".to_string()];
+        assert!(matches!(
+            classify_path("/api/x", "/app/api/x", &get, &proxy),
+            Route::Document
+        ));
+        assert!(matches!(
+            classify_path("/api/x", "/api/x", &get, &proxy),
+            Route::Pass
+        ));
     }
 
     #[test]
