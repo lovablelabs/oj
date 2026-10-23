@@ -200,3 +200,48 @@ fn css_only_pages_build_vites_exact_files() {
     };
     assert_same_output(&root);
 }
+
+/// React through `@vitejs/plugin-react`: a lazy route, state, JSON, an env
+/// variable and an image, the shape of a small React app.
+#[test]
+fn a_react_app_builds_vites_exact_files() {
+    let Some(root) = app(
+        "react",
+        &[
+            ("package.json", Some(r#"{"name":"parity","type":"module"}"#)),
+            (
+                "vite.config.js",
+                Some("import react from \"@vitejs/plugin-react\";\nexport default { plugins: [react()] };\n"),
+            ),
+            (
+                "index.html",
+                Some(r#"<!doctype html><html><head><title>r</title></head><body><div id="root"></div><script type="module" src="/src/main.jsx"></script></body></html>"#),
+            ),
+            (".env", Some("VITE_GREETING=hello\n")),
+            (
+                "src/main.jsx",
+                Some(
+                    "import { createRoot } from \"react-dom/client\";\nimport { useState, lazy, Suspense } from \"react\";\n\
+                     import data from \"./data.json\";\nimport { shared } from \"./shared.js\";\nimport logo from \"./logo.png\";\nimport \"./app.css\";\n\
+                     const Lazy = lazy(() => import(\"./Lazy.jsx\"));\n\
+                     function App() {\n  const [n, setN] = useState(0);\n  return (\n    <main>\n      <img src={logo} alt=\"\" />\n\
+                     \x20     <h1>{import.meta.env.VITE_GREETING} {import.meta.env.MODE} {data.name}</h1>\n\
+                     \x20     <button onClick={() => setN(n + 1)}>{shared(n)}</button>\n\
+                     \x20     <Suspense fallback={null}><Lazy /></Suspense>\n    </main>\n  );\n}\n\
+                     createRoot(document.getElementById(\"root\")).render(<App />);\n",
+                ),
+            ),
+            (
+                "src/Lazy.jsx",
+                Some("import { shared } from \"./shared.js\";\nexport default function Lazy() { return <p>{shared(41)}</p>; }\n"),
+            ),
+            ("src/shared.js", Some("export const shared = (n) => `count ${n + 1}`;\n")),
+            ("src/data.json", Some("{\"name\":\"corpus\",\"unused\":1}\n")),
+            ("src/app.css", Some("h1 { color: rebeccapurple; }\n")),
+            ("src/logo.png", None),
+        ],
+    ) else {
+        return;
+    };
+    assert_same_output(&root);
+}

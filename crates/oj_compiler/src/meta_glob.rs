@@ -384,16 +384,11 @@ fn static_args(src: &str) -> Option<Vec<Value>> {
 
 fn static_value(expr: &Expression) -> Option<Value> {
     Some(match expr {
-        Expression::StringLiteral(s) => Value::Str(s.value.to_string()),
+        Expression::StringLiteral(s) => Value::Str(crate::lit_str(s.value).to_string()),
         Expression::TemplateLiteral(t) if t.expressions.is_empty() => Value::Str(
             t.quasis
                 .iter()
-                .map(|q| {
-                    q.value
-                        .cooked
-                        .as_ref()
-                        .map_or(q.value.raw.as_str(), |c| c.as_str())
-                })
+                .map(|q| q.value.cooked.map_or(q.value.raw.as_str(), crate::lit_str))
                 .collect(),
         ),
         Expression::NumericLiteral(n) => Value::Num(n.value),
@@ -424,7 +419,7 @@ fn static_value(expr: &Expression) -> Option<Value> {
                 }
                 let key = match &p.key {
                     PropertyKey::StaticIdentifier(id) => id.name.to_string(),
-                    PropertyKey::StringLiteral(s) => s.value.to_string(),
+                    PropertyKey::StringLiteral(s) => crate::lit_str(s.value).to_string(),
                     PropertyKey::NumericLiteral(n) => n.value.to_string(),
                     _ => return None,
                 };

@@ -86,8 +86,8 @@ pub fn imports(source_text: &str, path: &Path) -> Vec<String> {
             .body
             .iter()
             .filter_map(|stmt| match stmt {
-                Statement::ImportDeclaration(decl) => Some(decl.source.value.as_str()),
-                Statement::ExportAllDeclaration(decl) => Some(decl.source.value.as_str()),
+                Statement::ImportDeclaration(decl) => Some(crate::lit_str(decl.source.value)),
+                Statement::ExportAllDeclaration(decl) => Some(crate::lit_str(decl.source.value)),
                 _ => None,
             })
             .filter(|s| seen.insert(*s))
@@ -176,7 +176,7 @@ struct EditCollector<'r> {
 
 impl EditCollector<'_> {
     fn literal(&mut self, lit: &StringLiteral) {
-        if let Some(spec) = (self.rewrite)(lit.value.as_str()) {
+        if let Some(spec) = (self.rewrite)(crate::lit_str(lit.value)) {
             self.edits.push((lit.span, spec));
         }
     }

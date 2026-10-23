@@ -484,19 +484,20 @@ impl<'p> DepTracker<'p> {
             };
         }
         if let Some(member) = callee.as_member_expression() {
-            let property =
-                member
-                    .static_property_name()
-                    .map(str::to_string)
-                    .or_else(|| match member {
-                        oxc_ast::ast::MemberExpression::ComputedMemberExpression(m) => {
-                            match &m.expression {
-                                Expression::StringLiteral(lit) => Some(lit.value.to_string()),
-                                _ => None,
+            let property = member
+                .static_property_name()
+                .map(|name| crate::jsrt::lit_text(name).into_owned())
+                .or_else(|| match member {
+                    oxc_ast::ast::MemberExpression::ComputedMemberExpression(m) => {
+                        match &m.expression {
+                            Expression::StringLiteral(lit) => {
+                                Some(crate::jsrt::lit_text(lit.value).into_owned())
                             }
+                            _ => None,
                         }
-                        _ => None,
-                    });
+                    }
+                    _ => None,
+                });
             let property = property?;
             if let Expression::Identifier(object) = member.object() {
                 let object_name = object.name.as_str();

@@ -110,7 +110,10 @@ pub fn foreign_factory_imports(code: &str, path: &str) -> Vec<(String, String)> 
             if let ImportDeclarationSpecifier::ImportSpecifier(s) = specifier {
                 let imported = export_name(&s.imported);
                 if factory_named(imported).is_some() {
-                    out.push((import.source.value.to_string(), imported.to_string()));
+                    out.push((
+                        crate::lit_str(import.source.value).to_string(),
+                        imported.to_string(),
+                    ));
                 }
             }
         }
@@ -151,7 +154,10 @@ pub fn reexport_of(code: &str, path: &str, name: &str) -> Option<ReExport> {
             Statement::ExportFromDeclaration(export) => {
                 for s in &export.specifiers {
                     if export_name(&s.exported) == name {
-                        return Some(from(&export.source.value, export_name(&s.local)));
+                        return Some(from(
+                            crate::lit_str(export.source.value),
+                            export_name(&s.local),
+                        ));
                     }
                 }
             }
@@ -163,7 +169,7 @@ pub fn reexport_of(code: &str, path: &str, name: &str) -> Option<ReExport> {
                 }
             }
             Statement::ExportAllDeclaration(export) if export.exported.is_none() => {
-                stars.push(export.source.value.to_string());
+                stars.push(crate::lit_str(export.source.value).to_string());
             }
             _ => {}
         }
@@ -176,7 +182,10 @@ pub fn reexport_of(code: &str, path: &str, name: &str) -> Option<ReExport> {
             for specifier in import.specifiers.iter().flatten() {
                 if let ImportDeclarationSpecifier::ImportSpecifier(s) = specifier {
                     if s.local.name == local.as_str() {
-                        return Some(from(&import.source.value, export_name(&s.imported)));
+                        return Some(from(
+                            crate::lit_str(import.source.value),
+                            export_name(&s.imported),
+                        ));
                     }
                 }
             }
@@ -193,7 +202,7 @@ fn export_name<'a>(name: &'a ModuleExportName) -> &'a str {
     match name {
         ModuleExportName::IdentifierName(id) => id.name.as_str(),
         ModuleExportName::IdentifierReference(id) => id.name.as_str(),
-        ModuleExportName::StringLiteral(lit) => lit.value.as_str(),
+        ModuleExportName::StringLiteral(lit) => crate::lit_str(lit.value),
     }
 }
 
@@ -431,7 +440,7 @@ impl Bindings {
             let Statement::ImportDeclaration(import) = statement else {
                 continue;
             };
-            let source = import.source.value.as_str();
+            let source = crate::lit_str(import.source.value);
             let tanstack = source.starts_with("@tanstack/");
             for specifier in import.specifiers.iter().flatten() {
                 match specifier {

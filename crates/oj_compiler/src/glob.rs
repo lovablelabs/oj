@@ -166,12 +166,7 @@ fn template_glob(tpl: &TemplateLiteral) -> Option<String> {
     }
     let mut pattern = String::new();
     for (i, q) in tpl.quasis.iter().enumerate() {
-        let piece = q
-            .value
-            .cooked
-            .as_ref()
-            .map(|c| c.as_str())
-            .unwrap_or(q.value.raw.as_str());
+        let piece = q.value.cooked.map_or(q.value.raw.as_str(), crate::lit_str);
         pattern.push_str(piece);
         if i < tpl.expressions.len() {
             pattern.push('*');
@@ -933,7 +928,7 @@ impl<'a> NewUrlAsset<'a, '_, '_> {
         }
         match n.arguments[0].as_expression()? {
             Expression::StringLiteral(spec) => {
-                let spec = spec.value.as_str();
+                let spec = crate::lit_str(spec.value);
                 is_relative(spec).then(|| UrlSpec::Literal(spec.to_string()))
             }
             Expression::TemplateLiteral(tpl) => {
@@ -1097,12 +1092,14 @@ fn is_import_meta_glob(call: &CallExpression) -> bool {
 
 fn collect_patterns(arg: &Argument) -> Option<Vec<String>> {
     match arg.as_expression()? {
-        Expression::StringLiteral(s) => Some(vec![s.value.to_string()]),
+        Expression::StringLiteral(s) => Some(vec![crate::lit_str(s.value).to_string()]),
         Expression::ArrayExpression(arr) => arr
             .elements
             .iter()
             .map(|el| match el {
-                ArrayExpressionElement::StringLiteral(s) => Some(s.value.to_string()),
+                ArrayExpressionElement::StringLiteral(s) => {
+                    Some(crate::lit_str(s.value).to_string())
+                }
                 _ => None,
             })
             .collect(),
@@ -1122,11 +1119,11 @@ fn collect_options(arg: &Argument) -> Option<GlobOptions> {
         };
         let key = match &p.key {
             PropertyKey::StaticIdentifier(id) => id.name.as_str(),
-            PropertyKey::StringLiteral(s) => s.value.as_str(),
+            PropertyKey::StringLiteral(s) => crate::lit_str(s.value),
             _ => continue,
         };
         let string = match &p.value {
-            Expression::StringLiteral(s) => Some(s.value.as_str()),
+            Expression::StringLiteral(s) => Some(crate::lit_str(s.value)),
             _ => None,
         };
         let boolean = match &p.value {

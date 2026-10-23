@@ -35,7 +35,7 @@ pub fn member_parts<'a>(expr: &'a Expression<'a>) -> Option<MemberParts<'a>> {
         Expression::ComputedMemberExpression(m) if !m.optional => Some(MemberParts {
             object: &m.object,
             key: match &m.expression {
-                Expression::StringLiteral(s) => Some(s.value.to_string()),
+                Expression::StringLiteral(s) => Some(crate::jsrt::lit_text(s.value).into_owned()),
                 Expression::NumericLiteral(n) => Some(crate::jsrt::js_number_to_string(n.value)),
                 _ => None,
             },

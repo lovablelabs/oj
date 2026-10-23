@@ -54,14 +54,14 @@ fn men_name(m: &ModuleExportName) -> String {
     match m {
         ModuleExportName::IdentifierName(i) => i.name.to_string(),
         ModuleExportName::IdentifierReference(i) => i.name.to_string(),
-        ModuleExportName::StringLiteral(s) => s.value.to_string(),
+        ModuleExportName::StringLiteral(s) => crate::lit_str(s.value).to_string(),
     }
 }
 
 fn men_key(key: &PropertyKey) -> String {
     match key {
         PropertyKey::StaticIdentifier(i) => i.name.to_string(),
-        PropertyKey::StringLiteral(s) => json_str(&s.value),
+        PropertyKey::StringLiteral(s) => json_str(crate::lit_str(s.value)),
         _ => "?".into(),
     }
 }
@@ -285,7 +285,7 @@ impl<'s> Hoister<'s> {
                 self.imports.insert(sym, repl);
             }
         }
-        self.hoist_import(imp.source.value.as_str(), &names);
+        self.hoist_import(crate::lit_str(imp.source.value), &names);
         self.remove(imp.span.start, imp.span.end);
     }
 
@@ -297,7 +297,7 @@ impl<'s> Hoister<'s> {
             .collect();
         if !exp.export_kind.is_type() && !value_specs.is_empty() {
             let names: Vec<String> = value_specs.iter().map(|s| men_name(&s.local)).collect();
-            let uid = self.hoist_import(exp.source.value.as_str(), &names);
+            let uid = self.hoist_import(crate::lit_str(exp.source.value), &names);
             for (s, local) in value_specs.iter().zip(&names) {
                 self.hoist_export(&men_name(&s.exported), &member(uid, local));
             }
@@ -347,7 +347,7 @@ impl<'s> Hoister<'s> {
 
     fn export_all(&mut self, exp: &ExportAllDeclaration) {
         if !exp.export_kind.is_type() {
-            let uid = self.hoist_import(exp.source.value.as_str(), &[]);
+            let uid = self.hoist_import(crate::lit_str(exp.source.value), &[]);
             let ns = format!("__vite_ssr_import_{uid}__");
             match &exp.exported {
                 Some(exported) => self.hoist_export(&men_name(exported), &ns),

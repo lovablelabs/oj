@@ -213,7 +213,7 @@ impl InteropRewriter<'_> {
         if decl.import_kind.is_type() {
             return;
         }
-        let Some(url) = (self.interop)(decl.source.value.as_str()) else {
+        let Some(url) = (self.interop)(crate::lit_str(decl.source.value)) else {
             return;
         };
         let n = self.next_idx();
@@ -251,7 +251,7 @@ impl InteropRewriter<'_> {
         if decl.export_kind.is_type() {
             return;
         }
-        let Some(url) = (self.interop)(decl.source.value.as_str()) else {
+        let Some(url) = (self.interop)(crate::lit_str(decl.source.value)) else {
             return;
         };
         let n = self.next_idx();
@@ -290,16 +290,16 @@ impl InteropRewriter<'_> {
         let Some(exported) = &decl.exported else {
             // Vite warns here too ("Unable to interop ... may lose module
             // exports").
-            if (self.interop)(decl.source.value.as_str()).is_some() {
+            if (self.interop)(crate::lit_str(decl.source.value)).is_some() {
                 (self.warn)(format!(
                     "cannot interop `export * from \"{}\"` in {}; runtime-assigned CommonJS exports are lost through a bare star re-export; use named exports, or pre-bundle the dep (optimizeDeps.include)",
-                    decl.source.value,
+                    decl.source.value.display(),
                     self.path.display(),
                 ));
             }
             return;
         };
-        let Some(url) = (self.interop)(decl.source.value.as_str()) else {
+        let Some(url) = (self.interop)(crate::lit_str(decl.source.value)) else {
             return;
         };
         let n = self.next_idx();
@@ -339,7 +339,7 @@ struct DynamicImportInterop<'i> {
 impl<'a> Visit<'a> for DynamicImportInterop<'_> {
     fn visit_import_expression(&mut self, it: &ImportExpression<'a>) {
         if let Expression::StringLiteral(lit) = &it.source {
-            if let Some(url) = (self.interop)(lit.value.as_str()) {
+            if let Some(url) = (self.interop)(crate::lit_str(lit.value)) {
                 self.edits.push(Edit {
                     start: it.span.start as usize,
                     end: it.span.end as usize,
@@ -356,7 +356,7 @@ fn export_name(n: &ModuleExportName) -> String {
     match n {
         ModuleExportName::IdentifierName(i) => i.name.to_string(),
         ModuleExportName::IdentifierReference(i) => i.name.to_string(),
-        ModuleExportName::StringLiteral(l) => l.value.to_string(),
+        ModuleExportName::StringLiteral(l) => crate::lit_str(l.value).to_string(),
     }
 }
 

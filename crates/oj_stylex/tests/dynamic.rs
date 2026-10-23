@@ -249,7 +249,9 @@ impl Interp<'_> {
             Expression::NullLiteral(_) => Ok(Rt::Null),
             Expression::BooleanLiteral(lit) => Ok(Rt::Bool(lit.value)),
             Expression::NumericLiteral(lit) => Ok(Rt::Num(lit.value)),
-            Expression::StringLiteral(lit) => Ok(Rt::Str(lit.value.to_string())),
+            Expression::StringLiteral(lit) => {
+                Ok(Rt::Str(oj_stylex::jsrt::lit_text(lit.value).into_owned()))
+            }
             Expression::Identifier(id) => Ok(self.lookup(&id.name)),
             Expression::ArrowFunctionExpression(_) | Expression::FunctionExpression(_) => {
                 Ok(Rt::Fn)
@@ -257,7 +259,12 @@ impl Interp<'_> {
             Expression::TemplateLiteral(tpl) => {
                 let mut out = String::new();
                 for (i, quasi) in tpl.quasis.iter().enumerate() {
-                    out.push_str(quasi.value.cooked.as_deref().unwrap_or("undefined"));
+                    out.push_str(
+                        &quasi
+                            .value
+                            .cooked
+                            .map_or("undefined".into(), oj_stylex::jsrt::lit_text),
+                    );
                     if let Some(part) = tpl.expressions.get(i) {
                         out.push_str(&to_string(&self.eval(part)?));
                     }

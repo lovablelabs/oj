@@ -313,7 +313,7 @@ fn require_specifier<'a>(call: &'a CallExpression) -> Option<&'a str> {
         return None;
     }
     match call.arguments[0].as_expression() {
-        Some(Expression::StringLiteral(s)) => Some(s.value.as_str()),
+        Some(Expression::StringLiteral(s)) => Some(crate::lit_str(s.value)),
         _ => None,
     }
 }
@@ -391,7 +391,7 @@ impl CjsAnalyzer {
                                 self.named_exports.push(id.name.to_string());
                             }
                             PropertyKey::StringLiteral(s) => {
-                                self.named_exports.push(s.value.to_string());
+                                self.named_exports.push(crate::lit_str(s.value).to_string());
                             }
                             _ => {}
                         }

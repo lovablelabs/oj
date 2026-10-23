@@ -1653,17 +1653,20 @@ impl<'a> Visit<'a> for Builder<'a> {
         let member = self.alloc(member);
         let kind = AstKind::TSEnumMember(member);
         self.enter_node(kind);
-        let name = match &member.id {
-            TSEnumMemberName::Identifier(ident) => ident.name,
-            TSEnumMemberName::String(lit) | TSEnumMemberName::ComputedString(lit) => {
-                Ident::from(lit.value)
-            }
-            TSEnumMemberName::ComputedTemplateString(template) => {
-                template.quasis.first().map_or(Ident::empty(), |quasi| {
-                    Ident::from(quasi.value.cooked.unwrap_or(quasi.value.raw))
-                })
-            }
-        };
+        let name =
+            match &member.id {
+                TSEnumMemberName::Identifier(ident) => ident.name,
+                TSEnumMemberName::String(lit) | TSEnumMemberName::ComputedString(lit) => {
+                    lit.value.as_str().map_or(Ident::empty(), Ident::from)
+                }
+                TSEnumMemberName::ComputedTemplateString(template) => template
+                    .quasis
+                    .first()
+                    .map_or(Ident::empty(), |quasi| match quasi.value.cooked {
+                        Some(cooked) => cooked.as_str().map_or(Ident::empty(), Ident::from),
+                        None => Ident::from(quasi.value.raw),
+                    }),
+            };
         self.declare_symbol(member.span, name, SymbolFlags::EnumMember, DeclSite::Other);
         self.visit_ts_enum_member_name(&member.id);
         if let Some(initializer) = &member.initializer {

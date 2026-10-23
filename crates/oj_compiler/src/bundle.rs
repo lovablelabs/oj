@@ -366,7 +366,7 @@ impl ModuleShape {
         for stmt in &program.body {
             match stmt {
                 Statement::ImportDeclaration(decl) => {
-                    let vi = shape.var_for(decl.source.value.as_str());
+                    let vi = shape.var_for(crate::lit_str(decl.source.value));
                     for spec in decl.specifiers.iter().flatten() {
                         let (local, member) = match spec {
                             ImportDeclarationSpecifier::ImportSpecifier(s) => {
@@ -409,7 +409,7 @@ impl ModuleShape {
                     }
                 }
                 Statement::ExportFromDeclaration(decl) => {
-                    let vi = shape.var_for(decl.source.value.as_str());
+                    let vi = shape.var_for(crate::lit_str(decl.source.value));
                     for spec in &decl.specifiers {
                         let local = export_name(&spec.local);
                         let expr = format!("_oj_m{vi}.{local}");
@@ -419,7 +419,7 @@ impl ModuleShape {
                     }
                 }
                 Statement::ExportAllDeclaration(decl) => {
-                    let vi = shape.var_for(decl.source.value.as_str());
+                    let vi = shape.var_for(crate::lit_str(decl.source.value));
                     shape.stars.push(vi);
                 }
                 Statement::ExportDefaultDeclaration(decl) => {
@@ -571,7 +571,7 @@ pub(crate) fn export_name(name: &ModuleExportName) -> String {
     match name {
         ModuleExportName::IdentifierName(n) => n.name.to_string(),
         ModuleExportName::IdentifierReference(n) => n.name.to_string(),
-        ModuleExportName::StringLiteral(s) => s.value.to_string(),
+        ModuleExportName::StringLiteral(s) => crate::lit_str(s.value).to_string(),
     }
 }
 
@@ -646,7 +646,7 @@ impl<'a> VisitMut<'a> for RefRewriter<'a, '_> {
             }
             Expression::ImportExpression(imp) => match &imp.source {
                 Expression::StringLiteral(lit) => {
-                    Some(format!("__oj_import_lazy({:?})", lit.value.as_str()))
+                    Some(format!("__oj_import_lazy({:?})", crate::lit_str(lit.value)))
                 }
                 _ => None,
             },

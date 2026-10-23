@@ -1476,9 +1476,14 @@ fn collect_import_decls(program: &Program<'_>) -> Vec<(String, u32)> {
     let mut out: Vec<(String, u32)> = Vec::new();
     for statement in &program.body {
         if let Statement::ImportDeclaration(decl) = statement
-            && !out.iter().any(|(s, _)| s == decl.source.value.as_str())
+            && !out
+                .iter()
+                .any(|(s, _)| *s == crate::jsrt::lit_text(decl.source.value))
         {
-            out.push((decl.source.value.to_string(), decl.span.start));
+            out.push((
+                crate::jsrt::lit_text(decl.source.value).into_owned(),
+                decl.span.start,
+            ));
         }
     }
     out
@@ -3452,7 +3457,8 @@ impl<'a, 'env> Shared<'a, 'env> {
             let Statement::ImportDeclaration(decl) = statement else {
                 continue;
             };
-            let source = decl.source.value.as_str();
+            let source_text = crate::jsrt::lit_text(decl.source.value);
+            let source: &str = &source_text;
             let rewritten = match rewrites.get(source) {
                 Some(hit) => hit.clone(),
                 None => {
@@ -3556,7 +3562,9 @@ fn style_map_member(expr: &Expression<'_>) -> Option<(String, Option<String>)> {
         Expression::ComputedMemberExpression(m) => match unwrap_parens(&m.object) {
             Expression::Identifier(obj) => {
                 let prop = match unwrap_parens(&m.expression) {
-                    Expression::StringLiteral(s) => Some(s.value.to_string()),
+                    Expression::StringLiteral(s) => {
+                        Some(crate::jsrt::lit_text(s.value).into_owned())
+                    }
                     Expression::NumericLiteral(n) => Some(js_number_to_string(n.value)),
                     _ => None,
                 };
@@ -3790,7 +3798,7 @@ impl<'a> Shared<'a, '_> {
         let namespace = match &info.prop {
             MemberProp::Static(name) => Some((*name).to_string()),
             MemberProp::Computed(expr) => match unwrap_parens(expr) {
-                Expression::StringLiteral(s) => Some(s.value.to_string()),
+                Expression::StringLiteral(s) => Some(crate::jsrt::lit_text(s.value).into_owned()),
                 Expression::NumericLiteral(n) => Some(js_number_to_string(n.value)),
                 _ => None,
             },
@@ -3892,7 +3900,7 @@ impl<'a> Hooks<'a> for PassAtoms<'_, 'a, '_> {
         let key = match &info.prop {
             MemberProp::Static(name) => Some((*name).to_string()),
             MemberProp::Computed(expr) => match expr {
-                Expression::StringLiteral(s) => Some(s.value.to_string()),
+                Expression::StringLiteral(s) => Some(crate::jsrt::lit_text(s.value).into_owned()),
                 Expression::NumericLiteral(n) => Some(js_number_to_string(n.value)),
                 _ => None,
             },
@@ -4079,7 +4087,7 @@ fn style_map_member_info(info: &MemberInfo<'_>) -> Option<(String, Option<String
     let prop = match &info.prop {
         MemberProp::Static(name) => Some((*name).to_string()),
         MemberProp::Computed(expr) => match unwrap_parens(expr) {
-            Expression::StringLiteral(s) => Some(s.value.to_string()),
+            Expression::StringLiteral(s) => Some(crate::jsrt::lit_text(s.value).into_owned()),
             Expression::NumericLiteral(n) => Some(js_number_to_string(n.value)),
             _ => None,
         },

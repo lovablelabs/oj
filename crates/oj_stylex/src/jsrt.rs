@@ -528,3 +528,63 @@ mod js_trim_tests {
         assert_eq!("\u{0085}x".trim(), "x");
     }
 }
+
+/// A string literal's value as text. Valid UTF-8 is borrowed; a lone
+/// surrogate keeps the form oxc 0.154 stored it in (`\u{FFFD}` then its four
+/// hex digits, and a literal U+FFFD as `\u{FFFD}fffd`), which these readers
+/// compared and keyed by before oxc 0.155 made the value WTF-8.
+pub fn lit_text(value: oxc_str::JSStr<'_>) -> std::borrow::Cow<'_, str> {
+    use std::fmt::Write as _;
+    if let Some(text) = value.as_str() {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(value.as_bytes().len());
+    for c in value.chars() {
+        match c.to_char() {
+            Some('\u{FFFD}') => out.push_str("\u{FFFD}fffd"),
+            Some(ch) => out.push(ch),
+            None => {
+                out.push('\u{FFFD}');
+                let _ = write!(out, "{:04x}", c.to_u32());
+            }
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
+#[cfg(test)]
+mod lit_text_tests {
+    use super::lit_text;
+
+    /// The first string literal's value in `source`.
+    fn first_string(source: &str, check: impl FnOnce(oxc_str::JSStr<'_>)) {
+        let allocator = oxc_allocator::Allocator::default();
+        let parsed =
+            oxc_parser::Parser::new(&allocator, source, oxc_span::SourceType::mjs()).parse();
+        let oxc_ast::ast::Statement::ExpressionStatement(stmt) = &parsed.program.body[0] else {
+            panic!("an expression statement");
+        };
+        let oxc_ast::ast::Expression::ParenthesizedExpression(paren) = &stmt.expression else {
+            panic!("a parenthesized literal");
+        };
+        let oxc_ast::ast::Expression::StringLiteral(lit) = &paren.expression else {
+            panic!("a string literal");
+        };
+        check(lit.value);
+    }
+
+    #[test]
+    fn valid_text_is_borrowed_and_lone_surrogates_keep_the_lossy_form() {
+        first_string(r#"("a\u00e9b");"#, |v| {
+            assert!(matches!(
+                lit_text(v),
+                std::borrow::Cow::Borrowed("a\u{e9}b")
+            ));
+        });
+        // oxc 0.154's form: U+FFFD then the surrogate's hex, and a literal
+        // U+FFFD in the same string escaped as `\u{FFFD}fffd`.
+        first_string(r#"("x\uD800\uFFFDy");"#, |v| {
+            assert_eq!(lit_text(v), "x\u{FFFD}d800\u{FFFD}fffdy");
+        });
+    }
+}

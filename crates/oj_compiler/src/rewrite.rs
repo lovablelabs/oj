@@ -44,7 +44,7 @@ pub(crate) fn rewrite_module_specifiers<'a>(
         if let Some(rewriter) = rewriter.as_deref_mut() {
             rewrite_literal(allocator, lit, rewriter);
         }
-        let spec = lit.value.to_string();
+        let spec = crate::lit_str(lit.value).to_string();
         bindings.extend(&spec, names);
         imports.push(spec);
     }
@@ -72,7 +72,7 @@ pub(crate) fn rewrite_literal<'a>(
     lit: &mut StringLiteral<'a>,
     rewriter: &mut ImportRewriter,
 ) {
-    if let Some(new_spec) = rewriter(lit.value.as_str()) {
+    if let Some(new_spec) = rewriter(crate::lit_str(lit.value)) {
         lit.value = allocator.alloc_str(&new_spec).into();
         lit.raw = None;
     }
@@ -142,7 +142,7 @@ impl<'a> VisitMut<'a> for DynamicImportRewriter<'a, '_> {
     fn visit_import_expression(&mut self, it: &mut ImportExpression<'a>) {
         if let Expression::StringLiteral(lit) = &mut it.source {
             rewrite_literal(self.allocator, lit, self.rewriter);
-            self.dynamic.push(lit.value.to_string());
+            self.dynamic.push(crate::lit_str(lit.value).to_string());
         }
         walk_mut::walk_import_expression(self, it);
     }

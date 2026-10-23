@@ -802,7 +802,7 @@ pub(crate) fn callee_is_object_mutator(callee: &Expression<'_>) -> bool {
     let property = match member {
         oxc_ast::ast::MemberExpression::StaticMemberExpression(m) => Some(m.property.name.as_str()),
         oxc_ast::ast::MemberExpression::ComputedMemberExpression(m) => match &m.expression {
-            Expression::StringLiteral(lit) => Some(lit.value.as_str()),
+            Expression::StringLiteral(lit) => lit.value.as_str(),
             _ => None,
         },
         oxc_ast::ast::MemberExpression::PrivateFieldExpression(_) => None,

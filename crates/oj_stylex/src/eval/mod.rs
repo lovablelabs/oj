@@ -828,12 +828,10 @@ impl<'a, 'env> Evaluator<'a, 'env> {
                 Some(last) => self.eval_node(last),
                 None => self.deopt(seq.span, errs::PATH_WITHOUT_NODE),
             },
-            Expression::StringLiteral(lit) => {
-                if lit.lone_surrogates {
-                    return Err(StylexError::lone_surrogate("a string literal"));
-                }
-                self.value(JsValue::Str(lit.value.to_string()))
-            }
+            Expression::StringLiteral(lit) => match lit.value.as_str() {
+                Some(text) => self.value(JsValue::Str(text.to_string())),
+                None => Err(StylexError::lone_surrogate("a string literal")),
+            },
             Expression::NumericLiteral(lit) => self.value(JsValue::Num(lit.value)),
             Expression::BooleanLiteral(lit) => self.value(JsValue::Bool(lit.value)),
             Expression::NullLiteral(_) => self.value(JsValue::Null),
@@ -895,11 +893,9 @@ impl<'a, 'env> Evaluator<'a, 'env> {
     fn eval_template(&mut self, tpl: &'a TemplateLiteral<'a>) -> EvalResult {
         let mut out = String::with_capacity(tpl.quasis.iter().map(|q| q.value.raw.len()).sum());
         for (i, quasi) in tpl.quasis.iter().enumerate() {
-            if quasi.lone_surrogates {
-                return Err(StylexError::lone_surrogate("a template literal"));
-            }
-            match &quasi.value.cooked {
-                Some(cooked) => out.push_str(cooked),
+            match quasi.value.cooked.map(|cooked| cooked.as_str()) {
+                Some(Some(cooked)) => out.push_str(cooked),
+                Some(None) => return Err(StylexError::lone_surrogate("a template literal")),
                 None => out.push_str("undefined"),
             }
             if let Some(expr) = tpl.expressions.get(i) {
@@ -1442,7 +1438,7 @@ impl<'a, 'env> Evaluator<'a, 'env> {
                 oxc_ast::ast::MemberExpression::ComputedMemberExpression(m) => {
                     match &m.expression {
                         Expression::Identifier(prop) => (Some(prop.name.as_str()), None),
-                        Expression::StringLiteral(lit) => (None, Some(lit.value.as_str())),
+                        Expression::StringLiteral(lit) => (None, lit.value.as_str()),
                         _ => (None, None),
                     }
                 }
@@ -1973,7 +1969,7 @@ fn collect_member_chain<'a, 'b>(
             Expression::ComputedMemberExpression(member) => {
                 match &member.expression {
                     Expression::StringLiteral(lit) => {
-                        parts.push(Cow::Borrowed(lit.value.as_str()));
+                        parts.push(crate::jsrt::lit_text(lit.value));
                     }
                     Expression::NumericLiteral(lit) => {
                         parts.push(Cow::Owned(js_number_to_string(lit.value)));
@@ -1992,7 +1988,7 @@ fn collect_member_chain<'a, 'b>(
 fn static_property_key(key: &PropertyKey<'_>) -> Option<String> {
     match key {
         PropertyKey::StaticIdentifier(id) => Some(id.name.to_string()),
-        PropertyKey::StringLiteral(lit) => Some(lit.value.to_string()),
+        PropertyKey::StringLiteral(lit) => Some(crate::jsrt::lit_text(lit.value).into_owned()),
         PropertyKey::NumericLiteral(lit) => Some(js_number_to_string(lit.value)),
         _ => None,
     }

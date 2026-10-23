@@ -503,11 +503,11 @@ fn dynamic_imports(code: &str) -> Option<Vec<DynamicImport>> {
     impl<'a> Visit<'a> for Collect {
         fn visit_import_expression(&mut self, it: &oxc_ast::ast::ImportExpression<'a>) {
             let url = match &it.source {
-                Expression::StringLiteral(s) => Some(s.value.to_string()),
+                Expression::StringLiteral(s) => s.value.as_str().map(str::to_string),
                 Expression::TemplateLiteral(t) if t.expressions.is_empty() => t
                     .quasis
                     .first()
-                    .and_then(|q| q.value.cooked.map(|c| c.to_string())),
+                    .and_then(|q| q.value.cooked.and_then(|c| c.as_str()).map(str::to_string)),
                 _ => None,
             };
             let span = oxc_span::GetSpan::span(&it.source);

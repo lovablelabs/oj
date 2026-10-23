@@ -181,7 +181,8 @@ fn scan_import_declaration(
     options: &ResolvedOptions,
     table: &mut ImportTable,
 ) -> Result<(), StylexError> {
-    let source = decl.source.value.as_str();
+    let source_text = crate::jsrt::lit_text(decl.source.value);
+    let source: &str = &source_text;
     if source == ATOMS_SOURCE {
         scan_atoms_declaration(decl, table);
         return Ok(());
@@ -238,7 +239,9 @@ fn scan_import_declaration(
                 }
                 let imported = match &spec.imported {
                     ModuleExportName::IdentifierName(id) => id.name.to_string(),
-                    ModuleExportName::StringLiteral(lit) => lit.value.to_string(),
+                    ModuleExportName::StringLiteral(lit) => {
+                        crate::jsrt::lit_text(lit.value).into_owned()
+                    }
                     ModuleExportName::IdentifierReference(id) => id.name.to_string(),
                 };
                 let local = spec.local.name.to_string();
@@ -294,7 +297,9 @@ fn scan_atoms_declaration(decl: &ImportDeclaration<'_>, table: &mut ImportTable)
                 spec.local.name.as_str(),
                 match &spec.imported {
                     ModuleExportName::IdentifierName(id) => id.name.to_string(),
-                    ModuleExportName::StringLiteral(lit) => lit.value.to_string(),
+                    ModuleExportName::StringLiteral(lit) => {
+                        crate::jsrt::lit_text(lit.value).into_owned()
+                    }
                     ModuleExportName::IdentifierReference(id) => id.name.to_string(),
                 },
             ),
@@ -325,7 +330,8 @@ fn scan_requires(
         let Some(Expression::StringLiteral(source)) = call.arguments[0].as_expression() else {
             continue;
         };
-        let source = source.value.as_str();
+        let source_text = crate::jsrt::lit_text(source.value);
+        let source: &str = &source_text;
         if source == ATOMS_SOURCE {
             scan_atoms_require(&declarator.id, table);
             continue;
