@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `OJ_SSR_TRANSFORM_CACHE=1` persists the `ssr` environment's transform results in the cache root and seeds Vite's module graph with them on the next start, so a runner environment (Cloudflare) skips every plugin transform for files whose bytes did not change. A changed file, and every module that imports it, is transformed afresh; virtual modules always are. Opt-in while it gets mileage: on a 3,400-module TanStack Start app the first `/health` render drops from 18.0 s to 12.8 s.
+
 ### Changed
 
 - TanStack Start apps are bundled by the rolldown built into oj. The client, server and Cloudflare Worker bundles of `oj build`, the dev client bundle and its hot updates now run on the rolldown crates linked into the binary, the bundler `oj build` already used for every other app, with the app's Vite plugins bridged through the plugin host. The app's own `rolldown` package no longer decides how oj bundles: an install that lacks it, or pins another version, builds the same. The Start client bundle cache format moves to 5, so existing entries are rebuilt once.
