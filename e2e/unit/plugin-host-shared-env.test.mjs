@@ -323,3 +323,61 @@ test(
     }
   },
 );
+
+// Vite runs the config hooks on the user's config and fills its defaults in
+// after them: a Start build host's hooks see `build.outDir` unset unless the
+// user set it (Nitro derives its public assets from it), and its fresh resolve
+// runs none of the app's plugins, whose config the host's own instances add
+// once (a second instance's would merge in beside them).
+test(
+  "a build host's config hooks see the user's config, each plugin's config once",
+  { skip: !fs.existsSync(viteSrc) && "fixture vite not installed" },
+  async () => {
+    const fx = tmpProject({ prefix: "oj-config-base-" });
+    fs.symlinkSync(viteSrc, path.join(fx.root, "node_modules", "vite"), "dir");
+    fx.write(
+      "vite.config.mjs",
+      `${LOG}
+     export default {
+       build: { sourcemap: true },
+       plugins: [{
+         name: "instance",
+         config(config) {
+           const n = (globalThis.__ojInstances = (globalThis.__ojInstances ?? 0) + 1);
+           log("config outDir=" + config.build?.outDir + " sourcemap=" + config.build?.sourcemap + " ssr=" + (config.environments?.ssr !== undefined));
+           return { environments: { extra: { consumer: "server", resolve: { conditions: ["instance-" + n] } } } };
+         },
+         configResolved(c) {
+           log("configResolved outDir=" + c.build.outDir + " conditions=" + c.environments.extra.resolve.conditions.join(","));
+         },
+       }],
+     };\n`,
+    );
+    const host = rpcSidecar("plugin-host.mjs", {
+      args: [
+        path.join(fx.root, "vite.config.mjs"),
+        JSON.stringify({
+          pluginsFormat: "vite",
+          config: { root: fx.root, base: "/", mode: "production", command: "build" },
+          env: { command: "build", mode: "production" },
+          environment: { name: "client", mode: "build" },
+          ojStartMode: true,
+          ojBundleHost: true,
+        }),
+      ],
+      env: { OJ_CACHE_ROOT: fx.root },
+      cwd: fx.root,
+    });
+    try {
+      const r = await host.send({ id: 1, hook: "buildStart", args: [] });
+      assert.equal(r.error, undefined, `${r.error}\n${host.stderr()}`);
+      assert.deepEqual(events(fx), [
+        "config outDir=undefined sourcemap=true ssr=false",
+        "configResolved outDir=dist conditions=instance-1",
+      ]);
+    } finally {
+      host.close();
+      fx.cleanup();
+    }
+  },
+);

@@ -781,13 +781,37 @@ let resolvedConfig = environment.config;
 // run in that resolve) and use the result as the base the plugins see: real
 // build.outDir/sourcemap/rollupOptions, cacheDir, env, envPrefix, assetsInclude(),
 // css, ssr, worker, createResolver, logger. oj's own plugin instances are spliced
-// in and their config hooks still run on top. Without Vite the synthesized
-// defaults stand. OJ_PLUGIN_SYNTH_CONFIG=1 forces the synthesized path.
+// in and their config hooks still run on top; as in Vite, those hooks see the
+// user's own values, and Vite's defaults fill in after them (splitResolvedBase).
+// Without Vite the synthesized defaults stand. OJ_PLUGIN_SYNTH_CONFIG=1 forces
+// the synthesized path.
 let userResolvedViteConfig = null;
 
+// The resolved base split in two: its values at the paths the user's config
+// sets (`user`), and the defaults Vite filled in around them (`defaults`).
+// Vite runs the config hooks on the user's config and resolves its defaults
+// after them, so a hook deriving its own option from an unset one sees it
+// unset: Nitro's public assets from `build.outDir` (Vite's "dist" would serve
+// a stale dist/), its ssr service from `environments.ssr`.
+function splitResolvedBase(base, userConfig) {
+  const user = {};
+  const defaults = {};
+  for (const [key, value] of Object.entries(base)) {
+    const own = userConfig?.[key];
+    if (own === undefined) defaults[key] = value;
+    else if (isPlainObject(value) && isPlainObject(own)) {
+      const split = splitResolvedBase(value, own);
+      user[key] = split.user;
+      if (Object.keys(split.defaults).length) defaults[key] = split.defaults;
+    } else user[key] = value;
+  }
+  return { user, defaults };
+}
+
 // The resolved base's bundler plugins (`build.rolldownOptions.plugins`, top
-// level and per environment) are that resolve's own instances, those its
-// plugins' config hooks added included (Nitro's, bound to that resolve's
+// level and per environment) are that resolve's own instances: its load of
+// the config file's, and in a dev host, which resolves with the app's
+// plugins, those their config hooks added (Nitro's, bound to that resolve's
 // Nitro). Keep the ones the user's config file declares, as oj loaded it;
 // oj's plugin instances' config hooks add their own on top.
 function withUserBundlerPlugins(base) {
@@ -847,9 +871,12 @@ async function loadUserResolvedViteConfig() {
           defaultNodeEnv,
         );
       }
-      // A Start bundle host resolves without the framework plugins oj
-      // reimplements, as it runs without them: their config hooks (the
-      // router generator's among them) do work oj's own pipeline does.
+      // A Start bundle host resolves without the app's plugins. It runs their
+      // config hooks itself, on its own instances, and the framework plugins
+      // oj reimplements not at all (their config hooks, the router
+      // generator's among them, do work oj's own pipeline does). Resolved
+      // here too, each would add its config a second time from another
+      // instance: another Nitro, whose preset the runtime picks (Deno's here).
       const loaded = await vite.loadConfigFromFile(
         { command: env.command, mode: env.mode, isSsrBuild: env.isSsrBuild, isPreview: false },
         pluginsPath,
@@ -857,11 +884,8 @@ async function loadUserResolvedViteConfig() {
         "silent",
       );
       const config = loaded?.config ?? {};
-      const kept = (await Promise.all([config.plugins ?? []].flat(Infinity))).filter(
-        (p) => p && !isReimplemented(p.name),
-      );
       return vite.resolveConfig(
-        { ...config, plugins: kept, root: appRoot, configFile: false, mode: env.mode, logLevel: "silent" },
+        { ...config, plugins: [], root: appRoot, configFile: false, mode: env.mode, logLevel: "silent" },
         env.command,
         env.mode,
         defaultNodeEnv,
@@ -1686,11 +1710,19 @@ async function runConfigHooks() {
   userResolvedViteConfig = await loadUserResolvedViteConfig();
   initStage("user-config-resolved");
   let config = initial.config ?? {};
+  // Vite's defaults the resolved base filled in, merged under the config once
+  // the config hooks ran.
+  let viteDefaults = null;
   if (userResolvedViteConfig) {
     // The user's resolved config is the base; oj's own values (root, base,
     // define, server, environments) overlay it; the plugin list is replaced below.
-    const { plugins: _fresh, ...base } = userResolvedViteConfig;
-    config = mergeConfigLite(withUserBundlerPlugins(base), config);
+    const { plugins: _fresh, ...rest } = userResolvedViteConfig;
+    const base = withUserBundlerPlugins(rest);
+    if (userViteConfig) {
+      const split = splitResolvedBase(base, userViteConfig);
+      viteDefaults = split.defaults;
+      config = mergeConfigLite(split.user, config);
+    } else config = mergeConfigLite(base, config);
   }
   // Coerce experimental.bundledDev off BEFORE the config/configResolved hooks
   // run, so TanStack's start-manifest-plugin emits the standard dev client entry
@@ -1753,6 +1785,7 @@ async function runConfigHooks() {
     // Keep the plugin array stable regardless of what a config hook returned.
     config.plugins = configPlugins;
   }
+  if (viteDefaults) config = mergeConfigLite(viteDefaults, config);
   // Vite runs `configEnvironment(name, options, env)` for every environment after
   // the config hooks and merges what it returns into that environment's options.
   // `env` is the one ConfigEnv plus isSsrTargetWebworker (config.ts

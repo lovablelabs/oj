@@ -292,6 +292,12 @@ back, never copies.
   to the server environment (`switchEnvironment`) on the same plugin
   instances, with its own plugin set (`applyToEnvironment`), buildStart,
   module graph, emitted files and closeBundle.
+- A Start bundle host's resolved base config comes from a resolve without
+  the app's plugins: the host runs their config hooks itself, so each adds
+  its config once (a second Nitro's, its preset picked for Deno, would
+  merge in beside it). As in Vite, the `config` hooks see the user's own
+  values, and the defaults the base filled in (`build.outDir`, the client
+  and ssr environments) merge in after them.
 - `config`, `configEnvironment`, `configResolved` and `buildApp` run on
   Vite's minimal plugin context (`this.meta` with the Vite and rolldown
   versions, no `this.environment`), `configEnvironment` plugin by plugin.
@@ -299,7 +305,8 @@ back, never copies.
   `buildEnvironments` reverse RPC) standing in for TanStack Start's config
   builder just before the first post-order hook. A throwing hook fails the
   build. Any other environment a hook builds (Nitro's) Rust bundles from its
-  config (the `buildEnvironment` reverse RPC), answering its output.
+  config (the `buildEnvironment` reverse RPC), answering its output; one
+  built ahead of oj's own moves the shared host back to the client.
 - A build runs an environment's `build.rolldownOptions.plugins` after its
   normal plugins, ahead of the post ones (Vite's
   `vite:rollup-options-plugins`). The resolved base config's bundler plugins

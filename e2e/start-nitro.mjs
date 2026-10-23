@@ -8,6 +8,8 @@
 // The Nitro server routes use the fixture's plugin virtual module,
 // import.meta.glob and a ?raw import: Vite runs the app's plugins and its
 // transforms for the nitro environment too, so oj's Nitro build must.
+// A dependency exporting a Deno build first and a stale dist/ check that
+// Nitro configures from the app's own config, as under Node's `vite build`.
 
 import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
@@ -78,6 +80,28 @@ function makeApp() {
     path.join(app, "server", "routes", "api", "nitro-raw.ts"),
     'import { defineHandler } from "nitro";\nimport notes from "../../../src/content/notes.txt?raw";\n\nexport default defineHandler(() => "raw:" + notes);\n',
   );
+  // A dependency with a Deno build ahead of its Node one: the node-server
+  // bundle must take the node condition, as `vite build` does under Node.
+  const probe = path.join(app, "node_modules", "oj-condition-probe");
+  fs.mkdirSync(probe, { recursive: true });
+  fs.writeFileSync(
+    path.join(probe, "package.json"),
+    JSON.stringify({
+      name: "oj-condition-probe",
+      type: "module",
+      exports: { ".": { deno: "./deno.mjs", node: "./node.mjs", default: "./node.mjs" } },
+    }),
+  );
+  fs.writeFileSync(path.join(probe, "deno.mjs"), 'export const build = "deno";\n');
+  fs.writeFileSync(path.join(probe, "node.mjs"), 'export const build = "node";\n');
+  fs.writeFileSync(
+    path.join(app, "server", "routes", "api", "nitro-condition.ts"),
+    'import { defineHandler } from "nitro";\nimport { build } from "oj-condition-probe";\n\nexport default defineHandler(() => "condition:" + build);\n',
+  );
+  // A dist/ left by an earlier oj build: Nitro's public assets are its own
+  // (Vite's build.outDir is unset), never this directory.
+  fs.mkdirSync(path.join(app, "dist", "client"), { recursive: true });
+  fs.writeFileSync(path.join(app, "dist", "client", "stale-dist.txt"), "stale\n");
 }
 
 function assertLayout() {
@@ -87,6 +111,10 @@ function assertLayout() {
   }
   if (!fs.readdirSync(path.join(out, "public", "assets")).some((f) => f.endsWith(".js"))) {
     throw new Error("no client bundle in .output/public/assets");
+  }
+  for (const rel of ["client/stale-dist.txt", "stale-dist.txt"]) {
+    if (fs.existsSync(path.join(out, "public", rel)))
+      throw new Error(`.output/public/${rel} copied from a stale dist/: nitro's public assets must not include it`);
   }
   for (const rel of ["server.mjs", "worker.mjs", "server-bundle.mjs"]) {
     if (fs.existsSync(path.join(app, "dist", rel)))
@@ -186,6 +214,7 @@ async function runServer() {
       ["/api/nitro-virtual", "virtual:fixture-virtual-ok", "plugin virtual module"],
       ["/api/nitro-glob", "glob:Alpha Widget, Beta Widget", "import.meta.glob"],
       ["/api/nitro-raw", "raw:raw-notes-marker", "?raw import"],
+      ["/api/nitro-condition", "condition:node", "a dependency's node export condition"],
     ]) {
       const res = await get(route);
       if (res.status !== 200 || !res.body.startsWith(marker)) {
@@ -267,7 +296,7 @@ async function runServer() {
     }
 
     console.log(
-      `start-nitro: node-server render ok (${want.length} features + /about + nitro routes (plain, virtual, glob, raw) + server-fn call + assets + publicDir)`,
+      `start-nitro: node-server render ok (${want.length} features + /about + nitro routes (plain, virtual, glob, raw, condition) + server-fn call + assets + publicDir)`,
     );
   } finally {
     stop();

@@ -283,14 +283,27 @@ pub(crate) async fn build(
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .and_then(|v| v["commands"]["preview"].as_str().map(str::to_string));
-        let run = preview.map(|p| format!("cd {} && {p}", dir.display()));
+        let run = preview.map(|p| format!("cd {} && {p}", shell_quoted(&dir)));
         return Ok(Built { out_dir: dir, run });
     }
     let server = dist.join("server.mjs");
     let run = server
         .exists()
-        .then(|| format!("node {}", server.display()));
+        .then(|| format!("node {}", shell_quoted(&server)));
     Ok(Built { out_dir: dist, run })
+}
+
+/// A path as a POSIX shell word: as is when it is plain, else single-quoted.
+fn shell_quoted(path: &Path) -> String {
+    let s = path.display().to_string();
+    let plain = !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._-+=:,@%".contains(c));
+    if plain {
+        s
+    } else {
+        format!("'{}'", s.replace('\'', r"'\''"))
+    }
 }
 
 /// Nitro's `node_modules/.nitro/last-build.json` record of where its last
@@ -861,9 +874,18 @@ async fn build_app(
                 // from its config; its output is the hook's answer.
                 if rpc.method == "buildEnvironment" {
                     let name = rpc.args.first().and_then(|v| v.as_str()).unwrap_or_default();
-                    let reply = super::environment::build(&start, host, name, &styles, &emitter)
+                    let mut reply = super::environment::build(&start, host, name, &styles, &emitter)
                         .await
                         .map_err(|e| format!("{e:#}"));
+                    // Built ahead of oj's own environments: the shared host
+                    // goes back to the client, whose bundle comes next. The
+                    // switch reads the client's facts again, numbering their
+                    // config function handles as the client's facts hold them.
+                    if result.is_none() {
+                        if let Err(e) = host.switch_environment("client").await {
+                            reply = Err(format!("{e:#}"));
+                        }
+                    }
                     host.host.rpc_reply(rpc.id, reply);
                     continue;
                 }
@@ -1177,6 +1199,16 @@ const CF_LOADER_MJS: &str = r#"export async function resolve(spec, ctx, next) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_commands_quote_paths_the_shell_would_split() {
+        assert_eq!(shell_quoted(Path::new("/app/.output")), "/app/.output");
+        assert_eq!(
+            shell_quoted(Path::new("/my app/.output")),
+            "'/my app/.output'"
+        );
+        assert_eq!(shell_quoted(Path::new("/it's/dist")), r"'/it'\''s/dist'");
+    }
 
     #[test]
     fn the_node_server_bakes_the_base_in_as_a_string() {
