@@ -89,6 +89,13 @@ async fn spawn_with(
         "pluginsFormat": format,
         "ojStartMode": true,
         "ojBundleHost": true,
+        // The server render's entry, which TanStack Start's config hook (oj
+        // runs the framework natively) names as the ssr environment's input.
+        "startServerEntry": start
+            .server_entry()
+            .unwrap_or_else(|| start.cache.join("server-entry.tsx"))
+            .display()
+            .to_string(),
         "ojWorkerBundle": worker_bundle,
     })
     .to_string();

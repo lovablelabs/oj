@@ -29,12 +29,14 @@ test("an environment-declaring plugin gets server.environments (built from the a
   fx.pkg("vite", "index.mjs", {
     "index.mjs": `
       export function resolveConfig(inline) {
-        const mkEnv = (extra) => (name) => ({ name, init() {}, hot: { handleInvoke() {}, on() {} }, ...extra(name) });
+        // Count Vite's server startup calls (initServer).
+        const calls = (globalThis.__ojStubCalls = { clientBuildStart: 0, listened: [] });
+        const mkEnv = (extra) => (name) => ({ name, init() {}, listen() { calls.listened.push(name); }, hot: { handleInvoke() {}, on() {} }, ...extra(name) });
         return {
           root: inline.root,
           logger: { info() {}, warn() {}, warnOnce() {}, error() {} },
           environments: {
-            client: { dev: { createEnvironment: mkEnv((name) => ({ pluginContainer: { buildStart() {} } })) } },
+            client: { dev: { createEnvironment: mkEnv((name) => ({ pluginContainer: { buildStart() { calls.clientBuildStart++; } } })) } },
             worker: { dev: { createEnvironment: mkEnv((name) => ({ initRunner() {} })) } },
           },
         };
@@ -67,7 +69,7 @@ test("an environment-declaring plugin gets server.environments (built from the a
          seen.middlewareRan = ran;
        },
        transform(code, id) {
-         if (id.endsWith("probe.js")) return "export default " + JSON.stringify(seen) + ";";
+         if (id.endsWith("probe.js")) return "export default " + JSON.stringify({ ...seen, calls: globalThis.__ojStubCalls }) + ";";
          return null;
        },
      }];\n`,
@@ -104,6 +106,12 @@ test("an environment-declaring plugin gets server.environments (built from the a
     assert.equal(seen.middlewaresCallable, true, "server.middlewares is callable");
     assert.equal(seen.middlewaresHasUse, true, "server.middlewares.use exists");
     assert.equal(seen.middlewareRan, true, "a registered middleware runs when the app is invoked");
+
+    // Vite's initServer: the client buildStart (the shared state server
+    // transforms read, as vite:css-post's CSS modules cache), then listen() on
+    // the server environments; oj serves the client itself.
+    assert.equal(seen.calls.clientBuildStart, 1, "the client buildStart ran once");
+    assert.deepEqual(seen.calls.listened, ["worker"], "server environments listen, the client does not");
 
     // Surface the cloudflare plugin also reads.
     assert.equal(seen.hasClose, true, "server.close is provided");
