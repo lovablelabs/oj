@@ -26,6 +26,7 @@ mod css_url_inline;
 mod dep_plugin_load;
 mod dev_condition;
 mod dev_cors_host;
+mod dev_html_native;
 mod dev_mode;
 mod dev_process_env;
 mod dunder_paths;

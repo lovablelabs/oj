@@ -2,19 +2,24 @@ use super::*;
 
 /// `url` is the request path (ctx.path), `file` the html on disk (ctx.filename),
 /// `original_url` the url the browser asked for (ctx.originalUrl: the route a
-/// SPA fallback served index.html for). With a plugin host the whole of Vite's
-/// dev HTML transform runs there (env, plugin hooks, the dev client, inline
-/// module proxies, nonces), handed the env map and nonce oj already derives.
-/// A throwing transformIndexHtml fails the request (Vite parity), not served raw.
+/// SPA fallback served index.html for). Vite's dev HTML transform runs in the
+/// plugin host when a plugin hooks `transformIndexHtml` (its hooks interleave
+/// with Vite's), handed the env map and nonce oj already derives; otherwise
+/// natively (dev_html). A failing transform fails the request (Vite parity),
+/// the page is not served raw.
 pub(crate) async fn serve_html(
-    state: &ServerState,
+    state: &Arc<ServerState>,
     bytes: Vec<u8>,
     url: &str,
     original_url: &str,
     file: &Path,
 ) -> Response {
     let raw = String::from_utf8_lossy(&bytes).into_owned();
-    let html = match &state.plugins {
+    let transformed = match state
+        .plugins
+        .as_ref()
+        .filter(|_| state.plugins_have_transform_index_html)
+    {
         Some(host) => {
             let ctx = serde_json::json!({
                 "path": url,
@@ -24,30 +29,66 @@ pub(crate) async fn serve_html(
                 "ojCspNonce": state.csp_nonce,
             })
             .to_string();
-            match host.transform_index_html(&raw, &ctx).await {
-                Ok(out) => inject_module_preloads(out, state),
-                Err(e) => {
-                    eprintln!("oj: transformIndexHtml failed for {url}: {e}");
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-                        format!("oj: transformIndexHtml failed for {url}\n{e}"),
-                    )
-                        .into_response();
-                }
-            }
+            host.transform_index_html(&raw, &ctx).await
         }
-        None => {
-            // %VITE_*% substitution (Vite htmlEnvHook) runs before the client injection.
-            let raw = oj_env::replace_html_env(&raw, &state.html_env);
-            let mut html = inject_module_preloads(inject_dev_scripts(raw), state);
-            if let Some(nonce) = &state.csp_nonce {
-                html = inject_csp_nonce(&html, nonce);
-            }
-            html
-        }
+        None => native_dev_html(state, &raw, url, original_url, file).await,
     };
-    ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response()
+    match transformed {
+        Ok(out) => (
+            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            inject_module_preloads(out, state),
+        )
+            .into_response(),
+        Err(e) => {
+            eprintln!("oj: transformIndexHtml failed for {url}: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                format!("oj: transformIndexHtml failed for {url}\n{e}"),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Vite's dev HTML transform with no plugin hook in it, natively: inline
+/// styles compile through oj's CSS pipeline, inline modules wait in the
+/// server's html-proxy cache.
+async fn native_dev_html(
+    state: &Arc<ServerState>,
+    raw: &str,
+    url: &str,
+    original_url: &str,
+    file: &Path,
+) -> Result<String, String> {
+    let base = state.base.as_deref().unwrap_or("/");
+    let client_srcs = dev_html::client_srcs(base, &["/@oj/refresh-preamble.js", "/@oj/client.js"]);
+    let cfg = dev_html::DevHtmlConfig {
+        root: &state.root,
+        base,
+        env: &state.html_env,
+        env_prefixes: &state.env_prefixes,
+        nonce: state.csp_nonce.as_deref(),
+        client_srcs: &client_srcs,
+    };
+    let req = dev_html::DevHtmlRequest {
+        path: url,
+        filename: file,
+        original_url,
+    };
+    dev_html::transform_dev_html(raw, &cfg, &req, &NativeHtml(state)).await
+}
+
+struct NativeHtml<'a>(&'a Arc<ServerState>);
+
+impl dev_html::DevHtmlHost for NativeHtml<'_> {
+    async fn compile_style(&self, id: &str, code: &str) -> Result<String, String> {
+        css_serve::compile_html_style(self.0, id, code.to_string()).await
+    }
+
+    fn proxy(&self) -> &dev_html::HtmlProxyCache {
+        &self.0.html_proxy
+    }
 }
 
 /// Vite's `html.cspNonce`: nonce every script/style and stylesheet/modulepreload/
@@ -123,7 +164,7 @@ pub(crate) fn insert_after_head(html: &str, tags: &str) -> String {
     }
 }
 
-pub(crate) async fn serve_index_html(state: &ServerState, original_url: &str) -> Response {
+pub(crate) async fn serve_index_html(state: &Arc<ServerState>, original_url: &str) -> Response {
     match tokio::fs::read(state.root.join("index.html")).await {
         Ok(bytes) => {
             serve_html(

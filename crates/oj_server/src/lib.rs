@@ -72,6 +72,7 @@ const HMR_GATE_PATH: &str = "/__hmr_gate";
 pub fn is_dev_server_path(path: &str) -> bool {
     matches!(path, HMR_WS_PATH | HMR_FLUSH_PATH | HMR_GATE_PATH)
 }
+mod dev_html;
 mod html;
 pub mod tls;
 pub use html::*;
@@ -379,6 +380,13 @@ struct ServerState {
     // resolver when it matches one of these (object-form resolveId `filter.id`).
     resolve_id_res: Vec<regex::Regex>,
     plugins_watch_change: bool,
+    /// A plugin hooks `transformIndexHtml`: dev pages run the host's transform,
+    /// its hooks interleaved with Vite's; otherwise oj's native one (dev_html).
+    plugins_have_transform_index_html: bool,
+    /// The inline modules the native dev HTML transform lifted out of pages.
+    html_proxy: dev_html::HtmlProxyCache,
+    /// `envPrefix`, for the HTML env hook's undefined-variable warning.
+    env_prefixes: Vec<String>,
     plugins_hot_update: bool,
     html_env: std::collections::BTreeMap<String, String>,
     parsed_fired: Mutex<std::collections::HashSet<String>>,
@@ -803,20 +811,10 @@ struct PluginFile {
     label: String,
 }
 
-/// The app's plugin file, else an empty `oj.plugins.mjs` in the cache: Vite's
-/// dev HTML transform (inline modules and styles, the dev client, `%ENV%`,
-/// nonces) runs in the host, and Vite runs it for every page, plugins or not.
+/// The app's plugin file. Without one there is no plugin host: Vite's dev
+/// HTML transform runs natively (dev_html).
 fn plugin_file(root: &Path, config_file: Option<&Path>) -> Option<PluginFile> {
-    let Some(source) = plugins::plugin_source(root, config_file) else {
-        let path = oj_cache::cache_root(root).join("empty.plugins.mjs");
-        std::fs::create_dir_all(path.parent()?).ok()?;
-        std::fs::write(&path, "export default [];\n").ok()?;
-        return Some(PluginFile {
-            path,
-            format: PluginsFormat::Oj,
-            label: "no plugin file".to_string(),
-        });
-    };
+    let source = plugins::plugin_source(root, config_file)?;
     match source {
         plugins::PluginSource::OjPlugins(p) => Some(PluginFile {
             label: p.file_name().unwrap().to_string_lossy().into_owned(),
@@ -829,6 +827,19 @@ fn plugin_file(root: &Path, config_file: Option<&Path>) -> Option<PluginFile> {
             label: "vite.config".to_string(),
         }),
     }
+}
+
+/// An empty `oj.plugins.mjs` in the cache, for a host with no plugin file:
+/// `server.proxy` runs in the host.
+fn empty_plugin_file(root: &Path) -> Option<PluginFile> {
+    let path = oj_cache::cache_root(root).join("empty.plugins.mjs");
+    std::fs::create_dir_all(path.parent()?).ok()?;
+    std::fs::write(&path, "export default [];\n").ok()?;
+    Some(PluginFile {
+        path,
+        format: PluginsFormat::Oj,
+        label: "no plugin file".to_string(),
+    })
 }
 
 /// Handed to buildEnvironments and vite.resolveConfig verbatim: the deps
@@ -901,6 +912,7 @@ async fn spawn_plugin_host(
     payload: &str,
     registry: &oj_js::EngineRegistry,
     prewarm: Option<plugins::HostPrewarm>,
+    keep_for_proxy: bool,
 ) -> anyhow::Result<Option<Arc<PluginHost>>> {
     let label = &file.label;
     let spawned = match prewarm {
@@ -914,10 +926,16 @@ async fn spawn_plugin_host(
             return Ok(None);
         }
     };
-    // Kept with no plugins too: it hosts the dev HTML transform and `server.proxy`.
+    // With no plugin active, the dev HTML transform runs natively and the
+    // host goes, unless it hosts `server.proxy`.
     if host.plugin_count().await == 0 {
-        println!("  plugins: {label} (none active)");
-        return Ok(Some(host));
+        if keep_for_proxy {
+            println!("  plugins: {label} (none active; host kept for server.proxy)");
+            return Ok(Some(host));
+        }
+        host.shutdown();
+        println!("  plugins: {label} (none active; served natively)");
+        return Ok(None);
     }
     println!("  plugins: {label}");
     Ok(Some(host))
@@ -958,6 +976,7 @@ struct PluginCaps {
     resolve_id_res: Vec<regex::Regex>,
     watch_change: bool,
     hot_update: bool,
+    have_transform_index_html: bool,
 }
 
 fn compile_filters(patterns: &[String]) -> Vec<regex::Regex> {
@@ -980,6 +999,7 @@ impl PluginCaps {
         // hook's RPC is skipped for app modules its filter can never claim.
         let _ = host.build_hook_plan().await;
         let (watch_change, hot_update) = host.hmr_hooks().await;
+        let have_transform_index_html = host.has_transform_index_html().await;
         PluginCaps {
             use_module_parsed,
             have_transform,
@@ -990,6 +1010,7 @@ impl PluginCaps {
             resolve_id_res,
             watch_change,
             hot_update,
+            have_transform_index_html,
         }
     }
 }
@@ -1466,6 +1487,13 @@ impl DevServer {
             .filter(|f| f.format == PluginsFormat::Vite)
             .and_then(|_| PluginHost::prewarm(&root, Some(engine_registry.clone())));
         let config = load_dev_config(&root, config_file.as_deref(), &dev_mode)?;
+        let has_proxy = config
+            .server
+            .as_ref()
+            .and_then(|s| s.proxy.as_ref())
+            .is_some_and(|p| !p.is_empty());
+        let plugin_file =
+            plugin_file.or_else(|| has_proxy.then(|| empty_plugin_file(&root)).flatten());
 
         let env_dir = config
             .env_dir
@@ -1525,7 +1553,15 @@ impl DevServer {
         boot_phase("plugin host spawning");
         let plugin_host = match &plugin_file {
             Some(file) => {
-                spawn_plugin_host(&root, file, &payloads.client, &engine_registry, prewarm).await?
+                spawn_plugin_host(
+                    &root,
+                    file,
+                    &payloads.client,
+                    &engine_registry,
+                    prewarm,
+                    has_proxy,
+                )
+                .await?
             }
             None => None,
         };
@@ -1703,6 +1739,9 @@ impl DevServer {
             dep_load_res: caps.dep_load_res,
             resolve_id_res: caps.resolve_id_res,
             plugins_watch_change: caps.watch_change,
+            plugins_have_transform_index_html: caps.have_transform_index_html,
+            html_proxy: Default::default(),
+            env_prefixes: oj_config::env_prefixes(&config),
             plugins_hot_update: caps.hot_update,
             html_env: installed.html_env,
             parsed_fired: Mutex::new(std::collections::HashSet::new()),
