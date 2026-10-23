@@ -2252,12 +2252,13 @@ impl Plugin for OjUserPlugin {
     }
 }
 
-pub(crate) fn serialize_rendered_chunk(chunk: &rolldown_common::RollupRenderedChunk) -> String {
-    // `chunk.modules` (keyed by module id) is read by renderChunk hooks such as
-    // UnoCSS's `unocss:global:build:generate` to find their virtual layer module.
-    let mut modules = serde_json::Map::new();
-    for (id, rm) in chunk.modules.keys.iter().zip(chunk.modules.values.iter()) {
-        modules.insert(
+/// Rollup's `chunk.modules`, `{ [id]: RenderedModule }`: plugins like @crxjs
+/// walk its keys (module ids) and read renderedExports; dependency reports
+/// read renderedLength to tell kept modules from tree-shaken ones.
+fn rendered_modules(modules: &rolldown_common::Modules) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    for (id, rm) in modules.keys.iter().zip(modules.values.iter()) {
+        map.insert(
             id.as_str().to_string(),
             serde_json::json!({
                 "renderedExports": rm
@@ -2265,9 +2266,17 @@ pub(crate) fn serialize_rendered_chunk(chunk: &rolldown_common::RollupRenderedCh
                     .iter()
                     .map(|e| e.to_string())
                     .collect::<Vec<_>>(),
+                "renderedLength": rm.rendered_length(),
             }),
         );
     }
+    serde_json::Value::Object(map)
+}
+
+pub(crate) fn serialize_rendered_chunk(chunk: &rolldown_common::RollupRenderedChunk) -> String {
+    // `chunk.modules` (keyed by module id) is read by renderChunk hooks such as
+    // UnoCSS's `unocss:global:build:generate` to find their virtual layer module.
+    let modules = rendered_modules(&chunk.modules);
     serde_json::json!({
         "type": "chunk",
         "fileName": chunk.filename.to_string(),
@@ -2276,7 +2285,7 @@ pub(crate) fn serialize_rendered_chunk(chunk: &rolldown_common::RollupRenderedCh
         "isDynamicEntry": chunk.is_dynamic_entry,
         "facadeModuleId": chunk.facade_module_id.as_ref().map(|f| f.as_str().to_string()),
         "moduleIds": chunk.module_ids.iter().map(|m| m.as_str().to_string()).collect::<Vec<_>>(),
-        "modules": serde_json::Value::Object(modules),
+        "modules": modules,
         "imports": chunk.imports.iter().map(|i| i.to_string()).collect::<Vec<_>>(),
         "dynamicImports": chunk.dynamic_imports.iter().map(|i| i.to_string()).collect::<Vec<_>>(),
         "exports": chunk.exports.iter().map(|e| e.to_string()).collect::<Vec<_>>(),
@@ -2290,21 +2299,7 @@ pub(crate) fn serialize_bundle(bundle: &[rolldown_common::Output]) -> String {
     for out in bundle {
         match out {
             Output::Chunk(c) => {
-                // Rollup's `chunk.modules` is `{ [id]: RenderedModule }`; plugins
-                // like @crxjs walk its keys (module ids) and read renderedExports.
-                let mut modules = serde_json::Map::new();
-                for (id, rm) in c.modules.keys.iter().zip(c.modules.values.iter()) {
-                    modules.insert(
-                        id.as_str().to_string(),
-                        serde_json::json!({
-                            "renderedExports": rm
-                                .rendered_exports
-                                .iter()
-                                .map(|e| e.to_string())
-                                .collect::<Vec<_>>(),
-                        }),
-                    );
-                }
+                let modules = rendered_modules(&c.modules);
                 map.insert(
                     c.filename.to_string(),
                     serde_json::json!({
@@ -2315,7 +2310,7 @@ pub(crate) fn serialize_bundle(bundle: &[rolldown_common::Output]) -> String {
                         "isDynamicEntry": c.is_dynamic_entry,
                         "facadeModuleId": c.facade_module_id.as_ref().map(|f| f.as_str().to_string()),
                         "moduleIds": c.module_ids.iter().map(|m| m.as_str().to_string()).collect::<Vec<_>>(),
-                        "modules": serde_json::Value::Object(modules),
+                        "modules": modules,
                         "imports": c.imports.iter().map(|i| i.to_string()).collect::<Vec<_>>(),
                         "dynamicImports": c.dynamic_imports.iter().map(|i| i.to_string()).collect::<Vec<_>>(),
                         "exports": c.exports.iter().map(|e| e.to_string()).collect::<Vec<_>>(),
