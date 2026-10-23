@@ -346,10 +346,12 @@ fn record_glob_importer(state: &ServerState, file: &Path, url: &str, source: &st
         return;
     }
     let patterns: Vec<oj_compiler::glob::GlobMatcher> =
-        oj_compiler::glob::glob_patterns(source, file, Some(&state.root))
-            .iter()
-            .map(|call| call.matcher())
-            .collect();
+        oj_compiler::glob::glob_patterns_aliased(source, file, Some(&state.root), &|id| {
+            oj_compiler::glob::string_alias(&state.glob_alias, id)
+        })
+        .iter()
+        .map(|call| call.matcher())
+        .collect();
     let clean = url.split('?').next().unwrap_or(url).to_string();
     let mut globs = state.glob_importers.lock().unwrap();
     if patterns.is_empty() {

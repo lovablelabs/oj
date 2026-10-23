@@ -297,6 +297,9 @@ struct ServerState {
     /// `resolve.alias`, root and public dir as seen by `@import`/`@use`/`url()`
     /// specifiers inside stylesheets (Vite's CSS resolvers).
     css_resolve: oj_css::CssResolveConfig,
+    /// The client `resolve.alias`, which an aliased `import.meta.glob` pattern
+    /// resolves through.
+    glob_alias: Arc<[(String, String)]>,
     preload_snapshot: Vec<String>,
     proxy: Vec<(String, oj_config::ProxyEntry)>,
     /// Per `proxy` entry: the compiled pattern of a `^` (regex) context, `None`
@@ -1694,6 +1697,7 @@ impl DevServer {
             scss_additional_data: oj_config::css_additional_data(&config, "scss"),
             sass_additional_data: oj_config::css_additional_data(&config, "sass"),
             css_config: config.css.clone(),
+            glob_alias: Arc::from(css_resolve.alias.clone()),
             css_resolve,
             csp_nonce: oj_config::html_csp_nonce(&config),
             fs_allow: Arc::new(Mutex::new(fs_allow_list(&root, &server_cfg))),
@@ -1998,6 +2002,7 @@ fn dev_compile_opts(state: &ServerState) -> oj_compiler::CompileOptions {
     opts.jsx = state.jsx.clone();
     opts.env = Some(Arc::clone(&state.import_meta_env));
     opts.root = Some(state.root.clone());
+    opts.alias = Arc::clone(&state.glob_alias);
     opts
 }
 

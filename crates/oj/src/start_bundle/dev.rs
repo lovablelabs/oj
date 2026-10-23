@@ -338,6 +338,7 @@ impl DevBundler {
         }
         plugins.push(Pluginable::new_shared(
             StartCodePlugin::new(&start.root, CodeTarget::Client)
+                .with_alias(host.map(|h| h.facts.alias.clone()).unwrap_or_default())
                 .recording_globs(Arc::clone(&glob_scopes)),
         ));
         plugins.push(Pluginable::new_shared(StartAssetsPlugin::new(

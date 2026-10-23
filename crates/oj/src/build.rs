@@ -1063,7 +1063,12 @@ async fn bundle_worker_inline(
 /// and handing that copy to rolldown as `Some(code)` makes it push
 /// `SourcemapChainElement::Omitted`, which empties the module's mappings when
 /// `build.sourcemap` is on.
-fn expand_import_meta(id: &str, code: &str, root: &Path) -> Option<String> {
+fn expand_import_meta(
+    id: &str,
+    code: &str,
+    root: &Path,
+    alias: &[(String, String)],
+) -> Option<String> {
     let has_glob = code.contains("import.meta.glob");
     // Vite's dynamicImportVarsOptions.exclude defaults to node_modules.
     let has_dynamic = code.contains("import(") && !id.contains("/node_modules/");
@@ -1077,7 +1082,8 @@ fn expand_import_meta(id: &str, code: &str, root: &Path) -> Option<String> {
     // be unreachable and could mask a future edit that makes it reachable).
     let mut expanded = code.to_string();
     if has_glob {
-        expanded = oj_compiler::glob::expand_source(&expanded, path, Some(root));
+        let alias = |spec: &str| oj_compiler::glob::string_alias(alias, spec);
+        expanded = oj_compiler::glob::expand_source_aliased(&expanded, path, Some(root), &alias);
     }
     if has_dynamic {
         expanded = oj_compiler::glob::expand_dynamic_import_vars_source(&expanded, path);
@@ -1152,12 +1158,14 @@ impl Plugin for OjCssPlugin {
         let id: &str = args.id;
         let code: &str = args.code;
         async move {
-            Ok(expand_import_meta(id, code, &self.root).map(|code| {
-                rolldown_plugin::HookTransformOutput {
-                    code: Some(code),
-                    ..Default::default()
-                }
-            }))
+            Ok(
+                expand_import_meta(id, code, &self.root, &self.resolve.alias).map(|code| {
+                    rolldown_plugin::HookTransformOutput {
+                        code: Some(code),
+                        ..Default::default()
+                    }
+                }),
+            )
         }
     }
 
@@ -6319,11 +6327,39 @@ mod tests {
         }
     }
 
+    // `oj build` expands an aliased glob through `resolve.alias` (Vite's
+    // toAbsoluteGlob -> resolveId), with root-absolute keys.
+    #[test]
+    fn expand_import_meta_resolves_aliased_globs() {
+        let dir = scratch("expand-import-meta-alias");
+        fs::create_dir_all(dir.join("src/assets")).unwrap();
+        fs::write(dir.join("src/assets/hero.png"), "png").unwrap();
+        let id = dir.join("src/App.tsx").to_string_lossy().into_owned();
+        let alias = vec![("@".to_string(), dir.join("src").display().to_string())];
+        let out = expand_import_meta(
+            &id,
+            "const m = import.meta.glob(\"@/assets/*.png\");\n",
+            &dir,
+            &alias,
+        )
+        .expect("aliased glob expands");
+        assert!(
+            out.contains(r#""/src/assets/hero.png": () => import("./assets/hero.png")"#),
+            "{out}"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn expand_import_meta_reports_only_real_changes() {
         // No marker at all.
         assert_eq!(
-            expand_import_meta("/app/src/a.ts", "export const a = 1;\n", Path::new("/app")),
+            expand_import_meta(
+                "/app/src/a.ts",
+                "export const a = 1;\n",
+                Path::new("/app"),
+                &[]
+            ),
             None
         );
         // A plain string-literal dynamic import is left alone by the expander,
@@ -6332,7 +6368,8 @@ mod tests {
             expand_import_meta(
                 "/app/src/r.tsx",
                 "const P = lazy(() => import(\"./pages/P\"));\n",
-                Path::new("/app")
+                Path::new("/app"),
+                &[]
             ),
             None
         );
@@ -6341,7 +6378,8 @@ mod tests {
             expand_import_meta(
                 "/app/node_modules/x/index.js",
                 "export const c = (n) => import(`./c/${n}.js`);\n",
-                Path::new("/app")
+                Path::new("/app"),
+                &[]
             ),
             None
         );
@@ -6355,6 +6393,7 @@ mod tests {
             &id,
             "const load = (l) => import(`./locales/${l}.json`);\n",
             &dir,
+            &[],
         )
         .expect("matching variable dynamic import expands");
         assert!(
@@ -6373,6 +6412,7 @@ mod tests {
             "/app/src/main.js",
             "const w = new Worker(new URL(\"./w.ts\", import.meta.url), { type: \"module\" });\nconst s = new SharedWorker(new URL(\"./w.ts\", import.meta.url));\n",
             Path::new("/app"),
+            &[],
         )
         .expect("new URL asset expands");
         assert!(

@@ -420,6 +420,33 @@ console.log(getGreeting, pages);
     );
 }
 
+// An aliased glob (`@/pages/*.ts`) expands through the app's `resolve.alias`
+// in a Start bundle, as Vite's toAbsoluteGlob resolves it, not as a path
+// under the importer's directory.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_aliased_glob_expands_through_resolve_alias() {
+    let app = App::new(&[
+        (
+            "src/entry.ts",
+            "const pages = import.meta.glob(\"@/pages/*.ts\", { eager: true });\n\
+             console.log(Object.values(pages).map((p: any) => p.title));\n",
+        ),
+        ("src/pages/a.ts", "export const title = \"page-a\";"),
+        ("src/pages/b.ts", "export const title = \"page-b\";"),
+    ]);
+    let alias = normalize_alias(&serde_json::json!({ "@": app.dir.join("src") }));
+    let code = bundle(
+        &app,
+        "src/entry.ts",
+        vec![Pluginable::new_shared(
+            StartCodePlugin::new(&app.dir, CodeTarget::Client).with_alias(alias),
+        )],
+    )
+    .await
+    .unwrap();
+    assert!(code.contains("page-a") && code.contains("page-b"), "{code}");
+}
+
 #[test]
 fn the_test_app_root_is_canonical() {
     let app = App::new(&[]);

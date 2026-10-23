@@ -199,10 +199,10 @@ fn client_plugins(
             .with_module_parsed(start.jsx_config()),
         ));
     }
-    plugins.push(Pluginable::new_shared(StartCodePlugin::new(
-        &start.root,
-        target,
-    )));
+    plugins.push(Pluginable::new_shared(
+        StartCodePlugin::new(&start.root, target)
+            .with_alias(host.map(|h| h.facts.alias.clone()).unwrap_or_default()),
+    ));
     plugins.push(Pluginable::new_shared(StartAssetsPlugin::new(
         &start.root,
         Arc::clone(styles),
@@ -509,10 +509,14 @@ pub(crate) async fn build(
                     .with_module_parsed(start.jsx_config()),
                 ));
             }
-            plugins.push(Pluginable::new_shared(StartCodePlugin::new(
-                &start.root,
-                CodeTarget::Server,
-            )));
+            plugins.push(Pluginable::new_shared(
+                StartCodePlugin::new(&start.root, CodeTarget::Server).with_alias(
+                    server_host
+                        .as_ref()
+                        .map(|h| h.facts.alias.clone())
+                        .unwrap_or_default(),
+                ),
+            ));
             plugins.push(Pluginable::new_shared(StartAssetsPlugin::new(
                 &start.root,
                 Arc::clone(&styles),
