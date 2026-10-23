@@ -91,3 +91,47 @@ async fn a_build_with_no_stylesheet_gets_the_plugins_fallback_file() {
         .expect("assets/stylex.css written");
     assert!(sheet.contains("color: olive"), "{sheet}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dependencies_on_stylex_compile_in_the_bundle() {
+    let deps = "import { esmClass } from \"sx-esm\";\nimport { cjsClass } from \"sx-cjs\";\n\
+                document.body.className = esmClass + cjsClass;\n";
+    let Some(root) = app("stylex-deps", &[("src/main.ts", deps)]) else {
+        return;
+    };
+    write_files(
+        &root,
+        &[
+            (
+                "node_modules/sx-esm/package.json",
+                r#"{"name":"sx-esm","version":"1.0.0","type":"module","main":"index.js"}"#,
+            ),
+            (
+                "node_modules/sx-esm/index.js",
+                "import * as stylex from \"@stylexjs/stylex\";\n\
+                 export const esmClass = stylex.props(stylex.create({ c: { color: \"navy\" } }).c).className;\n",
+            ),
+            (
+                "node_modules/sx-cjs/package.json",
+                r#"{"name":"sx-cjs","version":"1.0.0","main":"index.js"}"#,
+            ),
+            (
+                "node_modules/sx-cjs/index.js",
+                "const stylex = require(\"@stylexjs/stylex\");\n\
+                 exports.cjsClass = stylex.props(stylex.create({ c: { color: \"maroon\" } }).c).className;\n",
+            ),
+        ],
+    );
+    build_app(&root).await.expect("the StyleX app builds");
+    let sheet = std::fs::read_to_string(root.join("dist/assets/stylex.css")).unwrap();
+    assert!(
+        sheet.contains("color: navy") && sheet.contains("color: maroon"),
+        "{sheet}"
+    );
+    let js: String = files_under(&root.join("dist"))
+        .into_iter()
+        .filter(|(p, _)| p.ends_with(".js"))
+        .map(|(_, c)| c)
+        .collect();
+    assert!(!js.contains("stylex.create"), "dependencies compiled");
+}

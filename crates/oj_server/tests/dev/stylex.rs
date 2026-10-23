@@ -272,3 +272,72 @@ async fn the_runtime_restyles_the_page_on_an_edit() {
         "the page reloaded"
     );
 }
+
+/// Packages that depend on `@stylexjs/stylex`, one per module format: the
+/// plugin keeps them out of the pre-bundle so its transform reaches them.
+pub(crate) const STYLEX_DEPS: &[(&str, &str)] = &[
+    (
+        "node_modules/sx-esm/package.json",
+        r#"{"name":"sx-esm","version":"1.0.0","type":"module","main":"index.js","dependencies":{"@stylexjs/stylex":"0.19.0"}}"#,
+    ),
+    (
+        "node_modules/sx-esm/index.js",
+        "import * as stylex from \"@stylexjs/stylex\";\n\
+         const s = stylex.create({ c: { color: \"navy\" } });\n\
+         export const esmClass = stylex.props(s.c).className;\n",
+    ),
+    (
+        "node_modules/sx-cjs/package.json",
+        r#"{"name":"sx-cjs","version":"1.0.0","main":"index.js","dependencies":{"@stylexjs/stylex":"0.19.0"}}"#,
+    ),
+    (
+        "node_modules/sx-cjs/index.js",
+        "const stylex = require(\"@stylexjs/stylex\");\n\
+         const s = stylex.create({ c: { color: \"maroon\" } });\n\
+         exports.cjsClass = stylex.props(s.c).className;\n",
+    ),
+];
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dependencies_on_stylex_compile_like_app_modules() {
+    require_fixture!("vite", "@stylexjs/unplugin", "@stylexjs/stylex");
+    let app = app("{}");
+    app.write(STYLEX_DEPS);
+    app.write(&[
+        (
+            "package.json",
+            r#"{"name":"sx","version":"1.0.0","type":"module","dependencies":{"sx-esm":"1.0.0","sx-cjs":"1.0.0"}}"#,
+        ),
+        (
+            "src/main.ts",
+            "import { esmClass } from \"sx-esm\";\nimport { cjsClass } from \"sx-cjs\";\n\
+             export const both = [esmClass, cjsClass];\n",
+        ),
+    ]);
+    let server = app.serve().await;
+    let main = server.text("/src/main.ts").await;
+    for dep in ["sx-esm", "sx-cjs"] {
+        let url = main
+            .split('"')
+            .find(|s| s.contains(&format!("/{dep}/")))
+            .unwrap_or_else(|| panic!("{dep} imported:\n{main}"));
+        assert!(
+            !url.contains("/@oj-deps/"),
+            "{dep} kept out of the pre-bundle: {url}"
+        );
+        let module = server.text(url).await;
+        assert!(
+            !module.contains("stylex.create"),
+            "{dep} compiled:\n{module}"
+        );
+    }
+    let css = server.text("/virtual:stylex.css").await;
+    assert!(
+        css.contains("color: navy"),
+        "the ESM dependency's rules:\n{css}"
+    );
+    assert!(
+        css.contains("color: maroon"),
+        "the CJS dependency's rules:\n{css}"
+    );
+}

@@ -768,6 +768,7 @@ impl CompileJob {
                 dep_src,
                 &mut |spec: &str| rw.rewrite(spec, &self.state.require_resolver),
                 Some(Arc::clone(&self.state.import_meta_env)),
+                self.state.stylex.as_ref(),
             );
         }
         // Gated on a cheap bare-import scan: the interop rewrite (a full
@@ -793,6 +794,7 @@ impl CompileJob {
             dep_src,
             &mut |spec: &str| rw.rewrite(spec, &self.state.resolver),
             Some(Arc::clone(&self.state.import_meta_env)),
+            self.state.stylex.as_ref(),
         )
     }
 
