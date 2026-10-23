@@ -740,13 +740,12 @@ fn public_file(public_dir: &Path, rest: &str) -> Option<PathBuf> {
 }
 
 /// Vite's publicFileToBuiltUrl: a public file's module exports its URL under
-/// the base. A relative base has no fixed prefix, so the client's file is
-/// emitted at its own path, unhashed, and the URL resolves against the
-/// importing chunk; the server's URL is root-absolute, as Vite resolves a
+/// the base. A relative base has no fixed prefix, so the client's URL resolves
+/// against the importing chunk (rewritten when it renders); the server's URL
+/// is root-absolute, as Vite resolves a
 /// relative base to `/` for an SSR build. `?raw` is the file's text and
 /// `?inline` its data URL, read from the public dir (vite:asset's load).
 fn public_file_module(
-    ctx: &rolldown_plugin::SharedLoadPluginContext,
     public_dir: &Path,
     id: &str,
     base: &str,
@@ -780,26 +779,155 @@ fn public_file_module(
         _ => {}
     }
     if !is_relative_base(base) {
-        return Ok(export_default_url(&with_base(rest, base)));
+        return Ok(export_default_url(&encode_uri_path(&with_base(rest, base))));
     }
     if !client {
-        return Ok(export_default_url(&with_base(rest, "/")));
+        return Ok(export_default_url(&encode_uri_path(&with_base(rest, "/"))));
     }
-    let bytes = read(&file()?)?;
-    let reference = ctx
-        .emit_file(
-            rolldown_common::EmittedAsset {
-                file_name: Some(arcstr::ArcStr::from(rest)),
-                source: rolldown_common::StrOrBytes::Bytes(bytes),
-                ..Default::default()
-            },
-            None,
-            None,
+    // The chunk's own path is known only when it renders.
+    Ok(export_default_url(&public_asset_placeholder(rest)))
+}
+
+/// Vite's `__VITE_PUBLIC_ASSET__` marker: a public file's URL in a client
+/// chunk under a relative base, rewritten by `render_public_asset_urls`.
+const PUBLIC_ASSET_MARK: &str = "__OJ_PUBLIC_ASSET__";
+
+fn public_asset_placeholder(rest: &str) -> String {
+    let hex: String = rest.bytes().map(|b| format!("{b:02x}")).collect();
+    format!("{PUBLIC_ASSET_MARK}{hex}__")
+}
+
+/// Vite's renderAssetUrlInJS for public files under a relative base: each
+/// quoted marker becomes its format's relative-URL expression
+/// (`new URL('../vite.svg', import.meta.url).href` for es), resolved from the
+/// chunk's own directory. The file is the public-dir copy, never emitted.
+fn render_public_asset_urls(
+    code: &str,
+    chunk_file: &str,
+    format: OutputFormat,
+    sourcemap: bool,
+) -> Option<(String, Option<rolldown_sourcemap::SourceMap>)> {
+    if !code.contains(PUBLIC_ASSET_MARK) {
+        return None;
+    }
+    let mut s = string_wizard::MagicString::new(code);
+    let mut from = 0;
+    while let Some(at) = code[from..].find(PUBLIC_ASSET_MARK).map(|i| from + i) {
+        let hex_start = at + PUBLIC_ASSET_MARK.len();
+        let Some(len) = code[hex_start..].find("__") else {
+            break;
+        };
+        let end = hex_start + len + 2;
+        from = end;
+        let quoted = at > 0
+            && end < code.len()
+            && matches!(code.as_bytes()[at - 1], b'"' | b'\'' | b'`')
+            && code.as_bytes()[end] == code.as_bytes()[at - 1];
+        let bytes: Option<Vec<u8>> = (0..len)
+            .step_by(2)
+            .map(|i| u8::from_str_radix(code.get(hex_start + i..hex_start + i + 2)?, 16).ok())
+            .collect();
+        let (Some(rest), true) = (bytes.and_then(|b| String::from_utf8(b).ok()), quoted) else {
+            continue;
+        };
+        let expr = relative_url_mechanism(format, &relative_to_chunk(chunk_file, &rest));
+        if s.update((at - 1) as u32, (end + 1) as u32, expr).is_err() {
+            return None;
+        }
+    }
+    let map = sourcemap.then(|| {
+        s.source_map(string_wizard::SourceMapOptions {
+            hires: string_wizard::Hires::True,
+            ..Default::default()
+        })
+    });
+    Some((s.to_string(), map))
+}
+
+/// `target` (an outDir-relative path) relative to the directory of `chunk`,
+/// as `path.posix.relative(path.dirname(chunk), target)`.
+fn relative_to_chunk(chunk: &str, target: &str) -> String {
+    let dirs: Vec<&str> = chunk.split('/').collect();
+    let dirs = &dirs[..dirs.len() - 1];
+    let parts: Vec<&str> = target.split('/').collect();
+    let common = dirs
+        .iter()
+        .zip(&parts[..parts.len() - 1])
+        .take_while(|(a, b)| a == b)
+        .count();
+    let mut out = "../".repeat(dirs.len() - common);
+    out.push_str(&parts[common..].join("/"));
+    out
+}
+
+/// Vite's relativeUrlMechanisms (build.ts), per output format.
+fn relative_url_mechanism(format: OutputFormat, relative: &str) -> String {
+    let escaped = escape_id(&partial_encode_uri_path(relative));
+    let from_document = |umd: bool| {
+        format!(
+            "new URL('{escaped}', {}document.currentScript && document.currentScript.tagName.toUpperCase() === 'SCRIPT' && document.currentScript.src || document.baseURI).href",
+            if umd { "typeof document === 'undefined' ? location.href : " } else { "" }
         )
-        .map_err(|e| anyhow::anyhow!(e))?;
-    Ok(format!(
-        "export default import.meta.ROLLUP_FILE_URL_{reference};"
-    ))
+    };
+    let from_dirname = format!(
+        "require('u' + 'rl').pathToFileURL(__dirname + '/{}').href",
+        escape_id(relative)
+    );
+    match format {
+        OutputFormat::Cjs => format!(
+            "(typeof document === 'undefined' ? {from_dirname} : {})",
+            from_document(false)
+        ),
+        OutputFormat::Umd => format!(
+            "(typeof document === 'undefined' && typeof location === 'undefined' ? {from_dirname} : {})",
+            from_document(true)
+        ),
+        OutputFormat::Iife => from_document(false),
+        _ => format!("new URL('{escaped}', import.meta.url).href"),
+    }
+}
+
+/// Vite's escapeId: the id safe inside a single-quoted JS string.
+fn escape_id(id: &str) -> String {
+    let mut out = String::with_capacity(id.len());
+    for ch in id.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\\n"),
+            '\r' => out.push_str("\\\r"),
+            '\'' | '\u{2028}' | '\u{2029}' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// Vite's encodeURIPath: `encodeURI` on the path, the query kept as is.
+fn encode_uri_path(uri: &str) -> String {
+    if uri.starts_with("data:") {
+        return uri.to_string();
+    }
+    let cut = uri.find(['?', '#']).unwrap_or(uri.len());
+    let (path, postfix) = uri.split_at(cut);
+    let mut out = String::with_capacity(uri.len());
+    for b in path.bytes() {
+        if b.is_ascii_alphanumeric() || b";,/?:@&=+$-_.!~*'()#".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out + postfix
+}
+
+/// Vite's partialEncodeURIPath: only `%` becomes `%25`.
+fn partial_encode_uri_path(uri: &str) -> String {
+    let cut = uri.find(['?', '#']).unwrap_or(uri.len());
+    let (path, postfix) = uri.split_at(cut);
+    path.replace('%', "%25") + postfix
 }
 
 fn export_default_url(url: &str) -> String {
@@ -1178,6 +1306,30 @@ impl Plugin for OjCssPlugin {
         rolldown_plugin::HookUsage::ResolveId
             | rolldown_plugin::HookUsage::Load
             | rolldown_plugin::HookUsage::Transform
+            | rolldown_plugin::HookUsage::RenderChunk
+    }
+
+    /// vite:asset's renderChunk: public-file markers become URLs relative to
+    /// the chunk.
+    fn render_chunk(
+        &self,
+        _ctx: &PluginContext,
+        args: &HookRenderChunkArgs<'_>,
+    ) -> impl std::future::Future<Output = HookRenderChunkReturn> + Send {
+        let out = render_public_asset_urls(
+            &args.code,
+            &args.chunk.filename,
+            args.options.format,
+            args.options.is_sourcemap_enabled(),
+        )
+        .map(|(code, map)| HookRenderChunkOutput {
+            code,
+            map: match map {
+                Some(map) => map.into(),
+                None => HookTransformOutputMap::Omitted,
+            },
+        });
+        async move { Ok(out) }
     }
 
     fn resolve_id(
@@ -1295,7 +1447,7 @@ impl Plugin for OjCssPlugin {
         let base = self.base.clone();
         let load = async move {
             if let Some(rest) = id.strip_prefix(PUBLIC_FILE_ID) {
-                return public_file_module(&ctx, &css_resolve.public_dir, rest, &base, client).map(
+                return public_file_module(&css_resolve.public_dir, rest, &base, client).map(
                     |code| {
                         Some(rolldown_plugin::HookLoadOutput {
                             code: arcstr::ArcStr::from(code),

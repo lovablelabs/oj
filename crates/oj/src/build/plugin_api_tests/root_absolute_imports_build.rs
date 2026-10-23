@@ -66,6 +66,50 @@ async fn public_import_resolves_against_the_chunk_under_a_relative_base() {
         root.join("dist/vite.svg").is_file(),
         "public file not written at its own path"
     );
+    assert!(!js.contains("__OJ_PUBLIC_ASSET__"), "marker left:\n{js}");
+}
+
+/// Vite never emits a public file: with `copyPublicDir: false` the URL still
+/// points at it, and nothing writes it.
+#[tokio::test]
+async fn relative_base_public_import_honors_copy_public_dir_false() {
+    let root = app("root-abs-imports-nocopy", "./");
+    write_files(
+        &root,
+        &[(
+            "oj.config.json",
+            r#"{"base":"./","build":{"copyPublicDir":false}}"#,
+        )],
+    );
+    build_app(&root).await.expect("the app builds");
+    let js = js_under(&root.join("dist/assets"));
+    assert!(js.contains("../vite.svg"), "URL not chunk-relative:\n{js}");
+    assert!(
+        !root.join("dist/vite.svg").exists(),
+        "public file written despite copyPublicDir: false"
+    );
+}
+
+/// The public URL is encoded as Vite's encodeURIPath does.
+#[tokio::test]
+async fn public_import_url_is_uri_encoded() {
+    let root = app("root-abs-imports-encoded", "/app/");
+    write_files(
+        &root,
+        &[
+            (
+                "public/my logo.svg",
+                "<svg xmlns=\"http://www.w3.org/2000/svg\"/>\n",
+            ),
+            (
+                "src/main.js",
+                "import logo from '/my logo.svg';\nconsole.log(logo);\n",
+            ),
+        ],
+    );
+    build_app(&root).await.expect("the app builds");
+    let js = js_under(&root.join("dist/assets"));
+    assert!(js.contains("/app/my%20logo.svg"), "URL not encoded:\n{js}");
 }
 
 #[tokio::test]
