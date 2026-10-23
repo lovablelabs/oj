@@ -74,14 +74,21 @@ try {
   // __vitePreload wrapping or stylesheet injection lands in it (Vite: isWorker).
   // `w-lazy-*` is the worker's own lazy chunk, not the worker: never pick it
   // by listing order, which follows the hash in the names.
-  const workerChunk = fs.readFileSync(
-    path.join(
-      assets,
-      files.find((f) => /^w-[^.]+\.js$/.test(f) && !f.startsWith("w-lazy-")),
-    ),
-    "utf8",
+  const workerFile = files.find((f) => /^w-[^.]+\.js$/.test(f) && !f.startsWith("w-lazy-"));
+  const workerChunk = fs.readFileSync(path.join(assets, workerFile), "utf8");
+  // What the build emitted, for a failure that only shows on one platform.
+  const emitted = files
+    .filter((f) => f.endsWith(".js"))
+    .map((f) => {
+      const code = fs.readFileSync(path.join(assets, f), "utf8");
+      return `${f} (${code.length}b): ${code.slice(0, 400)}`;
+    })
+    .join("\n");
+  assert.doesNotMatch(
+    workerChunk,
+    /__vitePreload|document\./,
+    `worker chunk ${workerFile} is free of document-only helpers; emitted:\n${emitted}`,
   );
-  assert.doesNotMatch(workerChunk, /__vitePreload|document\./, "worker chunk is free of document-only helpers");
   assert.match(workerChunk, /import\(/, "the worker keeps its dynamic import");
   const lazyChunk = files.find((f) => /^w-lazy-[^.]+\.js$/.test(f));
   assert.ok(lazyChunk, `worker-only lazy chunk emitted: ${files}`);
