@@ -97,3 +97,56 @@ async fn manifest_lists_non_entry_chunks_and_references_them_by_key() {
         }
     }
 }
+
+/// Vite gives a chunk's stylesheet the chunk's own original file name, and
+/// its manifest keeps an asset row only when no JS chunk holds that key: the
+/// sheets of a page (linked and imported) and of a lazy chunk are listed in
+/// those chunks' `css`, with no row of their own.
+#[tokio::test]
+async fn chunk_stylesheets_are_listed_in_css_without_rows_of_their_own() {
+    let root = scratch("manifest-css-rows");
+    write_files(
+        &root,
+        &[
+            ("package.json", r#"{"name":"m","private":true}"#),
+            (
+                "index.html",
+                r#"<!doctype html><html><head><link rel="stylesheet" href="/src/linked.css"></head><body><script type="module" src="/src/main.js"></script></body></html>"#,
+            ),
+            ("src/linked.css", ".linked { color: red }\n"),
+            ("src/style.css", ".style { color: green }\n"),
+            ("src/lazy.css", ".lazy { color: blue }\n"),
+            (
+                "src/lazy.js",
+                "import \"./lazy.css\";\nexport const l = 1;\n",
+            ),
+            (
+                "src/main.js",
+                "import \"./style.css\";\nimport(\"./lazy.js\");\n",
+            ),
+            (
+                "oj.config.mjs",
+                "export default { build: { manifest: true } };\n",
+            ),
+        ],
+    );
+    build_app(&root).await.expect("the css app builds");
+    let raw = fs::read_to_string(root.join("dist/.vite/manifest.json")).expect("manifest written");
+    let manifest: Value = serde_json::from_str(&raw).expect("manifest is JSON");
+    let m = manifest.as_object().expect("manifest is an object");
+    let css_rows: Vec<&String> = m
+        .iter()
+        .filter(|(_, row)| row["file"].as_str().is_some_and(|f| f.ends_with(".css")))
+        .map(|(k, _)| k)
+        .collect();
+    assert!(css_rows.is_empty(), "stylesheet rows: {css_rows:?}\n{raw}");
+    let page_css = m["index.html"]["css"]
+        .as_array()
+        .expect("the page lists its css");
+    assert_eq!(page_css.len(), 1, "{raw}");
+    let lazy = m
+        .values()
+        .find(|row| row["isDynamicEntry"] == Value::Bool(true))
+        .expect("the lazy chunk has a row");
+    assert_eq!(lazy["css"].as_array().map(Vec::len), Some(1), "{raw}");
+}

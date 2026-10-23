@@ -105,12 +105,13 @@ try {
   const html0 = fs.readFileSync(path.join(dist, "index.html"), "utf8");
   assert.match(
     html0,
-    /<script type="module" src="\/assets\/index-[^"]+\.js" crossorigin>/,
+    /<script type="module" crossorigin src="\/assets\/index-[^"]+\.js">/,
+    // Vite's serialization: crossorigin before src/href.
     "entry script carries crossorigin (Vite)",
   );
   assert.match(
     html0,
-    /<link rel="stylesheet" href="\/assets\/index-[^"]+\.css" crossorigin \/>/,
+    /<link rel="stylesheet" crossorigin href="\/assets\/index-[^"]+\.css">/,
     "injected stylesheet link carries crossorigin",
   );
   console.log("ok: defaults (no manifest, minified js + css, import.meta.hot gone, crossorigin tags)");
@@ -151,7 +152,8 @@ try {
   assert.ok(!list.some((f) => f.startsWith("assets/")), "nothing lands under the default assets/ dir");
   const html = fs.readFileSync(path.join(out1, "index.html"), "utf8");
   assert.match(html, /src="\/app\/static\/index-[^"]+\.js"/, "--base prefixes the script src");
-  assert.match(html, /href="\/app\/static\/linked-[^"]+\.css"/, "--base prefixes the linked stylesheet");
+  // The page is the entry, so its linked sheet lands in the entry's css (Vite).
+  assert.match(html, /href="\/app\/static\/index-[^"]+\.css"/, "--base prefixes the linked stylesheet");
   const main1 = readMain(out1, "static");
   assert.ok(main1.includes("usedFunction"), "--minify false keeps identifiers");
   assert.ok(!main1.includes("DEAD_CODE_MARKER"), "--minify false still drops dead code (Vite's dce-only)");
@@ -170,8 +172,13 @@ try {
   );
   assert.equal(manifest["src/big.png"]?.file, entry.assets[0], "asset row keyed by its original file name");
   assert.equal(manifest["src/big.png"]?.src, "src/big.png");
-  assert.equal(manifest["src/style.css"]?.file, entry.css[0], "css row keyed by its source path");
-  assert.match(manifest["src/linked.css"]?.file ?? "", /^static\/linked-/, "linked stylesheet has a row");
+  // Vite lists a chunk's stylesheet (the imported style.css and the page's
+  // linked sheet, both the entry's) in the chunk's `css`, with no row of its own.
+  assert.match(entry.css[0], /^static\/index-.*\.css$/, "the entry's sheet is listed in its css");
+  assert.ok(
+    !manifest["src/style.css"] && !manifest["src/linked.css"],
+    `chunk stylesheets have no row of their own: ${Object.keys(manifest).join(", ")}`,
+  );
   console.log("ok: --outDir --base --assetsDir --minify false --sourcemap inline --manifest --assetsInlineLimit");
 
   // 3. --manifest <name>, --out alias, short -m/-c, --app accepted.
