@@ -38,10 +38,6 @@ pub(crate) async fn delegate_to_node_proxy(
         .filter(|s| s.starts_with('/') && !s.starts_with("//"))
         .and_then(|s| s.parse::<Uri>().ok())
     {
-        // Vite's bypass sets req.url, so later middleware sees the new URL too.
-        parts
-            .extensions
-            .insert(axum::extract::OriginalUri(uri.clone()));
         parts.uri = uri;
     }
     next.run(axum::extract::Request::from_parts(parts, Body::empty()))
