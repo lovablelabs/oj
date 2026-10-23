@@ -49,6 +49,7 @@ async function assertApp(port, label) {
   const h = home.body;
   const want = [
     ["#lib alias (shout)", "HOME!"],
+    ["pre plugin load of an image query", "image-variant:64"],
     ["server function ran", "server-fn-marker"],
     ["cloudflare wrangler var", "fixture-edition"],
     ["tsconfig paths alias", "ALIAS!"],

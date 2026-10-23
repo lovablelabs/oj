@@ -50,6 +50,8 @@ import Welcome from "../content/welcome.mdx";
 // Asset conventions: ?raw inlines the text, ?url yields a served URL.
 import notes from "../content/notes.txt?raw";
 import heroUrl from "../hero.png?url";
+// A plugin's pre load owns an image's query form (vite-imagetools).
+import heroVariant from "../hero.png?w=64";
 
 // import.meta.glob (eager): a static map of the JSON content files.
 const modules = import.meta.glob("../content/*.json", { eager: true }) as Record<
@@ -106,6 +108,7 @@ function Index() {
       <p data-testid="env-define" suppressHydrationWarning>{__FIXTURE_SIDE__}</p>
       <p data-testid="raw">{notes.trim()}</p>
       <img data-testid="url" src={heroUrl} alt="hero" />
+      <p data-testid="image-variant">{heroVariant}</p>
       <span data-testid="svg"><Logo /></span>
       <span data-testid="svg-react"><Star /></span>
       <section data-testid="mdx"><Welcome /></section>

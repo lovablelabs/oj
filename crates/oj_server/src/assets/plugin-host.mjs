@@ -4306,10 +4306,13 @@ function withHtmlProxy(entries, hook, id) {
 
 // The load chain (Vite pluginContainer.load): `{ ssr }` options, the first
 // non-null result returned whole (code, map, meta) and its meta folded into
-// the module info.
-async function loadFull(id) {
+// the module info. `phase` "pre": only the hooks that run before Vite's core
+// plugins, which a Start bundle asks first for the assets its own loader owns
+// (vite-imagetools' `x.webp?w=768` comes before vite:asset).
+async function loadFull(id, phase) {
   const options = { ssr: environment.config?.consumer === "server" };
-  for (const { p, fn: handler } of withHtmlProxy(pluginsWithHook("load"), "load", id)) {
+  for (const { p, fn: handler, rank } of withHtmlProxy(pluginsWithHook("load"), "load", id)) {
+    if (phase === "pre" && !runsBeforeCoreResolver(p, rank)) continue;
     if (!hookIdMatches(p.load, id)) continue;
     let r;
     try {
@@ -4325,8 +4328,8 @@ async function loadFull(id) {
   }
   return null;
 }
-async function load(id) {
-  const r = await loadFull(id);
+async function load(id, phase) {
+  const r = await loadFull(id, phase);
   return r == null ? null : r.code;
 }
 
@@ -4647,6 +4650,7 @@ async function run(hook, args) {
   if (hook === "scanPluginHooks") return gateOnBuildStart().then(() => scanPluginHooks());
   if (hook === "scanPluginHook") return gateOnBuildStart().then(() => scanPluginHook(args[0], args[1]));
   if (hook === "load") return gateOnBuildStart().then(() => load(args[0]));
+  if (hook === "loadPhase") return gateOnBuildStart().then(() => load(args[0], args[1]));
   if (hook === "handleHotUpdate") return handleHotUpdate(args[0], args[1], args[2], args[3]);
   if (hook === "transformIndexHtml") return gateOnBuildStart().then(() => transformIndexHtml(args[0], args[1]));
   if (hook === "buildStart") return ensureBuildStart();

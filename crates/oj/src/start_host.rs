@@ -833,6 +833,30 @@ impl StartHost {
             return Ok(js(self.asset_module(&clean, kind).await?));
         }
 
+        // An asset under a query no intent names (vite-imagetools'
+        // `x.webp?w=768`): the load hooks Vite runs before vite:asset see the
+        // full id; unclaimed, it is the file's served URL, as vite:asset's.
+        if is_path
+            && query.is_some()
+            && oj_server::is_importable_asset_ext(&ext_of(&clean).to_ascii_lowercase())
+        {
+            let loaded = match self.bridge.plugin_host().await {
+                Some(host) if host.hook_wants_load(id) => {
+                    host.load_pre(id).await.map_err(|e| format!("{id}: {e}"))?
+                }
+                _ => None,
+            };
+            return match loaded {
+                Some(code) => self
+                    .bridge
+                    .transform_module(id, code, true, true)
+                    .await
+                    .map(js)
+                    .map_err(|e| e.to_string()),
+                None => Ok(js(self.asset_module(&clean, "url").await?)),
+            };
+        }
+
         if !is_path {
             // A plugin virtual id: the pipeline's load() consults the plugin
             // host and compiles the result.
