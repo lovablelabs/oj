@@ -38,8 +38,7 @@ pub(crate) fn is_watch_ignored(patterns: &[glob::Pattern], root: &Path, path: &P
 
 /// A file the config imported (Vite's `configFileDependencies`): its change
 /// restarts the server too; node_modules packages are left out, as in Vite.
-pub(crate) fn is_config_dependency(path: &Path) -> bool {
-    let deps = plugins::config_dependencies();
+pub(crate) fn is_config_dependency(deps: &[PathBuf], path: &Path) -> bool {
     if deps.is_empty() {
         return false;
     }
@@ -972,11 +971,12 @@ fn handle_batch(
     // Vite does, naming the file relative to the launch dir as Vite's
     // "<file> changed, restarting server" does. Vite restarts from
     // handleHMRUpdate, so not with `server.hmr: false`.
-    if let Some(file) = paths
-        .iter()
-        .filter(|_| state.hmr_enabled)
-        .find(|p| is_restart_trigger(&state.restart_files, p) || is_config_dependency(p))
-    {
+    let config_deps = plugins::vite_config_file(&state.root, state.config_file.as_deref())
+        .map(|config| plugins::config_dependencies_of(&config))
+        .unwrap_or_default();
+    if let Some(file) = paths.iter().filter(|_| state.hmr_enabled).find(|p| {
+        is_restart_trigger(&state.restart_files, p) || is_config_dependency(&config_deps, p)
+    }) {
         let shown = STARTUP_CWD
             .get()
             .and_then(|cwd| pathdiff::diff_paths(file, cwd))

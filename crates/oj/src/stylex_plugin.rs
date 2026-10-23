@@ -132,48 +132,80 @@ pub(crate) fn stylesheet(plugin: &StylexPlugin, root: &Path) -> anyhow::Result<O
     .map_err(|e| anyhow::anyhow!(e))
 }
 
-/// The sidecar beside a cached Start client bundle: the rules its modules
-/// compiled to, valid for that bundle's store key and this plugin's options.
-const RULES_SIDECAR: &str = "stylex-rules.json";
+/// What a cached Start client bundle keeps beside its chunks: the rules its
+/// modules compiled to, valid for that bundle and this plugin's options. It
+/// lives with the generation in the bundle store, so another worktree that
+/// restores the bundle gets its rules too.
+const RULES_ATTACHMENT: &str = "stylex-rules.json";
+
+/// A module id as the attachment stores it: in-root files `ws:<rel>` (ids
+/// are the bundler's realpaths, so against the canonical root), anything
+/// else as is. An out-of-root id is the same path in every worktree whose
+/// bundle shares the generation, since the bundle key covers it.
+fn stored_id(canonical_root: &Path, id: &str) -> String {
+    match Path::new(id).strip_prefix(canonical_root) {
+        Ok(rel) if !rel.as_os_str().is_empty() => format!("ws:{}", rel.to_string_lossy()),
+        _ => id.to_string(),
+    }
+}
+
+fn canonical(root: &Path) -> std::path::PathBuf {
+    std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())
+}
 
 /// Saves the rules of `modules`, the bundle cached under `key`: only its
 /// own, so a restore brings back no other environment's (or a gone module's).
-pub(crate) fn save_rules(plugin: &StylexPlugin, dir: &Path, key: &str, modules: &[String]) {
+pub(crate) fn save_rules(
+    plugin: &StylexPlugin,
+    store: &oj_cache::start_bundle::StartBundleStore,
+    root: &Path,
+    key: &str,
+    modules: &[String],
+) {
+    let root = canonical(root);
     let modules: std::collections::HashSet<&str> = modules.iter().map(String::as_str).collect();
     let rules: Vec<_> = plugin
         .module_rules()
         .into_iter()
         .filter(|(id, _)| modules.contains(id.as_str()))
+        .map(|(id, rules)| (stored_id(&root, &id), rules))
         .collect();
-    let sidecar = serde_json::json!({
-        "key": key,
+    let saved = serde_json::json!({
         "fingerprint": plugin.fingerprint(),
         "modules": rules,
     });
-    let _ = std::fs::write(dir.join(RULES_SIDECAR), sidecar.to_string());
+    store.attach(key, RULES_ATTACHMENT, saved.to_string().as_bytes());
 }
 
-/// Restores the rules saved for the bundle cached under `key`; false when
-/// none were saved for it (or for these options), and the bundle must be
-/// rebuilt for its modules to compile.
-pub(crate) fn restore_rules(plugin: &StylexPlugin, dir: &Path, key: &str) -> bool {
-    let Some(sidecar) = std::fs::read(dir.join(RULES_SIDECAR))
-        .ok()
+/// Restores the rules saved with the bundle cached under `key`, rehomed onto
+/// this root; false when none were saved for it (or for these options), and
+/// the bundle must be rebuilt for its modules to compile.
+pub(crate) fn restore_rules(
+    plugin: &StylexPlugin,
+    store: &oj_cache::start_bundle::StartBundleStore,
+    root: &Path,
+    key: &str,
+) -> bool {
+    let Some(saved) = store
+        .attachment(key, RULES_ATTACHMENT)
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
     else {
         return false;
     };
-    let saved_for =
-        |field: &str, want: &str| sidecar.get(field).and_then(|v| v.as_str()) == Some(want);
-    if !saved_for("key", key) || !saved_for("fingerprint", plugin.fingerprint()) {
+    if saved.get("fingerprint").and_then(|v| v.as_str()) != Some(plugin.fingerprint()) {
         return false;
     }
-    let Some(modules) = sidecar.get("modules").cloned().and_then(|m| {
+    let Some(modules) = saved.get("modules").cloned().and_then(|m| {
         serde_json::from_value::<Vec<(String, Vec<oj_stylex::rules::StylexRule>)>>(m).ok()
     }) else {
         return false;
     };
+    let root = canonical(root);
     for (id, rules) in modules {
+        let id = match id.strip_prefix("ws:") {
+            Some(rel) => root.join(rel).to_string_lossy().into_owned(),
+            None => id,
+        };
         plugin.set_module_rules(&id, rules);
     }
     true
@@ -186,39 +218,140 @@ mod tests {
     const SRC: &str = "import * as stylex from \"@stylexjs/stylex\";\n\
                        export const s = stylex.create({ a: { color: \"olive\" } });\n";
 
-    fn plugin(options: serde_json::Value) -> StylexPlugin {
-        StylexPlugin::new(&options, Path::new("/app"), false, true).unwrap()
+    /// A bundle store over `dir` holding one generation for `root`, and its key.
+    fn store_with_generation(
+        dir: &Path,
+        root: &Path,
+    ) -> (oj_cache::start_bundle::StartBundleStore, String) {
+        let start = dir.join(format!(
+            "start-{}",
+            root.display().to_string().replace('/', "_")
+        ));
+        std::fs::create_dir_all(start.join("client-chunks")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.ts"), SRC).unwrap();
+        std::fs::write(
+            start.join("closure.json"),
+            serde_json::to_vec(&[root.join("src/a.ts")]).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(start.join("client-chunks/entry.js"), "x").unwrap();
+        std::fs::write(
+            start.join("client-chunks.json"),
+            r#"{"entry":"entry.js","files":[{"name":"entry.js","size":1}]}"#,
+        )
+        .unwrap();
+        for name in [
+            "client-entry.modules",
+            "manifest.ts",
+            "glob-scopes.json",
+            "css-urls.json",
+        ] {
+            std::fs::write(
+                start.join(name),
+                if name.ends_with(".json") { "[]" } else { "" },
+            )
+            .unwrap();
+        }
+        let store = oj_cache::start_bundle::StartBundleStore::at_dirs(
+            root,
+            dir.join("shared"),
+            root.join(".oj-cache/start-bundle"),
+            8,
+            "0.0.1-test",
+            oj_cache::integrity::VerifyMode::Standard,
+            "development",
+        );
+        let (key, _) = store.persist(&start).unwrap();
+        (store, key)
+    }
+
+    // The rules travel with the generation: another worktree restoring the
+    // same bundle gets them under its own module ids.
+    #[test]
+    fn saved_rules_restore_in_another_worktree_under_its_ids() {
+        let dir = std::env::temp_dir().join(format!("oj-stylex-share-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (a, b) = (dir.join("wt-a"), dir.join("wt-b"));
+        let (store_a, key) = store_with_generation(&dir, &a);
+        let (store_b, key_b) = store_with_generation(&dir, &b);
+        assert_eq!(key, key_b, "same content, one generation");
+        let id = |root: &Path| {
+            canonical(root)
+                .join("src/a.ts")
+                .to_string_lossy()
+                .into_owned()
+        };
+        let cold = StylexPlugin::new(&serde_json::json!({}), &a, false, true).unwrap();
+        let rules = cold
+            .transform_source(Path::new(&id(&a)), SRC)
+            .unwrap()
+            .unwrap()
+            .rules;
+        cold.set_module_rules(&id(&a), rules);
+        save_rules(&cold, &store_a, &a, &key, &[id(&a)]);
+
+        let warm = StylexPlugin::new(&serde_json::json!({}), &b, false, true).unwrap();
+        assert_eq!(
+            warm.fingerprint(),
+            cold.fingerprint(),
+            "one fingerprint per app"
+        );
+        assert!(restore_rules(&warm, &store_b, &b, &key));
+        assert_eq!(
+            warm.module_rules()
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>(),
+            [id(&b)]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn saved_rules_restore_only_for_their_bundle_and_options() {
         let dir = std::env::temp_dir().join(format!("oj-stylex-sidecar-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let cold = plugin(serde_json::json!({}));
+        let _ = std::fs::remove_dir_all(&dir);
+        let app = dir.join("app");
+        let (store, key) = store_with_generation(&dir, &app);
+        let id = |rel: &str| canonical(&app).join(rel).to_string_lossy().into_owned();
+        let cold = StylexPlugin::new(&serde_json::json!({}), &app, false, true).unwrap();
         let rules = cold
-            .transform_source(Path::new("/app/src/a.ts"), SRC)
+            .transform_source(Path::new(&id("src/a.ts")), SRC)
             .unwrap()
             .unwrap()
             .rules;
-        cold.set_module_rules("/app/src/a.ts", rules.clone());
+        cold.set_module_rules(&id("src/a.ts"), rules.clone());
         // Another environment's module, not the bundle's: never saved.
-        cold.set_module_rules("/app/src/ssr-only.ts", rules);
-        save_rules(&cold, &dir, "k1", &["/app/src/a.ts".to_string()]);
+        cold.set_module_rules(&id("src/ssr-only.ts"), rules);
+        save_rules(&cold, &store, &app, &key, &[id("src/a.ts")]);
 
-        let warm = plugin(serde_json::json!({}));
-        assert!(!restore_rules(&warm, &dir, "k2"), "another bundle's key");
+        let warm = StylexPlugin::new(&serde_json::json!({}), &app, false, true).unwrap();
+        assert!(
+            !restore_rules(&warm, &store, &app, "0000"),
+            "another bundle's key"
+        );
         assert_eq!(warm.stylesheet().unwrap(), None);
-        assert!(restore_rules(&warm, &dir, "k1"));
+        assert!(restore_rules(&warm, &store, &app, &key));
         assert_eq!(
             warm.module_rules()
                 .iter()
-                .map(|(id, _)| id.as_str())
+                .map(|(id, _)| id.clone())
                 .collect::<Vec<_>>(),
-            ["/app/src/a.ts"]
+            [id("src/a.ts")]
         );
 
-        let other_options = plugin(serde_json::json!({ "classNamePrefix": "q" }));
-        assert!(!restore_rules(&other_options, &dir, "k1"), "other options");
+        let other_options = StylexPlugin::new(
+            &serde_json::json!({ "classNamePrefix": "q" }),
+            &app,
+            false,
+            true,
+        )
+        .unwrap();
+        assert!(
+            !restore_rules(&other_options, &store, &app, &key),
+            "other options"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

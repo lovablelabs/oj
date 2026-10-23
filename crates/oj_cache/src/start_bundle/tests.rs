@@ -980,3 +980,30 @@ fn a_restore_leaves_the_build_dirs_index_and_closure() {
     );
     assert!(!b.start.join(CHUNKS_DIR).exists(), "no chunk bytes copied");
 }
+
+// An attachment travels with its generation: another worktree restoring
+// the generation reads it back; another key, a gone generation, or a name
+// that is not a plain file name has none.
+#[test]
+fn attachments_travel_with_their_generation() {
+    let shared = shared_base("attach");
+    let a = Fixture::new("attach-a");
+    let b = Fixture::new("attach-b");
+    let store_a = split_store_at(&a.root, &shared, SHARED_KEEP_GENERATIONS);
+    let (key, _) = store_a.persist(&a.start).unwrap();
+    assert!(store_a.attach(&key, "rules.json", b"[1]"));
+    assert!(
+        !store_a.attach("0000", "rules.json", b"[1]"),
+        "no such generation"
+    );
+    assert!(!store_a.attach(&key, "../escape", b"x"), "not a plain name");
+    let store_b = split_store_at(&b.root, &shared, SHARED_KEEP_GENERATIONS);
+    b.clear_start_dir();
+    let (stats, _) = store_b.restore(&b.start, no_globs).unwrap();
+    assert_eq!(stats.key, key);
+    assert_eq!(
+        store_b.attachment(&key, "rules.json").as_deref(),
+        Some(&b"[1]"[..])
+    );
+    assert_eq!(store_b.attachment(&key, "other.json"), None);
+}

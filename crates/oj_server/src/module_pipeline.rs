@@ -219,7 +219,11 @@ pub(crate) async fn ensure_module_as(
         is_svelte,
         class_field_semantics,
         css,
-        plugin_maps: transformed.maps,
+        plugin_maps: transformed
+            .maps
+            .into_iter()
+            .map(|map| served_map_sources(&state.root, map))
+            .collect(),
         dep_map,
     };
     let compiled = tokio::task::spawn_blocking(move || job.run()).await;
@@ -484,6 +488,39 @@ fn glob_trace_rows(state: &ServerState, file: &Path, source: &str) -> Vec<oj_cac
             id: format!("glob:{pattern}"),
         })
         .collect()
+}
+
+/// A map an earlier transform returned (a plugin's, StyleX's), its in-root
+/// `sources` named by served path as the compile names the module itself
+/// (`/src/App.tsx`): the composed map then carries no checkout's path, so a
+/// cached entry means the same in every worktree. `sourcesContent` is
+/// embedded, so the name is a label; out-of-root sources stay as written.
+pub(crate) fn served_map_sources(root: &Path, map: String) -> String {
+    let Ok(mut json) = serde_json::from_str::<serde_json::Value>(&map) else {
+        return map;
+    };
+    let canonical = std::fs::canonicalize(root).ok();
+    let Some(sources) = json.get_mut("sources").and_then(|s| s.as_array_mut()) else {
+        return map;
+    };
+    let mut changed = false;
+    for source in sources.iter_mut() {
+        let Some(path) = source.as_str() else {
+            continue;
+        };
+        let rel = std::iter::once(root)
+            .chain(canonical.as_deref())
+            .find_map(|r| oj_cache::store::rel_key(r, Path::new(path)));
+        if let Some(rel) = rel.filter(|r| !r.is_empty()) {
+            *source = serde_json::Value::String(format!("/{rel}"));
+            changed = true;
+        }
+    }
+    if changed {
+        json.to_string()
+    } else {
+        map
+    }
 }
 
 /// The affirmative patterns a module's globs expand, resolved as the compile

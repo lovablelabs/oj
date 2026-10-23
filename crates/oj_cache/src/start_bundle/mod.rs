@@ -290,6 +290,31 @@ impl StartBundleStore {
         }
     }
 
+    /// Keeps `bytes` as `name` with the generation `key`: state a caller
+    /// derives from that bundle (the StyleX rules its modules compiled to)
+    /// travels with it to every worktree that restores it. False when there
+    /// is no such generation (or `name` is not a plain file name).
+    pub fn attach(&self, key: &str, name: &str, bytes: &[u8]) -> bool {
+        self.attachment_path(key, name)
+            .is_some_and(|path| integrity::atomic_write(&path, bytes).is_ok())
+    }
+
+    /// What [`Self::attach`] kept as `name` with the generation `key`.
+    pub fn attachment(&self, key: &str, name: &str) -> Option<Vec<u8>> {
+        fs::read(self.attachment_path(key, name)?).ok()
+    }
+
+    fn attachment_path(&self, key: &str, name: &str) -> Option<PathBuf> {
+        let plain = |s: &str| {
+            !s.is_empty()
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+                && !s.starts_with('.')
+        };
+        let entry = self.dir.join(key);
+        (plain(key) && plain(name) && entry.is_dir()).then(|| entry.join(format!("attach-{name}")))
+    }
+
     /// Folds `extra` into the key salt: bundle inputs only the caller knows,
     /// such as the config file the app was started with and the files it
     /// imported. Hash them worktree-independently, or nothing is shared.

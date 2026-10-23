@@ -185,7 +185,6 @@ pub fn plugin_source(root: &Path, config: Option<&Path>) -> Option<PluginSource>
 }
 
 mod extract;
-pub(crate) use extract::config_dependencies as extract_config_dependencies;
 mod hook_plan;
 mod host;
 pub use self::extract::*;

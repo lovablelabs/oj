@@ -231,7 +231,11 @@ async fn the_disk_cache_carries_each_modules_rules() {
         // travel in it. Cache writes are asynchronous.
         let cache = oj_cache::cache_root(&app.root);
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while !persisted(&cache, "\"stylex_rules\"", "color:red") {
+        // Relocatable entries persist to the shared store, pinned ones to
+        // the app's cache.
+        while !persisted(&cache, "\"stylex_rules\"", "color:red")
+            && !persisted(&crate::store_modules_dir(), "\"stylex_rules\"", "color:red")
+        {
             assert!(
                 std::time::Instant::now() < deadline,
                 "main.ts never persisted its rules"
@@ -246,6 +250,81 @@ async fn the_disk_cache_carries_each_modules_rules() {
 }
 
 /// Whether a persisted module under `dir` mentions both needles.
+// Two checkouts of one StyleX app share compiled modules through the oj
+// store: the plugin's fingerprint keys every module, so it must not carry
+// the checkout's path. The second checkout serves the first's entry for
+// main.ts (it writes none of its own) and its rules still reach the sheet.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_checkout_serves_the_firsts_compiled_module() {
+    require_fixture!("vite");
+    // A color no other test compiles, so the store entries are this test's;
+    // one whose name is its shortest spelling, which the sheet keeps.
+    let color = "tan";
+    let (a, b) = (app("{}"), app("{}"));
+    for checkout in [&a, &b] {
+        checkout.write(&[("src/main.ts", &main_ts(color))]);
+    }
+    let dev = |app: &App| oj_server::DevServer {
+        enable_cache: true,
+        ..app.dev()
+    };
+    let store = crate::store_modules_dir();
+    let entries = || count_persisted(&store, "\"stylex_rules\"", color);
+    {
+        let server = crate::serve(dev(&a)).await;
+        server.text("/src/main.ts").await;
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while entries() == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the first checkout never shared main.ts"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+    let shared = entries();
+    // The shared entry (its sourcemap included) names no checkout.
+    for checkout in [&a, &b] {
+        let path = checkout.root.to_string_lossy();
+        assert!(
+            !persisted(&store, color, &path),
+            "a shared entry carries {path}"
+        );
+    }
+    let server = crate::serve(dev(&b)).await;
+    server.text("/src/main.ts").await;
+    let css = server.text("/virtual:stylex.css").await;
+    assert!(css.contains(&format!("color: {color}")), "{css}");
+    // A miss would compile and write its own entry (asynchronously).
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        entries(),
+        shared,
+        "the second checkout compiled main.ts again"
+    );
+}
+
+/// How many persisted entries under `dir` contain both `a` and `b`.
+fn count_persisted(dir: &std::path::Path, a: &str, b: &str) -> usize {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| {
+            let path = e.path();
+            if path.is_dir() {
+                count_persisted(&path, a, b)
+            } else {
+                usize::from(
+                    path.extension().is_some_and(|x| x == "json")
+                        && std::fs::read_to_string(&path)
+                            .is_ok_and(|s| s.contains(a) && s.contains(b)),
+                )
+            }
+        })
+        .sum()
+}
+
 fn persisted(dir: &std::path::Path, a: &str, b: &str) -> bool {
     std::fs::read_dir(dir)
         .into_iter()

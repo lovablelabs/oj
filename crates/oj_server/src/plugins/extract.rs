@@ -425,7 +425,7 @@ pub(crate) fn extract_vite_values_timed(
     if let Some(hit) = store.lookup(&vite, command, mode_key) {
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&hit.output) {
             print_extraction_stderr(&hit.stderr);
-            let _ = CONFIG_DEPS.set(hit.deps);
+            record_config_dependencies(&vite, hit.deps);
             crate::boot_phase("vite-extract cache hit");
             return Some(parse_vite_values(&json));
         }
@@ -515,7 +515,7 @@ fn store_extraction(
                 .collect()
         })
         .unwrap_or_default();
-    let _ = CONFIG_DEPS.set(deps.clone());
+    record_config_dependencies(vite, deps.clone());
     if extraction_deps_truncated(json) {
         // Read recorder hit its cap: `__deps` is incomplete, so serve the
         // result but never cache it.
@@ -607,12 +607,27 @@ pub fn extraction_env_hash(vars: impl Iterator<Item = (String, String)>) -> Stri
     hasher.finalize().to_hex().to_string()
 }
 
-/// The files the config file imported, as the extractor reported them (Vite's
-/// `configFileDependencies`): the dev server restarts when one changes.
-pub(crate) static CONFIG_DEPS: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
+/// The files each config file imported, as its latest extraction reported
+/// them (Vite's `configFileDependencies`): the dev server restarts when one
+/// changes, and caches keyed on the config cover them. Keyed by config file,
+/// as one process may serve more than one app.
+static CONFIG_DEPS: std::sync::Mutex<Option<std::collections::HashMap<PathBuf, Vec<PathBuf>>>> =
+    std::sync::Mutex::new(None);
 
-pub fn config_dependencies() -> &'static [PathBuf] {
-    CONFIG_DEPS.get().map(Vec::as_slice).unwrap_or(&[])
+fn record_config_dependencies(config: &Path, deps: Vec<PathBuf>) {
+    let mut all = CONFIG_DEPS.lock().unwrap_or_else(|e| e.into_inner());
+    all.get_or_insert_with(std::collections::HashMap::new)
+        .insert(config.to_path_buf(), deps);
+}
+
+/// The files `config` (a resolved vite config file) imported.
+pub fn config_dependencies_of(config: &Path) -> Vec<PathBuf> {
+    CONFIG_DEPS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|all| all.get(config).cloned())
+        .unwrap_or_default()
 }
 
 fn str_field(json: &serde_json::Value, key: &str) -> Option<String> {

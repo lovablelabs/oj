@@ -165,9 +165,12 @@ impl StylexPlugin {
             }
         });
         let compiler = Value::Object(compiler);
-        let options = CompilerOptions::from_json(&compiler)
+        let mut options = CompilerOptions::from_json(&compiler)
             .and_then(|o| o.resolve())
             .map_err(|e| format!("{PLUGIN_NAME}: {e}"))?;
+        // The default rootDir is the app root: keyed absolutely, no two
+        // checkouts of an app would ever share a compiled module.
+        options.relocate_cache_repr(root);
         let mut sheet = Map::new();
         sheet.insert(
             "useLayers".into(),
@@ -182,9 +185,10 @@ impl StylexPlugin {
             .map_err(|e| format!("{PLUGIN_NAME}: {e}"))?;
         let fingerprint = blake3::hash(
             format!(
-                "{}:{}:{compiler}",
+                "{}:{}:{}",
                 crate::cache::compiler_fingerprint(),
-                options.cache_repr
+                options.cache_repr,
+                root_relative_json(&compiler, root)
             )
             .as_bytes(),
         )
@@ -356,6 +360,32 @@ impl StylexPlugin {
 /// depend on an import source's package (or `@stylexjs/stylex`), plus
 /// `externalPackages`. Vite keeps them out of dependency pre-bundling, so the
 /// transform reaches their modules. Found from the package.json nearest
+/// `value` with every string naming a path under `root` spelled
+/// `<root>/<rel>`, for keys that must agree across checkouts of one app (see
+/// [`crate::options::ResolvedOptions::relocate_cache_repr`]).
+fn root_relative_json(value: &Value, root: &Path) -> Value {
+    let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    fn walk(v: &Value, roots: &[&Path]) -> Value {
+        match v {
+            Value::String(s) => roots
+                .iter()
+                .find_map(|r| Path::new(s).strip_prefix(r).ok())
+                .map_or_else(
+                    || v.clone(),
+                    |rest| Value::String(format!("<root>/{}", rest.to_string_lossy())),
+                ),
+            Value::Array(items) => Value::Array(items.iter().map(|i| walk(i, roots)).collect()),
+            Value::Object(map) => Value::Object(
+                map.iter()
+                    .map(|(k, v)| (k.clone(), walk(v, roots)))
+                    .collect(),
+            ),
+            other => other.clone(),
+        }
+    }
+    walk(value, &[root, canonical.as_path()])
+}
+
 /// `root`, each dependency where Node's `require.resolve("<dep>/package.json")`
 /// would find it.
 pub fn dependency_packages(user: &Value, root: &Path) -> Vec<String> {
@@ -564,6 +594,42 @@ mod tests {
 
     fn plugin(user: Value) -> StylexPlugin {
         StylexPlugin::new(&user, Path::new("/app"), false, false).unwrap()
+    }
+
+    // The fingerprint keys every compiled module of a StyleX app: two
+    // checkouts of one app must agree on it, while options that change the
+    // compile, a rootDir outside the app among them, still move it.
+    #[test]
+    fn the_fingerprint_is_the_same_in_every_checkout() {
+        let at = |root: &str, user: Value| {
+            StylexPlugin::new(&user, Path::new(root), false, false)
+                .unwrap()
+                .fingerprint()
+                .to_string()
+        };
+        let aliased = |root: &str| json!({ "aliases": { "@/*": [format!("{root}/src/*")] } });
+        assert_eq!(at("/wt-a/app", json!({})), at("/wt-b/app", json!({})));
+        assert_eq!(
+            at("/wt-a/app", aliased("/wt-a/app")),
+            at("/wt-b/app", aliased("/wt-b/app"))
+        );
+        assert_ne!(
+            at("/wt-a/app", json!({})),
+            at("/wt-a/app", aliased("/wt-a/app"))
+        );
+        assert_ne!(
+            at("/wt-a/app", json!({})),
+            at("/wt-a/app", json!({ "classNamePrefix": "q" }))
+        );
+        let pinned =
+            json!({ "unstable_moduleResolution": { "type": "commonJS", "rootDir": "/shared/a" } });
+        let other =
+            json!({ "unstable_moduleResolution": { "type": "commonJS", "rootDir": "/shared/b" } });
+        assert_ne!(
+            at("/wt-a/app", pinned),
+            at("/wt-a/app", other),
+            "a rootDir outside the app keys absolutely"
+        );
     }
 
     #[test]

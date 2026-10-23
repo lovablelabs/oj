@@ -1152,7 +1152,9 @@ fn module_cache_config_salt(
         }
     }
     let mut config_files: Vec<PathBuf> = config_path.map(Path::to_path_buf).into_iter().collect();
-    config_files.extend(plugins::extract_config_dependencies().iter().cloned());
+    if let Some(config) = config_path {
+        config_files.extend(plugins::config_dependencies_of(config));
+    }
     config_files.sort();
     config_files.dedup();
     for file in &config_files {

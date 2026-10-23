@@ -2589,3 +2589,27 @@ fn glob_trace_rows_resolve_aliased_patterns() {
     );
     assert_eq!(patterns, ["/work/app/src/pages/*.tsx"]);
 }
+
+// An earlier transform's map (StyleX's, a plugin's) names the module by its
+// served path once it joins the chain, as the compile names it, so a shared
+// cache entry's sourcemap carries no checkout's path.
+#[test]
+fn chained_maps_name_in_root_sources_by_served_path() {
+    let root = Path::new("/work/wt-a/app");
+    let map = r#"{"version":3,"sources":["/work/wt-a/app/src/main.ts","/opt/lib/x.js"],"sourcesContent":["a","b"],"mappings":""}"#;
+    let out: serde_json::Value = serde_json::from_str(&crate::module_pipeline::served_map_sources(
+        root,
+        map.to_string(),
+    ))
+    .unwrap();
+    assert_eq!(
+        out["sources"],
+        serde_json::json!(["/src/main.ts", "/opt/lib/x.js"])
+    );
+    assert_eq!(out["sourcesContent"], serde_json::json!(["a", "b"]));
+    let not_a_map = "not json".to_string();
+    assert_eq!(
+        crate::module_pipeline::served_map_sources(root, not_a_map.clone()),
+        not_a_map
+    );
+}

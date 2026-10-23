@@ -1676,20 +1676,31 @@ fn pinned_output(
     cache: &Path,
     mode: &str,
 ) -> Option<oj_cache::start_bundle::PinnedBundle> {
-    match start_bundle_store(bundler.root(), mode, bundler.config_file()).persist(cache) {
+    let store = start_bundle_store(bundler.root(), mode, bundler.config_file());
+    match store.persist(cache) {
         Some((key, pinned)) => {
-            save_stylex_rules(bundler, cache, &key);
+            save_stylex_rules(bundler, &store, &key);
             Some(pinned)
         }
         None => oj_cache::start_bundle::PinnedBundle::from_build_dir(cache),
     }
 }
 
-/// The StyleX rules of the bundle just cached under `key`, saved beside it
-/// so a restore of it serves a complete sheet.
-fn save_stylex_rules(bundler: &ClientBundler, cache: &Path, key: &str) {
+/// The StyleX rules of the bundle just cached under `key`, kept with its
+/// generation so a restore of it (in any worktree) serves a complete sheet.
+fn save_stylex_rules(
+    bundler: &ClientBundler,
+    store: &oj_cache::start_bundle::StartBundleStore,
+    key: &str,
+) {
     if let Some(plugin) = bundler.stylex() {
-        crate::stylex_plugin::save_rules(plugin, cache, key, &bundler.bundle_modules());
+        crate::stylex_plugin::save_rules(
+            plugin,
+            store,
+            bundler.root(),
+            key,
+            &bundler.bundle_modules(),
+        );
     }
 }
 
@@ -2217,10 +2228,12 @@ fn start_bundle_store(
 /// knows the default config names.
 fn config_salt(root: &Path, config_file: Option<&Path>) -> Vec<u8> {
     let workspace = oj_cache::store::workspace_root(root);
-    let mut files: Vec<PathBuf> = oj_server::plugins::vite_config_file(root, config_file)
-        .into_iter()
-        .chain(oj_server::plugins::config_dependencies().iter().cloned())
-        .collect();
+    let config = oj_server::plugins::vite_config_file(root, config_file);
+    let deps = config
+        .as_deref()
+        .map(oj_server::plugins::config_dependencies_of)
+        .unwrap_or_default();
+    let mut files: Vec<PathBuf> = config.into_iter().chain(deps).collect();
     files.sort();
     files.dedup();
     let mut salt = Vec::new();
@@ -2248,8 +2261,9 @@ fn bundle_client_entry_cached(
         // A restored bundle never ran the StyleX transform: its modules'
         // rules come from the sidecar saved with it, or it is rebuilt.
         Ok((stats, _))
-            if stylex
-                .is_some_and(|p| !crate::stylex_plugin::restore_rules(p, cache, &stats.key)) =>
+            if stylex.is_some_and(|p| {
+                !crate::stylex_plugin::restore_rules(p, &store, root, &stats.key)
+            }) =>
         {
             println!("  oj start: client bundle cache miss (no StyleX rules saved for it)")
         }
@@ -2271,7 +2285,7 @@ fn bundle_client_entry_cached(
     }
     bundler.bundle(&[], false)?;
     if let Some((key, pinned)) = store.persist(cache) {
-        save_stylex_rules(bundler, cache, &key);
+        save_stylex_rules(bundler, &store, &key);
         println!(
             "  oj start: client bundle cached (key {}…, {} chunks)",
             key.get(..8).unwrap_or(&key),
