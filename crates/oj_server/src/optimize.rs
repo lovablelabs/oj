@@ -1136,7 +1136,7 @@ fn hash_tagged_lists(hasher: &mut blake3::Hasher, lists: &[(&[u8], &Vec<String>)
 }
 
 /// Bumped when the pre-bundle's output changes for the same inputs.
-const PREBUNDLE_FORMAT: &str = "\0prebundle:2";
+const PREBUNDLE_FORMAT: &str = "\0prebundle:3";
 
 fn lockfile_hash(root: &Path, version: &str, input: &OptimizeInput) -> String {
     let mut hasher = blake3::Hasher::new();

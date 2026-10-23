@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Unused and debug-only environment knobs: `OJ_V8_COMPILE_CACHE` and `NODE_COMPILE_CACHE` (nothing read them anymore), `OJ_HMR_DEBOUNCE_MS` (the watcher debounce stays 10ms), `OJ_CACHE_VERIFY`, `OJ_PLUGIN_SYNTH_CONFIG`, `OJ_NO_DEPS_PRESEED` and `OJ_OBSERVED_READS_MAX`. `OJ_ENABLE_CACHE` and `OJ_NO_CACHE` are gone too; use `--enable-cache` and `--no-cache`.
 
+### Fixed
+
+- Pre-bundled dependencies declare their top-level bindings with `var`, as Vite's do. Vite's optimizer sets `optimizeDeps.rolldownOptions.output.topLevelVar` unless the app turns it off, keeping the hoisting esbuild always gave; oj reported the option as unsupported and kept every `let`, `const` and `class`, so a dep that reads a binding before its declaration threw a TDZ `ReferenceError` under oj only. `topLevelVar: false` still opts out. Existing pre-bundles are rebuilt once.
+
 ## [0.2.45] - 2026-10-23
 
 ### Changed

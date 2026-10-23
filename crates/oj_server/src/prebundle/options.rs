@@ -52,6 +52,7 @@ struct Output {
     minify: Option<bool>,
     legal_comments: Option<LegalComments>,
     keep_names: Option<bool>,
+    top_level_var: Option<bool>,
 }
 
 fn strings(v: &Value) -> Option<Vec<String>> {
@@ -298,6 +299,9 @@ impl DepOptions {
                 .map(|f| AddonOutputOption::String(Some(f))),
             minify: self.output.minify.map(RawMinifyOptions::Bool),
             legal_comments: self.output.legal_comments,
+            // Vite's optimizer default (`output.topLevelVar ??= true`): a binding
+            // read before its declaration is `undefined`, as under esbuild.
+            top_level_var: (!scan).then(|| self.output.top_level_var.unwrap_or(true)),
             ..Default::default()
         }
     }
@@ -340,6 +344,7 @@ impl From<&Value> for Output {
                 "footer" => v.as_str().map(|f| out.footer = Some(f.into())).is_some(),
                 "minify" => v.as_bool().map(|m| out.minify = Some(m)).is_some(),
                 "keepNames" => v.as_bool().map(|k| out.keep_names = Some(k)).is_some(),
+                "topLevelVar" => v.as_bool().map(|t| out.top_level_var = Some(t)).is_some(),
                 "legalComments" => match v.as_str() {
                     Some("none") => {
                         out.legal_comments = Some(LegalComments::None);

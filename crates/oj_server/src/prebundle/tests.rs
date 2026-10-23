@@ -895,6 +895,88 @@ async fn legacy_esbuild_options_reach_the_bundle() {
     );
 }
 
+/// Top-level `let`, `const` and `class` declarations across the emitted files:
+/// the bindings that throw a TDZ ReferenceError when read before they run.
+fn lexical_top_level_bindings(app: &App) -> usize {
+    use oxc_ast::ast::{Declaration, Statement, VariableDeclarationKind};
+    let lexical = |d: &Declaration| match d {
+        Declaration::VariableDeclaration(v) => v.kind != VariableDeclarationKind::Var,
+        Declaration::ClassDeclaration(_) => true,
+        _ => false,
+    };
+    let mut count = 0;
+    for entry in std::fs::read_dir(app.out_dir()).unwrap().flatten() {
+        if entry.path().extension().is_none_or(|e| e != "mjs") {
+            continue;
+        }
+        let code = std::fs::read_to_string(entry.path()).unwrap();
+        let allocator = oxc_allocator::Allocator::default();
+        let parsed =
+            oxc_parser::Parser::new(&allocator, &code, oxc_span::SourceType::mjs()).parse();
+        assert!(!parsed.diagnostics.has_errors(), "{code}");
+        count += parsed
+            .program
+            .body
+            .iter()
+            .filter(|s| match s {
+                Statement::VariableDeclaration(v) => v.kind != VariableDeclarationKind::Var,
+                Statement::ClassDeclaration(_) => true,
+                Statement::ExportDeclaration(e) => lexical(&e.declaration),
+                _ => false,
+            })
+            .count();
+    }
+    count
+}
+
+// Vite's optimizer sets `output.topLevelVar ??= true`, keeping the hoisting
+// esbuild gave every pre-bundle: a dep that reads a binding before its
+// declaration (here through a cycle) gets `undefined` instead of throwing.
+#[tokio::test(flavor = "multi_thread")]
+async fn pre_bundled_top_level_bindings_hoist_like_vite() {
+    let hoisty = |app: &App| {
+        app.esm(
+            "hoisty",
+            &[
+                (
+                    "index.js",
+                    "import { label } from \"./label.js\";\nexport const config = { name: \"cfg\" };\nexport class Store {}\nexport function getConfig() { return config; }\nexport { label };\n",
+                ),
+                (
+                    "label.js",
+                    "import { getConfig } from \"./index.js\";\nexport let label = String(getConfig());\n",
+                ),
+            ],
+        )
+        .write(
+            "entry.js",
+            "import { label, Store } from \"hoisty\";\nexport const out = [label, Store];\n",
+        );
+    };
+
+    let app = App::new();
+    hoisty(&app);
+    let meta = app
+        .optimize(OptimizeInput {
+            entries: app.entry("entry.js"),
+            ..Default::default()
+        })
+        .await;
+    assert_eq!(keys(&meta), ["hoisty"]);
+    assert_eq!(lexical_top_level_bindings(&app), 0, "{}", emitted(&app));
+
+    // `false` is Vite's opt-out, and keeps the declarations as written.
+    let app = App::new();
+    hoisty(&app);
+    app.optimize(OptimizeInput {
+        entries: app.entry("entry.js"),
+        rolldown_options: Some(json!({ "output": { "topLevelVar": false } })),
+        ..Default::default()
+    })
+    .await;
+    assert!(lexical_top_level_bindings(&app) > 0, "{}", emitted(&app));
+}
+
 // A root or package path with glob syntax in it (`[v2]`, `{work}`) is a
 // literal prefix, as tinyglobby's `cwd` is: the html entries and an include
 // glob still find their files.
@@ -956,6 +1038,11 @@ fn rolldown_options_map_onto_the_run() {
             .keep_names,
         Some(true)
     );
+
+    // The scan writes nothing, so only the pre-bundle takes topLevelVar.
+    let options = super::DepOptions::new(&OptimizeInput::default());
+    assert_eq!(options.bundler_options(false).top_level_var, Some(true));
+    assert_eq!(options.bundler_options(true).top_level_var, None);
 }
 
 fn symlink(target: &Path, link: &Path) {

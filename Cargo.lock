@@ -6614,6 +6614,7 @@ dependencies = [
  "oj_resolver",
  "oj_stylex",
  "oxc_allocator",
+ "oxc_ast",
  "oxc_parser",
  "oxc_sourcemap",
  "oxc_span",

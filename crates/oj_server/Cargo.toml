@@ -59,6 +59,7 @@ arcstr = "1.2.0"
 rustc-hash = "2.1.3"
 
 [dev-dependencies]
+oxc_ast.workspace = true
 tempfile.workspace = true
 # test-util: paused time for the debounce test, like crates/oj.
 tokio = { workspace = true, features = ["test-util"] }
