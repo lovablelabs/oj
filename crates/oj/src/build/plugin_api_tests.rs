@@ -50,6 +50,7 @@ mod postcss_config_discovery_build;
 mod preload_relative_base_build;
 mod preprocessors_build;
 mod rolldown_options;
+mod root_absolute_imports_build;
 mod ssr_options;
 mod svelte_build;
 mod svgr_build;

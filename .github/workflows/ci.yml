@@ -150,6 +150,8 @@ jobs:
         run: node e2e/hmr-json-update.mjs
       - name: a non-root base serves the HMR client and refresh preamble
         run: node e2e/dev-base-hmr.mjs
+      - name: build resolves /src and public-dir imports by URL
+        run: node e2e/build-root-imports.mjs
       - name: unresolved relative import errors, creating the file recovers
         run: node e2e/hmr-unresolved-import.mjs
       - name: an env-file edit restarts dev and the open page reloads

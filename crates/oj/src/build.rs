@@ -261,6 +261,8 @@ struct OjCssPlugin {
     /// Source ids of `?worker` / `?worker&url` entries emitted as chunks, so the
     /// document-only build helpers can skip chunks that only a worker loads.
     worker_entries: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// The normalized `base` a public-file import's URL is built on.
+    base: String,
 }
 
 /// The app build settings an inline worker bundle shares with its importer:
@@ -725,6 +727,50 @@ fn b64(bytes: &[u8]) -> String {
     out
 }
 
+/// The id prefix of a public-dir file a JS module imports by its URL.
+const PUBLIC_FILE_ID: &str = "\0oj-public:/";
+
+/// `rest` (a root-absolute URL minus its `/`) as a file in the public dir.
+fn public_file(public_dir: &Path, rest: &str) -> Option<PathBuf> {
+    if public_dir.as_os_str().is_empty() {
+        return None;
+    }
+    let file = public_dir.join(rest);
+    file.is_file().then_some(file)
+}
+
+/// Vite's publicFileToBuiltUrl: a public file's module exports its URL under
+/// the base. A relative base has no fixed prefix, so the file is emitted at
+/// its own path, unhashed, and the URL resolves against the importing chunk.
+fn public_file_module(
+    ctx: &rolldown_plugin::SharedLoadPluginContext,
+    public_dir: &Path,
+    rest: &str,
+    base: &str,
+) -> anyhow::Result<String> {
+    if !is_relative_base(base) {
+        return Ok(export_default_url(&with_base(rest, base)));
+    }
+    let file = public_file(public_dir, rest)
+        .ok_or_else(|| anyhow::anyhow!("public file /{rest} is gone"))?;
+    let bytes =
+        std::fs::read(&file).map_err(|e| anyhow::anyhow!("cannot read {}: {e}", file.display()))?;
+    let reference = ctx
+        .emit_file(
+            rolldown_common::EmittedAsset {
+                file_name: Some(arcstr::ArcStr::from(rest)),
+                source: rolldown_common::StrOrBytes::Bytes(bytes),
+                ..Default::default()
+            },
+            None,
+            None,
+        )
+        .map_err(|e| anyhow::anyhow!(e))?;
+    Ok(format!(
+        "export default import.meta.ROLLUP_FILE_URL_{reference};"
+    ))
+}
+
 fn export_default_url(url: &str) -> String {
     format!(
         "export default {};",
@@ -1116,6 +1162,19 @@ impl Plugin for OjCssPlugin {
             .into_owned();
         let asset_query = split_asset_query(args.specifier);
         let importer = args.importer.map(str::to_string);
+        // Vite's resolve plugin reads a root-absolute id (`/src/x`) as a file
+        // under the root first; one not under it can be a public file.
+        let root_absolute = args
+            .specifier
+            .strip_prefix('/')
+            .filter(|rest| {
+                !rest.starts_with('/')
+                    && !args.specifier.contains('?')
+                    && !Path::new(args.specifier).starts_with(&self.root)
+            })
+            .map(str::to_string);
+        let root = self.root.clone();
+        let public_dir = self.resolve.public_dir.clone();
         let html_proxy = args.specifier.contains("?html-proxy&index=").then(|| {
             let spec = args.specifier.strip_prefix("./").unwrap_or(args.specifier);
             if Path::new(spec).is_absolute() {
@@ -1135,6 +1194,18 @@ impl Plugin for OjCssPlugin {
             if let Some((base, query)) = asset_query {
                 if let Ok(Ok(resolved)) = ctx.resolve(&base, importer.as_deref(), None).await {
                     let id = format!("{}?{query}", resolved.id.as_str());
+                    return Ok(Some(HookResolveIdOutput::from_id(id)));
+                }
+            }
+            if let Some(rest) = root_absolute {
+                let in_root = root.join(&rest).to_string_lossy().into_owned();
+                if let Ok(Ok(resolved)) = ctx.resolve(&in_root, importer.as_deref(), None).await {
+                    return Ok(Some(HookResolveIdOutput::from_id(resolved.id.to_string())));
+                }
+                // vite:asset's checkPublicFile: the file is served from the
+                // public dir at its own URL, never bundled or hashed.
+                if public_file(&public_dir, &rest).is_some() {
+                    let id = format!("{PUBLIC_FILE_ID}{rest}");
                     return Ok(Some(HookResolveIdOutput::from_id(id)));
                 }
             }
@@ -1180,7 +1251,19 @@ impl Plugin for OjCssPlugin {
         let css_resolve = self.resolve.clone();
         let html_inline = Arc::clone(&self.html_inline);
         let worker = self.worker.clone();
+        let base = self.base.clone();
         let load = async move {
+            if let Some(rest) = id.strip_prefix(PUBLIC_FILE_ID) {
+                return public_file_module(&ctx, &css_resolve.public_dir, rest, &base).map(
+                    |code| {
+                        Some(rolldown_plugin::HookLoadOutput {
+                            code: arcstr::ArcStr::from(code),
+                            module_type: Some(rolldown_common::ModuleType::Js),
+                            ..Default::default()
+                        })
+                    },
+                );
+            }
             if id.contains("?html-proxy&index=") {
                 if let Some(body) = html_inline.lock().unwrap().get(&id).cloned() {
                     return Ok(Some(rolldown_plugin::HookLoadOutput {
@@ -1395,6 +1478,7 @@ impl Plugin for OjCssPlugin {
                         worker: worker.clone(),
                         resolve: css_resolve.clone(),
                         worker_entries: Arc::clone(&worker_entries),
+                        base: base.clone(),
                     };
                     let code = bundle_worker_inline(&root, file, worker.as_ref(), nested).await?;
                     let literal = serde_json::Value::String(code).to_string();
@@ -2841,6 +2925,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
         client: true,
         css_code_split: css_split,
         resolve: css_resolve_of(&root, &config, "client", is_production),
+        base: normalize_base(config.base.as_deref().unwrap_or("/")),
         host: plugin_host.clone(),
         css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
         css: config.css.clone(),
@@ -4110,6 +4195,7 @@ pub(crate) async fn build_ssr(
         client: false,
         css_code_split: false,
         resolve: css_resolve_of(root, config, "ssr", is_production),
+        base: normalize_base(config.base.as_deref().unwrap_or("/")),
         host: plugin_host.clone(),
         css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
         css: config.css.clone(),
@@ -4286,6 +4372,7 @@ async fn build_server_fns(
                 inline_limit: 4096,
                 client: false,
                 resolve: css_resolve_of(root, config, "ssr", is_production),
+                base: normalize_base(config.base.as_deref().unwrap_or("/")),
                 css_code_split: false,
                 host: None,
                 css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
@@ -4689,6 +4776,7 @@ async fn build_client_entry(
         client: true,
         css_code_split: false,
         resolve: css_resolve_of(root, config, "client", is_production),
+        base: normalize_base(config.base.as_deref().unwrap_or("/")),
         host: plugin_host.clone(),
         css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
         css: config.css.clone(),
@@ -4949,6 +5037,7 @@ async fn build_library(
                 inline_limit: u64::MAX,
                 client: true,
                 resolve: css_resolve_of(root, config, "client", is_production),
+                base: normalize_base(config.base.as_deref().unwrap_or("/")),
                 css_code_split: false,
                 host: None,
                 css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
