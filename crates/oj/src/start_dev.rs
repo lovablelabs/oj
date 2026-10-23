@@ -2317,6 +2317,7 @@ enum Route {
     Pass,
 }
 
+#[cfg(test)]
 fn classify(req: &Request, proxy_prefixes: &[String]) -> Route {
     classify_path(
         req.uri().path(),
