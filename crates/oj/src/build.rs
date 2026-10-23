@@ -1392,12 +1392,21 @@ impl Plugin for OjCssPlugin {
                     ))));
                 }
                 // vite:asset's checkPublicFile: the file is served from the
-                // public dir at its own URL, never bundled or hashed. A worker
-                // query is not an asset import.
-                let worker = spec_query
+                // public dir at its own URL, never bundled or hashed. Only an
+                // asset type or a `?url` import is one (a public `/data.json`
+                // stays unresolved); a worker query is not an asset import.
+                let params: Vec<&str> = spec_query
                     .as_deref()
-                    .is_some_and(|q| q.split('&').any(|p| p == "worker" || p == "sharedworker"));
-                if !worker && public_file(&public_dir, &rest).is_some() {
+                    .map_or(vec![], |q| q.split('&').collect());
+                let worker = params
+                    .iter()
+                    .any(|p| *p == "worker" || *p == "sharedworker");
+                let asset = params.contains(&"url")
+                    || Path::new(&rest)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .is_some_and(oj_compiler::assets::is_asset_ext);
+                if asset && !worker && public_file(&public_dir, &rest).is_some() {
                     let id = with_query(&format!("{PUBLIC_FILE_ID}{rest}"));
                     return Ok(Some(HookResolveIdOutput::from_id(id)));
                 }

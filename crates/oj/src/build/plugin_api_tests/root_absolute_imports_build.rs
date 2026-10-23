@@ -167,3 +167,40 @@ async fn ssr_public_import_is_root_absolute_under_a_relative_base() {
         "chunk-relative:\n{server}"
     );
 }
+
+/// vite:asset claims a public file only as an asset type or a `?url` import:
+/// a public `/data.json` fails to resolve, its `?url` form is the URL.
+#[tokio::test]
+async fn public_non_asset_import_is_unresolved_like_vite() {
+    let root = app("root-abs-imports-non-asset", "/app/");
+    write_files(
+        &root,
+        &[
+            ("public/data.json", "{\"a\":1}\n"),
+            (
+                "src/main.js",
+                "import d from '/data.json';\nconsole.log(d);\n",
+            ),
+        ],
+    );
+    let err = build_app(&root)
+        .await
+        .expect_err("a public json import fails");
+    assert!(
+        format!("{err:#}").contains("/data.json"),
+        "error does not name the import: {err:#}"
+    );
+    write_files(
+        &root,
+        &[(
+            "src/main.js",
+            "import d from '/data.json?url';\nconsole.log(d);\n",
+        )],
+    );
+    build_app(&root).await.expect("the ?url form builds");
+    let js = js_under(&root.join("dist/assets"));
+    assert!(
+        js.contains("/app/data.json"),
+        "?url not the public URL:\n{js}"
+    );
+}
