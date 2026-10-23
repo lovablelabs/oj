@@ -228,6 +228,55 @@ console.log(a, b);
     assert!(std::fs::read_dir(client.join("assets")).unwrap().count() >= 3);
 }
 
+/// The StyleX sheet joins the first stylesheet the client emitted, under the
+/// name and link it already has, as the plugin's generateBundle appends it;
+/// with none it is the plugin's unlinked `assets/stylex.css`.
+#[tokio::test(flavor = "multi_thread")]
+async fn late_css_joins_the_first_client_sheet_in_place() {
+    let app = App::new(&[
+        ("src/a.css", ".a{color:red}"),
+        ("src/b.css", ".b{color:blue}"),
+    ]);
+    let start = app.start();
+    let client = app.dir.join("dist/client");
+    let emitter = Emitter::new(&client, "/", Arc::new(Styles::new(&start)));
+    let a = emitter.emit(&app.dir.join("src/a.css")).await.unwrap();
+    let b = emitter.emit(&app.dir.join("src/b.css")).await.unwrap();
+    let file = |url: &str| client.join(url.trim_start_matches('/'));
+    let before = std::fs::read_to_string(file(&a)).unwrap();
+    emitter
+        .append_generated_css("stylex.css", ".x1{color:green}")
+        .unwrap();
+
+    assert_eq!(
+        emitter.css_urls(),
+        vec![a.clone(), b.clone()],
+        "no new link"
+    );
+    assert_eq!(
+        std::fs::read_to_string(file(&a)).unwrap(),
+        format!("{before}\n.x1{{color:green}}"),
+        "appended after the first sheet"
+    );
+    assert!(!std::fs::read_to_string(file(&b)).unwrap().contains(".x1"));
+    assert!(!client.join("assets/stylex.css").exists());
+
+    let bare = App::new(&[]);
+    let bare_client = bare.dir.join("dist/client");
+    let emitter = Emitter::new(&bare_client, "/", Arc::new(Styles::new(&bare.start())));
+    emitter
+        .append_generated_css("stylex.css", ".x1{color:green}")
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(bare_client.join("assets/stylex.css")).unwrap(),
+        ".x1{color:green}"
+    );
+    assert!(
+        emitter.css_urls().is_empty(),
+        "the fallback is linked from nowhere"
+    );
+}
+
 /// A stylesheet that fails to compile names why and which plugin, as Vite's
 /// error does; rolldown alone said only "plugin threw an error".
 #[tokio::test(flavor = "multi_thread")]

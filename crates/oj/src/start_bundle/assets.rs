@@ -460,15 +460,28 @@ impl Emitter {
         result
     }
 
-    /// A stylesheet oj generated (no source file), written as `name` names it
-    /// and linked from every page like the client's own stylesheets.
-    pub fn generated_css(&self, name: &str, css: &str) -> Result<String, String> {
-        let url = self.write(Path::new(name), css.as_bytes())?;
-        let mut urls = self.css_urls.lock().unwrap();
-        if !urls.contains(&url) {
-            urls.push(url.clone());
-        }
-        Ok(url)
+    /// A plugin's late CSS (the StyleX sheet, complete only once every module
+    /// compiled) appended to the first stylesheet the client emitted, as the
+    /// plugin's generateBundle does (`current + '\n' + css`): the file keeps
+    /// the name it was hashed and linked under. With no stylesheet it is the
+    /// plugin's writeBundle fallback, `assets/<name>`, linked from nowhere.
+    pub fn append_generated_css(&self, name: &str, css: &str) -> Result<(), String> {
+        let first = self.css_urls.lock().unwrap().first().cloned();
+        let file = match first.as_deref().and_then(|u| u.rsplit_once("assets/")) {
+            Some((_, file)) => self.assets_dir.join(file),
+            None => {
+                std::fs::create_dir_all(&self.assets_dir).map_err(|e| e.to_string())?;
+                return std::fs::write(self.assets_dir.join(name), css).map_err(|e| e.to_string());
+            }
+        };
+        let current =
+            std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+        let joined = if current.is_empty() {
+            css.to_string()
+        } else {
+            format!("{current}\n{css}")
+        };
+        std::fs::write(&file, joined).map_err(|e| format!("{}: {e}", file.display()))
     }
 
     /// A `?inline` sheet's text: compiled and its `url()`s emitted as `css`

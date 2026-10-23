@@ -360,14 +360,11 @@ fn regex_class(html: &str, id: &str) -> bool {
     })
 }
 
-/// A Start build: the client's StyleX rules are Vite's byte for byte, and
-/// the production server's page is styled by them. Vite appends the rules to
-/// the app's first stylesheet; oj writes them as their own sheet linked
-/// beside it (the app's sheet is hashed and referenced before every module's
-/// rules are in), so the two files joined as the plugin joins them are
-/// Vite's one.
+/// A Start build: the client's stylesheet is Vite's byte for byte, StyleX's
+/// rules appended to the app's own sheet as the plugin's generateBundle does,
+/// and the production server's page is styled by it.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_start_build_styles_the_page_with_vites_rules() {
+async fn a_start_build_styles_the_page_with_vites_sheet() {
     let Some(root) = app(START, "start-build") else {
         return;
     };
@@ -384,17 +381,12 @@ async fn a_start_build_styles_the_page_with_vites_rules() {
         .current_dir(&vite_root));
 
     let vites = css_files(&vite_root.join("dist/client/assets"));
-    assert_eq!(vites.len(), 1, "Vite's client sheets: {vites:?}");
     let ours = css_files(&root.join("dist/client/assets"));
-    let (stylex, app_sheets): (Vec<_>, Vec<_>) = ours
-        .into_iter()
-        .partition(|(name, _)| name.starts_with("stylex-"));
-    assert_eq!(stylex.len(), 1, "oj's StyleX sheet: {stylex:?}");
-    assert_eq!(app_sheets.len(), 1, "oj's app sheet: {app_sheets:?}");
+    assert_eq!(vites.len(), 1, "Vite's client sheets: {vites:?}");
+    assert_eq!(ours.len(), 1, "oj's client sheets: {ours:?}");
     assert_eq!(
-        format!("{}\n{}", app_sheets[0].1, stylex[0].1),
-        vites[0].1,
-        "oj's Start build rules differ from Vite's"
+        ours[0].1, vites[0].1,
+        "oj's Start client sheet differs from Vite's"
     );
 
     let port = free_port();
