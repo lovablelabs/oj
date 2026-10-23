@@ -94,10 +94,19 @@ pub(crate) struct PreTransformed {
     pub rules: Vec<oj_stylex::rules::StylexRule>,
 }
 
+impl PreTransformed {
+    /// A module the transform left as it was: no rules.
+    pub(crate) fn unchanged(code: String) -> Self {
+        Self {
+            code,
+            map: None,
+            rules: Vec::new(),
+        }
+    }
+}
+
 /// The plugin's transform where Vite runs it, before the app plugins'
-/// (`enforce: 'pre'`), for a module those plugins transform too: `None` when
-/// the plugin passes over `id`. With no app transform in the way, the
-/// compile runs it on the parsed source instead.
+/// (`enforce: 'pre'`): `None` when the plugin passes over `id`.
 pub(crate) fn pre_transform(
     state: &ServerState,
     id: &str,
@@ -139,9 +148,27 @@ pub(crate) fn record_id(state: &ServerState, id: &str, rules: &[oj_stylex::rules
 }
 
 /// A served url's module id: the file's absolute path with the query kept,
-/// minus the HMR timestamp; oj's own `/@` urls stay as they are.
+/// minus the HMR timestamp and a dependency's `v=` version (which the SSR id
+/// of the same file never carries); oj's own `/@` urls stay as they are.
 fn module_id(root: &Path, url: &str) -> String {
     let url = strip_hmr_timestamp(url);
+    let url = match url.split_once('?') {
+        Some((path, query)) => {
+            // Only the dependency version Vite and oj add (`v=` and 8 hex
+            // digits): a user's own `v=` query is part of the id.
+            let dep_version = |kv: &&str| {
+                kv.strip_prefix("v=")
+                    .is_some_and(|v| v.len() == 8 && v.bytes().all(|b| b.is_ascii_hexdigit()))
+            };
+            let kept: Vec<&str> = query.split('&').filter(|kv| !dep_version(kv)).collect();
+            if kept.is_empty() {
+                path.to_string()
+            } else {
+                format!("{path}?{}", kept.join("&"))
+            }
+        }
+        None => url,
+    };
     if let Some(path) = url.strip_prefix("/@fs/") {
         return format!("/{path}");
     }
@@ -250,5 +277,34 @@ pub(crate) fn html_tags(
             ),
         ],
         _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::module_id;
+    use std::path::Path;
+
+    #[test]
+    fn module_ids_are_the_files_path_with_its_variant_query() {
+        let root = Path::new("/app");
+        assert_eq!(module_id(root, "/src/a.tsx"), "/app/src/a.tsx");
+        assert_eq!(
+            module_id(root, "/src/a.tsx?t=1700000000000"),
+            "/app/src/a.tsx"
+        );
+        assert_eq!(
+            module_id(root, "/src/a.tsx?alt&t=1700000000000"),
+            "/app/src/a.tsx?alt"
+        );
+        assert_eq!(
+            module_id(root, "/node_modules/ui/index.js?v=e80770d4"),
+            "/app/node_modules/ui/index.js"
+        );
+        // A user's own queries are part of the id.
+        assert_eq!(module_id(root, "/src/a.tsx?t=1"), "/app/src/a.tsx?t=1");
+        assert_eq!(module_id(root, "/src/a.tsx?v=2"), "/app/src/a.tsx?v=2");
+        assert_eq!(module_id(root, "/@fs/opt/lib/x.ts"), "/opt/lib/x.ts");
+        assert_eq!(module_id(root, "/@id/virtual:x"), "/@id/virtual:x");
     }
 }

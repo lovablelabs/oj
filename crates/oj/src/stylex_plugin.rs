@@ -136,12 +136,19 @@ pub(crate) fn stylesheet(plugin: &StylexPlugin, root: &Path) -> anyhow::Result<O
 /// compiled to, valid for that bundle's store key and this plugin's options.
 const RULES_SIDECAR: &str = "stylex-rules.json";
 
-/// Saves every recorded module's rules for the bundle cached under `key`.
-pub(crate) fn save_rules(plugin: &StylexPlugin, dir: &Path, key: &str) {
+/// Saves the rules of `modules`, the bundle cached under `key`: only its
+/// own, so a restore brings back no other environment's (or a gone module's).
+pub(crate) fn save_rules(plugin: &StylexPlugin, dir: &Path, key: &str, modules: &[String]) {
+    let modules: std::collections::HashSet<&str> = modules.iter().map(String::as_str).collect();
+    let rules: Vec<_> = plugin
+        .module_rules()
+        .into_iter()
+        .filter(|(id, _)| modules.contains(id.as_str()))
+        .collect();
     let sidecar = serde_json::json!({
         "key": key,
         "fingerprint": plugin.fingerprint(),
-        "modules": plugin.module_rules(),
+        "modules": rules,
     });
     let _ = std::fs::write(dir.join(RULES_SIDECAR), sidecar.to_string());
 }
@@ -193,14 +200,22 @@ mod tests {
             .unwrap()
             .unwrap()
             .rules;
-        cold.set_module_rules("/app/src/a.ts", rules);
-        save_rules(&cold, &dir, "k1");
+        cold.set_module_rules("/app/src/a.ts", rules.clone());
+        // Another environment's module, not the bundle's: never saved.
+        cold.set_module_rules("/app/src/ssr-only.ts", rules);
+        save_rules(&cold, &dir, "k1", &["/app/src/a.ts".to_string()]);
 
         let warm = plugin(serde_json::json!({}));
         assert!(!restore_rules(&warm, &dir, "k2"), "another bundle's key");
         assert_eq!(warm.stylesheet().unwrap(), None);
         assert!(restore_rules(&warm, &dir, "k1"));
-        assert_eq!(warm.stylesheet().unwrap(), cold.stylesheet().unwrap());
+        assert_eq!(
+            warm.module_rules()
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
+            ["/app/src/a.ts"]
+        );
 
         let other_options = plugin(serde_json::json!({ "classNamePrefix": "q" }));
         assert!(!restore_rules(&other_options, &dir, "k1"), "other options");

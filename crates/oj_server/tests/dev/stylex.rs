@@ -419,6 +419,8 @@ async fn ssr_modules_a_plugin_loads_feed_the_sheet() {
         .text(&format!("/@ssr-module?id={}", id.display()))
         .await;
     assert!(!module.contains("stylex.create"), "{module}");
+    // Compiled under its own file name, as the client's compile of it is.
+    assert!(module.contains("gen__"), "{module}");
     let css = server.text("/virtual:stylex.css").await;
     assert!(css.contains("color: maroon"), "{css}");
 }
@@ -528,4 +530,131 @@ async fn pages_the_plugin_host_transforms_get_the_tags_once() {
         custom.contains(runtime),
         "a custom server's page:\n{custom}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stylex_sees_the_import_before_the_cjs_interop_rewrite() {
+    require_fixture!("vite");
+    let app = app("{}");
+    // A CommonJS build of the runtime package: the pre-bundle gives it
+    // interop, which rewrites the module's import before oj compiles it.
+    app.write(&[
+        (
+            "node_modules/@stylexjs/stylex/package.json",
+            r#"{"name":"@stylexjs/stylex","version":"0.19.0","main":"index.js"}"#,
+        ),
+        (
+            "node_modules/@stylexjs/stylex/index.js",
+            "exports.create = () => { throw new Error(\"uncompiled StyleX\"); };\nexports.props = exports.create;\nexports.defineVars = exports.create;\n",
+        ),
+    ]);
+    let server = app.serve().await;
+    let main = server.text("/src/main.ts").await;
+    assert!(!main.contains("stylex.create"), "compiled:\n{main}");
+    let css = server.text("/virtual:stylex.css").await;
+    assert!(css.contains("color: red"), "{css}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plugin_loaded_client_module_feeds_the_sheet() {
+    require_fixture!("vite");
+    let app = app("{}");
+    app.write(&[
+        (
+            "vite.config.js",
+            "import stylex from \"@stylexjs/unplugin\";\n\
+             const sx = {\n\
+               name: \"sx\",\n\
+               resolveId(id) { if (id === \"virtual:sx\") return \"\\0virtual-sx.ts\"; },\n\
+               load(id) { if (id === \"\\0virtual-sx.ts\") return \"import * as stylex from '@stylexjs/stylex';\\nexport const c = stylex.props(stylex.create({ x: { color: 'maroon' } }).x).className;\\n\"; },\n\
+             };\n\
+             export default { plugins: [stylex.vite({}), sx] };\n",
+        ),
+        ("src/main.ts", "import { c } from \"virtual:sx\";\nexport const both = c;\n"),
+    ]);
+    let server = app.serve().await;
+    let main = server.text("/src/main.ts").await;
+    let url = main
+        .split('"')
+        .find(|s| s.starts_with("/@id/"))
+        .unwrap_or_else(|| panic!("the virtual import:\n{main}"))
+        .to_string();
+    let module = server.text(&url).await;
+    assert!(!module.contains("stylex.create"), "{module}");
+    let css = server.text("/virtual:stylex.css").await;
+    assert!(css.contains("color: maroon"), "{css}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_function_stub_keeps_its_modules_rules() {
+    require_fixture!("vite");
+    let app = app("{}");
+    app.write(&[(
+        "src/data.server.ts",
+        "import * as stylex from \"@stylexjs/stylex\";\n\
+         export const cls = () => stylex.props(stylex.create({ x: { color: \"maroon\" } }).x).className;\n",
+    )]);
+    let server = app.serve().await;
+    let id = app.root.join("src/data.server.ts");
+    server
+        .text(&format!("/@ssr-module?id={}", id.display()))
+        .await;
+    // The page loads the client stub of the same file afterwards.
+    server.text("/src/data.server.ts").await;
+    let css = server.text("/virtual:stylex.css").await;
+    assert!(css.contains("color: maroon"), "{css}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ssr_resolves_and_loads_the_virtual_runtime() {
+    require_fixture!("vite");
+    let app = app("{}");
+    let server = app.serve().await;
+    let importer = app.root.join("src/main.ts");
+    let resolved = server
+        .text(&format!(
+            "/@ssr-resolve?importer={}&spec=virtual:stylex:runtime",
+            importer.display()
+        ))
+        .await;
+    assert!(
+        resolved.contains(r#""id":"virtual:stylex:runtime""#),
+        "{resolved}"
+    );
+    let module = server.get("/@ssr-module?id=virtual:stylex:runtime").await;
+    assert_eq!(module.status, 200, "{}", module.body);
+    assert!(
+        module.body.contains("__stylex_virtual__"),
+        "{}",
+        module.body
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_relative_base_or_unknown_dev_mode_still_boots() {
+    require_fixture!("vite");
+    // Vite serves a relative base from the root in dev.
+    let app = app("{}");
+    app.write(&[(
+        "vite.config.js",
+        "import stylex from \"@stylexjs/unplugin\";\nexport default { base: \"./\", plugins: [stylex.vite({})] };\n",
+    )]);
+    let server = app.serve().await;
+    let html = server.text("/").await;
+    assert!(
+        html.contains(r#"src="/@id/virtual:stylex:runtime""#),
+        "{html}"
+    );
+    assert!(html.contains(r#"href="/virtual:stylex.css""#), "{html}");
+    drop(server);
+
+    // Any devMode string: no tags, the sheet still served.
+    let other = self::app("{ devMode: \"bogus\" }");
+    let server = other.serve().await;
+    assert!(!server.text("/").await.contains("virtual:stylex"));
+    server.text("/src/main.ts").await;
+    assert!(server
+        .text("/virtual:stylex.css")
+        .await
+        .contains("color: red"));
 }

@@ -61,6 +61,9 @@ pub(crate) struct DevBundler {
     /// Specifiers the app's `external` function kept external, so the dev
     /// bundle's unresolved-import check takes the function's own answers.
     fn_externals: Arc<Mutex<HashSet<String>>>,
+    /// The module ids of the last bundle written, whose StyleX rules a cached
+    /// copy of it carries.
+    bundle_modules: Mutex<Vec<String>>,
 }
 
 impl DevBundler {
@@ -87,12 +90,18 @@ impl DevBundler {
             style_epoch: std::sync::atomic::AtomicU64::new(0),
             clients: Mutex::new(HashSet::new()),
             fn_externals: Arc::default(),
+            bundle_modules: Mutex::new(Vec::new()),
         }
     }
 
     #[cfg(test)]
     pub(crate) fn for_tests(root: &Path) -> DevBundler {
         DevBundler::new(tests::start_at(root), None)
+    }
+
+    /// The module ids of the last bundle written.
+    pub(crate) fn bundle_modules(&self) -> Vec<String> {
+        self.bundle_modules.lock().unwrap().clone()
     }
 
     /// The app's StyleX plugin, whose rules a cached bundle must carry.
@@ -299,6 +308,7 @@ impl DevBundler {
             .iter()
             .map(|id| id.to_string())
             .collect();
+        *self.bundle_modules.lock().unwrap() = module_ids.clone();
         let watch_files = match host {
             Some(h) => h.host.watch_files().await.unwrap_or_default(),
             None => Vec::new(),
@@ -479,6 +489,7 @@ impl DevBundler {
             Some(h) => h.host.watch_files().await.unwrap_or_default(),
             None => Vec::new(),
         };
+        *self.bundle_modules.lock().unwrap() = module_ids.clone();
         let css_urls = parts.css_urls.lock().unwrap().clone();
         let scopes = parts.glob_scopes.lock().unwrap().clone();
         write_outputs(

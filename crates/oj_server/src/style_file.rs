@@ -119,14 +119,12 @@ pub fn needs_css_compile(src: &str) -> bool {
 }
 
 /// The prefix Start's dev urls take under Vite's `base` (`/app/` gives
-/// `/app`): empty at the root, and for a relative base, which dev serves at
-/// the root as Vite does.
+/// `/app`), as the dev server resolves it (`dev_base`): empty at the
+/// root and for a relative base, the path of a full-url one.
 pub fn start_dev_url_base(base: &str) -> String {
-    if base.starts_with('/') {
-        base.trim_end_matches('/').to_string()
-    } else {
-        String::new()
-    }
+    crate::middleware::dev_base(Some(base))
+        .map(|b| b.trim_end_matches('/').to_string())
+        .unwrap_or_default()
 }
 
 /// Where Start's unbundled dev serves a file (the Start bundles' fsBase),

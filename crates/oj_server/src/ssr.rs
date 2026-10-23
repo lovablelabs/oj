@@ -162,6 +162,10 @@ async fn ssr_resolve_raw(
     importer: &str,
     spec: &str,
 ) -> Result<RawResolution, String> {
+    // The StyleX plugin's virtual runtimes, kept as the id (its resolveId).
+    if crate::stylex::virtual_module(state, spec).is_some() {
+        return Ok(RawResolution::PluginId(spec.to_string()));
+    }
     let importer_dir = Path::new(importer).parent().unwrap_or(&state.root);
     let err = match state.ssr_resolver.resolve(importer_dir, spec) {
         Ok(p) => return Ok(RawResolution::Path(p)),
@@ -254,6 +258,10 @@ pub(crate) async fn ssr_module_inner(
     id: &str,
     runner: bool,
 ) -> Result<String, SsrModuleError> {
+    // The StyleX plugin's virtual runtimes (its load), in every environment.
+    if let Some(code) = crate::stylex::virtual_module(state, id) {
+        return ssr_compile_source(state, id, code.to_string(), true, runner);
+    }
     let path = PathBuf::from(id);
     if !ssr_module_allowed(state, &path) {
         return Err(SsrModuleError::Forbidden(
@@ -353,6 +361,18 @@ fn compile_ssr(
     runner: bool,
     stylex_rules: Option<Vec<oj_stylex::rules::StylexRule>>,
 ) -> Result<String, SsrModuleError> {
+    // A module a plugin `load`ed compiles under a synthetic path, but StyleX
+    // derives its hashes from the file: it runs on the real id, as the
+    // client's compile does.
+    let (source, stylex_rules) = match stylex_rules {
+        None if from_plugin => match crate::stylex::pre_transform(state, id, &source)
+            .map_err(SsrModuleError::Failed)?
+        {
+            Some(pre) => (pre.code, Some(pre.rules)),
+            None => (source, None),
+        },
+        rules => (source, rules),
+    };
     let compile_path: PathBuf = if from_plugin {
         PathBuf::from("virtual.tsx")
     } else {

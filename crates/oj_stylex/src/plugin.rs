@@ -53,6 +53,9 @@ pub enum DevMode {
     CssOnly,
     /// No dev endpoints, and no transform under `serve`.
     Off,
+    /// Any other value: the plugin still compiles and serves its stylesheet,
+    /// but injects nothing and serves neither runtime.
+    Other,
 }
 
 pub struct StylexPlugin {
@@ -114,7 +117,7 @@ impl StylexPlugin {
             None | Some("full") => DevMode::Full,
             Some("css-only") => DevMode::CssOnly,
             Some("off") => DevMode::Off,
-            Some(other) => return Err(format!("{PLUGIN_NAME}: unknown devMode \"{other}\"")),
+            Some(_) => DevMode::Other,
         };
         let import_sources = user
             .get("importSources")
@@ -605,9 +608,11 @@ mod tests {
                 .unwrap()
                 .contains("@layer priority1{")
         );
-        assert!(
-            StylexPlugin::new(&json!({ "devMode": "x" }), Path::new("/app"), false, false).is_err()
-        );
+        // The plugin accepts any devMode string; an unknown one injects nothing.
+        let other =
+            StylexPlugin::new(&json!({ "devMode": "x" }), Path::new("/app"), false, false).unwrap();
+        assert_eq!(other.dev_mode(), DevMode::Other);
+        assert_eq!(other.virtual_module(RUNTIME_ID), None);
     }
 
     #[test]

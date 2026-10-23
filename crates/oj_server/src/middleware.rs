@@ -403,6 +403,17 @@ mod tests {
     }
 
     #[test]
+    fn start_dev_urls_take_the_resolved_base() {
+        use crate::start_dev_url_base;
+        assert_eq!(start_dev_url_base("/app/"), "/app");
+        assert_eq!(start_dev_url_base("app/"), "/app");
+        assert_eq!(start_dev_url_base("https://cdn.example.com/app/"), "/app");
+        for root in ["/", "./", "", "./app/"] {
+            assert_eq!(start_dev_url_base(root), "", "{root:?}");
+        }
+    }
+
+    #[test]
     fn strip_base_needs_a_segment_boundary() {
         assert_eq!(strip_base("/app/x.js", "/app/"), Some("/x.js"));
         assert_eq!(strip_base("/app/", "/app/"), Some("/"));

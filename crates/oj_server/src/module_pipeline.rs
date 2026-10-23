@@ -111,20 +111,35 @@ pub(crate) async fn ensure_module_as(
 
     if is_server {
         let code = server_fn_stub(&oj_compiler::exports(&source, file), url);
-        let module = Arc::new(code_module(code));
+        let mut module = code_module(code);
+        // Vite's StyleX pass (`enforce: 'pre'`) runs before the server-fn
+        // rewrite, so the stub keeps the module's rules, which its SSR compile
+        // records under the same id.
+        if let Some(pre) = crate::stylex::pre_transform(state, &hook_id(file, url), &source)? {
+            module.stylex_rules = pre.rules;
+        }
+        let module = Arc::new(module);
         store_module(state, url, &key, &module);
         return Ok((key, module));
     }
 
     let transform_id = transform_id.map_or_else(|| hook_id(file, url), str::to_string);
-    let pre_stylex = if state.plugins_have_transform {
-        crate::stylex::pre_transform(state, &transform_id, &source)?
-    } else {
-        None
-    };
-    let (source, stylex_map, stylex_rules) = match pre_stylex {
-        Some(pre) => (pre.code, pre.map, Some(pre.rules)),
-        None => (source, None, None),
+    // The StyleX plugin is `enforce: 'pre'`: it compiles the module's own
+    // source, ahead of the app's transforms and oj's CJS-interop rewrite (off
+    // the async workers: a large module's compile is real work).
+    let (source, stylex_map, stylex_rules) = match &state.stylex {
+        Some(plugin) if plugin.handles(&transform_id, &source) => {
+            let (st, id) = (Arc::clone(state), transform_id.clone());
+            let pre = tokio::task::spawn_blocking(move || {
+                crate::stylex::pre_transform(&st, &id, &source).map(|pre| {
+                    pre.unwrap_or_else(|| crate::stylex::PreTransformed::unchanged(source))
+                })
+            })
+            .await
+            .map_err(|e| format!("StyleX compile task failed: {e}"))??;
+            (pre.code, pre.map, Some(pre.rules))
+        }
+        _ => (source, None, None),
     };
     let mut transformed = plugin_transform(state, file, &transform_id, source, is_dep).await?;
     if let Some(map) = stylex_map {
@@ -188,7 +203,6 @@ pub(crate) async fn ensure_module_as(
         css,
         plugin_maps: transformed.maps,
         dep_map,
-        stylex_done: stylex_rules.is_some(),
     };
     let compiled = tokio::task::spawn_blocking(move || job.run()).await;
 
@@ -665,8 +679,6 @@ struct CompileJob {
     css: CssState,
     plugin_maps: Vec<String>,
     dep_map: Arc<optimize::DepMap>,
-    /// StyleX already compiled the source, ahead of the app's plugins.
-    stylex_done: bool,
 }
 
 impl CompileJob {
@@ -787,7 +799,7 @@ impl CompileJob {
                 dep_src,
                 &mut |spec: &str| rw.rewrite(spec, &self.state.require_resolver),
                 Some(Arc::clone(&self.state.import_meta_env)),
-                self.state.stylex.as_ref().filter(|_| !self.stylex_done),
+                None,
             );
         }
         // Gated on a cheap bare-import scan: the interop rewrite (a full
@@ -813,7 +825,7 @@ impl CompileJob {
             dep_src,
             &mut |spec: &str| rw.rewrite(spec, &self.state.resolver),
             Some(Arc::clone(&self.state.import_meta_env)),
-            self.state.stylex.as_ref().filter(|_| !self.stylex_done),
+            None,
         )
     }
 
@@ -834,9 +846,8 @@ impl CompileJob {
         // The key already folded this decision (from the original path); the
         // compile must never re-derive it from a synthetic one.
         opts.class_field_set_semantics = Some(self.class_field_semantics);
-        if self.stylex_done {
-            opts.stylex = None;
-        }
+        // StyleX ran ahead of the app's plugins (see ensure_module_as).
+        opts.stylex = None;
         oj_compiler::compile_module_with_maps(
             &self.file,
             interopped.as_deref().unwrap_or(&self.source),

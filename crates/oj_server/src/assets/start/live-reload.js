@@ -108,9 +108,9 @@
   // Vite's `server.hmr.overlay` (its client's __HMR_ENABLE_OVERLAY__), filled
   // in when the dev server serves this file: off, a build error is only logged.
   const enableOverlay = __HMR_ENABLE_OVERLAY__;
-  // The dev `base` this script is served under (its own url names it), which
-  // the dev server's other urls share.
-  const base = new URL(import.meta.url).pathname.replace(/\/@oj-start\/live-reload\.js$/, "");
+  // The prefix the dev server's urls take under `base`, filled in when the
+  // dev server serves this file ("" at the root).
+  const base = __OJ_DEV_BASE__;
 
   function showError(err) {
     console.error("[oj] build error\n" + ((err && err.message) || err));

@@ -534,11 +534,8 @@ pub async fn start_dev(
     // The resolved gate (the knob or `server.hmrGate`): a gate on drops the
     // boot's engine at the next rebundle.
     bundler.set_hot_enabled(built.hmr_gate.is_none());
-    // Vite's `base` without its trailing slash; empty at the root (or `./`).
-    let base = match bundler.base().trim_end_matches('/') {
-        base if base.starts_with('/') => base.to_string(),
-        _ => String::new(),
-    };
+    // The dev urls' prefix under `base` (see oj_server::start_dev_url_base).
+    let base = oj_server::start_dev_url_base(bundler.base());
     let state = Arc::new(StartState {
         script_env: Arc::clone(&script_vars),
         bundler,
@@ -1437,7 +1434,7 @@ async fn rebundle_worker(
                 let outcome = match bundling.then(|| bundler.bundle(&inputs, false)) {
                     None => ClientRun::Skipped,
                     Some(Ok(true)) => ClientRun::Hot,
-                    Some(Ok(false)) => match pinned_output(&r, &c, &m) {
+                    Some(Ok(false)) => match pinned_output(&bundler, &r, &c, &m) {
                         Some(pinned) => ClientRun::Fresh(pinned),
                         None => ClientRun::Failed("the bundle left no output to serve".into()),
                     },
@@ -1683,13 +1680,25 @@ enum ClientRun {
 
 /// The output a successful bundle wrote, cached for the next boot.
 fn pinned_output(
+    bundler: &ClientBundler,
     root: &Path,
     cache: &Path,
     mode: &str,
 ) -> Option<oj_cache::start_bundle::PinnedBundle> {
     match start_bundle_store(root, mode).persist(cache) {
-        Some((_, pinned)) => Some(pinned),
+        Some((key, pinned)) => {
+            save_stylex_rules(bundler, cache, &key);
+            Some(pinned)
+        }
         None => oj_cache::start_bundle::PinnedBundle::from_build_dir(cache),
+    }
+}
+
+/// The StyleX rules of the bundle just cached under `key`, saved beside it
+/// so a restore of it serves a complete sheet.
+fn save_stylex_rules(bundler: &ClientBundler, cache: &Path, key: &str) {
+    if let Some(plugin) = bundler.stylex() {
+        crate::stylex_plugin::save_rules(plugin, cache, key, &bundler.bundle_modules());
     }
 }
 
@@ -1736,7 +1745,8 @@ async fn refresh_worker(root: PathBuf, cache: PathBuf, state: Arc<StartState>) {
         let bundler = Arc::clone(&state.bundler);
         let pinned = tokio::task::spawn_blocking(move || {
             bundler.bundle(&[], true)?;
-            pinned_output(&r, &c, &m).ok_or_else(|| anyhow::anyhow!("no client chunk index"))
+            pinned_output(&bundler, &r, &c, &m)
+                .ok_or_else(|| anyhow::anyhow!("no client chunk index"))
         })
         .await
         .map_err(anyhow::Error::from)
@@ -2223,9 +2233,7 @@ fn bundle_client_entry_cached(
     }
     bundler.bundle(&[], false)?;
     if let Some((key, pinned)) = store.persist(cache) {
-        if let Some(plugin) = stylex {
-            crate::stylex_plugin::save_rules(plugin, cache, &key);
-        }
+        save_stylex_rules(bundler, cache, &key);
         println!(
             "  oj start: client bundle cached (key {}…, {} chunks)",
             key.get(..8).unwrap_or(&key),
@@ -2427,7 +2435,7 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
                     (header::CONTENT_TYPE, "text/javascript"),
                     (header::CACHE_CONTROL, "no-cache"),
                 ],
-                render_live_reload(&js, state.hmr_overlay),
+                render_live_reload(&js, state.hmr_overlay, &state.base),
             )
                 .into_response(),
             Err(e) => (
@@ -2836,10 +2844,14 @@ async fn serve_client_chunk(
 }
 
 /// The live-reload client with Vite's `__HMR_ENABLE_OVERLAY__` filled in.
-fn render_live_reload(js: &str, overlay: bool) -> String {
+fn render_live_reload(js: &str, overlay: bool, url_base: &str) -> String {
     js.replace(
         "__HMR_ENABLE_OVERLAY__",
         if overlay { "true" } else { "false" },
+    )
+    .replace(
+        "__OJ_DEV_BASE__",
+        &serde_json::Value::String(url_base.to_string()).to_string(),
     )
 }
 
@@ -3569,9 +3581,13 @@ mod tests {
         oj_server::write_start_assets(&dir).unwrap();
         let js = std::fs::read_to_string(dir.join("live-reload.js")).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
-        let on = render_live_reload(&js, true);
-        let off = render_live_reload(&js, false);
+        let on = render_live_reload(&js, true, "/app");
+        let off = render_live_reload(&js, false, "");
         assert!(on.contains("const enableOverlay = true;"), "{on}");
+        // The dev urls' prefix under `base`, filled in as a string.
+        assert!(on.contains("const base = \"/app\";"), "{on}");
+        assert!(off.contains("const base = \"\";"), "{off}");
+        assert!(!on.contains("__OJ_DEV_BASE__"));
         assert!(off.contains("const enableOverlay = false;"), "{off}");
         assert!(!off.contains("__HMR_ENABLE_OVERLAY__"));
         // Off, an error frame is logged and the overlay never mounts.
