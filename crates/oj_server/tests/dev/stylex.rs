@@ -58,6 +58,14 @@ pub(crate) const STYLEX_PACKAGES: &[(&str, &str)] = &[
         "throw new Error(\"the real @stylexjs/unplugin ran\");\n",
     ),
     (
+        "node_modules/@stylexjs/unplugin/lib/index.js",
+        "throw new Error(\"the real @stylexjs/unplugin ran\");\n",
+    ),
+    (
+        "node_modules/@stylexjs/unplugin/lib/vite.js",
+        "throw new Error(\"the real @stylexjs/unplugin ran\");\n",
+    ),
+    (
         "node_modules/@stylexjs/stylex/package.json",
         r#"{"name":"@stylexjs/stylex","version":"0.19.0","type":"module","main":"index.js"}"#,
     ),
@@ -376,6 +384,19 @@ async fn every_import_form_hands_its_options_over() {
     ] {
         let app = app("{}");
         app.write(&[("vite.config.js", config)]);
+        let server = app.serve().await;
+        let main = server.text("/src/main.ts").await;
+        assert!(main.contains("main__styles.title q"), "{config}\n{main}");
+    }
+    // A CommonJS config `require()`s the package's CommonJS build.
+    for config in [
+        "const stylex = require(\"@stylexjs/unplugin\");\nmodule.exports = { plugins: [stylex.default.vite({ classNamePrefix: \"q\" })] };\n",
+        "const { vite } = require(\"@stylexjs/unplugin\");\nmodule.exports = { plugins: [vite({ classNamePrefix: \"q\" })] };\n",
+        "const stylexPlugin = require(\"@stylexjs/unplugin/vite\").default;\nmodule.exports = { plugins: [stylexPlugin({ classNamePrefix: \"q\" })] };\n",
+    ] {
+        let app = app("{}");
+        std::fs::remove_file(app.root.join("vite.config.js")).unwrap();
+        app.write(&[("vite.config.cjs", config)]);
         let server = app.serve().await;
         let main = server.text("/src/main.ts").await;
         assert!(main.contains("main__styles.title q"), "{config}\n{main}");

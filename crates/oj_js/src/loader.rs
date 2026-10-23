@@ -157,7 +157,9 @@ impl ModuleLoader for EngineModuleLoader {
         // A package oj stands in for: its own code never runs in the engine.
         if let Some(code) = deno_path_util::url_to_file_path(&specifier)
             .ok()
-            .and_then(|path| crate::stand_ins::source_for(&path.to_string_lossy()))
+            .and_then(|path| {
+                crate::stand_ins::source_for(&path.to_string_lossy(), crate::stand_ins::Format::Esm)
+            })
         {
             return ModuleLoadResponse::Sync(Ok(ModuleSource::new(
                 ModuleType::JavaScript,
@@ -292,6 +294,13 @@ impl NodeRequireLoader for EngineRequireLoader {
 
     fn load_text_file_lossy(&self, path: &Path) -> Result<FastString, JsErrorBox> {
         use sys_traits::FsRead;
+        // A package oj stands in for, `require()`d: its own code never runs.
+        if let Some(code) = crate::stand_ins::source_for(
+            &path.to_string_lossy(),
+            crate::stand_ins::Format::CommonJs,
+        ) {
+            return Ok(code.into());
+        }
         let text = self
             .sys
             .fs_read_to_string_lossy(path)

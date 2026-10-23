@@ -1539,14 +1539,9 @@ async function stylexPlugin(raw) {
     } while (list.some((v) => v && typeof v.then === "function"));
     const plugin = list.find((p) => p && p.name === "@stylexjs/unplugin");
     if (!plugin) return null;
-    // oj's stand-in for the package (oj_js stand_ins) records them; a config
-    // that require()s the package loads the real one, whose options stay
-    // in its closure.
-    let options = plugin.__ojStylexOptions;
-    if (!options) {
-      warn("@stylexjs/unplugin was loaded with require(), so oj compiles StyleX with the default options");
-      options = {};
-    }
+    // oj's stand-in for the package (oj_js stand_ins) records them, imported
+    // or require()d.
+    const options = plugin.__ojStylexOptions ?? {};
     const babel = options.babelConfig;
     if (babel && ((babel.plugins ?? []).length || (babel.presets ?? []).length)) {
       warn("@stylexjs/unplugin babelConfig plugins and presets are not applied (oj compiles StyleX natively)");
