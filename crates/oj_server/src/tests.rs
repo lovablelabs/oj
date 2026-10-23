@@ -860,19 +860,41 @@ fn glue_never_doubles_a_query_the_url_already_carries() {
 }
 
 #[test]
-fn restart_triggers_include_every_config_flavor() {
+fn restart_triggers_are_the_files_oj_loaded() {
+    let root = Path::new("/app");
+    let files = restart_files(
+        root,
+        &root.join("config/../env"),
+        "staging",
+        Some(Path::new("/elsewhere/custom.config.ts")),
+    );
     for f in [
-        "oj.config.ts",
-        "oj.config.json",
-        "vite.config.mts",
-        ".env",
-        ".env.staging",
-        "postcss.config.cjs",
+        "/app/oj.config.ts",
+        "/app/oj.config.json",
+        "/app/vite.config.mts",
+        "/app/postcss.config.cjs",
+        "/app/env/.env",
+        "/app/env/.env.local",
+        "/app/env/.env.staging",
+        "/app/env/.env.staging.local",
+        "/elsewhere/custom.config.ts",
     ] {
-        assert!(is_restart_trigger(Path::new(f)), "{f}");
+        assert!(is_restart_trigger(&files, Path::new(f)), "{f}");
     }
-    for f in ["src/main.ts", "package.json", "config.json", "env.ts"] {
-        assert!(!is_restart_trigger(Path::new(f)), "{f}");
+    // Vite restarts for the mode's env files in envDir and the config only:
+    // the same names elsewhere (a sibling package an outside-root `@source`
+    // watches, a nested dir, another mode) are files like any other.
+    for f in [
+        "/app/src/main.ts",
+        "/app/package.json",
+        "/app/.env",
+        "/app/env/.env.production",
+        "/app/src/.env",
+        "/app/packages/ui/vite.config.ts",
+        "/sibling/.env",
+        "/sibling/postcss.config.js",
+    ] {
+        assert!(!is_restart_trigger(&files, Path::new(f)), "{f}");
     }
 }
 

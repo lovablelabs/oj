@@ -334,6 +334,8 @@ struct ServerState {
     /// compares across dev server restarts.
     started_at_ms: u64,
     hmr_enabled: bool,
+    /// The files whose change restarts the server ([`restart_files`]).
+    restart_files: Vec<PathBuf>,
     /// The CLI's `--config` file (resolved against root), for the lazily
     /// spawned SSR host's plugin-source pick.
     config_file: Option<PathBuf>,
@@ -1732,6 +1734,7 @@ impl DevServer {
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0),
             hmr_enabled: hmr.enabled,
+            restart_files: restart_files(&root, &env_dir, &dev_mode, config_file.as_deref()),
             plugins: plugin_host.clone(),
             plugin_serve: Arc::clone(&plugin_serve),
             plugins_ssr: tokio::sync::OnceCell::new(),

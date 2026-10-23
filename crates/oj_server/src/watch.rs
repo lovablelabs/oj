@@ -50,29 +50,37 @@ pub(crate) fn is_config_dependency(path: &Path) -> bool {
     })
 }
 
-/// True for config / env files whose change requires a full server restart
-/// (they are read once at startup and cannot be hot-applied).
-pub(crate) fn is_restart_trigger(path: &Path) -> bool {
-    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-        return false;
-    };
-    if name == ".env" || name.starts_with(".env.") {
-        return true;
+/// The config and env files oj reads once at startup, so a change to one
+/// restarts the server: the mode's env files in `env_dir` (Vite's
+/// getEnvFilesForMode), every config flavor at the root, and `--config`.
+/// Only these paths: the same names elsewhere (a sibling package's `.env`, a
+/// nested `postcss.config.js`) are files like any other, as in Vite, whose
+/// restart check is `file === configFile` or one of the mode's env files.
+pub(crate) fn restart_files(
+    root: &Path,
+    env_dir: &Path,
+    mode: &str,
+    config_file: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = oj_env::env_files(env_dir, mode).into();
+    for base in [
+        "vite.config",
+        "oj.config",
+        "postcss.config",
+        "tailwind.config",
+    ] {
+        for ext in ["ts", "js", "mjs", "cjs", "mts", "cts", "json"] {
+            files.push(root.join(format!("{base}.{ext}")));
+        }
     }
-    let stem_ext = |bases: &[&str], exts: &[&str]| {
-        bases
-            .iter()
-            .any(|b| exts.iter().any(|e| name == format!("{b}.{e}")))
-    };
-    stem_ext(
-        &[
-            "vite.config",
-            "oj.config",
-            "postcss.config",
-            "tailwind.config",
-        ],
-        &["ts", "js", "mjs", "cjs", "mts", "cts", "json"],
-    )
+    files.extend(config_file.map(Path::to_path_buf));
+    // The watcher reports normalized paths; an `envDir: "../env"` must match.
+    files.iter().map(|f| normalize(f)).collect()
+}
+
+/// True when `path` is one of [`restart_files`].
+pub(crate) fn is_restart_trigger(files: &[PathBuf], path: &Path) -> bool {
+    files.iter().any(|f| f == path)
 }
 
 /// Tsconfig files whose change re-runs the tsconfig-aware transform; the name
@@ -967,7 +975,7 @@ fn handle_batch(
     if let Some(file) = paths
         .iter()
         .filter(|_| state.hmr_enabled)
-        .find(|p| is_restart_trigger(p) || is_config_dependency(p))
+        .find(|p| is_restart_trigger(&state.restart_files, p) || is_config_dependency(p))
     {
         let shown = STARTUP_CWD
             .get()

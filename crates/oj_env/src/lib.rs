@@ -16,7 +16,7 @@ pub use app::AppEnv;
 pub use defines::{
     import_meta_env_defines, import_meta_env_defines_with, resolve_node_env, with_process_env,
 };
-pub use dotenv::{load, load_with, parse};
+pub use dotenv::{env_files, load, load_with, parse};
 pub use html::{html_env_map, replace_html_env};
 pub use knobs::Knobs;
 pub use snapshot::{get, init, Env};
