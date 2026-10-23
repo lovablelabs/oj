@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `oj build` writes pages as Vite does. The entry `<script>`, its modulepreload links and its stylesheets go into `<head>`, serialized the way Vite writes them, and the module scripts leave the body. A page's local `<link rel="stylesheet">` is now imported by its entry and lands in the entry's stylesheet in document order, instead of becoming a hashed file of its own. A `media` or `disabled` one stays a plain asset. With `cssCodeSplit: false` the single sheet ends in Vite's hash marker, as Vite's does.
+- `oj build` builds workers as Vite does: each worker on its own in `worker.format` (iife unless set to `es`), named under `assetsDir`. A module the app and a worker share is bundled into each instead of split into a shared chunk. `new Worker(new URL(...))` and asset `new URL(..., import.meta.url)` keep their `new URL` with the built URL in place, and `?worker` and `?worker&inline` modules are Vite's own wrappers.
+- A chunk that holds nothing but CSS is not emitted, as in Vite. Its importers take its stylesheet, a static import of it becomes an `/* empty css */` comment of the same length, and an `import()` of it resolves to `Promise.resolve({})` with the stylesheet preloaded.
+- `build.rollupOptions.output.hashCharacters` (`base36`, `hex`) names every file `oj build` writes, stylesheets and assets included.
+- `import.meta.glob` maps are written as `/* @__PURE__ */ Object.assign({...})`, Vite's shape.
 
 ### Removed
 

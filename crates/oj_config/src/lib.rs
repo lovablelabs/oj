@@ -19,7 +19,7 @@ pub use build::{
     build_css_targets, build_inputs, build_manifest_name, build_minify, build_out_dir,
     build_report_compressed_size, build_sourcemap, build_ssr_entry, build_targets,
     environment_build_bool, module_preload_links, module_preload_polyfill, rolldown_options,
-    ssr_manifest_name, Sourcemap, BASELINE_WIDELY_AVAILABLE, MODULES_TARGET,
+    ssr_manifest_name, worker_format_es, Sourcemap, BASELINE_WIDELY_AVAILABLE, MODULES_TARGET,
 };
 pub use css::{
     css_additional_data, css_load_paths, css_modules, css_preprocessor_json, CssModulesSettings,

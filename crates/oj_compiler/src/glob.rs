@@ -809,7 +809,11 @@ impl<'a> GlobExpander<'a, '_> {
             let value = self.entry_value(&spec, &opts);
             entries.push(format!("{key:?}: {value}"));
         }
-        Some(format!("({{{}}})", entries.join(", ")))
+        // Vite writes the map as `Object.assign({...})`, droppable when unused.
+        Some(format!(
+            "/* #__PURE__ */ Object.assign({{{}}})",
+            entries.join(", ")
+        ))
     }
 
     /// One map value: a hoisted import binding when eager, else a lazy loader.
@@ -1351,7 +1355,10 @@ mod tests {
             Path::new("/app/src/main.ts"),
             None,
         );
-        assert!(out.contains("const m = {}"), "{out}");
+        assert!(
+            out.contains("const m = /* @__PURE__ */ Object.assign({})"),
+            "{out}"
+        );
     }
 
     // The watcher's patterns (Vite's importMetaGlob hotUpdate) resolve `/`
@@ -1803,7 +1810,7 @@ mod tests {
         let dir = fixture_dir("empty");
         let out = expand_source(&dir, "const m = import.meta.glob('./nope/*.json');\n");
         assert!(
-            out.contains("= {}"),
+            out.contains("= /* @__PURE__ */ Object.assign({})"),
             "no matches must expand to an empty object: {out}"
         );
         assert!(
@@ -1864,7 +1871,10 @@ mod tests {
         );
         let none =
             super::expand_source("const m = import.meta.glob('**/*.md');\n", &importer, None);
-        assert!(none.contains("const m = {}"), "no root, no matches: {none}");
+        assert!(
+            none.contains("const m = /* @__PURE__ */ Object.assign({})"),
+            "no root, no matches: {none}"
+        );
     }
 
     // Vite sorts the matched paths as strings: `-` (0x2d) sorts before `/`.
@@ -1943,7 +1953,10 @@ mod tests {
             &importer,
             Some(&root),
         );
-        assert!(plain.contains("const m = {};"), "{plain}");
+        assert!(
+            plain.contains("const m = /* @__PURE__ */ Object.assign({});"),
+            "{plain}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

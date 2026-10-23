@@ -806,7 +806,7 @@ mod tests {
         let none: Vec<String> = Vec::new();
         let theme_css = vec!["assets/theme-t.css".to_string()];
         let dependency = |file: &str| {
-            (file == "assets/theme-t.js").then(|| Dependency {
+            (file == "assets/theme-t.js").then_some(Dependency {
                 js: None,
                 imports: none.as_slice(),
                 css: theme_css.as_slice(),

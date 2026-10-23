@@ -70,6 +70,16 @@ pub fn build_assets_dir(config: &OjConfig) -> String {
         .to_string()
 }
 
+/// `worker.format: "es"`; Vite builds workers as `iife` by default.
+pub fn worker_format_es(config: &OjConfig) -> bool {
+    config
+        .worker
+        .as_ref()
+        .and_then(|w| w.get("format"))
+        .and_then(|f| f.as_str())
+        == Some("es")
+}
+
 /// `tail` under `build.assetsDir`, as Vite spells its default output patterns
 /// (`path.posix.join(assetsDir, "[name]-[hash].js")`).
 pub fn assets_dir_path(assets_dir: &str, tail: &str) -> String {

@@ -493,3 +493,75 @@ fn hash_characters_build_vites_exact_files() {
         assert_same_output(&root);
     }
 }
+
+/// Workers build on their own, as Vite's bundleWorkerEntry does, in
+/// `worker.format` (iife by default, es here too): `new Worker(new URL(...))`
+/// keeps its `new URL` with the built URL in place, `?worker` is Vite's
+/// WorkerWrapper, `?worker&url` the URL, `?worker&inline` the code, and a
+/// module the app and a worker share is bundled into each.
+#[test]
+fn workers_build_vites_exact_files() {
+    for format in ["iife", "es"] {
+        let config = format!("export default {{ worker: {{ format: \"{format}\" }} }};\n");
+        let Some(root) = app(
+            &format!("workers-{format}"),
+            &[
+                ("package.json", Some(r#"{"name":"parity","type":"module"}"#)),
+                ("vite.config.js", Some(&config)),
+                ("index.html", Some(PAGE)),
+                (
+                    "src/main.js",
+                    Some(
+                        "import { shared } from \"./shared.js\";\nimport W from \"./w2.js?worker\";\nimport url from \"./w3.js?worker&url\";\n\
+                         import Inline from \"./w4.js?worker&inline\";\n\
+                         new Worker(new URL(\"./w1.js\", import.meta.url), { type: \"module\" });\n\
+                         new W();\nnew Inline();\nconsole.log(url, shared(1));\n",
+                    ),
+                ),
+                ("src/w1.js", Some("import { shared } from \"./shared.js\";\nself.postMessage(shared(2));\n")),
+                ("src/w2.js", Some("self.onmessage = (e) => self.postMessage(e.data * 2);\n")),
+                ("src/w3.js", Some("self.postMessage(\"url\");\n")),
+                ("src/w4.js", Some("self.postMessage(\"inline\");\n")),
+                ("src/shared.js", Some("export const shared = (n) => `shared ${n}`;\n")),
+            ],
+        ) else {
+            return;
+        };
+        assert_same_output(&root);
+    }
+}
+
+/// `new URL(..., import.meta.url)` assets keep their `new URL` with the
+/// built URL in place (emitted, or inlined under the limit), a template URL
+/// becomes an eager `?url` glob lookup, and globs write Vite's
+/// `Object.assign` map.
+#[test]
+fn import_meta_urls_and_globs_build_vites_exact_files() {
+    let (big, x, y) = ("b".repeat(6000), "x".repeat(6000), "y".repeat(6000));
+    let Some(root) = app(
+        "meta-urls",
+        &[
+            ("package.json", Some(r#"{"name":"parity","type":"module"}"#)),
+            ("vite.config.js", Some("export default {};\n")),
+            ("index.html", Some(PAGE)),
+            (
+                "src/main.js",
+                Some(
+                    "const a = new URL(\"./big.png\", import.meta.url).href;\nconst b = new URL(\"./small.png\", import.meta.url);\n\
+                     const c = new URL(`./img/${window.n}.png`, import.meta.url);\n\
+                     const m = import.meta.glob(\"./m/*.js\", { eager: true });\nconst l = import.meta.glob(\"./m/*.js\");\n\
+                     console.log(a, b, c, m, l);\n",
+                ),
+            ),
+            ("src/big.png", Some(&big)),
+            ("src/small.png", Some("tiny")),
+            ("src/img/x.png", Some(&x)),
+            ("src/img/y.png", Some(&y)),
+            ("src/m/a.js", Some("export default \"a\";\n")),
+            ("src/m/b.js", Some("export default \"b\";\n")),
+        ],
+    ) else {
+        return;
+    };
+    assert_same_output(&root);
+}
