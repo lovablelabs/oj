@@ -4942,6 +4942,10 @@ async fn build_library(
     let started = Instant::now();
     let collected_css: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
     let mut emitted: Vec<(String, usize)> = Vec::new();
+    // The StyleX plugin, one instance across the formats: each records the
+    // same modules' rules again.
+    let stylex =
+        oj_server::stylex::plugin_for(root, config, "build").map_err(|e| anyhow::anyhow!(e))?;
 
     for fmt in &formats {
         let format = match fmt.as_str() {
@@ -4973,23 +4977,28 @@ async fn build_library(
             rolldown_minify(minify)
         };
 
+        let mut plugins: Vec<SharedPluginable> = Vec::new();
+        if let Some(plugin) = &stylex {
+            plugins.push(crate::stylex_plugin::transform(plugin));
+        }
+        plugins.push(Pluginable::new_shared(OjCssPlugin {
+            collected: Arc::clone(&collected_css),
+            root: root.to_path_buf(),
+            has_postcss: oj_server::has_postcss_config(root),
+            // Vite inlines every asset of a library build.
+            inline_limit: u64::MAX,
+            client: true,
+            resolve: css_resolve_of(root, config, "client", is_production),
+            css_code_split: false,
+            host: None,
+            css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
+            css: config.css.clone(),
+            html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            worker: None,
+            worker_entries: Arc::new(Mutex::new(std::collections::HashSet::new())),
+        }));
         let mut bundler = BundlerBuilder::default()
-            .with_plugins(vec![Pluginable::new_shared(OjCssPlugin {
-                collected: Arc::clone(&collected_css),
-                root: root.to_path_buf(),
-                has_postcss: oj_server::has_postcss_config(root),
-                // Vite inlines every asset of a library build.
-                inline_limit: u64::MAX,
-                client: true,
-                resolve: css_resolve_of(root, config, "client", is_production),
-                css_code_split: false,
-                host: None,
-                css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
-                css: config.css.clone(),
-                html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
-                worker: None,
-                worker_entries: Arc::new(Mutex::new(std::collections::HashSet::new())),
-            })])
+            .with_plugins(plugins)
             .with_options(BundlerOptions {
                 input: Some(
                     entries
@@ -5041,12 +5050,17 @@ async fn build_library(
     }
 
     let css_entries = collected_css.lock().unwrap().clone();
+    let mut stylex_css = match &stylex {
+        Some(plugin) => crate::stylex_plugin::stylesheet(plugin, root)?,
+        None => None,
+    };
     if !css_entries.is_empty() {
         let combined: String = css_entries
             .into_iter()
             .map(|(_, css)| css)
             .collect::<Vec<_>>()
             .join("\n");
+        let combined = append_stylex(combined, stylex_css.take());
         // Vite: `build.lib.cssFileName`, else the library's file name / package name.
         let css_stem = lib
             .css_file_name
@@ -5058,6 +5072,7 @@ async fn build_library(
         fs::write(out_dir.join(&css_name), &combined)?;
         emitted.push((css_name, combined.len()));
     }
+    write_stylex_fallback(out_dir, stylex_css, &mut emitted)?;
 
     println!(
         "oj build (library): {} in {:?}",

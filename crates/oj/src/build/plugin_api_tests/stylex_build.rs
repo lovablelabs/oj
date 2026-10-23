@@ -135,3 +135,60 @@ async fn dependencies_on_stylex_compile_in_the_bundle() {
         .collect();
     assert!(!js.contains("stylex.create"), "dependencies compiled");
 }
+
+const LIB_CONFIG: &str = "import stylex from \"@stylexjs/unplugin\";\n\
+export default {\n\
+  plugins: [stylex.vite({ useCSSLayers: true })],\n\
+  build: { lib: { entry: \"src/index.ts\", formats: [\"es\", \"cjs\"] } },\n\
+};\n";
+
+const LIB: &str = "import * as stylex from \"@stylexjs/stylex\";\n\
+const styles = stylex.create({ button: { color: \"olive\" } });\n\
+export const buttonClass = stylex.props(styles.button).className;\n";
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_library_build_appends_the_sheet_to_its_stylesheet() {
+    let Some(root) = app(
+        "stylex-lib",
+        &[
+            ("vite.config.js", LIB_CONFIG),
+            ("src/index.ts", &format!("import \"./lib.css\";\n{LIB}")),
+            ("src/lib.css", ".lib { margin: 0 }\n"),
+        ],
+    ) else {
+        return;
+    };
+    build_app(&root).await.expect("the StyleX library builds");
+    // The package is named `sx`: Vite names the library's files after it.
+    let sheet = std::fs::read_to_string(root.join("dist/sx.css")).expect("dist/sx.css");
+    let (lib_css, stylex_css) = sheet.split_once("@layer").expect("the StyleX sheet");
+    assert!(
+        lib_css.contains(".lib"),
+        "the library's own rules first:\n{sheet}"
+    );
+    assert!(stylex_css.contains("color: olive"), "{sheet}");
+    let class = stylex_css
+        .split('.')
+        .nth(1)
+        .and_then(|rest| rest.split([' ', '{']).next())
+        .expect("a class rule");
+    for out in ["dist/sx.js", "dist/sx.cjs"] {
+        let js = std::fs::read_to_string(root.join(out)).unwrap();
+        assert!(!js.contains("stylex.create"), "{out} compiled:\n{js}");
+        assert!(js.contains(class), "{out} uses {class}:\n{js}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_library_without_a_stylesheet_gets_the_fallback_file() {
+    let Some(root) = app(
+        "stylex-lib-fallback",
+        &[("vite.config.js", LIB_CONFIG), ("src/index.ts", LIB)],
+    ) else {
+        return;
+    };
+    build_app(&root).await.expect("the StyleX library builds");
+    let sheet = std::fs::read_to_string(root.join("dist/assets/stylex.css"))
+        .expect("assets/stylex.css written");
+    assert!(sheet.contains("color: olive"), "{sheet}");
+}
