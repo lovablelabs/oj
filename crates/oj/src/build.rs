@@ -3715,7 +3715,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
     // Split CSS is emitted once for the whole bundle; each page then links the
     // stylesheets of its own entry chunks (a page-relative href when the base is
     // relative).
-    let chunk_css: Vec<(String, String)> = if css_split {
+    let mut chunk_css: Vec<(String, String)> = if css_split {
         emit_split_css_files(
             &output,
             &collected_css,
@@ -3732,6 +3732,19 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
         Vec::new()
     };
     write_stylex_fallback(&out_dir, stylex_css, &mut emitted)?;
+    let pure_css = if es_output {
+        remove_pure_css_chunks(
+            &output,
+            &collected_css,
+            &out_dir,
+            &mut chunk_css,
+            &mut imports_map,
+        )?
+    } else {
+        Default::default()
+    };
+    emitted.retain(|(name, _)| !pure_css.contains_key(name));
+    manifest_entries.retain(|e| !pure_css.contains_key(&e.file));
     let mut all_sync_chunks: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     if let Some(name) = oj_config::ssr_manifest_name(&config) {
         let manifest = ssr_manifest(
@@ -3935,6 +3948,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
             &base,
             &imports_map,
             &chunk_css,
+            &pure_css,
             oj_config::module_preload_links(&config),
             &worker_entries.lock().unwrap().clone(),
         )?;
@@ -6108,6 +6122,106 @@ fn chunk_stylesheet(
     Ok(Some(ChunkStylesheet { css, name, sources }))
 }
 
+/// Vite's pure CSS chunks (es output): a chunk that is not an entry, exports
+/// nothing and renders no code, there only for its (non-module) stylesheets,
+/// is not emitted. Each chunk importing it takes its stylesheets after its own
+/// and loses the import, overwritten by a same-length `/* empty css */`
+/// comment (so its hash and sourcemap stand); an `import()` of it becomes
+/// `Promise.resolve({})` when the preload markers are filled. Returns each
+/// removed chunk's stylesheets.
+fn remove_pure_css_chunks(
+    output: &rolldown::BundleOutput,
+    collected_css: &Arc<Mutex<Vec<(String, String)>>>,
+    out_dir: &Path,
+    chunk_css: &mut Vec<(String, String)>,
+    imports_map: &mut std::collections::HashMap<String, Vec<String>>,
+) -> anyhow::Result<std::collections::BTreeMap<String, Vec<String>>> {
+    let styles: std::collections::HashSet<String> = collected_css
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(id, _)| id.clone())
+        .collect();
+    let css_module =
+        regex::Regex::new(r"\.module\.(css|less|sass|scss|styl|stylus|pcss|postcss|sss)(?:$|\?)")
+            .unwrap();
+    let mut removed: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for asset in &output.assets {
+        let rolldown_common::Output::Chunk(chunk) = asset else {
+            continue;
+        };
+        let mut has_css = false;
+        let pure = !chunk.is_entry
+            && chunk.exports.is_empty()
+            && chunk.code.is_empty()
+            && chunk.modules.keys.iter().all(|id| {
+                let style = styles.contains(id.as_str());
+                has_css |= style;
+                !style || !css_module.is_match(id.as_str())
+            });
+        if pure && has_css {
+            let file = chunk.filename.to_string();
+            let css = chunk_css
+                .iter()
+                .filter(|(c, _)| *c == file)
+                .map(|(_, css)| css.clone())
+                .collect();
+            removed.insert(file, css);
+        }
+    }
+    if removed.is_empty() {
+        return Ok(removed);
+    }
+    let names: Vec<String> = removed
+        .keys()
+        .map(|f| regex::escape(f.rsplit('/').next().unwrap_or(f)))
+        .collect();
+    let empty_chunk = regex::Regex::new(&format!(
+        r#"\bimport\s*["'][^"']*(?:{})["'];"#,
+        names.join("|")
+    ))?;
+    let mut files: Vec<&String> = imports_map.keys().collect();
+    files.sort();
+    let importers: Vec<String> = files
+        .into_iter()
+        .filter(|f| !removed.contains_key(*f))
+        .filter(|f| imports_map[*f].iter().any(|i| removed.contains_key(i)))
+        .cloned()
+        .collect();
+    for file in importers {
+        let imports = imports_map.get_mut(&file).unwrap();
+        let mut taken = Vec::new();
+        imports.retain(|i| match removed.get(i) {
+            Some(css) => {
+                taken.extend(css.iter().cloned());
+                false
+            }
+            None => true,
+        });
+        for css in taken {
+            if !chunk_css.iter().any(|(c, s)| *c == file && *s == css) {
+                chunk_css.push((file.clone(), css));
+            }
+        }
+        let path = out_dir.join(&file);
+        if let Ok(code) = fs::read_to_string(&path) {
+            let replaced = empty_chunk.replace_all(&code, |m: &regex::Captures| {
+                format!("/* empty css {}*/", " ".repeat(m[0].len() - 15))
+            });
+            if let std::borrow::Cow::Owned(replaced) = replaced {
+                fs::write(&path, replaced)?;
+            }
+        }
+    }
+    for file in removed.keys() {
+        imports_map.remove(file);
+        chunk_css.retain(|(c, _)| c != file);
+        let _ = fs::remove_file(out_dir.join(file));
+        let _ = fs::remove_file(out_dir.join(format!("{file}.map")));
+    }
+    Ok(removed)
+}
+
 /// The stylesheets a page links for its entry chunk (Vite's
 /// `getCssFilesForChunk`): the CSS of every chunk it reaches through static
 /// imports, dependencies first, then its own, each once (no FOUC).
@@ -6144,13 +6258,14 @@ fn apply_preload_helper(
     base: &str,
     imports_map: &std::collections::HashMap<String, Vec<String>>,
     chunk_css: &[(String, String)],
+    pure_css: &std::collections::BTreeMap<String, Vec<String>>,
     module_preload: bool,
     worker_entries: &std::collections::HashSet<String>,
 ) -> anyhow::Result<()> {
-    let css_of: std::collections::HashMap<&str, &str> = chunk_css
-        .iter()
-        .map(|(c, css)| (c.as_str(), css.as_str()))
-        .collect();
+    let mut css_of: std::collections::HashMap<&str, Vec<String>> = std::collections::HashMap::new();
+    for (chunk, css) in chunk_css {
+        css_of.entry(chunk).or_default().push(css.clone());
+    }
     let relative = is_relative_base(base);
     // Chunks only a worker ever loads run without a `document`: they preload
     // nothing (Vite builds workers without its import analysis, `isWorker`).
@@ -6194,11 +6309,18 @@ fn apply_preload_helper(
             if in_worker {
                 return None;
             }
+            if let Some(css) = pure_css.get(f) {
+                return Some(vite_preload::Dependency {
+                    js: None,
+                    imports: &[],
+                    css,
+                });
+            }
             let (name, imports) = imports_map.get_key_value(f)?;
             Some(vite_preload::Dependency {
                 js: Some(name.as_str()),
                 imports: imports.as_slice(),
-                css: css_of.get(f).copied(),
+                css: css_of.get(f).map_or(&[], Vec::as_slice),
             })
         };
         let Some(vite_preload::FilledChunk {

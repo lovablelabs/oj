@@ -451,41 +451,53 @@ impl<'a> ImportAnalysisVisitor<'a> {
 }
 
 /// What a chunk contributes to a preload list (Vite's collectPreloadDependencies).
+/// A removed pure CSS chunk has no `js`, only its stylesheets.
 pub(super) struct Dependency<'d> {
     pub js: Option<&'d str>,
     pub imports: &'d [String],
-    pub css: Option<&'d str>,
+    pub css: &'d [String],
+}
+
+/// A preload list, and whether it reached a removed pure CSS chunk (whose
+/// `import()` then resolves to `Promise.resolve({})`) with a stylesheet.
+#[derive(Default)]
+struct PreloadDependencies {
+    files: Vec<String>,
+    removed_chunk: bool,
+    removed_chunk_css: bool,
 }
 
 /// Vite's collectPreloadDependencies: the chunk, then what it imports
-/// (depth-first), then its stylesheet, each once, never the importer.
+/// (depth-first), then its stylesheets, each chunk once, never the importer.
 fn collect_preload_dependencies<'d>(
     file: &str,
     owner: &str,
     dependency: &dyn Fn(&str) -> Option<Dependency<'d>>,
-) -> Vec<String> {
+) -> PreloadDependencies {
     fn visit<'d>(
         file: &str,
         dependency: &dyn Fn(&str) -> Option<Dependency<'d>>,
         visited: &mut std::collections::HashSet<String>,
-        out: &mut Vec<String>,
+        out: &mut PreloadDependencies,
     ) {
         let Some(dep) = dependency(file) else { return };
         if !visited.insert(file.to_string()) {
             return;
         }
-        if let Some(js) = dep.js {
-            out.push(js.to_string());
+        match dep.js {
+            Some(js) => out.files.push(js.to_string()),
+            None => {
+                out.removed_chunk = true;
+                out.removed_chunk_css |= !dep.css.is_empty();
+            }
         }
         for import in dep.imports {
             visit(import, dependency, visited, out);
         }
-        if let Some(css) = dep.css {
-            out.push(css.to_string());
-        }
+        out.files.extend(dep.css.iter().cloned());
     }
     let mut visited = std::collections::HashSet::from([owner.to_string()]);
-    let mut out = Vec::new();
+    let mut out = PreloadDependencies::default();
     visit(file, dependency, &mut visited, &mut out);
     out
 }
@@ -493,6 +505,7 @@ fn collect_preload_dependencies<'d>(
 /// A dynamic `import()` in a finished chunk: where its specifier ends and its
 /// static url (es-module-lexer's `e` and `n`).
 struct DynamicImport {
+    expression: (usize, usize),
     specifier_end: usize,
     url: Option<String>,
 }
@@ -512,6 +525,7 @@ fn dynamic_imports(code: &str) -> Option<Vec<DynamicImport>> {
             };
             let span = oxc_span::GetSpan::span(&it.source);
             self.0.push(DynamicImport {
+                expression: (it.span.start as usize, it.span.end as usize),
                 specifier_end: span.end as usize,
                 url,
             });
@@ -624,19 +638,28 @@ pub(super) fn fill_preload_markers<'d>(
     let mut rewrote: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let dir = Path::new(file).parent().unwrap_or(Path::new(""));
     for (import, marker) in imports.iter().zip(&markers) {
-        let deps: Vec<String> = match &import.url {
+        let found = match &import.url {
             Some(url) => {
                 let normalized = normalize_posix(&dir.join(url));
-                let mut seen = std::collections::HashSet::new();
                 collect_preload_dependencies(&normalized, file, dependency)
-                    .into_iter()
-                    .filter(|d| seen.insert(d.clone()))
-                    .collect()
             }
-            None => Vec::new(),
+            None => PreloadDependencies::default(),
         };
+        if found.removed_chunk {
+            edits.push(Edit {
+                start: import.expression.0,
+                end: import.expression.1,
+                with: "Promise.resolve({})".to_string(),
+            });
+        }
+        let mut seen = std::collections::HashSet::new();
+        let deps: Vec<String> = found
+            .files
+            .into_iter()
+            .filter(|d| seen.insert(d.clone()))
+            .collect();
         let Some(marker) = *marker else { continue };
-        let deps: Vec<String> = if deps.len() > 1 {
+        let deps: Vec<String> = if deps.len() > 1 || (found.removed_chunk_css && !deps.is_empty()) {
             if module_preload {
                 deps
             } else {
@@ -764,7 +787,7 @@ mod tests {
     use super::*;
 
     fn deps<'d>(
-        graph: &'d [(&'d str, &'d [String], Option<&'d str>)],
+        graph: &'d [(&'d str, &'d [String], &'d [String])],
     ) -> impl Fn(&str) -> Option<Dependency<'d>> + 'd {
         move |file| {
             graph
@@ -773,23 +796,39 @@ mod tests {
                 .map(|(f, imports, css)| Dependency {
                     js: Some(f),
                     imports,
-                    css: *css,
+                    css,
                 })
         }
+    }
+
+    #[test]
+    fn a_removed_pure_css_chunk_resolves_empty_and_preloads_its_css() {
+        let none: Vec<String> = Vec::new();
+        let theme_css = vec!["assets/theme-t.css".to_string()];
+        let dependency = |file: &str| {
+            (file == "assets/theme-t.js").then(|| Dependency {
+                js: None,
+                imports: none.as_slice(),
+                css: theme_css.as_slice(),
+            })
+        };
+        let code = "e(()=>import(`./theme-t.js`),__VITE_PRELOAD__)";
+        let FilledChunk {
+            code: out, table, ..
+        } = fill_preload_markers(code, "assets/index-i.js", false, true, &dependency).unwrap();
+        assert_eq!(out, "e(()=>Promise.resolve({}),__vite__mapDeps([0]))");
+        assert!(table.unwrap().contains("[\"assets/theme-t.css\"]"));
     }
 
     #[test]
     fn markers_fill_with_vites_preload_lists() {
         let none: Vec<String> = Vec::new();
         let util = vec!["assets/util-x.js".to_string()];
+        let lazy_css = vec!["assets/lazy-a.css".to_string()];
         let graph = [
-            (
-                "assets/lazy-a.js",
-                util.as_slice(),
-                Some("assets/lazy-a.css"),
-            ),
-            ("assets/util-x.js", none.as_slice(), None),
-            ("assets/solo-b.js", none.as_slice(), None),
+            ("assets/lazy-a.js", util.as_slice(), lazy_css.as_slice()),
+            ("assets/util-x.js", none.as_slice(), none.as_slice()),
+            ("assets/solo-b.js", none.as_slice(), none.as_slice()),
         ];
         let dependency = deps(&graph);
         let code = "e(()=>import(`./lazy-a.js`),__VITE_PRELOAD__);e(()=>import(`./solo-b.js`),__VITE_PRELOAD__);e(__VITE_PRELOAD__)";

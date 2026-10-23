@@ -427,3 +427,33 @@ fn plugin_emitted_pages_build_vites_exact_files() {
     };
     assert_same_output(&root);
 }
+
+/// Chunks that are only CSS are not emitted: a lazy one loads as
+/// `Promise.resolve({})` with its stylesheet preloaded, and a shared one two
+/// lazy routes import leaves an `/* empty css */` comment behind, its
+/// stylesheet joining each importer's.
+#[test]
+fn pure_css_chunks_build_vites_exact_files() {
+    let Some(root) = app(
+        "pure-css",
+        &[
+            ("package.json", Some(r#"{"name":"parity","type":"module"}"#)),
+            ("vite.config.js", Some("export default {};\n")),
+            ("index.html", Some(PAGE)),
+            (
+                "src/main.js",
+                Some("window.t = () => import(\"./theme.js\");\nwindow.a = () => import(\"./a.js\");\nwindow.b = () => import(\"./b.js\");\n"),
+            ),
+            ("src/theme.js", Some("import \"./theme.css\";\n")),
+            ("src/base.js", Some("import \"./base.css\";\n")),
+            ("src/a.js", Some("import \"./base.js\";\nimport \"./a.css\";\nexport const a = 1;\n")),
+            ("src/b.js", Some("import \"./base.js\";\nexport const b = 2;\n")),
+            ("src/theme.css", Some(".theme { color: red; }\n")),
+            ("src/base.css", Some(".base { color: green; }\n")),
+            ("src/a.css", Some(".a { color: blue; }\n")),
+        ],
+    ) else {
+        return;
+    };
+    assert_same_output(&root);
+}
