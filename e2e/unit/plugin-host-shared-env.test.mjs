@@ -332,3 +332,52 @@ test(
     }
   },
 );
+
+// A worker plugin whose config hook fails is skipped in a Start build, but
+// that never excuses the app's own plugins: their buildApp failure still
+// fails the build.
+test(
+  "a worker's skipped config hook leaves the app's buildApp failure fatal",
+  { skip: !fs.existsSync(viteSrc) && "fixture vite not installed" },
+  async () => {
+    const fx = tmpProject({ prefix: "oj-worker-skip-" });
+    fx.write(
+      "vite.config.mjs",
+      `export default {
+         plugins: [{ name: "app", buildApp: { order: "post", handler() { throw new Error("app refused"); } } }],
+         worker: { plugins: () => [{ name: "worker", config() { throw new Error("worker config broke"); } }] },
+       };\n`,
+    );
+    const host = rpcSidecar("plugin-host.mjs", {
+      args: [
+        path.join(fx.root, "vite.config.mjs"),
+        JSON.stringify({
+          pluginsFormat: "vite",
+          config: { root: fx.root, base: "/", mode: "production", command: "build" },
+          env: { command: "build", mode: "production" },
+          environment: { name: "client", mode: "build" },
+          ojStartMode: true,
+          ojBundleHost: true,
+        }),
+      ],
+      env: { OJ_CACHE_ROOT: fx.root },
+      cwd: fx.root,
+    });
+    try {
+      await host.initSignal();
+      const opened = await host.send({ id: 1, hook: "openWorkerContainer", args: [JSON.stringify(["/app/src/w.ts"])] });
+      assert.equal(opened.error, undefined, JSON.stringify(opened));
+      const built = JSON.stringify({ client: { outDir: "/out/client", input: "c.tsx" } });
+      host.child.stdin.write(JSON.stringify({ id: 2, hook: "buildApp", args: [built] }) + "\n");
+      const request = await host.nextFrame();
+      assert.equal(request.method, "buildEnvironments", JSON.stringify(request));
+      const reply = await host
+        .send({ id: 3, hook: "rpcReply", args: [String(request.rpc), JSON.stringify({ result: null })] })
+        .then(async (r) => (r.id === 2 ? r : host.nextFrame()));
+      assert.match(String(reply.error), /\[plugin:app\] app refused/, JSON.stringify(reply));
+    } finally {
+      host.close();
+      fx.cleanup();
+    }
+  },
+);

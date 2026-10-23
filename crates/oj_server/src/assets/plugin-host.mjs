@@ -1334,6 +1334,12 @@ function createContainer(id, environment, resolvedConfig) {
     buildStartRun: null,
     buildStartFailureLogged: false,
     closeBundleDone: false,
+    // A config-phase hook of this container's plugins failed and was skipped:
+    // plugins that share state then fail in each other's later hooks (Nitro's
+    // buildApp after its config hook), so a buildApp failure is reported
+    // instead of failing the build. A worker's own plugins never excuse the
+    // app's.
+    configHookSkipped: false,
     // Config functions a fact handed out (`$fn` handles), and the module
     // infos of the chunking pass in flight (callStartFnBatch).
     startFns: [],
@@ -1650,10 +1656,6 @@ function minimalContext(meta) {
     },
   };
 }
-// A config-phase hook failed and was skipped: plugins that share state then
-// fail in each other's later hooks (Nitro's buildApp after its config hook),
-// so a buildApp failure is reported instead of failing the build.
-let configHookSkipped = false;
 
 let pluginConfigDelta = {};
 // The user config after the plugins' config and configEnvironment hooks:
@@ -1662,8 +1664,9 @@ let hookedUserConfig = {};
 // Vite's runConfigHook: every `config` hook of `list` in hook order, each
 // handed the config so far and the ConfigEnv, what it returns merged in.
 // `onPartial` sees each plugin's contribution; `keepPlugins` pins the plugin
-// array across the merges (mergeConfigLite concatenates arrays).
-async function runConfigHook(config, list, { onPartial, keepPlugins } = {}) {
+// array across the merges (mergeConfigLite concatenates arrays). A skipped
+// hook marks `container`.
+async function runConfigHook(config, list, { onPartial, keepPlugins, container = main } = {}) {
   const configContext = minimalContext();
   for (const { p, fn } of hooksOf(list, "config")) {
     initStage(`config:${p.name ?? "?"}`);
@@ -1675,7 +1678,7 @@ async function runConfigHook(config, list, { onPartial, keepPlugins } = {}) {
       }
     } catch (e) {
       if (!ojStartMode) throw e;
-      configHookSkipped = true;
+      container.configHookSkipped = true;
       process.stderr.write(`${OJ} plugin host: config(${p.name ?? "?"}) skipped: ${(e && e.message) || e}\n`);
     }
     if (keepPlugins) config.plugins = keepPlugins;
@@ -1683,7 +1686,7 @@ async function runConfigHook(config, list, { onPartial, keepPlugins } = {}) {
   return config;
 }
 // configResolved over `list` with `resolved`, on Vite's minimal context.
-async function runConfigResolved(list, resolved) {
+async function runConfigResolved(list, resolved, container = main) {
   const resolvedContext = minimalContext({ watchMode: command === "serve" });
   for (const { p, fn } of hooksOf(list, "configResolved")) {
     initStage(`configResolved:${p.name ?? "?"}`);
@@ -1691,7 +1694,7 @@ async function runConfigResolved(list, resolved) {
       await fn.call(resolvedContext, resolved);
     } catch (e) {
       if (!ojStartMode) throw e;
-      configHookSkipped = true;
+      container.configHookSkipped = true;
       process.stderr.write(`${OJ} plugin host: configResolved(${p.name ?? "?"}) skipped: ${(e && e.message) || e}\n`);
     }
   }
@@ -1753,7 +1756,7 @@ async function runConfigHooks() {
           if (r) config.environments[name] = mergeConfigLite(config.environments[name], r);
         } catch (e) {
           if (!ojStartMode) throw e;
-          configHookSkipped = true;
+          main.configHookSkipped = true;
           process.stderr.write(
             `${OJ} plugin host: configEnvironment(${p.name ?? "?"}) skipped: ${(e && e.message) || e}\n`,
           );
@@ -3882,7 +3885,9 @@ async function openWorkerContainer(bundleChain) {
     await flattenPlugins(typeof create === "function" ? create() : []),
     userViteConfig,
   );
-  const workerConfig = await runConfigHook(mergeConfigLite({}, hookedUserConfig), workerPlugins);
+  const c = createContainer(nextContainerId++, { name: "client", mode: environment.mode }, null);
+  c.topLevelPlugins = workerPlugins;
+  const workerConfig = await runConfigHook(mergeConfigLite({}, hookedUserConfig), workerPlugins, { container: c });
   const resolved = {
     ...workerConfig,
     ...main.resolvedConfig,
@@ -3891,9 +3896,8 @@ async function openWorkerContainer(bundleChain) {
     bundleChain,
   };
   resolved.plugins = withCssPostShim(workerPlugins);
-  await runConfigResolved(workerPlugins, resolved);
-  const c = createContainer(nextContainerId++, { name: "client", mode: environment.mode }, resolved);
-  c.topLevelPlugins = workerPlugins;
+  await runConfigResolved(workerPlugins, resolved, c);
+  c.resolvedConfig = resolved;
   await resolveEnvironment(c, "client");
   containers.set(c.id, c);
   logActivePlugins(c.plugins);
@@ -3960,7 +3964,7 @@ async function buildApp(builtJson) {
     try {
       await fn.call(context, builder);
     } catch (e) {
-      if (!configHookSkipped) throw decoratePluginError(e, p);
+      if (!main.configHookSkipped) throw decoratePluginError(e, p);
       process.stderr.write(
         `${OJ} plugin host: buildApp(${p.name ?? "?"}) failed (skipped): ${(e && e.message) || e}\n`,
       );
