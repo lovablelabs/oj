@@ -5,19 +5,29 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.45] - 2026-10-23
 
 ### Changed
 
 - TanStack Start apps are bundled by the rolldown built into oj. The client, server and Cloudflare Worker bundles of `oj build`, the dev client bundle and its hot updates now run on the rolldown crates linked into the binary, the bundler `oj build` already used for every other app, with the app's Vite plugins bridged through the plugin host. The app's own `rolldown` package no longer decides how oj bundles: an install that lacks it, or pins another version, builds the same. The Start client bundle cache format moves to 5, so existing entries are rebuilt once.
 - The dependency optimizer's scan and pre-bundle run on the same built-in rolldown, in process. The scan still resolves every import through the app's plugins with `scan: true`, and `optimizeDeps.rolldownOptions.plugins` still join it. `optimizeDeps.rolldownOptions` applies `platform`, `resolve`, `transform` (`define`, `target`, `jsx`), `moduleTypes`, `external` names, `treeshake`, `keepNames` and `output` (`banner`, `footer`, `minify`, `legalComments`); any other key is reported once and ignored. Existing pre-bundles are rebuilt once.
 - `OJ_VENDORED_ROLLDOWN` is gone, and the nix package no longer carries a rolldown of its own.
+- Dev pages run Vite's dev HTML transform natively when no plugin hooks `transformIndexHtml`: the import map, CSP nonce, `%ENV%` replacement, html-proxy modules for inline scripts, inline styles and tag injection, held byte for byte to Vite 8's output. A page a plugin hooks still runs through the plugin host. With pages native, an app with no active plugins starts no JS engine at all.
+- `@vitejs/plugin-react` 6 and `@vitejs/plugin-react-swc` 4 run natively. Their extra plugins (the refresh config hook, the bundled-dev preamble, the virtual preamble module) are work oj already does, so a React app whose only plugin is plugin-react starts no plugin host. On a Vite 8 + React app, a warm boot serves its first page in about 157ms instead of 255ms and idles at 51 MB instead of 150 MB.
+- The TanStack Start build gives app plugins Vite's build hooks. Every environment builds on the same plugin instances (`builder.sharedPlugins`), `moduleParsed` fires for every module with its imports, `buildApp` runs, each environment's `closeBundle` runs when its own build finishes, and assets off the client are dropped unless `build.emitAssets` is set. `?worker` bundles follow `worker.plugins`, `worker.format` and `worker.rolldownOptions`.
+- Tailwind v4 sheets compiled without a PostCSS config keep their compiler and scanner between compiles, as Tailwind's own integrations do. An edit rescans incrementally, and only a change to the sheet or a config, plugin or imported stylesheet rebuilds the compiler. On a 400-file app a recompile drops from about 20ms to 12ms, and memory stays flat across edits instead of growing with each one.
+- The Rust toolchain is now 1.99.1.
 
 ### Fixed
 
 - Dependency pre-bundling works in apps that install no rolldown (no Vite 8 in the tree). They used to serve every dependency file by file.
 - With `build.sourcemap` on, `oj build` keeps the maps plugins return from `transform` and `renderChunk`, in plain and TanStack Start apps. A module a plugin transformed used to lose every mapping, and a `renderChunk` edit shifted the chunk's map. A plugin that changes code without returning a map, or returns one oj cannot read, now gets Vite's "Sourcemap is likely to be incorrect" warning, naming it, once per build. As in rolldown, such a `transform` leaves the module unmapped, while such a `renderChunk` step only drops its own edit from the chunk's map.
 - A module that fails to load now says why. `oj build`, the TanStack Start bundles and the dependency scan printed only "Could not load x - plugin threw an error" when a stylesheet failed to compile or a plugin's `load` threw; the error now reads `[plugin] Could not load <module>` followed by the cause, and the Start dev overlay names the plugin and the module, as in Vite.
+- TanStack Start `createIsomorphicFn`, `createServerOnlyFn` and `createClientOnlyFn` calls compile per side, as TanStack's start compiler does. Both sides of every isomorphic function, and every server-only body, used to ship in the client bundle along with whatever they imported.
+- oj loads the app's `vite` by its ESM entry, as Node's `import("vite")` does. On Vite 5 and 6 it got the deprecated CJS proxy, so config extraction fell back to bundling the config itself, `this.meta.viteVersion` read `8.0.0`, and Vite printed its CJS deprecation warning twice per boot.
+- PostCSS configs run on the `postcss` that ships with the app's vite, as Vite does. Under a strict install (pnpm) where the app does not depend on `postcss` directly, oj skipped the whole config in dev and failed the build with `Could not load`. With a config and no postcss anywhere, oj now reports the missing package.
+- A Tailwind stylesheet under a PostCSS config has its `@import`s inlined before PostCSS runs, as Vite puts postcss-import first. Relative imports used to reach the browser unresolved. Remote imports are hoisted whole, so a Google Fonts url with `;` in it no longer splits, and `layer()`, `supports()` and media imports, cycles, duplicates and package `exports` follow postcss-import.
+- In TanStack Start dev, a client rebundle that fails before the app's build runs is logged with its error, and the overlay names it, instead of the generic "client bundle failed" text and a log line saying no rebundle happened.
 
 ## [0.2.44] - 2026-10-22
 
