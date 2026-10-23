@@ -943,3 +943,40 @@ fn a_closure_reaching_out_of_the_root_restores_under_its_own_key() {
     );
     let _ = fs::remove_dir_all(&outside);
 }
+
+// A restore into a build dir that never built (another worktree's
+// generation) leaves the chunk index a consumer reads and the closure the
+// dev rebundle gate consults; the chunks stay in the blob store.
+#[test]
+fn a_restore_leaves_the_build_dirs_index_and_closure() {
+    let shared = shared_base("build-view");
+    let a = Fixture::new("view-a");
+    let b = Fixture::new("view-b");
+    split_store_at(&a.root, &shared, SHARED_KEEP_GENERATIONS)
+        .persist(&a.start)
+        .unwrap();
+    b.clear_start_dir();
+    let _ = fs::remove_file(b.start.join(CHUNK_INDEX_FILE));
+    let _ = fs::remove_file(b.start.join(CLOSURE_FILE));
+    let (_, pinned) = split_store_at(&b.root, &shared, SHARED_KEEP_GENERATIONS)
+        .restore(&b.start, no_globs)
+        .unwrap();
+    let index: serde_json::Value =
+        serde_json::from_slice(&fs::read(b.start.join(CHUNK_INDEX_FILE)).unwrap()).unwrap();
+    assert_eq!(index["entry"], "client-entry.js");
+    let names: Vec<&str> = index["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["name"].as_str().unwrap())
+        .collect();
+    assert!(names.iter().all(|n| pinned.chunk(n).is_some()), "{names:?}");
+    let closure: Vec<String> =
+        serde_json::from_slice(&fs::read(b.start.join(CLOSURE_FILE)).unwrap()).unwrap();
+    assert_eq!(closure.len(), 2);
+    assert!(
+        closure.iter().all(|f| f.contains("view-b")),
+        "the closure names this worktree's files: {closure:?}"
+    );
+    assert!(!b.start.join(CHUNKS_DIR).exists(), "no chunk bytes copied");
+}

@@ -393,6 +393,8 @@ impl StartBundleStore {
             return Err(Miss::ChunkCorrupt { key, name, detail });
         }
         restore_artifacts(&entry, start_dir, &manifest, &key, &globs)?;
+        restore_build_view(start_dir, &manifest, &files)
+            .map_err(|_| Miss::ArtifactWriteFailed(CHUNK_INDEX_FILE.to_string()))?;
         if rehashed > 0 || !self.local.join(MEMO_FILE).is_file() {
             write_memo(&self.local, &build_memo(&files, &ids, &digests));
         }
@@ -657,6 +659,37 @@ fn restore_artifacts(
         return Err(Miss::ArtifactWriteFailed(CSS_URLS_FILE.to_string()));
     }
     Ok(())
+}
+
+/// The small files a fresh bundle leaves in the build dir besides the
+/// artifacts: the chunk index and the closure, rehomed onto this root. A
+/// restore from the shared store lands in a build dir that never built, so
+/// without them the dev rebundle gate has no closure to consult. The chunks
+/// themselves stay in the blob store, served from there (no per-boot copy
+/// of the chunk set; see [`StartBundleStore::restore`]).
+fn restore_build_view(
+    start_dir: &Path,
+    manifest: &GenerationManifest,
+    files: &[PathBuf],
+) -> std::io::Result<()> {
+    let index: Vec<serde_json::Value> = manifest
+        .files
+        .iter()
+        .map(|(name, f)| serde_json::json!({ "name": name, "size": f.size }))
+        .collect();
+    let index = serde_json::json!({ "entry": manifest.entry, "files": index });
+    integrity::atomic_write(
+        &start_dir.join(CHUNK_INDEX_FILE),
+        index.to_string().as_bytes(),
+    )?;
+    let closure: Vec<String> = files
+        .iter()
+        .map(|f| f.to_string_lossy().into_owned())
+        .collect();
+    integrity::atomic_write(
+        &start_dir.join(CLOSURE_FILE),
+        &serde_json::to_vec(&closure).unwrap_or_default(),
+    )
 }
 
 /// The trimmed generation key `current` points at.

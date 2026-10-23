@@ -190,14 +190,28 @@ try {
     html.includes("css-module-badge"),
     `dev /about did not render:\n${html.slice(0, 800)}\n---\n${log.slice(-1500)}`,
   );
-  const chunks = filesUnder(path.join(app, ".oj-cache"), ".js").map((f) => fs.readFileSync(f, "utf8"));
+  // The served client bundle, by its chunk index: a boot that restored the
+  // bundle from the oj store serves the chunks from there, not the build dir.
+  const startDir = path.join(app, ".oj-cache", "v1", "start");
+  const index = JSON.parse(fs.readFileSync(path.join(startDir, "client-chunks.json"), "utf8"));
+  const chunks = await Promise.all(
+    index.files
+      .filter((f) => f.name.endsWith(".js"))
+      .map(async (f) => (await fetch(`http://localhost:${PORT}/@oj-start/${f.name}`)).text()),
+  );
   const hrefs = [...html.matchAll(/<link[^>]*rel="stylesheet"[^>]*href="([^"]+)"/g)].map((m) => m[1]);
   const sheets = await Promise.all(
     hrefs.map(async (h) => (await fetch(new URL(h, `http://localhost:${PORT}/`))).text()),
   );
   const devClasses = checkStyles("dev", html, chunks, sheets);
-  const hero = fs.realpathSync(path.join(app, "src", "hero.png"));
-  checkInline("dev", html, chunks, (u) => u === `/@oj-start/fs${hero}`);
+  // In-root assets are served root-relative (`@ws/`), the same in every
+  // worktree; the URL must still serve the image.
+  checkInline("dev", html, chunks, (u) => u === "/@oj-start/fs/@ws/src/hero.png");
+  const heroRes = await fetch(`http://localhost:${PORT}/@oj-start/fs/@ws/src/hero.png`);
+  must(
+    heroRes.ok && Buffer.from(await heroRes.arrayBuffer()).equals(fs.readFileSync(path.join(app, "src", "hero.png"))),
+    `dev: the inline sheet's image url does not serve the image (${heroRes.status})`,
+  );
   console.log(`start dev: ${Object.values(devClasses).join(", ")} agree on server, client and sheet`);
   srv.kill("SIGKILL");
 
