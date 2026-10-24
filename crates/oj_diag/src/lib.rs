@@ -3,7 +3,7 @@
 
 //! Structured dev-server diagnostics. Every noteworthy failure is recorded as
 //! an [`Event`] in a bounded in-memory ring (the dev server lists it at
-//! `/@oj/diagnostics`), handed to each [`subscribe`]r (an exporter), and,
+//! `/@oj/diagnostics`), handed to each [`add_output`] (an exporter), and,
 //! when NDJSON output is on ([`set_json_output`]), printed as one
 //! machine-parsable stderr line a supervisor can ingest.
 //! Human stderr output is a separate concern: call sites keep their own
@@ -13,8 +13,7 @@
 use serde::Serialize;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Events kept; the oldest is dropped (and counted) past this.
 const RING_CAP: usize = 256;
@@ -172,15 +171,18 @@ struct Inner {
     counters: BTreeMap<&'static str, u64>,
     /// Events the ring evicted (history loss is visible, never silent).
     dropped: u64,
-    subscribers: Vec<SyncSender<Event>>,
-    /// Events a full subscriber queue refused, counted like evictions.
-    unsent: u64,
 }
+
+/// An exporter of every event as it is emitted, folded repeats included: an
+/// output like the NDJSON line, run on the emitting thread outside the ring's
+/// lock, so it must stay cheap and hand any I/O to a thread of its own.
+pub type Output = Arc<dyn Fn(&Event) + Send + Sync>;
 
 #[derive(Default)]
 pub struct Diagnostics {
     json: AtomicBool,
     inner: Mutex<Inner>,
+    outputs: Mutex<Vec<Output>>,
 }
 
 impl Diagnostics {
@@ -203,7 +205,6 @@ impl Diagnostics {
     pub fn record(&self, event: Event) -> Option<String> {
         let mut inner = self.inner.lock().unwrap();
         *inner.counters.entry(event.kind.as_str()).or_default() += 1;
-        inner.publish(&event);
         if let Some(last) = inner.events.back_mut() {
             if last.kind == event.kind
                 && last.module == event.module
@@ -237,34 +238,25 @@ impl Diagnostics {
             "events": events,
             "counters": inner.counters,
             "dropped": inner.dropped,
-            "unsent": inner.unsent,
         })
     }
 
-    /// Every event recorded from now on, folded repeats included, on a queue
-    /// of `capacity`: the consumer works on its own thread, never on the one
-    /// that emitted. A full queue drops the event (counted as `unsent`); a
-    /// dropped receiver unsubscribes.
-    pub fn subscribe(&self, capacity: usize) -> Receiver<Event> {
-        let (tx, rx) = std::sync::mpsc::sync_channel(capacity);
-        self.inner.lock().unwrap().subscribers.push(tx);
-        rx
+    /// Hands every later event to `output` (see [`Output`]).
+    pub fn add_output(&self, output: Output) {
+        self.outputs.lock().unwrap().push(output);
     }
-}
 
-impl Inner {
-    fn publish(&mut self, event: &Event) {
-        let mut unsent = 0;
-        self.subscribers
-            .retain(|tx| match tx.try_send(event.clone()) {
-                Ok(()) => true,
-                Err(TrySendError::Full(_)) => {
-                    unsent += 1;
-                    true
-                }
-                Err(TrySendError::Disconnected(_)) => false,
-            });
-        self.unsent += unsent;
+    /// The outputs, then the ring; in NDJSON mode a fresh (non-folded) event
+    /// also prints one line to stderr. The outputs run with no lock held, so
+    /// one that emits an event of its own cannot deadlock.
+    pub fn emit(&self, event: Event) {
+        let outputs = self.outputs.lock().unwrap().clone();
+        for output in &outputs {
+            output(&event);
+        }
+        if let Some(line) = self.record(event) {
+            eprintln!("{line}");
+        }
     }
 }
 
@@ -279,17 +271,14 @@ pub fn set_json_output(on: bool) {
     global().set_json_output(on);
 }
 
-/// [`Diagnostics::subscribe`] on the process ring.
-pub fn subscribe(capacity: usize) -> Receiver<Event> {
-    global().subscribe(capacity)
+/// [`Diagnostics::add_output`] on the process ring.
+pub fn add_output(output: Output) {
+    global().add_output(output);
 }
 
-/// Record into the process ring; in NDJSON mode a fresh (non-folded) event
-/// also prints one line to stderr.
+/// [`Diagnostics::emit`] on the process ring.
 pub fn emit(event: Event) {
-    if let Some(line) = global().record(event) {
-        eprintln!("{line}");
-    }
+    global().emit(event);
 }
 
 /// One stderr line for an event: the event's fields plus the `"oj":"diag"`
@@ -439,28 +428,33 @@ mod tests {
     }
 
     // An exporter sees every occurrence (the ring folds repeats, a counter
-    // must not), never blocks the emitter, and leaves when it hangs up.
+    // must not), and one that emits from inside its output cannot deadlock.
     #[test]
-    fn subscribers_get_every_event_without_blocking_the_emitter() {
-        let diag = Diagnostics::new();
-        let rx = diag.subscribe(2);
+    fn outputs_get_every_event_and_may_emit_themselves() {
+        let diag = Arc::new(Diagnostics::new());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (log, inner) = (seen.clone(), Arc::downgrade(&diag));
+        diag.add_output(Arc::new(move |e: &Event| {
+            log.lock().unwrap().push(e.message.clone());
+            if e.message == "boom" {
+                if let Some(diag) = inner.upgrade() {
+                    diag.emit(event(Kind::CompileError, "echo"));
+                }
+            }
+        }));
         for _ in 0..3 {
-            diag.record(event(Kind::CompileError, "boom"));
+            diag.emit(event(Kind::CompileError, "boom"));
         }
-        let got: Vec<Event> = rx.try_iter().collect();
-        assert_eq!(got.len(), 2, "the queue's capacity, the repeat included");
         assert_eq!(
-            diag.snapshot(None)["unsent"],
-            1,
-            "the full queue's refusal is counted"
+            *seen.lock().unwrap(),
+            ["boom", "echo", "boom", "echo", "boom", "echo"]
         );
+        let snapshot = diag.snapshot(None);
+        assert_eq!(snapshot["counters"]["compile_error"], 6);
         assert_eq!(
-            diag.snapshot(None)["events"][0]["count"],
-            3,
-            "the ring still folds"
+            snapshot["events"].as_array().unwrap().len(),
+            6,
+            "boom and echo alternate"
         );
-        drop(rx);
-        diag.record(event(Kind::CompileError, "later"));
-        assert!(diag.inner.lock().unwrap().subscribers.is_empty());
     }
 }

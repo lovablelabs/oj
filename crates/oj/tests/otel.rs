@@ -169,10 +169,21 @@ impl Server {
     /// `oj dev` on `app(name)` exporting to `endpoint`, its batch processors
     /// and metric reader exporting every `export_ms`, once it serves.
     fn start(name: &str, endpoint: &str, export_ms: &str) -> Server {
+        Server::start_with(name, endpoint, export_ms, &[])
+    }
+
+    /// [`Server::start`] with `env` applied last: `Some` sets a variable,
+    /// `None` removes it.
+    fn start_with(
+        name: &str,
+        endpoint: &str,
+        export_ms: &str,
+        env: &[(&str, Option<&str>)],
+    ) -> Server {
         let root = app(name);
         let port = free_port();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_oj"))
-            .args(["dev"])
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_oj"));
+        cmd.args(["dev"])
             .arg(&root)
             .args(["--port", &port.to_string()])
             .env("OJ_OTEL", "1")
@@ -182,6 +193,15 @@ impl Server {
             .env("OTEL_METRIC_EXPORT_INTERVAL", export_ms)
             .env("OTEL_BLRP_SCHEDULE_DELAY", export_ms)
             .env("OTEL_BSP_SCHEDULE_DELAY", export_ms)
+            .env_remove("OTEL_TRACES_SAMPLER")
+            .env_remove("OTEL_TRACES_SAMPLER_ARG");
+        for (key, value) in env {
+            match value {
+                Some(value) => cmd.env(key, value),
+                None => cmd.env_remove(key),
+            };
+        }
+        let mut child = cmd
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
@@ -271,7 +291,8 @@ fn otel_exports_diagnostics_spans_and_metrics() {
     let server = Server::start("export", &endpoint, "200");
     let port = server.port;
 
-    let traceparent = format!("traceparent: 00-{TRACE_ID}-{PARENT_ID}-01\r\n");
+    let traceparent =
+        format!("traceparent: 00-{TRACE_ID}-{PARENT_ID}-01\r\ntracestate: vendor=abc\r\n");
     assert_eq!(get(port, "/ok.tsx", &traceparent), 200);
     for _ in 0..3 {
         assert_eq!(
@@ -341,6 +362,10 @@ fn otel_exports_diagnostics_spans_and_metrics() {
         let spans = items(&r.traces, "Spans", "spans");
         let span = spans.iter().find(|s| s["traceId"] == TRACE_ID).unwrap();
         assert_eq!(span["name"], "GET");
+        assert_eq!(
+            span["traceState"], "vendor=abc",
+            "the parent's tracestate rides along"
+        );
         assert_eq!(attr(span, "url.path").as_deref(), Some("/ok.tsx"));
         assert_eq!(attr(span, "url.scheme").as_deref(), Some("http"));
         assert_eq!(
@@ -410,4 +435,71 @@ fn the_signal_shutdown_exports_what_is_queued() {
             .any(|rec| attr(rec, "oj.diag.kind").as_deref() == Some("compile_error")),
         "the queued diagnostic reached the collector"
     );
+    assert!(
+        items(&r.metrics, "Metrics", "metrics")
+            .iter()
+            .any(|m| m["name"] == "http.server.request.duration"),
+        "the shutdown collected and exported the metrics"
+    );
+}
+
+/// What reaches the collector from a session that serves a traced request
+/// and a broken module, exporting every 200ms, after it is stopped.
+fn session(name: &str, env: &[(&str, Option<&str>)]) -> (Arc<Mutex<Received>>, String) {
+    let (endpoint, received) = collector();
+    let server = Server::start_with(name, &endpoint, "200", env);
+    let traceparent = format!("traceparent: 00-{TRACE_ID}-{PARENT_ID}-01\r\n");
+    assert_eq!(get(server.port, "/ok.tsx", &traceparent), 200);
+    assert_eq!(get(server.port, "/main.tsx", ""), 500);
+    // Several export intervals: anything enabled has had time to arrive.
+    std::thread::sleep(Duration::from_millis(1500));
+    let stderr = server.stderr.lock().unwrap().clone();
+    server.stop();
+    (received, stderr)
+}
+
+fn nothing_arrived(received: &Mutex<Received>) -> bool {
+    let r = received.lock().unwrap();
+    r.logs.is_empty() && r.traces.is_empty() && r.metrics.is_empty()
+}
+
+// Off by default: with the OTLP endpoint configured but no OJ_OTEL, nothing
+// is exported and oj runs as it always did.
+#[test]
+fn nothing_exports_without_oj_otel() {
+    let (received, _) = session("off", &[("OJ_OTEL", None)]);
+    assert!(
+        nothing_arrived(&received),
+        "OJ_OTEL unset exported something"
+    );
+}
+
+// A config Deno refuses (an unsupported sampler) turns export off with a
+// warning; the dev server itself serves on.
+#[test]
+fn a_bad_otel_config_warns_and_oj_serves_on() {
+    let (received, stderr) = session("bad", &[("OTEL_TRACES_SAMPLER", Some("sometimes"))]);
+    assert!(
+        stderr.contains("OpenTelemetry export disabled"),
+        "the refusal is reported:\n{stderr}"
+    );
+    assert!(nothing_arrived(&received));
+}
+
+// always_off drops every span, even one whose parent was sampled; the
+// duration histogram and the diagnostics are not sampled and still arrive.
+#[test]
+fn an_always_off_sampler_drops_spans_only() {
+    let (received, _) = session("sampler", &[("OTEL_TRACES_SAMPLER", Some("always_off"))]);
+    let r = received.lock().unwrap();
+    assert!(
+        items(&r.traces, "Spans", "spans").is_empty(),
+        "a span was exported"
+    );
+    assert!(items(&r.metrics, "Metrics", "metrics")
+        .iter()
+        .any(|m| m["name"] == "http.server.request.duration"));
+    assert!(items(&r.logs, "Logs", "logRecords")
+        .iter()
+        .any(|rec| attr(rec, "oj.diag.kind").as_deref() == Some("compile_error")));
 }

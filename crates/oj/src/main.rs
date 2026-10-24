@@ -496,15 +496,22 @@ fn main() -> anyhow::Result<()> {
     ) {
         oj_server::otel::init();
     }
-    let result = tokio::runtime::Builder::new_multi_thread()
+    // Commands that return (build, preview, a failed boot) and panics that
+    // unwind out of here; the dev server's exits shut down on their own paths.
+    let _otel = ShutdownOtelOnDrop;
+    tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(oj_compiler::COMPILE_STACK_SIZE)
         .build()?
-        .block_on(run(cli));
-    // Commands that return (build, preview, a failed boot); the dev server's
-    // exits shut the export down on their own paths.
-    oj_server::otel::shutdown();
-    result
+        .block_on(run(cli))
+}
+
+struct ShutdownOtelOnDrop;
+
+impl Drop for ShutdownOtelOnDrop {
+    fn drop(&mut self) {
+        oj_server::otel::shutdown();
+    }
 }
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
