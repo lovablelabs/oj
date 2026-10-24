@@ -1803,14 +1803,7 @@ fn script_inputs(
     Ok(ScriptInputs { config, app_env })
 }
 
-/// The `.env` vars the Start scripts (route codegen, the SSR runtime's
-/// `process.env`) see: every var of the mode's files, the shell winning, as
-/// TanStack Start's load-env plugin assigns them to `process.env`.
-fn start_script_vars(env: &oj_env::Env, inputs: &ScriptInputs) -> Vec<(String, String)> {
-    crate::start_bundle::dotenv_process_vars(env, &inputs.app_env)
-}
-
-/// [`start_script_vars`] for one command, resolved against the process snapshot.
+/// The `.env` vars of one command, resolved against the process snapshot.
 #[cfg(test)]
 fn start_script_env(
     root: &Path,
@@ -1819,9 +1812,10 @@ fn start_script_env(
     mode: &str,
 ) -> anyhow::Result<Vec<(String, String)>> {
     let env = oj_env::get();
-    Ok(start_script_vars(
+    let inputs = script_inputs(env, root, config_file, command, mode)?;
+    Ok(crate::start_bundle::dotenv_process_vars(
         env,
-        &script_inputs(env, root, config_file, command, mode)?,
+        &inputs.app_env,
     ))
 }
 
@@ -1896,21 +1890,6 @@ pub async fn start_build(
     let cache = oj_cache::cache_root(&root).join("start");
     oj_server::prepare_cache_root(&root);
     oj_server::write_start_assets(&cache)?;
-    {
-        let gen_env = script_env(
-            oj_env::get(),
-            &root,
-            config_file.as_deref(),
-            "serve",
-            "development",
-        )?;
-        let (r, c) = (root.clone(), cache.clone());
-        tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-            generate_route_tree(&r, &c, &gen_env)?;
-            generate_server_fn_resolver(&r, &c)
-        })
-        .await??;
-    }
     // The build options Vite resolves for a Start app too: `--out`/`build.outDir`,
     // `base`, `build.sourcemap`, `build.minify`.
     let mut config = oj_config::load_with(&root, "build", mode).unwrap_or_default();
@@ -1922,8 +1901,6 @@ pub async fn start_build(
         mode,
     )
     .map_err(|e| anyhow::anyhow!(e))?;
-    let build_cfg = config.build.clone().unwrap_or_default();
-    let out_dir = prepare_start_out_dir(&root, out, &build_cfg, empty_out_dir)?;
     // Vite's rule: the shell's NODE_ENV wins, else `.env[.mode]`
     // NODE_ENV=development makes a development build, else production. The
     // shell's NODE_ENV comes from the startup snapshot, so nothing an engine
@@ -1939,6 +1916,19 @@ pub async fn start_build(
         oj_config::env_prefixes(&config),
         "production",
     );
+    // The route tree is generated under the build's own config and env, as
+    // the router plugin does inside a Vite build: no second evaluation.
+    {
+        let gen_env = script_vars(oj_env::get(), &root, &app_env);
+        let (r, c) = (root.clone(), cache.clone());
+        tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+            generate_route_tree(&r, &c, &gen_env)?;
+            generate_server_fn_resolver(&r, &c)
+        })
+        .await??;
+    }
+    let build_cfg = config.build.clone().unwrap_or_default();
+    let out_dir = prepare_start_out_dir(&root, out, &build_cfg, empty_out_dir)?;
     let output = crate::start_bundle::prod::BuildOutput {
         out_dir: out_dir.clone(),
         sourcemap: oj_config::build_sourcemap(&config),
@@ -2282,6 +2272,13 @@ fn script_env(
     mode: &str,
 ) -> anyhow::Result<Vec<(String, String)>> {
     let inputs = script_inputs(env, root, config_file, command, mode)?;
+    Ok(script_vars(env, root, &inputs.app_env))
+}
+
+/// What the Start scripts (route codegen, the SSR runtime's `process.env`)
+/// see: the app root and cache, NODE_ENV, and every var of the mode's `.env`
+/// files, the shell winning, as TanStack Start's load-env plugin assigns them.
+fn script_vars(env: &oj_env::Env, root: &Path, app_env: &oj_env::AppEnv) -> Vec<(String, String)> {
     let mut vars = vec![
         (
             "OJ_APP_ROOT".to_string(),
@@ -2291,13 +2288,10 @@ fn script_env(
             "OJ_CACHE_ROOT".to_string(),
             oj_cache::cache_root(root).to_string_lossy().into_owned(),
         ),
-        (
-            "NODE_ENV".to_string(),
-            inputs.app_env.node_env().to_string(),
-        ),
+        ("NODE_ENV".to_string(), app_env.node_env().to_string()),
     ];
-    vars.extend(start_script_vars(env, &inputs));
-    Ok(vars)
+    vars.extend(crate::start_bundle::dotenv_process_vars(env, app_env));
+    vars
 }
 
 fn app_uses_tailwind(root: &Path) -> bool {
