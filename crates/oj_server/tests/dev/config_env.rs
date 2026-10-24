@@ -137,3 +137,68 @@ async fn an_ssr_build_host_sees_vites_config_env() {
         "a hook saw isSsrBuild true:\n{seen}"
     );
 }
+
+const PROMISED_TANSTACK_CONFIG: &str = r#"import { appendFileSync } from "node:fs";
+import path from "node:path";
+const ran = (name) => ({
+  name,
+  config() {
+    appendFileSync(path.join(__dirname, "config-ran.txt"), name + "\n");
+  },
+});
+export default {
+  plugins: [
+    ran("user-probe"),
+    Promise.resolve([ran("tanstack-start-core:config"), Promise.resolve(ran("tanstack:router-generator"))]),
+  ],
+};
+"#;
+
+/// A Start bundle host resolves the config through Vite without the plugins
+/// oj reimplements; Vite asyncFlattens `plugins`, so TanStack's plugins handed
+/// in as `Promise.resolve([...])` are left out too: their config hooks never
+/// run and they never reach the host's plugin list.
+#[tokio::test(flavor = "multi_thread")]
+async fn start_bundle_host_leaves_out_promise_wrapped_tanstack_plugins() {
+    require_fixture!("vite");
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"promised","private":true,"type":"module"}"#,
+        ),
+        ("vite.config.mjs", PROMISED_TANSTACK_CONFIG),
+    ]);
+    app.link_fixture("vite");
+    let payload = serde_json::json!({
+        "config": { "root": app.root.display().to_string(), "base": "/", "mode": "production", "command": "build" },
+        "env": { "command": "build", "mode": "production" },
+        "environment": { "name": "client", "mode": "build" },
+        "pluginsFormat": "vite",
+        "ojStartMode": true,
+        "ojBundleHost": true,
+    })
+    .to_string();
+    let host = oj_server::plugins::PluginHost::spawn(
+        &app.root,
+        &app.root.join("vite.config.mjs"),
+        &payload,
+        None,
+    )
+    .await
+    .expect("the bundle host starts");
+    let names = host.plugin_names().await;
+    host.shutdown();
+    assert!(
+        names.iter().any(|n| n == "user-probe"),
+        "the user plugin did not load: {names:?}"
+    );
+    assert!(
+        !names.iter().any(|n| n.starts_with("tanstack")),
+        "a TanStack plugin is hosted: {names:?}"
+    );
+    let ran = std::fs::read_to_string(app.root.join("config-ran.txt")).unwrap_or_default();
+    assert!(
+        !ran.contains("tanstack"),
+        "a TanStack config hook ran in the bundle host:\n{ran}"
+    );
+}

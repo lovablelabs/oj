@@ -815,9 +815,7 @@ async function loadUserResolvedViteConfig() {
         "silent",
       );
       const config = loaded?.config ?? {};
-      const kept = (await Promise.all([config.plugins ?? []].flat(Infinity))).filter(
-        (p) => p && !isReimplemented(p.name),
-      );
+      const kept = (await flattenPlugins(config.plugins)).filter((p) => !isReimplemented(p.name));
       return vite.resolveConfig(
         { ...config, plugins: kept, root: appRoot, configFile: false, mode: env.mode, logLevel: "silent" },
         env.command,
@@ -1240,12 +1238,12 @@ try {
     userConfig = cfg && typeof cfg === "object" ? cfg : null;
     userViteConfig = userConfig;
     userResolveAlias = cfg?.resolve?.alias ?? null;
-    list = await Promise.all((cfg?.plugins ?? []).flat(Infinity));
+    list = cfg?.plugins;
   } else {
     const mod = await import(pathToFileURL(pluginsPath).href);
-    list = mod.default ?? mod.plugins ?? [];
+    list = mod.default ?? mod.plugins;
   }
-  allPlugins = (Array.isArray(list) ? list : [list]).filter(Boolean);
+  allPlugins = await flattenPlugins(list);
   nativePlugins = allPlugins.filter((p) => OJ_NATIVE_PLUGIN_NAMES.has(p && p.name));
   main.rawPlugins = allPlugins;
   main.plugins = hostedPlugins(allPlugins, userConfig);
@@ -1848,9 +1846,7 @@ async function environmentPlugins(environment, candidates) {
       next.push(p);
       continue;
     }
-    const returned = (await Promise.all((Array.isArray(applied) ? applied : [applied]).flat(Infinity)))
-      .flat(Infinity)
-      .filter(Boolean);
+    const returned = await flattenPlugins(applied);
     for (const ap of returned) {
       const ignored = ignoredEnvironmentPluginHooks.filter((hook) => ap[hook]);
       if (ignored.length > 0) {
@@ -4390,11 +4386,16 @@ async function callStartFnBatch(c, index, idsJson, generation, infosJson, tolera
 // plugin container) and runs the config's live
 // optimizeDeps.rolldownOptions.plugins, which Vite puts in the scan's plugin
 // list, through scanPluginHook.
-// Vite's asyncFlatten: plugin options may nest arrays and promises.
+// Vite's asyncFlatten over arraify, falsy entries dropped: plugin options may
+// nest arrays and promises, and a promise may resolve to an array of plugins
+// (`Promise.resolve([tanstackStart()])`), so the loop flattens what each
+// round of awaits produced until no thenable is left.
 async function flattenPlugins(value) {
-  const v = await value;
-  if (Array.isArray(v)) return (await Promise.all(v.map(flattenPlugins))).flat();
-  return v ? [v] : [];
+  let list = Array.isArray(value) ? value : [value];
+  do {
+    list = (await Promise.all(list)).flat(Infinity);
+  } while (list.some((v) => v?.then));
+  return list.filter(Boolean);
 }
 async function scanResolveId(source, importer) {
   const r = await resolveIdFull(main, source, importer || undefined, { scan: true });
