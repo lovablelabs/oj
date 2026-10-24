@@ -683,8 +683,14 @@ impl PluginHost {
     /// Moves a Start build's host to the next environment's build, on the
     /// same plugin instances (Vite's `builder.sharedPlugins`).
     #[inline]
+    /// The next environment brings its own plugin set (`applyToEnvironment`),
+    /// so the hook gates take that set's filters, as rolldown takes each
+    /// environment's plugins' filters in Vite.
     pub async fn switch_environment(&self, name: &str) -> Result<(), String> {
-        self.call_unit("switchEnvironment", &[name]).await
+        self.call_unit("switchEnvironment", &[name]).await?;
+        self.reset_hook_plan();
+        self.ensure_hook_plan().await;
+        Ok(())
     }
 
     /// Vite's `builder.buildApp`: the plugins' buildApp hooks, which reach
@@ -1283,11 +1289,10 @@ impl PluginHost {
             .and_then(|id| id.parse::<u32>().ok())
             .ok_or("the plugin host opened no worker container")?;
         let generation = self.core.revive.lock().unwrap().generation;
-        Ok(PluginHost::over(
-            std::sync::Arc::clone(&self.core),
-            id,
-            Some(generation),
-        ))
+        let worker = PluginHost::over(std::sync::Arc::clone(&self.core), id, Some(generation));
+        // Gated by `worker.plugins`' own filters, not the app's.
+        worker.ensure_hook_plan().await;
+        Ok(worker)
     }
 
     /// Drops this handle's worker container from the host (its plugins answer
