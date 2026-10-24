@@ -28,6 +28,7 @@ use deno_resolver::loader::DenoNpmModuleLoaderRc;
 use deno_resolver::loader::LoadedModuleSource;
 use deno_resolver::npm::DenoInNpmPackageChecker;
 use deno_resolver::npm::NpmResolver;
+use deno_runtime::code_cache::CodeCache;
 use deno_runtime::code_cache::CodeCacheType;
 use deno_runtime::deno_node::NodeRequireLoader;
 use deno_runtime::deno_permissions::PermissionsContainer;

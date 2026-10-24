@@ -3,10 +3,11 @@
 
 //! The engines' package.json memo. Node parses each package.json once per
 //! process; without a memo every resolve re-read and re-parsed the closest
-//! one. A hit still checks the file's mtime and size, so an edit made during
-//! a long dev session is picked up the way Vite's package cache drops an
-//! entry when its package.json changes.
+//! one. A hit still checks the file's stamp, so an edit made during a long
+//! dev session is picked up the way Vite's package cache drops an entry when
+//! its package.json changes.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
@@ -17,30 +18,47 @@ use deno_package_json::PackageJsonCache;
 use deno_package_json::PackageJsonCacheResult;
 use deno_package_json::PackageJsonRc;
 
-/// What a file looked like when it was read.
+/// What a file looked like when it was read. The mtime alone is not enough:
+/// npm extracts every file with the same fixed mtime, so a same-length
+/// package.json from an upgrade would match. The change time and inode move
+/// on any write or replace and cannot be set back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Stamp {
     modified: Option<SystemTime>,
     len: u64,
+    #[cfg(unix)]
+    changed: (i64, i64),
+    #[cfg(unix)]
+    inode: (u64, u64),
 }
 
 impl Stamp {
     fn of(path: &Path) -> std::io::Result<Self> {
         let meta = std::fs::metadata(path)?;
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
         Ok(Self {
             modified: meta.modified().ok(),
             len: meta.len(),
+            #[cfg(unix)]
+            changed: (meta.ctime(), meta.ctime_nsec()),
+            #[cfg(unix)]
+            inode: (meta.dev(), meta.ino()),
         })
     }
+}
+
+thread_local! {
+    /// The stamp a `get` that missed took, for the `set` that follows its
+    /// read. `load_from_path` runs both on one thread, so a concurrent load
+    /// of the same file can never hand this one its stamp. Taken before the
+    /// read, so a write racing it only ever makes the next lookup re-read.
+    static PROBED: RefCell<HashMap<PathBuf, Stamp>> = RefCell::new(HashMap::new());
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct PackageJsonMemo {
     parsed: Mutex<HashMap<PathBuf, (Stamp, PackageJsonRc)>>,
-    /// Stamps taken by a `get` that missed, for the `set` that follows its
-    /// read: taken before the read, so a write racing it only ever makes the
-    /// next lookup re-read.
-    probed: Mutex<HashMap<PathBuf, Stamp>>,
 }
 
 impl PackageJsonCache for PackageJsonMemo {
@@ -59,19 +77,12 @@ impl PackageJsonCache for PackageJsonMemo {
             }
         }
         drop(parsed);
-        self.probed
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(path.to_path_buf(), stamp);
+        PROBED.with_borrow_mut(|probed| probed.insert(path.to_path_buf(), stamp));
         PackageJsonCacheResult::NotCached
     }
 
     fn set(&self, path: PathBuf, package_json: Option<PackageJsonRc>) {
-        let stamp = self
-            .probed
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&path);
+        let stamp = PROBED.with_borrow_mut(|probed| probed.remove(&path));
         let mut parsed = self.parsed.lock().unwrap_or_else(|e| e.into_inner());
         match (stamp, package_json) {
             (Some(stamp), Some(pkg)) => {
@@ -124,6 +135,29 @@ mod tests {
             load(&memo, &path).unwrap().main.as_deref(),
             Some("lib/b.js")
         );
+    }
+
+    // npm extracts files with one fixed mtime: an upgraded dependency's
+    // package.json can keep both its mtime and its length.
+    #[test]
+    fn a_rewrite_keeping_mtime_and_length_is_read_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("package.json");
+        let fixed = std::time::UNIX_EPOCH + std::time::Duration::from_secs(499_162_500);
+        let write = |text: &str| {
+            std::fs::write(&path, text).unwrap();
+            std::fs::File::options()
+                .append(true)
+                .open(&path)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(fixed))
+                .unwrap();
+        };
+        let memo = PackageJsonMemo::default();
+        write(r#"{"name":"dep","version":"1.2.3","main":"a.js"}"#);
+        assert_eq!(load(&memo, &path).unwrap().main.as_deref(), Some("a.js"));
+        write(r#"{"name":"dep","version":"1.2.4","main":"b.js"}"#);
+        assert_eq!(load(&memo, &path).unwrap().main.as_deref(), Some("b.js"));
     }
 
     #[test]

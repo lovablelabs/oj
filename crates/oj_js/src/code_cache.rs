@@ -39,17 +39,27 @@ pub struct FsCodeCache {
 /// bytes for a module win.
 struct Held {
     entries: HashMap<PathBuf, Arc<[u8]>>,
-    /// A flush is scheduled. Each one re-arms on the next put, so a
+    /// Sum of the held entries' lengths, against [`HELD_MAX_BYTES`].
+    bytes: usize,
+    /// A timed flush is scheduled. Each one re-arms on the next put, so a
     /// long-lived engine writes what it compiles late as well.
     armed: bool,
+    /// An early flush (over [`HELD_MAX_BYTES`]) is running.
+    draining: bool,
 }
 
 static HELD: LazyLock<Mutex<Held>> = LazyLock::new(|| {
     Mutex::new(Held {
         entries: HashMap::new(),
+        bytes: 0,
         armed: false,
+        draining: false,
     })
 });
+
+/// Past this, a burst (a big app's first boot) is written now instead of
+/// waiting out the timer in memory.
+const HELD_MAX_BYTES: usize = 32 << 20;
 
 fn held() -> std::sync::MutexGuard<'static, Held> {
     HELD.lock().unwrap_or_else(|e| e.into_inner())
@@ -62,11 +72,34 @@ const FLUSH_AFTER: Duration = if cfg!(test) {
     Duration::from_secs(10)
 };
 
-/// Writes every held entry now. Runs at exit (a guard in `main`, and the
-/// dev server's signal shutdown before `process::exit`), so a session never
-/// loses what it compiled since the last timed flush.
+/// Writes every held entry now. An `atexit` hook runs it for every exit
+/// path (`main` returning, the dev server's signal shutdown, a plugin's
+/// `process.exit()`); a restart calls it before `exec`, which skips the hook.
 pub fn flush_at_exit() {
     write_held();
+}
+
+extern "C" fn flush_on_exit() {
+    write_held();
+}
+
+/// Registered with the first held entry, so a process that never produces
+/// (a consume-only child) never runs a flush at exit.
+fn arm_exit_flush() {
+    static ARMED: std::sync::Once = std::sync::Once::new();
+    ARMED.call_once(|| unsafe {
+        libc::atexit(flush_on_exit);
+    });
+}
+
+fn spawn_flush(name: &str, wait: Duration) -> bool {
+    std::thread::Builder::new()
+        .name(name.into())
+        .spawn(move || {
+            std::thread::sleep(wait);
+            write_held();
+        })
+        .is_ok()
 }
 
 /// Writes a snapshot of the held entries, then drops each one that was not
@@ -80,6 +113,7 @@ fn write_held() {
     let batch: Vec<(PathBuf, Arc<[u8]>)> = {
         let mut held = held();
         held.armed = false;
+        held.draining = false;
         held.entries
             .iter()
             .map(|(path, bytes)| (path.clone(), bytes.clone()))
@@ -96,6 +130,7 @@ fn write_held() {
             .is_some_and(|b| Arc::ptr_eq(b, &bytes))
         {
             held.entries.remove(&path);
+            held.bytes -= bytes.len();
         }
     }
 }
@@ -137,12 +172,6 @@ impl FsCodeCache {
 
     fn with_produce(dir: PathBuf, produce: bool) -> Self {
         Self { dir, produce }
-    }
-
-    /// Whether a miss should have V8 create an entry at all: a consume-only
-    /// cache skips the serialization too, not only the write.
-    pub fn produces(&self) -> bool {
-        self.produce
     }
 
     /// The engine-side hash for sources it caches itself (the ESM and
@@ -217,27 +246,27 @@ impl FsCodeCache {
         let mut bytes = Vec::with_capacity(8 + data.len());
         bytes.extend_from_slice(&source_hash.to_le_bytes());
         bytes.extend_from_slice(data);
+        let bytes: Arc<[u8]> = bytes.into();
         let mut held = held();
-        held.entries
-            .insert(self.entry_path(specifier, suffix), bytes.into());
+        held.bytes += bytes.len();
+        if let Some(old) = held
+            .entries
+            .insert(self.entry_path(specifier, suffix), bytes)
+        {
+            held.bytes -= old.len();
+        }
+        if held.bytes > HELD_MAX_BYTES && !held.draining {
+            held.draining = spawn_flush("oj-code-cache-drain", Duration::ZERO);
+        }
         if held.armed {
             return;
         }
-        held.armed = true;
-        drop(held);
         // Like Vite's unref'd timer, it never keeps a finished process
-        // waiting: the exit flush writes whatever it would have.
-        let _ = std::thread::Builder::new()
-            .name("oj-code-cache-flush".into())
-            .spawn(|| {
-                std::thread::sleep(FLUSH_AFTER);
-                write_held();
-            });
-    }
-
-    /// Writes every held entry (Node's `module.flushCompileCache()`).
-    pub fn flush(&self) {
-        write_held();
+        // waiting: the exit flush writes whatever it would have. A failed
+        // spawn leaves it unarmed, so the next put tries again.
+        held.armed = spawn_flush("oj-code-cache-flush", FLUSH_AFTER);
+        drop(held);
+        arm_exit_flush();
     }
 
     pub fn get(&self, specifier: &Url, kind: CodeCacheType, source_hash: u64) -> Option<Vec<u8>> {
@@ -413,6 +442,7 @@ impl CodeCache for FsCodeCache {
         self.put(&specifier, code_cache_type, source_hash, data);
     }
 
+    /// A consume-only cache skips V8's serialization too, not only the write.
     fn produces(&self) -> bool {
         self.produce
     }
@@ -456,7 +486,7 @@ mod tests {
 
         assert_eq!(cache.get(&url, CodeCacheType::EsModule, 7), None);
         cache.put(&url, CodeCacheType::EsModule, 7, b"bytecode");
-        cache.flush();
+        flush_at_exit();
         assert_eq!(
             cache.get(&url, CodeCacheType::EsModule, 7).as_deref(),
             Some(b"bytecode".as_slice())
@@ -510,7 +540,7 @@ mod hygiene_tests {
                 format!("bytecode-{v}").as_bytes(),
             );
         }
-        cache.flush();
+        flush_at_exit();
         let entries = std::fs::read_dir(dir.path()).unwrap().count();
         assert_eq!(entries, 1, "five version bumps must reuse one entry");
         // The latest generation is served; a stale source hash misses.
@@ -535,7 +565,7 @@ mod hygiene_tests {
             42,
             b"bytecode",
         );
-        cache.flush();
+        flush_at_exit();
         assert_eq!(
             cache
                 .get(&url("oj:///src/App.tsx?v=1"), CodeCacheType::EsModule, 42)
@@ -579,7 +609,7 @@ mod hygiene_tests {
             3,
             b"plain",
         );
-        cache.flush();
+        flush_at_exit();
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 3);
         assert_eq!(
             cache
@@ -617,7 +647,7 @@ mod hygiene_tests {
         for h in handles {
             h.join().unwrap();
         }
-        cache.flush();
+        flush_at_exit();
         assert_eq!(
             cache.get(&spec, CodeCacheType::EsModule, 1).as_deref(),
             Some(payload.as_slice()),
@@ -653,7 +683,7 @@ mod hygiene_tests {
             ));
             cache.put(&spec, CodeCacheType::EsModule, 42, b"config-bytecode");
         }
-        cache.flush();
+        flush_at_exit();
         assert_eq!(
             std::fs::read_dir(dir.path()).unwrap().count(),
             2,
@@ -686,7 +716,7 @@ mod hygiene_tests {
         for (i, s) in lookalikes.iter().enumerate() {
             cache.put(&url(s), CodeCacheType::EsModule, i as u64, b"x");
         }
-        cache.flush();
+        flush_at_exit();
         assert_eq!(
             std::fs::read_dir(dir.path()).unwrap().count(),
             lookalikes.len(),
@@ -705,7 +735,7 @@ mod hygiene_tests {
         for i in 0..10u64 {
             let spec = url(&format!("file:///m{i}.js"));
             cache.put(&spec, CodeCacheType::EsModule, i, &payload);
-            cache.flush();
+            flush_at_exit();
             let age = std::time::SystemTime::now() - std::time::Duration::from_secs(60 * (10 - i));
             std::fs::File::options()
                 .append(true)
@@ -740,7 +770,7 @@ mod hygiene_tests {
         std::fs::write(old.join("deadbeef-esm.bin"), b"old bytecode").unwrap();
         let cache = FsCodeCache::new(current.clone());
         cache.put(&url("file:///m.js"), CodeCacheType::EsModule, 1, b"new");
-        cache.flush();
+        flush_at_exit();
         cache.sweep_stale_generations();
         assert!(!old.exists(), "the dead generation is removed");
         assert!(
@@ -763,7 +793,7 @@ mod hygiene_tests {
             1,
             b"bytecode",
         );
-        cache.flush();
+        flush_at_exit();
         let stale = dir.path().join("deadbeef-esm.bin.tmp999");
         std::fs::write(&stale, b"torn").unwrap();
         let old = std::time::SystemTime::now() - std::time::Duration::from_secs(48 * 60 * 60);
@@ -901,7 +931,7 @@ mod hygiene_tests {
         );
         let fresh = url("file:///fresh.js");
         reader.put(&fresh, CodeCacheType::EsModule, 1, b"x");
-        reader.flush();
+        flush_at_exit();
         flush_at_exit();
         drop(reader);
         assert_eq!(
