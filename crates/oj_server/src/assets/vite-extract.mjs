@@ -1131,7 +1131,7 @@ const declaresRunnerEnvironment = (cfg) =>
 
 // Plugins whose `config` hooks this out-of-band re-run must not execute: the
 // exact rule a Start plugin host applies when IT re-runs config hooks on
-// fresh instances (plugin-host.mjs `isReimplemented`) — the framework
+// fresh instances (native-plugins.mjs `isReimplemented`) — the framework
 // plugins oj reimplements natively never ran hooks under oj, and their config
 // hooks have side effects that fight oj's own lifecycle (the TanStack router
 // plugin's config hook starts its route generator) — plus the dev-tooling
