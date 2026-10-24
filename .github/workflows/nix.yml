@@ -50,19 +50,27 @@ jobs:
       - name: add swap
         if: matrix.system == 'aarch64-linux'
         run: |
+          df -h /
+          swapon --show
+          sudo swapoff -a
+          sudo rm -f /swapfile /mnt/swapfile
           sudo fallocate -l 24G /swap-oj
           sudo chmod 600 /swap-oj
           sudo mkswap /swap-oj
           sudo swapon /swap-oj
           free -h
           df -h /
+          systemctl is-active systemd-oomd || true
       - name: build
         run: |
-          command -v free >/dev/null && (while sleep 30; do free -m | awk '/Mem:/{m=$3} /Swap:/{s=$3} END{print m+s}'; done > "$RUNNER_TEMP/mem.log") &
+          command -v free >/dev/null && (while sleep 5; do free -m | awk '/Mem:/{m=$3} /Swap:/{s=$3} END{print m+s}'; done > "$RUNNER_TEMP/mem.log") &
           nix build .#oj -L
-      - name: peak memory (MB)
+      - name: memory report
         if: always() && runner.os == 'Linux'
-        run: sort -n "$RUNNER_TEMP/mem.log" | tail -1
+        run: |
+          echo "peak RAM+swap (MB): $(sort -n "$RUNNER_TEMP/mem.log" | tail -1)"
+          df -h /
+          sudo dmesg | grep -iE 'out of memory|killed process|oom' || true
       - name: smoke
         run: ./result/bin/oj --version
       # The store binary bundles Start apps with the rolldown linked into it:
