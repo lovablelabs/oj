@@ -20,6 +20,10 @@ pub struct PluginHost {
     hook_plan: std::sync::RwLock<BuildHookPlan>,
     hook_plan_fetched: std::sync::atomic::AtomicBool,
     hook_plan_prime_started: std::sync::atomic::AtomicBool,
+    /// Bumped by every reset: a fetch that began before one (a revive's
+    /// refetch racing an environment switch) answered for the old plugin set
+    /// and must not land.
+    hook_plan_epoch: std::sync::atomic::AtomicU64,
 }
 
 /// A plugin host's engine and its lifecycle (boot, pushes, revive), shared by
@@ -964,6 +968,7 @@ impl PluginHost {
         if self.hook_plan_fetched.load(Ordering::Acquire) {
             return;
         }
+        let epoch = self.hook_plan_epoch.load(Ordering::Acquire);
         // Only a successful fetch is cached; a failure leaves the fail-open
         // default in place to be retried on the next call.
         if let Some(v) = self.call_json("getBuildHookPlan").await {
@@ -972,8 +977,11 @@ impl PluginHost {
                 load: HookFilterPlan::from_json(v.get("load")),
                 resolve_id: HookFilterPlan::from_json(v.get("resolveId")),
             };
-            *self.hook_plan.write().unwrap() = plan;
-            self.hook_plan_fetched.store(true, Ordering::Release);
+            let mut slot = self.hook_plan.write().unwrap();
+            if self.hook_plan_epoch.load(Ordering::Acquire) == epoch {
+                *slot = plan;
+                self.hook_plan_fetched.store(true, Ordering::Release);
+            }
         }
     }
 
@@ -1272,6 +1280,7 @@ impl PluginHost {
             hook_plan: std::sync::RwLock::new(BuildHookPlan::fail_open()),
             hook_plan_fetched: std::sync::atomic::AtomicBool::new(false),
             hook_plan_prime_started: std::sync::atomic::AtomicBool::new(false),
+            hook_plan_epoch: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -1310,7 +1319,10 @@ impl PluginHost {
     /// Fail-open gates until the plan is fetched again (a respawned engine).
     fn reset_hook_plan(&self) {
         use std::sync::atomic::Ordering;
-        *self.hook_plan.write().unwrap() = BuildHookPlan::fail_open();
+        let mut slot = self.hook_plan.write().unwrap();
+        self.hook_plan_epoch.fetch_add(1, Ordering::AcqRel);
+        *slot = BuildHookPlan::fail_open();
+        drop(slot);
         self.hook_plan_fetched.store(false, Ordering::Release);
         self.hook_plan_prime_started.store(false, Ordering::Release);
     }

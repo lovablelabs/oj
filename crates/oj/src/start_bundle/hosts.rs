@@ -212,6 +212,27 @@ mod tests {
         root
     }
 
+    /// [`app`] with the start-app fixture's `node_modules`, so the host strips
+    /// TS/JSX with the app's own Vite; None (after saying why) without it.
+    fn app_with_vite(name: &str, plugins: &str) -> Option<PathBuf> {
+        let modules = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../e2e/fixtures/start-app/node_modules")
+            .canonicalize()
+            .ok()
+            .filter(|m| m.join("vite").is_dir());
+        let Some(modules) = modules else {
+            assert!(
+                std::env::var_os("OJ_REQUIRE_FIXTURES").is_none(),
+                "OJ_REQUIRE_FIXTURES is set but the start-app fixture is not installed"
+            );
+            eprintln!("skipping: npm ci --prefix e2e/fixtures/start-app");
+            return None;
+        };
+        let root = app(name, plugins);
+        std::os::unix::fs::symlink(modules, root.join("node_modules")).unwrap();
+        Some(root)
+    }
+
     async fn client_host(root: &Path) -> BundleHost {
         spawn(
             &crate::start_bundle::dev::tests::start_at(root),
@@ -304,5 +325,43 @@ mod tests {
             .host
             .hook_wants_transform(&root.join("src/a.md").display().to_string(), "# a"));
         worker.close_worker().await.expect("closed");
+    }
+
+    // A normal transform's `filter.code` is tested on the code after Vite's
+    // TS/JSX strip, which the gate never sees: a filter only compiled JSX
+    // matches must still be offered the raw `.tsx`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_code_filter_after_the_strip_never_gates_on_raw_code() {
+        let Some(root) = app_with_vite(
+            "code-after-strip",
+            r#"export default [
+  { name: "jsx-runtime", transform: { filter: { code: "jsx-dev-runtime" }, handler(code) { return code; } } },
+];
+"#,
+        ) else {
+            return;
+        };
+        let host = client_host(&root).await.host;
+        let tsx = root.join("src/a.tsx").display().to_string();
+        assert!(host.hook_wants_transform(&tsx, "export const A = () => <div />;"));
+    }
+
+    // A pre transform runs before the strip, on the code the gate sees: its
+    // `filter.code` still gates.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pre_transforms_code_filter_still_gates() {
+        let Some(root) = app_with_vite(
+            "code-pre",
+            r#"export default [
+  { name: "needle", enforce: "pre", transform: { filter: { code: "needle" }, handler(code) { return code; } } },
+];
+"#,
+        ) else {
+            return;
+        };
+        let host = client_host(&root).await.host;
+        let ts = root.join("src/a.ts").display().to_string();
+        assert!(!host.hook_wants_transform(&ts, "export const a = 1;"));
+        assert!(host.hook_wants_transform(&ts, "export const needle = 1;"));
     }
 }

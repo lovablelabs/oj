@@ -4928,14 +4928,18 @@ async function run(hook, args, c) {
         present = true;
         const f = h && typeof h === "object" ? h.filter : null;
         const id = f ? gatePatterns(f.id, "id") : null;
-        const code = withCode && f ? gatePatterns(f.code, "code") : null;
+        // A normal or post transform's filter.code is tested on the code after
+        // the vite:oxc strip (Vite's slot for it), which the gate never sees:
+        // only its id patterns can gate.
+        const afterStrip = withCode && viteTransformWithOxc && !runsBeforeOxcStrip(p, hookOrderRank(h));
+        const code = withCode && f && !afterStrip ? gatePatterns(f.code, "code") : null;
         const idHas = Array.isArray(id) && id.length > 0;
         const codeHas = Array.isArray(code) && code.length > 0;
         // A pattern set gatePatterns refused (null) or a filter with no usable
         // includes cannot gate; that plugin must always be offered the module.
         if (
           (id === null && f && f.id != null) ||
-          (withCode && code === null && f && f.code != null) ||
+          (withCode && !afterStrip && code === null && f && f.code != null) ||
           (!idHas && !codeHas)
         ) {
           unfiltered = true;

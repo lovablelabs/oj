@@ -252,6 +252,46 @@ async fn a_worker_container_handle_dies_with_its_engine() {
     new.close_container().await.expect("closed");
 }
 
+// A revived engine resets the gates to fail-open, then fetches the plan
+// again: the hooks are gated by their filters on the new generation too.
+#[tokio::test]
+async fn a_revived_host_gates_by_the_plugins_filters_again() {
+    let root = std::env::temp_dir().join(format!("oj-revive-plan-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let plugins = root.join("oj.plugins.mjs");
+    std::fs::write(
+        &plugins,
+        "export default [{ name: \"md\", transform: { filter: { id: /\\.md$/ }, handler(code) { return code; } } }];\n",
+    )
+    .unwrap();
+    let config = serde_json::json!({
+        "config": { "root": root.display().to_string() },
+        "env": { "command": "serve", "mode": "development" },
+    })
+    .to_string();
+    let host = PluginHost::spawn_lazy(&root, &plugins, &config, None)
+        .await
+        .expect("the embedded engine spawns");
+    host.build_hook_plan().await;
+    let tsx = root.join("a.tsx").display().to_string();
+    assert!(!host.hook_wants_transform(&tsx, "export default 1"));
+
+    let generation = host.core.revive.lock().unwrap().generation;
+    host.core.declare_gone("test wedge", generation);
+    clear_respawn_spacing(&host);
+    host.resolve_id("x", "").await.expect("revived");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while host.hook_wants_transform(&tsx, "export default 1") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the revived host never fetched its plan again"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(host.hook_wants_transform(&root.join("a.md").display().to_string(), "# a"));
+}
+
 // A death report about a replaced engine (an old call's transport belt
 // firing after a revive) is stale and must not kill the new generation.
 #[tokio::test]
