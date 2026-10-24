@@ -1163,6 +1163,7 @@ fn merge_adopts_only_unset_fields() {
         preview: None,
         app_type: None,
         html: None,
+        worker: None,
         active_plugins: None,
         stylex: None,
     };
@@ -1212,6 +1213,7 @@ fn merge_never_overrides_config() {
         preview: None,
         app_type: None,
         html: None,
+        worker: None,
         active_plugins: None,
         stylex: None,
     };

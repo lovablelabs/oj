@@ -146,6 +146,7 @@ struct OutputOverrides {
     name: Option<String>,
     extend: Option<bool>,
     inline_dynamic_imports: bool,
+    hash_characters: Option<rolldown_common::HashCharacters>,
 }
 
 fn ro_output_overrides(ro: Option<&serde_json::Value>) -> OutputOverrides {
@@ -212,6 +213,15 @@ fn ro_output_overrides(ro: Option<&serde_json::Value>) -> OutputOverrides {
     ov.paths = str_map("paths");
     ov.name = out.get("name").and_then(|v| v.as_str()).map(String::from);
     ov.extend = out.get("extend").and_then(|v| v.as_bool());
+    ov.hash_characters = match out.get("hashCharacters").and_then(|v| v.as_str()) {
+        None | Some("base64") => None,
+        Some("base36") => Some(rolldown_common::HashCharacters::Base36),
+        Some("hex") => Some(rolldown_common::HashCharacters::Hex),
+        Some(other) => {
+            eprintln!("oj build: (!) build.rollupOptions.output.hashCharacters \"{other}\" is not supported; using base64.");
+            None
+        }
+    };
     ov.inline_dynamic_imports = out.get("inlineDynamicImports").and_then(|v| v.as_bool())
         == Some(true)
         || out.get("codeSplitting").and_then(|v| v.as_bool()) == Some(false)
@@ -258,10 +268,6 @@ struct OjCssPlugin {
     /// `bundleWorkerEntry` builds the worker under the app's resolved config).
     /// None: a bare browser bundle (server and library builds).
     worker: Option<Arc<WorkerBundleOpts>>,
-    /// Vite's resolved `build.cssMinify` (defaults to `build.minify`).
-    /// Source ids of `?worker` / `?worker&url` entries emitted as chunks, so the
-    /// document-only build helpers can skip chunks that only a worker loads.
-    worker_entries: Arc<Mutex<std::collections::HashSet<String>>>,
     /// The normalized `base` a public-file import's URL is built on.
     base: String,
     /// Each HTML page input (its absolute path) to the module it loads as:
@@ -271,7 +277,7 @@ struct OjCssPlugin {
     /// Where split chunk stylesheets go and how they are named, so a chunk's
     /// hash covers its stylesheet's name (vite:css-post's augmentChunkHash);
     /// None for builds that emit no split CSS.
-    chunk_css_hashing: Option<(PathBuf, String)>,
+    chunk_css_hashing: Option<(PathBuf, String, u8)>,
 }
 
 /// The app build settings an inline worker bundle shares with its importer:
@@ -283,6 +289,42 @@ struct WorkerBundleOpts {
     is_production: bool,
     define: Vec<(String, String)>,
     minify: bool,
+    /// `build.assetsDir`, where the worker build names its files.
+    assets_dir: String,
+    /// Vite's `bundleChain`: the workers this build is nested in, the last
+    /// one the worker being built (whose own URL is `self.location.href`).
+    chain: Vec<String>,
+    /// Each worker entry this build emitted, by file: its URL expression.
+    emitted: Mutex<std::collections::HashMap<String, String>>,
+}
+
+impl WorkerBundleOpts {
+    /// Workers in builds without the app build's defines (SSR, library,
+    /// client entry): `process.env.NODE_ENV` set, minified.
+    fn plain(config: &oj_config::OjConfig, is_production: bool) -> Arc<Self> {
+        let node_env = if is_production {
+            "production"
+        } else {
+            "development"
+        };
+        Arc::new(WorkerBundleOpts {
+            config: config.clone(),
+            is_production,
+            define: process_env_defines(node_env),
+            minify: true,
+            assets_dir: oj_config::build_assets_dir(config),
+            chain: Vec::new(),
+            emitted: Default::default(),
+        })
+    }
+}
+
+/// A worker's separate build (Vite's bundleWorkerEntry): its entry chunk's
+/// file name and code, and every other file it wrote.
+struct WorkerBundle {
+    entry_file_name: String,
+    entry_code: String,
+    files: Vec<(String, rolldown_common::StrOrBytes)>,
 }
 
 /// What `@import`/`@use`/`url()` specifiers inside stylesheets resolve through,
@@ -1098,9 +1140,24 @@ fn has_nested_quotes(text: &str) -> bool {
 
 /// Emit an asset file, or inline it as a data URL when it is under
 /// `assetsInlineLimit`; `no_inline` (`?no-inline`, Vite's asset plugin) always
-/// emits.
+/// emits. The module exporting its URL.
 fn emit_or_inline(
-    ctx: &rolldown_plugin::SharedLoadPluginContext,
+    ctx: &rolldown_plugin::PluginContext,
+    root: &Path,
+    file: &str,
+    bytes: Vec<u8>,
+    inline_limit: u64,
+    no_inline: bool,
+) -> anyhow::Result<String> {
+    let url = asset_url_expr(ctx, root, file, bytes, inline_limit, no_inline)?;
+    Ok(format!("export default {url};"))
+}
+
+/// The URL of an asset as a JS expression (Vite's fileToBuiltUrl in JS): a
+/// data URL string under `assetsInlineLimit`, else the emitted file's
+/// `import.meta.ROLLUP_FILE_URL_*`.
+fn asset_url_expr(
+    ctx: &rolldown_plugin::PluginContext,
     root: &Path,
     file: &str,
     bytes: Vec<u8>,
@@ -1109,10 +1166,11 @@ fn emit_or_inline(
 ) -> anyhow::Result<String> {
     let path = std::path::Path::new(file);
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let literal = |url: String| serde_json::Value::String(url).to_string();
     // Vite's shouldInline: strictly below the limit; `?no-inline` always emits.
     let inline = !no_inline && (bytes.len() as u64) < inline_limit;
     if inline && ext != "svg" {
-        return Ok(export_default_url(&format!(
+        return Ok(literal(format!(
             "data:{};base64,{}",
             asset_mime(ext),
             b64(&bytes)
@@ -1120,7 +1178,7 @@ fn emit_or_inline(
     }
     if inline && ext == "svg" {
         let text = String::from_utf8_lossy(&bytes);
-        return Ok(export_default_url(&svg_data_url(&text)));
+        return Ok(literal(svg_data_url(&text)));
     }
     let name = path
         .file_name()
@@ -1145,9 +1203,7 @@ fn emit_or_inline(
             None,
         )
         .map_err(|e| anyhow::anyhow!(e))?;
-    Ok(format!(
-        "export default import.meta.ROLLUP_FILE_URL_{reference};"
-    ))
+    Ok(format!("import.meta.ROLLUP_FILE_URL_{reference}"))
 }
 
 fn is_stylesheet_path(path: &str) -> bool {
@@ -1302,6 +1358,39 @@ pub(crate) fn split_asset_query(spec: &str) -> Option<(String, String)> {
     None
 }
 
+/// Vite's `workerTypeOption` for a bundled worker: a module worker under
+/// `worker.format: "es"`, else classic.
+fn worker_type_option(module: bool) -> String {
+    format!(
+        "{{\n          {}\n          name: options?.name\n        }}",
+        if module { "type: \"module\"," } else { "" }
+    )
+}
+
+/// Vite's `?worker&inline` module: the worker's code as a string, started
+/// from a Blob URL that revokes itself, else a data: URL; a SharedWorker
+/// always takes the data: URL.
+fn inline_worker_module(ctor: &str, code: &str, module: bool) -> String {
+    let js_content = format!(
+        "const jsContent = {};",
+        serde_json::Value::String(code.to_string())
+    );
+    let options = worker_type_option(module);
+    if ctor == "Worker" {
+        let revoke = if module {
+            "'URL.revokeObjectURL(import.meta.url);',"
+        } else {
+            "'(self.URL || self.webkitURL).revokeObjectURL(self.location.href);',"
+        };
+        return format!(
+            "{js_content}\n            const blob = typeof self !== \"undefined\" && self.Blob && new Blob([{revoke}jsContent], {{ type: \"text/javascript;charset=utf-8\" }});\n            export default function WorkerWrapper(options) {{\n              let objURL;\n              try {{\n                objURL = blob && (self.URL || self.webkitURL).createObjectURL(blob);\n                if (!objURL) throw ''\n                const worker = new {ctor}(objURL, {options});\n                worker.addEventListener(\"error\", () => {{\n                  (self.URL || self.webkitURL).revokeObjectURL(objURL);\n                }});\n                return worker;\n              }} catch(e) {{\n                return new {ctor}(\n                  'data:text/javascript;charset=utf-8,' + encodeURIComponent(jsContent),\n                  {options}\n                );\n              }}\n            }}"
+        );
+    }
+    format!(
+        "{js_content}\n            export default function WorkerWrapper(options) {{\n              return new {ctor}(\n                'data:text/javascript;charset=utf-8,' + encodeURIComponent(jsContent),\n                {options}\n              );\n            }}\n            "
+    )
+}
+
 /// `(file, ctor, inline, url)` for a resolved worker id (`x.ts?worker&inline`).
 fn worker_id_parts(id: &str) -> Option<(&str, &'static str, bool, bool)> {
     let (file, query) = id.split_once('?')?;
@@ -1321,54 +1410,134 @@ fn worker_id_parts(id: &str) -> Option<(&str, &'static str, bool, bool)> {
     ))
 }
 
-/// Bundle a worker entry to a single ESM string (dynamic imports inlined) for
-/// `?worker&inline`, so the worker ships inside the importing chunk as in Vite.
-/// The worker is bundled the way Vite's `bundleWorkerEntry` does it: under the
-/// app's resolve (alias, conditions), transform (target, JSX), define and minify
-/// settings, with oj's own asset/CSS/worker plugin so `?url`, stylesheets and
-/// nested workers inside the worker behave as in the main bundle. `nested` is
-/// the plugin for that inner bundle, built by the caller from its own fields.
-async fn bundle_worker_inline(
+/// Vite's bundleWorkerEntry: the worker built on its own under `worker.format`
+/// (iife by default), named `<assetsDir>/[name]-[hash]` like the app's files,
+/// with the app's resolve, transform, define and minify settings and oj's own
+/// asset/CSS/worker plugin.
+async fn bundle_worker_entry(
     root: &Path,
     file: &str,
-    opts: Option<&Arc<WorkerBundleOpts>>,
+    opts: &WorkerBundleOpts,
     nested: OjCssPlugin,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<WorkerBundle> {
+    if opts.chain.iter().any(|f| f == file) {
+        bail!(
+            "Circular worker imports detected. Vite does not support it. Import chain: {} -> {file}",
+            opts.chain.join(" -> ")
+        );
+    }
+    let es = oj_config::worker_format_es(&opts.config);
+    let names = |pattern: &str| oj_config::assets_dir_path(&opts.assets_dir, pattern);
     let plugins: Vec<SharedPluginable> = vec![Pluginable::new_shared(nested)];
     let mut bundler = BundlerBuilder::default()
         .with_plugins(plugins)
         .with_options(BundlerOptions {
             input: Some(vec![InputItem {
-                name: Some("worker".to_string()),
+                name: None,
                 import: file.to_string(),
             }]),
             cwd: Some(root.to_path_buf()),
-            format: Some(OutputFormat::Esm),
+            format: Some(if es {
+                OutputFormat::Esm
+            } else {
+                OutputFormat::Iife
+            }),
             platform: Some(rolldown::Platform::Browser),
-            code_splitting: Some(rolldown_common::CodeSplittingMode::Bool(false)),
-            resolve: opts.and_then(|o| rolldown_resolve(root, &o.config, "client")),
-            transform: opts.and_then(|o| transform_options(&o.config, o.is_production)),
-            define: opts.map(|o| o.define.iter().cloned().collect()),
-            minify: Some(rolldown_minify(opts.is_none_or(|o| o.minify))),
+            code_splitting: (!es).then_some(rolldown_common::CodeSplittingMode::Bool(false)),
+            resolve: rolldown_resolve(root, &opts.config, "client"),
+            transform: transform_options(&opts.config, opts.is_production),
+            define: Some(opts.define.iter().cloned().collect()),
+            minify: Some(rolldown_minify(opts.minify)),
+            entry_filenames: Some(names("[name]-[hash].js").into()),
+            chunk_filenames: Some(names("[name]-[hash].js").into()),
+            asset_filenames: Some(names("[name]-[hash].[ext]").into()),
+            preserve_entry_signatures: Some(rolldown_common::PreserveEntrySignatures::False),
+            comments: Some(vite_output_comments(opts.minify, false)),
+            experimental: Some(vite_mode_experimental()),
             ..Default::default()
         })
         .build()
-        .map_err(rolldown_failure!("inline worker init failed"))?;
+        .map_err(rolldown_failure!("worker init failed"))?;
     let out = bundler
         .generate()
         .await
-        .map_err(rolldown_failure!("inline worker build failed for {file}"))?;
-    let mut code = String::new();
-    for asset in &out.assets {
-        if let rolldown_common::Output::Chunk(chunk) = asset {
-            code.push_str(&chunk.code);
+        .map_err(rolldown_failure!("worker build failed for {file}"))?;
+    let mut entry: Option<(String, String)> = None;
+    let mut files = Vec::new();
+    for output in &out.assets {
+        match output {
+            rolldown_common::Output::Chunk(chunk) if entry.is_none() && chunk.is_entry => {
+                entry = Some((chunk.filename.to_string(), chunk.code.clone()));
+            }
+            rolldown_common::Output::Chunk(chunk) => files.push((
+                chunk.filename.to_string(),
+                rolldown_common::StrOrBytes::Str(chunk.code.clone()),
+            )),
+            rolldown_common::Output::Asset(asset) => {
+                files.push((asset.filename.to_string(), asset.source.clone()))
+            }
         }
     }
-    Ok(code)
+    let (entry_file_name, entry_code) =
+        entry.ok_or_else(|| anyhow::anyhow!("worker build for {file} produced no entry"))?;
+    Ok(WorkerBundle {
+        entry_file_name,
+        entry_code,
+        files,
+    })
 }
 
-/// The `import.meta.glob` / variable dynamic import / `new URL(.., import.meta.url)`
-/// expansions oj applies in the transform hook. `None` when the module comes out
+/// Vite's workerFileToUrl in a build: the worker built apart, its files
+/// emitted under their own names, and its entry's URL as a JS expression (the
+/// emitted file's `import.meta.ROLLUP_FILE_URL_*`, once per worker), or
+/// `self.location.href` for the worker being built.
+async fn worker_file_url(
+    ctx: &rolldown_plugin::PluginContext,
+    root: &Path,
+    file: &str,
+    opts: &WorkerBundleOpts,
+    nested: OjCssPlugin,
+) -> anyhow::Result<String> {
+    if opts.chain.last().is_some_and(|f| f == file) {
+        return Ok("self.location.href".to_string());
+    }
+    if let Some(url) = opts.emitted.lock().unwrap().get(file) {
+        return Ok(url.clone());
+    }
+    let bundle = bundle_worker_entry(root, file, opts, nested).await?;
+    for (file_name, source) in bundle.files {
+        ctx.emit_file(
+            rolldown_common::EmittedAsset {
+                file_name: Some(file_name.into()),
+                source,
+                ..Default::default()
+            },
+            None,
+            None,
+        )
+        .map_err(|e| anyhow::anyhow!(e))?;
+    }
+    let reference = ctx
+        .emit_file(
+            rolldown_common::EmittedAsset {
+                file_name: Some(bundle.entry_file_name.into()),
+                source: rolldown_common::StrOrBytes::Str(bundle.entry_code),
+                ..Default::default()
+            },
+            None,
+            None,
+        )
+        .map_err(|e| anyhow::anyhow!(e))?;
+    let url = format!("import.meta.ROLLUP_FILE_URL_{reference}");
+    opts.emitted
+        .lock()
+        .unwrap()
+        .insert(file.to_string(), url.clone());
+    Ok(url)
+}
+
+/// The `import.meta.glob` / variable dynamic import expansions oj applies in
+/// the transform hook (after its `new URL(.., import.meta.url)` rewrite). `None` when the module comes out
 /// byte-identical: the dynamic-import and new-URL expanders return a copy of their
 /// input when nothing matched (a plain `import("./x")`, a bare `import.meta.url`),
 /// and handing that copy to rolldown as `Some(code)` makes it push
@@ -1383,8 +1552,7 @@ fn expand_import_meta(
     let has_glob = code.contains("import.meta.glob");
     // Vite's dynamicImportVarsOptions.exclude defaults to node_modules.
     let has_dynamic = code.contains("import(") && !id.contains("/node_modules/");
-    let has_new_url = code.contains("import.meta.url");
-    if !has_glob && !has_dynamic && !has_new_url {
+    if !has_glob && !has_dynamic {
         return None;
     }
     let path = Path::new(id);
@@ -1399,13 +1567,135 @@ fn expand_import_meta(
     if has_dynamic {
         expanded = oj_compiler::glob::expand_dynamic_import_vars_source(&expanded, path);
     }
-    if has_new_url {
-        expanded = oj_compiler::glob::expand_new_url_asset_source(&expanded, path);
-    }
     if expanded != code {
         Some(expanded)
     } else {
         None
+    }
+}
+
+/// What a `new URL(..., import.meta.url)` names.
+enum UrlFile {
+    Source(PathBuf),
+    /// A public file, by its root-absolute URL.
+    Public(String),
+}
+
+impl OjCssPlugin {
+    /// Vite's worker and asset import-meta-url plugins in a build: each
+    /// `new URL(<file>, import.meta.url)` gets the built file's URL in place
+    /// (a worker built apart, an asset emitted or inlined, a public file under
+    /// the base), a template URL an eager `?url` glob lookup; a file that is
+    /// not there stays as written. None when nothing changed.
+    async fn rewrite_import_meta_urls(
+        &self,
+        ctx: &rolldown_plugin::PluginContext,
+        id: &str,
+        code: &str,
+    ) -> anyhow::Result<Option<String>> {
+        use oj_compiler::meta_glob::{self, MetaUrlKind, MetaUrlTarget};
+        if !code.contains("import.meta.url") || id.starts_with('\0') {
+            return Ok(None);
+        }
+        let sites =
+            meta_glob::scan_import_meta_urls(code, id).map_err(|e| anyhow::anyhow!("{e}"))?;
+        if sites.is_empty() {
+            return Ok(None);
+        }
+        let dir = Path::new(id.split('?').next().unwrap_or(id))
+            .parent()
+            .unwrap_or(&self.root)
+            .to_path_buf();
+        let mut targets = Vec::with_capacity(sites.len());
+        for site in &sites {
+            let target = match &site.kind {
+                MetaUrlKind::Template { .. } => MetaUrlTarget::Unresolved,
+                MetaUrlKind::Worker { file, .. } => match self.url_file(file, &dir) {
+                    Some(UrlFile::Source(abs)) => {
+                        let abs = abs.to_string_lossy().into_owned();
+                        match self.worker.as_deref() {
+                            Some(opts) => MetaUrlTarget::Url(
+                                worker_file_url(ctx, &self.root, &abs, opts, self.for_worker(&abs))
+                                    .await?,
+                            ),
+                            None => MetaUrlTarget::Unresolved,
+                        }
+                    }
+                    _ => MetaUrlTarget::Unresolved,
+                },
+                MetaUrlKind::Asset { file, .. } => match self.url_file(file, &dir) {
+                    Some(UrlFile::Source(abs)) => {
+                        let bytes = fs::read(&abs)?;
+                        let abs = abs.to_string_lossy().into_owned();
+                        MetaUrlTarget::Url(asset_url_expr(
+                            ctx,
+                            &self.root,
+                            &abs,
+                            bytes,
+                            self.inline_limit,
+                            false,
+                        )?)
+                    }
+                    Some(UrlFile::Public(url)) if !is_relative_base(&self.base) => {
+                        MetaUrlTarget::Url(
+                            serde_json::Value::String(with_base(&url, &self.base)).to_string(),
+                        )
+                    }
+                    _ => MetaUrlTarget::Unresolved,
+                },
+            };
+            targets.push(target);
+        }
+        let out = meta_glob::apply_import_meta_urls(code, &sites, &targets);
+        Ok((out != code).then_some(out))
+    }
+
+    /// The file a `new URL` names: relative to the importer, else under the
+    /// root, else a public file (by its URL).
+    fn url_file(&self, spec: &str, dir: &Path) -> Option<UrlFile> {
+        if spec.starts_with('.') {
+            let abs = resolve_html_ref(spec, dir, &self.root);
+            return abs.is_file().then_some(UrlFile::Source(abs));
+        }
+        let rest = spec.strip_prefix('/')?;
+        let abs = self.root.join(rest);
+        if abs.is_file() {
+            return Some(UrlFile::Source(abs));
+        }
+        public_file(&self.resolve.public_dir, rest).map(|_| UrlFile::Public(spec.to_string()))
+    }
+
+    /// The plugin a worker's own build runs (Vite builds it in a fresh
+    /// environment under the app's config): its CSS inlined into the worker,
+    /// `file` the last of its worker chain.
+    fn for_worker(&self, file: &str) -> OjCssPlugin {
+        OjCssPlugin {
+            collected: Arc::new(Mutex::new(Vec::new())),
+            root: self.root.clone(),
+            has_postcss: self.has_postcss,
+            client: true,
+            inline_limit: self.inline_limit,
+            css_code_split: false,
+            host: self.host.clone(),
+            css_transform_enabled: Arc::clone(&self.css_transform_enabled),
+            css: self.css.clone(),
+            html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            worker: self.worker.as_ref().map(|w| {
+                Arc::new(WorkerBundleOpts {
+                    config: w.config.clone(),
+                    is_production: w.is_production,
+                    define: w.define.clone(),
+                    minify: w.minify,
+                    assets_dir: w.assets_dir.clone(),
+                    chain: w.chain.iter().cloned().chain([file.to_string()]).collect(),
+                    emitted: Default::default(),
+                })
+            }),
+            resolve: self.resolve.clone(),
+            base: self.base.clone(),
+            pages: Default::default(),
+            chunk_css_hashing: None,
+        }
     }
 }
 
@@ -1434,7 +1724,7 @@ impl Plugin for OjCssPlugin {
         let name = self
             .chunk_css_hashing
             .as_ref()
-            .and_then(|(out_dir, asset_names)| {
+            .and_then(|(out_dir, asset_names, hash_base)| {
                 let css_map: std::collections::HashMap<String, String> =
                     self.collected.lock().unwrap().iter().cloned().collect();
                 let module_ids: Vec<String> =
@@ -1444,6 +1734,7 @@ impl Plugin for OjCssPlugin {
                     inline_limit: self.inline_limit,
                     asset_names: Some(asset_names.as_str()),
                     resolve,
+                    hash_base: *hash_base,
                 };
                 chunk_stylesheet(
                     &chunk.name,
@@ -1600,7 +1891,7 @@ impl Plugin for OjCssPlugin {
 
     fn transform(
         &self,
-        _ctx: SharedTransformPluginContext,
+        ctx: SharedTransformPluginContext,
         args: &HookTransformArgs<'_>,
     ) -> impl std::future::Future<Output = HookTransformReturn> + Send {
         // Borrow, do not copy: `Pluginable::call_transform` boxes this future for
@@ -1612,14 +1903,19 @@ impl Plugin for OjCssPlugin {
             if json {
                 return vite_json_module(id, code);
             }
-            Ok(
-                expand_import_meta(id, code, &self.root, &self.resolve.alias).map(|code| {
-                    rolldown_plugin::HookTransformOutput {
-                        code: Some(code),
-                        ..Default::default()
-                    }
-                }),
-            )
+            let urls = if self.client {
+                self.rewrite_import_meta_urls(&ctx, id, code).await?
+            } else {
+                None
+            };
+            let code_now = urls.as_deref().unwrap_or(code);
+            let expanded = expand_import_meta(id, code_now, &self.root, &self.resolve.alias);
+            Ok(expanded
+                .or(urls)
+                .map(|code| rolldown_plugin::HookTransformOutput {
+                    code: Some(code),
+                    ..Default::default()
+                }))
         }
     }
 
@@ -1634,7 +1930,6 @@ impl Plugin for OjCssPlugin {
         let routes_id = root.join("oj-routes.tsx").to_string_lossy().into_owned();
         let client = self.client;
         let inline_limit = self.inline_limit;
-        let worker_entries = Arc::clone(&self.worker_entries);
         let host = self.host.clone();
         let css_transform_enabled = Arc::clone(&self.css_transform_enabled);
         let self_has_postcss = self.has_postcss;
@@ -1644,6 +1939,7 @@ impl Plugin for OjCssPlugin {
         let worker = self.worker.clone();
         let base = self.base.clone();
         let page = self.pages.lock().unwrap().get(&id).cloned();
+        let worker_nested = worker_id_parts(&id).map(|(file, ..)| self.for_worker(file));
         let load = async move {
             let js = |code: String| {
                 Ok(Some(rolldown_plugin::HookLoadOutput {
@@ -1866,61 +2162,26 @@ impl Plugin for OjCssPlugin {
                 }));
             }
             if let Some((file, ctor, inline, url)) = worker_id_parts(&id) {
-                if inline {
-                    // `?worker&inline`: the worker's bundled code travels inside
-                    // this chunk and starts from a Blob URL (data: URL fallback).
-                    let nested = OjCssPlugin {
-                        collected: Arc::new(Mutex::new(Vec::new())),
-                        root: root.clone(),
-                        has_postcss: self_has_postcss,
-                        client: true,
-                        inline_limit,
-                        css_code_split: false,
-                        host: host.clone(),
-                        css_transform_enabled: Arc::clone(&css_transform_enabled),
-                        css: css_cfg.clone(),
-                        html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
-                        worker: worker.clone(),
-                        resolve: css_resolve.clone(),
-                        worker_entries: Arc::clone(&worker_entries),
-                        base: base.clone(),
-                        pages: Default::default(),
-                        chunk_css_hashing: None,
-                    };
-                    let code = bundle_worker_inline(&root, file, worker.as_ref(), nested).await?;
-                    let literal = serde_json::Value::String(code).to_string();
-                    return Ok(Some(rolldown_plugin::HookLoadOutput {
-                        code: arcstr::ArcStr::from(format!(
-                            "const __oj_worker_code = {literal};\nexport default function (options) {{ const opts = Object.assign({{ type: \"module\" }}, options); const blob = typeof Blob !== \"undefined\" && new Blob([__oj_worker_code], {{ type: \"text/javascript;charset=utf-8\" }}); const url = blob ? URL.createObjectURL(blob) : \"data:text/javascript;charset=utf-8,\" + encodeURIComponent(__oj_worker_code); try {{ return new {ctor}(url, opts); }} finally {{ if (blob) setTimeout(() => URL.revokeObjectURL(url), 0); }} }};"
-                        )),
-                        module_type: Some(rolldown_common::ModuleType::Js),
-                        ..Default::default()
-                    }));
-                }
-                let stem = std::path::Path::new(file)
-                    .file_stem()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("worker")
-                    .to_string();
-                worker_entries.lock().unwrap().insert(file.to_string());
-                let reference = ctx
-                    .emit_chunk(rolldown_common::EmittedChunk {
-                        id: file.to_string(),
-                        name: Some(stem.into()),
-                        preserve_entry_signatures: Some(
-                            rolldown_common::PreserveEntrySignatures::False,
-                        ),
-                        ..Default::default()
-                    })
-                    .map_err(|e| anyhow::anyhow!(e))?;
-                let code = if url {
-                    // `?worker&url` (also what `new Worker(new URL(...))` becomes):
-                    // the chunk's URL as a string.
-                    format!("export default import.meta.ROLLUP_FILE_URL_{reference};")
+                let (Some(opts), Some(nested)) = (worker.as_deref(), worker_nested) else {
+                    bail!("a worker cannot be built here: {id}");
+                };
+                let module = oj_config::worker_format_es(&opts.config);
+                // Vite's worker load, bundled: `?worker&inline` carries the
+                // worker's code, `?worker&url` is its URL, `?worker` its
+                // WorkerWrapper.
+                let code = if inline {
+                    let bundle = bundle_worker_entry(&root, file, opts, nested).await?;
+                    inline_worker_module(ctor, &bundle.entry_code, module)
                 } else {
-                    format!(
-                        "export default function (options) {{ return new {ctor}(import.meta.ROLLUP_FILE_URL_{reference}, Object.assign({{ type: \"module\" }}, options)); }};"
-                    )
+                    let url_code = worker_file_url(&ctx, &root, file, opts, nested).await?;
+                    if url {
+                        format!("export default {url_code}")
+                    } else {
+                        let options = worker_type_option(module);
+                        format!(
+                            "export default function WorkerWrapper(options) {{\n            return new {ctor}(\n              {url_code},\n              {options}\n            );\n          }}"
+                        )
+                    }
                 };
                 return Ok(Some(rolldown_plugin::HookLoadOutput {
                     code: arcstr::ArcStr::from(code),
@@ -3354,8 +3615,6 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
     }
 
     let collected_css: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
-    let worker_entries: Arc<Mutex<std::collections::HashSet<String>>> =
-        Arc::new(Mutex::new(std::collections::HashSet::new()));
     let css_split = css_code_split_of(&config);
     let plugin_host = user_plugin_host(
         cli.config.as_deref(),
@@ -3369,6 +3628,8 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
     .await;
     let plugin_defines = plugin_config_defines(&plugin_host).await;
     let env_delta = plugin_env_delta(&plugin_host).await;
+    let out_ov = ro_output_overrides(ro_opts);
+    let asset_hash_base = hash_base(out_ov.hash_characters);
     let emit = Arc::new(EmitState::with_pages(
         root.to_path_buf(),
         Arc::clone(&page_setup),
@@ -3415,12 +3676,19 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
             is_production,
             define: client_define.clone(),
             minify: client_minify,
+            assets_dir: assets_dir.clone(),
+            chain: Vec::new(),
+            emitted: Default::default(),
         })),
-        worker_entries: Arc::clone(&worker_entries),
         pages: Arc::clone(&page_setup.pages),
-        chunk_css_hashing: css_split.then(|| (out_dir.clone(), asset_names_pattern.clone())),
+        chunk_css_hashing: css_split.then(|| {
+            (
+                out_dir.clone(),
+                asset_names_pattern.clone(),
+                asset_hash_base,
+            )
+        }),
     }));
-    let out_ov = ro_output_overrides(ro_opts);
     // Vite's build import analysis (preload wrapping, polyfill) only applies to
     // es output; umd/iife/cjs bundles cannot use `import.meta.url`.
     let es_output = out_ov.format.is_none();
@@ -3460,6 +3728,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
                 .map(|p| rolldown_common::PathsOutputOption::FxHashMap(p.into_iter().collect())),
             name: out_ov.name,
             extend: out_ov.extend,
+            hash_characters: out_ov.hash_characters,
             treeshake: ro_treeshake(ro_opts),
             // Vite sets `preserveEntrySignatures: false` for app builds; oj keeps
             // rolldown's exports-only default because plugin-emitted chunks (crx
@@ -3588,6 +3857,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
         inline_limit: assets_inline_limit_of(&config),
         asset_names: Some(asset_names_pattern.as_str()),
         resolve: css_asset_resolve.as_ref(),
+        hash_base: asset_hash_base,
     };
     let mut manifest_entries: Vec<ManifestEntry> = Vec::new();
     let mut manifest_assets: Vec<ManifestAsset> = Vec::new();
@@ -3689,7 +3959,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
             let combined = chunk_css_asset(&combined, &css_asset_opts.resolve)?;
             // Named before the StyleX sheet joins it, as Vite names the asset
             // before the plugin's generateBundle appends to it.
-            let hash = css_asset_hash(&combined);
+            let hash = css_asset_hash_in(&combined, asset_hash_base);
             // Vite emits the bundle from the generateBundle that strips the
             // hash marker off every other sheet, too late to be stripped.
             let combined = append_stylex(format!("{combined}/*$vite$:1*/"), stylex_css.take());
@@ -3715,7 +3985,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
     // Split CSS is emitted once for the whole bundle; each page then links the
     // stylesheets of its own entry chunks (a page-relative href when the base is
     // relative).
-    let chunk_css: Vec<(String, String)> = if css_split {
+    let mut chunk_css: Vec<(String, String)> = if css_split {
         emit_split_css_files(
             &output,
             &collected_css,
@@ -3732,6 +4002,19 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
         Vec::new()
     };
     write_stylex_fallback(&out_dir, stylex_css, &mut emitted)?;
+    let pure_css = if es_output {
+        remove_pure_css_chunks(
+            &output,
+            &collected_css,
+            &out_dir,
+            &mut chunk_css,
+            &mut imports_map,
+        )?
+    } else {
+        Default::default()
+    };
+    emitted.retain(|(name, _)| !pure_css.contains_key(name));
+    manifest_entries.retain(|e| !pure_css.contains_key(&e.file));
     let mut all_sync_chunks: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     if let Some(name) = oj_config::ssr_manifest_name(&config) {
         let manifest = ssr_manifest(
@@ -3935,8 +4218,8 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
             &base,
             &imports_map,
             &chunk_css,
+            &pure_css,
             oj_config::module_preload_links(&config),
-            &worker_entries.lock().unwrap().clone(),
         )?;
     }
 
@@ -4470,7 +4753,7 @@ fn emit_html_asset(
         }
         return Some(format!("data:{};base64,{}", asset_mime(ext), b64(&data)));
     }
-    let hash = content_hash(&data);
+    let hash = content_hash_in(&data, opts.hash_base);
     let stem = abs.file_stem().and_then(|s| s.to_str()).unwrap_or("asset");
     let name = render_asset_name(opts.asset_names, &sanitize_asset_name(stem), &hash, ext);
     let dest = out_dir.join(&name);
@@ -4655,8 +4938,7 @@ pub(crate) async fn build_ssr(
         css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
         css: config.css.clone(),
         html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
-        worker: None,
-        worker_entries: Arc::new(Mutex::new(std::collections::HashSet::new())),
+        worker: Some(WorkerBundleOpts::plain(config, is_production)),
         pages: Default::default(),
         chunk_css_hashing: None,
     }));
@@ -4841,8 +5123,7 @@ async fn build_server_fns(
                 css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
                 css: config.css.clone(),
                 html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
-                worker: None,
-                worker_entries: Arc::new(Mutex::new(std::collections::HashSet::new())),
+                worker: Some(WorkerBundleOpts::plain(config, is_production)),
                 pages: Default::default(),
                 chunk_css_hashing: None,
             })])
@@ -5251,8 +5532,7 @@ async fn build_client_entry(
         css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
         css: config.css.clone(),
         html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
-        worker: None,
-        worker_entries: Arc::new(Mutex::new(std::collections::HashSet::new())),
+        worker: Some(WorkerBundleOpts::plain(config, is_production)),
         pages: Default::default(),
         chunk_css_hashing: None,
     }));
@@ -5524,8 +5804,7 @@ async fn build_library(
             css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
             css: config.css.clone(),
             html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            worker: None,
-            worker_entries: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            worker: Some(WorkerBundleOpts::plain(config, is_production)),
             pages: Default::default(),
             chunk_css_hashing: None,
         }));
@@ -5803,7 +6082,18 @@ fn sanitize_asset_name(s: &str) -> String {
 /// xxh3-128 of the bytes in rolldown's url-safe base64 (21 characters; a
 /// file name takes the first 8, or `[hash:N]`'s N).
 pub(crate) fn content_hash(bytes: &[u8]) -> String {
-    rolldown_utils::xxhash::xxhash_with_base(bytes, 64)
+    content_hash_in(bytes, 64)
+}
+
+/// [`content_hash`] in `output.hashCharacters`' base (64, 36 or 16), as
+/// rolldown names its own files.
+fn content_hash_in(bytes: &[u8], base: u8) -> String {
+    rolldown_utils::xxhash::xxhash_with_base(bytes, base)
+}
+
+/// The base of `output.hashCharacters`.
+fn hash_base(chars: Option<rolldown_common::HashCharacters>) -> u8 {
+    chars.unwrap_or_default().base()
 }
 
 /// A stylesheet asset's hash: Vite's finalizeCss emits the sheet with
@@ -5811,7 +6101,11 @@ pub(crate) fn content_hash(bytes: &[u8]) -> String {
 /// its links gained `crossorigin`) and strips it in generateBundle, so the
 /// name hashes the marker the file no longer has.
 pub(crate) fn css_asset_hash(css: &str) -> String {
-    content_hash(format!("{css}/*$vite$:1*/").as_bytes())
+    css_asset_hash_in(css, 64)
+}
+
+fn css_asset_hash_in(css: &str, base: u8) -> String {
+    content_hash_in(format!("{css}/*$vite$:1*/").as_bytes(), base)
 }
 
 /// Emit a CSS-referenced asset (font/image) under a content hash and return its
@@ -5825,6 +6119,8 @@ struct CssAssetOpts<'a> {
     asset_names: Option<&'a str>,
     /// Alias and root-absolute resolution for `url()` specifiers.
     resolve: oj_css::CssResolve<'a>,
+    /// `output.hashCharacters`' base for the names oj hashes itself.
+    hash_base: u8,
 }
 
 /// Render Vite/rolldown `assetFileNames` placeholders (`[name]`, `[hash]`,
@@ -5903,7 +6199,7 @@ fn emit_css_url(
         }
         return Some(format!("data:{};base64,{}", asset_mime(ext), b64(&data)));
     }
-    let hash = content_hash(&data);
+    let hash = content_hash_in(&data, opts.hash_base);
     let stem = abs.file_stem().and_then(|s| s.to_str()).unwrap_or("asset");
     let name = render_asset_name(opts.asset_names, &sanitize_asset_name(stem), &hash, ext);
     let dest = out_dir.join(&name);
@@ -6102,10 +6398,110 @@ fn chunk_stylesheet(
     let name = render_asset_name(
         opts.asset_names,
         &sanitize_asset_name(chunk_name),
-        &css_asset_hash(&css),
+        &css_asset_hash_in(&css, opts.hash_base),
         "css",
     );
     Ok(Some(ChunkStylesheet { css, name, sources }))
+}
+
+/// Vite's pure CSS chunks (es output): a chunk that is not an entry, exports
+/// nothing and renders no code, there only for its (non-module) stylesheets,
+/// is not emitted. Each chunk importing it takes its stylesheets after its own
+/// and loses the import, overwritten by a same-length `/* empty css */`
+/// comment (so its hash and sourcemap stand); an `import()` of it becomes
+/// `Promise.resolve({})` when the preload markers are filled. Returns each
+/// removed chunk's stylesheets.
+fn remove_pure_css_chunks(
+    output: &rolldown::BundleOutput,
+    collected_css: &Arc<Mutex<Vec<(String, String)>>>,
+    out_dir: &Path,
+    chunk_css: &mut Vec<(String, String)>,
+    imports_map: &mut std::collections::HashMap<String, Vec<String>>,
+) -> anyhow::Result<std::collections::BTreeMap<String, Vec<String>>> {
+    let styles: std::collections::HashSet<String> = collected_css
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(id, _)| id.clone())
+        .collect();
+    let css_module =
+        regex::Regex::new(r"\.module\.(css|less|sass|scss|styl|stylus|pcss|postcss|sss)(?:$|\?)")
+            .unwrap();
+    let mut removed: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for asset in &output.assets {
+        let rolldown_common::Output::Chunk(chunk) = asset else {
+            continue;
+        };
+        let mut has_css = false;
+        let pure = !chunk.is_entry
+            && chunk.exports.is_empty()
+            && chunk.code.is_empty()
+            && chunk.modules.keys.iter().all(|id| {
+                let style = styles.contains(id.as_str());
+                has_css |= style;
+                !style || !css_module.is_match(id.as_str())
+            });
+        if pure && has_css {
+            let file = chunk.filename.to_string();
+            let css = chunk_css
+                .iter()
+                .filter(|(c, _)| *c == file)
+                .map(|(_, css)| css.clone())
+                .collect();
+            removed.insert(file, css);
+        }
+    }
+    if removed.is_empty() {
+        return Ok(removed);
+    }
+    let names: Vec<String> = removed
+        .keys()
+        .map(|f| regex::escape(f.rsplit('/').next().unwrap_or(f)))
+        .collect();
+    let empty_chunk = regex::Regex::new(&format!(
+        r#"\bimport\s*["'][^"']*(?:{})["'];"#,
+        names.join("|")
+    ))?;
+    let mut files: Vec<&String> = imports_map.keys().collect();
+    files.sort();
+    let importers: Vec<String> = files
+        .into_iter()
+        .filter(|f| !removed.contains_key(*f))
+        .filter(|f| imports_map[*f].iter().any(|i| removed.contains_key(i)))
+        .cloned()
+        .collect();
+    for file in importers {
+        let imports = imports_map.get_mut(&file).unwrap();
+        let mut taken = Vec::new();
+        imports.retain(|i| match removed.get(i) {
+            Some(css) => {
+                taken.extend(css.iter().cloned());
+                false
+            }
+            None => true,
+        });
+        for css in taken {
+            if !chunk_css.iter().any(|(c, s)| *c == file && *s == css) {
+                chunk_css.push((file.clone(), css));
+            }
+        }
+        let path = out_dir.join(&file);
+        if let Ok(code) = fs::read_to_string(&path) {
+            let replaced = empty_chunk.replace_all(&code, |m: &regex::Captures| {
+                format!("/* empty css {}*/", " ".repeat(m[0].len() - 15))
+            });
+            if let std::borrow::Cow::Owned(replaced) = replaced {
+                fs::write(&path, replaced)?;
+            }
+        }
+    }
+    for file in removed.keys() {
+        imports_map.remove(file);
+        chunk_css.retain(|(c, _)| c != file);
+        let _ = fs::remove_file(out_dir.join(file));
+        let _ = fs::remove_file(out_dir.join(format!("{file}.map")));
+    }
+    Ok(removed)
 }
 
 /// The stylesheets a page links for its entry chunk (Vite's
@@ -6144,42 +6540,14 @@ fn apply_preload_helper(
     base: &str,
     imports_map: &std::collections::HashMap<String, Vec<String>>,
     chunk_css: &[(String, String)],
+    pure_css: &std::collections::BTreeMap<String, Vec<String>>,
     module_preload: bool,
-    worker_entries: &std::collections::HashSet<String>,
 ) -> anyhow::Result<()> {
-    let css_of: std::collections::HashMap<&str, &str> = chunk_css
-        .iter()
-        .map(|(c, css)| (c.as_str(), css.as_str()))
-        .collect();
+    let mut css_of: std::collections::HashMap<&str, Vec<String>> = std::collections::HashMap::new();
+    for (chunk, css) in chunk_css {
+        css_of.entry(chunk).or_default().push(css.clone());
+    }
     let relative = is_relative_base(base);
-    // Chunks only a worker ever loads run without a `document`: they preload
-    // nothing (Vite builds workers without its import analysis, `isWorker`).
-    let worker_only = {
-        let mut entries: Vec<(String, bool)> = Vec::new();
-        let mut dynamic_map: std::collections::HashMap<String, Vec<String>> =
-            std::collections::HashMap::new();
-        for asset in &output.assets {
-            if let rolldown_common::Output::Chunk(chunk) = asset {
-                let file = chunk.filename.to_string();
-                dynamic_map.insert(
-                    file.clone(),
-                    chunk
-                        .dynamic_imports
-                        .iter()
-                        .map(|d| d.to_string())
-                        .collect(),
-                );
-                if chunk.is_entry {
-                    let is_worker = chunk
-                        .facade_module_id
-                        .as_ref()
-                        .is_some_and(|f| worker_entries.contains(f.as_ref() as &str));
-                    entries.push((file, is_worker));
-                }
-            }
-        }
-        worker_only_chunks(&entries, imports_map, &dynamic_map)
-    };
     for asset in &output.assets {
         let rolldown_common::Output::Chunk(chunk) = asset else {
             continue;
@@ -6189,16 +6557,19 @@ fn apply_preload_helper(
         let Ok(code) = fs::read_to_string(&path) else {
             continue;
         };
-        let in_worker = worker_only.contains(&file);
         let dependency = |f: &str| -> Option<vite_preload::Dependency<'_>> {
-            if in_worker {
-                return None;
+            if let Some(css) = pure_css.get(f) {
+                return Some(vite_preload::Dependency {
+                    js: None,
+                    imports: &[],
+                    css,
+                });
             }
             let (name, imports) = imports_map.get_key_value(f)?;
             Some(vite_preload::Dependency {
                 js: Some(name.as_str()),
                 imports: imports.as_slice(),
-                css: css_of.get(f).copied(),
+                css: css_of.get(f).map_or(&[], Vec::as_slice),
             })
         };
         let Some(vite_preload::FilledChunk {
@@ -6229,42 +6600,6 @@ fn apply_preload_helper(
         fs::write(&path, written)?;
     }
     Ok(())
-}
-
-/// The chunks reachable (statically or dynamically) from worker entries but from
-/// no other entry.
-fn worker_only_chunks(
-    entries: &[(String, bool)],
-    imports_map: &std::collections::HashMap<String, Vec<String>>,
-    dynamic_map: &std::collections::HashMap<String, Vec<String>>,
-) -> std::collections::BTreeSet<String> {
-    let closure = |roots: &[&String]| -> std::collections::BTreeSet<String> {
-        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        let mut stack: Vec<String> = roots.iter().map(|r| (*r).clone()).collect();
-        while let Some(f) = stack.pop() {
-            if !seen.insert(f.clone()) {
-                continue;
-            }
-            for m in [imports_map, dynamic_map] {
-                if let Some(deps) = m.get(&f) {
-                    stack.extend(deps.iter().cloned());
-                }
-            }
-        }
-        seen
-    };
-    let workers: Vec<&String> = entries.iter().filter(|(_, w)| *w).map(|(f, _)| f).collect();
-    if workers.is_empty() {
-        return std::collections::BTreeSet::new();
-    }
-    let others: Vec<&String> = entries
-        .iter()
-        .filter(|(_, w)| !*w)
-        .map(|(f, _)| f)
-        .collect();
-    let from_workers = closure(&workers);
-    let from_others = closure(&others);
-    from_workers.difference(&from_others).cloned().collect()
 }
 
 /// Vite's `ssr-manifest.json` (ssrManifestPlugin): for every source module in the
@@ -6989,30 +7324,15 @@ mod tests {
         assert!(out.contains("Unknown variable dynamic import"), "{out}");
         fs::remove_dir_all(&dir).unwrap();
 
-        // `new URL(..., import.meta.url)` really changes.
-        let out = expand_import_meta(
-            "/app/src/main.js",
-            "const w = new Worker(new URL(\"./w.ts\", import.meta.url), { type: \"module\" });\nconst s = new SharedWorker(new URL(\"./w.ts\", import.meta.url));\n",
-            Path::new("/app"),
-            &[],
-        )
-        .expect("new URL asset expands");
-        assert!(
-            out.contains("import __oj_worker_0 from \"./w.ts?worker&url\""),
-            "{out}"
-        );
-        assert!(
-            out.contains("import __oj_worker_1 from \"./w.ts?sharedworker&url\""),
-            "{out}"
-        );
-        assert!(
-            out.contains("new Worker(__oj_worker_0, { type: \"module\" })"),
-            "{out}"
-        );
-        assert!(out.contains("new SharedWorker(__oj_worker_1)"), "{out}");
-        assert!(
-            !out.contains("w.ts?url"),
-            "the worker entry is not a plain asset: {out}"
+        // `new URL(..., import.meta.url)` is the transform's own rewrite.
+        assert_eq!(
+            expand_import_meta(
+                "/app/src/main.js",
+                "const w = new Worker(new URL(\"./w.ts\", import.meta.url));\n",
+                Path::new("/app"),
+                &[],
+            ),
+            None
         );
     }
 
@@ -7809,37 +8129,6 @@ mod tests {
         let w = chunk_size_warning(500.0);
         assert!(w.contains("larger than 500 kB after minification"));
         assert!(w.contains("build.chunkSizeWarningLimit"));
-    }
-
-    #[test]
-    fn worker_only_chunks_exclude_anything_a_page_entry_reaches() {
-        let entries = vec![("main.js".to_string(), false), ("w.js".to_string(), true)];
-        let imports: std::collections::HashMap<String, Vec<String>> = [
-            ("main.js".to_string(), vec!["shared.js".to_string()]),
-            (
-                "w.js".to_string(),
-                vec!["shared.js".to_string(), "wlib.js".to_string()],
-            ),
-        ]
-        .into_iter()
-        .collect();
-        let dynamics: std::collections::HashMap<String, Vec<String>> =
-            [("w.js".to_string(), vec!["wlazy.js".to_string()])]
-                .into_iter()
-                .collect();
-        let only = worker_only_chunks(&entries, &imports, &dynamics);
-        assert_eq!(
-            only.into_iter().collect::<Vec<_>>(),
-            vec![
-                "w.js".to_string(),
-                "wlazy.js".to_string(),
-                "wlib.js".to_string()
-            ],
-            "shared.js is reachable from the page, so it keeps the document helpers"
-        );
-        assert!(
-            worker_only_chunks(&[("main.js".to_string(), false)], &imports, &dynamics).is_empty()
-        );
     }
 
     #[test]

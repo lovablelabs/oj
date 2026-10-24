@@ -47,6 +47,8 @@ pub struct OjConfig {
     pub ssr: Option<serde_json::Value>,
     /// Vite's `html` block (`cspNonce`).
     pub html: Option<HtmlConfig>,
+    /// Vite's `worker` block (`format`); opaque, its `plugins` a function.
+    pub worker: Option<serde_json::Value>,
     pub legacy: Option<LegacyConfig>,
     /// How many of a vite.config's plugins the plugin host would run, from
     /// extraction (not a config key). `Some(0)`: no host is needed.

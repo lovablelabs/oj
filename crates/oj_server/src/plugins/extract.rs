@@ -55,6 +55,8 @@ pub struct ViteValues {
     pub app_type: Option<String>,
     /// `html` block (`cspNonce`).
     pub html: Option<serde_json::Value>,
+    /// `worker` block (`format`).
+    pub worker: Option<serde_json::Value>,
     /// The config's plugins the plugin host would run (none of oj's native
     /// set); an over-count. None when extraction could not read the list.
     pub active_plugins: Option<usize>,
@@ -687,6 +689,7 @@ pub(crate) fn parse_vite_values(json: &serde_json::Value) -> ViteValues {
         preview: non_null(json, "preview"),
         app_type: str_field(json, "appType"),
         html: non_null(json, "html"),
+        worker: non_null(json, "worker"),
         active_plugins: json
             .get("activePlugins")
             .and_then(|v| v.as_u64())
@@ -890,6 +893,9 @@ pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues)
     }
     if config.html.is_none() {
         config.html = v.html.and_then(|h| serde_json::from_value(h).ok());
+    }
+    if config.worker.is_none() {
+        config.worker = v.worker;
     }
     if config.esbuild.is_none() {
         config.esbuild = v.esbuild;

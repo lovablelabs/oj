@@ -427,3 +427,141 @@ fn plugin_emitted_pages_build_vites_exact_files() {
     };
     assert_same_output(&root);
 }
+
+/// Chunks that are only CSS are not emitted: a lazy one loads as
+/// `Promise.resolve({})` with its stylesheet preloaded, and a shared one two
+/// lazy routes import leaves an `/* empty css */` comment behind, its
+/// stylesheet joining each importer's.
+#[test]
+fn pure_css_chunks_build_vites_exact_files() {
+    let Some(root) = app(
+        "pure-css",
+        &[
+            ("package.json", Some(r#"{"name":"parity","type":"module"}"#)),
+            ("vite.config.js", Some("export default {};\n")),
+            ("index.html", Some(PAGE)),
+            (
+                "src/main.js",
+                Some("window.t = () => import(\"./theme.js\");\nwindow.a = () => import(\"./a.js\");\nwindow.b = () => import(\"./b.js\");\n"),
+            ),
+            ("src/theme.js", Some("import \"./theme.css\";\n")),
+            ("src/base.js", Some("import \"./base.css\";\n")),
+            ("src/a.js", Some("import \"./base.js\";\nimport \"./a.css\";\nexport const a = 1;\n")),
+            ("src/b.js", Some("import \"./base.js\";\nexport const b = 2;\n")),
+            ("src/theme.css", Some(".theme { color: red; }\n")),
+            ("src/base.css", Some(".base { color: green; }\n")),
+            ("src/a.css", Some(".a { color: blue; }\n")),
+        ],
+    ) else {
+        return;
+    };
+    assert_same_output(&root);
+}
+
+/// `output.hashCharacters` names every file: chunks, stylesheets, and the
+/// assets imported, referenced from CSS or from the page.
+#[test]
+fn hash_characters_build_vites_exact_files() {
+    let (logo, bg, hero) = ("l".repeat(6000), "b".repeat(6000), "h".repeat(6000));
+    for chars in ["hex", "base36"] {
+        let config = format!(
+            "export default {{ build: {{ rolldownOptions: {{ output: {{ hashCharacters: \"{chars}\" }} }} }} }};\n"
+        );
+        let Some(root) = app(
+            &format!("hash-{chars}"),
+            &[
+                ("package.json", Some(r#"{"name":"parity","type":"module"}"#)),
+                ("vite.config.js", Some(&config)),
+                (
+                    "index.html",
+                    Some(r#"<!doctype html><html><head><title>p</title></head><body><img src="/src/hero.png"><script type="module" src="/src/main.js"></script></body></html>"#),
+                ),
+                (
+                    "src/main.js",
+                    Some("import \"./main.css\";\nimport logo from \"./logo.png\";\nconsole.log(logo);\nwindow.l = () => import(\"./lazy.js\");\n"),
+                ),
+                ("src/lazy.js", Some("import \"./lazy.css\";\nexport default 1;\n")),
+                ("src/main.css", Some("body { background: url(./bg.png); }\n")),
+                ("src/lazy.css", Some(".lazy { color: red; }\n")),
+                ("src/logo.png", Some(&logo)),
+                ("src/bg.png", Some(&bg)),
+                ("src/hero.png", Some(&hero)),
+            ],
+        ) else {
+            return;
+        };
+        assert_same_output(&root);
+    }
+}
+
+/// Workers build on their own, as Vite's bundleWorkerEntry does, in
+/// `worker.format` (iife by default, es here too): `new Worker(new URL(...))`
+/// keeps its `new URL` with the built URL in place, `?worker` is Vite's
+/// WorkerWrapper, `?worker&url` the URL, `?worker&inline` the code, and a
+/// module the app and a worker share is bundled into each.
+#[test]
+fn workers_build_vites_exact_files() {
+    for format in ["iife", "es"] {
+        let config = format!("export default {{ worker: {{ format: \"{format}\" }} }};\n");
+        let Some(root) = app(
+            &format!("workers-{format}"),
+            &[
+                ("package.json", Some(r#"{"name":"parity","type":"module"}"#)),
+                ("vite.config.js", Some(&config)),
+                ("index.html", Some(PAGE)),
+                (
+                    "src/main.js",
+                    Some(
+                        "import { shared } from \"./shared.js\";\nimport W from \"./w2.js?worker\";\nimport url from \"./w3.js?worker&url\";\n\
+                         import Inline from \"./w4.js?worker&inline\";\n\
+                         new Worker(new URL(\"./w1.js\", import.meta.url), { type: \"module\" });\n\
+                         new W();\nnew Inline();\nconsole.log(url, shared(1));\n",
+                    ),
+                ),
+                ("src/w1.js", Some("import { shared } from \"./shared.js\";\nself.postMessage(shared(2));\n")),
+                ("src/w2.js", Some("self.onmessage = (e) => self.postMessage(e.data * 2);\n")),
+                ("src/w3.js", Some("self.postMessage(\"url\");\n")),
+                ("src/w4.js", Some("self.postMessage(\"inline\");\n")),
+                ("src/shared.js", Some("export const shared = (n) => `shared ${n}`;\n")),
+            ],
+        ) else {
+            return;
+        };
+        assert_same_output(&root);
+    }
+}
+
+/// `new URL(..., import.meta.url)` assets keep their `new URL` with the
+/// built URL in place (emitted, or inlined under the limit), a template URL
+/// becomes an eager `?url` glob lookup, and globs write Vite's
+/// `Object.assign` map.
+#[test]
+fn import_meta_urls_and_globs_build_vites_exact_files() {
+    let (big, x, y) = ("b".repeat(6000), "x".repeat(6000), "y".repeat(6000));
+    let Some(root) = app(
+        "meta-urls",
+        &[
+            ("package.json", Some(r#"{"name":"parity","type":"module"}"#)),
+            ("vite.config.js", Some("export default {};\n")),
+            ("index.html", Some(PAGE)),
+            (
+                "src/main.js",
+                Some(
+                    "const a = new URL(\"./big.png\", import.meta.url).href;\nconst b = new URL(\"./small.png\", import.meta.url);\n\
+                     const c = new URL(`./img/${window.n}.png`, import.meta.url);\n\
+                     const m = import.meta.glob(\"./m/*.js\", { eager: true });\nconst l = import.meta.glob(\"./m/*.js\");\n\
+                     console.log(a, b, c, m, l);\n",
+                ),
+            ),
+            ("src/big.png", Some(&big)),
+            ("src/small.png", Some("tiny")),
+            ("src/img/x.png", Some(&x)),
+            ("src/img/y.png", Some(&y)),
+            ("src/m/a.js", Some("export default \"a\";\n")),
+            ("src/m/b.js", Some("export default \"b\";\n")),
+        ],
+    ) else {
+        return;
+    };
+    assert_same_output(&root);
+}

@@ -735,6 +735,9 @@ pub fn has_scheme(file: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MetaUrlTarget {
     File(PathBuf),
+    /// The built file's URL as a JS expression, written in place (Vite's
+    /// build: an emitted file's `import.meta.ROLLUP_FILE_URL_*`, a data URL).
+    Url(String),
     /// A worker starting its own entry: `self.location.href`.
     SelfWorker,
     Unresolved,
@@ -792,6 +795,23 @@ pub fn apply_import_meta_urls(code: &str, sites: &[MetaUrl], targets: &[MetaUrlT
                     format!("{ident} + {}", json(postfix))
                 } else {
                     ident
+                };
+                edits.push((
+                    site.start,
+                    site.end,
+                    format!("new URL({href}, '' + import.meta.url)"),
+                ));
+            }
+            (MetaUrlKind::Worker { .. }, MetaUrlTarget::Url(url)) => edits.push((
+                site.start,
+                site.end,
+                format!("new URL(/* @vite-ignore */ {url}, '' + import.meta.url)"),
+            )),
+            (MetaUrlKind::Asset { postfix, .. }, MetaUrlTarget::Url(url)) => {
+                let href = if postfix.starts_with('#') {
+                    format!("{url} + {}", json(postfix))
+                } else {
+                    url.clone()
                 };
                 edits.push((
                     site.start,

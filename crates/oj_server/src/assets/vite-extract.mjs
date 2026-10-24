@@ -1685,6 +1685,7 @@ export async function extract(input) {
       preview: extractPreview(c.preview),
       appType: typeof c.appType === "string" ? c.appType : null,
       html: typeof c.html?.cspNonce === "string" ? { cspNonce: c.html.cspNonce } : null,
+      worker: typeof c.worker?.format === "string" ? { format: c.worker.format } : null,
       activePlugins: await activePluginCount(raw),
       stylex: await stylexPlugin(raw),
     };
