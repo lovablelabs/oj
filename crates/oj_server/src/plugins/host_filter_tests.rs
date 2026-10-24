@@ -206,3 +206,23 @@ async fn a_plugin_with_a_non_function_then_does_not_hang_the_host() {
     .expect("the host finished loading its plugins");
     assert_eq!(names, ["thenful", "after"]);
 }
+
+// A rejection inside what applyToEnvironment returned is the hook failing,
+// like a throw from the hook itself: the plugin stays active and the host
+// comes up, instead of the whole boot failing on one plugin.
+#[tokio::test]
+async fn a_rejection_inside_an_apply_to_environment_result_keeps_the_plugin() {
+    let src = r#"export default {
+  plugins: [
+    { name: "user" },
+    { name: "rejects", applyToEnvironment: () => [Promise.reject(new Error("nested"))] },
+  ],
+};
+"#;
+    let extra = serde_json::json!({
+        "environment": { "name": "client", "mode": "build" },
+        "pluginsFormat": "vite",
+    });
+    let names = hosted_names("nested-reject", "vite.config.mjs", src, extra).await;
+    assert_eq!(names, ["user", "rejects"]);
+}

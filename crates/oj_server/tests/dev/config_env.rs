@@ -202,6 +202,47 @@ async fn start_bundle_host_leaves_out_promise_wrapped_tanstack_plugins() {
     assert_eq!(ran, "user-probe\nuser-probe\n", "the config hooks that ran");
 }
 
+/// The Start SSR host leaves the same plugins out of its Vite resolve as a
+/// bundle host: TanStack's config hooks (the route generator's among them)
+/// do work oj's own Start pipeline does, so only the user's hook runs, once
+/// in that resolve and once in the host.
+#[tokio::test(flavor = "multi_thread")]
+async fn start_ssr_host_leaves_tanstack_config_hooks_out_of_its_resolve() {
+    require_fixture!("vite");
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"ssrresolve","private":true,"type":"module"}"#,
+        ),
+        ("vite.config.mjs", PROMISED_TANSTACK_CONFIG),
+    ]);
+    app.link_fixture("vite");
+    let payload = serde_json::json!({
+        "config": { "root": app.root.display().to_string(), "base": "/", "mode": "development", "command": "serve" },
+        "env": { "command": "serve", "mode": "development" },
+        "environment": { "name": "ssr", "mode": "dev" },
+        "pluginsFormat": "vite",
+        "ojStartMode": true,
+    })
+    .to_string();
+    let host = oj_server::plugins::PluginHost::spawn(
+        &app.root,
+        &app.root.join("vite.config.mjs"),
+        &payload,
+        None,
+    )
+    .await
+    .expect("the ssr host starts");
+    let names = host.plugin_names().await;
+    host.shutdown();
+    assert!(
+        names.iter().any(|n| n == "user-probe"),
+        "the host's plugins: {names:?}"
+    );
+    let ran = std::fs::read_to_string(app.root.join("config-ran.txt")).unwrap_or_default();
+    assert_eq!(ran, "user-probe\nuser-probe\n", "the config hooks that ran");
+}
+
 /// Vite's build reads `build.rolldownOptions.plugins` through
 /// asyncFlatten(arraify(..)) (build.ts): a lone plugin on a Worker
 /// environment is a one-entry list in the Start facts, not a throw.

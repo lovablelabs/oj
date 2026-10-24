@@ -280,6 +280,13 @@ const ojStartMode = initial.ojStartMode === true;
 // `this.resolve` that no plugin answers ends in that bundler's resolution
 // (the `bundlerResolve` reverse RPC), as it ends in Rollup's under Vite.
 const ojBundleHost = initial.ojBundleHost === true;
+// In start mode the ssr-environment host backs oj's in-process Start module
+// host: framework plugins oj reimplements natively (vite:*, tanstack's
+// compiler plugins) must not transform SSR modules — the Start pipeline does
+// their work (server-fn rewrite, route tree, refresh) — while user plugins
+// (mdx, svgr, virtual modules) run. A Start bundle host leaves the same
+// plugins out: the native Start bundles do their work.
+const startLeavesOutReimplemented = ojStartMode && (hostEnvName === "ssr" || ojBundleHost);
 
 const _ojTTY = process.stderr.isTTY && !process.env.NO_COLOR;
 const OJ = _ojTTY ? "\x1b[48;2;255;255;255m\x1b[1;38;2;42;51;212m oj \x1b[0m" : "oj";
@@ -799,7 +806,7 @@ async function loadUserResolvedViteConfig() {
     // pre-set first so it computes isNodeEnvSet like a real CLI run.
     unsetOjNodeEnvForResolve();
     const rc = await asNode(async () => {
-      if (!ojBundleHost || typeof vite.loadConfigFromFile !== "function") {
+      if (!startLeavesOutReimplemented || typeof vite.loadConfigFromFile !== "function") {
         return vite.resolveConfig(
           { root: appRoot, configFile: pluginsPath, mode: env.mode, logLevel: "silent" },
           env.command,
@@ -807,7 +814,7 @@ async function loadUserResolvedViteConfig() {
           defaultNodeEnv,
         );
       }
-      // A Start bundle host resolves without the framework plugins oj
+      // A Start SSR or bundle host resolves without the framework plugins oj
       // reimplements, as it runs without them: their config hooks (the
       // router generator's among them) do work oj's own pipeline does.
       const loaded = await vite.loadConfigFromFile(
@@ -1221,13 +1228,6 @@ function hostedPlugins(list, userConfig) {
   });
   return out.sort((a, b) => enforceRank(a) - enforceRank(b));
 }
-// In start mode the ssr-environment host backs oj's in-process Start module
-// host: framework plugins oj reimplements natively (vite:*, tanstack's
-// compiler plugins) must not transform SSR modules — the Start pipeline does
-// their work (server-fn rewrite, route tree, refresh) — while user plugins
-// (mdx, svgr, virtual modules) run. A Start bundle host leaves the same
-// plugins out: the native Start bundles do their work.
-const startLeavesOutReimplemented = ojStartMode && (hostEnvName === "ssr" || ojBundleHost);
 // Whether oj does `p`'s work itself, so this host leaves it out: the
 // top-level list and what applyToEnvironment returns alike.
 function ojRunsNatively(p) {
@@ -1839,7 +1839,9 @@ async function environmentPlugins(environment, candidates) {
     let applied;
     initStage(`applyToEnvironment:${p.name ?? "?"}`);
     try {
+      // A rejection nested in what it returned counts as its own throw.
       applied = await p.applyToEnvironment(environment);
+      if (applied && applied !== true) applied = await flattenPlugins(applied);
     } catch (e) {
       process.stderr.write(
         `${OJ} plugin host: applyToEnvironment(${p.name ?? "?"}) threw; keeping the plugin active: ${(e && e.message) || e}\n`,
@@ -1852,7 +1854,7 @@ async function environmentPlugins(environment, candidates) {
       next.push(p);
       continue;
     }
-    const returned = (await flattenPlugins(applied)).filter((ap) => !ojRunsNatively(ap));
+    const returned = applied.filter((ap) => !ojRunsNatively(ap));
     for (const ap of returned) {
       const ignored = ignoredEnvironmentPluginHooks.filter((hook) => ap[hook]);
       if (ignored.length > 0) {
