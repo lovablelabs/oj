@@ -250,8 +250,11 @@ impl Diagnostics {
     /// also prints one line to stderr. The outputs run with no lock held, so
     /// one that emits an event of its own cannot deadlock.
     pub fn emit(&self, event: Event) {
-        let outputs = self.outputs.lock().unwrap().clone();
-        for output in &outputs {
+        let outputs = {
+            let outputs = self.outputs.lock().unwrap();
+            (!outputs.is_empty()).then(|| outputs.clone())
+        };
+        for output in outputs.iter().flatten() {
             output(&event);
         }
         if let Some(line) = self.record(event) {

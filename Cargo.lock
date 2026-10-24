@@ -6600,7 +6600,6 @@ dependencies = [
  "axum",
  "blake3",
  "deno_signals",
- "deno_telemetry",
  "futures-util",
  "glob",
  "globset",

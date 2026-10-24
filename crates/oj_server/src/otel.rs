@@ -21,8 +21,8 @@ use axum::extract::Request;
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
-use deno_telemetry::{OtelConfig, OtelGlobals, OtelRuntimeConfig, OTEL_GLOBALS};
 use hyper::body::{Frame, SizeHint};
+use oj_js::deno_telemetry::{OtelConfig, OtelGlobals, OtelRuntimeConfig, OTEL_GLOBALS};
 use opentelemetry::logs::{LogRecord as _, Logger as _, LoggerProvider as _, Severity};
 use opentelemetry::metrics::{Counter, Histogram, MeterProvider as _};
 use opentelemetry::trace::{
@@ -50,8 +50,10 @@ struct Sampler {
 }
 
 impl Sampler {
-    /// Unset or empty is the spec default, parentbased_always_on. Deno's init
-    /// already refuses an unsupported name, so one never reaches here.
+    /// Unset or empty is the spec default, parentbased_always_on (Deno's own
+    /// default is always_on, but its JS instrumentation is off here, so no
+    /// Deno span shares a trace with oj's). Deno's init already refuses an
+    /// unsupported name, so one never reaches here.
     fn from_vars(name: Option<&str>, arg: Option<&str>) -> Sampler {
         // An unparsable or non-finite probability is the spec default, 1.0.
         let ratio = || {
@@ -107,7 +109,7 @@ pub fn init() {
         runtime_name: "oj".into(),
         runtime_version: env!("CARGO_PKG_VERSION").into(),
     };
-    if let Err(e) = deno_telemetry::init(&sys_traits::impls::RealSys, runtime, config) {
+    if let Err(e) = oj_js::deno_telemetry::init(&sys_traits::impls::RealSys, runtime, config) {
         eprintln!("oj: OpenTelemetry export disabled: {e}");
         return;
     }
@@ -120,18 +122,33 @@ pub fn init() {
     }));
 }
 
+/// Longest an exit waits for the last export. The OTLP exporter's own timeout
+/// is 10s per signal by default, so an unreachable collector would otherwise
+/// hold a Ctrl-C, or a restart on a config edit, for half a minute.
+const SHUTDOWN_BUDGET: Duration = Duration::from_secs(2);
+
 /// Exports what is queued and closes the pipeline, as deno_telemetry's own
-/// exit hook does on `Deno.exit()`, without running the other exit hooks.
-/// oj calls it at each of its exits (the signal shutdown, a restart's
-/// re-exec, `main` returning or unwinding). A signal can also have
-/// deno_signals run Deno's hook first; the providers ignore a second shutdown.
+/// exit hook does on `Deno.exit()`, without running the other exit hooks, and
+/// within [`SHUTDOWN_BUDGET`]. oj calls it at each of its exits (the signal
+/// shutdown, a restart's re-exec, `main` returning or unwinding). A signal can
+/// also have deno_signals run Deno's hook first; the providers ignore a
+/// second shutdown.
 pub fn shutdown() {
     let Some(globals) = OTEL_GLOBALS.get() else {
         return;
     };
-    let _ = globals.span_processor.shutdown();
-    let _ = globals.log_processor.shutdown();
-    let _ = globals.meter_provider.shutdown();
+    let (done, finished) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("oj-otel-shutdown".into())
+        .spawn(move || {
+            let _ = globals.span_processor.shutdown();
+            let _ = globals.log_processor.shutdown();
+            let _ = globals.meter_provider.shutdown();
+            let _ = done.send(());
+        });
+    if spawned.is_ok() {
+        let _ = finished.recv_timeout(SHUTDOWN_BUDGET);
+    }
 }
 
 /// Diagnostics as `oj.diag` log records and the `oj.diag.events` counter.
@@ -229,14 +246,32 @@ fn source_name(source: oj_diag::Source) -> &'static str {
 /// for `http.route` and the span is named by the method alone.
 pub struct RequestTracer {
     globals: &'static OtelGlobals,
+    /// `base`: routes are classified past it, as oj's routes see them.
+    base: Option<String>,
     scope: InstrumentationScope,
     duration: Histogram<f64>,
     sampler: Sampler,
 }
 
+/// `router` with a [`RequestTracer`] as its outermost layer, so the span and
+/// the duration cover every other one; `router` itself when export is off.
+pub fn traced<S: Clone + Send + Sync + 'static>(
+    router: axum::Router<S>,
+    scheme: &'static str,
+    base: Option<&str>,
+) -> axum::Router<S> {
+    let Some(tracer) = RequestTracer::new(base) else {
+        return router;
+    };
+    let tracer = Arc::new(tracer);
+    router.layer(axum::middleware::from_fn(
+        move |req: Request, next: Next| tracer.clone().trace(scheme, req, next),
+    ))
+}
+
 impl RequestTracer {
     /// `None` when export is off.
-    pub fn new() -> Option<Self> {
+    pub fn new(base: Option<&str>) -> Option<Self> {
         let globals = OTEL_GLOBALS.get()?;
         let scope = scope();
         let duration = globals
@@ -250,6 +285,7 @@ impl RequestTracer {
             .build();
         Some(Self {
             globals,
+            base: base.map(str::to_owned),
             scope,
             duration,
             sampler: Sampler::from_vars(
@@ -267,10 +303,12 @@ impl RequestTracer {
     ) -> Response {
         let start_time = SystemTime::now();
         let started = Instant::now();
+        let path = req.uri().path().to_owned();
         let mut exchange = Exchange {
             method_original: req.method().as_str().to_owned(),
             protocol: protocol_version(req.version()),
-            path: req.uri().path().to_owned(),
+            class: classify(&path, self.base.as_deref()),
+            path,
             scheme,
             status: StatusCode::OK,
             body: BodyEnd::Sent,
@@ -314,6 +352,9 @@ impl RequestTracer {
 struct Exchange {
     method_original: String,
     protocol: Option<&'static str>,
+    /// [`route_class`] of the path past `base`.
+    class: &'static str,
+    /// The request's own path, `base` included (`url.path`).
     path: String,
     scheme: &'static str,
     status: StatusCode,
@@ -351,7 +392,7 @@ impl Exchange {
             KeyValue::new("http.request.method", known_method(&self.method_original)),
             KeyValue::new("http.response.status_code", i64::from(self.status.as_u16())),
             KeyValue::new("url.scheme", self.scheme),
-            KeyValue::new("oj.route.class", route_class(&self.path)),
+            KeyValue::new("oj.route.class", self.class),
         ];
         if let Some(protocol) = self.protocol {
             attributes.push(KeyValue::new("network.protocol.version", protocol));
@@ -561,7 +602,18 @@ fn parse_parent(headers: &HeaderMap) -> Option<SpanContext> {
     context.is_valid().then_some(context)
 }
 
-/// A low-cardinality name for what a dev-server path serves.
+/// [`route_class`] of `path` as oj's routes see it: past `base`. A path
+/// outside the base keeps its own name (oj's unbased module URLs).
+fn classify(path: &str, base: Option<&str>) -> &'static str {
+    let route = base
+        .and_then(|base| crate::strip_base(path, base))
+        .unwrap_or(path);
+    route_class(route)
+}
+
+/// A low-cardinality name for what a dev-server path (past `base`) serves.
+/// Only a known file extension makes a path a file: page URLs carry dots too
+/// (`/users/jane.doe`, `/docs/v1.2`).
 fn route_class(path: &str) -> &'static str {
     if path.starts_with("/@oj/") || path.starts_with("/@vite/") || path.starts_with("/__") {
         return "internal";
@@ -569,24 +621,41 @@ fn route_class(path: &str) -> &'static str {
     if path.starts_with("/@oj-deps/") || path.contains("/node_modules/.vite/") {
         return "dep";
     }
+    // TanStack Start's server-function RPCs (start_dev routes the prefix).
+    if path.starts_with("/_serverFn/") {
+        return "server_fn";
+    }
     if path.starts_with("/@id/") || path.starts_with("/@fs/") {
         return "module";
     }
     let file = path.rsplit('/').next().unwrap_or("");
-    let ext = file.rsplit_once('.').map(|(_, ext)| ext);
-    // Other `/@` paths are dev-server modules (`/@react-refresh`,
-    // `/@virtual/..`, `/@oj-empty`); without an extension they are no page.
-    if path.starts_with("/@") && matches!(ext, None | Some("html")) {
-        return "module";
-    }
-    match ext {
-        None | Some("html") => "document",
+    let ext = file
+        .rsplit_once('.')
+        .map(|(_, ext)| ext.to_ascii_lowercase());
+    let class = match ext.as_deref() {
         Some(
             "js" | "mjs" | "cjs" | "ts" | "tsx" | "jsx" | "mts" | "cts" | "vue" | "svelte" | "json",
-        ) => "module",
-        Some("css" | "scss" | "sass" | "less" | "styl" | "pcss") => "style",
-        Some(_) => "asset",
+        ) => Some("module"),
+        Some("css" | "scss" | "sass" | "less" | "styl" | "stylus" | "pcss" | "postcss") => {
+            Some("style")
+        }
+        Some(
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "svg" | "ico" | "bmp" | "tif"
+            | "tiff" | "apng" | "jfif" | "pjpeg" | "pjp" | "cur" | "woff" | "woff2" | "ttf" | "otf"
+            | "eot" | "mp4" | "webm" | "ogg" | "mp3" | "wav" | "flac" | "aac" | "opus" | "mov"
+            | "m4a" | "vtt" | "wasm" | "map" | "txt" | "xml" | "pdf" | "webmanifest" | "zip",
+        ) => Some("asset"),
+        _ => None,
+    };
+    if let Some(class) = class {
+        return class;
     }
+    // Other `/@` paths are dev-server modules (`/@react-refresh`,
+    // `/@virtual/..`, `/@oj-empty`), never pages.
+    if path.starts_with("/@") {
+        return "module";
+    }
+    "document"
 }
 
 #[cfg(test)]
@@ -620,6 +689,49 @@ mod tests {
         assert_eq!(route_class("/"), "document");
         assert_eq!(route_class("/dashboard/settings"), "document");
         assert_eq!(route_class("/index.html"), "document");
+        assert_eq!(route_class("/@vite/client"), "internal");
+        assert_eq!(route_class("/node_modules/.vite/deps/react.js"), "dep");
+        assert_eq!(route_class("/_serverFn/src_fns_ts--getUser"), "server_fn");
+        assert_eq!(route_class("/assets/app.js.map"), "asset");
+        assert_eq!(route_class("/Logo.PNG"), "asset");
+        assert_eq!(route_class("/fonts/inter.woff2"), "asset");
+        assert_eq!(route_class("/@virtual/page.html"), "module");
+    }
+
+    // Page URLs carry dots too: only a known file extension makes a file.
+    #[test]
+    fn a_dotted_page_url_is_still_a_document() {
+        for page in [
+            "/users/jane.doe",
+            "/docs/v1.2",
+            "/posts/hello.world",
+            "/app/",
+        ] {
+            assert_eq!(route_class(page), "document", "{page}");
+        }
+    }
+
+    // With `base: '/app/'`, oj's routes see `/app/@oj/client.js` as
+    // `/@oj/client.js`; its class must too. Unbased module URLs stay as is.
+    #[test]
+    fn routes_classify_past_the_base() {
+        let base = Some("/app/");
+        assert_eq!(classify("/app/@oj/client.js", base), "internal");
+        assert_eq!(classify("/app/@oj-deps/react.js", base), "dep");
+        assert_eq!(classify("/app/__ws", base), "internal");
+        assert_eq!(classify("/app/", base), "document");
+        assert_eq!(classify("/app", base), "document");
+        assert_eq!(
+            classify("/src/App.tsx", base),
+            "module",
+            "an unbased module URL"
+        );
+        assert_eq!(classify("/apple.svg", base), "asset", "not under /app/");
+        assert_eq!(
+            classify("/app/@oj/client.js", None),
+            "module",
+            "without the base it is no oj route, just a script"
+        );
     }
 
     fn headers(traceparent: &str) -> HeaderMap {
@@ -843,6 +955,7 @@ mod tests {
         Exchange {
             method_original: method.into(),
             protocol: Some("1.1"),
+            class: route_class("/src/App.tsx"),
             path: "/src/App.tsx".into(),
             scheme: "https",
             status: StatusCode::from_u16(status).unwrap(),

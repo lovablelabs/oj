@@ -652,6 +652,8 @@ pub struct BuiltApp {
     /// `server.https`: serve TLS with ALPN h2 + http/1.1 (Vite's secure dev
     /// server shape) instead of plain http.
     pub https: Option<oj_config::HttpsConfig>,
+    /// `base`, `None` for `/`.
+    pub base: Option<String>,
     /// The HMR gate (the editor-driven hold), when enabled: the Start
     /// server holds its page reload behind it like the plain path holds updates.
     pub hmr_gate: Option<HmrGateHandle>,
@@ -1383,16 +1385,6 @@ fn build_router(
             cors_middleware,
         ));
     }
-    // Outermost, so the span covers every other layer.
-    if let Some(tracer) = otel::RequestTracer::new() {
-        let tracer = Arc::new(tracer);
-        let scheme = tls::url_scheme(server_cfg.https.as_ref());
-        app = app.layer(axum::middleware::from_fn(
-            move |req: axum::extract::Request, next: axum::middleware::Next| {
-                tracer.clone().trace(scheme, req, next)
-            },
-        ));
-    }
     app.with_state(state)
 }
 
@@ -1437,7 +1429,12 @@ impl DevServer {
         if built.open {
             open_browser(&url);
         }
-        tls::serve_router(listener, built.router, built.https.as_ref()).await?;
+        let router = otel::traced(
+            built.router,
+            tls::url_scheme(built.https.as_ref()),
+            built.base.as_deref(),
+        );
+        tls::serve_router(listener, router, built.https.as_ref()).await?;
         Ok(())
     }
 
@@ -1853,6 +1850,7 @@ impl DevServer {
             state: Arc::clone(&state),
         };
         let watch_feed = state.watch_feed.clone();
+        let base = state.base.clone();
         let router = build_router(state, &server_cfg, &hmr.ws_path);
         Ok(BuiltApp {
             router,
@@ -1867,6 +1865,7 @@ impl DevServer {
             plugin_host,
             open,
             https: server_cfg.https.clone(),
+            base,
             hmr_gate,
             ssr,
             watch_feed,

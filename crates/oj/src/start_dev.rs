@@ -672,6 +672,12 @@ pub async fn start_dev(
         port
     );
     println!("  {}", oj_server::link(&url, &oj_server::cell(&url)));
+    // Outermost, around this server's own routes too.
+    let app = oj_server::otel::traced(
+        app,
+        oj_server::tls::url_scheme(built.https.as_ref()),
+        built.base.as_deref(),
+    );
     oj_server::tls::serve_router(listener, app, built.https.as_ref()).await?;
     Ok(())
 }

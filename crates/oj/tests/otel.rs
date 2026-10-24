@@ -10,7 +10,7 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -68,12 +68,24 @@ fn collector() -> (String, Arc<Mutex<Received>>) {
     (endpoint, received)
 }
 
+/// A port no other test in this binary was given: the OS can hand a
+/// just-released port out again, and two servers on one port would see each
+/// other's requests (oj moves to the next port when its own is taken).
 fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+    static GIVEN: Mutex<Vec<u16>> = Mutex::new(Vec::new());
+    loop {
+        let port = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let mut given = GIVEN.lock().unwrap();
+        // oj may also take port + 1 when port is busy.
+        if !given.iter().any(|p| p.abs_diff(port) <= 1) {
+            given.push(port);
+            return port;
+        }
+    }
 }
 
 /// The status of `GET path` over HTTP/1.1, with extra header lines.
@@ -180,7 +192,18 @@ impl Server {
         export_ms: &str,
         env: &[(&str, Option<&str>)],
     ) -> Server {
-        let root = app(name);
+        Server::start_in(app(name), endpoint, export_ms, env, "/ok.tsx")
+    }
+
+    /// [`Server::start_with`] on an app at `root` (removed on drop), ready
+    /// once `ready` serves a 200.
+    fn start_in(
+        root: PathBuf,
+        endpoint: &str,
+        export_ms: &str,
+        env: &[(&str, Option<&str>)],
+        ready: &str,
+    ) -> Server {
         let port = free_port();
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_oj"));
         cmd.args(["dev"])
@@ -227,14 +250,14 @@ impl Server {
             root,
         };
         let deadline = Instant::now() + Duration::from_secs(60);
-        while TcpStream::connect(("127.0.0.1", port)).is_err() || get(port, "/ok.tsx", "") != 200 {
+        while TcpStream::connect(("127.0.0.1", port)).is_err() || get(port, ready, "") != 200 {
             if let Ok(Some(status)) = server.child.try_wait() {
                 panic!(
                     "oj exited before serving: {status}\n{}",
                     server.stderr.lock().unwrap()
                 );
             }
-            assert!(Instant::now() < deadline, "oj never served /ok.tsx");
+            assert!(Instant::now() < deadline, "oj never served {ready}");
             std::thread::sleep(Duration::from_millis(50));
         }
         server
@@ -265,6 +288,11 @@ impl Server {
 }
 
 fn app(name: &str) -> PathBuf {
+    app_with(name, &[])
+}
+
+/// [`app`] plus `extra` files.
+fn app_with(name: &str, extra: &[(&str, &str)]) -> PathBuf {
     let root = std::env::temp_dir()
         .canonicalize()
         .unwrap()
@@ -279,7 +307,10 @@ fn app(name: &str) -> PathBuf {
         ),
         ("ok.tsx", "export const fine = 1;\n"),
         ("main.tsx", "export const broken = {;\n"),
-    ] {
+    ]
+    .iter()
+    .chain(extra)
+    {
         std::fs::write(root.join(name), text).unwrap();
     }
     root
@@ -502,4 +533,121 @@ fn an_always_off_sampler_drops_spans_only() {
     assert!(items(&r.logs, "Logs", "logRecords")
         .iter()
         .any(|rec| attr(rec, "oj.diag.kind").as_deref() == Some("compile_error")));
+}
+
+/// A private copy of e2e/fixtures/start-app sharing its install, or None
+/// (after saying why) when the fixture is not installed.
+fn start_app() -> Option<PathBuf> {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../e2e/fixtures/start-app")
+        .canonicalize()
+        .unwrap();
+    if !fixture.join("node_modules/@tanstack/react-start").is_dir() {
+        assert!(
+            std::env::var_os("OJ_REQUIRE_FIXTURES").is_none(),
+            "OJ_REQUIRE_FIXTURES is set but the start-app fixture is not installed"
+        );
+        eprintln!("skipping: npm ci --prefix e2e/fixtures/start-app");
+        return None;
+    }
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("oj-otel-start-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    copy_sources(&fixture, &root);
+    std::os::unix::fs::symlink(fixture.join("node_modules"), root.join("node_modules")).unwrap();
+    Some(root)
+}
+
+fn copy_sources(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap().flatten() {
+        let name = entry.file_name();
+        if matches!(
+            name.to_str(),
+            Some("node_modules" | "dist" | ".oj-cache" | ".tanstack" | "routeTree.gen.ts")
+        ) {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            copy_sources(&path, &to.join(&name));
+        } else {
+            std::fs::copy(&path, to.join(&name)).unwrap();
+        }
+    }
+}
+
+// Start dev answers documents and client chunks in a route of its own,
+// around the router the SPA server shares: those requests are traced too.
+#[test]
+fn start_documents_get_a_server_span() {
+    let Some(root) = start_app() else {
+        return;
+    };
+    let (endpoint, received) = collector();
+    let server = Server::start_in(root, &endpoint, "200", &[], "/");
+    let traceparent = format!("traceparent: 00-{TRACE_ID}-{PARENT_ID}-01\r\n");
+    assert_eq!(get(server.port, "/", &traceparent), 200);
+    settles("the document's span", &received, |r| {
+        items(&r.traces, "Spans", "spans").iter().any(|s| {
+            s["traceId"] == TRACE_ID
+                && attr(s, "url.path").as_deref() == Some("/")
+                && attr(s, "oj.route.class").as_deref() == Some("document")
+                && attr(s, "http.response.status_code").as_deref() == Some("200")
+        })
+    });
+    let r = received.lock().unwrap();
+    let ours = items(&r.traces, "Spans", "spans")
+        .into_iter()
+        .filter(|s| s["traceId"] == TRACE_ID)
+        .count();
+    assert_eq!(ours, 1, "one span per request, never one per layer");
+    drop(r);
+    server.stop();
+}
+
+// A collector that accepts and never answers holds every export until the
+// OTLP exporter's own timeout; the exit must not wait that out.
+#[test]
+fn an_unreachable_collector_cannot_hold_up_the_exit() {
+    let blackhole = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}", blackhole.local_addr().unwrap());
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        for stream in blackhole.incoming().flatten() {
+            held.push(stream);
+        }
+    });
+    let server = Server::start_with("blackhole", &endpoint, "60000", &[]);
+    let traceparent = format!("traceparent: 00-{TRACE_ID}-{PARENT_ID}-01\r\n");
+    assert_eq!(get(server.port, "/ok.tsx", &traceparent), 200);
+    assert_eq!(get(server.port, "/main.tsx", ""), 500);
+    let started = Instant::now();
+    server.stop();
+    assert!(
+        started.elapsed() < Duration::from_secs(6),
+        "the exit waited {:?} on an unreachable collector",
+        started.elapsed()
+    );
+}
+
+// With `base: '/app/'` oj's routes see requests past the base, and so does
+// the route class; `url.path` stays the path the browser asked for.
+#[test]
+fn a_based_app_classifies_routes_past_the_base() {
+    let root = app_with("base", &[("oj.config.json", r#"{"base":"/app/"}"#)]);
+    let (endpoint, received) = collector();
+    let server = Server::start_in(root, &endpoint, "200", &[], "/app/ok.tsx");
+    let traceparent = format!("traceparent: 00-{TRACE_ID}-{PARENT_ID}-01\r\n");
+    assert_eq!(get(server.port, "/app/@oj/client.js", &traceparent), 200);
+    settles("the based client's span", &received, |r| {
+        items(&r.traces, "Spans", "spans").iter().any(|s| {
+            s["traceId"] == TRACE_ID
+                && attr(s, "url.path").as_deref() == Some("/app/@oj/client.js")
+                && attr(s, "oj.route.class").as_deref() == Some("internal")
+        })
+    });
+    server.stop();
 }
