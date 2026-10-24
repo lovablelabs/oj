@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Pre-bundled dependencies declare their top-level bindings with `var`, as Vite's do. Vite's optimizer sets `optimizeDeps.rolldownOptions.output.topLevelVar` unless the app turns it off, keeping the hoisting esbuild always gave; oj reported the option as unsupported and kept every `let`, `const` and `class`, so a dep that reads a binding before its declaration threw a TDZ `ReferenceError` under oj only. `topLevelVar: false` still opts out. Existing pre-bundles are rebuilt once.
+- `oj build` runs a plugin's `transform` once per stylesheet, as Vite does. The load step already runs the plugin transforms on the stylesheet's source; the transform step ran them again on the JS module oj bundles in its place. A transformer that returns CSS instead of editing its input, as `@tailwindcss/vite` does, replaced that module with CSS, and the build failed with a `PARSE_ERROR` in the stylesheet. Plain imports, `?url` and `?inline` all hit it.
 
 ## [0.2.45] - 2026-10-23
 
