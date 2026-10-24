@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 //
-// `oj dev --no-cache` (and OJ_NO_CACHE=1) must disable the on-disk module cache:
+// `oj dev --no-cache` must disable the on-disk module cache:
 // serving a module writes no persistent entry, so every start recompiles. A
 // control run (no flag) proves the same fixture caches normally, so the
 // --no-cache result is meaningful.
@@ -56,12 +56,12 @@ function moduleCacheEntries() {
 // writer time to flush, and return how many module cache entries exist after.
 async function runAndCount({ noCache }) {
   fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
-  const args = ["dev", app, "--port", String(port)];
+  // The persistent cache is opt-in (--enable-cache), so both runs enable it:
+  // the control's "caches normally" then means something, and the other run
+  // proves --no-cache beats --enable-cache.
+  const args = ["dev", app, "--port", String(port), "--enable-cache"];
   if (noCache) args.push("--no-cache");
-  // The persistent cache is opt-in (OJ_ENABLE_CACHE / --enable-cache), so the
-  // control run must enable it for "caches normally" to mean anything; the
-  // --no-cache run keeps the SAME env, proving the flag beats the env.
-  const proc = spawn(oj, args, { stdio: "ignore", env: { ...process.env, OJ_ENABLE_CACHE: "1" } });
+  const proc = spawn(oj, args, { stdio: "ignore" });
   try {
     await waitUp(`http://localhost:${port}/`);
     const r = await fetch(`http://localhost:${port}/main.tsx`);

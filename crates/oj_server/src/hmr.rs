@@ -292,8 +292,8 @@ pub(crate) fn strip_hmr_timestamp(url: &str) -> String {
     }
 }
 
-/// Append the HMR timestamp to a served module url. Only JS-served modules (compilable,
-/// JSON, style wrappers) are stamped per Vite's importAnalysis; asset and oj-internal urls never.
+/// Append the HMR timestamp to a served module url, as Vite's importAnalysis does for
+/// a dep with a `lastHMRTimestamp`: JS-served modules and asset URL modules, never oj-internal urls.
 pub(crate) fn stamp_import_url(url: &str, timestamp: u64) -> String {
     if timestamp == 0 || url.starts_with("/@") || !url.starts_with('/') {
         return url.to_string();
@@ -303,7 +303,7 @@ pub(crate) fn stamp_import_url(url: &str, timestamp: u64) -> String {
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("");
-    if !COMPILABLE.contains(&ext) && ext != "json" && !is_style_ext(ext) {
+    if !COMPILABLE.contains(&ext) && ext != "json" && !is_style_ext(ext) && !is_asset_ext(ext) {
         return url.to_string();
     }
     if query.split('&').any(|kv| kv.starts_with("t=")) {
@@ -871,6 +871,28 @@ async fn plugin_watched_files(state: &ServerState) -> std::collections::HashSet<
         .collect()
 }
 
+/// Vite resolves through rolldown's native `vite_resolve` plugin, whose
+/// `watchChange` clears its resolver cache on a create or delete and keeps it
+/// on an update. oj's resolvers cache lookups too, misses included, and drop
+/// them on the same events, from the watcher itself, ahead of HMR
+/// (`server.hmr: false`, a held editor gate and a full-reload flush never
+/// reach [`decide`]). Without it an alias import of a created file
+/// (`@/lib/x`) stays a bare package to the SSR runtime until the importer is
+/// edited again. The events are the ones plugins' `watchChange` gets.
+pub(crate) fn drop_resolver_misses(
+    state: &ServerState,
+    paths: &[PathBuf],
+    created: &std::collections::HashSet<PathBuf>,
+) {
+    if paths
+        .iter()
+        .any(|p| change_type(state, p, created) != "update")
+    {
+        state.resolver.clear_cache();
+        state.ssr_resolver.clear_cache();
+    }
+}
+
 /// A created file may be one a module failed to import: re-process those importers
 /// (Vite's `_hasResolveFailedErrorModules`); notify can't tell create from modify, so exists-but-not-in-graph counts as new.
 fn retry_failed_resolves(state: &ServerState, paths: &mut Vec<PathBuf>) {
@@ -885,10 +907,6 @@ fn retry_failed_resolves(state: &ServerState, paths: &mut Vec<PathBuf>) {
     if !new_file {
         return;
     }
-    // The resolver caches misses too: without this a created `./dir/index.ts`
-    // or extension-probed file stays "not found" for the importer's retry.
-    state.resolver.clear_cache();
-    state.ssr_resolver.clear_cache();
     let failed: Vec<String> = state.resolve_failed.lock().unwrap().drain().collect();
     for url in failed {
         paths.push(state.root.join(url.trim_start_matches('/')));
@@ -903,11 +921,6 @@ fn glob_importers_hit(state: &ServerState, paths: &[PathBuf]) -> Vec<String> {
         return Vec::new();
     }
     let graph = state.graph.lock().unwrap();
-    // `*` stops at `/`, as the directory walk expanding the glob does.
-    let opts = glob::MatchOptions {
-        require_literal_separator: true,
-        ..Default::default()
-    };
     let mut hit: Vec<String> = Vec::new();
     for p in paths {
         let known = graph.contains(Path::new(&url_of(&state.root, p)));
@@ -915,8 +928,8 @@ fn glob_importers_hit(state: &ServerState, paths: &[PathBuf]) -> Vec<String> {
             continue;
         }
         for (importer, patterns) in globs.iter() {
-            if patterns.iter().any(|pat| pat.matches_path_with(p, opts)) && !hit.contains(importer)
-            {
+            let file = p.to_string_lossy().replace('\\', "/");
+            if patterns.iter().any(|m| m.is_match(&file)) && !hit.contains(importer) {
                 hit.push(importer.clone());
             }
         }
@@ -1196,7 +1209,14 @@ fn decide_file(
                     .any(|p| is_style_url(&p.to_string_lossy()))
             })
     };
-    if !(COMPILABLE.contains(&ext) || is_style_ext(ext) || ext == "json" || css_dep()) {
+    // An imported asset is a URL module: its importers re-import it under a new
+    // `?t=` and get a url its `<img>` refetches, as in Vite.
+    if !(COMPILABLE.contains(&ext)
+        || is_style_ext(ext)
+        || ext == "json"
+        || is_asset_ext(ext)
+        || css_dep())
+    {
         return Flow::Done;
     }
     if !state.graph.lock().unwrap().contains(Path::new(&url)) {

@@ -201,3 +201,30 @@ async fn watch_change_reports_create_and_delete() {
     })
     .await;
 }
+
+/// chokidar reports `add` for a path again after its `unlink`: a file created,
+/// deleted and created again is a create the second time, not an update.
+#[tokio::test(flavor = "multi_thread")]
+async fn watch_change_reports_create_again_after_a_delete() {
+    let (app, server) = boot("{ hmr: false }", false).await;
+    app.write(&[("src/again.js", "export {};\n")]);
+    log_until(&server, "no first create event", |l| {
+        count(l, "watch create ", "/src/again.js") == 1
+    })
+    .await;
+    std::fs::remove_file(app.root.join("src/again.js")).unwrap();
+    log_until(&server, "no delete event", |l| {
+        count(l, "watch delete ", "/src/again.js") == 1
+    })
+    .await;
+    app.write(&[("src/again.js", "export const x = 1;\n")]);
+    let entries = log_until(&server, "no create event after the delete", |l| {
+        count(l, "watch create ", "/src/again.js") == 2
+    })
+    .await;
+    assert_eq!(
+        count(&entries, "watch update ", "/src/again.js"),
+        0,
+        "the re-creation is no update: {entries:?}"
+    );
+}

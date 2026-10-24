@@ -8,6 +8,7 @@ description = "Dev server: on-demand compile over HTTP, WebSocket HMR channel, f
 
 [dependencies]
 oj_compiler.workspace = true
+oj_stylex.workspace = true
 oj_graph.workspace = true
 oj_resolver.workspace = true
 oj_cache.workspace = true
@@ -44,10 +45,18 @@ rustls-pemfile = "2.2"
 hyper = "1.11"
 hyper-util = { version = "0.1.20", features = ["server", "server-auto", "http1", "http2", "service", "tokio"] }
 futures-util = "0.3"
-http-body = "1"
-rolldown = "=1.2.5"
-rolldown_common = "=1.2.5"
-rolldown_plugin = "=1.2.5"
+# `experimental`: the dep scan (Bundler::scan), which crawls without generating.
+rolldown = { version = "=1.2.15", features = ["experimental"] }
+rolldown_common = "=1.2.15"
+rolldown_plugin = "=1.2.15"
+rolldown_utils = "=1.2.15"
+rolldown_error = "=1.2.15"
+oxc_allocator.workspace = true
+oxc_parser.workspace = true
+oxc_span.workspace = true
+oxc_syntax.workspace = true
+arcstr = "1.2.0"
+rustc-hash = "2.1.3"
 
 # The embedded Deno's OTLP pipeline and the versions it pins (OJ_OTEL).
 deno_telemetry = "0.81.0"
@@ -56,6 +65,7 @@ opentelemetry_sdk = { version = "0.32.1", default-features = false, features = [
 sys_traits = { version = "0.1.28", features = ["real"] }
 
 [dev-dependencies]
+oxc_ast.workspace = true
 tempfile.workspace = true
 # test-util: paused time for the debounce test, like crates/oj.
 tokio = { workspace = true, features = ["test-util"] }
@@ -67,4 +77,4 @@ libc = "0.2"
 # Same version the embedded Deno runtime registers its signal handlers with.
 deno_signals = "0.50.0"
 # Fork of deno_process (see crates/oj_deno_process): spawn hook + own groups.
-deno_process = { package = "oj_deno_process", version = "0.2.39", path = "../oj_deno_process" }
+deno_process = { package = "oj_deno_process", version = "0.2.45", path = "../oj_deno_process" }

@@ -1,5 +1,5 @@
 // Copyright 2018-2026 the Deno authors. MIT license.
-use libc::INT_MAX;
+const INT_MAX: libc::c_int = libc::c_int::MAX;
 
 use crate::*;
 

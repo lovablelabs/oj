@@ -1,0 +1,425 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/transform-stylex-defineVars-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs only — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "upstream/defineVars-tokens-as-null-001",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: null,\n          nextColor: {\n            default: null\n          },\n          otherColor: {\n            default: null,\n            '@media (prefers-color-scheme: dark)': null,\n            '@media print': null,\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineVars-tokens-object-002",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: 'red',\n          nextColor: {\n            default: 'green'\n          },\n          otherColor: {\n            default: 'blue',\n            '@media (prefers-color-scheme: dark)': 'lightblue',\n            '@media print': 'white',\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineVars-tokens-object-haste-003",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "stylex/packages/vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: 'red',\n          nextColor: {\n            default: 'green'\n          },\n          otherColor: {\n            default: 'blue',\n            '@media (prefers-color-scheme: dark)': 'lightblue',\n            '@media print': 'white',\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineVars-tokens-object-deep-in-file-t-004",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "src/css/vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: 'red'\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineVars-tokens-object-with-nested-ru-005",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: {\n            default: 'blue',\n            '@media (prefers-color-scheme: dark)': {\n              default: 'lightblue',\n              '@supports (color: oklab(0 0 0))': 'oklab(0.7 -0.3 -0.4)',\n            }\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineVars-literal-tokens-object-006",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          '--color': 'red',\n          '--otherColor': {\n            default: 'blue',\n            ':hover': 'lightblue',\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineVars-local-variable-tokens-object-007",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const tokens = {\n          '--color': 'red',\n          '--nextColor': {\n            default: 'green'\n          },\n          '--otherColor': {\n            default: 'blue',\n            '@media (prefers-color-scheme: dark)': 'lightblue',\n            '@media print': 'white',\n          },\n        };\n        export const vars = stylex.defineVars(tokens)\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineVars-local-variables-used-in-toke-008",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const COLOR = 'red';\n        export const vars = stylex.defineVars({\n          color: COLOR\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineVars-template-literals-used-in-to-009",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const NUMBER = 10;\n        export const vars = stylex.defineVars({\n          size: `${NUMBER}rem`\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineVars-expressions-used-in-tokens-o-010",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const NUMBER = 10;\n        export const vars = stylex.defineVars({\n          radius: NUMBER * 2\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineVars-stylex-types-used-in-tokens-011",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: stylex.types.color({\n            default: 'red',\n            '@media (prefers-color-scheme: dark)': 'white',\n            '@media print': 'black',\n          })\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineVars-same-group-references-inside-012",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const colors = stylex.defineVars({\n          text: 'black',\n          textMuted: () => `color-mix(${colors.text}, transparent 50%)`,\n          textSubtle: () => `color-mix(${colors.textMuted}, white 10%)`,\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineVars-same-group-references-can-po-013",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const colors = stylex.defineVars({\n          textMuted: () => `color-mix(${colors.text}, transparent 50%)`,\n          text: 'black',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineVars-nested-function-leaves-resol-014",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const colors = stylex.defineVars({\n          text: 'black',\n          textMuted: () => ({\n            default: `color-mix(${colors.text}, transparent 50%)`,\n            '@media (prefers-color-scheme: dark)': `color-mix(${colors.text}, white 20%)`,\n          }),\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineVars-function-values-can-mix-same-015",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n\n          export const base = stylex.defineVars({\n            overlay: 'rgba(0 0 0 / 0.3)',\n          });\n\n          export const colors = stylex.defineVars({\n            text: 'black',\n            textMuted: () =>\n              `color-mix(${colors.text}, ${base.overlay} 20%)`,\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineVars-function-values-can-referenc-016",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const colors = stylex.defineVars({\n          accent: stylex.types.color('red'),\n          accentGlow: () => `color-mix(${colors.accent}, white 15%)`,\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineVars-function-values-can-return-s-017",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const colors = stylex.defineVars({\n          accent: () => stylex.types.color('red'),\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineVars-function-values-can-return-n-018",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const colors = stylex.defineVars({\n          accent: () => ({\n            default: 'red',\n            '@media (prefers-color-scheme: dark)': 'blue',\n          }),\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineVars-multiple-variables-objects-s-019",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: 'red'\n        });\n        export const otherVars = stylex.defineVars({\n          otherColor: 'orange'\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineVars-multiple-variables-objects-d-020",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: 'red'\n        });\n        export const otherVars = stylex.defineVars({\n          otherColor: vars.color\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineVars-multiple-variables-objects-d-021",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: 'red'\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineVars-multiple-variables-objects-d-022",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const otherVars = stylex.defineVars({\n          otherColor: 'orange'\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVars"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineVars-tokens-object-includes-debug-023",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({\n            color: {\n              default: 'blue',\n              '@media (prefers-color-scheme: dark)': {\n                default: 'lightblue',\n                '@supports (color: oklab(0 0 0))': 'oklab(0.7 -0.3 -0.4)',\n              }\n            },\n            otherColor: 'green'\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "debug": true,
+        "enableDebugClassNames": true
+      },
+      "mode": "prod",
+      "tags": ["defineVars"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineVars-tokens-object-includes-debug-024",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({\n            '10': 'green',\n            '1.5 pixels': 'blue',\n            'corner#radius': 'purple',\n            '@@primary': 'pink'\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "debug": true,
+        "enableDebugClassNames": true
+      },
+      "mode": "prod",
+      "tags": ["defineVars"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineVars-tokens-object-025",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({\n            color: 'red',\n            nextColor: 'green',\n            otherColor: 'blue'\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "dev": true,
+        "enableDebugClassNames": true
+      },
+      "mode": "prod",
+      "tags": ["defineVars"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineVars-tokens-object-026",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({\n            color: 'red',\n            nextColor: 'green',\n            otherColor: 'blue'\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["defineVars"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineVars-processes-tokens-in-files-wi-027",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "src/vars/default.cssvars.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({\n            color: 'red'\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "themeFileExtension": "cssvars",
+          "type": "commonJS"
+        },
+        "debug": true,
+        "enableDebugClassNames": true
+      },
+      "mode": "prod",
+      "tags": ["defineVars"],
+      "expect": "ok"
+    }
+  ]
+}

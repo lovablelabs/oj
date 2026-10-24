@@ -108,11 +108,14 @@
   // Vite's `server.hmr.overlay` (its client's __HMR_ENABLE_OVERLAY__), filled
   // in when the dev server serves this file: off, a build error is only logged.
   const enableOverlay = __HMR_ENABLE_OVERLAY__;
+  // The prefix the dev server's urls take under `base`, filled in when the
+  // dev server serves this file ("" at the root).
+  const base = __OJ_DEV_BASE__;
 
   function showError(err) {
     console.error("[oj] build error\n" + ((err && err.message) || err));
     if (!enableOverlay) return;
-    import("/@oj-start/error-overlay.js")
+    import(base + "/@oj-start/error-overlay.js")
       .then(() => {
         const Overlay = customElements.get("vite-error-overlay");
         document.querySelectorAll("vite-error-overlay").forEach((n) => (n.close ? n.close() : n.remove()));
@@ -186,7 +189,9 @@
   };
 
   const connect = () => {
-    ws = new WebSocket((location.protocol === "https:" ? "wss" : "ws") + "://" + location.host + "/@oj-start/hmr");
+    ws = new WebSocket(
+      (location.protocol === "https:" ? "wss" : "ws") + "://" + location.host + base + "/@oj-start/hmr",
+    );
     ws.onopen = () => {
       if (bus.runtime) send({ type: "oj:client", id: bus.runtime.clientId });
       while (outbox.length && send(outbox[0])) outbox.shift();

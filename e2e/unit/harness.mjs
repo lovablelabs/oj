@@ -4,7 +4,7 @@
 // Shared test harness for driving oj's Node sidecars from `node --test`.
 // Two shapes, matching how the Rust side spawns them:
 //   - runSidecar:  one-shot `node <sidecar> <jsonArg>` -> parsed stdout JSON
-//                  (optimize-deps.mjs)
+//                  (dep-names.mjs)
 //   - rpcSidecar:  long-lived newline-delimited JSON RPC over stdin/stdout
 //                  (plugin-host.mjs)
 
@@ -24,8 +24,7 @@ const esbuildSrc = path.join(repo, "e2e/fixtures/start-app/node_modules/esbuild"
 export const hasEsbuildFixture = () => fs.existsSync(esbuildSrc);
 
 // Wrap `node:test`'s `test` so cases that need the pre-bundler's esbuild skip
-// (rather than hard-fail) when the start-app fixture has no node_modules, the
-// same convention optimize-deps.test.mjs uses.
+// (rather than hard-fail) when the start-app fixture has no node_modules.
 export function testWithEsbuild(test) {
   return hasEsbuildFixture() ? test : (name, fn) => test(name, { skip: "fixture esbuild not installed" }, () => {});
 }
@@ -81,8 +80,8 @@ export function tmpProject({ prefix = "oj-fx-", pkgJson = { name: "fx" }, linkEs
   };
 }
 
-// Shape A: run a one-shot module's exported entry (`optimize(config)` for
-// optimize-deps.mjs) the way oj's in-process JS engine calls it — in a fresh
+// Shape A: run a one-shot module's exported entry (`namedExports(config)` for
+// dep-names.mjs) the way oj's in-process JS engine calls it — in a fresh
 // node child per run for isolation — and return the parsed result. Throws on
 // a non-zero exit; the thrown error carries `.stdout`/`.stderr`/`.status` for
 // error-path assertions.
@@ -96,7 +95,7 @@ writeSync(1, JSON.stringify(out));
 process.exit(0);
 `;
 
-export function runSidecar(sidecarRel, config, { cwd, timeout = 30_000, exportName = "optimize" } = {}) {
+export function runSidecar(sidecarRel, config, { cwd, timeout = 30_000, exportName } = {}) {
   const out = execFileSync(
     "node",
     ["--input-type=module", "-e", ONE_SHOT_WRAPPER, asset(sidecarRel), exportName, JSON.stringify(config)],
@@ -318,6 +317,7 @@ export function runExtract(fx, { prefix = "oj-extract-run-" } = {}) {
     const script = path.join(runDir, "vite-extract.mjs");
     fs.copyFileSync(asset("vite-extract.mjs"), script);
     fs.copyFileSync(asset("vite-config-node.mjs"), path.join(runDir, "vite-config-node.mjs"));
+    fs.copyFileSync(asset("native-plugins.mjs"), path.join(runDir, "native-plugins.mjs"));
     const r = spawnSync(
       process.execPath,
       ["--input-type=module", "-e", EXTRACT_WRAPPER, script, fx.configPath, fx.appRoot],
@@ -348,7 +348,12 @@ export function bootHost(fx, { prefix = "oj-host-run-" } = {}) {
   // ./vite-html.mjs) are materialized next to it by oj the same way.
   fs.copyFileSync(asset("discovered-deps.mjs"), path.join(runDir, "discovered-deps.mjs"));
   fs.copyFileSync(asset("vite-config-node.mjs"), path.join(runDir, "vite-config-node.mjs"));
+  fs.copyFileSync(asset("native-plugins.mjs"), path.join(runDir, "native-plugins.mjs"));
   fs.copyFileSync(asset("vite-html.mjs"), path.join(runDir, "vite-html.mjs"));
+  fs.mkdirSync(path.join(runDir, "start"));
+  for (const name of ["vite-globs.mjs", "glob-libs.mjs"]) {
+    fs.copyFileSync(asset(`start/${name}`), path.join(runDir, "start", name));
+  }
   const host = rpcSidecar(hostScript, {
     args: [
       fx.configPath,

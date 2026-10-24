@@ -189,7 +189,7 @@ fn strip_types(path: &Path, source: &str) -> Result<String, ConfigError> {
     let allocator = Allocator::default();
     let source_type = SourceType::from_path(path).unwrap_or_else(|_| SourceType::ts());
     let parsed = Parser::new(&allocator, source, source_type).parse();
-    if parsed.panicked {
+    if parsed.fatal_error {
         return Err(ConfigError::Parse(
             path.to_path_buf(),
             "syntax error".into(),

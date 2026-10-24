@@ -127,6 +127,47 @@ async fn a_hung_hot_update_hook_never_holds_a_restart_back() {
     );
 }
 
+/// Only the env files oj loaded restart it, as Vite's restart check is the
+/// mode's env files in `envDir`: a `.env` or `vite.config.js` elsewhere under
+/// a watched dir (a nested package, or a sibling an outside-root Tailwind
+/// `@source` watches) is a file like any other.
+#[tokio::test(flavor = "multi_thread")]
+async fn only_the_loaded_env_files_restart() {
+    let app = App::new(&[
+        ("package.json", r#"{"name":"env-scope","version":"1.0.0"}"#),
+        ("src/main.js", "document.title = \"v1\";\n"),
+        ("src/nested/x.js", "export const x = 1;\n"),
+        ("index.html", INDEX_HTML),
+    ]);
+    let server = app.serve().await;
+    server.text("/src/main.js").await;
+    server.text("/src/nested/x.js").await;
+    app.write(&[
+        ("src/nested/.env", "VITE_X=1\n"),
+        ("src/nested/vite.config.js", "export default {};\n"),
+    ]);
+    // A watched edit after them proves their batch was handled.
+    app.write(&[("src/main.js", "document.title = \"v2\";\n")]);
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(
+        crate::take_restarts_for(&app.root),
+        Vec::<String>::new(),
+        "a nested .env or config restarted the server"
+    );
+
+    app.write(&[(".env", "VITE_X=1\n")]);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut restarts = Vec::new();
+    while restarts.is_empty() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        restarts = crate::take_restarts_for(&app.root);
+    }
+    assert!(
+        restarts.len() == 1 && restarts[0].ends_with("/.env changed"),
+        "the root .env edit never restarted: {restarts:?}"
+    );
+}
+
 /// A hot-update hook that never settles for one file leaves every other
 /// file's HMR alone: Vite handles each watcher event on its own
 /// (`onFileChange(file).catch(...)`), never queued behind an earlier one.

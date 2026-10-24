@@ -1,0 +1,452 @@
+[
+ {
+  "name": "ancestor :hover default",
+  "relation": "ancestor",
+  "pseudo": ":hover",
+  "marker": null,
+  "options": {},
+  "expectedSelector": ":where(.x-default-marker:hover *)"
+ },
+ {
+  "name": "ancestor :hover string marker",
+  "relation": "ancestor",
+  "pseudo": ":hover",
+  "marker": {
+   "value": "custom-marker"
+  },
+  "options": {},
+  "expectedSelector": ":where(.custom-marker:hover *)"
+ },
+ {
+  "name": "ancestor [data-open] default",
+  "relation": "ancestor",
+  "pseudo": "[data-open]",
+  "marker": null,
+  "options": {},
+  "expectedSelector": ":where(.x-default-marker[data-open] *)"
+ },
+ {
+  "name": "ancestor [data-open] string marker",
+  "relation": "ancestor",
+  "pseudo": "[data-open]",
+  "marker": {
+   "value": "custom-marker"
+  },
+  "options": {},
+  "expectedSelector": ":where(.custom-marker[data-open] *)"
+ },
+ {
+  "name": "ancestor marker object",
+  "relation": "ancestor",
+  "pseudo": ":focus",
+  "marker": {
+   "value": {
+    "$obj": [
+     [
+      "xleysvp",
+      "xleysvp"
+     ],
+     [
+      "$$css",
+      true
+     ]
+    ]
+   }
+  },
+  "options": {},
+  "expectedSelector": ":where(.xleysvp:focus *)"
+ },
+ {
+  "name": "descendant :hover default",
+  "relation": "descendant",
+  "pseudo": ":hover",
+  "marker": null,
+  "options": {},
+  "expectedSelector": ":where(:has(.x-default-marker:hover))"
+ },
+ {
+  "name": "descendant :hover string marker",
+  "relation": "descendant",
+  "pseudo": ":hover",
+  "marker": {
+   "value": "custom-marker"
+  },
+  "options": {},
+  "expectedSelector": ":where(:has(.custom-marker:hover))"
+ },
+ {
+  "name": "descendant [data-open] default",
+  "relation": "descendant",
+  "pseudo": "[data-open]",
+  "marker": null,
+  "options": {},
+  "expectedSelector": ":where(:has(.x-default-marker[data-open]))"
+ },
+ {
+  "name": "descendant [data-open] string marker",
+  "relation": "descendant",
+  "pseudo": "[data-open]",
+  "marker": {
+   "value": "custom-marker"
+  },
+  "options": {},
+  "expectedSelector": ":where(:has(.custom-marker[data-open]))"
+ },
+ {
+  "name": "descendant marker object",
+  "relation": "descendant",
+  "pseudo": ":focus",
+  "marker": {
+   "value": {
+    "$obj": [
+     [
+      "xleysvp",
+      "xleysvp"
+     ],
+     [
+      "$$css",
+      true
+     ]
+    ]
+   }
+  },
+  "options": {},
+  "expectedSelector": ":where(:has(.xleysvp:focus))"
+ },
+ {
+  "name": "siblingBefore :hover default",
+  "relation": "siblingBefore",
+  "pseudo": ":hover",
+  "marker": null,
+  "options": {},
+  "expectedSelector": ":where(.x-default-marker:hover ~ *)"
+ },
+ {
+  "name": "siblingBefore :hover string marker",
+  "relation": "siblingBefore",
+  "pseudo": ":hover",
+  "marker": {
+   "value": "custom-marker"
+  },
+  "options": {},
+  "expectedSelector": ":where(.custom-marker:hover ~ *)"
+ },
+ {
+  "name": "siblingBefore [data-open] default",
+  "relation": "siblingBefore",
+  "pseudo": "[data-open]",
+  "marker": null,
+  "options": {},
+  "expectedSelector": ":where(.x-default-marker[data-open] ~ *)"
+ },
+ {
+  "name": "siblingBefore [data-open] string marker",
+  "relation": "siblingBefore",
+  "pseudo": "[data-open]",
+  "marker": {
+   "value": "custom-marker"
+  },
+  "options": {},
+  "expectedSelector": ":where(.custom-marker[data-open] ~ *)"
+ },
+ {
+  "name": "siblingBefore marker object",
+  "relation": "siblingBefore",
+  "pseudo": ":focus",
+  "marker": {
+   "value": {
+    "$obj": [
+     [
+      "xleysvp",
+      "xleysvp"
+     ],
+     [
+      "$$css",
+      true
+     ]
+    ]
+   }
+  },
+  "options": {},
+  "expectedSelector": ":where(.xleysvp:focus ~ *)"
+ },
+ {
+  "name": "siblingAfter :hover default",
+  "relation": "siblingAfter",
+  "pseudo": ":hover",
+  "marker": null,
+  "options": {},
+  "expectedSelector": ":where(:has(~ .x-default-marker:hover))"
+ },
+ {
+  "name": "siblingAfter :hover string marker",
+  "relation": "siblingAfter",
+  "pseudo": ":hover",
+  "marker": {
+   "value": "custom-marker"
+  },
+  "options": {},
+  "expectedSelector": ":where(:has(~ .custom-marker:hover))"
+ },
+ {
+  "name": "siblingAfter [data-open] default",
+  "relation": "siblingAfter",
+  "pseudo": "[data-open]",
+  "marker": null,
+  "options": {},
+  "expectedSelector": ":where(:has(~ .x-default-marker[data-open]))"
+ },
+ {
+  "name": "siblingAfter [data-open] string marker",
+  "relation": "siblingAfter",
+  "pseudo": "[data-open]",
+  "marker": {
+   "value": "custom-marker"
+  },
+  "options": {},
+  "expectedSelector": ":where(:has(~ .custom-marker[data-open]))"
+ },
+ {
+  "name": "siblingAfter marker object",
+  "relation": "siblingAfter",
+  "pseudo": ":focus",
+  "marker": {
+   "value": {
+    "$obj": [
+     [
+      "xleysvp",
+      "xleysvp"
+     ],
+     [
+      "$$css",
+      true
+     ]
+    ]
+   }
+  },
+  "options": {},
+  "expectedSelector": ":where(:has(~ .xleysvp:focus))"
+ },
+ {
+  "name": "anySibling :hover default",
+  "relation": "anySibling",
+  "pseudo": ":hover",
+  "marker": null,
+  "options": {},
+  "expectedSelector": ":where(.x-default-marker:hover ~ *, :has(~ .x-default-marker:hover))"
+ },
+ {
+  "name": "anySibling :hover string marker",
+  "relation": "anySibling",
+  "pseudo": ":hover",
+  "marker": {
+   "value": "custom-marker"
+  },
+  "options": {},
+  "expectedSelector": ":where(.custom-marker:hover ~ *, :has(~ .custom-marker:hover))"
+ },
+ {
+  "name": "anySibling [data-open] default",
+  "relation": "anySibling",
+  "pseudo": "[data-open]",
+  "marker": null,
+  "options": {},
+  "expectedSelector": ":where(.x-default-marker[data-open] ~ *, :has(~ .x-default-marker[data-open]))"
+ },
+ {
+  "name": "anySibling [data-open] string marker",
+  "relation": "anySibling",
+  "pseudo": "[data-open]",
+  "marker": {
+   "value": "custom-marker"
+  },
+  "options": {},
+  "expectedSelector": ":where(.custom-marker[data-open] ~ *, :has(~ .custom-marker[data-open]))"
+ },
+ {
+  "name": "anySibling marker object",
+  "relation": "anySibling",
+  "pseudo": ":focus",
+  "marker": {
+   "value": {
+    "$obj": [
+     [
+      "xleysvp",
+      "xleysvp"
+     ],
+     [
+      "$$css",
+      true
+     ]
+    ]
+   }
+  },
+  "options": {},
+  "expectedSelector": ":where(.xleysvp:focus ~ *, :has(~ .xleysvp:focus))"
+ },
+ {
+  "name": "ancestor complex pseudo",
+  "relation": "ancestor",
+  "pseudo": ":nth-child(2n)",
+  "marker": null,
+  "options": {},
+  "expectedSelector": ":where(.x-default-marker:nth-child(2n) *)"
+ },
+ {
+  "name": "ancestor focus-visible",
+  "relation": "ancestor",
+  "pseudo": ":focus-visible",
+  "marker": null,
+  "options": {},
+  "expectedSelector": ":where(.x-default-marker:focus-visible *)"
+ },
+ {
+  "name": "ancestor prefix option",
+  "relation": "ancestor",
+  "pseudo": ":hover",
+  "marker": null,
+  "options": {
+   "classNamePrefix": "pfx"
+  },
+  "expectedSelector": ":where(.pfx-default-marker:hover *)"
+ },
+ {
+  "name": "ancestor bare colon accepted",
+  "relation": "ancestor",
+  "pseudo": ":",
+  "marker": null,
+  "options": {},
+  "expectedSelector": ":where(.x-default-marker: *)"
+ },
+ {
+  "name": "ancestor empty attr accepted",
+  "relation": "ancestor",
+  "pseudo": "[]",
+  "marker": null,
+  "options": {},
+  "expectedSelector": ":where(.x-default-marker[] *)"
+ },
+ {
+  "name": "plain object marker loses prefix",
+  "relation": "ancestor",
+  "pseudo": ":hover",
+  "marker": {
+   "value": {
+    "$obj": []
+   }
+  },
+  "options": {},
+  "expectedSelector": ":where(.default-marker:hover *)"
+ },
+ {
+  "name": "css-only marker object loses prefix",
+  "relation": "ancestor",
+  "pseudo": ":hover",
+  "marker": {
+   "value": {
+    "$obj": [
+     [
+      "$$css",
+      true
+     ]
+    ]
+   }
+  },
+  "options": {},
+  "expectedSelector": ":where(.default-marker:hover *)"
+ },
+ {
+  "name": "css-false marker object loses prefix",
+  "relation": "ancestor",
+  "pseudo": ":hover",
+  "marker": {
+   "value": {
+    "$obj": [
+     [
+      "$$css",
+      false
+     ],
+     [
+      "k",
+      "v"
+     ]
+    ]
+   }
+  },
+  "options": {},
+  "expectedSelector": ":where(.default-marker:hover *)"
+ },
+ {
+  "name": "number marker loses prefix",
+  "relation": "ancestor",
+  "pseudo": ":hover",
+  "marker": {
+   "value": 5
+  },
+  "options": {},
+  "expectedSelector": ":where(.default-marker:hover *)"
+ },
+ {
+  "name": "null marker uses options",
+  "relation": "ancestor",
+  "pseudo": ":hover",
+  "marker": {
+   "value": null
+  },
+  "options": {},
+  "expectedSelector": ":where(.x-default-marker:hover *)"
+ },
+ {
+  "name": "classNamePrefix key on marker object",
+  "relation": "ancestor",
+  "pseudo": ":hover",
+  "marker": {
+   "value": {
+    "$obj": [
+     [
+      "classNamePrefix",
+      "q"
+     ]
+    ]
+   }
+  },
+  "options": {},
+  "expectedSelector": ":where(.q-default-marker:hover *)"
+ },
+ {
+  "name": "no-prefix pseudo",
+  "relation": "ancestor",
+  "pseudo": "hover",
+  "marker": null,
+  "options": {},
+  "expectedError": {
+   "message": "Pseudo selector must start with \":\" or \"[\"",
+   "code": "InvalidWhenSelector",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "pseudo element",
+  "relation": "descendant",
+  "pseudo": "::before",
+  "marker": null,
+  "options": {},
+  "expectedError": {
+   "message": "Pseudo selector cannot start with \"::\" (pseudo-elements are not supported)",
+   "code": "InvalidWhenSelector",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "unclosed attr",
+  "relation": "siblingBefore",
+  "pseudo": "[data-open",
+  "marker": null,
+  "options": {},
+  "expectedError": {
+   "message": "Attribute selector must end with \"]\"",
+   "code": "InvalidWhenSelector",
+   "messageExact": true
+  }
+ }
+]

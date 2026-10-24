@@ -96,7 +96,7 @@ async fn assets_dir_places_every_hashed_output_under_it() {
 
     let html = fs::read_to_string(root.join("dist/index.html")).unwrap();
     assert!(
-        Regex::new(r#"/static/main-[^"']+\.js"#)
+        Regex::new(r#"/static/index-[^"']+\.js"#)
             .unwrap()
             .is_match(&html)
             && Regex::new(r#"/static/[^"']+\.css"#)

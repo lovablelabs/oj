@@ -1,0 +1,387 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/transform-value-normalization-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs and upstream's own expected values — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "assertions/value-normalization-normalize-whitespace-in-css-001-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            x: {\n              transform: '  rotate(10deg)  translate3d( 0 , 0 , 0 )  '\n            }\n          });\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["value-normalization", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x18qx21s{transform:rotate(10deg) translate3d(0,0,0)}\",\n  priority: 3000\n});",
+        "site": {
+          "file": "transform-value-normalization-test.js",
+          "test": "normalize whitespace in CSS values",
+          "line": 40
+        }
+      }
+    },
+    {
+      "id": "assertions/value-normalization-normalize-whitespace-in-css-002-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { color: 'rgba( 1, 222,  33 , 0.5)' } });\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["value-normalization", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xe1l9yr{color:rgba(1,222,33,.5)}\",\n  priority: 3000\n});",
+        "site": {
+          "file": "transform-value-normalization-test.js",
+          "test": "normalize whitespace in CSS values",
+          "line": 58
+        }
+      }
+    },
+    {
+      "id": "assertions/value-normalization-no-dimensions-for-0-values-003-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: {\n            margin: '0px',\n            marginLeft: '1px'\n          } });\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["value-normalization", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1ghz6dp{margin:0}\",\n  priority: 1000\n});\n_inject2({\n  ltr: \".xgsvwom{margin-left:1px}\",\n  priority: 4000\n});",
+        "site": {
+          "file": "transform-value-normalization-test.js",
+          "test": "no dimensions for 0 values",
+          "line": 75
+        }
+      }
+    },
+    {
+      "id": "assertions/value-normalization-0-timings-are-all-0s-004-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { transitionDuration: '500ms' } });\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["value-normalization", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1wsgiic{transition-duration:.5s}\",\n  priority: 3000\n});",
+        "site": {
+          "file": "transform-value-normalization-test.js",
+          "test": "0 timings are all \"0s\"",
+          "line": 99
+        }
+      }
+    },
+    {
+      "id": "assertions/value-normalization-0-angles-are-all-0deg-005-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            x: { transform: '0rad' },\n            y: { transform: '0turn' },\n            z: { transform: '0grad' }\n          });\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["value-normalization", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1jpfit1{transform:0deg}\",\n  priority: 3000\n});",
+        "site": {
+          "file": "transform-value-normalization-test.js",
+          "test": "0 angles are all \"0deg\"",
+          "line": 116
+        }
+      }
+    },
+    {
+      "id": "assertions/value-normalization-calc-preserves-spaces-around-006-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { width: 'calc((100% + 3% -   100px) / 7)' } });\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["value-normalization", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1hauit9{width:calc((100% + 3% - 100px) / 7)}\",\n  priority: 4000\n});",
+        "site": {
+          "file": "transform-value-normalization-test.js",
+          "test": "calc() preserves spaces around \"+\" and \"-\"",
+          "line": 137
+        }
+      }
+    },
+    {
+      "id": "assertions/value-normalization-strip-leading-zeros-007-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: {\n            transitionDuration: '0.01s',\n            transitionTimingFunction: 'cubic-bezier(.08,.52,.52,1)'\n          } });\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["value-normalization", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xpvlhck{transition-duration:.01s}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xxziih7{transition-timing-function:cubic-bezier(.08,.52,.52,1)}\",\n  priority: 3000\n});",
+        "site": {
+          "file": "transform-value-normalization-test.js",
+          "test": "strip leading zeros",
+          "line": 154
+        }
+      }
+    },
+    {
+      "id": "assertions/value-normalization-use-double-quotes-in-empty-s-008-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { quotes: \"''\" } });\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["value-normalization", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x169joja{quotes:\\\"\\\"}\",\n  priority: 3000\n});",
+        "site": {
+          "file": "transform-value-normalization-test.js",
+          "test": "use double quotes in empty strings",
+          "line": 178
+        }
+      }
+    },
+    {
+      "id": "assertions/value-normalization-timing-values-are-converted-009-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            x: { transitionDuration: '1234ms' },\n            y: { transitionDuration: '10ms' },\n            z: { transitionDuration: '1ms' }\n          });\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["value-normalization", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xsa3hc2{transition-duration:1.234s}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xpvlhck{transition-duration:.01s}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xjd9b36{transition-duration:1ms}\",\n  priority: 3000\n});",
+        "site": {
+          "file": "transform-value-normalization-test.js",
+          "test": "timing values are converted to seconds unless < 10ms",
+          "line": 195
+        }
+      }
+    },
+    {
+      "id": "assertions/value-normalization-transforms-non-unitless-prop-010-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            normalize: {\n              height: 500,\n              margin: 10,\n              width: 500\n            },\n            unitless: {\n              fontWeight: 500,\n              lineHeight: 1.5,\n              opacity: 0.5,\n              zoom: 2,\n            },\n          });\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["value-normalization", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1egiwwb{height:500px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x1oin6zd{margin:10px}\",\n  priority: 1000\n});\n_inject2({\n  ltr: \".xvue9z{width:500px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xk50ysn{font-weight:500}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1evy7pa{line-height:1.5}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xbyyjgo{opacity:.5}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xy2o3ld{zoom:2}\",\n  priority: 3000\n});",
+        "site": {
+          "file": "transform-value-normalization-test.js",
+          "test": "transforms non-unitless property values",
+          "line": 224
+        }
+      }
+    },
+    {
+      "id": "assertions/value-normalization-number-values-rounded-down-t-011-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { height: 100 / 3 } });\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["value-normalization", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1vvwc6p{height:33.3333px}\",\n  priority: 4000\n});",
+        "site": {
+          "file": "transform-value-normalization-test.js",
+          "test": "number values rounded down to four decimal points",
+          "line": 277
+        }
+      }
+    },
+    {
+      "id": "assertions/value-normalization-content-property-values-are-012-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            default: {\n              content: '',\n            },\n            other: {\n              content: 'next',\n            },\n            withQuotes: {\n              content: '\"prev\"',\n            }\n          });\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["value-normalization", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x14axycx{content:\\\"\\\"}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xmmpjw1{content:\\\"next\\\"}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x12vzfr8{content:\\\"prev\\\"}\",\n  priority: 3000\n});",
+        "site": {
+          "file": "transform-value-normalization-test.js",
+          "test": "\"content\" property values are wrapped in quotes",
+          "line": 294
+        }
+      }
+    },
+    {
+      "id": "assertions/value-normalization-legacy-no-space-before-impor-013-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { color: 'red !important' } });\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["value-normalization", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xzw3067{color:red!important}\",\n  priority: 3000\n});",
+        "site": {
+          "file": "transform-value-normalization-test.js",
+          "test": "[legacy] no space before \"!important\"",
+          "line": 329
+        }
+      }
+    },
+    {
+      "id": "assertions/value-normalization-transforms-font-size-from-px-014-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              foo: {\n                fontSize: '24px',\n              },\n              bar: {\n                fontSize: 18,\n              },\n              baz: {\n                fontSize: '1.25rem',\n              },\n              qux: {\n                fontSize: 'inherit',\n              }\n            });\n          ",
+      "options": {
+        "runtimeInjection": true,
+        "enableFontSizePxToRem": true
+      },
+      "mode": "prod",
+      "tags": ["value-normalization", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xngnso2{font-size:1.5rem}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1c3i2sq{font-size:1.125rem}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1603h9y{font-size:1.25rem}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1qlqyl8{font-size:inherit}\",\n  priority: 3000\n});",
+        "site": {
+          "file": "transform-value-normalization-test.js",
+          "test": "transforms font size from px to rem",
+          "line": 349
+        }
+      }
+    },
+    {
+      "id": "assertions/value-normalization-transforms-font-size-from-px-015-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              foo: {\n                fontSize: 'calc(100% - 24px)',\n              },\n            });\n          ",
+      "options": {
+        "runtimeInjection": true,
+        "enableFontSizePxToRem": true
+      },
+      "mode": "prod",
+      "tags": ["value-normalization", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x37c5sx{font-size:calc(100% - 1.5rem)}\",\n  priority: 3000\n});",
+        "site": {
+          "file": "transform-value-normalization-test.js",
+          "test": "transforms font size from px to rem even with calc",
+          "line": 394
+        }
+      }
+    },
+    {
+      "id": "assertions/value-normalization-ignores-px-font-size-016-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              foo: {\n                fontSize: '24px',\n              },\n              bar: {\n                fontSize: 18,\n              },\n              baz: {\n                fontSize: '1.25rem',\n              },\n              qux: {\n                fontSize: 'inherit',\n              }\n            });\n          ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["value-normalization", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1pvqxga{font-size:24px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xosj86m{font-size:18px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1603h9y{font-size:1.25rem}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1qlqyl8{font-size:inherit}\",\n  priority: 3000\n});",
+        "site": {
+          "file": "transform-value-normalization-test.js",
+          "test": "ignores px font size",
+          "line": 420
+        }
+      }
+    },
+    {
+      "id": "assertions/value-normalization-ignores-px-font-size-within-017-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              foo: {\n                fontSize: 'calc(100% - 24px)',\n              },\n            });\n          ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["value-normalization", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1upkca{font-size:calc(100% - 24px)}\",\n  priority: 3000\n});",
+        "site": {
+          "file": "transform-value-normalization-test.js",
+          "test": "ignores px font size within calc",
+          "line": 464
+        }
+      }
+    }
+  ]
+}

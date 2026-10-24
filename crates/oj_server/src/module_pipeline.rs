@@ -69,10 +69,15 @@ pub(crate) async fn ensure_module_as(
     };
     record_glob_importer(state, file, url, &source);
     if ext == Some("css") && is_tailwind_css(&source) {
-        let css = compile_tailwind(state, url, &source).await?;
+        let (css, imported) = compile_tailwind(state, file, url, &source).await?;
+        // Vite's dev css rewrites a sheet's urls to served paths, so the
+        // `<style>` the JS wrapper injects resolves them from any page.
+        let dir = file.parent().unwrap_or(Path::new("/"));
+        let css = crate::style_file::rewrite_relative_urls(&css, dir, |f| url_of(&state.root, f));
         let module = CachedModule {
             is_boundary: true,
             kind: "css".into(),
+            imports: css_dep_imports(state, file, &imported),
             ..code_module(css)
         };
         return Ok(register_uncached(state, url, module));
@@ -106,13 +111,40 @@ pub(crate) async fn ensure_module_as(
 
     if is_server {
         let code = server_fn_stub(&oj_compiler::exports(&source, file), url);
-        let module = Arc::new(code_module(code));
+        let mut module = code_module(code);
+        // Vite's StyleX pass (`enforce: 'pre'`) runs before the server-fn
+        // rewrite, so the stub keeps the module's rules, which its SSR compile
+        // records under the same id.
+        if let Some(pre) = crate::stylex::pre_transform(state, &hook_id(file, url), &source)? {
+            module.stylex_rules = pre.rules;
+        }
+        let module = Arc::new(module);
         store_module(state, url, &key, &module);
         return Ok((key, module));
     }
 
     let transform_id = transform_id.map_or_else(|| hook_id(file, url), str::to_string);
-    let transformed = plugin_transform(state, file, &transform_id, source, is_dep).await?;
+    // The StyleX plugin is `enforce: 'pre'`: it compiles the module's own
+    // source, ahead of the app's transforms and oj's CJS-interop rewrite (off
+    // the async workers: a large module's compile is real work).
+    let (source, stylex_map, stylex_rules) = match &state.stylex {
+        Some(plugin) if plugin.handles(&transform_id, &source) => {
+            let (st, id) = (Arc::clone(state), transform_id.clone());
+            let pre = tokio::task::spawn_blocking(move || {
+                crate::stylex::pre_transform(&st, &id, &source).map(|pre| {
+                    pre.unwrap_or_else(|| crate::stylex::PreTransformed::unchanged(source))
+                })
+            })
+            .await
+            .map_err(|e| format!("StyleX compile task failed: {e}"))??;
+            (pre.code, pre.map, Some(pre.rules))
+        }
+        _ => (source, None, None),
+    };
+    let mut transformed = plugin_transform(state, file, &transform_id, source, is_dep).await?;
+    if let Some(map) = stylex_map {
+        transformed.maps.insert(0, map);
+    }
     let source = if is_preprocessor(url) {
         preprocess_less_stylus(state, url, transformed.code).await?
     } else {
@@ -177,6 +209,9 @@ pub(crate) async fn ensure_module_as(
     let module = match compiled {
         Ok(Ok(mut module)) => {
             module.watch_files = transformed.watch_files;
+            if let Some(rules) = stylex_rules {
+                module.stylex_rules = rules;
+            }
             Arc::new(module)
         }
         Ok(Err(err)) => {
@@ -221,15 +256,15 @@ fn code_module(code: String) -> CachedModule {
         fs_allow: Vec::new(),
         watch_files: Vec::new(),
         import_bindings: Vec::new(),
+        stylex_rules: Vec::new(),
     }
 }
 
 /// `export default "<url>"`: how a non-compiled asset import is served.
 fn url_asset_module(url: &str) -> CachedModule {
-    let clean = url.split('?').next().unwrap_or(url);
     code_module(format!(
         "export default {};\n",
-        serde_json::Value::String(clean.to_string())
+        serde_json::Value::String(asset_export_url(url))
     ))
 }
 
@@ -340,9 +375,12 @@ fn record_glob_importer(state: &ServerState, file: &Path, url: &str, source: &st
     if !source.contains("import.meta.glob") {
         return;
     }
-    let patterns: Vec<glob::Pattern> = oj_compiler::glob::glob_patterns(source, file)
+    let patterns: Vec<oj_compiler::glob::GlobMatcher> =
+        oj_compiler::glob::glob_patterns_aliased(source, file, Some(&state.root), &|id| {
+            oj_compiler::glob::string_alias(&state.glob_alias, id)
+        })
         .iter()
-        .filter_map(|p| glob::Pattern::new(p).ok())
+        .map(|call| call.matcher())
         .collect();
     let clean = url.split('?').next().unwrap_or(url).to_string();
     let mut globs = state.glob_importers.lock().unwrap();
@@ -399,6 +437,10 @@ fn compile_key(
     // must miss (Vite invalidates its whole module graph on that reload).
     mode_key.push_str("+deps");
     mode_key.push_str(&state.optimized.browser_version());
+    if let Some(stylex) = &state.stylex {
+        mode_key.push_str("+stylex");
+        mode_key.push_str(stylex.fingerprint());
+    }
     let key = state.cache.key(source.as_bytes(), url, &mode_key);
     if let Some((mtime, size)) = stamp {
         state
@@ -466,10 +508,10 @@ pub(crate) async fn plugin_transform(
     }
     let resolved = resolved_imports_json(&state.resolver, &state.fs_allow, &source, file);
     match host.transform(&source, transform_id, &resolved).await {
-        Ok((code, watch_files, maps, _)) => Ok(Transformed {
-            code,
-            watch_files,
-            maps,
+        Ok(t) => Ok(Transformed {
+            code: t.code,
+            watch_files: t.watch_files,
+            maps: t.maps,
         }),
         // Vite fails the request with the plugin's error (code frame in the
         // overlay); serving the untransformed source would ship wrong code.
@@ -592,6 +634,26 @@ async fn css_prepass(
     })
 }
 
+/// A sheet's pulled-in files as its graph imports, so a dep edit hot-updates
+/// it, `/@fs/` ones outside the root watched as Vite's ensureWatchedFile
+/// does; the sheet itself is filtered (a self-edge is a bogus cycle).
+/// Normalized first: an `@import "../../x.css"` target keeps its `..`s,
+/// under the root by spelling only.
+fn css_dep_imports(state: &ServerState, sheet: &Path, deps: &[PathBuf]) -> Vec<String> {
+    let mut imports: Vec<String> = deps
+        .iter()
+        .map(|p| normalize(p))
+        .filter(|p| p != sheet)
+        .map(|p| {
+            ensure_watched_file(state, &p);
+            url_of(&state.root, &p)
+        })
+        .collect();
+    imports.sort();
+    imports.dedup();
+    imports
+}
+
 #[derive(Clone, Copy)]
 enum CompileKind {
     Json,
@@ -665,23 +727,7 @@ impl CompileJob {
             .and_then(|c| c.dev_sourcemap)
             .unwrap_or(false);
         let output = oj_css::compile_css_dev(&self.url, &css_src, dev_sourcemap, &resolve)?;
-        // Pulled-in files enter the graph as this sheet's imports so a dep edit
-        // hot-updates it, `/@fs/` ones outside the root watched as Vite's
-        // ensureWatchedFile does; filter the sheet itself (a self-edge is a
-        // bogus cycle). Normalized first: an `@import "../../x.css"` target
-        // keeps its `..`s, under the root by spelling only.
-        let root = &state.root;
-        let mut dep_imports: Vec<String> = css_deps
-            .iter()
-            .map(|p| normalize(p))
-            .filter(|p| *p != self.file)
-            .map(|p| {
-                ensure_watched_file(state, &p);
-                url_of(root, &p)
-            })
-            .collect();
-        dep_imports.sort();
-        dep_imports.dedup();
+        let dep_imports = css_dep_imports(state, &self.file, &css_deps);
         // A CSS module's class map changes on edit, so it cannot self-accept
         // (Vite's css-analysis): the update climbs to the importing component.
         let is_css_module = output.exports.is_some();
@@ -733,6 +779,7 @@ impl CompileJob {
             },
             require_map: Vec::new(),
             css_exports: Vec::new(),
+            stylex_rules: output.stylex_rules,
         })
     }
 
@@ -752,6 +799,7 @@ impl CompileJob {
                 dep_src,
                 &mut |spec: &str| rw.rewrite(spec, &self.state.require_resolver),
                 Some(Arc::clone(&self.state.import_meta_env)),
+                None,
             );
         }
         // Gated on a cheap bare-import scan: the interop rewrite (a full
@@ -777,6 +825,7 @@ impl CompileJob {
             dep_src,
             &mut |spec: &str| rw.rewrite(spec, &self.state.resolver),
             Some(Arc::clone(&self.state.import_meta_env)),
+            None,
         )
     }
 
@@ -797,6 +846,8 @@ impl CompileJob {
         // The key already folded this decision (from the original path); the
         // compile must never re-derive it from a synthetic one.
         opts.class_field_set_semantics = Some(self.class_field_semantics);
+        // StyleX ran ahead of the app's plugins (see ensure_module_as).
+        opts.stylex = None;
         oj_compiler::compile_module_with_maps(
             &self.file,
             interopped.as_deref().unwrap_or(&self.source),
@@ -827,15 +878,27 @@ impl ImportRewrite<'_> {
     fn rewrite(&self, spec: &str, resolver: &OjResolver) -> Option<String> {
         let job = self.job;
         let state = &*job.state;
-        // Only a plugin's resolveId can answer what oj's resolver cannot. The
-        // host runs for every app (it hosts the dev HTML transform), plugins
-        // or not, so its presence alone says nothing.
+        // Only a plugin's resolveId can answer what oj's resolver cannot. A
+        // host may run with no plugin (it hosts `server.proxy`), so its
+        // presence alone says nothing.
         let plugin_fallback = state.plugins.is_some() && state.plugins_have_resolve_id;
         if spec == "virtual:oj-routes" {
             return Some("/@oj/routes.js".to_string());
         }
+        // @vitejs/plugin-react's refresh runtime and its virtual preamble (the
+        // react-refresh and virtual-preamble plugins, which oj does natively).
+        match spec {
+            "/@react-refresh" => return Some("/@oj/refresh-runtime.js".to_string()),
+            "@vitejs/plugin-react/preamble" | "@vitejs/plugin-react-swc/preamble" => {
+                return Some("/@oj/refresh-preamble.js".to_string())
+            }
+            _ => {}
+        }
         if state.virtual_ids.contains(spec) {
             return Some(format!("/@virtual/{spec}"));
+        }
+        if crate::stylex::virtual_module(state, spec).is_some() {
+            return Some(format!("/@id/{spec}"));
         }
         // Vite runs plugins' resolveId before its own resolver: a non-bare import
         // a filter claims goes to /@id/, which falls back to disk on decline.
@@ -1042,6 +1105,9 @@ pub(crate) fn fs_allow_from(imports: &[String]) -> Vec<String> {
 }
 
 pub(crate) fn register_in_graph(state: &ServerState, url: &str, module: &CachedModule) {
+    // Every path that hands out a module (compile, memory, disk) lands here,
+    // so the stylesheet always holds the variant being served.
+    crate::stylex::record(state, url, &module.stylex_rules);
     if !module.fs_allow.is_empty() {
         let mut allow = state.fs_allow.lock().unwrap();
         for p in &module.fs_allow {

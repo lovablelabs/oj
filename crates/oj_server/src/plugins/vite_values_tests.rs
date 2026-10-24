@@ -188,7 +188,7 @@ async fn spawn_live_host(tag: &str) -> (PathBuf, std::sync::Arc<PluginHost>) {
 /// Rewind respawn spacing after an induced death: these tests target revive
 /// semantics, not keeper timing.
 fn clear_respawn_spacing(host: &PluginHost) {
-    host.revive.lock().unwrap().last =
+    host.core.revive.lock().unwrap().last =
         Some(std::time::Instant::now() - PLUGIN_HOST_RESPAWN_SPACING);
 }
 
@@ -197,15 +197,15 @@ fn clear_respawn_spacing(host: &PluginHost) {
 #[tokio::test]
 async fn a_gone_host_is_revived_by_the_next_call() {
     let (_root, host) = spawn_live_host("basic").await;
-    let generation = host.revive.lock().unwrap().generation;
-    host.declare_gone("test wedge", generation);
+    let generation = host.core.revive.lock().unwrap().generation;
+    host.core.declare_gone("test wedge", generation);
     clear_respawn_spacing(&host);
-    assert!(*host.host_gone.borrow(), "the death latched");
+    assert!(*host.core.host_gone.borrow(), "the death latched");
 
     host.resolve_id("x", "")
         .await
         .expect("the next call revives the host and serves");
-    let revive = host.revive.lock().unwrap();
+    let revive = host.core.revive.lock().unwrap();
     assert_eq!(
         revive.generation,
         generation + 1,
@@ -213,7 +213,43 @@ async fn a_gone_host_is_revived_by_the_next_call() {
     );
     assert_eq!(revive.attempts, 1, "one respawn consumed");
     drop(revive);
-    assert!(!*host.host_gone.borrow(), "the host is live again");
+    assert!(!*host.core.host_gone.borrow(), "the host is live again");
+}
+
+// A revived engine numbers its worker containers afresh: a handle from the
+// dead one answers nothing and closing it leaves the new container 1 alone.
+#[tokio::test]
+async fn a_worker_container_handle_dies_with_its_engine() {
+    let (_root, host) = spawn_live_host("worker-gen").await;
+    let old = host
+        .open_worker_container(&[])
+        .await
+        .expect("a worker container");
+    let generation = host.core.revive.lock().unwrap().generation;
+    host.core.declare_gone("test wedge", generation);
+    clear_respawn_spacing(&host);
+    host.resolve_id("x", "").await.expect("revived");
+
+    let new = host
+        .open_worker_container(&[])
+        .await
+        .expect("a worker container");
+    assert_eq!(
+        old.container, new.container,
+        "the revived engine reuses the id"
+    );
+    let err = old
+        .resolve_id("x", "")
+        .await
+        .expect_err("the old handle is stale");
+    assert!(err.contains("died with its plugin host's engine"), "{err}");
+    old.close_container()
+        .await
+        .expect("closing a stale handle is a no-op");
+    new.resolve_id("x", "")
+        .await
+        .expect("the new container is untouched by the stale close");
+    new.close_container().await.expect("closed");
 }
 
 // A death report about a replaced engine (an old call's transport belt
@@ -221,14 +257,15 @@ async fn a_gone_host_is_revived_by_the_next_call() {
 #[tokio::test]
 async fn a_stale_death_report_does_not_kill_a_revived_host() {
     let (_root, host) = spawn_live_host("stale").await;
-    let generation = host.revive.lock().unwrap().generation;
-    host.declare_gone("test wedge", generation);
+    let generation = host.core.revive.lock().unwrap().generation;
+    host.core.declare_gone("test wedge", generation);
     clear_respawn_spacing(&host);
     host.resolve_id("x", "").await.expect("revived");
 
-    host.declare_gone("stale report about the old engine", generation);
+    host.core
+        .declare_gone("stale report about the old engine", generation);
     assert!(
-        !*host.host_gone.borrow(),
+        !*host.core.host_gone.borrow(),
         "a stale-generation report is ignored"
     );
     host.resolve_id("x", "").await.expect("still serving");
@@ -242,7 +279,11 @@ async fn a_shutdown_host_is_never_revived() {
     host.host_gone_wait().await;
     let err = host.resolve_id("x", "").await.expect_err("stays dead");
     assert!(err.contains("plugin host exited"), "{err}");
-    assert_eq!(host.revive.lock().unwrap().attempts, 0, "no respawn burned");
+    assert_eq!(
+        host.core.revive.lock().unwrap().attempts,
+        0,
+        "no respawn burned"
+    );
 }
 
 // Keeper is best effort per addon: an unloadable path is skipped, the eval
@@ -336,14 +377,17 @@ return null;
         err.contains("memory limit") && err.contains("OJ_PLUGIN_MEMORY_MB"),
         "the failure names the cap and its knob: {err}"
     );
-    assert!(*host.host_gone.borrow(), "a blown heap retires the engine");
+    assert!(
+        *host.core.host_gone.borrow(),
+        "a blown heap retires the engine"
+    );
 
     clear_respawn_spacing(&host);
     host.load("after")
         .await
         .expect("the next call revives the host on a fresh heap");
     assert_eq!(
-        host.revive.lock().unwrap().attempts,
+        host.core.revive.lock().unwrap().attempts,
         1,
         "one respawn consumed"
     );
@@ -355,8 +399,8 @@ return null;
 async fn the_respawn_budget_is_finite_and_spaced() {
     let (_root, host) = spawn_live_host("budget").await;
     for round in 0..PLUGIN_HOST_RESPAWN_LIMIT {
-        let generation = host.revive.lock().unwrap().generation;
-        host.declare_gone("recurring test wedge", generation);
+        let generation = host.core.revive.lock().unwrap().generation;
+        host.core.declare_gone("recurring test wedge", generation);
         if round == 0 {
             clear_respawn_spacing(&host);
         }
@@ -365,16 +409,16 @@ async fn the_respawn_budget_is_finite_and_spaced() {
         if round > 0 {
             let err = host.resolve_id("x", "").await.expect_err("spacing rejects");
             assert!(err.contains("plugin host exited"), "{err}");
-            host.revive.lock().unwrap().last =
+            host.core.revive.lock().unwrap().last =
                 Some(std::time::Instant::now() - PLUGIN_HOST_RESPAWN_SPACING);
         }
         host.resolve_id("x", "")
             .await
             .expect("revives within budget");
     }
-    let generation = host.revive.lock().unwrap().generation;
-    host.declare_gone("one wedge too many", generation);
-    host.revive.lock().unwrap().last =
+    let generation = host.core.revive.lock().unwrap().generation;
+    host.core.declare_gone("one wedge too many", generation);
+    host.core.revive.lock().unwrap().last =
         Some(std::time::Instant::now() - PLUGIN_HOST_RESPAWN_SPACING);
     let err = host.resolve_id("x", "").await.expect_err("budget spent");
     assert!(err.contains("plugin host exited"), "{err}");
@@ -726,13 +770,13 @@ return null;
         .await
         .expect("the next call revives the host and serves");
     assert_eq!(
-        host.revive.lock().unwrap().attempts,
+        host.core.revive.lock().unwrap().attempts,
         1,
         "one respawn consumed"
     );
     // A second death inside the respawn spacing fails fast without a window.
-    let generation = host.revive.lock().unwrap().generation;
-    host.declare_gone("second test wedge", generation);
+    let generation = host.core.revive.lock().unwrap().generation;
+    host.core.declare_gone("second test wedge", generation);
     let t1 = std::time::Instant::now();
     let err = host
         .load("again")
@@ -802,7 +846,7 @@ return null;
         .await
         .expect("a concurrent call is untouched by the hang");
     assert!(
-        !*host.host_gone.borrow(),
+        !*host.core.host_gone.borrow(),
         "no wedge verdict for a parked loop"
     );
 
@@ -1119,6 +1163,8 @@ fn merge_adopts_only_unset_fields() {
         preview: None,
         app_type: None,
         html: None,
+        active_plugins: None,
+        stylex: None,
     };
     merge_vite_values(&mut config, v);
     assert_eq!(config.base.as_deref(), Some("/vite-base/"));
@@ -1166,6 +1212,8 @@ fn merge_never_overrides_config() {
         preview: None,
         app_type: None,
         html: None,
+        active_plugins: None,
+        stylex: None,
     };
     merge_vite_values(&mut config, v);
     assert_eq!(config.base.as_deref(), Some("/oj-base/"));
@@ -1637,13 +1685,13 @@ async fn a_prewarmed_engine_hosts_the_plugins_and_revives_normally() {
         "the plugin loaded on the prewarmed engine resolves: {resolved:?}"
     );
 
-    let generation = host.revive.lock().unwrap().generation;
-    host.declare_gone("test wedge", generation);
+    let generation = host.core.revive.lock().unwrap().generation;
+    host.core.declare_gone("test wedge", generation);
     clear_respawn_spacing(&host);
     host.resolve_id("virtual:x", "")
         .await
         .expect("a revive boots a fresh engine and serves");
-    assert_eq!(host.revive.lock().unwrap().generation, generation + 1);
+    assert_eq!(host.core.revive.lock().unwrap().generation, generation + 1);
     let _ = std::fs::remove_dir_all(&root);
 }
 

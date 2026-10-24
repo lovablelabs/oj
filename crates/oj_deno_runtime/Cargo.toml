@@ -145,7 +145,7 @@ version = "0.118.0"
 
 [dependencies.deno_process]
 package = "oj_deno_process"
-version = "0.2.39"
+version = "0.2.45"
 path = "../oj_deno_process"
 
 [dependencies.deno_resolver]
@@ -217,7 +217,7 @@ version = "0.97.0"
 features = ["sync"]
 
 [dependencies.notify]
-version = "8.2.0"
+version = "=9.0.0-rc.6"
 
 [dependencies.once_cell]
 version = "1.17.1"

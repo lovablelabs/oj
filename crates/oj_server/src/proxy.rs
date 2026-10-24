@@ -1,5 +1,9 @@
 use super::*;
 use futures_util::{SinkExt, StreamExt};
+
+#[cfg(test)]
+#[path = "proxy_tests.rs"]
+mod tests;
 use tokio_tungstenite::tungstenite as ts;
 
 /// Delegate a matched request to the Vite-shaped proxy in the plugin host. On
@@ -126,8 +130,54 @@ async fn forward_direct(
     target: &str,
 ) -> Response {
     const BUFFER_LIMIT: usize = 1024 * 1024;
+    let opts = entry.options();
+    let follow = opts.is_some_and(|o| o.follow_redirects == Some(true));
     let method = req.method().clone();
-    let req_headers = req.headers().clone();
+    let mut req_headers = req.headers().clone();
+    if opts.is_some_and(|o| o.xfwd == Some(true)) {
+        add_forwarded_headers(&mut req_headers, false);
+    }
+    let client = if entry.secure() {
+        &state.http
+    } else {
+        state
+            .http_insecure
+            .get_or_init(|| plugin_mw::browser_hop_client(true))
+    };
+    let mut outgoing = HeaderMap::new();
+    for (name, value) in req_headers.iter() {
+        if entry.change_origin() && name == header::HOST {
+            continue;
+        }
+        outgoing.append(name, value.clone());
+    }
+    let host = req_headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let finish = |resp: reqwest::Response| {
+        // Stream the upstream body so SSE/long-polling arrive chunk by chunk.
+        let mut resp = stream_reqwest_response(resp);
+        if let Some(opts) = opts {
+            let status = resp.status().as_u16();
+            rewrite_reply_headers(opts, host.as_deref(), status, resp.headers_mut());
+        }
+        resp
+    };
+
+    if follow {
+        // follow-redirects replays the body on each hop, so it holds the
+        // request body, up to its 10 MiB maxBodyLength.
+        let body = match axum::body::to_bytes(req.into_body(), FOLLOW_MAX_BODY).await {
+            Ok(b) => b,
+            Err(e) => return bad_gateway(format!("oj proxy to {prefix} failed: {e}")),
+        };
+        return match follow_redirects(client, method, target, outgoing, body).await {
+            Ok(resp) => finish(resp),
+            Err(e) => bad_gateway(format!("oj proxy to {prefix} failed: {e}")),
+        };
+    }
+
     // Buffer small bodies to preserve Content-Length; stream chunked or large
     // bodies so uploads are not capped.
     let content_length = req_headers
@@ -144,30 +194,277 @@ async fn forward_direct(
             Err(e) => return bad_gateway(format!("oj proxy: body read: {e}")),
         }
     };
-
-    let client = if entry.secure() {
-        &state.http
-    } else {
-        state.http_insecure.get_or_init(|| {
-            reqwest::Client::builder()
-                .danger_accept_invalid_certs(true)
-                .build()
-                .expect("reqwest client")
-        })
-    };
-    let mut out = client.request(method, target).body(body);
-    for (name, value) in req_headers.iter() {
-        if entry.change_origin() && name == header::HOST {
-            continue;
-        }
-        out = out.header(name, value);
-    }
-
-    match out.send().await {
-        // Stream the upstream body so SSE/long-polling arrive chunk by chunk.
-        Ok(resp) => stream_reqwest_response(resp),
+    match client
+        .request(method, target)
+        .headers(outgoing)
+        .body(body)
+        .send()
+        .await
+    {
+        Ok(resp) => finish(resp),
         Err(e) => bad_gateway(format!("oj proxy to {prefix} failed: {e}")),
     }
+}
+
+/// follow-redirects' limits, which http-proxy uses for `followRedirects`.
+const FOLLOW_MAX_REDIRECTS: usize = 21;
+const FOLLOW_MAX_BODY: usize = 10 * 1024 * 1024;
+
+/// `followRedirects: true`, with follow-redirects' rules (http-proxy forwards
+/// through it): at most 21 hops; a 301/302 answering a POST, or a 303
+/// answering anything but GET/HEAD, continues as a body-less GET without its
+/// `content-*` headers; every other hop replays the method and the body; the
+/// Host header gives way to the next URL's; credentials and cookies are
+/// dropped when the next hop leaves the host (or its subdomains) or
+/// downgrades from https.
+pub(crate) async fn follow_redirects(
+    client: &reqwest::Client,
+    mut method: Method,
+    target: &str,
+    mut headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<reqwest::Response, String> {
+    let mut url = reqwest::Url::parse(target).map_err(|e| e.to_string())?;
+    let mut body = Some(body);
+    for _ in 0..=FOLLOW_MAX_REDIRECTS {
+        let mut request = client
+            .request(method.clone(), url.clone())
+            .headers(headers.clone());
+        if let Some(b) = &body {
+            request = request.body(b.clone());
+        }
+        let resp = request.send().await.map_err(|e| e.to_string())?;
+        let status = resp.status().as_u16();
+        let location = resp
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let Some(location) = location.filter(|_| (300..400).contains(&status)) else {
+            return Ok(resp);
+        };
+        let next = url.join(&location).map_err(|e| e.to_string())?;
+        if ((status == 301 || status == 302) && method == Method::POST)
+            || (status == 303 && method != Method::GET && method != Method::HEAD)
+        {
+            method = Method::GET;
+            body = None;
+            let content: Vec<_> = headers
+                .keys()
+                .filter(|k| k.as_str().starts_with("content-"))
+                .cloned()
+                .collect();
+            for k in content {
+                headers.remove(k);
+            }
+        }
+        let current_host = headers
+            .remove(header::HOST)
+            .and_then(|v| v.to_str().ok().map(str::to_string))
+            .unwrap_or_else(|| url_host(&url));
+        let next_host = url_host(&next);
+        let subdomain = next_host.ends_with(&format!(".{current_host}"));
+        if (next.scheme() != url.scheme() && next.scheme() != "https")
+            || (next_host != current_host && !subdomain)
+        {
+            for k in [
+                header::AUTHORIZATION,
+                header::PROXY_AUTHORIZATION,
+                header::COOKIE,
+            ] {
+                headers.remove(k);
+            }
+        }
+        url = next;
+    }
+    Err("Maximum number of redirects exceeded".to_string())
+}
+
+/// http-proxy-3's XHeaders (passes/web-incoming.js, ws-incoming.js) for
+/// `xfwd: true`: the browser's address, the Host's port (else the scheme's),
+/// and the protocol, each appended to any value already there; on a plain
+/// request also `x-forwarded-host`, when none came in.
+pub(crate) fn add_forwarded_headers(headers: &mut HeaderMap, websocket: bool) {
+    let conn = crate::tls::client_conn();
+    let encrypted = conn.is_some_and(|c| c.encrypted);
+    let host = headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    // common.getPort: the first `:<digits>` of the Host.
+    static PORT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let port = PORT
+        .get_or_init(|| regex::Regex::new(r":(\d+)").expect("port regex"))
+        .captures(&host)
+        .map(|c| c[1].to_string())
+        .unwrap_or_else(|| if encrypted { "443" } else { "80" }.to_string());
+    let proto = match (websocket, encrypted) {
+        (false, false) => "http",
+        (false, true) => "https",
+        (true, false) => "ws",
+        (true, true) => "wss",
+    };
+    let values = [
+        ("x-forwarded-for", conn.map(|c| c.addr.ip().to_string())),
+        ("x-forwarded-port", Some(port)),
+        ("x-forwarded-proto", Some(proto.to_string())),
+    ];
+    for (name, value) in values {
+        let Some(value) = value else { continue };
+        // Node joins repeated headers with ", " before http-proxy appends.
+        let existing: Vec<&str> = headers
+            .get_all(name)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .collect();
+        let joined = if existing.is_empty() {
+            value
+        } else {
+            format!("{},{value}", existing.join(", "))
+        };
+        if let Ok(v) = header::HeaderValue::from_str(&joined) {
+            headers.insert(name, v);
+        }
+    }
+    if !websocket && !headers.contains_key("x-forwarded-host") {
+        if let Ok(v) = header::HeaderValue::from_str(&host) {
+            headers.insert("x-forwarded-host", v);
+        }
+    }
+}
+
+/// http-proxy-3's web-outgoing passes on a reply (setRedirectHostRewrite and
+/// writeHeaders' cookie rewrites), applied only when the entry asks: a
+/// redirect's `Location` on the target's host moves to `hostRewrite`, or the
+/// browser's Host with `autoRewrite`, and `protocolRewrite` swaps its scheme;
+/// every `Set-Cookie` gets its `domain` / `path` rewritten.
+pub(crate) fn rewrite_reply_headers(
+    opts: &oj_config::ProxyOptions,
+    request_host: Option<&str>,
+    status: u16,
+    headers: &mut HeaderMap,
+) {
+    let rewrites_location = opts.host_rewrite.is_some()
+        || opts.auto_rewrite == Some(true)
+        || opts.protocol_rewrite.is_some();
+    // http-proxy's redirectRegex, /^201|30(1|2|7|8)$/.
+    let redirect = matches!(status, 201 | 301 | 302 | 307 | 308);
+    if rewrites_location && redirect {
+        if let Some(location) = headers.get(header::LOCATION).and_then(|v| v.to_str().ok()) {
+            let target = proxy_url(&opts.target);
+            let mut u = proxy_url(location);
+            if url_host(&target) == url_host(&u) {
+                if let Some(host) = &opts.host_rewrite {
+                    set_url_host(&mut u, host);
+                } else if opts.auto_rewrite == Some(true) {
+                    set_url_host(&mut u, request_host.unwrap_or(""));
+                }
+                if let Some(protocol) = &opts.protocol_rewrite {
+                    let _ = u.set_scheme(protocol.trim_end_matches(':'));
+                }
+                if let Ok(v) = header::HeaderValue::from_str(u.as_str()) {
+                    headers.insert(header::LOCATION, v);
+                }
+            }
+        }
+    }
+    let domain = opts.cookie_domain_rewrite.as_ref().and_then(|c| c.config());
+    let path = opts.cookie_path_rewrite.as_ref().and_then(|c| c.config());
+    if domain.is_none() && path.is_none() {
+        return;
+    }
+    let cookies: Vec<String> = headers
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok().map(str::to_string))
+        .collect();
+    if cookies.is_empty() {
+        return;
+    }
+    headers.remove(header::SET_COOKIE);
+    for mut cookie in cookies {
+        if let Some(config) = &domain {
+            cookie = rewrite_cookie_property(&cookie, config, "domain");
+        }
+        if let Some(config) = &path {
+            cookie = rewrite_cookie_property(&cookie, config, "path");
+        }
+        if let Ok(v) = header::HeaderValue::from_str(&cookie) {
+            headers.append(header::SET_COOKIE, v);
+        }
+    }
+}
+
+/// http-proxy-3's common.toURL: relative to `http://base.invalid`, a
+/// protocol-relative url kept under that base.
+fn proxy_url(url: &str) -> reqwest::Url {
+    let base = reqwest::Url::parse("http://base.invalid").expect("base url");
+    let url = if url.starts_with("//") {
+        format!("http://base.invalid{url}")
+    } else {
+        url.to_string()
+    };
+    base.join(&url).unwrap_or(base)
+}
+
+/// A URL's `host` as the WHATWG URL reports it: the port only when it is not
+/// the scheme's default.
+fn url_host(u: &reqwest::Url) -> String {
+    match (u.host_str(), u.port()) {
+        (Some(h), Some(p)) => format!("{h}:{p}"),
+        (Some(h), None) => h.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// The WHATWG `url.host = value` setter: the host, and the port when given.
+fn set_url_host(u: &mut reqwest::Url, value: &str) {
+    let Ok(parsed) = reqwest::Url::parse(&format!("http://{value}")) else {
+        return;
+    };
+    let Some(host) = parsed.host_str() else {
+        return;
+    };
+    if u.set_host(Some(host)).is_err() {
+        return;
+    }
+    let explicit = value
+        .rsplit_once(':')
+        .filter(|(h, p)| !h.is_empty() && !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|(_, p)| p.parse::<u16>().ok());
+    if let Some(port) = explicit {
+        let _ = u.set_port(Some(port));
+    }
+}
+
+/// http-proxy-3's rewriteCookieProperty: the first `; <property>=<value>`
+/// becomes the configured value for `<value>` (or for `"*"`), and is removed
+/// when that is empty; an unlisted value stays.
+fn rewrite_cookie_property(
+    cookie: &str,
+    config: &std::collections::BTreeMap<String, String>,
+    property: &str,
+) -> String {
+    let re = regex::Regex::new(&format!(r"(?i)(;\s*{property}=)([^;]+)")).expect("cookie regex");
+    let Some(caps) = re.captures(cookie) else {
+        return cookie.to_string();
+    };
+    let previous = &caps[2];
+    let Some(next) = config.get(previous).or_else(|| config.get("*")) else {
+        return cookie.to_string();
+    };
+    let whole = caps.get(0).expect("match");
+    let replacement = if next.is_empty() {
+        String::new()
+    } else {
+        format!("{}{next}", &caps[1])
+    };
+    format!(
+        "{}{replacement}{}",
+        &cookie[..whole.start()],
+        &cookie[whole.end()..]
+    )
 }
 
 /// Compiled `^` proxy context (Vite: `new RegExp(context)`); `None` for prefixes.
@@ -451,7 +748,14 @@ fn upstream_ws_request(
             ts::handshake::client::generate_key(),
         );
     let rewrite_origin = entry.is_some_and(|e| e.rewrite_ws_origin());
-    for (name, value) in headers.iter() {
+    let mut forwarded = headers.clone();
+    if entry
+        .and_then(|e| e.options())
+        .is_some_and(|o| o.xfwd == Some(true))
+    {
+        add_forwarded_headers(&mut forwarded, true);
+    }
+    for (name, value) in forwarded.iter() {
         if !ws_forwardable_header(name) {
             continue;
         }

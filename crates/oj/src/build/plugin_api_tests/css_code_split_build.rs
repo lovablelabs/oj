@@ -107,11 +107,20 @@ async fn dynamic_chunk_css_is_split_and_injected_on_load() {
         .iter()
         .find(|f| f.starts_with("lazy-") && f.ends_with(".js"))
         .unwrap_or_else(|| panic!("no lazy chunk emitted: {assets:?}"));
+    // Vite loads a lazy chunk's stylesheet through its importer's preload
+    // list (the chunk and its css), not from the chunk itself.
     let lazy_code = fs::read_to_string(assets_dir.join(lazy_js)).unwrap();
+    assert!(!lazy_code.contains("createElement(`link`)"), "{lazy_code}");
+    let entry_js = assets
+        .iter()
+        .find(|f| f.starts_with("index-") && f.ends_with(".js"))
+        .unwrap_or_else(|| panic!("no entry chunk emitted: {assets:?}"));
+    let entry_code = fs::read_to_string(assets_dir.join(entry_js)).unwrap();
     assert!(
-        lazy_code.contains(r#"createElement("link")"#)
-            || lazy_code.contains("createElement('link')"),
-        "lazy chunk must self-inject its stylesheet:\n{lazy_code}"
+        entry_code.starts_with(&format!(
+            "const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=[\"assets/{lazy_js}\",\"assets/{lazy_css}\"])))=>i.map(i=>d[i]);\n"
+        )),
+        "the importer preloads the lazy chunk and its stylesheet:\n{entry_code}"
     );
 
     if super::browser::skip() {

@@ -1,0 +1,363 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/transform-stylex-defineConsts-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs only — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "upstream/defineConsts-constants-are-unique-001",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import stylex from 'stylex';\n        export const breakpoints = stylex.defineConsts({ padding: '10px' });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineConsts-constants-are-unique-002",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import stylex from 'stylex';\n        export const breakpoints = stylex.defineConsts({ margin: '10px' });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineConsts-constants-object-003",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const breakpoints = stylex.defineConsts({\n          sm: '(min-width: 768px)',\n          md: '(min-width: 1024px)',\n          lg: '(min-width: 1280px)',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineConsts-constants-object-haste-004",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "stylex/packages/TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const breakpoints = stylex.defineConsts({\n          sm: '(min-width: 768px)',\n          md: '(min-width: 1024px)',\n          lg: '(min-width: 1280px)',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineConsts-constant-names-special-chara-005",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const sizes = stylex.defineConsts({\n          'font-size*large': '18px',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineConsts-constant-names-number-006",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const levels = stylex.defineConsts({\n          1: 'one'\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineConsts-constant-names-prefix-preser-007",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const sizes = stylex.defineConsts({\n          '--small': '8px',\n          '--large': '24px',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineConsts-adds-placeholder-for-constan-008",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "main.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { colors } from './constants.stylex';\n\n        export const styles = stylex.create({\n          root: {\n            backgroundColor: colors.background,\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineConsts-adds-media-query-placeholder-009",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "main.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { breakpoints } from './constants.stylex';\n\n        export const styles = stylex.create({\n          root: {\n            color: {\n              default: 'red',\n              [breakpoints.small]: 'blue',\n            },\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineConsts-works-with-firstthatworks-010",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "main.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { colors } from './constants.stylex';\n\n        export const styles = stylex.create({\n          nodeEnd: (animationDuration) => ({\n            foo: {\n              color: stylex.firstThatWorks(colors.background, 'transparent'),\n            },\n          }),\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "firstThatWorks", "create", "upstream-skipped"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/defineConsts-works-with-dynamic-styles-co-011",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "main.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { colors } from './constants.stylex';\n\n        export const styles = stylex.create({\n          node: (padding) => ({\n            padding: padding,\n            color: colors.background,\n          }),\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineConsts-works-with-dynamic-styles-at-012",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "main.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { breakpoints } from './constants.stylex';\n\n        export const styles = stylex.create({\n          node: (color) => ({\n            color: {\n              [breakpoints.small]: 'blue',\n              default: color,\n            },\n          }),\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineConsts-adds-multiple-media-query-pl-013",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "main.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { breakpoints } from './constants.stylex';\n\n        export const styles = stylex.create({\n          root: {\n            color: {\n              default: 'red',\n              [breakpoints.small]: 'blue',\n              [breakpoints.big]: 'yellow',\n            },\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineConsts-adds-nested-media-query-plac-014",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "main.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { breakpoints, colors } from './constants.stylex';\n\n        export const styles = stylex.create({\n          root: {\n            color: {\n              default: 'black',\n              [breakpoints.big]: {\n                default: colors.red,\n                [breakpoints.small]: colors.blue,\n              },\n            },\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineConsts-constants-object-with-runtim-015",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const breakpoints = stylex.defineConsts({\n          sm: '(min-width: 768px)',\n          md: '(min-width: 1024px)',\n          lg: '(min-width: 1280px)',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["defineConsts"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineConsts-numeric-constants-with-runti-016",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const sizes = stylex.defineConsts({\n          small: 8,\n          medium: 16,\n          large: 24,\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["defineConsts"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineConsts-string-constants-with-runtim-017",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const colors = stylex.defineConsts({\n          primary: 'rebeccapurple',\n          secondary: 'coral',\n          tertiary: 'turquoise',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["defineConsts"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineConsts-mixed-string-and-numeric-con-018",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const theme = stylex.defineConsts({\n          spacing: 16,\n          color: 'blue',\n          breakpoint: '(min-width: 768px)',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["defineConsts"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineConsts-constants-with-special-chara-019",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const urls = stylex.defineConsts({\n          background: 'url(\"bg.png\")',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["defineConsts"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineConsts-constants-with-custom-inject-020",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const breakpoints = stylex.defineConsts({\n          sm: '(min-width: 768px)',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": "@custom/inject-path"
+      },
+      "mode": "prod",
+      "tags": ["defineConsts"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineConsts-haste-module-with-runtimeinj-021",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "stylex/packages/TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const breakpoints = stylex.defineConsts({\n          sm: '(min-width: 768px)',\n          md: '(min-width: 1024px)',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["defineConsts"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineConsts-constants-with-numeric-keys-022",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const levels = stylex.defineConsts({\n          0: 'zero',\n          1: 'one',\n          2: 'two',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["defineConsts"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineConsts-multiple-defineconsts-calls-023",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const breakpoints = stylex.defineConsts({\n          sm: '(min-width: 768px)',\n        });\n        export const colors = stylex.defineConsts({\n          primary: 'blue',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["defineConsts"],
+      "expect": "ok"
+    }
+  ]
+}

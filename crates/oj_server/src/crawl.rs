@@ -18,6 +18,9 @@ pub(crate) fn spawn_crawl(state: Arc<ServerState>, done_tx: tokio::sync::watch::
                 let state = Arc::clone(&state);
                 tasks.spawn(async move {
                     match ensure_module(&state, &file, &url).await {
+                        // A sheet's imports are the files it inlined, Vite's
+                        // file-only entries: never compiled on their own.
+                        Ok((_, module)) if module.kind == "css" => Vec::new(),
                         Ok((_, module)) => module.imports.clone(),
                         Err(err) => {
                             eprintln!("oj: crawl: {err}");
@@ -42,7 +45,7 @@ pub(crate) fn spawn_crawl(state: Arc<ServerState>, done_tx: tokio::sync::watch::
             }
         }
 
-        let paths = state.graph.lock().unwrap().module_paths();
+        let paths = served_module_paths(&state);
         println!(
             "{} eager graph ready: {} modules in {:?}",
             oj_tag(),
@@ -52,6 +55,25 @@ pub(crate) fn spawn_crawl(state: Arc<ServerState>, done_tx: tokio::sync::watch::
         save_graph_snapshot(&state.root, &paths);
         let _ = done_tx.send(true);
     });
+}
+
+/// The graph's modules minus the files only stylesheets pull in (Vite's
+/// file-only entries): those are HMR edges, never served as modules, so a
+/// modulepreload of one would compile a partial without its importer.
+pub(crate) fn served_module_paths(state: &ServerState) -> Vec<PathBuf> {
+    let graph = state.graph.lock().unwrap();
+    graph
+        .module_paths()
+        .into_iter()
+        .filter(|p| {
+            !graph.node(p).is_some_and(|n| {
+                !n.importers.is_empty()
+                    && n.importers
+                        .iter()
+                        .all(|i| is_style_url(&i.to_string_lossy()))
+            })
+        })
+        .collect()
 }
 
 /// The file behind a crawled url, when it is one the eager crawl compiles.

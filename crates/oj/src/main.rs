@@ -4,10 +4,12 @@
 mod build;
 mod ssr_dev;
 mod ssr_host;
+mod start_bundle;
 mod start_chunks;
 mod start_dev;
 mod start_host;
 mod start_hot;
+mod stylex_plugin;
 
 // Linking-only for now: build.rs exports the Node-API symbols these crates
 // define, so they must be part of the binary (rustc drops unused crates from
@@ -46,11 +48,11 @@ enum Command {
         /// Vite's `--mode` for the dev server (default `development`).
         #[arg(long)]
         mode: Option<String>,
-        /// Enable the experimental on-disk module cache (also OJ_ENABLE_CACHE=1).
+        /// Enable the experimental on-disk module cache.
         /// Off by default; warm restarts then re-serve compiled modules from disk.
         #[arg(long)]
         enable_cache: bool,
-        /// Force the on-disk module cache off even if enabled (also OJ_NO_CACHE=1).
+        /// Force the on-disk module cache off even if enabled.
         #[arg(long)]
         no_cache: bool,
         /// Compile modules on demand instead of eagerly crawling the whole graph
@@ -76,28 +78,18 @@ enum Command {
         #[arg(long)]
         root: Option<PathBuf>,
     },
-    /// Internal: run one Start one-shot script (route-tree regen, the server-fn
-    /// resolver) to completion on a fresh embedded engine, in a process of its
-    /// own, then exit. The env pairs the script's `run(env)` receives arrive
-    /// as JSON on stdin (they used to be spawn env; argv would print values
-    /// in `ps`). A process per run on purpose: rolldown's binding retains
-    /// native memory per `build()` that neither closing the bundler nor
-    /// tearing the isolate down releases — only process exit reclaims it,
-    /// exactly as the retired per-run `node` spawns did.
+    /// Internal: run one Start one-shot script (route-tree regen) to
+    /// completion on a fresh embedded engine, in a process of its own, then
+    /// exit. The env pairs the script's `run(env)` receives arrive as JSON on
+    /// stdin (they used to be spawn env; argv would print values in `ps`). A
+    /// process per run keeps the generator's module state (and whatever the
+    /// app's packages hold) out of the dev server.
     #[command(name = "start-script", hide = true)]
     StartScript {
         script: PathBuf,
         /// The engine root (bare imports resolve from its node_modules).
         #[arg(long)]
         root: PathBuf,
-        /// Serve runs for the dev session instead of one (the client bundle):
-        /// each stdin line is one run's env JSON, answered by a
-        /// [`start_host::SCRIPT_REPLY`] line on stdout, all on one engine so
-        /// the script's module state (its plugin container) lives as long
-        /// as the dev server, as Vite's does. EOF calls the script's
-        /// `close()` and exits.
-        #[arg(long)]
-        serve: bool,
     },
     /// Internal: run one export of an oj-owned module (config extraction) on a
     /// fresh embedded engine, in a process of its own, then exit. The JSON
@@ -189,6 +181,12 @@ enum Command {
         /// Public base path (default: the config's `base`).
         #[arg(long)]
         base: Option<String>,
+    },
+    /// StyleX compiler: transform files, compile a project's sheet, or serve
+    /// the resident compiler protocol (the standalone `fru` command set).
+    Stylex {
+        #[command(subcommand)]
+        command: oj_stylex::cli::Command,
     },
 }
 
@@ -445,6 +443,16 @@ fn main() -> anyhow::Result<()> {
     // The parsed CLI is the single source for the app root: a second argv
     // parser would drift from clap the moment a flag is added.
     let cli = Cli::parse();
+    // Synchronous and self-contained (its own worker threads, no engine), so
+    // it runs before any runtime exists, on an env snapshot of its own.
+    let cli = match cli.command {
+        Command::Stylex { command } => {
+            oj_env::init();
+            oj_stylex::cli::run(command);
+            return Ok(());
+        }
+        command => Cli { command },
+    };
     // An EMPTY agent counts as unset: Vite's lockfile-preference sort treats
     // "" exactly like a missing agent (falsy), so leaving it would keep the
     // reversal this preset exists to fix.
@@ -561,16 +569,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             println!("{value}");
             Ok(())
         }
-        Command::StartScript {
-            script,
-            root,
-            serve: true,
-        } => {
-            let root = root.canonicalize().context("engine root not found")?;
-            let scripts = start_host::ScriptEngine::new(&root)?;
-            scripts.serve(&script).await
-        }
-        Command::StartScript { script, root, .. } => {
+        Command::StartScript { script, root } => {
+            // A one-shot child: the parent waits on its exit.
+            oj_js::code_cache::consume_only();
             let root = root.canonicalize().context("engine root not found")?;
             let mut buf = String::new();
             std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut buf)
@@ -587,6 +588,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             timeout_secs,
             result,
         } => {
+            oj_js::code_cache::consume_only();
             let mut buf = String::new();
             std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut buf)
                 .context("engine-job payload on stdin")?;
@@ -619,6 +621,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             println!("{}", output.code);
             Ok(())
         }
+        Command::Stylex { .. } => unreachable!("`oj stylex` runs before the runtime starts"),
         Command::Build {
             root,
             out,
@@ -648,7 +651,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let config = resolve_config_arg(&root, config);
             if oj_server::is_tanstack_start_app(&root) {
                 let mode = mode.unwrap_or_else(|| "production".to_string());
-                start_dev::start_build(root, config, &mode, out).await
+                start_dev::start_build(root, config, &mode, out, empty_out_dir).await
             } else {
                 build::build(
                     root,

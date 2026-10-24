@@ -77,7 +77,7 @@ pub fn compile_factory(
     // (which allows `with`, top-level `this` and other script-only forms).
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, source_text, source_type_for(path)).parse();
-    if parsed.panicked || !has_module_syntax(&parsed.program) {
+    if parsed.fatal_error || !has_module_syntax(&parsed.program) {
         return compile_cjs_factory(path, source_text, resolve);
     }
     if !parsed.diagnostics.is_empty() {
@@ -166,7 +166,7 @@ fn compile_esm_factory(
 ) -> Result<FactoryOutput, CompileError> {
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, source_text, source_type_for(path)).parse();
-    if parsed.panicked || !parsed.diagnostics.is_empty() {
+    if parsed.fatal_error || !parsed.diagnostics.is_empty() {
         return Err(parse_error(path, source_text, parsed));
     }
     compile_esm_factory_from_parsed(
@@ -206,7 +206,7 @@ fn compile_esm_factory_from_parsed<'a>(
     }
     replace_defines(allocator, &mut program, env, source_text);
     if crate::scan(&crate::F_IMPORT_META_GLOB, source_text) {
-        crate::glob::expand(allocator, path.parent().unwrap_or(path), &mut program);
+        crate::glob::expand(allocator, path, None, &crate::glob::no_alias, &mut program);
     }
 
     let (_, dynamic_imports) =
@@ -366,7 +366,7 @@ impl ModuleShape {
         for stmt in &program.body {
             match stmt {
                 Statement::ImportDeclaration(decl) => {
-                    let vi = shape.var_for(decl.source.value.as_str());
+                    let vi = shape.var_for(crate::lit_str(decl.source.value));
                     for spec in decl.specifiers.iter().flatten() {
                         let (local, member) = match spec {
                             ImportDeclarationSpecifier::ImportSpecifier(s) => {
@@ -409,7 +409,7 @@ impl ModuleShape {
                     }
                 }
                 Statement::ExportFromDeclaration(decl) => {
-                    let vi = shape.var_for(decl.source.value.as_str());
+                    let vi = shape.var_for(crate::lit_str(decl.source.value));
                     for spec in &decl.specifiers {
                         let local = export_name(&spec.local);
                         let expr = format!("_oj_m{vi}.{local}");
@@ -419,7 +419,7 @@ impl ModuleShape {
                     }
                 }
                 Statement::ExportAllDeclaration(decl) => {
-                    let vi = shape.var_for(decl.source.value.as_str());
+                    let vi = shape.var_for(crate::lit_str(decl.source.value));
                     shape.stars.push(vi);
                 }
                 Statement::ExportDefaultDeclaration(decl) => {
@@ -558,7 +558,7 @@ fn parse_snippet<'a>(
 ) -> Result<Vec<Statement<'a>>, CompileError> {
     let source: &'a str = allocator.alloc_str(source);
     let parsed = Parser::new(allocator, source, SourceType::cjs()).parse();
-    if parsed.panicked {
+    if parsed.fatal_error {
         return Err(CompileError::Transform {
             path: path.to_path_buf(),
             message: format!("internal: snippet failed to parse: {source}"),
@@ -571,7 +571,7 @@ pub(crate) fn export_name(name: &ModuleExportName) -> String {
     match name {
         ModuleExportName::IdentifierName(n) => n.name.to_string(),
         ModuleExportName::IdentifierReference(n) => n.name.to_string(),
-        ModuleExportName::StringLiteral(s) => s.value.to_string(),
+        ModuleExportName::StringLiteral(s) => crate::lit_str(s.value).to_string(),
     }
 }
 
@@ -646,7 +646,7 @@ impl<'a> VisitMut<'a> for RefRewriter<'a, '_> {
             }
             Expression::ImportExpression(imp) => match &imp.source {
                 Expression::StringLiteral(lit) => {
-                    Some(format!("__oj_import_lazy({:?})", lit.value.as_str()))
+                    Some(format!("__oj_import_lazy({:?})", crate::lit_str(lit.value)))
                 }
                 _ => None,
             },

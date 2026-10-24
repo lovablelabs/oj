@@ -1,8 +1,8 @@
-//! Start dev hot updates: the client bundler's DevEngine patches
-//! (bundle-client.mjs) on their way to the pages, as Vite's bundled dev
-//! serves them (server/bundledDev.ts). The bundler reports each patch on its
-//! stdout; the page it belongs to gets an `oj:hmr` frame on /@oj-start/hmr and
-//! fetches the patch from /@oj-start/hmr/<file>.
+//! Start dev hot updates: the client bundle's DevEngine patches
+//! (start_bundle::hot) on their way to the pages, as Vite's bundled dev
+//! serves them (server/bundledDev.ts). The page a patch belongs to gets an
+//! `oj:hmr` frame on /@oj-start/hmr and fetches the patch from
+//! /@oj-start/hmr/<file>.
 
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -10,14 +10,21 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 
-/// Prefixes an unsolicited line from the bundler (a patch), as SCRIPT_REPLY
-/// prefixes the answer to a request.
-pub(crate) const SCRIPT_EVENT: &str = "\u{1e}oj-start-event:";
 /// Where a page fetches its patches.
 pub(crate) const PATCH_PREFIX: &str = "/@oj-start/hmr/";
 /// Patches a page fetches right after its frame; older ones only matter to a
 /// page far behind, which the sequence check reloads anyway.
 const KEPT_PATCHES: usize = 64;
+
+/// One page's hot update, as the dev engine made it.
+#[derive(Debug, Clone)]
+pub(crate) struct Patch {
+    pub client: String,
+    pub filename: String,
+    pub seq: u32,
+    pub changed_ids: Vec<String>,
+    pub code: String,
+}
 
 /// A frame for the pages: one page's patch, or (client `None`) every page's.
 #[derive(Debug)]
@@ -34,11 +41,14 @@ pub(crate) struct HotUpdates {
     /// until an output generated after it is served.
     generation: std::sync::atomic::AtomicU64,
     stale: tokio::sync::watch::Sender<bool>,
+    /// Where pages fetch a patch: [`PATCH_PREFIX`] under the dev `base`.
+    patch_prefix: String,
 }
 
 impl HotUpdates {
-    pub(crate) fn new() -> HotUpdates {
+    pub(crate) fn new(url_base: &str) -> HotUpdates {
         HotUpdates {
+            patch_prefix: format!("{url_base}{PATCH_PREFIX}"),
             tx: broadcast::channel(64).0,
             patches: Mutex::new(VecDeque::new()),
             generation: std::sync::atomic::AtomicU64::new(0),
@@ -80,21 +90,10 @@ impl HotUpdates {
         let _ = self.tx.send(Arc::new(Frame { client: None, text }));
     }
 
-    /// One event line from the bundler, past its SCRIPT_EVENT prefix.
-    pub(crate) fn accept(&self, line: &str) {
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-            return;
-        };
-        let text = |k: &str| v.get(k).and_then(|s| s.as_str());
-        let (Some("patch"), Some(client), Some(filename), Some(seq), Some(code)) = (
-            text("kind"),
-            text("client"),
-            text("filename"),
-            v.get("seq").and_then(|n| n.as_u64()),
-            text("code"),
-        ) else {
-            return;
-        };
+    /// A patch for its page: kept for the page to fetch, announced on its
+    /// socket, and marking the written client output stale.
+    pub(crate) fn accept(&self, patch: &Patch) {
+        let filename = patch.filename.as_str();
         if filename.contains('/') {
             return;
         }
@@ -104,7 +103,7 @@ impl HotUpdates {
         // cross-origin (Vite's guard against GHSA-4v9v-hfq4-rm2v).
         let body = format!(
             "{}\n;__rolldown_runtime__.payloadDelivered({});\n; export {{}}",
-            code,
+            patch.code,
             serde_json::to_string(filename).unwrap_or_default()
         );
         {
@@ -119,16 +118,16 @@ impl HotUpdates {
         }
         let text = serde_json::json!({
             "type": "oj:hmr",
-            "url": format!("{PATCH_PREFIX}{filename}"),
-            "seq": seq,
-            "changedIds": v.get("changedIds").cloned().unwrap_or_default(),
+            "url": format!("{}{filename}", self.patch_prefix),
+            "seq": patch.seq,
+            "changedIds": patch.changed_ids,
         })
         .to_string();
         self.generation
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.stale.send_replace(true);
         let _ = self.tx.send(Arc::new(Frame {
-            client: Some(client.to_string()),
+            client: Some(patch.client.clone()),
             text,
         }));
     }
@@ -189,23 +188,21 @@ pub(crate) fn page_message(text: &str) -> Option<PageMessage> {
 mod tests {
     use super::*;
 
-    fn patch_line(client: &str, file: &str, seq: u64) -> String {
-        serde_json::json!({
-            "kind": "patch",
-            "client": client,
-            "filename": file,
-            "seq": seq,
-            "changedIds": ["src/a.tsx"],
-            "code": "__rolldown_runtime__.registerFactory(\"src/a.tsx\", () => {});",
-        })
-        .to_string()
+    fn patch(client: &str, file: &str, seq: u32) -> Patch {
+        Patch {
+            client: client.into(),
+            filename: file.into(),
+            seq,
+            changed_ids: vec!["src/a.tsx".into()],
+            code: "__rolldown_runtime__.registerFactory(\"src/a.tsx\", () => {});".into(),
+        }
     }
 
     #[tokio::test]
     async fn a_patch_goes_to_its_page_and_is_served_with_the_delivery_ack() {
-        let hot = HotUpdates::new();
+        let hot = HotUpdates::new("");
         let mut rx = hot.subscribe();
-        hot.accept(&patch_line("c1", "hmr_patch_0.js", 1));
+        hot.accept(&patch("c1", "hmr_patch_0.js", 1));
         let frame = rx.recv().await.unwrap();
         assert_eq!(frame.client.as_deref(), Some("c1"));
         let v: serde_json::Value = serde_json::from_str(&frame.text).unwrap();
@@ -216,6 +213,13 @@ mod tests {
 
         let resp = hot.serve("hmr_patch_0.js");
         assert_eq!(resp.status(), StatusCode::OK);
+
+        // Under a dev `base`, pages fetch the patch there.
+        let based = HotUpdates::new("/app");
+        let mut rx = based.subscribe();
+        based.accept(&patch("c1", "hmr_patch_1.js", 1));
+        let v: serde_json::Value = serde_json::from_str(&rx.recv().await.unwrap().text).unwrap();
+        assert_eq!(v["url"], "/app/@oj-start/hmr/hmr_patch_1.js");
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
@@ -227,10 +231,10 @@ mod tests {
     }
 
     #[test]
-    fn only_recent_patches_are_kept_and_odd_lines_are_dropped() {
-        let hot = HotUpdates::new();
-        for i in 0..(KEPT_PATCHES as u64 + 5) {
-            hot.accept(&patch_line("c1", &format!("hmr_patch_{i}.js"), i + 1));
+    fn only_recent_patches_are_kept_and_escaping_names_are_dropped() {
+        let hot = HotUpdates::new("");
+        for i in 0..(KEPT_PATCHES as u32 + 5) {
+            hot.accept(&patch("c1", &format!("hmr_patch_{i}.js"), i + 1));
         }
         assert_eq!(hot.serve("hmr_patch_0.js").status(), StatusCode::NOT_FOUND);
         assert_eq!(
@@ -238,14 +242,13 @@ mod tests {
                 .status(),
             StatusCode::OK
         );
-        hot.accept("not json");
-        hot.accept(&patch_line("c1", "../escape.js", 1));
+        hot.accept(&patch("c1", "../escape.js", 1));
         assert_eq!(hot.serve("../escape.js").status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
     async fn a_style_refresh_tells_every_page_what_to_relink_and_link() {
-        let hot = HotUpdates::new();
+        let hot = HotUpdates::new("");
         let mut rx = hot.subscribe();
         hot.refresh_styles(false, &["/@oj-start/fs/app/src/new.css".to_string()]);
         let frame = rx.recv().await.unwrap();

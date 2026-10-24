@@ -19,9 +19,7 @@ const app = path.join(here, "fixtures", "start-app");
 const oj = path.join(repo, "target", "debug", "oj");
 const PORT = Number(process.env.OJ_E2E_PORT || 3099);
 
-const installed =
-  fs.existsSync(path.join(app, "node_modules", "@tanstack", "react-start")) &&
-  fs.existsSync(path.join(app, "node_modules", "rolldown"));
+const installed = fs.existsSync(path.join(app, "node_modules", "@tanstack", "react-start"));
 if (!installed) {
   console.log("SKIP start define/mode: fixture deps not installed");
   process.exit(0);
@@ -76,6 +74,23 @@ const must = (cond, msg) => {
   if (!cond) throw new Error(msg);
 };
 
+// The env probe (src/lib/env-probe.js) as the client computes it: its
+// template literal in the client bundle, `import.meta.env` replaced by the
+// bundle's defines, evaluated. A bare `import.meta.env` left in it does not
+// evaluate (null), as it would not run in the page.
+function clientProbe(js) {
+  const at = js.indexOf("jsenv:");
+  if (at === -1) return null;
+  const start = js.lastIndexOf("`", at);
+  const end = js.indexOf("`", at);
+  if (start === -1 || end === -1) return js.slice(at).match(/^jsenv:[^"'`]*/)?.[0] ?? null;
+  try {
+    return new Function(`return ${js.slice(start, end + 1)}`)();
+  } catch {
+    return null;
+  }
+}
+
 try {
   await served([], async () => {
     const html = (await get("/")).body;
@@ -90,7 +105,10 @@ try {
       "default: client bundle did not apply the config define (hydration would throw)",
     );
     must(!/\b__FIXTURE_DEFINE__\b/.test(js), "default: client bundle still references the bare define identifier");
-    must(/"MODE":\s*"development"/.test(js), "default: client import.meta.env.MODE is not development");
+    must(
+      clientProbe(js)?.startsWith("jsenv:development:false:default-flavor:true"),
+      `default: client import.meta.env (MODE, SSR, .env.development, DEV) wrong: ${clientProbe(js)}`,
+    );
     must(js.includes("default-flavor"), "default: client did not get .env.development VITE_ var");
     must(!js.includes("staging-flavor"), "default: .env.staging leaked into the default mode");
     // envPrefix: a FIXTURE_ var reaches both sides, an unprefixed one neither.
@@ -121,8 +139,10 @@ try {
     );
     must(html.includes("fixture-define-marker"), "--mode staging: SSR lost the config define");
     const js = await clientBundle();
-    must(/"MODE":\s*"staging"/.test(js), "--mode staging: client import.meta.env.MODE is not staging");
-    must(/"DEV":\s*true/.test(js), "--mode staging: a non-production dev mode is still DEV");
+    must(
+      clientProbe(js)?.startsWith("jsenv:staging:false:staging-flavor:true"),
+      `--mode staging: client import.meta.env (MODE staging, DEV still true) wrong: ${clientProbe(js)}`,
+    );
     must(js.includes("staging-flavor"), "--mode staging: client did not get .env.staging VITE_ var");
     must(!js.includes("default-flavor"), "--mode staging: .env.development leaked into staging");
     must(js.includes("fixture-define-marker"), "--mode staging: client lost the config define");

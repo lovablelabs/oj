@@ -9,11 +9,12 @@ use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Context};
+use html_tags::{PageRef, Tag};
 use oj_server::plugins::PluginHost;
 use rolldown::{
     BundlerBuilder, BundlerOptions, InputItem, OutputFormat, RawMinifyOptions, SourceMapType,
 };
-use rolldown_plugin::__inner::SharedPluginable;
+use rolldown_plugin::__inner::{Pluginable, SharedPluginable};
 use rolldown_plugin::{
     HookLoadArgs, HookLoadOutput, HookLoadReturn, HookRenderChunkArgs, HookRenderChunkOutput,
     HookRenderChunkReturn, HookResolveIdArgs, HookResolveIdOutput, HookResolveIdReturn,
@@ -258,9 +259,22 @@ struct OjCssPlugin {
     /// None: a bare browser bundle (server and library builds).
     worker: Option<Arc<WorkerBundleOpts>>,
     /// Vite's resolved `build.cssMinify` (defaults to `build.minify`).
-    /// Source ids of `?worker` / `?worker&url` entries emitted as chunks, so the
-    /// document-only build helpers can skip chunks that only a worker loads.
-    worker_entries: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// `?worker` entries already bundled (Vite's bundleWorkerEntry cache), by
+    /// entry and the chain of workers above it: the emitted entry's file
+    /// reference, so every import of one worker shares one bundle.
+    worker_bundles: WorkerBundles,
+    /// The worker entries this bundle is nested under, outermost first.
+    worker_chain: Arc<Vec<String>>,
+    /// The normalized `base` a public-file import's URL is built on.
+    base: String,
+    /// Each HTML page input (its absolute path) to the module it loads as:
+    /// Vite's html proxy, importing the modulepreload polyfill and then the
+    /// page's module scripts in order.
+    pages: Arc<std::collections::HashMap<String, String>>,
+    /// Where split chunk stylesheets go and how they are named, so a chunk's
+    /// hash covers its stylesheet's name (vite:css-post's augmentChunkHash);
+    /// None for builds that emit no split CSS.
+    chunk_css_hashing: Option<(PathBuf, String)>,
 }
 
 /// The app build settings an inline worker bundle shares with its importer:
@@ -272,7 +286,18 @@ struct WorkerBundleOpts {
     is_production: bool,
     define: Vec<(String, String)>,
     minify: bool,
+    assets_dir: String,
+    sourcemap: Option<SourceMapType>,
 }
+
+/// In-flight and finished `?worker` bundles by (entry, worker chain). Keyed by
+/// the chain too, so two workers importing each other fail on the cycle instead
+/// of waiting on each other's bundle.
+type WorkerBundles = Arc<
+    Mutex<
+        std::collections::HashMap<(String, Arc<Vec<String>>), Arc<tokio::sync::OnceCell<String>>>,
+    >,
+>;
 
 /// What `@import`/`@use`/`url()` specifiers inside stylesheets resolve through,
 /// as Vite's CSS resolvers do: the environment's `resolve.alias`, the root and
@@ -281,6 +306,7 @@ fn css_resolve_of(
     root: &Path,
     config: &oj_config::OjConfig,
     env: &str,
+    production: bool,
 ) -> oj_css::CssResolveConfig {
     oj_css::CssResolveConfig {
         root: root.to_path_buf(),
@@ -288,6 +314,7 @@ fn css_resolve_of(
         alias: oj_config::resolve_alias(config, env),
         targets: oj_config::build_css_targets(config),
         minify: oj_config::build_css_minify(config, env == "ssr"),
+        production,
         modules: oj_server::css_modules_options(config),
         lightning: oj_server::css_lightning_options(config),
     }
@@ -487,6 +514,7 @@ fn advanced_chunks(adv: &serde_json::Value) -> Option<rolldown_common::CodeSplit
             include_dependencies_recursively: obj
                 .get("includeDependenciesRecursively")
                 .and_then(|v| v.as_bool()),
+            ..Default::default()
         },
     ))
 }
@@ -554,10 +582,29 @@ fn process_env_defines(node_env: &str) -> Vec<(String, String)> {
     pairs
 }
 
+/// Vite's output `comments`: a minified build keeps none (no annotation,
+/// JSDoc or legal comments), an unminified one keeps them all, and an ES
+/// library keeps its annotations so a consumer can still tree-shake it.
+fn vite_output_comments(minify: bool, es_lib: bool) -> rolldown_common::CommentsOptions {
+    rolldown_common::CommentsOptions {
+        legal: !minify,
+        annotation: !minify || es_lib,
+        jsdoc: !minify,
+    }
+}
+
+/// Vite builds every environment with rolldown's `experimental.viteMode`.
+fn vite_mode_experimental() -> rolldown_common::ExperimentalOptions {
+    rolldown_common::ExperimentalOptions {
+        vite_mode: Some(true),
+        ..Default::default()
+    }
+}
+
 /// Vite maps `build.minify: false` to rolldown's `'dce-only'`: no mangling or
 /// whitespace removal, but dead code is still dropped (rolldown's `false` would
 /// keep it).
-fn rolldown_minify(on: bool) -> RawMinifyOptions {
+pub(crate) fn rolldown_minify(on: bool) -> RawMinifyOptions {
     if on {
         RawMinifyOptions::Bool(true)
     } else {
@@ -671,7 +718,11 @@ fn empty_dir_keep_git(out_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn prepare_out_dir(root: &Path, out_dir: &Path, empty: Option<bool>) -> anyhow::Result<()> {
+pub(crate) fn prepare_out_dir(
+    root: &Path,
+    out_dir: &Path,
+    empty: Option<bool>,
+) -> anyhow::Result<()> {
     if out_dir_emptiable(root, out_dir, empty, true) {
         // Emptying an outDir that IS the project root deletes the sources the
         // build reads, so it can never be what anyone meant, even with an explicit
@@ -720,6 +771,283 @@ fn b64(bytes: &[u8]) -> String {
         });
     }
     out
+}
+
+/// The id prefix of a public-dir file a JS module imports by its URL.
+const PUBLIC_FILE_ID: &str = "\0oj-public:/";
+
+/// `rest` (a root-absolute URL minus its `/`) as a file in the public dir.
+fn public_file(public_dir: &Path, rest: &str) -> Option<PathBuf> {
+    if public_dir.as_os_str().is_empty() {
+        return None;
+    }
+    let file = public_dir.join(rest);
+    file.is_file().then_some(file)
+}
+
+/// Vite's publicFileToBuiltUrl: a public file's module exports its URL under
+/// the base. A relative base has no fixed prefix, so the client's URL resolves
+/// against the importing chunk (rewritten when it renders); the server's URL
+/// is root-absolute, as Vite resolves a
+/// relative base to `/` for an SSR build. `?raw` is the file's text and
+/// `?inline` its data URL, read from the public dir (vite:asset's load).
+fn public_file_module(
+    public_dir: &Path,
+    id: &str,
+    base: &str,
+    client: bool,
+) -> anyhow::Result<String> {
+    let (rest, query) = id.split_once('?').unwrap_or((id, ""));
+    let file = || {
+        public_file(public_dir, rest).ok_or_else(|| anyhow::anyhow!("public file /{rest} is gone"))
+    };
+    let read = |file: &Path| {
+        std::fs::read(file).map_err(|e| anyhow::anyhow!("cannot read {}: {e}", file.display()))
+    };
+    let kind = split_asset_query(&format!("x?{query}")).map(|(_, q)| q);
+    match kind.as_deref() {
+        Some("raw") => {
+            let text = String::from_utf8_lossy(&read(&file()?)?).into_owned();
+            return Ok(export_default_url(&text));
+        }
+        Some("inline") => {
+            let bytes = read(&file()?)?;
+            let ext = Path::new(rest)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
+            return Ok(export_default_url(&if ext == "svg" {
+                svg_data_url(&String::from_utf8_lossy(&bytes))
+            } else {
+                format!("data:{};base64,{}", asset_mime(ext), b64(&bytes))
+            }));
+        }
+        _ => {}
+    }
+    if !is_relative_base(base) {
+        return Ok(export_default_url(&encode_uri_path(&with_base(rest, base))));
+    }
+    if !client {
+        return Ok(export_default_url(&encode_uri_path(&with_base(rest, "/"))));
+    }
+    // The chunk's own path is known only when it renders.
+    Ok(export_default_url(&public_asset_placeholder(rest)))
+}
+
+/// Vite's `__VITE_PUBLIC_ASSET__` marker: a public file's URL in a client
+/// chunk under a relative base, rewritten by `render_public_asset_urls`.
+const PUBLIC_ASSET_MARK: &str = "__OJ_PUBLIC_ASSET__";
+
+fn public_asset_placeholder(rest: &str) -> String {
+    let hex: String = rest.bytes().map(|b| format!("{b:02x}")).collect();
+    format!("{PUBLIC_ASSET_MARK}{hex}__")
+}
+
+/// Vite's renderAssetUrlInJS for public files under a relative base: each
+/// quoted marker becomes its format's relative-URL expression
+/// (`new URL('../vite.svg', import.meta.url).href` for es), resolved from the
+/// chunk's own directory. The file is the public-dir copy, never emitted.
+fn render_public_asset_urls(
+    code: &str,
+    chunk_file: &str,
+    format: OutputFormat,
+    sourcemap: bool,
+) -> Option<(String, Option<rolldown_sourcemap::SourceMap>)> {
+    if !code.contains(PUBLIC_ASSET_MARK) {
+        return None;
+    }
+    let mut s = string_wizard::MagicString::new(code);
+    let mut from = 0;
+    while let Some(at) = code[from..].find(PUBLIC_ASSET_MARK).map(|i| from + i) {
+        let hex_start = at + PUBLIC_ASSET_MARK.len();
+        let Some(len) = code[hex_start..].find("__") else {
+            break;
+        };
+        let end = hex_start + len + 2;
+        from = end;
+        let quoted = at > 0
+            && end < code.len()
+            && matches!(code.as_bytes()[at - 1], b'"' | b'\'' | b'`')
+            && code.as_bytes()[end] == code.as_bytes()[at - 1];
+        let bytes: Option<Vec<u8>> = (0..len)
+            .step_by(2)
+            .map(|i| u8::from_str_radix(code.get(hex_start + i..hex_start + i + 2)?, 16).ok())
+            .collect();
+        let (Some(rest), true) = (bytes.and_then(|b| String::from_utf8(b).ok()), quoted) else {
+            continue;
+        };
+        let expr = relative_url_mechanism(format, &relative_to_chunk(chunk_file, &rest));
+        if s.update((at - 1) as u32, (end + 1) as u32, expr).is_err() {
+            return None;
+        }
+    }
+    let map = sourcemap.then(|| {
+        s.source_map(string_wizard::SourceMapOptions {
+            hires: string_wizard::Hires::True,
+            ..Default::default()
+        })
+    });
+    Some((s.to_string(), map))
+}
+
+/// Vite 8's JSON transform (rolldown's `builtin:vite-json`, Vite's defaults
+/// `namedExports: true`, `stringify: 'auto'`, minified in the build): an
+/// object becomes named exports and a default object of them; a large
+/// non-object becomes `JSON.parse(...)`.
+fn vite_json_module(id: &str, code: &str) -> rolldown_plugin::HookTransformReturn {
+    let special = rolldown_plugin_utils::is_special_query(id);
+    let json_ext = id.ends_with(".json")
+        || id.rfind(".json?").is_some_and(|i| {
+            let post = &id[i + 6..];
+            post != "commonjs-proxy" && post != "commonjs-external"
+        });
+    if !json_ext || special {
+        return Ok(None);
+    }
+    let code = rolldown_plugin_utils::strip_bom(code);
+    let named_exports = code.trim_start().starts_with('{');
+    let stringify = code.len() > rolldown_plugin_utils::constants::THRESHOLD_SIZE;
+    let value: serde_json::Value = serde_json::from_str(code)?;
+    let js = if !named_exports && stringify {
+        let minified = serde_json::to_string(&value)?;
+        format!(
+            "export default /*#__PURE__*/ JSON.parse({})",
+            serde_json::Value::String(minified)
+        )
+    } else {
+        rolldown_plugin_utils::data_to_esm(&value, true)
+    };
+    Ok(Some(rolldown_plugin::HookTransformOutput {
+        code: Some(js),
+        map: rolldown_sourcemap::SourceMap::default().into(),
+        module_type: Some(rolldown_common::ModuleType::Js),
+        ..Default::default()
+    }))
+}
+
+/// Vite's unescapeHashPlaceholders: rolldown's `!~{id}~` hash placeholders
+/// back from their `encodeURI` form, so rolldown still fills them in.
+fn unescape_hash_placeholders(uri: &str) -> String {
+    let mut out = String::with_capacity(uri.len());
+    let mut rest = uri;
+    while let Some(start) = rest.find("!~%7B") {
+        let after = &rest[start + 5..];
+        let id_len = after
+            .bytes()
+            .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'$')
+            .count();
+        if (1..=17).contains(&id_len) && after[id_len..].starts_with("%7D~") {
+            out.push_str(&rest[..start]);
+            out.push_str("!~{");
+            out.push_str(&after[..id_len]);
+            out.push_str("}~");
+            rest = &after[id_len + 4..];
+        } else {
+            out.push_str(&rest[..start + 5]);
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Vite's joinUrlSegments.
+fn join_url_segments(a: &str, b: &str) -> String {
+    if a.is_empty() || b.is_empty() {
+        return format!("{a}{b}");
+    }
+    let a = a.strip_suffix('/').unwrap_or(a);
+    if b.starts_with('/') {
+        format!("{a}{b}")
+    } else {
+        format!("{a}/{b}")
+    }
+}
+
+/// `target` (an outDir-relative path) relative to the directory of `chunk`,
+/// as `path.posix.relative(path.dirname(chunk), target)`.
+fn relative_to_chunk(chunk: &str, target: &str) -> String {
+    let dirs: Vec<&str> = chunk.split('/').collect();
+    let dirs = &dirs[..dirs.len() - 1];
+    let parts: Vec<&str> = target.split('/').collect();
+    let common = dirs
+        .iter()
+        .zip(&parts[..parts.len() - 1])
+        .take_while(|(a, b)| a == b)
+        .count();
+    let mut out = "../".repeat(dirs.len() - common);
+    out.push_str(&parts[common..].join("/"));
+    out
+}
+
+/// Vite's relativeUrlMechanisms (build.ts), per output format.
+fn relative_url_mechanism(format: OutputFormat, relative: &str) -> String {
+    let escaped = escape_id(&partial_encode_uri_path(relative));
+    let from_document = |umd: bool| {
+        format!(
+            "new URL('{escaped}', {}document.currentScript && document.currentScript.tagName.toUpperCase() === 'SCRIPT' && document.currentScript.src || document.baseURI).href",
+            if umd { "typeof document === 'undefined' ? location.href : " } else { "" }
+        )
+    };
+    let from_dirname = format!(
+        "require('u' + 'rl').pathToFileURL(__dirname + '/{}').href",
+        escape_id(relative)
+    );
+    match format {
+        OutputFormat::Cjs => format!(
+            "(typeof document === 'undefined' ? {from_dirname} : {})",
+            from_document(false)
+        ),
+        OutputFormat::Umd => format!(
+            "(typeof document === 'undefined' && typeof location === 'undefined' ? {from_dirname} : {})",
+            from_document(true)
+        ),
+        OutputFormat::Iife => from_document(false),
+        _ => format!("new URL('{escaped}', import.meta.url).href"),
+    }
+}
+
+/// Vite's escapeId: the id safe inside a single-quoted JS string.
+fn escape_id(id: &str) -> String {
+    let mut out = String::with_capacity(id.len());
+    for ch in id.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\\n"),
+            '\r' => out.push_str("\\\r"),
+            '\'' | '\u{2028}' | '\u{2029}' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// Vite's encodeURIPath: `encodeURI` on the path, the query kept as is.
+fn encode_uri_path(uri: &str) -> String {
+    if uri.starts_with("data:") {
+        return uri.to_string();
+    }
+    let cut = uri.find(['?', '#']).unwrap_or(uri.len());
+    let (path, postfix) = uri.split_at(cut);
+    let mut out = String::with_capacity(uri.len());
+    for b in path.bytes() {
+        if b.is_ascii_alphanumeric() || b";,/?:@&=+$-_.!~*'()#".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out + postfix
+}
+
+/// Vite's partialEncodeURIPath: only `%` becomes `%25`.
+fn partial_encode_uri_path(uri: &str) -> String {
+    let cut = uri.find(['?', '#']).unwrap_or(uri.len());
+    let (path, postfix) = uri.split_at(cut);
+    path.replace('%', "%25") + postfix
 }
 
 fn export_default_url(url: &str) -> String {
@@ -875,8 +1203,8 @@ async fn compile_stylesheet(
             .get_or_init(|| async { host.has_transform().await })
             .await;
         if on {
-            if let Ok((out, _, _, _)) = host.transform(&source, id, "{}").await {
-                source = out;
+            if let Ok(t) = host.transform(&source, id, "{}").await {
+                source = t.code;
             }
         }
     }
@@ -913,11 +1241,11 @@ async fn compile_stylesheet(
     // Plain `@import`s are inlined (postcss-import parity) so the concatenated
     // chunk stylesheet does not carry imports that 404 from `assets/`. It runs
     // before PostCSS, as postcss-import is the first plugin of Vite's chain, so
-    // imported rules go through the user's plugins too. A Tailwind stylesheet
-    // resolves its own imports in the tailwind engine (as the Tailwind Vite
-    // plugin does).
+    // imported rules go through the user's plugins too, Tailwind included.
+    // Without a PostCSS config a Tailwind stylesheet resolves its own imports
+    // in the tailwind engine (as the Tailwind Vite plugin does).
     let tailwind = oj_server::sidecar::is_tailwind_css(&source);
-    if !tailwind {
+    if !tailwind || has_postcss {
         source =
             oj_css::inline_imports_with(&source, std::path::Path::new(path), &resolve.as_ref())
                 .map_err(|e| anyhow::anyhow!(e))?;
@@ -1007,36 +1335,51 @@ fn worker_id_parts(id: &str) -> Option<(&str, &'static str, bool, bool)> {
     ))
 }
 
+/// A worker bundle's options (Vite's `bundleWorkerEntry`): the app's resolve
+/// (alias, conditions), transform (target, JSX), define and minify settings.
+/// `opts` is None for a bare browser bundle (server and library builds).
+fn worker_bundler_options(
+    root: &Path,
+    file: &str,
+    opts: Option<&Arc<WorkerBundleOpts>>,
+) -> BundlerOptions {
+    BundlerOptions {
+        input: Some(vec![InputItem {
+            name: Some(
+                Path::new(file)
+                    .file_stem()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("worker")
+                    .to_string(),
+            ),
+            import: file.to_string(),
+        }]),
+        cwd: Some(root.to_path_buf()),
+        format: Some(OutputFormat::Esm),
+        platform: Some(rolldown::Platform::Browser),
+        resolve: opts.and_then(|o| rolldown_resolve(root, &o.config, "client")),
+        transform: opts.and_then(|o| transform_options(&o.config, o.is_production)),
+        define: opts.map(|o| o.define.iter().cloned().collect()),
+        minify: Some(rolldown_minify(opts.is_none_or(|o| o.minify))),
+        ..Default::default()
+    }
+}
+
 /// Bundle a worker entry to a single ESM string (dynamic imports inlined) for
 /// `?worker&inline`, so the worker ships inside the importing chunk as in Vite.
-/// The worker is bundled the way Vite's `bundleWorkerEntry` does it: under the
-/// app's resolve (alias, conditions), transform (target, JSX), define and minify
-/// settings, with oj's own asset/CSS/worker plugin so `?url`, stylesheets and
-/// nested workers inside the worker behave as in the main bundle. `nested` is
-/// the plugin for that inner bundle, built by the caller from its own fields.
+/// `nested` is the plugin for that inner bundle, built by the caller.
 async fn bundle_worker_inline(
     root: &Path,
     file: &str,
     opts: Option<&Arc<WorkerBundleOpts>>,
     nested: OjCssPlugin,
 ) -> anyhow::Result<String> {
-    let plugins: Vec<SharedPluginable> = vec![Arc::new(nested)];
+    let plugins: Vec<SharedPluginable> = vec![Pluginable::new_shared(nested)];
     let mut bundler = BundlerBuilder::default()
         .with_plugins(plugins)
         .with_options(BundlerOptions {
-            input: Some(vec![InputItem {
-                name: Some("worker".to_string()),
-                import: file.to_string(),
-            }]),
-            cwd: Some(root.to_path_buf()),
-            format: Some(OutputFormat::Esm),
-            platform: Some(rolldown::Platform::Browser),
             code_splitting: Some(rolldown_common::CodeSplittingMode::Bool(false)),
-            resolve: opts.and_then(|o| rolldown_resolve(root, &o.config, "client")),
-            transform: opts.and_then(|o| transform_options(&o.config, o.is_production)),
-            define: opts.map(|o| o.define.iter().cloned().collect()),
-            minify: Some(rolldown_minify(opts.is_none_or(|o| o.minify))),
-            ..Default::default()
+            ..worker_bundler_options(root, file, opts)
         })
         .build()
         .map_err(rolldown_failure!("inline worker init failed"))?;
@@ -1053,6 +1396,77 @@ async fn bundle_worker_inline(
     Ok(code)
 }
 
+/// A `?worker` / `?worker&url` / `new Worker(new URL(..))` entry's own bundle,
+/// as Vite's `bundleWorkerEntry` builds it: apart from the importing bundle's
+/// module graph, so nothing document-only (the preload helper, CSS injection)
+/// reaches the worker, with its chunks split and named under `assetsDir`.
+/// Every output file is emitted into the importing bundle under its name;
+/// returns the entry's file reference.
+async fn bundle_worker_entry(
+    ctx: &SharedLoadPluginContext,
+    root: &Path,
+    file: &str,
+    opts: Option<&Arc<WorkerBundleOpts>>,
+    nested: OjCssPlugin,
+) -> anyhow::Result<String> {
+    let names = |tail: &str| {
+        oj_config::assets_dir_path(opts.map_or("assets", |o| o.assets_dir.as_str()), tail)
+    };
+    let plugins: Vec<SharedPluginable> = vec![Pluginable::new_shared(nested)];
+    let mut bundler = BundlerBuilder::default()
+        .with_plugins(plugins)
+        .with_options(BundlerOptions {
+            entry_filenames: Some(names("[name]-[hash].js").into()),
+            chunk_filenames: Some(names("[name]-[hash].js").into()),
+            asset_filenames: Some(names("[name]-[hash][extname]").into()),
+            sourcemap: opts.and_then(|o| o.sourcemap),
+            preserve_entry_signatures: Some(rolldown_common::PreserveEntrySignatures::False),
+            ..worker_bundler_options(root, file, opts)
+        })
+        .build()
+        .map_err(rolldown_failure!("worker init failed"))?;
+    let out = bundler
+        .generate()
+        .await
+        .map_err(rolldown_failure!("worker build failed for {file}"))?;
+    let emit = |file_name: String, source: rolldown_common::StrOrBytes| {
+        ctx.emit_file(
+            rolldown_common::EmittedAsset {
+                file_name: Some(file_name.into()),
+                source,
+                ..Default::default()
+            },
+            None,
+            None,
+        )
+        .map_err(|e| anyhow::anyhow!(e))
+    };
+    let mut entry = None;
+    for asset in out.assets {
+        match asset {
+            rolldown_common::Output::Chunk(chunk) => {
+                if let Some(map) = &chunk.map {
+                    emit(
+                        format!("{}.map", chunk.filename),
+                        rolldown_common::StrOrBytes::Str(map.to_json_string()),
+                    )?;
+                }
+                let reference = emit(
+                    chunk.filename.to_string(),
+                    rolldown_common::StrOrBytes::Str(chunk.code.clone()),
+                )?;
+                if chunk.is_entry {
+                    entry = Some(reference.to_string());
+                }
+            }
+            rolldown_common::Output::Asset(a) => {
+                emit(a.filename.to_string(), a.source.clone())?;
+            }
+        }
+    }
+    entry.ok_or_else(|| anyhow::anyhow!("the worker bundle of {file} has no entry chunk"))
+}
+
 /// The `import.meta.glob` / variable dynamic import / `new URL(.., import.meta.url)`
 /// expansions oj applies in the transform hook. `None` when the module comes out
 /// byte-identical: the dynamic-import and new-URL expanders return a copy of their
@@ -1060,7 +1474,12 @@ async fn bundle_worker_inline(
 /// and handing that copy to rolldown as `Some(code)` makes it push
 /// `SourcemapChainElement::Omitted`, which empties the module's mappings when
 /// `build.sourcemap` is on.
-fn expand_import_meta(id: &str, code: &str) -> Option<String> {
+fn expand_import_meta(
+    id: &str,
+    code: &str,
+    root: &Path,
+    alias: &[(String, String)],
+) -> Option<String> {
     let has_glob = code.contains("import.meta.glob");
     // Vite's dynamicImportVarsOptions.exclude defaults to node_modules.
     let has_dynamic = code.contains("import(") && !id.contains("/node_modules/");
@@ -1074,7 +1493,8 @@ fn expand_import_meta(id: &str, code: &str) -> Option<String> {
     // be unreachable and could mask a future edit that makes it reachable).
     let mut expanded = code.to_string();
     if has_glob {
-        expanded = oj_compiler::glob::expand_source(&expanded, path);
+        let alias = |spec: &str| oj_compiler::glob::string_alias(alias, spec);
+        expanded = oj_compiler::glob::expand_source_aliased(&expanded, path, Some(root), &alias);
     }
     if has_dynamic {
         expanded = oj_compiler::glob::expand_dynamic_import_vars_source(&expanded, path);
@@ -1098,6 +1518,95 @@ impl Plugin for OjCssPlugin {
         rolldown_plugin::HookUsage::ResolveId
             | rolldown_plugin::HookUsage::Load
             | rolldown_plugin::HookUsage::Transform
+            | rolldown_plugin::HookUsage::RenderChunk
+            | rolldown_plugin::HookUsage::ResolveFileUrl
+            | rolldown_plugin::HookUsage::AugmentChunkHash
+    }
+
+    /// vite:css-post's augmentChunkHash: a chunk's hash also covers the name of
+    /// the stylesheet it imports, so the chunk is renamed when only its CSS
+    /// changes.
+    fn augment_chunk_hash(
+        &self,
+        _ctx: &PluginContext,
+        chunk: Arc<rolldown_common::RollupRenderedChunk>,
+    ) -> impl std::future::Future<Output = rolldown_plugin::HookAugmentChunkHashReturn> + Send {
+        let name = self
+            .chunk_css_hashing
+            .as_ref()
+            .and_then(|(out_dir, asset_names)| {
+                let css_map: std::collections::HashMap<String, String> =
+                    self.collected.lock().unwrap().iter().cloned().collect();
+                let module_ids: Vec<String> =
+                    chunk.modules.keys.iter().map(|m| m.to_string()).collect();
+                let resolve = self.resolve.as_ref();
+                let opts = CssAssetOpts {
+                    inline_limit: self.inline_limit,
+                    asset_names: Some(asset_names.as_str()),
+                    resolve,
+                };
+                chunk_stylesheet(
+                    &chunk.name,
+                    &module_ids,
+                    &css_map,
+                    &self.root,
+                    out_dir,
+                    &self.base,
+                    opts,
+                    &mut Vec::new(),
+                    &mut std::collections::HashMap::new(),
+                )
+                .ok()
+                .flatten()
+                .map(|sheet| sheet.name)
+            });
+        async move { Ok(name) }
+    }
+
+    /// vite:asset's resolveFileUrl: an emitted asset's URL in JS is
+    /// `base + file` (a string), or under a relative base the chunk-relative
+    /// runtime expression (toOutputFilePathInJS).
+    fn resolve_file_url(
+        &self,
+        _ctx: &PluginContext,
+        args: &rolldown_plugin::HookResolveFileUrlArgs<'_>,
+    ) -> impl std::future::Future<Output = rolldown_plugin::HookResolveFileUrlReturn> + Send {
+        let relative = self.client && (self.base.is_empty() || self.base == "./");
+        let code = if relative {
+            relative_url_mechanism(
+                args.format,
+                &relative_to_chunk(args.chunk_id, args.file_name),
+            )
+        } else {
+            serde_json::Value::String(unescape_hash_placeholders(&encode_uri_path(
+                &join_url_segments(&self.base, args.file_name),
+            )))
+            .to_string()
+        };
+        async move { Ok(Some(code)) }
+    }
+
+    /// vite:asset's renderChunk: public-file markers become URLs relative to
+    /// the chunk.
+    fn render_chunk(
+        &self,
+        _ctx: &PluginContext,
+        args: &HookRenderChunkArgs<'_>,
+    ) -> impl std::future::Future<Output = HookRenderChunkReturn> + Send {
+        let out = render_public_asset_urls(
+            &args.code,
+            &args.chunk.filename,
+            args.options.format,
+            args.options.is_sourcemap_enabled(),
+        )
+        .map(|(code, map)| HookRenderChunkOutput {
+            code,
+            map: match map {
+                Some(map) => map.into(),
+                None => HookTransformOutputMap::Omitted,
+            },
+        });
+        async move { Ok(out) }
     }
 
     fn resolve_id(
@@ -1105,6 +1614,7 @@ impl Plugin for OjCssPlugin {
         ctx: &PluginContext,
         args: &HookResolveIdArgs<'_>,
     ) -> impl std::future::Future<Output = HookResolveIdReturn> + Send {
+        let is_polyfill = args.specifier == MODULEPRELOAD_POLYFILL_SPEC;
         let is_routes = args.specifier == "virtual:oj-routes";
         let routes_id = self
             .root
@@ -1113,6 +1623,19 @@ impl Plugin for OjCssPlugin {
             .into_owned();
         let asset_query = split_asset_query(args.specifier);
         let importer = args.importer.map(str::to_string);
+        // Vite's resolve plugin reads a root-absolute id (`/src/x`) as a file
+        // under the root first; one not under it can be a public file. The
+        // query rides along (`/vite.svg?url`, `/src/x.svg?raw`).
+        let (spec_path, spec_query) = match args.specifier.split_once('?') {
+            Some((path, query)) => (path, Some(query.to_string())),
+            None => (args.specifier, None),
+        };
+        let root_absolute = spec_path
+            .strip_prefix('/')
+            .filter(|rest| !rest.starts_with('/') && !Path::new(spec_path).starts_with(&self.root))
+            .map(str::to_string);
+        let root = self.root.clone();
+        let public_dir = self.resolve.public_dir.clone();
         let html_proxy = args.specifier.contains("?html-proxy&index=").then(|| {
             let spec = args.specifier.strip_prefix("./").unwrap_or(args.specifier);
             if Path::new(spec).is_absolute() {
@@ -1123,6 +1646,11 @@ impl Plugin for OjCssPlugin {
         });
         let ctx = ctx.clone();
         async move {
+            if is_polyfill {
+                return Ok(Some(HookResolveIdOutput::from_id(
+                    MODULEPRELOAD_POLYFILL_ID,
+                )));
+            }
             if is_routes {
                 return Ok(Some(HookResolveIdOutput::from_id(routes_id)));
             }
@@ -1132,6 +1660,37 @@ impl Plugin for OjCssPlugin {
             if let Some((base, query)) = asset_query {
                 if let Ok(Ok(resolved)) = ctx.resolve(&base, importer.as_deref(), None).await {
                     let id = format!("{}?{query}", resolved.id.as_str());
+                    return Ok(Some(HookResolveIdOutput::from_id(id)));
+                }
+            }
+            if let Some(rest) = root_absolute {
+                let with_query = |id: &str| match &spec_query {
+                    Some(q) => format!("{id}?{q}"),
+                    None => id.to_string(),
+                };
+                let in_root = root.join(&rest).to_string_lossy().into_owned();
+                if let Ok(Ok(resolved)) = ctx.resolve(&in_root, importer.as_deref(), None).await {
+                    return Ok(Some(HookResolveIdOutput::from_id(with_query(
+                        resolved.id.as_str(),
+                    ))));
+                }
+                // vite:asset's checkPublicFile: the file is served from the
+                // public dir at its own URL, never bundled or hashed. Only an
+                // asset type or a `?url` import is one (a public `/data.json`
+                // stays unresolved); a worker query is not an asset import.
+                let params: Vec<&str> = spec_query
+                    .as_deref()
+                    .map_or(vec![], |q| q.split('&').collect());
+                let worker = params
+                    .iter()
+                    .any(|p| *p == "worker" || *p == "sharedworker");
+                let asset = params.contains(&"url")
+                    || Path::new(&rest)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .is_some_and(oj_compiler::assets::is_asset_ext);
+                if asset && !worker && public_file(&public_dir, &rest).is_some() {
+                    let id = with_query(&format!("{PUBLIC_FILE_ID}{rest}"));
                     return Ok(Some(HookResolveIdOutput::from_id(id)));
                 }
             }
@@ -1148,11 +1707,17 @@ impl Plugin for OjCssPlugin {
         // the lifetime of `args`, so the source is probed in place.
         let id: &str = args.id;
         let code: &str = args.code;
+        let json = *args.module_type == rolldown_common::ModuleType::Json;
         async move {
+            if json {
+                return vite_json_module(id, code);
+            }
             Ok(
-                expand_import_meta(id, code).map(|code| rolldown_plugin::HookTransformOutput {
-                    code: Some(code),
-                    ..Default::default()
+                expand_import_meta(id, code, &self.root, &self.resolve.alias).map(|code| {
+                    rolldown_plugin::HookTransformOutput {
+                        code: Some(code),
+                        ..Default::default()
+                    }
                 }),
             )
         }
@@ -1169,7 +1734,8 @@ impl Plugin for OjCssPlugin {
         let routes_id = root.join("oj-routes.tsx").to_string_lossy().into_owned();
         let client = self.client;
         let inline_limit = self.inline_limit;
-        let worker_entries = Arc::clone(&self.worker_entries);
+        let worker_bundles = Arc::clone(&self.worker_bundles);
+        let worker_chain = Arc::clone(&self.worker_chain);
         let host = self.host.clone();
         let css_transform_enabled = Arc::clone(&self.css_transform_enabled);
         let self_has_postcss = self.has_postcss;
@@ -1177,7 +1743,33 @@ impl Plugin for OjCssPlugin {
         let css_resolve = self.resolve.clone();
         let html_inline = Arc::clone(&self.html_inline);
         let worker = self.worker.clone();
-        async move {
+        let base = self.base.clone();
+        let page = self.pages.get(&id).cloned();
+        let load = async move {
+            let js = |code: String| {
+                Ok(Some(rolldown_plugin::HookLoadOutput {
+                    code: arcstr::ArcStr::from(code),
+                    module_type: Some(rolldown_common::ModuleType::Js),
+                    ..Default::default()
+                }))
+            };
+            if let Some(proxy) = page {
+                return js(proxy);
+            }
+            if id == MODULEPRELOAD_POLYFILL_ID {
+                return js(vite_preload::MODULEPRELOAD_POLYFILL_JS.to_string());
+            }
+            if let Some(rest) = id.strip_prefix(PUBLIC_FILE_ID) {
+                return public_file_module(&css_resolve.public_dir, rest, &base, client).map(
+                    |code| {
+                        Some(rolldown_plugin::HookLoadOutput {
+                            code: arcstr::ArcStr::from(code),
+                            module_type: Some(rolldown_common::ModuleType::Js),
+                            ..Default::default()
+                        })
+                    },
+                );
+            }
             if id.contains("?html-proxy&index=") {
                 if let Some(body) = html_inline.lock().unwrap().get(&id).cloned() {
                     return Ok(Some(rolldown_plugin::HookLoadOutput {
@@ -1257,7 +1849,7 @@ impl Plugin for OjCssPlugin {
                 if let Some(host) = &host {
                     let svg = std::fs::read_to_string(&id)
                         .map_err(|e| anyhow::anyhow!("cannot read {id}: {e}"))?;
-                    if let Ok((out, _, _, _)) = host.transform(&svg, &id, "{}").await {
+                    if let Ok(out) = host.transform(&svg, &id, "{}").await.map(|t| t.code) {
                         if out != svg && !out.trim_start().starts_with('<') {
                             return Ok(Some(rolldown_plugin::HookLoadOutput {
                                 code: arcstr::ArcStr::from(out),
@@ -1375,24 +1967,50 @@ impl Plugin for OjCssPlugin {
                 }));
             }
             if let Some((file, ctor, inline, url)) = worker_id_parts(&id) {
+                if worker_chain.iter().any(|w| w == file) {
+                    let names: Vec<String> = worker_chain
+                        .iter()
+                        .map(String::as_str)
+                        .chain([file])
+                        .map(|w| {
+                            Path::new(w).strip_prefix(&root).map_or_else(
+                                |_| w.to_string(),
+                                |r| r.to_string_lossy().replace('\\', "/"),
+                            )
+                        })
+                        .collect();
+                    bail!(
+                        "Circular worker imports detected. Vite does not support it. Import chain: {}",
+                        names.join(" -> ")
+                    );
+                }
+                // The worker's own bundle runs oj's plugin too, so `?url`,
+                // stylesheets and nested workers inside it behave as here.
+                let mut chain = (*worker_chain).clone();
+                chain.push(file.to_string());
+                let chain = Arc::new(chain);
+                let nested = OjCssPlugin {
+                    collected: Arc::new(Mutex::new(Vec::new())),
+                    root: root.clone(),
+                    has_postcss: self_has_postcss,
+                    client: true,
+                    inline_limit,
+                    css_code_split: false,
+                    host: host.clone(),
+                    css_transform_enabled: Arc::clone(&css_transform_enabled),
+                    css: css_cfg.clone(),
+                    html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
+                    worker: worker.clone(),
+                    resolve: css_resolve.clone(),
+                    worker_bundles: Arc::clone(&worker_bundles),
+                    worker_chain: Arc::clone(&chain),
+                    base: base.clone(),
+                    pages: Default::default(),
+                    chunk_css_hashing: None,
+                };
                 if inline {
                     // `?worker&inline`: the worker's bundled code travels inside
                     // this chunk and starts from a Blob URL (data: URL fallback).
-                    let nested = OjCssPlugin {
-                        collected: Arc::new(Mutex::new(Vec::new())),
-                        root: root.clone(),
-                        has_postcss: self_has_postcss,
-                        client: true,
-                        inline_limit,
-                        css_code_split: false,
-                        host: host.clone(),
-                        css_transform_enabled: Arc::clone(&css_transform_enabled),
-                        css: css_cfg.clone(),
-                        html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
-                        worker: worker.clone(),
-                        resolve: css_resolve.clone(),
-                        worker_entries: Arc::clone(&worker_entries),
-                    };
                     let code = bundle_worker_inline(&root, file, worker.as_ref(), nested).await?;
                     let literal = serde_json::Value::String(code).to_string();
                     return Ok(Some(rolldown_plugin::HookLoadOutput {
@@ -1403,22 +2021,21 @@ impl Plugin for OjCssPlugin {
                         ..Default::default()
                     }));
                 }
-                let stem = std::path::Path::new(file)
-                    .file_stem()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("worker")
-                    .to_string();
-                worker_entries.lock().unwrap().insert(file.to_string());
-                let reference = ctx
-                    .emit_chunk(rolldown_common::EmittedChunk {
-                        id: file.to_string(),
-                        name: Some(stem.into()),
-                        preserve_entry_signatures: Some(
-                            rolldown_common::PreserveEntrySignatures::False,
-                        ),
-                        ..Default::default()
+                // The chain above this bundle is part of the key: it names the
+                // bundle the worker's files are emitted into.
+                let cell = Arc::clone(
+                    worker_bundles
+                        .lock()
+                        .unwrap()
+                        .entry((file.to_string(), Arc::clone(&worker_chain)))
+                        .or_default(),
+                );
+                let reference = cell
+                    .get_or_try_init(|| {
+                        bundle_worker_entry(&ctx, &root, file, worker.as_ref(), nested)
                     })
-                    .map_err(|e| anyhow::anyhow!(e))?;
+                    .await?
+                    .clone();
                 let code = if url {
                     // `?worker&url` (also what `new Worker(new URL(...))` becomes):
                     // the chunk's URL as a string.
@@ -1495,6 +2112,11 @@ impl Plugin for OjCssPlugin {
                 side_effects,
                 ..Default::default()
             }))
+        };
+        let (plugin, failed) = (self.name(), args.id.to_string());
+        async move {
+            load.await
+                .map_err(|e| oj_server::load_error::load_failed(plugin, &failed, e))
         }
     }
 }
@@ -1648,7 +2270,7 @@ fn server_fn_prod_stub(exports: &[String], url: &str) -> String {
     out
 }
 
-fn copy_public_dir(src: &Path, dest: &Path) -> anyhow::Result<()> {
+pub(crate) fn copy_public_dir(src: &Path, dest: &Path) -> anyhow::Result<()> {
     if !src.is_dir() {
         return Ok(());
     }
@@ -1673,10 +2295,10 @@ fn copy_public_dir(src: &Path, dest: &Path) -> anyhow::Result<()> {
 // OjUserPlugin (which fills it inside hooks) and build() (which reads the
 // collected HTML pages afterward to render them).
 #[derive(Debug)]
-struct EmitState {
+pub(crate) struct EmitState {
     root: PathBuf,
     // oj chunk ref id -> rolldown ref id, resolved to the hashed name later.
-    chunk_refs: std::sync::Mutex<std::collections::HashMap<String, String>>,
+    pub(crate) chunk_refs: std::sync::Mutex<std::collections::HashMap<String, String>>,
     // oj ref id -> an already-resolved output name (emitted `.html` pages, whose
     // output path is known at emit time rather than via rolldown).
     direct_names: std::sync::Mutex<std::collections::HashMap<String, String>>,
@@ -1685,7 +2307,7 @@ struct EmitState {
 }
 
 impl EmitState {
-    fn new(root: PathBuf) -> Self {
+    pub(crate) fn new(root: PathBuf) -> Self {
         Self {
             root,
             chunk_refs: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -1700,6 +2322,7 @@ struct OjUserPlugin {
     host: Arc<PluginHost>,
     render_chunk_enabled: Arc<tokio::sync::OnceCell<bool>>,
     emit: Arc<EmitState>,
+    map_warnings: Arc<MapWarnings>,
     // Vite/rolldown push hook filters into the bundler so a filtered hook never
     // runs for a module it does not claim; the host's live plan gates the
     // isolate RPCs the same way. It only over-approximates (the host
@@ -1727,6 +2350,7 @@ impl OjUserPlugin {
             host,
             render_chunk_enabled: Arc::new(tokio::sync::OnceCell::new()),
             emit,
+            map_warnings: Arc::default(),
             gate,
             gate_debug: oj_server::plugins::hook_gate_debug(),
             gate_count: oj_server::plugins::hook_gate_debug() || cfg!(test),
@@ -1740,7 +2364,7 @@ impl OjUserPlugin {
 // The rolldown module type a plugin-loaded id should parse as, from its
 // extension (query stripped). Defaults to Js, matching Rollup/Vite treating an
 // extensionless virtual id as JavaScript.
-fn module_type_for_id(id: &str) -> rolldown_common::ModuleType {
+pub(crate) fn module_type_for_id(id: &str) -> rolldown_common::ModuleType {
     use rolldown_common::ModuleType;
     let path = id.split(['?', '#']).next().unwrap_or(id);
     match Path::new(path).extension().and_then(|e| e.to_str()) {
@@ -1752,11 +2376,104 @@ fn module_type_for_id(id: &str) -> rolldown_common::ModuleType {
     }
 }
 
+/// The source-map warnings of one build, each printed once.
+#[derive(Debug, Default)]
+pub(crate) struct MapWarnings(Mutex<std::collections::HashSet<String>>);
+
+impl MapWarnings {
+    fn warn(&self, text: String) {
+        if self.0.lock().unwrap().insert(text.clone()) {
+            eprintln!("oj build warning: {text}");
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn printed(&self) -> Vec<String> {
+        self.0.lock().unwrap().iter().cloned().collect()
+    }
+}
+
+/// Which hook's chain `host_chain_map` collapses: rolldown breaks a module's
+/// transform chain at a missing map, but only skips that step's map in a
+/// chunk's renderChunk chain.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChainHook {
+    Transform,
+    RenderChunk,
+}
+
+/// The one map rolldown takes for the host's plugin chain: the plugins' maps
+/// collapsed in order. A plugin that changed the code without a map breaks
+/// the chain as rolldown does for `hook`, and so does a map that cannot be
+/// read; `warnings` names the plugin, since rolldown's own warning would name
+/// oj's wrapper.
+pub(crate) fn host_chain_map(
+    sourcemap: bool,
+    t: &oj_server::plugins::HostTransform,
+    hook: ChainHook,
+    warnings: Option<&MapWarnings>,
+) -> HookTransformOutputMap {
+    if !sourcemap {
+        return HookTransformOutputMap::Omitted;
+    }
+    let warn = |text: String| {
+        if let Some(w) = warnings {
+            w.warn(text);
+        }
+    };
+    if let Some(name) = &t.map_broken {
+        warn(format!(
+            "Sourcemap is likely to be incorrect: a plugin ({name}) was used to transform files, but didn't generate a sourcemap for the transformation."
+        ));
+        if hook == ChainHook::Transform {
+            return HookTransformOutputMap::Omitted;
+        }
+    }
+    let mut maps = Vec::with_capacity(t.maps.len());
+    for (i, json) in t.maps.iter().enumerate() {
+        let Some(map) = parse_plugin_map(json) else {
+            let name = t.map_plugins.get(i).map_or("?", String::as_str);
+            warn(format!(
+                "Sourcemap is likely to be incorrect: a plugin ({name}) returned a sourcemap oj cannot read."
+            ));
+            if hook == ChainHook::Transform {
+                return HookTransformOutputMap::Omitted;
+            }
+            continue;
+        };
+        maps.push(map);
+    }
+    match maps.as_slice() {
+        [] if t.map_broken.is_some() => HookTransformOutputMap::Omitted,
+        [] => HookTransformOutputMap::Null,
+        [one] => one.clone().into(),
+        all => rolldown_sourcemap::collapse_sourcemaps(&all.iter().collect::<Vec<_>>()).into(),
+    }
+}
+
+/// A plugin's map as rolldown's JS side takes it: an object that leaves out
+/// `version`, `sources` or `names` still reads (rolldown fills `sources` with
+/// the module id afterwards).
+fn parse_plugin_map(json: &str) -> Option<rolldown_sourcemap::SourceMap> {
+    if let Ok(map) = oxc_sourcemap::SourceMap::from_json_string(json) {
+        return Some(map.into_owned());
+    }
+    let mut v: serde_json::Value = serde_json::from_str(json).ok()?;
+    let o = v.as_object_mut()?;
+    o.entry("version").or_insert(3.into());
+    o.entry("sources").or_insert(serde_json::json!([""]));
+    o.entry("names").or_insert(serde_json::json!([]));
+    let json = v.to_string();
+    oxc_sourcemap::SourceMap::from_json_string(&json)
+        .ok()
+        .map(|m| m.into_owned())
+}
+
 // Forward chunks a plugin emitted (in buildStart or transform) to rolldown as
 // build roots. A `.html` id is not a JS module: its `<script type=module>` are
 // emitted as JS entries instead and the page is queued for rendering, with the
 // ref id resolving to the page's output path.
-fn forward_emitted_chunks(
+pub(crate) fn forward_emitted_chunks(
     ctx: &PluginContext,
     chunks: &[oj_server::plugins::ChunkEmit],
     emit: &EmitState,
@@ -1823,7 +2540,9 @@ fn forward_emitted_html(ctx: &PluginContext, c: &oj_server::plugins::ChunkEmit, 
         out_rel,
         src_html: content,
         scripts,
+        refs: Vec::new(),
         dir: emit.root.clone(),
+        entry: None,
     });
 }
 
@@ -1902,6 +2621,7 @@ impl Plugin for OjUserPlugin {
         }
         let host = Arc::clone(&self.host);
         let id = args.id.to_string();
+        let plugin = self.name();
         async move {
             if !pass {
                 return Ok(None);
@@ -1910,7 +2630,7 @@ impl Plugin for OjUserPlugin {
             // bundling the raw source instead would ship wrong output silently.
             host.load(&id)
                 .await
-                .map_err(|e| anyhow::anyhow!("plugin load failed for {id}:\n{e}"))
+                .map_err(|e| oj_server::load_error::load_failed(plugin, &id, anyhow::anyhow!(e)))
                 .map(|loaded| {
                     loaded.map(|code| {
                         let path = id.split(['?', '#']).next().unwrap_or(&id);
@@ -1957,6 +2677,8 @@ impl Plugin for OjUserPlugin {
         let emit = Arc::clone(&self.emit);
         let code: &str = args.code;
         let id: &str = args.id;
+        let sourcemap = ctx.inner.options().is_sourcemap_enabled();
+        let map_warnings = Arc::clone(&self.map_warnings);
         async move {
             if !pass {
                 return Ok(None);
@@ -1969,11 +2691,18 @@ impl Plugin for OjUserPlugin {
                 return Ok(None);
             }
             match host.transform(code, id, "{}").await {
-                Ok((out, _, _, chunks)) => {
-                    forward_emitted_chunks(&ctx.inner, &chunks, &emit);
-                    if out != code {
+                Ok(t) => {
+                    forward_emitted_chunks(&ctx.inner, &t.chunks, &emit);
+                    if t.code != code {
+                        let map = host_chain_map(
+                            sourcemap,
+                            &t,
+                            ChainHook::Transform,
+                            Some(&map_warnings),
+                        );
                         Ok(Some(HookTransformOutput {
-                            code: Some(out),
+                            code: Some(t.code),
+                            map,
                             ..Default::default()
                         }))
                     } else {
@@ -2050,6 +2779,8 @@ impl Plugin for OjUserPlugin {
         let host = Arc::clone(&self.host);
         let enabled = Arc::clone(&self.render_chunk_enabled);
         let code = Arc::clone(&args.code);
+        let sourcemap = args.options.is_sourcemap_enabled();
+        let map_warnings = Arc::clone(&self.map_warnings);
         // Once the first call learned no plugin has renderChunk, later chunks
         // skip the JSON serialization too, not just the RPC.
         let chunk_json = if enabled.get() == Some(&false) {
@@ -2065,10 +2796,11 @@ impl Plugin for OjUserPlugin {
                 return Ok(None);
             }
             match host.render_chunk(&code, &chunk_json).await {
-                Ok(Some(out)) if out != *code => Ok(Some(HookRenderChunkOutput {
-                    code: out,
-                    map: HookTransformOutputMap::Null,
-                })),
+                Ok(t) if t.code != *code => {
+                    let map =
+                        host_chain_map(sourcemap, &t, ChainHook::RenderChunk, Some(&map_warnings));
+                    Ok(Some(HookRenderChunkOutput { code: t.code, map }))
+                }
                 _ => Ok(None),
             }
         }
@@ -2136,12 +2868,13 @@ impl Plugin for OjUserPlugin {
     }
 }
 
-fn serialize_rendered_chunk(chunk: &rolldown_common::RollupRenderedChunk) -> String {
-    // `chunk.modules` (keyed by module id) is read by renderChunk hooks such as
-    // UnoCSS's `unocss:global:build:generate` to find their virtual layer module.
-    let mut modules = serde_json::Map::new();
-    for (id, rm) in chunk.modules.keys.iter().zip(chunk.modules.values.iter()) {
-        modules.insert(
+/// Rollup's `chunk.modules`, `{ [id]: RenderedModule }`: plugins like @crxjs
+/// walk its keys (module ids) and read renderedExports; dependency reports
+/// read renderedLength to tell kept modules from tree-shaken ones.
+fn rendered_modules(modules: &rolldown_common::Modules) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    for (id, rm) in modules.keys.iter().zip(modules.values.iter()) {
+        map.insert(
             id.as_str().to_string(),
             serde_json::json!({
                 "renderedExports": rm
@@ -2149,9 +2882,17 @@ fn serialize_rendered_chunk(chunk: &rolldown_common::RollupRenderedChunk) -> Str
                     .iter()
                     .map(|e| e.to_string())
                     .collect::<Vec<_>>(),
+                "renderedLength": rm.code().map_or(0, |c| c.encode_utf16().count()),
             }),
         );
     }
+    serde_json::Value::Object(map)
+}
+
+pub(crate) fn serialize_rendered_chunk(chunk: &rolldown_common::RollupRenderedChunk) -> String {
+    // `chunk.modules` (keyed by module id) is read by renderChunk hooks such as
+    // UnoCSS's `unocss:global:build:generate` to find their virtual layer module.
+    let modules = rendered_modules(&chunk.modules);
     serde_json::json!({
         "type": "chunk",
         "fileName": chunk.filename.to_string(),
@@ -2160,7 +2901,7 @@ fn serialize_rendered_chunk(chunk: &rolldown_common::RollupRenderedChunk) -> Str
         "isDynamicEntry": chunk.is_dynamic_entry,
         "facadeModuleId": chunk.facade_module_id.as_ref().map(|f| f.as_str().to_string()),
         "moduleIds": chunk.module_ids.iter().map(|m| m.as_str().to_string()).collect::<Vec<_>>(),
-        "modules": serde_json::Value::Object(modules),
+        "modules": modules,
         "imports": chunk.imports.iter().map(|i| i.to_string()).collect::<Vec<_>>(),
         "dynamicImports": chunk.dynamic_imports.iter().map(|i| i.to_string()).collect::<Vec<_>>(),
         "exports": chunk.exports.iter().map(|e| e.to_string()).collect::<Vec<_>>(),
@@ -2168,27 +2909,13 @@ fn serialize_rendered_chunk(chunk: &rolldown_common::RollupRenderedChunk) -> Str
     .to_string()
 }
 
-fn serialize_bundle(bundle: &[rolldown_common::Output]) -> String {
+pub(crate) fn serialize_bundle(bundle: &[rolldown_common::Output]) -> String {
     use rolldown_common::{Output, StrOrBytes};
     let mut map = serde_json::Map::new();
     for out in bundle {
         match out {
             Output::Chunk(c) => {
-                // Rollup's `chunk.modules` is `{ [id]: RenderedModule }`; plugins
-                // like @crxjs walk its keys (module ids) and read renderedExports.
-                let mut modules = serde_json::Map::new();
-                for (id, rm) in c.modules.keys.iter().zip(c.modules.values.iter()) {
-                    modules.insert(
-                        id.as_str().to_string(),
-                        serde_json::json!({
-                            "renderedExports": rm
-                                .rendered_exports
-                                .iter()
-                                .map(|e| e.to_string())
-                                .collect::<Vec<_>>(),
-                        }),
-                    );
-                }
+                let modules = rendered_modules(&c.modules);
                 map.insert(
                     c.filename.to_string(),
                     serde_json::json!({
@@ -2199,7 +2926,7 @@ fn serialize_bundle(bundle: &[rolldown_common::Output]) -> String {
                         "isDynamicEntry": c.is_dynamic_entry,
                         "facadeModuleId": c.facade_module_id.as_ref().map(|f| f.as_str().to_string()),
                         "moduleIds": c.module_ids.iter().map(|m| m.as_str().to_string()).collect::<Vec<_>>(),
-                        "modules": serde_json::Value::Object(modules),
+                        "modules": modules,
                         "imports": c.imports.iter().map(|i| i.to_string()).collect::<Vec<_>>(),
                         "dynamicImports": c.dynamic_imports.iter().map(|i| i.to_string()).collect::<Vec<_>>(),
                         "exports": c.exports.iter().map(|e| e.to_string()).collect::<Vec<_>>(),
@@ -2230,7 +2957,7 @@ fn serialize_bundle(bundle: &[rolldown_common::Output]) -> String {
     serde_json::Value::Object(map).to_string()
 }
 
-fn apply_bundle_mutations(bundle: &mut Vec<rolldown_common::Output>, json: &str) {
+pub(crate) fn apply_bundle_mutations(bundle: &mut Vec<rolldown_common::Output>, json: &str) {
     use rolldown_common::{Output, StrOrBytes};
     let Ok(map) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json) else {
         return;
@@ -2603,6 +3330,10 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
     let mut inputs: Vec<InputItem> = Vec::new();
     let mut seen_imports: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut had_html = false;
+    let mut pages: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    // Vite's build import analysis, the polyfill included, is es output only.
+    let page_polyfill = oj_config::module_preload_polyfill(&config)
+        && ro_output_overrides(ro_opts).format.is_none();
     let push_input = |abs: &Path,
                       name: String,
                       inputs: &mut Vec<InputItem>,
@@ -2638,24 +3369,48 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
             for (_, id, body) in &inline {
                 html_inline.lock().unwrap().insert(id.clone(), body.clone());
             }
-            let scripts: Vec<HtmlScript> = module_script_srcs(&content)
+            // A linked stylesheet that does not resolve stays on the page.
+            let refs: Vec<PageRef> = html_tags::page_refs(&content, is_css_request)
                 .into_iter()
-                .map(|src| {
-                    let abs = match inline.iter().find(|(p, _, _)| *p == src) {
-                        Some((_, id, _)) => PathBuf::from(id),
-                        None => resolve_html_ref(&src, &html_dir, &root),
-                    };
-                    HtmlScript { src, abs }
+                .filter(|r| match r {
+                    PageRef::Style(href) => resolve_html_ref(href, &html_dir, &root).is_file(),
+                    PageRef::Script { .. } => true,
                 })
                 .collect();
-            for s in &scripts {
-                let stem = s
-                    .abs
-                    .file_stem()
-                    .and_then(|x| x.to_str())
-                    .unwrap_or("entry")
-                    .to_string();
-                push_input(&s.abs, stem, &mut inputs, &mut seen_imports);
+            let ref_abs = |r: &PageRef| match r {
+                PageRef::Script { src, .. } => match inline.iter().find(|(p, _, _)| p == src) {
+                    Some((_, id, _)) => PathBuf::from(id),
+                    None => resolve_html_ref(src, &html_dir, &root),
+                },
+                PageRef::Style(href) => resolve_html_ref(href, &html_dir, &root),
+            };
+            let scripts: Vec<HtmlScript> = refs
+                .iter()
+                .filter_map(|r| match r {
+                    PageRef::Script { src, .. } => Some(HtmlScript {
+                        src: src.clone(),
+                        abs: ref_abs(r),
+                    }),
+                    PageRef::Style(_) => None,
+                })
+                .collect();
+            // The page itself is the rollup input, as in Vite: a proxy
+            // module importing the modulepreload polyfill (when the page has
+            // a module script) and then each module script and bundled
+            // stylesheet in document order. Its entry chunk, and that chunk's
+            // stylesheet, take the input's name: `index` for the default
+            // index.html, the key of an object `input`, never a script's own
+            // file name.
+            if !refs.is_empty() {
+                let mut proxy = String::new();
+                if page_polyfill && !scripts.is_empty() {
+                    proxy.push_str("import \"vite/modulepreload-polyfill\";\n");
+                }
+                for r in &refs {
+                    proxy.push_str(&format!("import {:?};\n", ref_abs(r).to_string_lossy()));
+                }
+                pages.insert(abs.to_string_lossy().into_owned(), proxy);
+                push_input(&abs, name.clone(), &mut inputs, &mut seen_imports);
             }
             let out_rel = if rel_path.is_absolute() {
                 abs.strip_prefix(&root)
@@ -2670,7 +3425,9 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
                 out_rel,
                 src_html: content,
                 scripts,
+                refs,
                 dir: html_dir,
+                entry: Some(abs.clone()),
             });
         } else {
             if !abs.exists() {
@@ -2687,8 +3444,6 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
     }
 
     let collected_css: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
-    let worker_entries: Arc<Mutex<std::collections::HashSet<String>>> =
-        Arc::new(Mutex::new(std::collections::HashSet::new()));
     let css_split = css_code_split_of(&config);
     let plugin_host = user_plugin_host(
         cli.config.as_deref(),
@@ -2704,8 +3459,13 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
     let env_delta = plugin_env_delta(&plugin_host).await;
     let emit = Arc::new(EmitState::new(root.to_path_buf()));
     let mut oj_plugins: Vec<SharedPluginable> = Vec::new();
+    let stylex =
+        oj_server::stylex::plugin_for(&root, &config, "build").map_err(|e| anyhow::anyhow!(e))?;
+    if let Some(plugin) = &stylex {
+        oj_plugins.push(crate::stylex_plugin::transform(plugin));
+    }
     if let Some(host) = &plugin_host {
-        oj_plugins.push(Arc::new(OjUserPlugin::new(
+        oj_plugins.push(Pluginable::new_shared(OjUserPlugin::new(
             Arc::clone(host),
             Arc::clone(&emit),
             host.build_hook_plan().await,
@@ -2722,14 +3482,15 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
         pairs.extend(plugin_defines);
         pairs
     };
-    oj_plugins.push(Arc::new(OjCssPlugin {
+    oj_plugins.push(Pluginable::new_shared(OjCssPlugin {
         collected: Arc::clone(&collected_css),
         root: root.to_path_buf(),
         has_postcss: oj_server::has_postcss_config(&root),
         inline_limit: assets_inline_limit_of(&config),
         client: true,
         css_code_split: css_split,
-        resolve: css_resolve_of(&root, &config, "client"),
+        resolve: css_resolve_of(&root, &config, "client", is_production),
+        base: normalize_base(config.base.as_deref().unwrap_or("/")),
         host: plugin_host.clone(),
         css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
         css: config.css.clone(),
@@ -2739,14 +3500,31 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
             is_production,
             define: client_define.clone(),
             minify: client_minify,
+            assets_dir: assets_dir.clone(),
+            sourcemap: env_sourcemap(&config, "client", sourcemap),
         })),
-        worker_entries: Arc::clone(&worker_entries),
+        worker_bundles: Default::default(),
+        worker_chain: Default::default(),
+        pages: Arc::new(pages),
+        chunk_css_hashing: css_split.then(|| (out_dir.clone(), asset_names_pattern.clone())),
     }));
     let out_ov = ro_output_overrides(ro_opts);
     // Vite's build import analysis (preload wrapping, polyfill) only applies to
     // es output; umd/iife/cjs bundles cannot use `import.meta.url`.
     let es_output = out_ov.format.is_none();
-    let out_banner = out_ov.banner.clone();
+    if es_output {
+        let relative = is_relative_base(&base);
+        oj_plugins.push(Pluginable::new_shared(
+            vite_preload::BuildImportAnalysisPlugin {
+                preload_code: arcstr::ArcStr::from(vite_preload::preload_code(
+                    &base,
+                    oj_config::module_preload_polyfill(&config),
+                    relative,
+                )),
+                is_relative_base: relative,
+            },
+        ));
+    }
     let mut bundler = BundlerBuilder::default()
         .with_plugins(oj_plugins)
         .with_options(BundlerOptions {
@@ -2795,6 +3573,9 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
             minify: Some(rolldown_minify(client_minify)),
             sourcemap: env_sourcemap(&config, "client", sourcemap),
             define: Some(client_define.into_iter().collect()),
+            comments: Some(vite_output_comments(client_minify, false)),
+            top_level_var: Some(true),
+            experimental: Some(vite_mode_experimental()),
             ..Default::default()
         })
         .build()
@@ -2892,7 +3673,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
     let has_postcss = oj_server::has_postcss_config(&root);
     let public_dir = oj_config::public_dir(&config, &root);
     let link_css_transform_enabled: tokio::sync::OnceCell<bool> = tokio::sync::OnceCell::new();
-    let link_css_resolve = css_resolve_of(&root, &config, "client");
+    let link_css_resolve = css_resolve_of(&root, &config, "client", is_production);
     let css_asset_opts = CssAssetOpts {
         inline_limit: assets_inline_limit_of(&config),
         asset_names: Some(asset_names_pattern.as_str()),
@@ -2961,6 +3742,11 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
         }
     }
 
+    // The StyleX plugin's sheet joins the first stylesheet the build emits.
+    let mut stylex_css = match &stylex {
+        Some(plugin) => crate::stylex_plugin::stylesheet(plugin, &root)?,
+        None => None,
+    };
     // Non-split CSS is one combined stylesheet linked from every page.
     let combined_css_name: Option<String> = if !css_split {
         let mut css_entries = collected_css.lock().unwrap().clone();
@@ -2989,8 +3775,14 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
                     )
                 })
                 .collect::<Vec<_>>()
-                .join("\n");
-            let hash = content_hash(combined.as_bytes());
+                .concat();
+            let combined = chunk_css_asset(&combined, &css_asset_opts.resolve)?;
+            // Named before the StyleX sheet joins it, as Vite names the asset
+            // before the plugin's generateBundle appends to it.
+            let hash = css_asset_hash(&combined);
+            // Vite emits the bundle from the generateBundle that strips the
+            // hash marker off every other sheet, too late to be stripped.
+            let combined = append_stylex(format!("{combined}/*$vite$:1*/"), stylex_css.take());
             let css_name = render_asset_name(css_asset_opts.asset_names, "style", &hash, "css");
             if let Some(parent) = out_dir.join(&css_name).parent() {
                 fs::create_dir_all(parent)?;
@@ -3024,10 +3816,12 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
             &mut emitted,
             &mut manifest_entries,
             &mut manifest_assets,
+            &mut stylex_css,
         )?
     } else {
         Vec::new()
     };
+    write_stylex_fallback(&out_dir, stylex_css, &mut emitted)?;
     let mut all_sync_chunks: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     if let Some(name) = oj_config::ssr_manifest_name(&config) {
         let manifest = ssr_manifest(
@@ -3055,6 +3849,17 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
     // Page script entries across all documents: the only chunks that get the
     // modulepreload polyfill (a worker or plugin-emitted entry has no document).
     let mut page_entry_files: Vec<String> = Vec::new();
+    let chunk_code: std::collections::HashMap<String, &str> = output
+        .assets
+        .iter()
+        .filter_map(|o| match o {
+            rolldown_common::Output::Chunk(c) => Some((c.filename.to_string(), c.code.as_str())),
+            _ => None,
+        })
+        .collect();
+    // Entry chunks their page loads through their imports instead: removed
+    // from the output once every page is written.
+    let mut inlined_entries: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     // Vite's build transformIndexHtml ctx (html.ts) carries the output bundle
     // and the page's entry chunk; serialized once for every page, and not at
     // all when no plugin has the hook (the bundle JSON carries every chunk's
@@ -3071,15 +3876,81 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
     for doc in &html_docs {
         let mut rewritten_html = oj_env::replace_html_env(&doc.src_html, &html_env);
         let page_base = page_base(&base, &doc.out_rel);
-        // Rewrite each `<script src>` to its hashed output chunk and collect
-        // this page's own entry chunks (for modulepreload and split CSS).
+        // Rewrite the page's module scripts to its hashed entry chunk and
+        // collect the page's own entry chunks (for modulepreload and split
+        // CSS). A built page is one entry, so its first module script loads
+        // that chunk and the others go, as Vite's build-html does.
         let mut doc_entry_files: Vec<String> = Vec::new();
-        for s in &doc.scripts {
-            if let Some(file) = facade_to_file.get(&s.abs) {
-                let out_src = with_base(file, &page_base);
-                rewritten_html = rewritten_html.replace(&s.src, &out_src);
-                rewritten_html = add_script_crossorigin(&rewritten_html, &out_src);
+        // The tags injectToHead writes for the page's entry chunk, once its
+        // other assets are rewritten.
+        let mut entry_tags: Vec<Tag> = Vec::new();
+        match doc.entry.as_ref().and_then(|e| facade_to_file.get(e)) {
+            Some(file) => {
+                rewritten_html = html_tags::strip_page_refs(&rewritten_html, &doc.refs);
+                let is_async = doc.refs.iter().all(|r| match r {
+                    PageRef::Script { is_async, .. } => *is_async,
+                    PageRef::Style(_) => true,
+                });
+                let imports = imported_chunks(file, &imports_map);
+                // Vite's inlined entry: a chunk of nothing but side-effect
+                // imports (a page whose scripts only pull in CSS and shared
+                // chunks) is not emitted; the page loads what it imports.
+                if chunk_code.get(file).is_some_and(|c| is_entirely_import(c)) {
+                    inlined_entries.insert(file.clone());
+                    // An external import is loaded by its own URL.
+                    entry_tags.extend(imports.iter().map(|c| {
+                        let src = match chunk_code.contains_key(c) {
+                            true => with_base(c, &page_base),
+                            false => c.clone(),
+                        };
+                        Tag::script(src, is_async)
+                    }));
+                } else {
+                    entry_tags.push(Tag::script(with_base(file, &page_base), is_async));
+                    if oj_config::module_preload_links(&config) {
+                        entry_tags.extend(
+                            imports
+                                .iter()
+                                .filter(|c| chunk_code.contains_key(*c))
+                                .map(|c| Tag::modulepreload(with_base(c, &page_base))),
+                        );
+                    }
+                }
+                entry_tags.extend(
+                    page_css_files(&chunk_css, file, &imports_map)
+                        .into_iter()
+                        .map(|css| Tag::stylesheet(with_base(css, &page_base))),
+                );
                 doc_entry_files.push(file.clone());
+            }
+            None => {
+                for s in &doc.scripts {
+                    if let Some(file) = facade_to_file.get(&s.abs) {
+                        let out_src = with_base(file, &page_base);
+                        rewritten_html = rewritten_html.replace(&s.src, &out_src);
+                        rewritten_html = add_script_crossorigin(&rewritten_html, &out_src);
+                        doc_entry_files.push(file.clone());
+                    }
+                }
+                let mut preloads: std::collections::BTreeSet<String> =
+                    std::collections::BTreeSet::new();
+                for entry in &doc_entry_files {
+                    preloads.extend(transitive_imports(entry, &imports_map));
+                }
+                if oj_config::module_preload_links(&config) {
+                    entry_tags.extend(
+                        preloads
+                            .iter()
+                            .map(|f| Tag::modulepreload(with_base(f, &page_base))),
+                    );
+                }
+                for entry in &doc_entry_files {
+                    entry_tags.extend(
+                        page_css_files(&chunk_css, entry, &imports_map)
+                            .into_iter()
+                            .map(|css| Tag::stylesheet(with_base(css, &page_base))),
+                    );
+                }
             }
         }
         page_entry_files.extend(doc_entry_files.iter().cloned());
@@ -3088,32 +3959,12 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
             all_sync_chunks.extend(transitive_imports(entry, &imports_map));
         }
 
-        // Inject <link rel="modulepreload"> for this page's transitively
-        // imported chunks so the browser fetches them in parallel.
-        let mut preloads: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        for entry in &doc_entry_files {
-            for dep in transitive_imports(entry, &imports_map) {
-                preloads.insert(dep);
-            }
-        }
-        if !preloads.is_empty() && oj_config::module_preload_links(&config) {
-            let links = preloads
-                .iter()
-                .map(|f| {
-                    format!(
-                        "<link rel=\"modulepreload\" href=\"{}\" crossorigin />",
-                        with_base(f, &page_base)
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            rewritten_html = insert_before_head(&rewritten_html, &links);
-        }
-
-        // `<link rel="stylesheet" href>` to a local file (relative or root-absolute)
-        // goes through the same pipeline as an imported stylesheet (Sass/PostCSS/
-        // Tailwind, lightningcss, url() assets) and is emitted hashed, as in Vite.
-        {
+        // A plugin-emitted page's `<link rel="stylesheet" href>` to a local file
+        // goes through the same pipeline as an imported stylesheet (Sass/
+        // PostCSS/Tailwind, lightningcss, url() assets) and is emitted hashed.
+        // An input page's are its entry's imports, or (`media`, `disabled`)
+        // plain assets, as in Vite.
+        if doc.entry.is_none() {
             let mut seen_link_assets: std::collections::HashMap<PathBuf, String> =
                 std::collections::HashMap::new();
             for href in stylesheet_hrefs(&doc.src_html) {
@@ -3147,7 +3998,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
                     &mut emitted,
                     &mut seen_link_assets,
                 );
-                let hash = content_hash(css.as_bytes());
+                let hash = css_asset_hash(&css);
                 let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("style");
                 let name = render_asset_name(
                     css_asset_opts.asset_names,
@@ -3199,17 +4050,10 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
                 });
         }
 
+        rewritten_html = html_tags::inject_to_head(&rewritten_html, &entry_tags);
         if let Some(css_name) = &combined_css_name {
-            let link = format!(
-                "<link rel=\"stylesheet\" href=\"{}\" crossorigin />",
-                with_base(css_name, &page_base)
-            );
-            rewritten_html = insert_before_head(&rewritten_html, &link);
-        } else if css_split {
-            let links = split_css_links(&chunk_css, &doc_entry_files, &imports_map, &page_base);
-            if !links.is_empty() {
-                rewritten_html = insert_before_head(&rewritten_html, &links);
-            }
+            let link = Tag::stylesheet(with_base(css_name, &page_base));
+            rewritten_html = html_tags::inject_to_head(&rewritten_html, &[link]);
         }
 
         if let Some(host) = plugin_host.as_ref().filter(|_| html_hook_on) {
@@ -3248,10 +4092,18 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
         fs::write(&dest, rewritten_html)?;
     }
 
-    // Vite's build import analysis: wrap dynamic imports in `__vitePreload` so a
-    // lazy chunk's own dependencies and stylesheets load in parallel (and its
-    // CSS is applied before it runs), inject the modulepreload polyfill into
-    // page entries, and give async-only chunks a stylesheet fallback.
+    // Inlined entries are not emitted (Vite deletes them from the bundle once
+    // their pages load their imports instead).
+    for file in &inlined_entries {
+        let _ = fs::remove_file(out_dir.join(file));
+        let _ = fs::remove_file(out_dir.join(format!("{file}.map")));
+    }
+    emitted.retain(|(name, _)| !inlined_entries.contains(name));
+    manifest_entries.retain(|e| !inlined_entries.contains(&e.file));
+
+    // Vite's build import analysis: each wrapped `import()` gets its preload
+    // list, so a lazy chunk's own dependencies and stylesheets load in
+    // parallel (and its CSS is applied before it runs).
     if es_output {
         apply_preload_helper(
             &output,
@@ -3259,11 +4111,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
             &base,
             &imports_map,
             &chunk_css,
-            &all_sync_chunks,
-            &page_entry_files,
-            oj_config::module_preload_polyfill(&config),
-            out_banner.as_deref(),
-            &worker_entries.lock().unwrap().clone(),
+            oj_config::module_preload_links(&config),
         )?;
     }
 
@@ -3376,13 +4224,19 @@ struct HtmlDoc {
     out_rel: String,
     src_html: String,
     scripts: Vec<HtmlScript>,
+    /// What the page's entry imports, which leave the built page (Vite's
+    /// build-html moves them into the entry chunk's tags).
+    refs: Vec<PageRef>,
     /// Directory of the source page; relative `<link href>`s resolve against it.
     dir: PathBuf,
+    /// The page as the build's input (its proxy module's id); None for a page
+    /// a plugin emitted, whose scripts are entries of their own.
+    entry: Option<PathBuf>,
 }
 
 /// Inline `<script type="module">…</script>` blocks (no `src`): the byte range
-/// of the whole element and its body.
-fn inline_module_scripts(html: &str) -> Vec<(usize, usize, String)> {
+/// of the whole element, its body and whether it is `async`.
+fn inline_module_scripts(html: &str) -> Vec<(usize, usize, String, bool)> {
     let mut out = Vec::new();
     for (start, _) in html.match_indices("<script") {
         let Some(tag_end) = html[start..].find('>') else {
@@ -3405,7 +4259,13 @@ fn inline_module_scripts(html: &str) -> Vec<(usize, usize, String)> {
         if body.trim().is_empty() {
             continue;
         }
-        out.push((start, body_start + close + "</script>".len(), body));
+        let is_async = has_bare_attr(tag, "async");
+        out.push((
+            start,
+            body_start + close + "</script>".len(),
+            body,
+            is_async,
+        ));
     }
     out
 }
@@ -3425,12 +4285,15 @@ fn externalize_inline_scripts(
     }
     let mut out = html.to_string();
     let mut entries = Vec::new();
-    for (n, (start, end, body)) in blocks.iter().enumerate().rev() {
+    for (n, (start, end, body, is_async)) in blocks.iter().enumerate().rev() {
         let placeholder = format!("/@oj-inline/{n}.js");
         let id = format!("{}?html-proxy&index={n}.js", html_abs.display());
         out.replace_range(
             *start..*end,
-            &format!("<script type=\"module\" src=\"{placeholder}\"></script>"),
+            &format!(
+                "<script type=\"module\"{} src=\"{placeholder}\"></script>",
+                if *is_async { " async" } else { "" }
+            ),
         );
         entries.push((placeholder, id, body.clone()));
     }
@@ -3537,11 +4400,76 @@ fn add_script_crossorigin(html: &str, src: &str) -> String {
     out
 }
 
-fn insert_before_head(html: &str, snippet: &str) -> String {
-    match html.find("</head>") {
-        Some(i) => format!("{}{}\n{}", &html[..i], snippet, &html[i..]),
-        None => format!("{snippet}\n{html}"),
+/// Vite's isEntirelyImport: the chunk is only whitespace, comments and
+/// side-effect `import "x";` statements (false negatives are fine).
+fn is_entirely_import(code: &str) -> bool {
+    let b = code.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i].is_ascii_whitespace() {
+            i += 1;
+        } else if code[i..].starts_with("/*") {
+            match code[i + 2..].find("*/") {
+                Some(e) => i += 2 + e + 2,
+                None => return false,
+            }
+        } else if code[i..].starts_with("//") {
+            i = code[i..].find('\n').map_or(b.len(), |e| i + e + 1);
+        } else if code[i..].starts_with("import") {
+            i += "import".len();
+            while i < b.len() && b[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            let Some(&quote) = b.get(i).filter(|q| **q == b'"' || **q == b'\'') else {
+                return false;
+            };
+            i += 1;
+            loop {
+                match b.get(i) {
+                    None | Some(b'\n') => return false,
+                    Some(b'\\') => i += 2,
+                    Some(c) if *c == quote => {
+                        i += 1;
+                        break;
+                    }
+                    Some(_) => i += 1,
+                }
+            }
+            while i < b.len() && b[i].is_ascii_whitespace() && b[i] != b'\n' {
+                i += 1;
+            }
+            while b.get(i) == Some(&b';') {
+                i += 1;
+            }
+        } else {
+            return false;
+        }
     }
+    true
+}
+
+/// Vite's getImportedChunks: a chunk's static imports, transitively, in
+/// post-order (each chunk after what it imports), each once.
+fn imported_chunks(
+    file: &str,
+    imports_map: &std::collections::HashMap<String, Vec<String>>,
+) -> Vec<String> {
+    fn walk(
+        file: &str,
+        imports_map: &std::collections::HashMap<String, Vec<String>>,
+        seen: &mut std::collections::HashSet<String>,
+        out: &mut Vec<String>,
+    ) {
+        for dep in imports_map.get(file).into_iter().flatten() {
+            if seen.insert(dep.clone()) {
+                walk(dep, imports_map, seen, out);
+                out.push(dep.clone());
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(file, imports_map, &mut Default::default(), &mut out);
+    out
 }
 
 /// Rewrite the `href` of every `<link>` whose value is `from`, keeping the tag's
@@ -3984,27 +4912,36 @@ pub(crate) async fn build_ssr(
 
     let emit = Arc::new(EmitState::new(root.to_path_buf()));
     let mut oj_plugins: Vec<SharedPluginable> = Vec::new();
+    let stylex =
+        oj_server::stylex::plugin_for(root, config, "build").map_err(|e| anyhow::anyhow!(e))?;
+    if let Some(plugin) = &stylex {
+        oj_plugins.push(crate::stylex_plugin::transform(plugin));
+    }
     if let Some(host) = &plugin_host {
-        oj_plugins.push(Arc::new(OjUserPlugin::new(
+        oj_plugins.push(Pluginable::new_shared(OjUserPlugin::new(
             Arc::clone(host),
             Arc::clone(&emit),
             host.build_hook_plan().await,
         )));
     }
-    oj_plugins.push(Arc::new(OjCssPlugin {
+    oj_plugins.push(Pluginable::new_shared(OjCssPlugin {
         collected: Arc::clone(&collected_css),
         root: root.to_path_buf(),
         has_postcss: oj_server::has_postcss_config(root),
         inline_limit: assets_inline_limit_of(config),
         client: false,
         css_code_split: false,
-        resolve: css_resolve_of(root, config, "ssr"),
+        resolve: css_resolve_of(root, config, "ssr", is_production),
+        base: normalize_base(config.base.as_deref().unwrap_or("/")),
         host: plugin_host.clone(),
         css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
         css: config.css.clone(),
         html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
         worker: None,
-        worker_entries: Arc::new(Mutex::new(std::collections::HashSet::new())),
+        worker_bundles: Default::default(),
+        worker_chain: Default::default(),
+        pages: Default::default(),
+        chunk_css_hashing: None,
     }));
     let mut bundler = BundlerBuilder::default()
         .with_plugins(oj_plugins)
@@ -4082,6 +5019,12 @@ pub(crate) async fn build_ssr(
         if let rolldown_common::Output::Chunk(c) = asset {
             emitted.push((c.filename.to_string(), c.code.len()));
         }
+    }
+    // An SSR build emits no stylesheet, so the StyleX plugin's sheet takes
+    // its writeBundle fallback there too.
+    if let Some(plugin) = &stylex {
+        let sheet = crate::stylex_plugin::stylesheet(plugin, root)?;
+        write_stylex_fallback(out_dir, sheet, &mut emitted)?;
     }
     println!(
         "oj build (ssr): {} in {:?}",
@@ -4168,20 +5111,24 @@ async fn build_server_fns(
     })));
     let result = async {
         let mut bundler = BundlerBuilder::default()
-            .with_plugins(vec![Arc::new(OjCssPlugin {
+            .with_plugins(vec![Pluginable::new_shared(OjCssPlugin {
                 collected: Arc::clone(&collected),
                 root: root.to_path_buf(),
                 has_postcss: oj_server::has_postcss_config(root),
                 inline_limit: 4096,
                 client: false,
-                resolve: css_resolve_of(root, config, "ssr"),
+                resolve: css_resolve_of(root, config, "ssr", is_production),
+                base: normalize_base(config.base.as_deref().unwrap_or("/")),
                 css_code_split: false,
                 host: None,
                 css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
                 css: config.css.clone(),
                 html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
                 worker: None,
-                worker_entries: Arc::new(Mutex::new(std::collections::HashSet::new())),
+                worker_bundles: Default::default(),
+                worker_chain: Default::default(),
+                pages: Default::default(),
+                chunk_css_hashing: None,
             })])
             .with_options(BundlerOptions {
                 input: Some(vec![InputItem {
@@ -4563,27 +5510,36 @@ async fn build_client_entry(
     let env_delta = plugin_env_delta(&plugin_host).await;
     let emit = Arc::new(EmitState::new(root.to_path_buf()));
     let mut oj_plugins: Vec<SharedPluginable> = Vec::new();
+    let stylex =
+        oj_server::stylex::plugin_for(root, config, "build").map_err(|e| anyhow::anyhow!(e))?;
+    if let Some(plugin) = &stylex {
+        oj_plugins.push(crate::stylex_plugin::transform(plugin));
+    }
     if let Some(host) = &plugin_host {
-        oj_plugins.push(Arc::new(OjUserPlugin::new(
+        oj_plugins.push(Pluginable::new_shared(OjUserPlugin::new(
             Arc::clone(host),
             Arc::clone(&emit),
             host.build_hook_plan().await,
         )));
     }
-    oj_plugins.push(Arc::new(OjCssPlugin {
+    oj_plugins.push(Pluginable::new_shared(OjCssPlugin {
         collected: Arc::clone(&collected_css),
         root: root.to_path_buf(),
         has_postcss: oj_server::has_postcss_config(root),
         inline_limit: assets_inline_limit_of(config),
         client: true,
         css_code_split: false,
-        resolve: css_resolve_of(root, config, "client"),
+        resolve: css_resolve_of(root, config, "client", is_production),
+        base: normalize_base(config.base.as_deref().unwrap_or("/")),
         host: plugin_host.clone(),
         css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
         css: config.css.clone(),
         html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
         worker: None,
-        worker_entries: Arc::new(Mutex::new(std::collections::HashSet::new())),
+        worker_bundles: Default::default(),
+        worker_chain: Default::default(),
+        pages: Default::default(),
+        chunk_css_hashing: None,
     }));
 
     let mut bundler = BundlerBuilder::default()
@@ -4656,7 +5612,11 @@ async fn build_client_entry(
     let js = js.ok_or_else(|| anyhow::anyhow!("client build produced no entry chunk"))?;
 
     let mut css_entries = collected_css.lock().unwrap().clone();
-    let css = if css_entries.is_empty() {
+    let stylex_css = match &stylex {
+        Some(plugin) => crate::stylex_plugin::stylesheet(plugin, root)?,
+        None => None,
+    };
+    let css = if css_entries.is_empty() && stylex_css.is_none() {
         None
     } else {
         css_entries.sort();
@@ -4664,13 +5624,11 @@ async fn build_client_entry(
             .into_iter()
             .map(|(_, css)| css)
             .collect::<Vec<_>>()
-            .join("\n");
-        let hash = format!("{:016x}", {
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            combined.hash(&mut h);
-            h.finish()
-        });
+            .concat();
+        let resolve = css_resolve_of(root, config, "client", is_production);
+        let combined = chunk_css_asset(&combined, &resolve.as_ref())?;
+        let hash = css_asset_hash(&combined);
+        let combined = append_stylex(combined, stylex_css);
         let name = oj_config::assets_dir_path(&assets_dir, &format!("style-{}.css", &hash[..8]));
         if let Some(parent) = out_dir.join(&name).parent() {
             fs::create_dir_all(parent)?;
@@ -4798,6 +5756,10 @@ async fn build_library(
     let started = Instant::now();
     let collected_css: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
     let mut emitted: Vec<(String, usize)> = Vec::new();
+    // The StyleX plugin, one instance across the formats: each records the
+    // same modules' rules again.
+    let stylex =
+        oj_server::stylex::plugin_for(root, config, "build").map_err(|e| anyhow::anyhow!(e))?;
 
     for fmt in &formats {
         let format = match fmt.as_str() {
@@ -4820,30 +5782,41 @@ async fn build_library(
         let minify_opts = if minify && matches!(fmt.as_str(), "es" | "esm") {
             RawMinifyOptions::Object(rolldown_common::RawMinifyOptionsDetailed {
                 mangle: Some(rolldown_common::RawMangleOptions::default()),
+                mangle_properties: None,
                 compress: Some(rolldown_common::RawCompressOptions::default()),
                 remove_whitespace: false,
+                ascii_only: false,
             })
         } else {
             rolldown_minify(minify)
         };
 
+        let mut plugins: Vec<SharedPluginable> = Vec::new();
+        if let Some(plugin) = &stylex {
+            plugins.push(crate::stylex_plugin::transform(plugin));
+        }
+        plugins.push(Pluginable::new_shared(OjCssPlugin {
+            collected: Arc::clone(&collected_css),
+            root: root.to_path_buf(),
+            has_postcss: oj_server::has_postcss_config(root),
+            // Vite inlines every asset of a library build.
+            inline_limit: u64::MAX,
+            client: true,
+            resolve: css_resolve_of(root, config, "client", is_production),
+            base: normalize_base(config.base.as_deref().unwrap_or("/")),
+            css_code_split: false,
+            host: None,
+            css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
+            css: config.css.clone(),
+            html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            worker: None,
+            worker_bundles: Default::default(),
+            worker_chain: Default::default(),
+            pages: Default::default(),
+            chunk_css_hashing: None,
+        }));
         let mut bundler = BundlerBuilder::default()
-            .with_plugins(vec![Arc::new(OjCssPlugin {
-                collected: Arc::clone(&collected_css),
-                root: root.to_path_buf(),
-                has_postcss: oj_server::has_postcss_config(root),
-                // Vite inlines every asset of a library build.
-                inline_limit: u64::MAX,
-                client: true,
-                resolve: css_resolve_of(root, config, "client"),
-                css_code_split: false,
-                host: None,
-                css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
-                css: config.css.clone(),
-                html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
-                worker: None,
-                worker_entries: Arc::new(Mutex::new(std::collections::HashSet::new())),
-            })])
+            .with_plugins(plugins)
             .with_options(BundlerOptions {
                 input: Some(
                     entries
@@ -4895,12 +5868,19 @@ async fn build_library(
     }
 
     let css_entries = collected_css.lock().unwrap().clone();
+    let mut stylex_css = match &stylex {
+        Some(plugin) => crate::stylex_plugin::stylesheet(plugin, root)?,
+        None => None,
+    };
     if !css_entries.is_empty() {
         let combined: String = css_entries
             .into_iter()
             .map(|(_, css)| css)
             .collect::<Vec<_>>()
-            .join("\n");
+            .concat();
+        let resolve = css_resolve_of(root, config, "client", is_production);
+        let combined = chunk_css_asset(&combined, &resolve.as_ref())?;
+        let combined = append_stylex(combined, stylex_css.take());
         // Vite: `build.lib.cssFileName`, else the library's file name / package name.
         let css_stem = lib
             .css_file_name
@@ -4912,6 +5892,7 @@ async fn build_library(
         fs::write(out_dir.join(&css_name), &combined)?;
         emitted.push((css_name, combined.len()));
     }
+    write_stylex_fallback(out_dir, stylex_css, &mut emitted)?;
 
     println!(
         "oj build (library): {} in {:?}",
@@ -5060,46 +6041,36 @@ fn ordered_sync_chunks(
     out
 }
 
-/// The `__vitePreload` deps of a dynamic import of `target`, in Vite's
-/// `addDeps` order (importAnalysisBuild.ts): each chunk as it is reached, its
-/// static imports' deps, then its own stylesheet, so a lazy chunk's CSS lands
-/// after the shared CSS it imports. Chunks in `own` (the importer's) are left out.
-fn preload_deps(
-    target: &str,
-    map: &std::collections::HashMap<String, Vec<String>>,
-    css_of: &std::collections::HashMap<&str, &str>,
-    own: &std::collections::BTreeSet<String>,
-) -> Vec<String> {
-    fn visit(
-        f: &str,
-        map: &std::collections::HashMap<String, Vec<String>>,
-        css_of: &std::collections::HashMap<&str, &str>,
-        own: &std::collections::BTreeSet<String>,
-        seen: &mut std::collections::HashSet<String>,
-        out: &mut Vec<String>,
-    ) {
-        if own.contains(f) || !seen.insert(f.to_string()) {
-            return;
-        }
-        out.push(f.to_string());
-        for dep in map.get(f).into_iter().flatten() {
-            visit(dep, map, css_of, own, seen, out);
-        }
-        if let Some(css) = css_of.get(f) {
-            out.push(css.to_string());
-        }
-    }
+/// `@stylexjs/unplugin`'s generateBundle: its sheet appended to a stylesheet
+/// the build emits, before that file is hashed.
+/// A chunk's module stylesheets as the CSS asset Vite writes: concatenated,
+/// then finished as one sheet ([`oj_css::finalize_chunk_css`]).
+fn chunk_css_asset(css: &str, resolve: &oj_css::CssResolve<'_>) -> anyhow::Result<String> {
+    oj_css::finalize_chunk_css(css, resolve).map_err(|e| anyhow::anyhow!(e))
+}
 
-    let mut out = Vec::new();
-    visit(
-        target,
-        map,
-        css_of,
-        own,
-        &mut std::collections::HashSet::new(),
-        &mut out,
-    );
-    out
+fn append_stylex(css: String, stylex: Option<String>) -> String {
+    match stylex {
+        Some(sheet) if css.is_empty() => sheet,
+        Some(sheet) => format!("{css}\n{sheet}"),
+        None => css,
+    }
+}
+
+/// The plugin's writeBundle fallback for a build with no stylesheet:
+/// `assets/stylex.css` in the output, linked from nowhere.
+fn write_stylex_fallback(
+    out_dir: &Path,
+    stylex: Option<String>,
+    emitted: &mut Vec<(String, usize)>,
+) -> anyhow::Result<()> {
+    let Some(sheet) = stylex else {
+        return Ok(());
+    };
+    fs::create_dir_all(out_dir.join("assets"))?;
+    fs::write(out_dir.join("assets/stylex.css"), &sheet)?;
+    emitted.push(("assets/stylex.css".to_string(), sheet.len()));
+    Ok(())
 }
 
 fn sanitize_asset_name(s: &str) -> String {
@@ -5114,8 +6085,19 @@ fn sanitize_asset_name(s: &str) -> String {
         .collect()
 }
 
-fn content_hash(bytes: &[u8]) -> String {
-    blake3::hash(bytes).to_hex()[..16].to_string()
+/// The hash rolldown names an emitted asset by, which Vite's assets carry:
+/// xxh3-128 of the bytes in rolldown's url-safe base64 (21 characters; a
+/// file name takes the first 8, or `[hash:N]`'s N).
+pub(crate) fn content_hash(bytes: &[u8]) -> String {
+    rolldown_utils::xxhash::xxhash_with_base(bytes, 64)
+}
+
+/// A stylesheet asset's hash: Vite's finalizeCss emits the sheet with
+/// `/*$vite$:1*/` appended (vitejs/vite#18038, so a sheet's name moved when
+/// its links gained `crossorigin`) and strips it in generateBundle, so the
+/// name hashes the marker the file no longer has.
+pub(crate) fn css_asset_hash(css: &str) -> String {
+    content_hash(format!("{css}/*$vite$:1*/").as_bytes())
 }
 
 /// Emit a CSS-referenced asset (font/image) under a content hash and return its
@@ -5140,11 +6122,25 @@ fn render_asset_name(pattern: Option<&str>, name: &str, hash: &str, ext: &str) -
     } else {
         format!(".{ext}")
     };
-    pattern
+    let mut out = pattern
         .replace("[name]", name)
-        .replace("[hash]", &hash[..hash.len().min(8)])
         .replace("[extname]", &extname)
-        .replace("[ext]", ext)
+        .replace("[ext]", ext);
+    // `[hash]` is 8 characters, `[hash:N]` N of them (1 to 21), as rolldown
+    // renders a file name.
+    while let Some(start) = out.find("[hash") {
+        let Some(len) = out[start..].find(']') else {
+            break;
+        };
+        let spec = &out[start + "[hash".len()..start + len];
+        let n = match spec.strip_prefix(':') {
+            Some(n) => n.parse::<usize>().unwrap_or(8).clamp(1, 21),
+            None if spec.is_empty() => 8,
+            None => break,
+        };
+        out.replace_range(start..=start + len, &hash[..hash.len().min(n)]);
+    }
+    out
 }
 
 fn emit_css_url(
@@ -5254,7 +6250,7 @@ fn rebase_css_urls(
 
 /// `build.cssCodeSplit`: emit one stylesheet per chunk that imports CSS and
 /// return `(chunk filename, css filename)` pairs. Which pages link which
-/// stylesheet render-blocking is decided per page by `split_css_links`; chunks
+/// stylesheet render-blocking is decided per page by `page_css_files`; chunks
 /// only reached through dynamic imports get their CSS from `__vitePreload` (and
 /// a self-injecting fallback, see `apply_preload_helper`).
 #[allow(clippy::too_many_arguments)]
@@ -5268,6 +6264,7 @@ fn emit_split_css_files(
     emitted: &mut Vec<(String, usize)>,
     manifest_entries: &mut [ManifestEntry],
     manifest_assets: &mut Vec<ManifestAsset>,
+    stylex_css: &mut Option<String>,
 ) -> anyhow::Result<Vec<(String, String)>> {
     let css_map: std::collections::HashMap<String, String> =
         collected_css.lock().unwrap().iter().cloned().collect();
@@ -5277,44 +6274,58 @@ fn emit_split_css_files(
     }
     let mut seen_assets: std::collections::HashMap<PathBuf, String> =
         std::collections::HashMap::new();
+    // The StyleX sheet joins the first entry chunk's stylesheet (where the
+    // plugin's lands under Vite, whose entry CSS is emitted first), else the
+    // first stylesheet: never a lazy chunk's when an entry has one.
+    let chunks_with_css: Vec<&rolldown_common::OutputChunk> = output
+        .assets
+        .iter()
+        .filter_map(|o| match o {
+            rolldown_common::Output::Chunk(c)
+                if c.modules
+                    .keys
+                    .iter()
+                    .any(|m| css_map.contains_key(m.as_str())) =>
+            {
+                Some(c.as_ref())
+            }
+            _ => None,
+        })
+        .collect();
+    let stylex_chunk = chunks_with_css
+        .iter()
+        .find(|c| c.is_entry)
+        .or(chunks_with_css.first())
+        .map(|c| c.filename.to_string());
     for asset in &output.assets {
         let rolldown_common::Output::Chunk(chunk) = asset else {
             continue;
         };
-        let mut css = String::new();
-        let mut sources: Vec<String> = Vec::new();
-        for module_id in &chunk.modules.keys {
-            let mid = module_id.to_string();
-            if let Some(src) = css_map.get(&mid) {
-                sources.push(mid.clone());
-                let dir = Path::new(&mid)
-                    .parent()
-                    .map(Path::to_path_buf)
-                    .unwrap_or_else(|| root.to_path_buf());
-                if !css.is_empty() {
-                    css.push('\n');
-                }
-                css.push_str(&rebase_css_urls(
-                    src,
-                    &dir,
-                    out_dir,
-                    base,
-                    opts,
-                    emitted,
-                    &mut seen_assets,
-                ));
-            }
-        }
-        if css.is_empty() {
+        let module_ids: Vec<String> = chunk.modules.keys.iter().map(|m| m.to_string()).collect();
+        let Some(sheet) = chunk_stylesheet(
+            &chunk.name,
+            &module_ids,
+            &css_map,
+            root,
+            out_dir,
+            base,
+            opts,
+            emitted,
+            &mut seen_assets,
+        )?
+        else {
             continue;
-        }
-        let hash = content_hash(css.as_bytes());
-        let css_name = render_asset_name(
-            opts.asset_names,
-            &sanitize_asset_name(&chunk.name),
-            &hash,
-            "css",
-        );
+        };
+        let ChunkStylesheet {
+            css,
+            name: css_name,
+            sources,
+        } = sheet;
+        let css = if stylex_chunk.as_deref() == Some(chunk.filename.as_str()) {
+            append_stylex(css, stylex_css.take())
+        } else {
+            css
+        };
         if let Some(parent) = out_dir.join(&css_name).parent() {
             fs::create_dir_all(parent)?;
         }
@@ -5325,254 +6336,160 @@ fn emit_split_css_files(
                 entry.css.push(css_name.clone());
             }
         }
-        // Vite keys the stylesheet's manifest row by each source file it was
-        // built from (the asset's `originalFileNames`).
-        for src in &sources {
-            push_css_manifest_row(manifest_assets, root, src, &css_name);
+        // Vite's css-post emits a chunk's sheet under the chunk's own original
+        // file name (getChunkOriginalFileName), and the manifest keeps an asset
+        // row only when no JS chunk holds that key. So a chunk's sheet is only
+        // listed in the chunk's `css`, with a row of its own (keyed by its
+        // sources) only when the chunk left no JS row.
+        let chunk_has_row = manifest_entries
+            .iter()
+            .any(|e| e.file == chunk.filename.as_str());
+        if !chunk_has_row {
+            for src in &sources {
+                push_css_manifest_row(manifest_assets, root, src, &css_name);
+            }
         }
         chunk_css.push((chunk.filename.to_string(), css_name));
     }
     Ok(chunk_css)
 }
 
-/// Render-blocking `<link rel=stylesheet>` tags for a page: the CSS of its entry
-/// chunks and of every chunk they reach through static imports (no FOUC).
-fn split_css_links(
-    chunk_css: &[(String, String)],
-    entry_files: &[String],
+/// A chunk's stylesheet asset: its CSS modules' sheets in the chunk's module
+/// order, `url()`s emitted, finished as one sheet, and named by its hash
+/// before anything (StyleX) joins it, as Vite names the asset it emits.
+struct ChunkStylesheet {
+    css: String,
+    name: String,
+    sources: Vec<String>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn chunk_stylesheet(
+    chunk_name: &str,
+    module_ids: &[String],
+    css_map: &std::collections::HashMap<String, String>,
+    root: &Path,
+    out_dir: &Path,
+    base: &str,
+    opts: CssAssetOpts<'_>,
+    emitted: &mut Vec<(String, usize)>,
+    seen: &mut std::collections::HashMap<PathBuf, String>,
+) -> anyhow::Result<Option<ChunkStylesheet>> {
+    let mut css = String::new();
+    let mut sources: Vec<String> = Vec::new();
+    for mid in module_ids {
+        if let Some(src) = css_map.get(mid) {
+            sources.push(mid.clone());
+            let dir = Path::new(mid)
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| root.to_path_buf());
+            css.push_str(&rebase_css_urls(
+                src, &dir, out_dir, base, opts, emitted, seen,
+            ));
+        }
+    }
+    if css.is_empty() {
+        return Ok(None);
+    }
+    let css = chunk_css_asset(&css, &opts.resolve)?;
+    let name = render_asset_name(
+        opts.asset_names,
+        &sanitize_asset_name(chunk_name),
+        &css_asset_hash(&css),
+        "css",
+    );
+    Ok(Some(ChunkStylesheet { css, name, sources }))
+}
+
+/// The stylesheets a page links for its entry chunk (Vite's
+/// `getCssFilesForChunk`): the CSS of every chunk it reaches through static
+/// imports, dependencies first, then its own, each once (no FOUC).
+fn page_css_files<'a>(
+    chunk_css: &'a [(String, String)],
+    entry: &str,
     imports_map: &std::collections::HashMap<String, Vec<String>>,
-    page_base: &str,
-) -> String {
-    let css_of: std::collections::HashMap<&str, &str> = chunk_css
-        .iter()
-        .map(|(c, s)| (c.as_str(), s.as_str()))
-        .collect();
-    let mut linked: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    let mut links = String::new();
-    for chunk in ordered_sync_chunks(entry_files, imports_map) {
-        if let Some(css_name) = css_of.get(chunk.as_str()) {
-            if linked.insert(css_name) {
-                if !links.is_empty() {
-                    links.push('\n');
-                }
-                links.push_str(&format!(
-                    "<link rel=\"stylesheet\" href=\"{}\" crossorigin />",
-                    with_base(css_name, page_base)
-                ));
+) -> Vec<&'a str> {
+    let mut out: Vec<&str> = Vec::new();
+    for chunk in ordered_sync_chunks(&[entry.to_string()], imports_map) {
+        for (_, css) in chunk_css.iter().filter(|(c, _)| *c == chunk) {
+            if !out.contains(&css.as_str()) {
+                out.push(css);
             }
         }
     }
-    links
+    out
 }
 
-/// Vite's `__vitePreload` helper (importAnalysisBuild.ts), ES2015 so it survives
-/// any `build.target`. `__vite__assetsURL` is generated per base: a relative base
-/// resolves deps against the importing chunk, an absolute base is prefixed.
-const PRELOAD_HELPER_JS: &str = r#"const __vite__scriptRel=(function(){var r=typeof document!=="undefined"&&document.createElement("link").relList;return r&&r.supports&&r.supports("modulepreload")?"modulepreload":"preload"})();const __vite__seen={};function __vitePreload(baseModule,deps,importerUrl){var promise=Promise.resolve();if(deps&&deps.length>0){var links=document.getElementsByTagName("link");var cspNonceMeta=document.querySelector("meta[property=csp-nonce]");var cspNonce=cspNonceMeta&&(cspNonceMeta.nonce||cspNonceMeta.getAttribute("nonce"));var allSettled=function(ps){return Promise.all(ps.map(function(p){return Promise.resolve(p).then(function(value){return{status:"fulfilled",value:value}},function(reason){return{status:"rejected",reason:reason}})}))};promise=allSettled(deps.map(function(dep){dep=new URL(__vite__assetsURL(dep,importerUrl),import.meta.url).href;if(dep in __vite__seen)return;__vite__seen[dep]=true;var isCss=dep.endsWith(".css");for(var i=links.length-1;i>=0;i--){var l=links[i];if(l.href===dep&&(!isCss||l.rel==="stylesheet"))return}var link=document.createElement("link");link.rel=isCss?"stylesheet":__vite__scriptRel;if(!isCss){link.as="script"}link.crossOrigin="";link.href=dep;if(cspNonce)link.setAttribute("nonce",cspNonce);document.head.appendChild(link);if(isCss){return new Promise(function(res,rej){link.addEventListener("load",res);link.addEventListener("error",function(){rej(new Error("Unable to preload CSS for "+dep))})})}}))}function handlePreloadError(err){var e=new Event("vite:preloadError",{cancelable:true});e.payload=err;window.dispatchEvent(e);if(!e.defaultPrevented)throw err}return promise.then(function(res){for(var i=0;i<(res||[]).length;i++){var item=res[i];if(item.status!=="rejected")continue;handlePreloadError(item.reason)}return baseModule().catch(handlePreloadError)})}"#;
+/// The polyfill's specifier, imported first by each page proxy, and the id it
+/// resolves to (Vite's, whose chunk is named `modulepreload-polyfill`).
+const MODULEPRELOAD_POLYFILL_SPEC: &str = "vite/modulepreload-polyfill";
+const MODULEPRELOAD_POLYFILL_ID: &str = "\0vite/modulepreload-polyfill.js";
 
-/// Vite's `vite/modulepreload-polyfill` (fetches `<link rel=modulepreload>` on
-/// browsers without native support), injected into page entry chunks.
-const MODULEPRELOAD_POLYFILL_JS: &str = r#"(function(){var relList=document.createElement("link").relList;if(relList&&relList.supports&&relList.supports("modulepreload"))return;for(var i=0,ls=document.querySelectorAll('link[rel="modulepreload"]');i<ls.length;i++)processPreload(ls[i]);new MutationObserver(function(mutations){for(var m=0;m<mutations.length;m++){var mutation=mutations[m];if(mutation.type!=="childList")continue;for(var n=0;n<mutation.addedNodes.length;n++){var node=mutation.addedNodes[n];if(node.tagName==="LINK"&&node.rel==="modulepreload")processPreload(node)}}}).observe(document,{childList:true,subtree:true});function getFetchOpts(link){var fetchOpts={};if(link.integrity)fetchOpts.integrity=link.integrity;if(link.referrerPolicy)fetchOpts.referrerPolicy=link.referrerPolicy;if(link.crossOrigin==="use-credentials")fetchOpts.credentials="include";else if(link.crossOrigin==="anonymous")fetchOpts.credentials="omit";else fetchOpts.credentials="same-origin";return fetchOpts}function processPreload(link){if(link.ep)return;link.ep=true;var fetchOpts=getFetchOpts(link);fetch(link.href,fetchOpts)}})();"#;
-
-/// Wrap each `import("./chunk.js")` in a chunk with `__vitePreload`, passing the
-/// dependency list Vite would (the lazy chunk, its statically imported chunks
-/// and their stylesheets, minus what the importer already has), prepend the
-/// modulepreload polyfill to page entries, and give async-only chunks that own
-/// CSS a self-injecting fallback link. Everything is prepended on the chunk's
-/// first line so existing sourcemap line numbers stay valid.
-#[allow(clippy::too_many_arguments)]
+/// Vite's build import analysis, once the chunks are written: each
+/// `__VITE_PRELOAD__` marker the import analysis plugin left becomes the
+/// import's preload list (the lazy chunk, what it imports and their
+/// stylesheets, when that is more than the chunk itself), with the chunk's
+/// `__vite__mapDeps` table prepended, as Vite's generateBundle does after the
+/// file names are fixed. Its sourcemap follows the edits.
 fn apply_preload_helper(
     output: &rolldown::BundleOutput,
     out_dir: &Path,
     base: &str,
     imports_map: &std::collections::HashMap<String, Vec<String>>,
     chunk_css: &[(String, String)],
-    sync_chunks: &std::collections::BTreeSet<String>,
-    page_entries: &[String],
-    polyfill: bool,
-    banner: Option<&str>,
-    worker_entries: &std::collections::HashSet<String>,
+    module_preload: bool,
 ) -> anyhow::Result<()> {
     let css_of: std::collections::HashMap<&str, &str> = chunk_css
         .iter()
         .map(|(c, css)| (c.as_str(), css.as_str()))
         .collect();
     let relative = is_relative_base(base);
-    // Chunks only a worker ever loads run without a `document`: no preload
-    // wrapping, no stylesheet self-injection (Vite builds workers without its
-    // import analysis, `isWorker`).
-    let worker_only = {
-        let mut entries: Vec<(String, bool)> = Vec::new();
-        let mut dynamic_map: std::collections::HashMap<String, Vec<String>> =
-            std::collections::HashMap::new();
-        for asset in &output.assets {
-            if let rolldown_common::Output::Chunk(chunk) = asset {
-                let file = chunk.filename.to_string();
-                dynamic_map.insert(
-                    file.clone(),
-                    chunk
-                        .dynamic_imports
-                        .iter()
-                        .map(|d| d.to_string())
-                        .collect(),
-                );
-                if chunk.is_entry {
-                    let is_worker = chunk
-                        .facade_module_id
-                        .as_ref()
-                        .is_some_and(|f| worker_entries.contains(f.as_ref() as &str));
-                    entries.push((file, is_worker));
-                }
-            }
-        }
-        worker_only_chunks(&entries, imports_map, &dynamic_map)
-    };
     for asset in &output.assets {
         let rolldown_common::Output::Chunk(chunk) = asset else {
             continue;
         };
         let file = chunk.filename.to_string();
-        if worker_only.contains(&file) {
-            continue;
-        }
         let path = out_dir.join(&file);
-        let Ok(mut code) = fs::read_to_string(&path) else {
+        let Ok(code) = fs::read_to_string(&path) else {
             continue;
         };
-        let mut prefix = String::new();
-
-        if polyfill && page_entries.iter().any(|e| e == &file) {
-            prefix.push_str(MODULEPRELOAD_POLYFILL_JS);
-        }
-
-        let mut dep_list: Vec<String> = Vec::new();
-        let mut wrapped = false;
-        if !chunk.dynamic_imports.is_empty() {
-            let own: std::collections::BTreeSet<String> = std::iter::once(file.clone())
-                .chain(transitive_imports(&file, imports_map))
-                .collect();
-            for target in &chunk.dynamic_imports {
-                let target = target.to_string();
-                let rel = relative_chunk_path(&file, &target);
-                let mut deps = preload_deps(&target, imports_map, &css_of, &own);
-                // Only the chunk itself: `import()` fetches it anyway.
-                if deps.len() <= 1 {
-                    deps.clear();
-                }
-                let mut idx: Vec<String> = Vec::new();
-                for d in deps {
-                    let d = if relative {
-                        relative_chunk_path(&file, &d)
-                    } else {
-                        d
-                    };
-                    let i = match dep_list.iter().position(|x| x == &d) {
-                        Some(i) => i,
-                        None => {
-                            dep_list.push(d);
-                            dep_list.len() - 1
-                        }
-                    };
-                    idx.push(i.to_string());
-                }
-                // rolldown's minifier may emit the specifier in any quote style.
-                for quote in ['"', '\'', '`'] {
-                    let needle = format!("import({quote}{rel}{quote})");
-                    if code.contains(&needle) {
-                        let replacement = format!(
-                            "__vitePreload(function(){{return import({quote}{rel}{quote})}},__vite__mapDeps([{}]),import.meta.url)",
-                            idx.join(",")
-                        );
-                        code = code.replace(&needle, &replacement);
-                        wrapped = true;
-                    }
-                }
+        let dependency = |f: &str| -> Option<vite_preload::Dependency<'_>> {
+            let (name, imports) = imports_map.get_key_value(f)?;
+            Some(vite_preload::Dependency {
+                js: Some(name.as_str()),
+                imports: imports.as_slice(),
+                css: css_of.get(f).copied(),
+            })
+        };
+        let Some(vite_preload::FilledChunk {
+            code: filled,
+            table,
+            spans,
+        }) =
+            vite_preload::fill_preload_markers(&code, &file, relative, module_preload, &dependency)
+        else {
+            continue;
+        };
+        // The table goes first, after a hashbang line when there is one.
+        let insert_at = if filled.starts_with("#!") {
+            filled.find('\n').map_or(filled.len(), |i| i + 1)
+        } else {
+            0
+        };
+        let table = table.unwrap_or_default();
+        let written = format!("{}{table}{}", &filled[..insert_at], &filled[insert_at..]);
+        let map_path = out_dir.join(format!("{file}.map"));
+        if let Ok(map) = fs::read_to_string(&map_path) {
+            let from_line = u32::from(insert_at > 0);
+            let inserted = (!table.is_empty()).then_some(from_line);
+            if let Some(shifted) = vite_preload::shift_sourcemap(&map, &code, &spans, inserted) {
+                fs::write(&map_path, shifted)?;
             }
         }
-        if wrapped {
-            let assets_url = if relative {
-                "function(dep,importerUrl){return new URL(dep,importerUrl).href}".to_string()
-            } else {
-                format!(
-                    "function(dep){{return {}+dep}}",
-                    serde_json::Value::String(base.to_string())
-                )
-            };
-            prefix.push_str(&format!(
-                "const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f={})))=>i.map(i=>d[i]);const __vite__assetsURL={assets_url};{PRELOAD_HELPER_JS}",
-                serde_json::Value::Array(
-                    dep_list
-                        .iter()
-                        .map(|d| serde_json::Value::String(d.clone()))
-                        .collect()
-                )
-            ));
-        }
-
-        // Async-only chunks with CSS: a fallback for dynamic imports the rewrite
-        // above could not see (variable specifiers), idempotent against preload.
-        if !sync_chunks.contains(&file) {
-            if let Some(css_name) = css_of.get(file.as_str()) {
-                let href = serde_json::Value::String(if relative {
-                    relative_chunk_path(&file, css_name)
-                } else {
-                    with_base(css_name, base)
-                });
-                // Compare resolved URLs (`link.href` is absolute), so a link the
-                // preload helper or the page already added is recognized.
-                prefix.push_str(&format!(
-                    "(function(){{var u=new URL({href},import.meta.url).href;var ls=document.getElementsByTagName('link');for(var i=0;i<ls.length;i++){{if(ls[i].rel==='stylesheet'&&ls[i].href===u)return}}var l=document.createElement('link');l.rel='stylesheet';l.href=u;document.head.appendChild(l)}})();"
-                ));
-            }
-        }
-
-        if !prefix.is_empty() {
-            // `output.banner` stays the first thing in the file (a license
-            // header, a `"use client"` directive) ahead of oj's helpers.
-            let (head, body) = match banner {
-                Some(b) if !b.is_empty() && code.starts_with(b) => (b, &code[b.len()..]),
-                _ => ("", code.as_str()),
-            };
-            fs::write(&path, format!("{head}{prefix}{body}"))?;
-        }
+        fs::write(&path, written)?;
     }
     Ok(())
-}
-
-/// The chunks reachable (statically or dynamically) from worker entries but from
-/// no other entry.
-fn worker_only_chunks(
-    entries: &[(String, bool)],
-    imports_map: &std::collections::HashMap<String, Vec<String>>,
-    dynamic_map: &std::collections::HashMap<String, Vec<String>>,
-) -> std::collections::BTreeSet<String> {
-    let closure = |roots: &[&String]| -> std::collections::BTreeSet<String> {
-        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        let mut stack: Vec<String> = roots.iter().map(|r| (*r).clone()).collect();
-        while let Some(f) = stack.pop() {
-            if !seen.insert(f.clone()) {
-                continue;
-            }
-            for m in [imports_map, dynamic_map] {
-                if let Some(deps) = m.get(&f) {
-                    stack.extend(deps.iter().cloned());
-                }
-            }
-        }
-        seen
-    };
-    let workers: Vec<&String> = entries.iter().filter(|(_, w)| *w).map(|(f, _)| f).collect();
-    if workers.is_empty() {
-        return std::collections::BTreeSet::new();
-    }
-    let others: Vec<&String> = entries
-        .iter()
-        .filter(|(_, w)| !*w)
-        .map(|(f, _)| f)
-        .collect();
-    let from_workers = closure(&workers);
-    let from_others = closure(&others);
-    from_workers.difference(&from_others).cloned().collect()
 }
 
 /// Vite's `ssr-manifest.json` (ssrManifestPlugin): for every source module in the
@@ -5844,7 +6761,10 @@ fn manifest_entries_from_bundle(
 // serialize_bundle plus a synthetic `.vite/manifest.json` asset, so a plugin's
 // generateBundle can read the Vite build manifest from the bundle the way it
 // would under Vite (with build.manifest enabled).
-fn serialize_bundle_with_vite_manifest(bundle: &[rolldown_common::Output], root: &Path) -> String {
+pub(crate) fn serialize_bundle_with_vite_manifest(
+    bundle: &[rolldown_common::Output],
+    root: &Path,
+) -> String {
     let base = serialize_bundle(bundle);
     let mut entries = manifest_entries_from_bundle(bundle, root);
     let mut assets = Vec::new();
@@ -5924,6 +6844,9 @@ fn build_manifest(entries: &[ManifestEntry], assets: &[ManifestAsset]) -> serde_
     }
     serde_json::Value::Object(map)
 }
+
+mod html_tags;
+mod vite_preload;
 
 // The plugin-API build contract (emitFile, generateBundle, hook gating, ...)
 // end to end through `build`: real plugins in the in-process host, assertions
@@ -6144,20 +7067,24 @@ mod tests {
         for (index, (config_name, config, expected)) in [
             (
                 "oj.config.json",
-                r#"{"build":{"modulePreload":false}}"#,
+                r#"{"build":{"modulePreload":false,"rollupOptions":{"input":["index.html","other.html"]}}}"#,
                 false,
             ),
             (
                 "vite.config.mjs",
-                "export default { build: { modulePreload: false } };",
+                "export default { build: { modulePreload: false, rollupOptions: { input: [\"index.html\", \"other.html\"] } } };",
                 false,
             ),
             (
                 "oj.config.json",
-                r#"{"build":{"modulePreload":{"polyfill":false}}}"#,
+                r#"{"build":{"modulePreload":{"polyfill":false},"rollupOptions":{"input":["index.html","other.html"]}}}"#,
                 true,
             ),
-            ("oj.config.json", "{}", true),
+            (
+                "oj.config.json",
+                r#"{"build":{"rollupOptions":{"input":["index.html","other.html"]}}}"#,
+                true,
+            ),
         ]
         .into_iter()
         .enumerate()
@@ -6172,10 +7099,14 @@ mod tests {
             fs::write(root.join(config_name), config).unwrap();
             fs::write(
                 root.join("index.html"),
-                r#"<html><head></head><body>
-                    <script type="module" src="/first.js"></script>
-                    <script type="module" src="/second.js"></script>
-                </body></html>"#,
+                r#"<html><head></head><body><script type="module" src="/first.js"></script></body></html>"#,
+            )
+            .unwrap();
+            // A second page sharing a module, so the build has a shared
+            // chunk the pages modulepreload (one page is one entry).
+            fs::write(
+                root.join("other.html"),
+                r#"<html><head></head><body><script type="module" src="/second.js"></script></body></html>"#,
             )
             .unwrap();
             fs::write(
@@ -6203,11 +7134,39 @@ mod tests {
         }
     }
 
+    // `oj build` expands an aliased glob through `resolve.alias` (Vite's
+    // toAbsoluteGlob -> resolveId), with root-absolute keys.
+    #[test]
+    fn expand_import_meta_resolves_aliased_globs() {
+        let dir = scratch("expand-import-meta-alias");
+        fs::create_dir_all(dir.join("src/assets")).unwrap();
+        fs::write(dir.join("src/assets/hero.png"), "png").unwrap();
+        let id = dir.join("src/App.tsx").to_string_lossy().into_owned();
+        let alias = vec![("@".to_string(), dir.join("src").display().to_string())];
+        let out = expand_import_meta(
+            &id,
+            "const m = import.meta.glob(\"@/assets/*.png\");\n",
+            &dir,
+            &alias,
+        )
+        .expect("aliased glob expands");
+        assert!(
+            out.contains(r#""/src/assets/hero.png": () => import("./assets/hero.png")"#),
+            "{out}"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn expand_import_meta_reports_only_real_changes() {
         // No marker at all.
         assert_eq!(
-            expand_import_meta("/app/src/a.ts", "export const a = 1;\n"),
+            expand_import_meta(
+                "/app/src/a.ts",
+                "export const a = 1;\n",
+                Path::new("/app"),
+                &[]
+            ),
             None
         );
         // A plain string-literal dynamic import is left alone by the expander,
@@ -6215,7 +7174,9 @@ mod tests {
         assert_eq!(
             expand_import_meta(
                 "/app/src/r.tsx",
-                "const P = lazy(() => import(\"./pages/P\"));\n"
+                "const P = lazy(() => import(\"./pages/P\"));\n",
+                Path::new("/app"),
+                &[]
             ),
             None
         );
@@ -6223,7 +7184,9 @@ mod tests {
         assert_eq!(
             expand_import_meta(
                 "/app/node_modules/x/index.js",
-                "export const c = (n) => import(`./c/${n}.js`);\n"
+                "export const c = (n) => import(`./c/${n}.js`);\n",
+                Path::new("/app"),
+                &[]
             ),
             None
         );
@@ -6233,8 +7196,13 @@ mod tests {
         fs::create_dir_all(dir.join("locales")).unwrap();
         fs::write(dir.join("locales/en.json"), "{}").unwrap();
         let id = dir.join("main.js").to_string_lossy().into_owned();
-        let out = expand_import_meta(&id, "const load = (l) => import(`./locales/${l}.json`);\n")
-            .expect("matching variable dynamic import expands");
+        let out = expand_import_meta(
+            &id,
+            "const load = (l) => import(`./locales/${l}.json`);\n",
+            &dir,
+            &[],
+        )
+        .expect("matching variable dynamic import expands");
         assert!(
             out.contains(r#"case "./locales/en.json": return import("./locales/en.json")"#),
             "{out}"
@@ -6250,6 +7218,8 @@ mod tests {
         let out = expand_import_meta(
             "/app/src/main.js",
             "const w = new Worker(new URL(\"./w.ts\", import.meta.url), { type: \"module\" });\nconst s = new SharedWorker(new URL(\"./w.ts\", import.meta.url));\n",
+            Path::new("/app"),
+            &[],
         )
         .expect("new URL asset expands");
         assert!(
@@ -6311,9 +7281,9 @@ mod tests {
             .filter_map(|e| e.ok().map(|e| e.path()))
             .find(|p| {
                 let name = p.file_name().unwrap().to_string_lossy();
-                name.starts_with("main-") && name.ends_with(".map")
+                name.starts_with("index-") && name.ends_with(".map")
             })
-            .expect("main-*.map emitted");
+            .expect("index-*.map emitted");
         let map: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&map_path).unwrap()).unwrap();
         let sources: Vec<&str> = map["sources"]
@@ -6420,18 +7390,6 @@ mod tests {
         assert_eq!(
             resolve_html_ref("main.tsx", page_dir, root),
             PathBuf::from("/proj/src/pages/options/main.tsx")
-        );
-    }
-
-    #[test]
-    fn insert_before_head_places_snippet_or_prepends() {
-        assert_eq!(
-            insert_before_head("<head></head><body></body>", "<x>"),
-            "<head><x>\n</head><body></body>"
-        );
-        assert_eq!(
-            insert_before_head("<body></body>", "<x>"),
-            "<x>\n<body></body>"
         );
     }
 
@@ -6790,6 +7748,121 @@ mod tests {
         );
     }
 
+    /// Vite's `bundleWorkerEntry`: a `?worker` is its own bundle, so the app's
+    /// import analysis never wraps the worker's `import()` in `__vitePreload`
+    /// (which reaches for `document`), not even for a module the app shares,
+    /// and the worker's lazy chunk is split off next to it.
+    #[tokio::test]
+    async fn worker_bundle_carries_no_document_helpers() {
+        let root = scratch("worker-own-bundle");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("package.json"), r#"{"type":"module"}"#).unwrap();
+        fs::write(
+            root.join("src/shared.js"),
+            "export const load = () => import('./lazy.js');\n",
+        )
+        .unwrap();
+        fs::write(root.join("src/lazy.js"), "export const v = 'lazy-value';\n").unwrap();
+        fs::write(
+            root.join("src/w.js"),
+            "import { load } from './shared.js';\nself.onmessage = async () => self.postMessage((await load()).v);\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/main.js"),
+            "import W from './w.js?worker';\nimport url from './w.js?worker&url';\nimport { load } from './shared.js';\n\
+             load().then((m) => { document.body.textContent = m.v + url; new W(); });\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("index.html"),
+            r#"<html><body><script type="module" src="/src/main.js"></script></body></html>"#,
+        )
+        .unwrap();
+        build(root.clone(), Some("production"), CliOptions::default())
+            .await
+            .expect("worker fixture should build");
+        let assets: Vec<String> = fs::read_dir(root.join("dist/assets"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        let read = |f: &str| fs::read_to_string(root.join("dist/assets").join(f)).unwrap();
+        let workers: Vec<&String> = assets
+            .iter()
+            .filter(|f| f.starts_with("w-") && f.ends_with(".js"))
+            .collect();
+        assert_eq!(workers.len(), 1, "one bundle for both imports: {assets:?}");
+        let worker = read(workers[0]);
+        assert!(
+            !worker.contains("__vitePreload") && !worker.contains("document"),
+            "document-only helper in the worker:\n{worker}"
+        );
+        assert!(
+            worker.contains("import("),
+            "the worker keeps its lazy import:\n{worker}"
+        );
+        let main = read(
+            assets
+                .iter()
+                .find(|f| f.starts_with("index-") && f.ends_with(".js"))
+                .unwrap(),
+        );
+        assert!(
+            main.contains(workers[0].as_str()),
+            "the app points at the worker bundle:\n{main}"
+        );
+        assert!(
+            assets
+                .iter()
+                .filter(|f| f.starts_with("lazy-") && f.ends_with(".js"))
+                .any(|f| read(f).contains("lazy-value")),
+            "the lazy chunk is emitted: {assets:?}"
+        );
+    }
+
+    /// Two workers importing each other fail with Vite's cycle error instead of
+    /// waiting on each other's bundle.
+    #[tokio::test]
+    async fn circular_worker_imports_fail() {
+        let root = scratch("worker-cycle");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("package.json"), r#"{"type":"module"}"#).unwrap();
+        fs::write(
+            root.join("src/a.js"),
+            "import B from './b.js?worker';\nnew B();\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/b.js"),
+            "import A from './a.js?worker';\nnew A();\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/main.js"),
+            "import A from './a.js?worker';\nimport B from './b.js?worker';\nnew A(); new B();\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("index.html"),
+            r#"<html><body><script type="module" src="/src/main.js"></script></body></html>"#,
+        )
+        .unwrap();
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            build(root.clone(), Some("production"), CliOptions::default()),
+        )
+        .await
+        .expect("a worker cycle must fail, not hang")
+        .expect_err("a worker cycle must fail the build");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("Circular worker imports detected")
+                && (msg.contains("src/a.js -> src/b.js -> src/a.js")
+                    || msg.contains("src/b.js -> src/a.js -> src/b.js")),
+            "{msg}"
+        );
+    }
+
     /// The plugin host of an SSR (and client-entry) build is told the real mode,
     /// so a plugin's `configResolved(config).mode` under `--mode staging` is
     /// "staging" as in Vite, not a hardcoded "production".
@@ -7088,37 +8161,6 @@ mod tests {
         let w = chunk_size_warning(500.0);
         assert!(w.contains("larger than 500 kB after minification"));
         assert!(w.contains("build.chunkSizeWarningLimit"));
-    }
-
-    #[test]
-    fn worker_only_chunks_exclude_anything_a_page_entry_reaches() {
-        let entries = vec![("main.js".to_string(), false), ("w.js".to_string(), true)];
-        let imports: std::collections::HashMap<String, Vec<String>> = [
-            ("main.js".to_string(), vec!["shared.js".to_string()]),
-            (
-                "w.js".to_string(),
-                vec!["shared.js".to_string(), "wlib.js".to_string()],
-            ),
-        ]
-        .into_iter()
-        .collect();
-        let dynamics: std::collections::HashMap<String, Vec<String>> =
-            [("w.js".to_string(), vec!["wlazy.js".to_string()])]
-                .into_iter()
-                .collect();
-        let only = worker_only_chunks(&entries, &imports, &dynamics);
-        assert_eq!(
-            only.into_iter().collect::<Vec<_>>(),
-            vec![
-                "w.js".to_string(),
-                "wlazy.js".to_string(),
-                "wlib.js".to_string()
-            ],
-            "shared.js is reachable from the page, so it keeps the document helpers"
-        );
-        assert!(
-            worker_only_chunks(&[("main.js".to_string(), false)], &imports, &dynamics).is_empty()
-        );
     }
 
     #[test]
@@ -7506,16 +8548,30 @@ mod tests {
     }
 
     #[test]
-    fn content_hashes_are_stable_and_content_addressed() {
-        // Pinned: filenames derived from this end up in caching headers, so the
-        // value must not drift with the toolchain that built oj.
-        assert_eq!(content_hash(b""), "af1349b9f5f9a1a6");
-        assert_eq!(content_hash(b"oj"), "b74f11b8dbbdd6b4");
-        assert_eq!(content_hash(b"oj").len(), 16);
-        assert!(content_hash(b"oj").chars().all(|c| c.is_ascii_hexdigit()));
-        assert_ne!(content_hash(b"a"), content_hash(b"b"));
-        // A one-bit difference is a different name.
+    fn content_hashes_are_rolldowns_and_name_files_as_vite_does() {
+        // Pinned: rolldown's own vector for its asset hash (xxh3-128, url-safe
+        // base64), so oj's names cannot drift from Vite's.
+        assert_eq!(content_hash(b"hello"), "YOFJeqs95x38-Gwetwem1");
         assert_ne!(content_hash(&[0x00]), content_hash(&[0x01]));
+        // The stylesheet Vite 8 wrote as `index-Dd1cQZtR.css`: its name hashes
+        // the sheet with Vite's `/*$vite$:1*/` marker the file does not keep.
+        let sheet =
+            "body{margin:0}.b{color:#00f;background:url(/assets/bg-ImMoGWfP.png)}.a{color:red}\n";
+        assert_eq!(&css_asset_hash(sheet)[..8], "Dd1cQZtR");
+        assert_eq!(
+            render_asset_name(None, "index", &css_asset_hash(sheet), "css"),
+            "assets/index-Dd1cQZtR.css"
+        );
+        // `[hash:N]` takes N characters (1 to 21), `[hash]` 8.
+        let hash = content_hash(b"hello");
+        assert_eq!(
+            render_asset_name(Some("x/[name].[hash:4]-[hash][extname]"), "a", &hash, "png"),
+            "x/a.YOFJ-YOFJeqs9.png"
+        );
+        assert_eq!(
+            render_asset_name(Some("[hash:99][ext]"), "a", &hash, "png"),
+            "YOFJeqs95x38-Gwetwem1png"
+        );
     }
 
     #[test]
@@ -7602,71 +8658,30 @@ mod tests {
     // output order: Vite links an imported (shared/vendor) stylesheet before the
     // entry's own, so a module rule wins the equal-specificity tie.
     #[test]
-    fn split_css_links_orders_shared_css_before_the_entry_css() {
+    fn page_css_files_orders_shared_css_before_the_entry_css() {
         let chunk_css = vec![
             ("entry.js".to_string(), "entry.css".to_string()),
             ("base.js".to_string(), "base.css".to_string()),
         ];
         let mut imports_map = std::collections::HashMap::new();
         imports_map.insert("entry.js".to_string(), vec!["base.js".to_string()]);
-        let links = split_css_links(&chunk_css, &["entry.js".to_string()], &imports_map, "/");
         assert_eq!(
-            links,
-            "<link rel=\"stylesheet\" href=\"/base.css\" crossorigin />\n<link rel=\"stylesheet\" href=\"/entry.css\" crossorigin />"
+            page_css_files(&chunk_css, "entry.js", &imports_map),
+            ["base.css", "entry.css"]
         );
         // A chunk that is not synchronously reachable keeps its CSS unlinked.
         let dyn_css = vec![
             ("entry.js".to_string(), "entry.css".to_string()),
             ("lazy.js".to_string(), "lazy.css".to_string()),
         ];
-        let links = split_css_links(
-            &dyn_css,
-            &["entry.js".to_string()],
-            &std::collections::HashMap::new(),
-            "/",
-        );
         assert_eq!(
-            links,
-            "<link rel=\"stylesheet\" href=\"/entry.css\" crossorigin />"
+            page_css_files(&dyn_css, "entry.js", &std::collections::HashMap::new()),
+            ["entry.css"]
         );
     }
 
     // Vite's addDeps: a lazy chunk's own stylesheet after the CSS of the chunks
     // it imports, and nothing the importer already has.
-    #[test]
-    fn preload_deps_put_a_lazy_chunks_css_after_its_imports() {
-        let imports: std::collections::HashMap<String, Vec<String>> = [
-            ("lazy.js", vec!["shared.js", "vendor.js"]),
-            ("shared.js", vec!["vendor.js"]),
-        ]
-        .into_iter()
-        .map(|(k, v)| (k.to_string(), v.into_iter().map(String::from).collect()))
-        .collect();
-        let css_of: std::collections::HashMap<&str, &str> = [
-            ("lazy.js", "lazy.css"),
-            ("shared.js", "shared.css"),
-            ("vendor.js", "vendor.css"),
-        ]
-        .into_iter()
-        .collect();
-        let none = std::collections::BTreeSet::new();
-        assert_eq!(
-            preload_deps("lazy.js", &imports, &css_of, &none),
-            [
-                "lazy.js",
-                "shared.js",
-                "vendor.js",
-                "vendor.css",
-                "shared.css",
-                "lazy.css"
-            ]
-        );
-        let own = std::collections::BTreeSet::from(["vendor.js".to_string()]);
-        assert_eq!(
-            preload_deps("lazy.js", &imports, &css_of, &own),
-            ["lazy.js", "shared.js", "shared.css", "lazy.css"]
-        );
-    }
 
     #[test]
     fn asset_names_are_sanitized_without_collapsing_to_nothing() {

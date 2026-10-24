@@ -13,6 +13,8 @@ members = [
     "crates/oj_server",
     "crates/oj",
     "crates/oj_js",
+    "crates/oj_stylex",
+    "crates/fru",
     "crates/oj_wasm",
     "crates/oj_deno_napi",
     "crates/oj_deno_runtime",
@@ -20,22 +22,23 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.39"
+version = "0.2.45"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/lovablelabs/oj"
 
 [workspace.dependencies]
-oj_compiler = { version = "0.2.39", path = "crates/oj_compiler" }
-oj_resolver = { version = "0.2.39", path = "crates/oj_resolver" }
-oj_graph = { version = "0.2.39", path = "crates/oj_graph" }
-oj_cache = { version = "0.2.39", path = "crates/oj_cache" }
-oj_css = { version = "0.2.39", path = "crates/oj_css" }
-oj_diag = { version = "0.2.39", path = "crates/oj_diag" }
-oj_env = { version = "0.2.39", path = "crates/oj_env" }
-oj_config = { version = "0.2.39", path = "crates/oj_config" }
-oj_server = { version = "0.2.39", path = "crates/oj_server" }
-oj_js = { version = "0.2.39", path = "crates/oj_js" }
+oj_compiler = { version = "0.2.45", path = "crates/oj_compiler" }
+oj_resolver = { version = "0.2.45", path = "crates/oj_resolver" }
+oj_graph = { version = "0.2.45", path = "crates/oj_graph" }
+oj_cache = { version = "0.2.45", path = "crates/oj_cache" }
+oj_css = { version = "0.2.45", path = "crates/oj_css" }
+oj_diag = { version = "0.2.45", path = "crates/oj_diag" }
+oj_env = { version = "0.2.45", path = "crates/oj_env" }
+oj_config = { version = "0.2.45", path = "crates/oj_config" }
+oj_server = { version = "0.2.45", path = "crates/oj_server" }
+oj_js = { version = "0.2.45", path = "crates/oj_js" }
+oj_stylex = { version = "0.2.45", path = "crates/oj_stylex" }
 
 # oj-maintained forks of deno_napi 0.190.0 and deno_runtime 0.267.0 (published
 # to crates.io under these names), carrying oj's napi finalizer-registry patch:
@@ -45,24 +48,25 @@ oj_js = { version = "0.2.39", path = "crates/oj_js" }
 # children. See crates/oj_deno_napi/lib.rs. Consumers rename them back via the
 # dependency key so `use deno_napi::`/`use deno_runtime::` stay unchanged; a
 # published oj resolves them by version from crates.io.
-oj_deno_napi = { package = "oj_deno_napi", version = "0.2.39", path = "crates/oj_deno_napi" }
-oj_deno_runtime = { package = "oj_deno_runtime", version = "0.2.39", path = "crates/oj_deno_runtime" }
+oj_deno_napi = { package = "oj_deno_napi", version = "0.2.45", path = "crates/oj_deno_napi" }
+oj_deno_runtime = { package = "oj_deno_runtime", version = "0.2.45", path = "crates/oj_deno_runtime" }
 
-oxc_allocator = "0.146.0"
-oxc_parser = "0.146.0"
-oxc_ast = "0.146.0"
-oxc_ast_visit = "0.146.0"
-oxc_span = "0.146.0"
-oxc_semantic = "0.146.0"
-oxc_transformer = "0.146.0"
-oxc_transformer_plugins = "0.146.0"
-oxc_minifier = "0.146.0"
-oxc_ecmascript = "0.146.0"
-oxc_syntax = "0.146.0"
-oxc_codegen = "0.146.0"
-oxc_diagnostics = "0.146.0"
-oxc_sourcemap = "8.1.2"
-oxc_resolver = "11.24.2"
+oxc_allocator = "0.155.0"
+oxc_parser = "0.155.0"
+oxc_ast = "0.155.0"
+oxc_ast_visit = "0.155.0"
+oxc_span = "0.155.0"
+oxc_semantic = "0.155.0"
+oxc_transformer = "0.155.0"
+oxc_transformer_plugins = "0.155.0"
+oxc_minifier = "0.155.0"
+oxc_ecmascript = "0.155.0"
+oxc_syntax = "0.155.0"
+oxc_str = "0.155.0"
+oxc_codegen = "0.155.0"
+oxc_diagnostics = "0.155.0"
+oxc_sourcemap = "9.0.0"
+oxc_resolver = "11.24.3"
 base64 = "0.22"
 
 anyhow = "1.0.104"
@@ -75,7 +79,7 @@ serde_json = "1.0.151"
 tokio = { version = "1.53.1", features = ["full"] }
 axum = { version = "0.8.9", features = ["ws"] }
 tower = { version = "0.5.3", features = ["util"] }
-notify = "8.2.0"
+notify = "=9.0.0-rc.6"
 clap = { version = "4.6.6", features = ["derive"] }
 
 # test-only
@@ -104,6 +108,8 @@ oj_cache = { opt-level = 3 }
 oj_diag = { opt-level = 3 }
 oj_env = { opt-level = 3 }
 oj_config = { opt-level = 3 }
+oj_stylex = { opt-level = 3 }
+fru = { opt-level = 3 }
 oj_js = { opt-level = 3 }
 oxc = { opt-level = 3 }
 oxc_allocator = { opt-level = 3 }
@@ -211,3 +217,52 @@ rustc-hash = { opt-level = 3 }
 dashmap = { opt-level = 3 }
 parking_lot = { opt-level = 3 }
 mio = { opt-level = 3 }
+# Fat LTO keeps a z crate's size attributes, so a non-generic hot loop stays
+# size-optimized even when an opt-level 3 crate calls it. These are those
+# loops: lightningcss's tokenizer and number printing, the gzip size report
+# and Start chunk compression, oxc_resolver's package.json parse, inline
+# sourcemap base64, module-specifier URLs, rolldown's hook filters and chunk
+# hashes, its rayon pool, and the deno resolver and permission checks every
+# engine import and fs op passes.
+cssparser = { opt-level = 3 }
+cssparser-color = { opt-level = 3 }
+dtoa = { opt-level = 3 }
+dtoa-short = { opt-level = 3 }
+parcel_sourcemap = { opt-level = 3 }
+flate2 = { opt-level = 3 }
+zlib-rs = { opt-level = 3 }
+miniz_oxide = { opt-level = 3 }
+crc32fast = { opt-level = 3 }
+adler2 = { opt-level = 3 }
+simd-adler32 = { opt-level = 3 }
+simd-json = { opt-level = 3 }
+value-trait = { opt-level = 3 }
+halfbrown = { opt-level = 3 }
+base64 = { opt-level = 3 }
+base64-simd = { opt-level = 3 }
+vsimd = { opt-level = 3 }
+url = { opt-level = 3 }
+percent-encoding = { opt-level = 3 }
+idna = { opt-level = 3 }
+regex = { opt-level = 3 }
+regex-automata = { opt-level = 3 }
+regex-syntax = { opt-level = 3 }
+aho-corasick = { opt-level = 3 }
+regress = { opt-level = 3 }
+xxhash-rust = { opt-level = 3 }
+rayon = { opt-level = 3 }
+rayon-core = { opt-level = 3 }
+crossbeam-deque = { opt-level = 3 }
+crossbeam-epoch = { opt-level = 3 }
+crossbeam-utils = { opt-level = 3 }
+parking_lot_core = { opt-level = 3 }
+compact_str = { opt-level = 3 }
+ryu-js = { opt-level = 3 }
+foldhash = { opt-level = 3 }
+sourcemap = { opt-level = 3 }
+deno_permissions = { opt-level = 3 }
+node_resolver = { opt-level = 3 }
+deno_resolver = { opt-level = 3 }
+deno_package_json = { opt-level = 3 }
+deno_path_util = { opt-level = 3 }
+sys_traits = { opt-level = 3 }

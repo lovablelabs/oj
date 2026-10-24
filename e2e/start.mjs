@@ -17,9 +17,7 @@ const onlyProd = process.argv.includes("--prod");
 const runDev = !onlyProd;
 const runProd = !onlyDev;
 
-const installed =
-  fs.existsSync(path.join(app, "node_modules", "@tanstack", "react-start")) &&
-  fs.existsSync(path.join(app, "node_modules", "rolldown"));
+const installed = fs.existsSync(path.join(app, "node_modules", "@tanstack", "react-start"));
 if (!installed) {
   console.log("SKIP start integration: fixture deps not installed");
   console.log("  enable with: (cd e2e/fixtures/start-app && npm install)");
@@ -27,8 +25,8 @@ if (!installed) {
 }
 
 execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
-// Retried: SIGKILLed servers orphan node children for a beat, and their
-// NODE_COMPILE_CACHE flush into .oj-cache/v8 races the removal (ENOTEMPTY).
+// Retried: a SIGKILLed server's children outlive it for a beat, and their
+// writes into .oj-cache race the removal (ENOTEMPTY).
 const rm = (p) => {
   for (let i = 0; ; i++) {
     try {
@@ -51,6 +49,7 @@ async function assertApp(port, label) {
   const h = home.body;
   const want = [
     ["#lib alias (shout)", "HOME!"],
+    ["pre plugin load of an image query", "image-variant:64"],
     ["server function ran", "server-fn-marker"],
     ["cloudflare wrangler var", "fixture-edition"],
     ["tsconfig paths alias", "ALIAS!"],

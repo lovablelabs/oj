@@ -15,7 +15,7 @@ const CONFIG: &str = r#"export default ({ command, mode }) => ({
 });
 "#;
 
-/// The `main-*.js` chunk under `<out_dir>/assets`, after checking the page
+/// The `index-*.js` chunk under `<out_dir>/assets`, after checking the page
 /// and the chunk's `.map` (build.sourcemap) were written.
 fn built_main(root: &Path, out_dir: &str) -> String {
     let out = root.join(out_dir);
@@ -31,7 +31,7 @@ fn built_main(root: &Path, out_dir: &str) -> String {
         .collect();
     let js = names
         .iter()
-        .find(|f| f.starts_with("main-") && f.ends_with(".js"))
+        .find(|f| f.starts_with("index-") && f.ends_with(".js"))
         .unwrap_or_else(|| panic!("{out_dir}: main chunk emitted: {names:?}"));
     assert!(
         assets.join(format!("{js}.map")).exists(),

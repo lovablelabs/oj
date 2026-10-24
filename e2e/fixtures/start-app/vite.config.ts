@@ -53,6 +53,22 @@ function freshModulePlugin(): Plugin {
   };
 }
 
+// vite-imagetools' shape: an `enforce: "pre"` object-form load keyed on an
+// image's query, which must run before oj's own asset loader claims the id.
+function imageVariantPlugin(): Plugin {
+  return {
+    name: "fixture-image-variant",
+    enforce: "pre",
+    load: {
+      filter: { id: /\.png\?w=\d+/ },
+      handler(id) {
+        const w = new URL(id, "file:").searchParams.get("w");
+        return `export default ${JSON.stringify(`image-variant:${w}`)};`;
+      },
+    },
+  };
+}
+
 // Echoes a page's import.meta.hot.send back to it (server.ws.on -> send).
 function wsEchoPlugin(): Plugin {
   return {
@@ -80,6 +96,7 @@ export default defineConfig({
   plugins: [
     buildInfoPlugin(),
     freshModulePlugin(),
+    imageVariantPlugin(),
     wsEchoPlugin(),
     // .mdx before react/tanstack so its output is plain JSX for them to handle.
     mdx(),

@@ -458,7 +458,7 @@ pub fn build(files: &BTreeMap<String, String>) -> BuildResult {
         // compiler, which is empty on wasm32: it would silently become `({})`.
         // glob_patterns visits the AST, so a comment or string that merely
         // mentions the name does not trip the guard.
-        if !oj_compiler::glob::glob_patterns(source, Path::new(&path)).is_empty() {
+        if !oj_compiler::glob::glob_patterns(source, Path::new(&path), None).is_empty() {
             errors.push(BuildError {
                 path: path.clone(),
                 message: "import.meta.glob is not supported in the wasm playground yet".to_string(),

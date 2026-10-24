@@ -28,14 +28,22 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
-      # The optimizer, config-extraction and Start alias tests run the real
-      # vite/rolldown (and the config loader's esbuild) from the start-app
-      # fixture and skip without it, so it installs BEFORE the cargo run.
+      # The config-extraction and Start tests run the real vite (and the config
+      # loader's rolldown and esbuild) from the start-app fixture and skip
+      # without it, so it installs BEFORE the cargo run.
       # One workspace run only: a second `-p` scoped run resolves features
       # differently and rebuilt v8, which then could not find the rusty_v8
       # archive in the restored cache.
-      - name: install start-app fixture (bundlers for optimizer + config tests)
+      - name: install start-app fixture (vite for the config and Start tests)
         run: npm ci --prefix e2e/fixtures/start-app
+      # The StyleX e2e (crates/oj/tests/stylex_e2e.rs) runs the real
+      # @stylexjs packages and Vite's build of the same apps, a Vite SPA and a
+      # TanStack Start app; their own fixtures, so the plugin's unplugin@2
+      # peer sits at the root beside TanStack's nested @3.
+      - name: install stylex fixtures
+        run: |
+          npm ci --prefix e2e/fixtures/stylex-app
+          npm ci --prefix e2e/fixtures/start-stylex-app
       # The dev tests that need a page drive headless Chrome over the DevTools
       # protocol and skip without one; Playwright only installs the browser.
       - run: npm install --prefix e2e
@@ -131,13 +139,17 @@ jobs:
         run: node e2e/ssr-prod.mjs
       - name: native addon re-registration across one-shot engines (rolldown 1.1.0)
         run: node e2e/native-addon-reregister.mjs
-      - name: vendored rolldown is authoritative for Start builds
-        run: node e2e/vendored-rolldown.mjs
       - name: server fast-paths (cache bound, mtime, hmr gating)
         run: |
           node e2e/memory-cache.mjs
           node e2e/mtime-fastpath.mjs
           node e2e/hmr-hook-skip.mjs
+      - name: watcher rescans after an inotify queue overflow (small queues)
+        run: |
+          trap 'sudo sysctl -w fs.inotify.max_queued_events=16384' EXIT
+          sudo sysctl -w fs.inotify.max_queued_events=1
+          node e2e/watch-rescan.mjs
+          node e2e/watch-rescan-quiet.mjs
       - name: startup compile error overlay + recovery by reload
         run: node e2e/hmr-overlay-recovery.mjs
       - name: plugin-owned websocket upgrades (tunnel plugins)
@@ -146,6 +158,10 @@ jobs:
         run: node e2e/plugin-server-process.mjs
       - name: json import edit reaches the boundary (stamped import)
         run: node e2e/hmr-json-update.mjs
+      - name: a non-root base serves the HMR client and refresh preamble
+        run: node e2e/dev-base-hmr.mjs
+      - name: build resolves /src and public-dir imports by URL
+        run: node e2e/build-root-imports.mjs
       - name: unresolved relative import errors, creating the file recovers
         run: node e2e/hmr-unresolved-import.mjs
       - name: an env-file edit restarts dev and the open page reloads
@@ -179,8 +195,16 @@ jobs:
         run: node e2e/cjs-require-condition.mjs
       - name: optimizeDeps.exclude'd packages run through every plugin load/transform
         run: node e2e/plugin-excluded-dep.mjs
+      - name: start dev SSR, client bundle and prod build of the fixture app
+        run: node e2e/start.mjs
       - name: start prod build honors outDir, base, sourcemap, minify
         run: node e2e/start-build-options.mjs
+      - name: start build empties outDir by Vite's emptyOutDir rule
+        run: node e2e/start-build-outdir.mjs
+      - name: start build shares plugin instances, runs moduleParsed, buildApp and emitAssets
+        run: node e2e/start-shared-plugins.mjs
+      - name: start build bundles workers with worker.plugins, worker.format and worker.rolldownOptions
+        run: node e2e/start-worker-plugins.mjs
       - name: throwing lifecycle hooks fail the build and dev startup
         run: node e2e/plugin-lifecycle-errors.mjs
       - name: plugin config() define reaches dev and build compiles
@@ -189,6 +213,8 @@ jobs:
         run: node e2e/plugin-hot-update-delete.mjs
       - name: start dev applies config define to the client bundle; --mode selects .env.<mode>
         run: node e2e/start-define-mode.mjs
+      - name: start server code reads every .env var from process.env
+        run: node e2e/start-dotenv-process-env.mjs
       - name: start dev runs @tanstack/devtools inject-source on SSR and client
         run: node e2e/start-devtools-source.mjs
       - name: start dev client chunks revalidate by ETag and gzip
@@ -203,6 +229,16 @@ jobs:
         run: node e2e/start-graceful-close.mjs
       - name: tanstack start ssr worker queries + post plugins see JS
         run: node e2e/start-ssr-worker-url.mjs
+      - name: start server fn called from the browser (handler comments with parens)
+        run: node e2e/start-server-fn-client.mjs
+      - name: start environment functions compile per side (no server code in the browser)
+        run: node e2e/start-env-fns.mjs
+      - name: start server code root-absolute import.meta.glob (Vite toAbsoluteGlob + root keys)
+        run: node e2e/start-server-root-glob.mjs
+      - name: start dev alias import of a created file resolves without HMR (Vite resolves from disk)
+        run: node e2e/start-new-file-alias.mjs
+      - name: plugin middleware redirects and cookies reach the browser (spa + start)
+        run: node e2e/redirect-passthrough.mjs
       - name: ssr runner module cache + selective invalidation (hmr-ssr core)
         run: node e2e/ssr-hmr.mjs
       - name: ssr externalized-dep export-shape interop (Vite ssr-deps matrix)
@@ -223,6 +259,8 @@ jobs:
         run: node e2e/start-cloudflare.mjs
       - name: start dev for @cloudflare/vite-plugin serves from the worker; an edit yields a fresh document
         run: node e2e/start-cloudflare-dev.mjs
+      - name: start dev with ssr in workerd leaves client edits to the page's HMR (no rebundle, no reload)
+        run: node e2e/start-cloudflare-hmr.mjs
       - name: experimental.bundledDev is coerced off; the standard dev client entry serves and the page hydrates
         run: node e2e/bundleddev-coerce.mjs
       - name: server.proxy covers the worker's outbound fetch (one proxy in the middleware stack), function rewrite applied
@@ -239,13 +277,13 @@ jobs:
         run: node e2e/server-fs-allow.mjs
       - name: optimized deps are versioned and served immutable with an ETag
         run: node e2e/dep-optimize.mjs
-      - name: a Vite 8 app without esbuild discovers and pre-bundles its deps with rolldown
+      - name: the dep scan resolves through the app's plugins and pre-bundles on oj's rolldown
         run: node e2e/dep-optimize-rolldown.mjs
       - name: a dep the scan missed is discovered at serve time and re-optimized
         run: node e2e/dep-optimize-discover.mjs
       - name: an optimized dep imported by another optimized dep evaluates once
         run: node e2e/dep-optimize-entry-instance.mjs
-      - name: the in-host scan keeps answering plugin hooks (no watchdog starvation)
+      - name: the dep scan keeps the plugin host answering hooks (no watchdog starvation)
         run: node e2e/scan-starvation.mjs
       - name: thousands of plugin fs.watch handles register and deliver under a write storm
         run: node e2e/fs-watch-many-watchers.mjs
@@ -304,6 +342,8 @@ jobs:
         run: node e2e/start-app-alias.mjs
       - name: start dev shows a failed client bundle in the error overlay, never a blank page
         run: node e2e/start-error-overlay.mjs
+      - name: start dev names a rebundle that fails before the build in the overlay and the log
+        run: node e2e/start-rebundle-failure.mjs
       - name: start dev ssr renders route, module and css module edits
         run: node e2e/start-ssr-hmr.mjs
       - name: start dev applies a component edit in place and reloads what no module accepts
@@ -334,10 +374,10 @@ jobs:
           ls playground/dist/assets/*.js
           # publicDir assets are copied to the build output
           test -f playground/dist/robots.txt
-          # the html's <link rel="stylesheet"> is bundled like Vite: emitted as a
-          # hashed asset and the href rewritten to it
-          grep -qE 'href="/assets/tailwind-[A-Za-z0-9_-]+\.css"' playground/dist/index.html
-          grep -q underline playground/dist/assets/tailwind-*.css
+          # the html's <link rel="stylesheet"> is bundled like Vite: the page is
+          # the entry, so its linked sheet lands in the entry's hashed css asset
+          grep -qE 'href="/assets/index-[A-Za-z0-9_-]+\.css"' playground/dist/index.html
+          grep -q underline playground/dist/assets/index-*.css
           test -f playground/dist/.vite/manifest.json
           grep -q isEntry playground/dist/.vite/manifest.json
           grep -rq hello-from-env playground/dist/assets/*.js

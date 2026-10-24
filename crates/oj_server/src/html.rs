@@ -2,19 +2,24 @@ use super::*;
 
 /// `url` is the request path (ctx.path), `file` the html on disk (ctx.filename),
 /// `original_url` the url the browser asked for (ctx.originalUrl: the route a
-/// SPA fallback served index.html for). With a plugin host the whole of Vite's
-/// dev HTML transform runs there (env, plugin hooks, the dev client, inline
-/// module proxies, nonces), handed the env map and nonce oj already derives.
-/// A throwing transformIndexHtml fails the request (Vite parity), not served raw.
+/// SPA fallback served index.html for). Vite's dev HTML transform runs in the
+/// plugin host when a plugin hooks `transformIndexHtml` (its hooks interleave
+/// with Vite's), handed the env map and nonce oj already derives; otherwise
+/// natively (dev_html). A failing transform fails the request (Vite parity),
+/// the page is not served raw.
 pub(crate) async fn serve_html(
-    state: &ServerState,
+    state: &Arc<ServerState>,
     bytes: Vec<u8>,
     url: &str,
     original_url: &str,
     file: &Path,
 ) -> Response {
     let raw = String::from_utf8_lossy(&bytes).into_owned();
-    let html = match &state.plugins {
+    let transformed = match state
+        .plugins
+        .as_ref()
+        .filter(|_| state.plugins_have_transform_index_html)
+    {
         Some(host) => {
             let ctx = serde_json::json!({
                 "path": url,
@@ -24,30 +29,73 @@ pub(crate) async fn serve_html(
                 "ojCspNonce": state.csp_nonce,
             })
             .to_string();
-            match host.transform_index_html(&raw, &ctx).await {
-                Ok(out) => inject_module_preloads(out, state),
-                Err(e) => {
-                    eprintln!("oj: transformIndexHtml failed for {url}: {e}");
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-                        format!("oj: transformIndexHtml failed for {url}\n{e}"),
-                    )
-                        .into_response();
-                }
-            }
+            host.transform_index_html(&raw, &ctx).await
         }
-        None => {
-            // %VITE_*% substitution (Vite htmlEnvHook) runs before the client injection.
-            let raw = oj_env::replace_html_env(&raw, &state.html_env);
-            let mut html = inject_module_preloads(inject_dev_scripts(raw), state);
-            if let Some(nonce) = &state.csp_nonce {
-                html = inject_csp_nonce(&html, nonce);
-            }
-            html
-        }
+        // The host's transform runs the StyleX plugin's hook itself; here its
+        // tags follow the page's own transform (an ordinary, unordered hook).
+        None => native_dev_html(state, &raw, url, original_url, file)
+            .await
+            .map(|out| {
+                let base = state.base.as_deref().unwrap_or("/");
+                dev_html::inject_head_tags(out, &crate::stylex::html_tags(state, base))
+            }),
     };
-    ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response()
+    match transformed {
+        Ok(out) => (
+            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            inject_module_preloads(out, state),
+        )
+            .into_response(),
+        Err(e) => {
+            eprintln!("oj: transformIndexHtml failed for {url}: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                format!("oj: transformIndexHtml failed for {url}\n{e}"),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Vite's dev HTML transform with no plugin hook in it, natively: inline
+/// styles compile through oj's CSS pipeline, inline modules wait in the
+/// server's html-proxy cache.
+async fn native_dev_html(
+    state: &Arc<ServerState>,
+    raw: &str,
+    url: &str,
+    original_url: &str,
+    file: &Path,
+) -> Result<String, String> {
+    let base = state.base.as_deref().unwrap_or("/");
+    let client_srcs = dev_html::client_srcs(base, &["/@oj/refresh-preamble.js", "/@oj/client.js"]);
+    let cfg = dev_html::DevHtmlConfig {
+        root: &state.root,
+        base,
+        env: &state.html_env,
+        env_prefixes: &state.env_prefixes,
+        nonce: state.csp_nonce.as_deref(),
+        client_srcs: &client_srcs,
+    };
+    let req = dev_html::DevHtmlRequest {
+        path: url,
+        filename: file,
+        original_url,
+    };
+    dev_html::transform_dev_html(raw, &cfg, &req, &NativeHtml(state)).await
+}
+
+struct NativeHtml<'a>(&'a Arc<ServerState>);
+
+impl dev_html::DevHtmlHost for NativeHtml<'_> {
+    async fn compile_style(&self, id: &str, code: &str) -> Result<String, String> {
+        css_serve::compile_html_style(self.0, id, code.to_string()).await
+    }
+
+    fn proxy(&self) -> &dev_html::HtmlProxyCache {
+        &self.0.html_proxy
+    }
 }
 
 /// Vite's `html.cspNonce`: nonce every script/style and stylesheet/modulepreload/
@@ -123,7 +171,7 @@ pub(crate) fn insert_after_head(html: &str, tags: &str) -> String {
     }
 }
 
-pub(crate) async fn serve_index_html(state: &ServerState, original_url: &str) -> Response {
+pub(crate) async fn serve_index_html(state: &Arc<ServerState>, original_url: &str) -> Response {
     match tokio::fs::read(state.root.join("index.html")).await {
         Ok(bytes) => {
             serve_html(
@@ -176,8 +224,16 @@ pub(crate) fn is_spa_navigation(rel: &str, headers: &HeaderMap) -> bool {
 
 pub(crate) async fn serve_fallback(
     State(state): State<Arc<ServerState>>,
-    req: axum::extract::Request,
+    mut req: axum::extract::Request,
 ) -> Response {
+    // Past the routes, oj's file lookup and plugin middleware see the URL
+    // with its base again, as Vite's configureServer middleware does.
+    if let Some(unstripped) = req
+        .extensions_mut()
+        .remove::<crate::middleware::UnstrippedUri>()
+    {
+        *req.uri_mut() = unstripped.0;
+    }
     // A WebSocket upgrade nothing above claimed (oj's own ws endpoints and
     // `ws: true` proxies run earlier): plugin `upgrade` listeners get it.
     if is_websocket_upgrade(req.headers()) && vite_ws_subprotocol(req.headers()).is_none() {
@@ -202,13 +258,30 @@ pub(crate) async fn serve_fallback(
         .unwrap_or_else(|| (StatusCode::NOT_FOUND, "oj: not found").into_response())
 }
 
-/// The preload href: the exact URL the importer names (`?import` for styles,
-/// `?v=<version>` for deps) so preload and import share one cache entry.
-pub(crate) fn preload_href(path: &str, version: &str) -> String {
+/// The preload href: the exact URL the importer names, so preload and import
+/// share one cache entry. `?import` for styles; a pre-bundled entry's current
+/// URL from `entries` (file name to URL), whose version moves with every
+/// rerun; anything else under `/@oj-deps/` bare, as dep files import their
+/// chunks. An app asset is imported as `?url` (an `.svg` stays bare when
+/// `svg_compiled`, for svgr), never by the url its `<img src>` fetches.
+pub(crate) fn preload_href(
+    path: &str,
+    entries: &HashMap<String, String>,
+    svg_compiled: bool,
+) -> String {
     if is_style_url(path) {
         format!("{path}?import")
-    } else if !version.is_empty() && path.starts_with("/@oj-deps/") {
-        format!("{path}?v={version}")
+    } else if !path.starts_with("/@")
+        && !path.contains("/node_modules/")
+        && is_asset_path(Path::new(path))
+        && !(svg_compiled && path.ends_with(".svg"))
+    {
+        format!("{path}?url")
+    } else if let Some(url) = path
+        .strip_prefix("/@oj-deps/")
+        .and_then(|file| entries.get(file))
+    {
+        url.clone()
     } else {
         path.to_string()
     }
@@ -216,11 +289,7 @@ pub(crate) fn preload_href(path: &str, version: &str) -> String {
 
 pub(crate) fn inject_module_preloads(html: String, state: &ServerState) -> String {
     let paths: Vec<String> = if *state.crawl_done.borrow() {
-        state
-            .graph
-            .lock()
-            .unwrap()
-            .module_paths()
+        served_module_paths(state)
             .iter()
             .map(|p| p.display().to_string())
             .collect()
@@ -230,13 +299,13 @@ pub(crate) fn inject_module_preloads(html: String, state: &ServerState) -> Strin
     if paths.is_empty() {
         return html;
     }
-    let version = state.optimized.version();
+    let entries = state.optimized.entry_urls();
     let links: String = paths
         .iter()
         .map(|p| {
             format!(
                 "<link rel=\"modulepreload\" href=\"{}\" />\n",
-                preload_href(p, version)
+                preload_href(p, &entries, state.plugins_have_transform)
             )
         })
         .collect();

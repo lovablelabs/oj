@@ -80,6 +80,15 @@ pub struct CompileOptions {
     pub class_field_set_semantics: Option<bool>,
     /// The dev server's defines; `None` uses the mode-derived fallback.
     pub env: Option<Arc<ImportMetaEnv>>,
+    /// The app root (Vite's `config.root`) that `/`-led `import.meta.glob`
+    /// patterns resolve against; `None` leaves them matching nothing.
+    pub root: Option<PathBuf>,
+    /// The app's string `resolve.alias` entries (find, replacement), which an
+    /// aliased `import.meta.glob("@/x/*.ts")` pattern resolves through.
+    pub alias: Arc<[(String, String)]>,
+    /// The config's `@stylexjs/unplugin`, run on the parsed source before any
+    /// other transform (the plugin is `enforce: 'pre'`).
+    pub stylex: Option<Arc<oj_stylex::plugin::StylexPlugin>>,
 }
 
 impl CompileOptions {
@@ -92,6 +101,9 @@ impl CompileOptions {
             jsx: JsxConfig::default(),
             class_field_set_semantics: None,
             env: None,
+            root: None,
+            alias: Arc::from([]),
+            stylex: None,
         }
     }
 
@@ -104,6 +116,9 @@ impl CompileOptions {
             jsx: JsxConfig::default(),
             class_field_set_semantics: None,
             env: None,
+            root: None,
+            alias: Arc::from([]),
+            stylex: None,
         }
     }
 }
@@ -125,6 +140,8 @@ pub struct CompileOutput {
     /// `Some` when the module references `import.meta.hot` (it needs a hot
     /// context injected); what its `accept` calls declared.
     pub hot_accept: Option<HotAccept>,
+    /// The StyleX rules this module compiled to (empty without the plugin).
+    pub stylex_rules: Vec<oj_stylex::rules::StylexRule>,
 }
 
 /// The `import.meta.hot.accept(...)` forms a module uses (Vite's
@@ -199,9 +216,18 @@ pub fn compile_module_with_maps(
     let allocator = Allocator::default();
 
     let mut program = parse(&allocator, path, source_text, source_type)?;
+    let stylex_rules = match &opts.stylex {
+        Some(stylex) if stylex.handles(&path.to_string_lossy(), source_text) => stylex
+            .transform_program(&allocator, &mut program, path, source_text)
+            .map_err(|message| CompileError::Transform {
+                path: path.to_path_buf(),
+                message,
+            })?,
+        _ => Vec::new(),
+    };
     transform(&allocator, path, source_text, opts, &mut program)?;
     apply_defines(&allocator, source_text, opts, &mut program);
-    let synthesized = expand_synthesized(&allocator, path, source_text, &mut program);
+    let synthesized = expand_synthesized(&allocator, path, opts, source_text, &mut program);
 
     let specifiers = rewrite_module_specifiers(&allocator, &mut program, &mut rewriter);
     let mut hot_accept = lex_hot_accept(&allocator, &mut program, &mut rewriter);
@@ -220,6 +246,7 @@ pub fn compile_module_with_maps(
         import_bindings: specifiers.bindings,
         is_refresh_boundary,
         hot_accept,
+        stylex_rules,
     })
 }
 
@@ -241,7 +268,7 @@ fn parse<'a>(
     source_type: SourceType,
 ) -> Result<Program<'a>, CompileError> {
     let parsed = Parser::new(allocator, source_text, source_type).parse();
-    if parsed.panicked || !parsed.diagnostics.is_empty() {
+    if parsed.fatal_error || !parsed.diagnostics.is_empty() {
         return Err(CompileError::Parse {
             path: path.to_path_buf(),
             message: diagnostics_message!(parsed.diagnostics, source_text),
@@ -278,7 +305,7 @@ fn validate_emitted(path: &Path, code: &str, source_type: SourceType) -> Result<
     let parsed = Parser::new(&allocator, code, grammar).parse();
     // Strict-mode early errors (`++eval` in a module) live in the checker,
     // not the grammar, so the parse alone is not the browser's bar.
-    let checked = if parsed.panicked || !parsed.diagnostics.is_empty() {
+    let checked = if parsed.fatal_error || !parsed.diagnostics.is_empty() {
         parsed.diagnostics
     } else {
         SemanticBuilder::new()
@@ -296,6 +323,32 @@ fn validate_emitted(path: &Path, code: &str, source_type: SourceType) -> Result<
         });
     }
     Ok(())
+}
+
+/// One module's TypeScript strip and JSX transform on its way through a
+/// bundler, with React Fast Refresh registration in dev where plugin-react
+/// would add it: what Vite's oxc plugin does for a bundled environment. The
+/// JavaScript out and its source map JSON.
+pub fn transform_for_bundle(
+    path: &Path,
+    source_text: &str,
+    jsx: &JsxConfig,
+    dev: bool,
+) -> Result<(String, Option<String>), CompileError> {
+    let source_type = SourceType::from_path(path).unwrap_or_else(|_| SourceType::mjs());
+    let opts = CompileOptions {
+        dev,
+        refresh: dev,
+        sourcemap: true,
+        jsx: jsx.clone(),
+        ..CompileOptions::prod()
+    };
+    let allocator = Allocator::default();
+    let mut program = parse(&allocator, path, source_text, source_type)?;
+    transform(&allocator, path, source_text, &opts, &mut program)?;
+    let (code, map) = codegen(&program, path, &opts, false, &[]);
+    validate_emitted(path, &code, source_type)?;
+    Ok((code, map))
 }
 
 /// TypeScript strip, JSX and (dev) React Refresh instrumentation.
@@ -405,13 +458,15 @@ fn apply_defines<'a>(
 fn expand_synthesized<'a>(
     allocator: &'a Allocator,
     path: &Path,
+    opts: &CompileOptions,
     source_text: &str,
     program: &mut Program<'a>,
 ) -> bool {
     let dir = path.parent().unwrap_or(path);
     let mut synthesized = false;
     if scan(&F_IMPORT_META_GLOB, source_text) {
-        glob::expand(allocator, dir, program);
+        let alias = |id: &str| glob::string_alias(&opts.alias, id);
+        glob::expand(allocator, path, opts.root.as_deref(), &alias, program);
         synthesized = true;
     }
     if scan(&F_IMPORT_PAREN, source_text) {
@@ -470,6 +525,38 @@ fn codegen(
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn stylex_compiles_before_typescript_and_reports_rules() {
+        let plugin = oj_stylex::plugin::StylexPlugin::new(
+            &serde_json::json!({}),
+            Path::new("/app"),
+            false,
+            false,
+        )
+        .unwrap();
+        let mut opts = CompileOptions::prod();
+        opts.stylex = Some(Arc::new(plugin));
+        let src = "import * as stylex from '@stylexjs/stylex';\n\
+                   const styles = stylex.create({ root: { color: 'red' } });\n\
+                   export const App = (p: { n: number }) => <div {...stylex.props(styles.root)} />;\n";
+        let out = compile_module(Path::new("/app/src/App.tsx"), src, &opts, None).unwrap();
+        assert!(!out.code.contains("stylex.create"), "{}", out.code);
+        assert!(out.code.contains("x1e2nbdu"), "{}", out.code);
+        assert!(!out.code.contains(": number"), "TypeScript still stripped");
+        assert_eq!(out.stylex_rules.len(), 1);
+        assert_eq!(&*out.stylex_rules[0].ltr, ".x1e2nbdu{color:red}");
+
+        // Off the plugin's gate (no import source), the module is untouched.
+        let plain = compile_module(
+            Path::new("/app/src/b.ts"),
+            "export const x = 1;\n",
+            &opts,
+            None,
+        )
+        .unwrap();
+        assert!(plain.stylex_rules.is_empty());
+    }
 
     #[test]
     fn defines_apply_after_jsx_transform_without_reference_id_panic() {
@@ -603,6 +690,34 @@ import React from "react";
         );
     }
 
+    // The dev server's root reaches the glob expansion of every compile, SSR
+    // included: Vite's toAbsoluteGlob resolves `/` patterns from
+    // `config.root`, so a server module's root-absolute glob finds its file.
+    #[test]
+    fn a_compile_resolves_root_absolute_globs_from_its_root() {
+        let root =
+            std::env::temp_dir().join(format!("oj-compile-root-glob-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src/lib")).unwrap();
+        std::fs::write(root.join("src/lib/target.server.ts"), "export const t = 1;").unwrap();
+        let src = "export const load = () => import.meta.glob('/src/lib/target.server.ts')['/src/lib/target.server.ts'];\n";
+        let opts = CompileOptions {
+            ssr: true,
+            root: Some(root.clone()),
+            ..CompileOptions::dev()
+        };
+        let out = compile_module(&root.join("src/routes/page.ts"), src, &opts, None).unwrap();
+        assert!(
+            out.code.contains(
+                r#""/src/lib/target.server.ts": () => import("../lib/target.server.ts")"#
+            ),
+            "{}",
+            out.code
+        );
+        assert!(!out.code.contains("import.meta.glob"), "{}", out.code);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn fast_refresh_only_in_dev_with_refresh_enabled() {
         let prod = compile(Path::new("C.tsx"), APP_TSX, &CompileOptions::prod()).unwrap();
@@ -618,6 +733,9 @@ import React from "react";
                 jsx: JsxConfig::default(),
                 class_field_set_semantics: None,
                 env: None,
+                root: None,
+                alias: Arc::from([]),
+                stylex: None,
             },
             None,
         )
@@ -706,6 +824,9 @@ import React from "react";
                 jsx: JsxConfig::default(),
                 class_field_set_semantics: None,
                 env: None,
+                root: None,
+                alias: Arc::from([]),
+                stylex: None,
             },
             None,
         )

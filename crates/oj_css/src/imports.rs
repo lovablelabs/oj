@@ -96,16 +96,8 @@ impl Inliner<'_, '_> {
             self.stack.pop();
             let child_dir = target.parent().unwrap_or(Path::new("."));
             let rebased = rebase_to_dir(&child, child_dir, dir, self.resolve);
-            match import.media {
-                // `@import "x" print;` becomes `@media print { ... }`.
-                Some(media) => {
-                    out.push_str(&format!("@media {media} {{\n{rebased}\n}}\n"));
-                }
-                None => {
-                    out.push_str(&rebased);
-                    out.push('\n');
-                }
-            }
+            out.push_str(&import.wrap(rebased));
+            out.push('\n');
         }
         out.push_str(rest);
         Ok(out)
@@ -122,8 +114,9 @@ fn at_statement_start(before: &str) -> bool {
         .is_none_or(|c| matches!(c, ';' | '}' | '{' | '/'))
 }
 
-/// Move every `@import` left after inlining to the top (after `@charset`), as
-/// CSS requires imports to precede all other rules.
+/// Move every `@import` left after inlining to the top, after `@charset` and
+/// leading `@layer a, b;` statements (postcss-import's order), as CSS
+/// requires imports to precede all other rules.
 fn hoist_imports(css: &str) -> String {
     let mut imports: Vec<&str> = Vec::new();
     let mut body = String::with_capacity(css.len());
@@ -131,7 +124,10 @@ fn hoist_imports(css: &str) -> String {
     while let Some(pos) = rest.find(IMPORT) {
         let (before, at) = rest.split_at(pos);
         body.push_str(before);
-        match at_statement_start(before).then(|| at.find(';')).flatten() {
+        match at_statement_start(before)
+            .then(|| statement_end(at))
+            .flatten()
+        {
             Some(end) => {
                 imports.push(&at[..=end]);
                 rest = &at[end + 1..];
@@ -156,57 +152,187 @@ fn hoist_imports(css: &str) -> String {
             body_rest = &body_rest[stmt_end..];
         }
     }
+    let layers = leading_layer_statements(body_rest);
+    out.push_str(&body_rest[..layers]);
+    if layers > 0 {
+        out.push('\n');
+    }
     for imp in imports {
         out.push_str(imp.trim_start());
         out.push('\n');
     }
-    out.push_str(body_rest);
+    out.push_str(&body_rest[layers..]);
     out
 }
 
-/// An inlinable `@import`: `"x"`, `'x'`, `url(x)` or `url("x")`, optionally
-/// with a media query.
+/// The bytes of `css`'s leading run of comments and empty `@layer a, b;`
+/// statements, which may precede imports.
+fn leading_layer_statements(css: &str) -> usize {
+    let mut at = 0;
+    loop {
+        let rest = &css[at..];
+        let trimmed = rest.trim_start();
+        let ws = rest.len() - trimmed.len();
+        if let Some(comment) = trimmed.strip_prefix("/*") {
+            match comment.find("*/") {
+                Some(end) => at += ws + 2 + end + 2,
+                None => return at,
+            }
+        } else if let Some(after) = trimmed
+            .strip_prefix("@layer")
+            .filter(|a| a.starts_with(char::is_whitespace))
+        {
+            match statement_end(after) {
+                Some(end) => at += ws + "@layer".len() + end + 1,
+                None => return at,
+            }
+        } else {
+            return at;
+        }
+    }
+}
+
+/// The contents of the string `s` opens with and the bytes through its
+/// closing quote.
+fn quoted(s: &str) -> Option<(&str, usize)> {
+    let quote = s.chars().next().filter(|&q| q == '"' || q == '\'')?;
+    let close = s[1..].find(quote)?;
+    Some((&s[1..1 + close], close + 2))
+}
+
+/// The `;` ending the statement `s` starts, skipping strings and parens (a
+/// Google Fonts url carries `;`s), as PostCSS's tokenizer does. None when a
+/// block opens or closes first.
+fn statement_end(s: &str) -> Option<usize> {
+    let mut quote = None;
+    let mut depth = 0usize;
+    let mut chars = s.char_indices();
+    while let Some((i, c)) = chars.next() {
+        match (quote, c) {
+            (Some(_), '\\') => {
+                chars.next();
+            }
+            (Some(q), _) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '(') => depth += 1,
+            (None, ')') => depth = depth.saturating_sub(1),
+            (None, ';') if depth == 0 => return Some(i),
+            (None, '{' | '}') => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The specifier an `@import` names (`"x"`, `'x'`, `url(x)`, `url("x")`)
+/// and the bytes of `after` (what follows `@import`) through it.
+fn import_target(after: &str) -> Option<(&str, usize)> {
+    let trimmed = after.trim_start();
+    let ws = after.len() - trimmed.len();
+    let (spec, used) = if let Some(inner) = trimmed.strip_prefix("url(") {
+        let body = inner.trim_start();
+        let lead = inner.len() - body.len();
+        let (raw, close) = match quoted(body) {
+            Some((raw, end)) => (raw, lead + end + body[end..].find(')')?),
+            None => {
+                let close = inner.find(')')?;
+                (inner[..close].trim(), close)
+            }
+        };
+        (raw, "url(".len() + close + 1)
+    } else {
+        quoted(trimmed)?
+    };
+    Some((spec, ws + used))
+}
+
+/// The `)` closing a group whose `(` precedes `s`.
+fn close_paren(s: &str) -> Option<usize> {
+    let mut depth = 1usize;
+    let mut quote = None;
+    for (i, c) in s.char_indices() {
+        match (quote, c) {
+            (Some(q), _) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '(') => depth += 1,
+            (None, ')') => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// An inlinable `@import` with its conditions, as postcss-import parses them:
+/// `layer` / `layer(x)`, then `supports(...)`, then a media query.
 #[derive(Debug, PartialEq, Eq)]
 struct PlainImport {
     spec: String,
     /// Bytes after `@import` through the closing `;`.
     len: usize,
+    /// `Some("")` for an anonymous `layer`.
+    layer: Option<String>,
+    supports: Option<String>,
     media: Option<String>,
 }
 
 impl PlainImport {
-    /// None for `layer(...)` / `supports(...)` imports and external urls,
-    /// which stay for the browser.
+    /// None for external urls, which stay for the browser.
     fn parse(after: &str) -> Option<PlainImport> {
-        let trimmed = after.trim_start();
-        let ws = after.len() - trimmed.len();
-        let (spec, used) = if let Some(inner) = trimmed.strip_prefix("url(") {
-            let close = inner.find(')')?;
-            let raw = inner[..close].trim().trim_matches(['"', '\'']);
-            (raw, "url(".len() + close + 1)
-        } else {
-            let quote = trimmed.chars().next().filter(|&q| q == '"' || q == '\'')?;
-            let close = trimmed[1..].find(quote)?;
-            (&trimmed[1..1 + close], close + 2)
-        };
-        let tail = &trimmed[used..];
-        let semi = tail.find(';')?;
-        let cond = &tail[..semi];
-        if cond.contains(['{', '}']) {
-            return None;
-        }
-        let cond = cond.trim();
-        if cond.contains("layer(") || cond.contains("supports(") || cond.starts_with("layer") {
-            return None;
-        }
+        let (spec, used) = import_target(after)?;
+        let tail = &after[used..];
+        let semi = statement_end(tail)?;
         if spec.is_empty() || is_external(spec) {
             return None;
         }
+        let mut cond = tail[..semi].trim();
+        let mut layer = None;
+        if let Some(inner) = cond.strip_prefix("layer(") {
+            let close = close_paren(inner)?;
+            layer = Some(inner[..close].trim().to_string());
+            cond = inner[close + 1..].trim_start();
+        } else if let Some(rest) = cond
+            .strip_prefix("layer")
+            .filter(|r| r.is_empty() || r.starts_with(char::is_whitespace))
+        {
+            layer = Some(String::new());
+            cond = rest.trim_start();
+        }
+        let mut supports = None;
+        if let Some(inner) = cond.strip_prefix("supports(") {
+            let close = close_paren(inner)?;
+            supports = Some(inner[..close].trim().to_string());
+            cond = inner[close + 1..].trim_start();
+        }
         Some(PlainImport {
             spec: spec.to_string(),
-            len: ws + used + semi + 1,
+            len: used + semi + 1,
+            layer,
+            supports,
             media: (!cond.is_empty()).then(|| cond.to_string()),
         })
+    }
+
+    /// `css` inside the import's conditions: media outermost, then supports,
+    /// then layer (postcss-import's applyConditions).
+    fn wrap(&self, mut css: String) -> String {
+        let block = |head: String, body: String| format!("{head} {{\n{body}\n}}");
+        if let Some(layer) = &self.layer {
+            css = block(format!("@layer {layer}").trim_end().to_string(), css);
+        }
+        if let Some(supports) = &self.supports {
+            css = block(format!("@supports ({supports})"), css);
+        }
+        if let Some(media) = &self.media {
+            css = block(format!("@media {media}"), css);
+        }
+        css
     }
 }
 
@@ -253,6 +379,9 @@ pub fn resolve_css_import_with(
         if !pkg_dir.is_dir() {
             continue;
         }
+        if read_package_json(&pkg_dir).is_some_and(|json| json.get("exports").is_some()) {
+            return exports_css_entry(spec, dir, resolve.production);
+        }
         if rest.is_empty() {
             return package_css_entry(&pkg_dir);
         }
@@ -261,6 +390,26 @@ pub fn resolve_css_import_with(
         }
     }
     None
+}
+
+/// A package with `exports` resolves through them alone, with Vite's CSS
+/// resolver conditions (`style`, the mode, `import`, `default`).
+fn exports_css_entry(spec: &str, dir: &Path, production: bool) -> Option<PathBuf> {
+    let mode = if production {
+        "production"
+    } else {
+        "development"
+    };
+    let resolver = oxc_resolver::Resolver::new(oxc_resolver::ResolveOptions {
+        condition_names: ["style", mode, "import", "default"]
+            .map(String::from)
+            .to_vec(),
+        extensions: vec![".css".to_string()],
+        main_fields: vec!["style".to_string()],
+        main_files: Vec::new(),
+        ..oxc_resolver::ResolveOptions::default()
+    });
+    resolver.resolve(dir, spec).ok().map(|r| r.into_path_buf())
 }
 
 /// A bare package import: the `style` / `main` entry when it is CSS, else
@@ -539,5 +688,152 @@ mod tests {
             out.starts_with("@import url(https://x.test/a.css);"),
             "{out}"
         );
+    }
+
+    const FONTS: &str =
+        "@import url('https://fonts.test/css2?family=X:wght@400;500;700&display=swap');";
+
+    #[test]
+    fn remote_import_with_semicolons_hoists_whole() {
+        let out = hoist_imports(&format!(".a{{}}\n{FONTS}\n.b{{}}\n"));
+        assert!(out.starts_with(&format!("{FONTS}\n")), "{out}");
+        assert!(out.contains(".a{}") && out.contains(".b{}"), "{out}");
+    }
+
+    #[test]
+    fn statement_end_skips_strings_and_parens() {
+        assert_eq!(statement_end(" url('a;b') print;x"), Some(17));
+        assert_eq!(statement_end(" \"a;b\";"), Some(6));
+        assert_eq!(statement_end(" url(a;b);"), Some(9));
+        assert_eq!(statement_end(" \"a\\\";\";"), Some(7));
+        assert_eq!(statement_end(" x { y; }"), None);
+    }
+
+    #[test]
+    fn relative_imports_after_a_remote_font_import_are_inlined() {
+        let base = std::env::temp_dir().join(format!("oj-css-fonts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("styles")).unwrap();
+        std::fs::write(base.join("styles/a.css"), ".from-a { color: red; }\n").unwrap();
+        std::fs::write(base.join("styles/b.css"), ".from-b { color: blue; }\n").unwrap();
+        let src = format!(
+            "{FONTS}\n@import \"./styles/a.css\";\n@import './styles/b.css';\n\n.app {{ margin: 0; }}\n"
+        );
+        let out = inline_imports(&src, &base.join("index.css")).unwrap();
+        assert!(out.starts_with(&format!("{FONTS}\n")), "{out}");
+        assert!(!out.contains("./styles/"), "{out}");
+        let css = compile_css_dev("/index.css", &out, false, &CssResolve::default())
+            .unwrap()
+            .css;
+        for rule in [".from-a", ".from-b", ".app", "wght@400;500;700"] {
+            assert!(css.contains(rule), "{rule} kept:\n{css}");
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let base = std::env::temp_dir().join(format!("oj-css-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        base
+    }
+
+    #[test]
+    fn layer_supports_and_media_imports_are_inlined_in_place() {
+        let base = scratch("conditions");
+        std::fs::write(base.join("a.css"), ".a { color: red; }\n").unwrap();
+        let src = "@layer base, components;\n@import \"./a.css\" layer(components) supports(display: grid) print;\n@import './a.css' layer;\n.own { color: blue; }\n";
+        let out = inline_imports(src, &base.join("index.css")).unwrap();
+        assert!(
+            out.starts_with("@layer base, components;\n"),
+            "layer order statement first: {out}"
+        );
+        assert!(
+            out.contains("@media print {\n@supports (display: grid) {\n@layer components {\n.a { color: red; }"),
+            "media outermost, then supports, then layer: {out}"
+        );
+        assert!(
+            out.contains("@layer {\n.a { color: red; }"),
+            "anonymous layer: {out}"
+        );
+        assert!(!out.contains("@import"), "{out}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn kept_imports_hoist_below_leading_layer_statements() {
+        let out = hoist_imports(&format!("/* c */\n@layer a, b;\n.x{{}}\n{FONTS}\n"));
+        assert!(
+            out.starts_with(&format!("/* c */\n@layer a, b;\n{FONTS}\n")),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn package_exports_resolve_with_vite_css_conditions() {
+        let base = scratch("exports");
+        let pkg = base.join("node_modules/ui-kit");
+        std::fs::create_dir_all(pkg.join("dist")).unwrap();
+        std::fs::write(
+            pkg.join("package.json"),
+            r#"{"name":"ui-kit","style":"./wrong.css","exports":{".":{"style":"./dist/kit.css"},"./tailwind.css":{"style":{"production":"./dist/tw.min.css","development":"./dist/tw.css"}}}}"#,
+        )
+        .unwrap();
+        for f in ["kit.css", "tw.css", "tw.min.css"] {
+            std::fs::write(
+                pkg.join("dist").join(f),
+                format!(".{} {{}}\n", f.replace('.', "-")),
+            )
+            .unwrap();
+        }
+        std::fs::write(pkg.join("wrong.css"), ".wrong {}\n").unwrap();
+        let dev = CssResolve::default();
+        let prod = CssResolve {
+            production: true,
+            ..CssResolve::default()
+        };
+        let r = |spec: &str, resolve: &CssResolve<'_>| {
+            resolve_css_import_with(spec, &base, resolve).map(|p| p.canonicalize().unwrap())
+        };
+        let dist = pkg.join("dist").canonicalize().unwrap();
+        assert_eq!(
+            r("ui-kit", &dev),
+            Some(dist.join("kit.css")),
+            "exports beat the style field"
+        );
+        assert_eq!(r("ui-kit/tailwind.css", &dev), Some(dist.join("tw.css")));
+        assert_eq!(
+            r("ui-kit/tailwind.css", &prod),
+            Some(dist.join("tw.min.css"))
+        );
+        assert_eq!(
+            r("ui-kit/wrong.css", &dev),
+            None,
+            "exports encapsulate the package"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn inlined_tailwind_paths_rebase_to_the_inlining_sheet() {
+        let base = scratch("tw-paths");
+        std::fs::create_dir_all(base.join("sub")).unwrap();
+        std::fs::write(
+            base.join("sub/child.css"),
+            "@plugin \"./plug.js\";\n@source '../content';\n@source \"!./skip\";\n@config \"tailwind.config.js\";\n@source inline(\"underline\");\n",
+        )
+        .unwrap();
+        let out =
+            inline_imports("@import \"./sub/child.css\";\n", &base.join("index.css")).unwrap();
+        for want in [
+            "@plugin \"./sub/plug.js\";",
+            "@source './content';",
+            "@source \"!./sub/skip\";",
+            "@config \"tailwind.config.js\";",
+            "@source inline(\"underline\");",
+        ] {
+            assert!(out.contains(want), "{want}: {out}");
+        }
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

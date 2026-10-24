@@ -782,14 +782,6 @@ fn ts_source_outside_root_is_not_treated_as_a_dep() {
 }
 
 #[test]
-fn html_injection_puts_preamble_first_in_head() {
-    let out = inject_dev_scripts("<html><head><title>x</title></head></html>".into());
-    let preamble = out.find("refresh-preamble").unwrap();
-    let title = out.find("<title>").unwrap();
-    assert!(preamble < title);
-}
-
-#[test]
 fn glue_only_added_for_boundary_modules() {
     assert!(hot_glue("/src/util.ts", None, false, false).is_empty());
     let glue = hot_glue("/src/App.tsx", Some("t=1700000000000"), true, false);
@@ -868,42 +860,41 @@ fn glue_never_doubles_a_query_the_url_already_carries() {
 }
 
 #[test]
-fn restart_triggers_include_every_config_flavor() {
+fn restart_triggers_are_the_files_oj_loaded() {
+    let root = Path::new("/app");
+    let files = restart_files(
+        root,
+        &root.join("config/../env"),
+        "staging",
+        Some(Path::new("/elsewhere/custom.config.ts")),
+    );
     for f in [
-        "oj.config.ts",
-        "oj.config.json",
-        "vite.config.mts",
-        ".env",
-        ".env.staging",
-        "postcss.config.cjs",
+        "/app/oj.config.ts",
+        "/app/oj.config.json",
+        "/app/vite.config.mts",
+        "/app/postcss.config.cjs",
+        "/app/env/.env",
+        "/app/env/.env.local",
+        "/app/env/.env.staging",
+        "/app/env/.env.staging.local",
+        "/elsewhere/custom.config.ts",
     ] {
-        assert!(is_restart_trigger(Path::new(f)), "{f}");
+        assert!(is_restart_trigger(&files, Path::new(f)), "{f}");
     }
-    for f in ["src/main.ts", "package.json", "config.json", "env.ts"] {
-        assert!(!is_restart_trigger(Path::new(f)), "{f}");
-    }
-}
-
-// inotify's open/read/close events are dropped before any batch loop sees
-// them; real changes still pass.
-#[test]
-fn access_events_are_noise_and_changes_are_not() {
-    use notify::event::{AccessKind, AccessMode, CreateKind, DataChange, ModifyKind};
-    use notify::{Event, EventKind};
-    for kind in [
-        EventKind::Access(AccessKind::Open(AccessMode::Any)),
-        EventKind::Access(AccessKind::Read),
-        EventKind::Access(AccessKind::Close(AccessMode::Read)),
-        EventKind::Access(AccessKind::Close(AccessMode::Write)),
+    // Vite restarts for the mode's env files in envDir and the config only:
+    // the same names elsewhere (a sibling package an outside-root `@source`
+    // watches, a nested dir, another mode) are files like any other.
+    for f in [
+        "/app/src/main.ts",
+        "/app/package.json",
+        "/app/.env",
+        "/app/env/.env.production",
+        "/app/src/.env",
+        "/app/packages/ui/vite.config.ts",
+        "/sibling/.env",
+        "/sibling/postcss.config.js",
     ] {
-        assert!(crate::watch::is_access(&Event::new(kind)), "{kind:?}");
-    }
-    for kind in [
-        EventKind::Create(CreateKind::File),
-        EventKind::Modify(ModifyKind::Data(DataChange::Content)),
-        EventKind::Remove(notify::event::RemoveKind::File),
-    ] {
-        assert!(!crate::watch::is_access(&Event::new(kind)), "{kind:?}");
+        assert!(!is_restart_trigger(&files, Path::new(f)), "{f}");
     }
 }
 
@@ -1334,7 +1325,11 @@ fn stamp_import_url_marks_only_compilable_module_urls() {
         stamp_import_url("/src/a.css?inline", 5),
         "/src/a.css?inline&t=5"
     );
-    assert_eq!(stamp_import_url("/logo.svg?url", 5), "/logo.svg?url");
+    assert_eq!(
+        stamp_import_url("/src/hero.png?url", 5),
+        "/src/hero.png?url&t=5",
+        "an updated image's importer must fetch its new url"
+    );
     assert_eq!(
         stamp_import_url("/@oj-deps/react.js", 5),
         "/@oj-deps/react.js"
@@ -1423,23 +1418,59 @@ fn unresolved_import_error_points_at_the_specifier() {
 
 #[test]
 fn preload_hints_name_the_exact_import_url() {
-    assert_eq!(preload_href("/src/main.tsx", "abcd1234"), "/src/main.tsx");
-    assert_eq!(preload_href("/src/a.css", "abcd1234"), "/src/a.css?import");
-    // Optimized deps and package bundles preload under their versioned URL,
-    // so the preload and the later import hit one immutable cache entry.
+    let entries: HashMap<String, String> = [(
+        "react.mjs".to_string(),
+        "/@oj-deps/react.mjs?v=1d335a14".to_string(),
+    )]
+    .into();
     assert_eq!(
-        preload_href("/@oj-deps/react.mjs", "abcd1234"),
-        "/@oj-deps/react.mjs?v=abcd1234"
+        preload_href("/src/main.tsx", &entries, false),
+        "/src/main.tsx"
     );
     assert_eq!(
-        preload_href("/@oj-deps/react.mjs", ""),
+        preload_href("/src/a.css", &entries, false),
+        "/src/a.css?import"
+    );
+    // A pre-bundled entry preloads under the URL importers name it by now,
+    // not the session's base version, so the preload and the later import
+    // hit one immutable cache entry and a rerun leaves no stale hint.
+    assert_eq!(
+        preload_href("/@oj-deps/react.mjs", &entries, false),
+        "/@oj-deps/react.mjs?v=1d335a14"
+    );
+    assert_eq!(
+        preload_href("/@oj-deps/chunk-AB12CD.mjs", &entries, false),
+        "/@oj-deps/chunk-AB12CD.mjs",
+        "dep files import chunks bare"
+    );
+    assert_eq!(
+        preload_href("/@oj-deps/react.mjs", &HashMap::new(), false),
         "/@oj-deps/react.mjs",
-        "no version, no query"
+        "no entry, no query"
     );
     assert_eq!(
-        preload_href("/@id/6e6f6465", "abcd1234"),
+        preload_href("/@id/6e6f6465", &entries, false),
         "/@id/6e6f6465",
         "stubs are unversioned"
+    );
+    // The bare asset url is the `<img src>`'s raw file; the import is `?url`.
+    assert_eq!(
+        preload_href("/src/assets/hero.png", &entries, false),
+        "/src/assets/hero.png?url"
+    );
+    assert_eq!(
+        preload_href("/src/logo.svg", &entries, false),
+        "/src/logo.svg?url"
+    );
+    assert_eq!(
+        preload_href("/src/logo.svg", &entries, true),
+        "/src/logo.svg",
+        "a transform plugin may componentize a bare svg import"
+    );
+    assert_eq!(
+        preload_href("/node_modules/pkg/icon.png", &entries, false),
+        "/node_modules/pkg/icon.png",
+        "a dependency's asset import is not marked"
     );
 }
 
@@ -1997,8 +2028,8 @@ fn child_registry_lifecycle_persists_and_drains() {
 #[test]
 fn start_assets_sibling_imports_are_written() {
     let names: std::collections::HashSet<&str> = START_ASSETS.iter().map(|(n, _)| *n).collect();
-    // Top-level import/export statements only: build.mjs also writes import
-    // lines into the server entry it generates, as string literals.
+    // Top-level import/export statements only (a script may write import
+    // lines into code it generates, as string literals).
     let sibling =
         regex::Regex::new(r#"(?m)^(?:import|export)\b[^;]*?\bfrom\s*["']\./([^"'/]+)["']"#)
             .unwrap();
@@ -2011,5 +2042,328 @@ fn start_assets_sibling_imports_are_written() {
             );
         }
     }
-    assert!(names.contains("vite-config-node.mjs"));
+    assert!(names.contains("vite-globs.mjs"));
+}
+
+// @cloudflare/vite-plugin (1.55+) adds `**/.wrangler/**` to the resolved
+// `server.watch.ignored` (wrangler-watch-ignore.ts), so miniflare's state
+// writes on every SSR request never reach the watcher's consumers.
+#[test]
+fn the_cloudflare_plugin_ignore_covers_miniflare_state() {
+    let root = Path::new("/repo/web");
+    let pats = watch_ignored_patterns(root, &["**/.wrangler/**".to_string()]);
+    for p in [
+        "/repo/web/.wrangler/state/v3/observability/miniflare-wobs-trace-store/abc.sqlite",
+        "/repo/web/.wrangler/state/v3/d1/x.sqlite-wal",
+    ] {
+        assert!(is_watch_ignored(&pats, root, Path::new(p)), "{p}");
+    }
+    assert!(!is_watch_ignored(
+        &pats,
+        root,
+        Path::new("/repo/web/src/routes/index.tsx")
+    ));
+}
+
+// A directory that appears reports its files as creates, as chokidar's
+// addDir walk does, except where Vite's chokidar never looks: a fresh
+// install's top-level node_modules is one Create event and must not report
+// every package file. Nested dirs are walked too (a staged tree moved under
+// a glob), and a symlink back up the tree does not loop.
+#[test]
+fn created_dirs_skip_what_vite_never_watches() {
+    use notify::event::{CreateKind, ModifyKind, RenameMode};
+    use notify::{Event, EventKind};
+    let root = std::env::temp_dir().join(format!("oj-created-dirs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let file = |rel: &str| {
+        let p = root.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, "x").unwrap();
+        p
+    };
+    file("node_modules/react/index.js");
+    file(".git/HEAD");
+    file("dist/a.js");
+    file("generated/a.ts");
+    file(".oj-cache/a");
+    file("cache/a");
+    file("src/pkg/node_modules/x/index.js");
+    file("src/vendor/.git/HEAD");
+    file("src/file.ts");
+    let top = file("content/a.md");
+    let moved_a = file("src/content/moved/a.json");
+    let moved_dist = file("src/content/moved/dist/b.json");
+    file("src/content/moved/node_modules/x/y.json");
+    file("src/content/moved/.git/z");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(root.join("src"), root.join("src/content/moved/up")).unwrap();
+    let moved = root.join("src/content/moved");
+    let outside = std::env::temp_dir();
+
+    let ignored = watch_ignored_patterns(&root, &["generated".to_string()]);
+    let cache = root.join("cache");
+    let ev = |kind| {
+        let mut ev = Event::new(kind);
+        ev.paths = [
+            "node_modules",
+            ".git",
+            "dist",
+            "generated",
+            ".oj-cache",
+            "cache",
+            "src/pkg/node_modules",
+            "src/vendor/.git",
+            "src/file.ts",
+            "content",
+            "src/content/moved",
+        ]
+        .iter()
+        .map(|r| root.join(r))
+        .chain([outside.clone()])
+        .collect();
+        ev
+    };
+    let want = vec![root.join("content"), moved.clone()];
+    for kind in [
+        EventKind::Create(CreateKind::Folder),
+        EventKind::Modify(ModifyKind::Name(RenameMode::To)),
+    ] {
+        assert_eq!(
+            crate::watch::created_dirs(&ignored, &root, &cache, &ev(kind)),
+            want,
+            "{kind:?}"
+        );
+    }
+    assert!(
+        crate::watch::created_dirs(
+            &ignored,
+            &root,
+            &cache,
+            &ev(EventKind::Modify(ModifyKind::Any))
+        )
+        .is_empty(),
+        "a write's parent-directory event is no new directory"
+    );
+
+    let mut found = Vec::new();
+    crate::watch::scan_files(&moved, &mut found);
+    found.sort();
+    let mut expected = vec![moved_a, moved_dist];
+    expected.sort();
+    assert_eq!(
+        found, expected,
+        "a nested dist is watched; node_modules, .git, the symlink are not"
+    );
+    let mut found = Vec::new();
+    crate::watch::scan_files(&root.join("content"), &mut found);
+    assert_eq!(found, [top]);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// The boot scan is chokidar's initial watched set: every file the root watch
+// covers, under the root's real path, never one inside an unwatched dir.
+#[test]
+fn watched_files_cover_what_the_root_watch_covers() {
+    let root = std::env::temp_dir().join(format!("oj-watched-files-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let file = |rel: &str| {
+        let p = root.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, "x").unwrap();
+        p
+    };
+    let real = |p: PathBuf| std::fs::canonicalize(p).unwrap();
+    let want: std::collections::HashSet<PathBuf> = [
+        real(file("index.html")),
+        real(file("src/main.ts")),
+        real(file("src/dist/kept.ts")),
+        real(file(".wrangler/state/a.sqlite")),
+    ]
+    .into();
+    for rel in [
+        "node_modules/react/index.js",
+        ".git/HEAD",
+        "dist/a.js",
+        ".oj-cache/a",
+        "src/vendor/node_modules/x/index.js",
+        "src/vendor/.git/HEAD",
+    ] {
+        file(rel);
+    }
+    assert_eq!(watched_files(&root), want);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// Zed's reading of a rescan: an inotify overflow has no path (the whole
+// root), FSEvents' MustScanSubDirs names a subtree or an ancestor of the root
+// (the whole root), and a subtree the root watch leaves out is no rescan.
+#[test]
+fn rescan_roots_read_overflow_and_must_scan_subdirs() {
+    use notify::event::Flag;
+    use notify::{Event, EventKind};
+    let root = Path::new("/app");
+    let cache = Path::new("/app/.oj-cache");
+    let ignored = watch_ignored_patterns(root, &["generated".to_string()]);
+    let rescan = |paths: &[&str]| {
+        let mut ev = Event::new(EventKind::Other).set_flag(Flag::Rescan);
+        ev.paths = paths.iter().map(PathBuf::from).collect();
+        crate::watch::rescan_roots(&ignored, root, cache, &ev)
+    };
+    assert_eq!(rescan(&[]), [PathBuf::from("/app")], "inotify overflow");
+    assert_eq!(rescan(&["/"]), [PathBuf::from("/app")], "an ancestor");
+    assert_eq!(
+        rescan(&["/app/src/routes"]),
+        [PathBuf::from("/app/src/routes")]
+    );
+    for skipped in [
+        "/app/node_modules/react",
+        "/app/src/pkg/node_modules",
+        "/app/.git",
+        "/app/dist",
+        "/app/.oj-cache/start",
+        "/app/generated",
+        "/elsewhere",
+    ] {
+        assert!(rescan(&[skipped]).is_empty(), "{skipped}");
+    }
+    let mut plain = Event::new(EventKind::Other);
+    plain.paths = vec![PathBuf::from("/app/src")];
+    assert!(crate::watch::rescan_roots(&ignored, root, cache, &plain).is_empty());
+
+    let collapsed = crate::watch::collapse_rescans(
+        [
+            "/app/src/a",
+            "/app/src",
+            "/app/src-b",
+            "/app/lib/x",
+            "/app/lib/x",
+        ]
+        .iter()
+        .map(PathBuf::from)
+        .collect(),
+    );
+    assert_eq!(
+        collapsed,
+        ["/app/lib/x", "/app/src", "/app/src-b"].map(PathBuf::from)
+    );
+}
+
+// A rescan diffs the subtree against the watcher's snapshot, as Zed's does:
+// unknown files are adds (a moved-in tree keeps its old mtimes), known paths
+// gone are removals, known files whose mtime, inode or size moved are edits
+// (a rename onto one brings its own inode), and directories it never knew,
+// or knew under another inode or birth, are new and get re-armed. A chmod, untouched
+// files, ignored paths and node_modules stay silent.
+#[test]
+fn rescan_changes_diff_against_the_known_files() {
+    let base = std::env::temp_dir().join(format!("oj-rescan-diff-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(base.join("app")).unwrap();
+    let base = std::fs::canonicalize(&base).unwrap();
+    let root = base.join("app");
+    let write = |p: &Path, body: &str| {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, body).unwrap();
+    };
+    let old = SystemTime::now() - Duration::from_secs(3600);
+    let age = |p: &Path| {
+        std::fs::File::options()
+            .write(true)
+            .open(p)
+            .unwrap()
+            .set_modified(old)
+            .unwrap()
+    };
+    for rel in [
+        "src/edited.ts",
+        "src/gone.ts",
+        "src/replaced.ts",
+        "src/untouched.ts",
+        "src/chmod.ts",
+        "src/recreated/a.ts",
+        "generated/a.ts",
+        "index.html",
+    ] {
+        let p = root.join(rel);
+        write(&p, "x");
+        age(&p);
+    }
+    let staged = base.join("staged/tree/inner.ts");
+    write(&staged, "x");
+    age(&staged);
+    let cache = root.join(".oj-cache");
+    let ignored = watch_ignored_patterns(&root, &["**/generated/**".to_string()]);
+    let known = crate::watch::boot_snapshot(&ignored, &root, &cache);
+    assert!(
+        known.contains_key(&root.join("src")),
+        "directories are known"
+    );
+    assert!(known.contains_key(&root.join("src/recreated")));
+    assert!(
+        !known.contains_key(&root.join("generated/a.ts")),
+        "ignored paths stay out of the snapshot"
+    );
+
+    write(&root.join("src/edited.ts"), "yy");
+    std::fs::remove_file(root.join("src/gone.ts")).unwrap();
+    let tmp = root.join("src/.replaced.ts.tmp");
+    write(&tmp, "z");
+    age(&tmp);
+    std::fs::rename(&tmp, root.join("src/replaced.ts")).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            root.join("src/chmod.ts"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+    let added = root.join("src/added.ts");
+    write(&added, "n");
+    age(&added);
+    std::fs::rename(staged.parent().unwrap(), root.join("src/moved")).unwrap();
+    // Deleted and recreated under the same path, the freed inode possibly
+    // handed back: a new birth, and no watch.
+    std::fs::remove_dir_all(root.join("src/recreated")).unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+    write(&root.join("src/recreated/a.ts"), "xy");
+    write(&root.join("generated/b.ts"), "x");
+    write(&root.join("node_modules/dep/index.js"), "x");
+    write(&root.join("src/pkg/node_modules/a.js"), "x");
+
+    let found =
+        crate::watch::rescan_changes(std::slice::from_ref(&root), &ignored, &root, &cache, &known);
+    assert_eq!(
+        found.added,
+        [root.join("src/added.ts"), root.join("src/moved/inner.ts")]
+    );
+    assert_eq!(
+        found.changed,
+        [
+            root.join("src/edited.ts"),
+            root.join("src/recreated/a.ts"),
+            root.join("src/replaced.ts"),
+        ]
+    );
+    assert_eq!(found.removed, [root.join("src/gone.ts")]);
+    let mut new_dirs = vec![root.join("src/moved"), root.join("src/pkg")];
+    // Only a filesystem that keeps birth times can tell a reused inode.
+    if crate::watch::stamp(&root.join("src/recreated"))
+        .unwrap()
+        .born
+        .is_some()
+    {
+        new_dirs.push(root.join("src/recreated"));
+    }
+    assert_eq!(found.new_dirs, new_dirs);
+
+    // A subtree rescan reports only under it.
+    let sub =
+        crate::watch::rescan_changes(&[root.join("src/moved")], &ignored, &root, &cache, &known);
+    assert_eq!(sub.added, [root.join("src/moved/inner.ts")]);
+    assert_eq!(sub.new_dirs, [root.join("src/moved")]);
+    assert!(sub.changed.is_empty() && sub.removed.is_empty());
+    let _ = std::fs::remove_dir_all(&base);
 }

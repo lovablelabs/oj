@@ -64,7 +64,7 @@ async fn manual_chunks_object_splits_deps_into_a_vendor_chunk() {
         .unwrap_or_else(|| panic!("no vendor chunk emitted: {files:?}"));
     let main = files
         .iter()
-        .find(|f| f.starts_with("main-") && f.ends_with(".js"))
+        .find(|f| f.starts_with("index-") && f.ends_with(".js"))
         .unwrap_or_else(|| panic!("no main chunk emitted: {files:?}"));
     let vendor_code = fs::read_to_string(assets.join(vendor)).unwrap();
     assert!(

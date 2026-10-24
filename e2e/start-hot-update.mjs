@@ -15,7 +15,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { settles, sleep, waitUp } from "./util.mjs";
+import { rmrf, settles, sleep, waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, "..");
@@ -37,14 +37,21 @@ const must = (cond, msg) => {
 const widget = path.join(app, "src", "widgets", "glob-widget.jsx");
 const format = path.join(app, "src", "lib", "format.ts");
 const sheet = path.join(app, "src", "widgets", "hot-sheet.css");
+const draft = path.join(app, "src", "content", "draft.txt");
+const miniflare = path.join(app, ".wrangler", "state", "v3", "trace-store", "a.sqlite");
+const stray = path.join(app, "stray-notes.txt");
 const originals = new Map([widget, format].map((f) => [f, fs.readFileSync(f, "utf8")]));
 const restore = () => {
   for (const [f, src] of originals) fs.writeFileSync(f, src);
   fs.rmSync(sheet, { force: true });
+  fs.rmSync(draft, { force: true });
+  fs.rmSync(stray, { force: true });
+  fs.rmSync(path.join(app, ".wrangler"), { recursive: true, force: true });
 };
 process.on("exit", restore);
 
-fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
+// The async rm: a previous run's server can still be landing cache writes.
+await rmrf(path.join(app, ".oj-cache"));
 let log = "";
 // Its own process group: the bundler and plugin host children go with it.
 const srv = spawn(oj, ["dev", app, "--port", String(PORT)], { detached: true, stdio: ["ignore", "pipe", "pipe"] });
@@ -87,6 +94,50 @@ try {
     await settles(() => log.includes("oj start: hot updated"), { timeoutMs: 30000, pollMs: 50 }),
     "the dev server did not report a hot update",
   );
+
+  // Vite re-expands a glob only for an added file its patterns match. An
+  // edit batched with a create the fixture's `../content/*.json` globs never
+  // expand to still patches in place: a file under their scan base they do
+  // not match, and a matching one that came and went before the batch
+  // settled (GNU sed's temp, an editor's safe-write).
+  const hotCount = () => log.split("oj start: hot updated").length - 1;
+  for (const [label, create] of [
+    ["a create no glob pattern matches", () => fs.writeFileSync(draft, "draft")],
+    [
+      // Miniflare writes its state on SSR requests; @cloudflare/vite-plugin
+      // ignores it from 1.55 on, and before that Vite's graphs never knew it.
+      "a write outside every module graph and glob (miniflare state)",
+      () => {
+        fs.mkdirSync(path.dirname(miniflare), { recursive: true });
+        fs.writeFileSync(miniflare, String(Date.now()));
+      },
+    ],
+    [
+      "a matching temp gone before the batch settled",
+      () => {
+        const temp = path.join(app, "src", "content", "sedf1aa6r.json");
+        fs.writeFileSync(temp, "{}");
+        return () => fs.rmSync(temp);
+      },
+    ],
+  ]) {
+    const before = hotCount();
+    const mark = log.length;
+    const text = `jsx${before}:`;
+    const after = create();
+    fs.writeFileSync(widget, originals.get(widget).replace('"jsxglob:"', JSON.stringify(text)));
+    after?.();
+    await page.waitForSelector(`[data-testid="glob-jsx"]:has-text("${text}")`, { timeout: 30000 });
+    must(
+      await settles(() => hotCount() > before || /oj start: (rebuilt|updated)/.test(log.slice(mark)), {
+        timeoutMs: 30000,
+        pollMs: 50,
+      }),
+      `${label}: the dev server did not report the batch`,
+    );
+    must(hotCount() > before, `${label} turned the edit into a rebuild:\n${log.slice(mark)}`);
+    must((await page.evaluate(() => window.__hotProbe)) === "kept", `${label} reloaded the page`);
+  }
 
   // import.meta.hot.send reaches a plugin's server.ws.on, and its
   // server.ws.send reply reaches the page's import.meta.hot.on.
@@ -144,6 +195,21 @@ try {
   // the bundle imports: that update applies in place too.
   await sleep(5000);
   must((await page.evaluate(() => window.__hotProbe)) === "kept", "the manifest rewrite reloaded the page");
+  // That rewrite changed files the server render had imported, behind the
+  // watcher's back. An unrelated file event next (an editor's or Finder's
+  // stray write) names nothing any module graph knows, so it reloads
+  // nothing: Vite acts on an event through that event's own file alone.
+  const strayMark = log.length;
+  fs.writeFileSync(stray, "notes");
+  must(
+    await settles(() => log.slice(strayMark).includes("stray-notes.txt"), { timeoutMs: 30000, pollMs: 50 }),
+    "the watcher never reported the stray file",
+  );
+  await sleep(3000);
+  must(
+    (await page.evaluate(() => window.__hotProbe)) === "kept",
+    `an unrelated file event reloaded the page:\n${log.slice(strayMark)}`,
+  );
 
   // An edit no module accepts (a plain function the route imports): the page
   // reloads into the fresh bundle.

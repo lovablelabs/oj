@@ -97,20 +97,15 @@ export default { base };"#);
 #[test]
 fn truncated_observed_reads_serve_but_never_cache() {
     let _g = lock();
-    // Cap the recorder at one path; the config reads two .json files, so the
-    // dep stamp is incomplete and the result must not be cached.
-    std::env::set_var("OJ_OBSERVED_READS_MAX", "1");
+    // The recorder caps at 512 paths; the config probes 513 missing .json
+    // files, so the dep stamp is incomplete and the result must not be cached.
     let dir = app(r#"import fs from "node:fs";
-const a = JSON.parse(fs.readFileSync(new URL("./a.json", import.meta.url), "utf8"));
-const b = JSON.parse(fs.readFileSync(new URL("./b.json", import.meta.url), "utf8"));
-export default { base: a.base + b.base };"#);
+for (let i = 0; i <= 512; i++) fs.existsSync(new URL(`./m${i}.json`, import.meta.url));
+export default { base: "/t/" };"#);
     let root = dir.path();
-    std::fs::write(root.join("a.json"), r#"{"base":"/a"}"#).unwrap();
-    std::fs::write(root.join("b.json"), r#"{"base":"/b"}"#).unwrap();
-    let result = extract_vite_values_with(root, None, "serve", "development", true);
-    std::env::remove_var("OJ_OBSERVED_READS_MAX");
-    let v = result.expect("the result is still served");
-    assert_eq!(v.base.as_deref(), Some("/a/b"));
+    let v = extract_vite_values_with(root, None, "serve", "development", true)
+        .expect("the result is still served");
+    assert_eq!(v.base.as_deref(), Some("/t/"));
     assert!(
         extraction_store(root)
             .lookup(&root.join("vite.config.mjs"), "serve", "development")
@@ -178,6 +173,42 @@ export default { base: "/loud/" };"#);
         "stdout prints are dropped, as the old subprocess capture dropped them: {}",
         hit.stderr
     );
+}
+
+#[test]
+fn worker_config_warns_only_in_an_spa_build() {
+    let _g = lock();
+    let config = r#"export default { worker: { format: "es" } };"#;
+    let warning = "worker config is not applied";
+    let spa = app(config);
+    let root = spa.path();
+    let vite = root.join("vite.config.mjs");
+    extract_vite_values_with(root, None, "build", "production", true).unwrap();
+    let hit = extraction_store(root)
+        .lookup(&vite, "build", "production@spa-build")
+        .expect("an SPA build's extraction is cached under its own key");
+    assert!(hit.stderr.contains(warning), "{}", hit.stderr);
+    // Dev bundles no worker, so `worker` is nothing oj leaves out there.
+    extract_vite_values_with(root, None, "serve", "development", true).unwrap();
+    let hit = extraction_store(root)
+        .lookup(&vite, "serve", "development")
+        .expect("cached");
+    assert!(!hit.stderr.contains(warning), "{}", hit.stderr);
+
+    // The Start build bundles workers with `worker` applied.
+    let start = app(config);
+    let root = start.path();
+    std::fs::create_dir_all(root.join("src/routes")).unwrap();
+    std::fs::write(
+        root.join("package.json"),
+        r#"{"name":"fx","version":"1.0.0","type":"module","dependencies":{"@tanstack/react-start":"*"}}"#,
+    )
+    .unwrap();
+    extract_vite_values_with(root, None, "build", "production", true).unwrap();
+    let hit = extraction_store(root)
+        .lookup(&root.join("vite.config.mjs"), "build", "production")
+        .expect("cached");
+    assert!(!hit.stderr.contains(warning), "{}", hit.stderr);
 }
 
 #[test]
@@ -260,8 +291,10 @@ fn engine_jobs_can_spawn_child_processes() {
         dir.path().join("spawn-job.mjs"),
         r#"import { execFileSync, spawn } from "node:child_process";
 export async function run() {
-  const sync = execFileSync("/bin/echo", ["sync-child"], { encoding: "utf8" }).trim();
-  const child = spawn("/bin/echo", ["piped-child"]);
+  // An explicit cwd: tests share one process, whose cwd a parallel test's
+  // plugin host may have moved into a temp dir it then deleted.
+  const sync = execFileSync("/bin/echo", ["sync-child"], { encoding: "utf8", cwd: "/" }).trim();
+  const child = spawn("/bin/echo", ["piped-child"], { cwd: "/" });
   let piped = "";
   child.stdout.on("data", (d) => { piped += d.toString(); });
   const code = await new Promise((resolve) => child.on("close", resolve));
@@ -306,4 +339,30 @@ fn engine_job_envelope_round_trips_every_outcome() {
             _ => panic!("outcome {outcome:?} came back as {back:?}"),
         }
     }
+}
+
+/// Extraction counts the config's plugins the host would run (every one
+/// outside oj's native set, `apply` ignored, async and nested factories
+/// flattened), and a later boot reads the count from the cache.
+#[test]
+fn extraction_counts_the_plugins_a_host_would_run() {
+    let _g = lock();
+    let native = r#"[{ name: "vite:react-babel" }, { name: "vite:react:config-post" }, [Promise.resolve({ name: "vite:react-refresh-fbm" })], { name: "vite:react-virtual-preamble" }]"#;
+    let dir = app(&format!("export default {{ plugins: {native} }};"));
+    let v = extract_vite_values_with(dir.path(), None, "serve", "development", true).unwrap();
+    assert_eq!(v.active_plugins, Some(0), "only native plugins");
+    assert_eq!(
+        cached_active_plugins(dir.path(), None, "development"),
+        Some(0)
+    );
+
+    let dir = app(&format!(
+        "export default {{ plugins: [...{native}, {{ name: \"mine\", apply: \"build\" }}] }};"
+    ));
+    let v = extract_vite_values_with(dir.path(), None, "serve", "development", true).unwrap();
+    assert_eq!(
+        v.active_plugins,
+        Some(1),
+        "an app plugin, even build-only, counts"
+    );
 }

@@ -58,9 +58,8 @@ try {
     [],
     "no compile errors before the first failing request",
   );
-  // A host runs even with no plugins: it hosts Vite's dev HTML transform.
-  assert.equal(clean.pluginHost.present, true, "the plugin host runs with no plugins too");
-  assert.equal(clean.pluginHost.gone, false, "the plugin host is alive");
+  // No plugins, no host: the dev HTML transform is native.
+  assert.deepEqual(clean.pluginHost, { present: false }, "no plugin host without plugins");
   assert.ok(Number(clean.startedAt) > 0, "startedAt is set");
 
   for (let i = 0; i < 3; i++) {

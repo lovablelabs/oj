@@ -32,7 +32,7 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { settles } from "./util.mjs";
+import { CLOUDFLARE_DEPS, settles } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -41,9 +41,7 @@ const oj = path.join(repo, "target", "debug", "oj");
 const PORT = 6890; // oj dev server
 const UPSTREAM = 6891; // proxy upstream (only answers the STRIPPED /data)
 
-const installed =
-  fs.existsSync(path.join(fixture, "node_modules", "@tanstack", "react-start")) &&
-  fs.existsSync(path.join(fixture, "node_modules", "rolldown"));
+const installed = fs.existsSync(path.join(fixture, "node_modules", "@tanstack", "react-start"));
 if (!installed) {
   console.log("SKIP proxy worker fetch: fixture deps not installed");
   console.log("  enable with: (cd e2e/fixtures/start-app && npm install)");
@@ -77,7 +75,7 @@ function installCloudflareDeps() {
     path.join(tmp, "package.json"),
     JSON.stringify({ name: "oj-cf-deps", private: true, type: "module" }),
   );
-  execSync("npm install --no-audit --no-fund --no-package-lock @cloudflare/vite-plugin wrangler", {
+  execSync(`npm install --no-audit --no-fund --no-package-lock ${CLOUDFLARE_DEPS}`, {
     cwd: tmp,
     stdio: "inherit",
   });

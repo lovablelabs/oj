@@ -55,6 +55,11 @@ pub struct ViteValues {
     pub app_type: Option<String>,
     /// `html` block (`cspNonce`).
     pub html: Option<serde_json::Value>,
+    /// The config's plugins the plugin host would run (none of oj's native
+    /// set); an over-count. None when extraction could not read the list.
+    pub active_plugins: Option<usize>,
+    /// The config's `@stylexjs/unplugin` (`{ options }`), which oj runs natively.
+    pub stylex: Option<serde_json::Value>,
 }
 
 /// The oj executable one-shot engine jobs run in, set once by the binary's main.
@@ -209,6 +214,11 @@ pub(crate) fn run_engine_job_subprocess(
                 job_cwd.display()
             ))
         })?;
+    // Vite loads the config and runs the optimizer in-process, so neither
+    // outlives the server. Registered, the child dies in the dev server's
+    // shutdown or restart sweep; unregistered, it ran until its parent poll
+    // noticed, up to 200ms of writes into the app's code cache.
+    let _registered = RegisteredChild::new(child.id());
     {
         use std::io::Write;
         let mut stdin = child.stdin.take().expect("piped stdin");
@@ -233,6 +243,7 @@ pub(crate) fn run_engine_job_subprocess(
     let started = std::time::Instant::now();
     let kill_at = deadline.map(|t| started + t + std::time::Duration::from_secs(15));
     let mut next_log = started + std::time::Duration::from_secs(30);
+    let exited = child_exit_signal(&child);
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -243,14 +254,16 @@ pub(crate) fn run_engine_job_subprocess(
                 return Err(oj_js::EngineError::Deadline);
             }
             Ok(None) => {
-                if kill_at.is_none() && std::time::Instant::now() >= next_log {
+                let now = std::time::Instant::now();
+                if kill_at.is_none() && now >= next_log {
                     eprintln!(
                         "oj: the {export} engine job is still running ({}s)…",
                         started.elapsed().as_secs()
                     );
                     next_log += std::time::Duration::from_secs(30);
                 }
-                std::thread::sleep(std::time::Duration::from_millis(25));
+                let wake = kill_at.map_or(next_log, |at| at.min(next_log));
+                let _ = exited.recv_timeout(wake.saturating_duration_since(now).min(EXIT_NAP));
             }
             Err(e) => {
                 let _ = std::fs::remove_file(&result_file);
@@ -270,6 +283,66 @@ pub(crate) fn run_engine_job_subprocess(
     let envelope: serde_json::Value =
         serde_json::from_str(&envelope).map_err(|e| boot(format!("engine job result: {e}")))?;
     engine_job_outcome(envelope)
+}
+
+/// An engine job child in the shutdown sweep's registry until it is reaped.
+struct RegisteredChild(u32);
+
+impl RegisteredChild {
+    fn new(pid: u32) -> Self {
+        crate::register_child(pid);
+        Self(pid)
+    }
+}
+
+impl Drop for RegisteredChild {
+    fn drop(&mut self) {
+        crate::unregister_child(self.0);
+    }
+}
+
+/// Longest sleep between exit checks. Unix wakes on exit itself, so it only
+/// bounds how late the deadline and progress checks run.
+#[cfg(unix)]
+const EXIT_NAP: std::time::Duration = std::time::Duration::MAX;
+#[cfg(not(unix))]
+const EXIT_NAP: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// Fires once `child` has exited, without reaping it: the zombie keeps the pid,
+/// so the caller can still kill and `wait` the `Child` it owns.
+fn child_exit_signal(child: &std::process::Child) -> std::sync::mpsc::Receiver<()> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    #[cfg(unix)]
+    {
+        let pid = child.id();
+        let _ = std::thread::Builder::new()
+            .name("oj-job-wait".into())
+            .spawn(move || {
+                loop {
+                    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+                    let rc = unsafe {
+                        libc::waitid(
+                            libc::P_PID,
+                            pid as libc::id_t,
+                            &mut info,
+                            libc::WEXITED | libc::WNOWAIT,
+                        )
+                    };
+                    if rc == 0
+                        || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR)
+                    {
+                        break;
+                    }
+                }
+                let _ = tx.send(());
+            });
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child;
+        std::mem::forget(tx);
+    }
+    rx
 }
 
 /// Evaluate the app's `vite.config` for `command` ("serve" | "build") and `mode`.
@@ -297,6 +370,41 @@ pub(crate) fn extract_vite_values_with(
     extract_vite_values_timed(root, config, command, mode, mode_explicit, None)
 }
 
+/// Keyed per (config, command, mode); a default-mode evaluation gets its own
+/// key. `worker` options reach only a build's worker bundles, which an SPA
+/// build makes without them (the Start build applies them, dev bundles none),
+/// so only an SPA build warns; its stderr is cached apart.
+fn extraction_mode_key(mode: &str, mode_explicit: bool, spa_build: bool) -> String {
+    let key = if mode_explicit {
+        mode.to_string()
+    } else {
+        format!("{mode}@default")
+    };
+    if spa_build {
+        format!("{key}@spa-build")
+    } else {
+        key
+    }
+}
+
+/// The active plugin count the last dev extraction of this config recorded,
+/// while its inputs are unchanged: known before the config is evaluated
+/// again, so a boot that needs no plugin host never starts its engine.
+pub(crate) fn cached_active_plugins(
+    root: &Path,
+    config: Option<&Path>,
+    mode: &str,
+) -> Option<usize> {
+    if plugins_file(root).is_some() {
+        return None;
+    }
+    let vite = vite_config_file(root, config)?;
+    let hit =
+        extraction_store(root).lookup(&vite, "serve", &extraction_mode_key(mode, true, false))?;
+    let json: serde_json::Value = serde_json::from_str(&hit.output).ok()?;
+    json.get("activePlugins")?.as_u64().map(|n| n as usize)
+}
+
 /// [`extract_vite_values_with`] with the evaluation bound explicit (tests).
 pub(crate) fn extract_vite_values_timed(
     root: &Path,
@@ -309,12 +417,8 @@ pub(crate) fn extract_vite_values_timed(
     if plugins_file(root).is_some() {
         return None;
     }
-    // Keyed per (config, command, mode); a default-mode evaluation gets its own key.
-    let mode_key = if mode_explicit {
-        mode.to_string()
-    } else {
-        format!("{mode}@default")
-    };
+    let spa_build = command == "build" && !crate::is_tanstack_start_app(root);
+    let mode_key = extraction_mode_key(mode, mode_explicit, spa_build);
     let mode_key = mode_key.as_str();
     let vite = vite_config_file(root, config)?;
     let store = extraction_store(root);
@@ -335,6 +439,7 @@ pub(crate) fn extract_vite_values_timed(
         "command": command,
         "mode": mode,
         "modeKind": if mode_explicit { "explicit" } else { "default" },
+        "spaBuild": spa_build,
         "cacheDir": cache.to_string_lossy(),
     });
     // The result is the call's return value: config code that prints cannot corrupt it.
@@ -377,6 +482,7 @@ fn materialize_extract_script(cache: &Path) -> Option<PathBuf> {
     static EXTRACT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = EXTRACT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     super::ensure_asset(cache, "vite-config-node.mjs", super::VITE_CONFIG_NODE_JS).ok()?;
+    super::ensure_asset(cache, "native-plugins.mjs", super::NATIVE_PLUGINS_JS).ok()?;
     let script = cache.join("oj-vite-extract.mjs");
     if std::fs::read(&script).ok().as_deref() != Some(VITE_EXTRACT_JS.as_bytes()) {
         let tmp = cache.join(format!(
@@ -581,6 +687,11 @@ pub(crate) fn parse_vite_values(json: &serde_json::Value) -> ViteValues {
         preview: non_null(json, "preview"),
         app_type: str_field(json, "appType"),
         html: non_null(json, "html"),
+        active_plugins: json
+            .get("activePlugins")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize),
+        stylex: non_null(json, "stylex"),
     }
 }
 
@@ -596,6 +707,7 @@ pub fn adopt_vite_config_values(
         return no_values_verdict(root, config_file);
     };
     merge_vite_values(config, v);
+    exclude_stylex_dependencies(config, root, command);
     Ok(())
 }
 
@@ -612,6 +724,7 @@ pub fn adopt_vite_config_values_default_mode(
         return no_values_verdict(root, config_file);
     };
     merge_vite_values(config, v);
+    exclude_stylex_dependencies(config, root, command);
     Ok(())
 }
 
@@ -635,8 +748,38 @@ fn no_values_verdict(root: &Path, config_file: Option<&Path>) -> Result<(), Stri
     Ok(())
 }
 
+/// The `@stylexjs/unplugin` `config` hook, which oj runs natively (the config
+/// only ever sees oj's stand-in for the plugin): the app's dependencies on
+/// StyleX join `optimizeDeps.exclude`. The plugin's `apply` drops it, hook
+/// included, under `serve` with `devMode: 'off'`.
+fn exclude_stylex_dependencies(config: &mut oj_config::OjConfig, root: &Path, command: &str) {
+    let Some(stylex) = &config.vite_stylex else {
+        return;
+    };
+    let options = stylex.get("options").cloned().unwrap_or_default();
+    if command == "serve" && options.get("devMode").and_then(|v| v.as_str()) == Some("off") {
+        return;
+    }
+    let packages = oj_stylex::plugin::dependency_packages(&options, root);
+    if packages.is_empty() {
+        return;
+    }
+    let exclude = config
+        .optimize_deps
+        .get_or_insert_with(Default::default)
+        .exclude
+        .get_or_insert_with(Vec::new);
+    for package in packages {
+        if !exclude.contains(&package) {
+            exclude.push(package);
+        }
+    }
+}
+
 /// Fills every field oj's own config left unset from the vite.config values.
 pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues) {
+    config.vite_active_plugins = v.active_plugins;
+    config.vite_stylex = v.stylex;
     if config.base.is_none() {
         config.base = v.base;
     }
@@ -1092,5 +1235,68 @@ fn merge_css(config: &mut oj_config::OjConfig, css: &serde_json::Value) {
         if entry.additional_data.is_none() {
             entry.additional_data = Some(data.to_string());
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod exit_signal_tests {
+    use super::*;
+
+    #[test]
+    fn exit_signal_fires_on_exit_and_leaves_the_child_to_reap() {
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "sleep 0.2; exit 7"])
+            .spawn()
+            .unwrap();
+        let exited = child_exit_signal(&child);
+        assert!(
+            exited
+                .recv_timeout(std::time::Duration::from_millis(50))
+                .is_err(),
+            "fires only once the child exits"
+        );
+        exited
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("fires when the child exits");
+        let status = child
+            .try_wait()
+            .unwrap()
+            .expect("exited child reaps at once");
+        assert_eq!(status.code(), Some(7), "status survives the signal");
+    }
+
+    // A dev server's shutdown sweep kills a running engine job child, so it
+    // cannot keep writing into the app's cache after the server is gone.
+    #[test]
+    fn the_shutdown_sweep_kills_a_running_engine_job_child() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("fake-oj");
+        std::fs::write(&exe, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (exe2, root) = (exe.clone(), dir.path().to_path_buf());
+        std::thread::spawn(move || {
+            let out = run_engine_job_subprocess(
+                &exe2,
+                &root,
+                Path::new("job.mjs"),
+                "run",
+                &serde_json::Value::Null,
+                None,
+            );
+            let _ = tx.send(out);
+        });
+        let started = std::time::Instant::now();
+        let mut killed = 0;
+        while killed == 0 && started.elapsed() < std::time::Duration::from_secs(10) {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            killed = crate::watch::child_groups::kill_all();
+        }
+        assert!(killed >= 1, "the running job child was not in the sweep");
+        let out = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the job returns once its child is killed");
+        assert!(out.is_err(), "a killed job fails: {out:?}");
     }
 }

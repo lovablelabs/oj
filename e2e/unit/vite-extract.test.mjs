@@ -170,13 +170,21 @@ test("warnUnsupported reports only options the user's config sets", () => {
     "",
   );
   const userSets = captureStderr(() =>
-    warnUnsupported({
-      worker: { format: "es" },
-      esbuild: { charset: "ascii" },
-      build: { terserOptions: { compress: true } },
-    }),
+    warnUnsupported(
+      {
+        worker: { format: "es" },
+        esbuild: { charset: "ascii" },
+        build: { terserOptions: { compress: true } },
+      },
+      true,
+    ),
   );
   assert.match(userSets, /worker config is not applied/);
+  // Dev bundles no worker and the Start build applies `worker`: no warning.
+  assert.doesNotMatch(
+    captureStderr(() => warnUnsupported({ worker: { format: "es" } })),
+    /worker/,
+  );
   assert.match(userSets, /esbuild options charset are not applied/);
   assert.match(userSets, /build.terserOptions is not applied/);
 
@@ -486,16 +494,6 @@ test("mergeConfigLite twins are byte-identical across the two shipped assets", (
     block("vite-extract.mjs"),
     block("plugin-host.mjs"),
     "the two mergeConfigLite copies drifted — keep them byte-identical",
-  );
-});
-
-// The Start scripts import the Node-style config loader from their own dir,
-// so it ships twice; the two copies must not drift.
-test("vite-config-node twins are byte-identical across the two asset dirs", () => {
-  assert.equal(
-    fs.readFileSync(asset("start/vite-config-node.mjs"), "utf8"),
-    fs.readFileSync(asset("vite-config-node.mjs"), "utf8"),
-    "assets/start/vite-config-node.mjs drifted from assets/vite-config-node.mjs",
   );
 });
 

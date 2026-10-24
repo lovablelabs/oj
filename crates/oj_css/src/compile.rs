@@ -209,6 +209,50 @@ pub(crate) fn compile_css_depth(
     Ok(CssOutput { css, exports })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+/// `@stylexjs/unplugin`'s pass over its assembled sheet: lightningcss's
+/// `transform({ targets: browserslistToTargets(browserslist()),
+/// ...lightningcssOptions, code })`. The app's browserslist (see
+/// [`crate::browserslist_targets`]) unless the options name `targets`, then
+/// their `include`/`exclude`, `drafts`, `nonStandard`, `pseudoClasses`,
+/// `unusedSymbols` and `minify` (unminified by default).
+pub fn process_for_browserslist(
+    filename: &str,
+    source: &str,
+    root: &std::path::Path,
+    env: &str,
+    lightningcss_options: &serde_json::Value,
+) -> Result<String, String> {
+    let browsers = match lightningcss_options.get("targets") {
+        Some(targets) if targets.is_object() => crate::targets::browsers_from_json(targets),
+        _ => crate::targets::browserslist_targets(root, env)?.browsers,
+    };
+    let lightning = LightningOptions::from_json(lightningcss_options);
+    let targets = lightning.targets(lightningcss::targets::Targets {
+        browsers,
+        ..lightningcss::targets::Targets::default()
+    });
+    let mut stylesheet = parse_stylesheet(source, filename, None, lightning.parser_flags())?;
+    stylesheet
+        .minify(MinifyOptions {
+            targets,
+            unused_symbols: lightning.unused_symbols(),
+        })
+        .map_err(|err| format!("css error in {filename}: {err}"))?;
+    let result = stylesheet
+        .to_css(PrinterOptions {
+            minify: lightningcss_options
+                .get("minify")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+            targets,
+            pseudo_classes: lightning.pseudo_classes(),
+            ..PrinterOptions::default()
+        })
+        .map_err(|err| format!("css print error in {filename}: {err}"))?;
+    Ok(result.code)
+}
+
 /// Vite's build `minifyCSS` (lightningcss, the default `build.cssMinify`):
 /// a finished sheet minified for `build.cssTarget` under `css.lightningcss`,
 /// nothing else rewritten.

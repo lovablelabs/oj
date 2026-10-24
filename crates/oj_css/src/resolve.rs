@@ -17,6 +17,8 @@ pub struct CssResolve<'a> {
     pub targets: &'a [String],
     /// `build.cssMinify` (dev never minifies).
     pub minify: bool,
+    /// A production build: package `exports` resolve under `production`.
+    pub production: bool,
     pub modules: &'a CssModulesOptions,
     /// `css.lightningcss`, applied by a minifying (build) compile.
     pub lightning: &'a LightningOptions,
@@ -46,6 +48,7 @@ impl Default for CssResolve<'_> {
             alias: &[],
             targets: &[],
             minify: false,
+            production: false,
             modules: &DEFAULT_MODULES,
             lightning: &DEFAULT_LIGHTNING,
         }
@@ -73,6 +76,7 @@ pub struct CssResolveConfig {
     pub alias: Vec<(String, String)>,
     pub targets: Vec<String>,
     pub minify: bool,
+    pub production: bool,
     pub modules: CssModulesOptions,
     pub lightning: LightningOptions,
 }
@@ -88,6 +92,7 @@ impl CssResolveConfig {
             alias: &self.alias,
             targets: &self.targets,
             minify: self.minify,
+            production: self.production,
             modules: &self.modules,
             lightning: &self.lightning,
         }
@@ -102,6 +107,7 @@ impl From<CssResolve<'_>> for CssResolveConfig {
             alias: r.alias.to_vec(),
             targets: r.targets.to_vec(),
             minify: r.minify,
+            production: r.production,
             modules: r.modules.clone(),
             lightning: r.lightning.clone(),
         }

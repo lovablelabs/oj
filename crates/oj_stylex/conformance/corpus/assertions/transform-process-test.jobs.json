@@ -1,0 +1,153 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/transform-process-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs and upstream's own expected values — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "assertions/process-no-rules-001-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "main.js",
+      "source": "\n  import * as stylex from '@stylexjs/stylex';\nexport const constants = {\n  YELLOW: \"yellow\",\n  ORANGE: \"var(--orange-theme-color)\",\n  mediaBig: \"@media (max-width: 1000px)\",\n  mediaSmall: \"@media (max-width: 500px)\"\n};\nexport const vars = {\n  blue: \"var(--blue-xpqh4lw)\",\n  marginTokens: \"var(--marginTokens-x8nt2k2)\",\n  colorTokens: \"var(--colorTokens-xkxfyv)\",\n  __varGroupHash__: \"xsg933n\"\n};\n  \nexport const spacing = {\n  small: \"var(--small-x19twipt)\",\n  medium: \"var(--medium-xypjos2)\",\n  large: \"var(--large-x1ec7iuc)\",\n  __varGroupHash__: \"xbiwvf9\"\n};\n  \n  ",
+      "options": {
+        "debug": true,
+        "enableDebugClassNames": true,
+        "styleResolution": "property-specificity",
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["process", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const constants = {\n  YELLOW: \"yellow\",\n  ORANGE: \"var(--orange-theme-color)\",\n  mediaBig: \"@media (max-width: 1000px)\",\n  mediaSmall: \"@media (max-width: 500px)\"\n};\nexport const vars = {\n  blue: \"var(--blue-xpqh4lw)\",\n  marginTokens: \"var(--marginTokens-x8nt2k2)\",\n  colorTokens: \"var(--colorTokens-xkxfyv)\",\n  __varGroupHash__: \"xsg933n\"\n};\nexport const spacing = {\n  small: \"var(--small-x19twipt)\",\n  medium: \"var(--medium-xypjos2)\",\n  large: \"var(--large-x1ec7iuc)\",\n  __varGroupHash__: \"xbiwvf9\"\n};",
+        "site": {
+          "file": "transform-process-test.js",
+          "test": "no rules",
+          "line": 159
+        }
+      }
+    },
+    {
+      "id": "assertions/process-all-rules-uselayers-false-002-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "components/main.js",
+      "source": "\n  import * as stylex from '@stylexjs/stylex';\nexport const constants = {\n  YELLOW: \"yellow\",\n  ORANGE: \"var(--orange-theme-color)\",\n  mediaBig: \"@media (max-width: 1000px)\",\n  mediaSmall: \"@media (max-width: 500px)\"\n};\nexport const vars = {\n  blue: \"var(--blue-xpqh4lw)\",\n  marginTokens: \"var(--marginTokens-x8nt2k2)\",\n  colorTokens: \"var(--colorTokens-xkxfyv)\",\n  __varGroupHash__: \"xsg933n\"\n};\n  \nexport const spacing = {\n  small: \"var(--small-x19twipt)\",\n  medium: \"var(--medium-xypjos2)\",\n  large: \"var(--large-x1ec7iuc)\",\n  __varGroupHash__: \"xbiwvf9\"\n};\n  \n\nexport const themeColor = stylex.createTheme(vars, {\n  blue: 'lightblue'\n});\nexport const themeSpacing = stylex.createTheme(spacing, {\n  small: '5px',\n  medium: '10px',\n  large: '20px'\n});\nexport const styles = stylex.create({\n  root: {\n    animationName: stylex.keyframes({\n      '0%': {\n        boxShadow: '1px 2px 3px 4px red',\n        color: constants.YELLOW\n      },\n      '100%': {\n        boxShadow: '10px 20px 30px 40px green',\n        color: constants.ORANGE\n      }\n    }),\n    backgroundColor: {\n      default: 'red',\n      ':hover': 'blue',\n      [stylex.when.ancestor(':focus')]: 'green',\n      '@media (max-width: 1000px)': {\n        default: 'yellow',\n        [stylex.when.descendant(':focus')]: 'purple',\n        [stylex.when.anySibling(':active')]: 'orange',\n      }\n    },\n    margin: vars.marginTokens,\n    borderColor: {\n      default: 'green',\n      [constants.mediaBig]: {\n        default: vars.blue,\n        [constants.mediaSmall]: 'yellow',\n      }\n    },\n    outlineColor: vars.colorTokens,\n    textShadow: {\n      default: '1px 2px 3px 4px red',\n      '@media (min-width:320px)': '10px 20px 30px 40px green'\n    },\n    padding: spacing.large,\n    margin: '10px 20px',\n    float: 'inline-start'\n  },\n  overrideColor: {\n    [constants.ORANGE]: 'red'\n  },\n  dynamic: (color) => ({ color })\n});\n\n  ",
+      "options": {
+        "debug": true,
+        "enableDebugClassNames": true,
+        "styleResolution": "property-specificity",
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["process", "createTheme", "keyframes", "when", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const constants = {\n  YELLOW: \"yellow\",\n  ORANGE: \"var(--orange-theme-color)\",\n  mediaBig: \"@media (max-width: 1000px)\",\n  mediaSmall: \"@media (max-width: 500px)\"\n};\nexport const vars = {\n  blue: \"var(--blue-xpqh4lw)\",\n  marginTokens: \"var(--marginTokens-x8nt2k2)\",\n  colorTokens: \"var(--colorTokens-xkxfyv)\",\n  __varGroupHash__: \"xsg933n\"\n};\nexport const spacing = {\n  small: \"var(--small-x19twipt)\",\n  medium: \"var(--medium-xypjos2)\",\n  large: \"var(--large-x1ec7iuc)\",\n  __varGroupHash__: \"xbiwvf9\"\n};\nexport const themeColor = {\n  xsg933n: \"x6xqkwy xsg933n\",\n  $$css: true\n};\nexport const themeSpacing = {\n  xbiwvf9: \"x57uvma xbiwvf9\",\n  $$css: true\n};\nexport const styles = {\n  root: {\n    \"animationName-kKVMdj\": \"animationName-x13ah0pd\",\n    \"backgroundColor-kWkggS\": \"backgroundColor-xrkmrrc backgroundColor-xbrh7vm backgroundColor-xfy810d backgroundColor-xahc4vn backgroundColor-x1t4kl4c backgroundColor-x975j7z\",\n    \"margin-kogj98\": \"margin-xymmreb\",\n    \"borderColor-kVAM5u\": \"borderColor-x1bg2uv5 borderColor-x5ugf7c borderColor-xqiy1ys\",\n    \"outlineColor-kjBf7l\": \"outlineColor-x184ctg8\",\n    \"textShadow-kKMj4B\": \"textShadow-x1skrh0i textShadow-xtj17id\",\n    \"padding-kmVPX3\": \"padding-xss17vw\",\n    \"float-kyUFMd\": \"float-x1kmio9f\",\n    $$css: \"components/main.js:33\"\n  },\n  overrideColor: {\n    \"--orange-theme-color\": \"--orange-theme-color-xufgesz\",\n    $$css: \"components/main.js:71\"\n  },\n  dynamic: color => [{\n    \"color-kMwMTN\": color != null ? \"color-x14rh7hd\" : color,\n    $$css: \"components/main.js:74\"\n  }, {\n    \"--x-color\": color != null ? color : undefined\n  }]\n};",
+        "site": {
+          "file": "transform-process-test.js",
+          "test": "all rules (useLayers:false)",
+          "line": 198
+        }
+      }
+    },
+    {
+      "id": "assertions/process-all-rules-uselayers-true-003-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "main.js",
+      "source": "\n  import * as stylex from '@stylexjs/stylex';\nexport const constants = {\n  YELLOW: \"yellow\",\n  ORANGE: \"var(--orange-theme-color)\",\n  mediaBig: \"@media (max-width: 1000px)\",\n  mediaSmall: \"@media (max-width: 500px)\"\n};\nexport const vars = {\n  blue: \"var(--blue-xpqh4lw)\",\n  marginTokens: \"var(--marginTokens-x8nt2k2)\",\n  colorTokens: \"var(--colorTokens-xkxfyv)\",\n  __varGroupHash__: \"xsg933n\"\n};\n  \nexport const spacing = {\n  small: \"var(--small-x19twipt)\",\n  medium: \"var(--medium-xypjos2)\",\n  large: \"var(--large-x1ec7iuc)\",\n  __varGroupHash__: \"xbiwvf9\"\n};\n  \n\nexport const themeColor = stylex.createTheme(vars, {\n  blue: 'lightblue'\n});\nexport const themeSpacing = stylex.createTheme(spacing, {\n  small: '5px',\n  medium: '10px',\n  large: '20px'\n});\nexport const styles = stylex.create({\n  root: {\n    animationName: stylex.keyframes({\n      '0%': {\n        boxShadow: '1px 2px 3px 4px red',\n        color: constants.YELLOW\n      },\n      '100%': {\n        boxShadow: '10px 20px 30px 40px green',\n        color: constants.ORANGE\n      }\n    }),\n    backgroundColor: {\n      default: 'red',\n      ':hover': 'blue',\n      [stylex.when.ancestor(':focus')]: 'green',\n      '@media (max-width: 1000px)': {\n        default: 'yellow',\n        [stylex.when.descendant(':focus')]: 'purple',\n        [stylex.when.anySibling(':active')]: 'orange',\n      }\n    },\n    margin: vars.marginTokens,\n    borderColor: {\n      default: 'green',\n      [constants.mediaBig]: {\n        default: vars.blue,\n        [constants.mediaSmall]: 'yellow',\n      }\n    },\n    outlineColor: vars.colorTokens,\n    textShadow: {\n      default: '1px 2px 3px 4px red',\n      '@media (min-width:320px)': '10px 20px 30px 40px green'\n    },\n    padding: spacing.large,\n    margin: '10px 20px',\n    float: 'inline-start'\n  },\n  overrideColor: {\n    [constants.ORANGE]: 'red'\n  },\n  dynamic: (color) => ({ color })\n});\n\n  ",
+      "options": {
+        "debug": true,
+        "enableDebugClassNames": true,
+        "styleResolution": "property-specificity",
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "useLayers": true
+      },
+      "mode": "prod",
+      "tags": ["process", "createTheme", "keyframes", "when", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const constants = {\n  YELLOW: \"yellow\",\n  ORANGE: \"var(--orange-theme-color)\",\n  mediaBig: \"@media (max-width: 1000px)\",\n  mediaSmall: \"@media (max-width: 500px)\"\n};\nexport const vars = {\n  blue: \"var(--blue-xpqh4lw)\",\n  marginTokens: \"var(--marginTokens-x8nt2k2)\",\n  colorTokens: \"var(--colorTokens-xkxfyv)\",\n  __varGroupHash__: \"xsg933n\"\n};\nexport const spacing = {\n  small: \"var(--small-x19twipt)\",\n  medium: \"var(--medium-xypjos2)\",\n  large: \"var(--large-x1ec7iuc)\",\n  __varGroupHash__: \"xbiwvf9\"\n};\nexport const themeColor = {\n  xsg933n: \"x6xqkwy xsg933n\",\n  $$css: true\n};\nexport const themeSpacing = {\n  xbiwvf9: \"x57uvma xbiwvf9\",\n  $$css: true\n};\nexport const styles = {\n  root: {\n    \"animationName-kKVMdj\": \"animationName-x13ah0pd\",\n    \"backgroundColor-kWkggS\": \"backgroundColor-xrkmrrc backgroundColor-xbrh7vm backgroundColor-xfy810d backgroundColor-xahc4vn backgroundColor-x1t4kl4c backgroundColor-x975j7z\",\n    \"margin-kogj98\": \"margin-xymmreb\",\n    \"borderColor-kVAM5u\": \"borderColor-x1bg2uv5 borderColor-x5ugf7c borderColor-xqiy1ys\",\n    \"outlineColor-kjBf7l\": \"outlineColor-x184ctg8\",\n    \"textShadow-kKMj4B\": \"textShadow-x1skrh0i textShadow-xtj17id\",\n    \"padding-kmVPX3\": \"padding-xss17vw\",\n    \"float-kyUFMd\": \"float-x1kmio9f\",\n    $$css: \"main.js:33\"\n  },\n  overrideColor: {\n    \"--orange-theme-color\": \"--orange-theme-color-xufgesz\",\n    $$css: \"main.js:71\"\n  },\n  dynamic: color => [{\n    \"color-kMwMTN\": color != null ? \"color-x14rh7hd\" : color,\n    $$css: \"main.js:74\"\n  }, {\n    \"--x-color\": color != null ? color : undefined\n  }]\n};",
+        "site": {
+          "file": "transform-process-test.js",
+          "test": "all rules (useLayers:true)",
+          "line": 291
+        }
+      }
+    },
+    {
+      "id": "assertions/process-all-rules-legacydisablelayer-004-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "main.js",
+      "source": "\n  import * as stylex from '@stylexjs/stylex';\nexport const constants = {\n  YELLOW: \"yellow\",\n  ORANGE: \"var(--orange-theme-color)\",\n  mediaBig: \"@media (max-width: 1000px)\",\n  mediaSmall: \"@media (max-width: 500px)\"\n};\nexport const vars = {\n  blue: \"var(--blue-xpqh4lw)\",\n  marginTokens: \"var(--marginTokens-x8nt2k2)\",\n  colorTokens: \"var(--colorTokens-xkxfyv)\",\n  __varGroupHash__: \"xsg933n\"\n};\n  \nexport const spacing = {\n  small: \"var(--small-x19twipt)\",\n  medium: \"var(--medium-xypjos2)\",\n  large: \"var(--large-x1ec7iuc)\",\n  __varGroupHash__: \"xbiwvf9\"\n};\n  \n\nexport const themeColor = stylex.createTheme(vars, {\n  blue: 'lightblue'\n});\nexport const themeSpacing = stylex.createTheme(spacing, {\n  small: '5px',\n  medium: '10px',\n  large: '20px'\n});\nexport const styles = stylex.create({\n  root: {\n    animationName: stylex.keyframes({\n      '0%': {\n        boxShadow: '1px 2px 3px 4px red',\n        color: constants.YELLOW\n      },\n      '100%': {\n        boxShadow: '10px 20px 30px 40px green',\n        color: constants.ORANGE\n      }\n    }),\n    backgroundColor: {\n      default: 'red',\n      ':hover': 'blue',\n      [stylex.when.ancestor(':focus')]: 'green',\n      '@media (max-width: 1000px)': {\n        default: 'yellow',\n        [stylex.when.descendant(':focus')]: 'purple',\n        [stylex.when.anySibling(':active')]: 'orange',\n      }\n    },\n    margin: vars.marginTokens,\n    borderColor: {\n      default: 'green',\n      [constants.mediaBig]: {\n        default: vars.blue,\n        [constants.mediaSmall]: 'yellow',\n      }\n    },\n    outlineColor: vars.colorTokens,\n    textShadow: {\n      default: '1px 2px 3px 4px red',\n      '@media (min-width:320px)': '10px 20px 30px 40px green'\n    },\n    padding: spacing.large,\n    margin: '10px 20px',\n    float: 'inline-start'\n  },\n  overrideColor: {\n    [constants.ORANGE]: 'red'\n  },\n  dynamic: (color) => ({ color })\n});\n\n  ",
+      "options": {
+        "debug": true,
+        "enableDebugClassNames": true,
+        "styleResolution": "property-specificity",
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["process", "createTheme", "keyframes", "when", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const constants = {\n  YELLOW: \"yellow\",\n  ORANGE: \"var(--orange-theme-color)\",\n  mediaBig: \"@media (max-width: 1000px)\",\n  mediaSmall: \"@media (max-width: 500px)\"\n};\nexport const vars = {\n  blue: \"var(--blue-xpqh4lw)\",\n  marginTokens: \"var(--marginTokens-x8nt2k2)\",\n  colorTokens: \"var(--colorTokens-xkxfyv)\",\n  __varGroupHash__: \"xsg933n\"\n};\nexport const spacing = {\n  small: \"var(--small-x19twipt)\",\n  medium: \"var(--medium-xypjos2)\",\n  large: \"var(--large-x1ec7iuc)\",\n  __varGroupHash__: \"xbiwvf9\"\n};\nexport const themeColor = {\n  xsg933n: \"x6xqkwy xsg933n\",\n  $$css: true\n};\nexport const themeSpacing = {\n  xbiwvf9: \"x57uvma xbiwvf9\",\n  $$css: true\n};\nexport const styles = {\n  root: {\n    \"animationName-kKVMdj\": \"animationName-x13ah0pd\",\n    \"backgroundColor-kWkggS\": \"backgroundColor-xrkmrrc backgroundColor-xbrh7vm backgroundColor-xfy810d backgroundColor-xahc4vn backgroundColor-x1t4kl4c backgroundColor-x975j7z\",\n    \"margin-kogj98\": \"margin-xymmreb\",\n    \"borderColor-kVAM5u\": \"borderColor-x1bg2uv5 borderColor-x5ugf7c borderColor-xqiy1ys\",\n    \"outlineColor-kjBf7l\": \"outlineColor-x184ctg8\",\n    \"textShadow-kKMj4B\": \"textShadow-x1skrh0i textShadow-xtj17id\",\n    \"padding-kmVPX3\": \"padding-xss17vw\",\n    \"float-kyUFMd\": \"float-x1kmio9f\",\n    $$css: \"main.js:33\"\n  },\n  overrideColor: {\n    \"--orange-theme-color\": \"--orange-theme-color-xufgesz\",\n    $$css: \"main.js:71\"\n  },\n  dynamic: color => [{\n    \"color-kMwMTN\": color != null ? \"color-x14rh7hd\" : color,\n    $$css: \"main.js:74\"\n  }, {\n    \"--x-color\": color != null ? color : undefined\n  }]\n};",
+        "site": {
+          "file": "transform-process-test.js",
+          "test": "all rules (legacyDisableLayers:true)",
+          "line": 739
+        }
+      }
+    },
+    {
+      "id": "assertions/process-legacy-expand-shorthands-wit-005-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "main.js",
+      "source": "\n  import * as stylex from '@stylexjs/stylex';\nexport const constants = {\n  YELLOW: \"yellow\",\n  ORANGE: \"var(--orange-theme-color)\",\n  mediaBig: \"@media (max-width: 1000px)\",\n  mediaSmall: \"@media (max-width: 500px)\"\n};\nexport const vars = {\n  blue: \"var(--blue-xpqh4lw)\",\n  marginTokens: \"var(--marginTokens-x8nt2k2)\",\n  colorTokens: \"var(--colorTokens-xkxfyv)\",\n  __varGroupHash__: \"xsg933n\"\n};\n  \nexport const spacing = {\n  small: \"var(--small-x19twipt)\",\n  medium: \"var(--medium-xypjos2)\",\n  large: \"var(--large-x1ec7iuc)\",\n  __varGroupHash__: \"xbiwvf9\"\n};\n  \n        \n        export const styles = stylex.create({\n          container: {\n            margin: '10px 20px',\n            padding: '5px 15px',\n            float: 'inline-start'\n          }\n        });\n      \n  ",
+      "options": {
+        "debug": true,
+        "enableDebugClassNames": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["process", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const constants = {\n  YELLOW: \"yellow\",\n  ORANGE: \"var(--orange-theme-color)\",\n  mediaBig: \"@media (max-width: 1000px)\",\n  mediaSmall: \"@media (max-width: 500px)\"\n};\nexport const vars = {\n  blue: \"var(--blue-xpqh4lw)\",\n  marginTokens: \"var(--marginTokens-x8nt2k2)\",\n  colorTokens: \"var(--colorTokens-xkxfyv)\",\n  __varGroupHash__: \"xsg933n\"\n};\nexport const spacing = {\n  small: \"var(--small-x19twipt)\",\n  medium: \"var(--medium-xypjos2)\",\n  large: \"var(--large-x1ec7iuc)\",\n  __varGroupHash__: \"xbiwvf9\"\n};\nexport const styles = {\n  container: {\n    \"marginTop-keoZOQ\": \"marginTop-x1anpbxc\",\n    \"marginInlineEnd-k71WvV\": \"marginInlineEnd-x3aesyq\",\n    \"marginBottom-k1K539\": \"marginBottom-xyorhqc\",\n    \"marginInlineStart-keTefX\": \"marginInlineStart-xqsn43r\",\n    \"paddingTop-kLKAdn\": \"paddingTop-x123j3cw\",\n    \"paddingInlineEnd-kwRFfy\": \"paddingInlineEnd-x1q3ajuy\",\n    \"paddingBottom-kGO01o\": \"paddingBottom-xs9asl8\",\n    \"paddingInlineStart-kZCmMZ\": \"paddingInlineStart-x1gx403c\",\n    \"float-kyUFMd\": \"float-xj87blo\",\n    $$css: \"main.js:25\"\n  }\n};",
+        "site": {
+          "file": "transform-process-test.js",
+          "test": "legacy-expand-shorthands with logical styles polyfill",
+          "line": 847
+        }
+      }
+    }
+  ]
+}

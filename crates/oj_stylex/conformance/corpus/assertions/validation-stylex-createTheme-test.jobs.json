@@ -1,0 +1,296 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/validation-stylex-createTheme-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs and upstream's own expected values — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "assertions/validation-createTheme-must-be-bound-to-a-variable-001-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import stylex from 'stylex';\n          stylex.createTheme({__varGroupHash__: 'x568ih9'}, {});\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-createTheme", "validation", "createTheme", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "createTheme() calls must be bound to a bare variable.",
+        "site": {
+          "file": "validation-stylex-createTheme-test.js",
+          "test": "must be bound to a variable",
+          "line": 41
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-createTheme-it-must-have-two-arguments-002-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import stylex from 'stylex';\n          const variables = stylex.createTheme();\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-createTheme", "validation", "createTheme", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "createTheme() should have 2 arguments.",
+        "site": {
+          "file": "validation-stylex-createTheme-test.js",
+          "test": "it must have two arguments",
+          "line": 50
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-createTheme-it-must-have-two-arguments-003-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import stylex from 'stylex';\n          const variables = stylex.createTheme({});\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-createTheme", "validation", "createTheme", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "createTheme() should have 2 arguments.",
+        "site": {
+          "file": "validation-stylex-createTheme-test.js",
+          "test": "it must have two arguments",
+          "line": 57
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-createTheme-it-must-have-two-arguments-004-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import stylex from 'stylex';\n          const variables = stylex.createTheme(genStyles(), {});\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-createTheme", "validation", "createTheme", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Only static values are allowed inside of a createTheme() call.",
+        "site": {
+          "file": "validation-stylex-createTheme-test.js",
+          "test": "it must have two arguments",
+          "line": 64
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-createTheme-it-must-have-two-arguments-005-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import stylex from 'stylex';\n          const variables = stylex.createTheme({}, {});\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-createTheme", "validation", "createTheme", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Can only override variables theme created with defineVars().",
+        "site": {
+          "file": "validation-stylex-createTheme-test.js",
+          "test": "it must have two arguments",
+          "line": 71
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-createTheme-it-must-have-two-arguments-006-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import stylex from 'stylex';\n          const variables = stylex.createTheme({__varGroupHash__: 'x568ih9'}, genStyles());\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-createTheme", "validation", "createTheme", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Only static values are allowed inside of a createTheme() call.",
+        "site": {
+          "file": "validation-stylex-createTheme-test.js",
+          "test": "it must have two arguments",
+          "line": 80
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-createTheme-it-must-have-two-arguments-007-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import stylex from 'stylex';\n          const variables = stylex.createTheme({__varGroupHash__: 'x568ih9'}, {});\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-createTheme", "validation", "createTheme", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-createTheme-test.js",
+          "test": "it must have two arguments",
+          "line": 87
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-createTheme-variable-keys-must-be-a-stat-008-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import stylex from 'stylex';\n          const variables = stylex.createTheme(\n            {__varGroupHash__: 'x568ih9', labelColor: 'var(--labelColorHash)'},\n            {[labelColor]: 'red',});\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-createTheme", "validation", "createTheme", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Only static values are allowed inside of a createTheme() call.",
+        "site": {
+          "file": "validation-stylex-createTheme-test.js",
+          "test": "variable keys must be a static value",
+          "line": 98
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-createTheme-values-must-be-static-number-009-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import stylex from 'stylex';\n          const variables = stylex.createTheme(\n            {__varGroupHash__: 'x568ih9', cornerRadius: 'var(--cornerRadiusHash)'},\n            {cornerRadius: 5,}\n          );\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-createTheme", "validation", "createTheme", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-createTheme-test.js",
+          "test": "values must be static number or string in stylex.createTheme()",
+          "line": 112
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-createTheme-values-must-be-static-number-010-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import stylex from 'stylex';\n          const variables = stylex.createTheme(\n            {__varGroupHash__: 'x568ih9', labelColor: 'var(--labelColorHash)'},\n            {labelColor: 'red',}\n          );\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-createTheme", "validation", "createTheme", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-createTheme-test.js",
+          "test": "values must be static number or string in stylex.createTheme()",
+          "line": 123
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-createTheme-values-must-be-static-number-011-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import stylex from 'stylex';\n          const variables = stylex.createTheme(\n            {__varGroupHash__: 'x568ih9', labelColor: 'var(--labelColorHash)'},\n            {labelColor: labelColor,}\n          );\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-createTheme", "validation", "createTheme", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Only static values are allowed inside of a createTheme() call.",
+        "site": {
+          "file": "validation-stylex-createTheme-test.js",
+          "test": "values must be static number or string in stylex.createTheme()",
+          "line": 134
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-createTheme-values-must-be-static-number-012-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import stylex from 'stylex';\n          const variables = stylex.createTheme(\n            {__varGroupHash__: 'x568ih9', labelColor: 'var(--labelColorHash)'},\n            {labelColor: labelColor(),}\n          );\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-createTheme", "validation", "createTheme", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Only static values are allowed inside of a createTheme() call.",
+        "site": {
+          "file": "validation-stylex-createTheme-test.js",
+          "test": "values must be static number or string in stylex.createTheme()",
+          "line": 144
+        }
+      }
+    }
+  ]
+}

@@ -5,6 +5,107 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Cold boots are faster. V8 code-cache entries are held in memory, shared by every engine in the process, and written in batches 10 seconds apart, like Node's compile cache under Vite. Before, every module wrote its entry during the import. Shutdown and restarts write what is still held. One-shot children the server waits on (config extraction, start scripts) read the cache but no longer create entries. package.json files are parsed once per process and read again only when the file changes. On a TanStack Start fixture the cold first response drops from 2.40s to 1.99s, and a cold import of Vite plus the Start plugin in an engine job from 461ms to 233ms.
+- `oj build` writes pages as Vite does. The entry `<script>`, its modulepreload links and its stylesheets go into `<head>`, serialized the way Vite writes them, and the module scripts leave the body. A page's local `<link rel="stylesheet">` is now imported by its entry and lands in the entry's stylesheet in document order, instead of becoming a hashed file of its own. A `media` or `disabled` one stays a plain asset. With `cssCodeSplit: false` the single sheet ends in Vite's hash marker, as Vite's does.
+
+### Removed
+
+- Unused and debug-only environment knobs: `OJ_V8_COMPILE_CACHE` and `NODE_COMPILE_CACHE` (nothing read them anymore), `OJ_HMR_DEBOUNCE_MS` (the watcher debounce stays 10ms), `OJ_CACHE_VERIFY`, `OJ_PLUGIN_SYNTH_CONFIG`, `OJ_NO_DEPS_PRESEED` and `OJ_OBSERVED_READS_MAX`. `OJ_ENABLE_CACHE` and `OJ_NO_CACHE` are gone too; use `--enable-cache` and `--no-cache`.
+
+### Fixed
+
+- Pre-bundled dependencies declare their top-level bindings with `var`, as Vite's do. Vite's optimizer sets `optimizeDeps.rolldownOptions.output.topLevelVar` unless the app turns it off, keeping the hoisting esbuild always gave; oj reported the option as unsupported and kept every `let`, `const` and `class`, so a dep that reads a binding before its declaration threw a TDZ `ReferenceError` under oj only. `topLevelVar: false` still opts out. Existing pre-bundles are rebuilt once.
+
+## [0.2.45] - 2026-10-23
+
+### Changed
+
+- TanStack Start apps are bundled by the rolldown built into oj. The client, server and Cloudflare Worker bundles of `oj build`, the dev client bundle and its hot updates now run on the rolldown crates linked into the binary, the bundler `oj build` already used for every other app, with the app's Vite plugins bridged through the plugin host. The app's own `rolldown` package no longer decides how oj bundles: an install that lacks it, or pins another version, builds the same. The Start client bundle cache format moves to 5, so existing entries are rebuilt once.
+- The dependency optimizer's scan and pre-bundle run on the same built-in rolldown, in process. The scan still resolves every import through the app's plugins with `scan: true`, and `optimizeDeps.rolldownOptions.plugins` still join it. `optimizeDeps.rolldownOptions` applies `platform`, `resolve`, `transform` (`define`, `target`, `jsx`), `moduleTypes`, `external` names, `treeshake`, `keepNames` and `output` (`banner`, `footer`, `minify`, `legalComments`); any other key is reported once and ignored. Existing pre-bundles are rebuilt once.
+- `OJ_VENDORED_ROLLDOWN` is gone, and the nix package no longer carries a rolldown of its own.
+- Dev pages run Vite's dev HTML transform natively when no plugin hooks `transformIndexHtml`: the import map, CSP nonce, `%ENV%` replacement, html-proxy modules for inline scripts, inline styles and tag injection, held byte for byte to Vite 8's output. A page a plugin hooks still runs through the plugin host. With pages native, an app with no active plugins starts no JS engine at all.
+- `@vitejs/plugin-react` 6 and `@vitejs/plugin-react-swc` 4 run natively. Their extra plugins (the refresh config hook, the bundled-dev preamble, the virtual preamble module) are work oj already does, so a React app whose only plugin is plugin-react starts no plugin host. On a Vite 8 + React app, a warm boot serves its first page in about 157ms instead of 255ms and idles at 51 MB instead of 150 MB.
+- The TanStack Start build gives app plugins Vite's build hooks. Every environment builds on the same plugin instances (`builder.sharedPlugins`), `moduleParsed` fires for every module with its imports, `buildApp` runs, each environment's `closeBundle` runs when its own build finishes, and assets off the client are dropped unless `build.emitAssets` is set. `?worker` bundles follow `worker.plugins`, `worker.format` and `worker.rolldownOptions`.
+- Tailwind v4 sheets compiled without a PostCSS config keep their compiler and scanner between compiles, as Tailwind's own integrations do. An edit rescans incrementally, and only a change to the sheet or a config, plugin or imported stylesheet rebuilds the compiler. On a 400-file app a recompile drops from about 20ms to 12ms, and memory stays flat across edits instead of growing with each one.
+- The Rust toolchain is now 1.99.1.
+
+### Fixed
+
+- Plugin hook filters gate like Vite's. A string `filter.id` is a picomatch glob joined to the root, as in Vite, not a literal, so `filter: { id: "**/*.svg" }` now offers the plugin dependency loads and the imports it names; a RegExp keeps its `i` and `s` flags; and a pattern oj cannot carry exactly (extglobs, POSIX classes, brace ranges, `m`/`u` flags, a regex Rust cannot compile) makes the gate call the plugin instead of skipping it. A filter with only an `exclude` claims nothing up front: oj resolves natively first and offers that plugin what it cannot resolve. In builds, glob-filtered plugins are gated per hook instead of always called.
+- Dependency pre-bundling works in apps that install no rolldown (no Vite 8 in the tree). They used to serve every dependency file by file.
+- With `build.sourcemap` on, `oj build` keeps the maps plugins return from `transform` and `renderChunk`, in plain and TanStack Start apps. A module a plugin transformed used to lose every mapping, and a `renderChunk` edit shifted the chunk's map. A plugin that changes code without returning a map, or returns one oj cannot read, now gets Vite's "Sourcemap is likely to be incorrect" warning, naming it, once per build. As in rolldown, such a `transform` leaves the module unmapped, while such a `renderChunk` step only drops its own edit from the chunk's map.
+- A module that fails to load now says why. `oj build`, the TanStack Start bundles and the dependency scan printed only "Could not load x - plugin threw an error" when a stylesheet failed to compile or a plugin's `load` threw; the error now reads `[plugin] Could not load <module>` followed by the cause, and the Start dev overlay names the plugin and the module, as in Vite.
+- TanStack Start `createIsomorphicFn`, `createServerOnlyFn` and `createClientOnlyFn` calls compile per side, as TanStack's start compiler does. Both sides of every isomorphic function, and every server-only body, used to ship in the client bundle along with whatever they imported.
+- oj loads the app's `vite` by its ESM entry, as Node's `import("vite")` does. On Vite 5 and 6 it got the deprecated CJS proxy, so config extraction fell back to bundling the config itself, `this.meta.viteVersion` read `8.0.0`, and Vite printed its CJS deprecation warning twice per boot.
+- PostCSS configs run on the `postcss` that ships with the app's vite, as Vite does. Under a strict install (pnpm) where the app does not depend on `postcss` directly, oj skipped the whole config in dev and failed the build with `Could not load`. With a config and no postcss anywhere, oj now reports the missing package.
+- A Tailwind stylesheet under a PostCSS config has its `@import`s inlined before PostCSS runs, as Vite puts postcss-import first. Relative imports used to reach the browser unresolved. Remote imports are hoisted whole, so a Google Fonts url with `;` in it no longer splits, and `layer()`, `supports()` and media imports, cycles, duplicates and package `exports` follow postcss-import.
+- In TanStack Start dev, a client rebundle that fails before the app's build runs is logged with its error, and the overlay names it, instead of the generic "client bundle failed" text and a log line saying no rebundle happened.
+
+## [0.2.44] - 2026-10-22
+
+### Fixed
+
+- An edit made while the file watcher was losing events is no longer lost until a restart. A burst of writes (a `git checkout`, a package install, a code generator) can overflow the Linux inotify queue, and macOS can ask for a subtree to be rescanned; oj ignored both, so edits made meanwhile never hot-updated or rebundled, and a directory created meanwhile was never watched. As Zed does, the watcher now keeps a snapshot of the files it knows (mtime, inode, size and birth time) and on a rescan diffs the affected tree against it: new files are creates, files gone are deletes, files whose stamp moved are edits, and directories born during the overflow are watched again. Untouched files stay silent.
+- In plain dev, a create event for a file that already existed when the server started is an edit, as in chokidar, which Vite uses.
+- In TanStack Start dev, a file added to a bundled `import.meta.glob` reaches the client bundle however it arrives. A file written atomically (to a temp file, then renamed into place), a directory moved in with files inside, and a file added while no server ran all used to be left out until another edit. A file renamed into place, or found inside a new directory, also reaches the worker environments as a create, as chokidar reports it. The Start client bundle cache format moves to 4, so existing entries are rebuilt once.
+- A directory created or moved anywhere under the root now reports the files it already holds, not only directories at the top level. A freshly created `node_modules`, `.git` or `dist` is never walked.
+- In TanStack Start dev, a batch of file events reloads the browser only when one of its own paths changed a module the runner loaded, as Vite acts on each event's file alone. An unrelated write (a Finder `.DS_Store`, an editor's stray file) could reload the page when some other file had changed behind the watcher's back.
+- The dependency optimizer globs with Vite's own code (tinyglobby and picomatch, as Vite 8.2.1 ships them) for its entries, `optimizeDeps.include` patterns and the `import.meta.glob` calls it scans, so an importer under a directory like `routes/[id]/` finds its siblings and character classes and braces work. Apps without a Vite install use the same bundled libraries.
+
+### Changed
+
+- notify is now `9.0.0-rc.6`. oj's file watchers subscribe to changes only: inotify no longer queues an event for every open of a watched file, which reads alone could use to flood or overflow the queue. `Deno.watchFs` (and `node:fs.watch` in plugins) keeps the events it reported before.
+
+## [0.2.43] - 2026-10-21
+
+### Fixed
+
+- A TanStack Start app whose documents are rendered in workerd (`cloudflare({ viteEnvironment: { name: "ssr" } })`) keeps client edits in place. Those pages load TanStack's unbundled dev client entry and take each edit as an HMR update, as under Vite, but oj rebuilt its own Start client bundle on every edit, which no such page loads, and then reloaded the page, throwing the update away. oj no longer builds that bundle, at boot or on edits, unless a page rendered by oj's own runner loads it. In that case it builds once the plugin host shows that no worker environment renders the documents, before the first document asks for it. A route-tree change still reloads, as in Vite.
+- In TanStack Start dev, a created file triggers a client rebundle only when an `import.meta.glob` the bundle expanded actually matches it, with the glob's own case, dotfile and `node_modules` rules, as Vite's glob `hotUpdate` matches added files. Any file created under a glob's base directory used to rebundle, including an editor's or `sed`'s temp file and miniflare's state writes. A file created and removed within one batch no longer counts.
+
+## [0.2.42] - 2026-10-21
+
+### Fixed
+
+- A root-absolute `import.meta.glob` in dev server code (`import.meta.glob("/src/x.ts")` in a TanStack Start server function, middleware or loader, or an SPA module) resolves from the app root and is keyed `/src/x.ts`, as in Vite. It globbed the filesystem root instead and came back empty, so code that looked a module up by key silently took its fallback. A `base: "/x"` option resolves from the root too, and a module is left out of its own glob.
+- A file created after an import of it failed to resolve now resolves without its importer being edited, and a deleted file stops resolving, with `server.hmr: false` or an editor gate holding updates too. oj's resolvers kept their misses until HMR retried them; as in Vite, a created or deleted file now clears the resolver caches whatever HMR does. In TanStack Start this was a 500 on a server function call (`Could not find package '@app/lib'`). A file created again after its delete now reaches plugins' `watchChange` as `create`, not `update`.
+- A redirect answered behind the dev server reaches the browser as written, with every `Set-Cookie`, through plugin middleware and `server.proxy`. oj followed it on the server, so the browser got the destination's page under the original URL without the redirect's cookies, and a sign-in or sign-out relying on browser redirects never completed. Plugin middleware in a non-Start app now also sees the browser's `Host`, so an absolute redirect it builds points at the dev server and not the loopback port.
+- `server.proxy` applies http-proxy's opt-in options, as Vite does: `autoRewrite`, `hostRewrite`, `protocolRewrite`, `cookieDomainRewrite`, `cookiePathRewrite`, `followRedirects` (with follow-redirects' rules, a 307 or 308 replaying the method and body) and `xfwd`. oj's built-in proxy warned about them and ignored them. A string entry means `changeOrigin: true` in every proxy path.
+- Plugin middleware and `server.proxy` see the browser's connection, as under Vite: `req.socket.remoteAddress` is the browser's address and `req.socket.encrypted` is set over HTTPS, instead of oj's loopback hop. So `xfwd` reports the browser's address and `https`, including through an app's own `http-proxy` or `http-proxy-3`.
+
+## [0.2.41] - 2026-10-20
+
+### Changed
+
+- Dependencies are updated to their latest semver-compatible releases (tokio 1.54, hyper 1.12, rustls 0.23.46, reqwest 0.13.5 among them), and rquickjs goes from 0.12 to 0.14.
+
+### Fixed
+
+- The dev HTML's `<link rel="modulepreload">` hints for pre-bundled deps name each entry's current URL. Every hint carried the session's base version, so after an optimizer rerun, or from boot on a warm session, a dep's hint and its import named different `?v=` URLs, and the hint got the outdated-dep 504 on every page load. Chunks preload bare, as dep files import them.
+
+## [0.2.40] - 2026-10-20
+
+### Changed
+
+- rolldown is updated to 1.2.14 and oxc to 0.154, for both oj's crates and the npm rolldown the nix build vendors for Start bundles. Building oj now needs rustc 1.97.
+- The release build compiles the hot loops of oj's dependencies at opt-level 3: lightningcss's tokenizer and number printing, zlib, simd-json, base64, url, the regex engines, xxhash, rayon and the deno resolver. `oj build` of an app with a 6.7MB stylesheet went from 216ms to 169ms, and that stylesheet's first `oj dev` request from 178ms to 142ms.
+- Strings cross between Rust and the embedded engine without a JSON round trip, so a plugin transform no longer escapes and unescapes its whole payload twice. On an app of 300 modules of about 110KB each, the cold dev crawl went from 935ms to 752ms.
+- An engine job (config extraction, the dep pre-bundle) reports its exit at once instead of being polled every 25ms. A cold `oj dev` reaches its first response about 8% sooner.
+
+### Fixed
+
+- An app whose vite config aliases a dep to its own node_modules path (`resolve.alias: { react: path.resolve("node_modules/react") }`) loads one copy of it. The dep scan skipped every bare import an alias matched, so React was inlined into each pre-bundled dep and then optimized a second time, and a hook from a pre-bundled dep failed with a null dispatcher. As in Vite's scan, an aliased bare import is recorded as a dep when the alias lands in node_modules and crawled when it lands in the app's source.
+- TanStack Start client bundles rewrite `new Worker(new URL("./w.ts", import.meta.url))`, `new SharedWorker(...)` and `new URL(asset, import.meta.url)`, as Vite does, in dev and in a build. They reached the browser unchanged and resolved under `/@oj-start/`, so the worker or asset failed to load.
+- A file under `server.watch.ignored` (or the cache dir) written more often than every 10ms no longer holds the watcher's batch open, so an edit made meanwhile reaches HMR. Excluded paths are now dropped as each event arrives.
+- In TanStack Start, a server function whose handler contains a comment or string with an unbalanced parenthesis no longer breaks the client bundle with a parse error. The client and build rewrites now skip comments, strings, templates and regex literals when finding the handler's end, as the SSR rewrite already did.
+- A string returned from the embedded engine that contains a lone surrogate arrives with U+FFFD instead of as `null`.
+- A restart, or a boot after the deps cache was cleared, no longer serves its pre-bundled deps under `?v=` URLs an earlier session handed out. Those URLs are cached `immutable`, so the browser could keep bytes from a bundle that no longer existed. As in Vite, each session salts the dep versions it mints, and a warm boot keeps the persisted ones. A versioned dep URL whose file is gone answers Vite's outdated 504 instead of 404.
+- Stopping or restarting `oj dev` kills a running engine job (the dep scan, the pre-bundle, config extraction) with the server's other children. The job used to outlive the server until it noticed its parent was gone, writing V8 code cache into `.oj-cache` meanwhile.
+
 ## [0.2.39] - 2026-10-19
 
 ### Fixed

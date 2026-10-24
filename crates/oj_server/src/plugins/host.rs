@@ -1,25 +1,44 @@
 use super::*;
 use std::sync::Arc;
 
+/// The host's own plugin container: the environment it boots in.
+pub(crate) const MAIN_CONTAINER: u32 = 0;
+
+/// A handle on one plugin container of a plugin host: the host's own
+/// (MAIN_CONTAINER), or a worker bundle's ([`PluginHost::open_worker_container`]).
+/// Every container lives in the one engine and realm the host runs.
 pub struct PluginHost {
-    /// Engine hosting plugin-host.mjs; an Option so `declare_gone`/`shutdown` can
-    /// take + abandon it. A thread wedged in NATIVE code leaks with its isolate.
-    engine: Mutex<Option<std::sync::Arc<oj_js::JsEngine>>>,
-    /// The plugin-host.mjs path on disk, the module every hook call targets.
-    host_module: String,
+    pub(crate) core: std::sync::Arc<HostCore>,
+    /// The container this handle's hook calls address.
+    pub(crate) container: u32,
+    /// A worker container's engine generation: a revived engine numbers its
+    /// containers afresh, so the handle answers nothing past it. `None` for
+    /// the host's own container, which every generation re-creates.
+    generation: Option<u64>,
     /// Live hook plan: starts fail-open, overwritten only by a successful fetch,
     /// reverts to fail-open on engine respawn; a failed fetch is never cached.
     hook_plan: std::sync::RwLock<BuildHookPlan>,
     hook_plan_fetched: std::sync::atomic::AtomicBool,
     hook_plan_prime_started: std::sync::atomic::AtomicBool,
+}
+
+/// A plugin host's engine and its lifecycle (boot, pushes, revive), shared by
+/// every container on it.
+pub(crate) struct HostCore {
+    /// Engine hosting plugin-host.mjs; an Option so `declare_gone`/`shutdown` can
+    /// take + abandon it. A thread wedged in NATIVE code leaks with its isolate.
+    engine: Mutex<Option<std::sync::Arc<oj_js::JsEngine>>>,
+    /// The plugin-host.mjs path on disk, the module every hook call targets.
+    host_module: String,
     /// Wired once at server boot (the reader clones per push, lock-free).
     ws_out: std::sync::OnceLock<tokio::sync::broadcast::Sender<String>>,
     /// `{ ojServer: { action, ... } }` pushes from the host: a plugin invalidating
     /// a module via server.moduleGraph, or server.restart(). Wired once.
     server_events: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<serde_json::Value>>,
-    /// The host's async reverse RPC (`{ rpc, method, args }` pushes), answered
-    /// by the dev server with [`PluginHost::rpc_reply`]. Wired once.
-    rpc_requests: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<HostRpc>>,
+    /// The host's async reverse RPC (`{ rpc, method, args, container }`
+    /// pushes), routed to the asking container's handler, which answers with
+    /// [`PluginHost::rpc_reply`].
+    rpc_routes: Mutex<std::collections::HashMap<u32, tokio::sync::mpsc::UnboundedSender<HostRpc>>>,
     /// Host's `{ ojServeInfo }` push: None until top-level init completes; late
     /// subscribers can still activate the middleware path.
     serve_info_push: tokio::sync::watch::Sender<Option<ServeInfo>>,
@@ -57,7 +76,9 @@ pub struct PluginHost {
     /// Set by `shutdown()`: retired on purpose, must never be revived.
     shut_down: std::sync::atomic::AtomicBool,
     /// Weak self-handle so `&self` methods can hand a fresh generation's tasks their `Arc`s.
-    self_ref: std::sync::OnceLock<std::sync::Weak<PluginHost>>,
+    self_ref: std::sync::OnceLock<std::sync::Weak<HostCore>>,
+    /// The handle on the host's own container, whose hook plan a respawn resets.
+    main: std::sync::OnceLock<std::sync::Weak<PluginHost>>,
 }
 
 /// The dev listener's bound (port, interface): hosts booting after the bind
@@ -65,7 +86,7 @@ pub struct PluginHost {
 pub(crate) static DEV_LISTENER: Mutex<Option<(u16, String)>> = Mutex::new(None);
 /// Every spawned host, weakly: the bind-time announce must reach hosts booted
 /// before the listener existed (the normal boot order).
-pub(crate) static LIVE_HOSTS: Mutex<Vec<std::sync::Weak<PluginHost>>> = Mutex::new(Vec::new());
+pub(crate) static LIVE_HOSTS: Mutex<Vec<std::sync::Weak<HostCore>>> = Mutex::new(Vec::new());
 
 /// Dev listener bound: remember for hosts yet to boot, tell every live one.
 /// The stub `httpServer` emits "listening" only on this signal (Vite parity: the socket really accepts).
@@ -119,6 +140,7 @@ fn new_host_engine(
 /// Writes the boot module the host's engine calls before the host module.
 fn ensure_boot_module(root: &Path) -> Result<String, String> {
     let dir = oj_cache::cache_root(root);
+    ensure_asset(&dir, "vite-config-node.mjs", VITE_CONFIG_NODE_JS).map_err(|e| e.to_string())?;
     ensure_asset(&dir, "plugin-host-boot.mjs", PLUGIN_HOST_BOOT_JS).map_err(|e| e.to_string())?;
     Ok(dir
         .join("plugin-host-boot.mjs")
@@ -126,7 +148,7 @@ fn ensure_boot_module(root: &Path) -> Result<String, String> {
         .into_owned())
 }
 
-/// See [`PluginHost::boot`].
+/// See [`HostCore::boot`].
 pub(crate) struct BootContext {
     boot_seed: serde_json::Value,
     root: PathBuf,
@@ -140,7 +162,7 @@ pub(crate) struct BootContext {
     import_meta_env: Arc<std::sync::OnceLock<Arc<oj_compiler::ImportMetaEnv>>>,
 }
 
-/// See [`PluginHost::revive`].
+/// See [`HostCore::revive`].
 pub(crate) struct ReviveState {
     /// The live engine's generation; bumped by each revive.
     pub(crate) generation: u64,
@@ -409,9 +431,15 @@ impl std::fmt::Debug for PluginHost {
     }
 }
 
+impl std::fmt::Debug for HostCore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HostCore")
+    }
+}
+
 /// A host dropped without an explicit shutdown abandons its engine: the last
 /// `Arc<JsEngine>` drop must not JOIN a thread parked in a never-settling init.
-impl Drop for PluginHost {
+impl Drop for HostCore {
     fn drop(&mut self) {
         if let Some(engine) = self
             .engine
@@ -565,15 +593,12 @@ impl PluginHost {
             "initialJson": config_json,
             "cacheRoot": oj_cache::cache_root(root),
         });
-        let host = std::sync::Arc::new(PluginHost {
+        let core = std::sync::Arc::new(HostCore {
             engine: Mutex::new(None),
             host_module: script.to_string_lossy().into_owned(),
-            hook_plan: std::sync::RwLock::new(BuildHookPlan::fail_open()),
-            hook_plan_fetched: std::sync::atomic::AtomicBool::new(false),
-            hook_plan_prime_started: std::sync::atomic::AtomicBool::new(false),
             ws_out: std::sync::OnceLock::new(),
             server_events: std::sync::OnceLock::new(),
-            rpc_requests: std::sync::OnceLock::new(),
+            rpc_routes: Mutex::new(std::collections::HashMap::new()),
             serve_info_push: tokio::sync::watch::channel(None).0,
             initialized: tokio::sync::watch::channel(false).0,
             host_gone: tokio::sync::watch::channel(false).0,
@@ -605,25 +630,769 @@ impl PluginHost {
             }),
             shut_down: std::sync::atomic::AtomicBool::new(false),
             self_ref: std::sync::OnceLock::new(),
+            main: std::sync::OnceLock::new(),
         });
-        let _ = host.self_ref.set(std::sync::Arc::downgrade(&host));
+        let _ = core.self_ref.set(std::sync::Arc::downgrade(&core));
+        let host = std::sync::Arc::new(PluginHost::over(
+            std::sync::Arc::clone(&core),
+            MAIN_CONTAINER,
+            None,
+        ));
+        let _ = core.main.set(std::sync::Arc::downgrade(&host));
         LIVE_HOSTS
             .lock()
             .unwrap()
-            .push(std::sync::Arc::downgrade(&host));
+            .push(std::sync::Arc::downgrade(&core));
         let warm = prewarm.take().map(|p| (p.engine, p.post_rx));
-        Self::ignite_with(&host, 0, warm).map_err(|e| anyhow::anyhow!("{e}"))?;
+        HostCore::ignite_with(&core, 0, warm).map_err(|e| anyhow::anyhow!("{e}"))?;
         Ok(host)
+    }
+
+    pub async fn transform(
+        &self,
+        code: &str,
+        id: &str,
+        resolved: &str,
+    ) -> Result<HostTransform, String> {
+        let raw = self.call("transform", &[code, id, resolved]).await?;
+        Ok(HostTransform::parse(raw, code))
+    }
+
+    pub async fn seed_chunk_names(&self, map_json: &str) -> Result<Option<String>, String> {
+        self.call("seedChunkNames", &[map_json]).await
+    }
+
+    #[inline]
+    pub async fn has_module_parsed(&self) -> bool {
+        self.call_flag("hasModuleParsed", false).await
+    }
+
+    #[inline]
+    pub async fn module_parsed(&self, id: &str) -> Result<(), String> {
+        self.call_unit("replayModuleParsed", &[id]).await
+    }
+
+    /// A Start build's module_parsed: rolldown's ModuleInfo as JSON (`id`,
+    /// `code`, `importedIds`, `dynamicallyImportedIds`, `importers`,
+    /// `dynamicImporters`, `exports`, `isEntry`).
+    #[inline]
+    pub async fn bundle_module_parsed(&self, info_json: &str) -> Result<(), String> {
+        self.call_unit("bundleModuleParsed", &[info_json]).await
+    }
+
+    /// Moves a Start build's host to the next environment's build, on the
+    /// same plugin instances (Vite's `builder.sharedPlugins`).
+    #[inline]
+    pub async fn switch_environment(&self, name: &str) -> Result<(), String> {
+        self.call_unit("switchEnvironment", &[name]).await
+    }
+
+    /// Vite's `builder.buildApp`: the plugins' buildApp hooks, which reach
+    /// oj's environment builds through the `buildEnvironments` reverse RPC.
+    /// `built_json` names the environments oj builds (name -> `{ outDir, input }`).
+    #[inline]
+    pub async fn build_app(&self, built_json: &str) -> Result<(), String> {
+        self.call_unit("buildApp", &[built_json]).await
+    }
+
+    #[inline]
+    pub async fn resolve_id(&self, source: &str, importer: &str) -> Result<Option<String>, String> {
+        self.call("resolveId", &[source, importer]).await
+    }
+
+    /// One phase of the resolveId chain for a Start bundle host: `"pre"` (the
+    /// hooks Vite runs before its core resolver), `"post"` (the rest), or
+    /// `"all"`. The winning result whole, `external` included.
+    pub async fn resolve_id_phase(
+        &self,
+        source: &str,
+        importer: &str,
+        phase: &str,
+        is_entry: bool,
+    ) -> Result<Option<ResolvedId>, String> {
+        let entry = if is_entry { "true" } else { "false" };
+        let raw = self
+            .call("resolveIdPhase", &[source, importer, phase, entry])
+            .await?;
+        match raw {
+            None => Ok(None),
+            Some(raw) => serde_json::from_str::<serde_json::Value>(&raw)
+                .ok()
+                .and_then(|v| ResolvedId::from_json(&v))
+                .map(Some)
+                .ok_or_else(|| format!("resolveId result for {source}: {raw}")),
+        }
+    }
+
+    /// The live config values a Start bundle reads (plugin-host.mjs
+    /// `startFacts`): aliases, externals, chunk policy, the Cloudflare Worker
+    /// environment and dev-server flags, functions as `{ "$fn": n }` handles.
+    pub async fn start_facts(&self) -> Result<serde_json::Value, String> {
+        let raw = self.call("startFacts", &[]).await?.unwrap_or_default();
+        serde_json::from_str(&raw).map_err(|e| format!("start facts: {e}"))
+    }
+
+    /// Calls the config function behind a `{ "$fn": n }` handle with JSON
+    /// arguments; its JSON result.
+    pub async fn call_start_fn(
+        &self,
+        handle: u64,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let raw = self
+            .call("callStartFn", &[&handle.to_string(), &args.to_string()])
+            .await?
+            .unwrap_or_default();
+        serde_json::from_str(&raw).map_err(|e| format!("config function #{handle}: {e}"))
+    }
+
+    /// A codeSplitting group function over a batch of module ids (one result
+    /// per id). `infos` (module infos, as JSON) carries the ones this
+    /// chunking `generation` has not sent yet. `tolerant`: a throw comes back
+    /// as `{ "$threw": message }` for its id instead of failing the batch.
+    pub async fn call_start_fn_batch(
+        &self,
+        handle: u64,
+        ids: &[String],
+        generation: u64,
+        infos: Option<&str>,
+        tolerant: bool,
+    ) -> Result<Vec<serde_json::Value>, String> {
+        let ids = serde_json::to_string(ids).map_err(|e| e.to_string())?;
+        let raw = self
+            .call(
+                "callStartFnBatch",
+                &[
+                    &handle.to_string(),
+                    &ids,
+                    &generation.to_string(),
+                    infos.unwrap_or(""),
+                    if tolerant { "true" } else { "false" },
+                ],
+            )
+            .await?
+            .unwrap_or_default();
+        serde_json::from_str(&raw).map_err(|e| format!("codeSplitting function #{handle}: {e}"))
+    }
+
+    /// The resolveId chain as the dep scan runs it (Vite's
+    /// `pluginContainer.resolveId(..., { scan: true })`): the winning result
+    /// whole, `external` included.
+    pub(crate) async fn scan_resolve_id(
+        &self,
+        source: &str,
+        importer: &str,
+    ) -> Result<Option<ResolvedId>, String> {
+        let raw = self.call("scanResolveId", &[source, importer]).await?;
+        Ok(raw
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .and_then(|v| ResolvedId::from_json(&v)))
+    }
+
+    /// Which hooks the live `optimizeDeps.rolldownOptions.plugins` implement;
+    /// `None` when the config lists none.
+    pub(crate) async fn scan_plugin_hooks(
+        &self,
+    ) -> Result<Option<crate::prebundle::ScanPluginHooks>, String> {
+        let Some(raw) = self.call("scanPluginHooks", &[]).await? else {
+            return Ok(None);
+        };
+        let v: serde_json::Value =
+            serde_json::from_str(&raw).map_err(|e| format!("scan plugin hooks: {e}"))?;
+        let has = |k: &str| v.get(k).and_then(|b| b.as_bool()).unwrap_or(false);
+        Ok(Some(crate::prebundle::ScanPluginHooks {
+            resolve_id: has("resolveId"),
+            load: has("load"),
+            transform: has("transform"),
+        }))
+    }
+
+    /// One hook of `optimizeDeps.rolldownOptions.plugins` over JSON
+    /// arguments: resolveId and load return the first plugin's answer,
+    /// transform the code after every plugin; null when none answered.
+    pub(crate) async fn scan_plugin_hook(
+        &self,
+        hook: &str,
+        args: &serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let raw = self
+            .call("scanPluginHook", &[hook, &args.to_string()])
+            .await?;
+        raw.map(|raw| serde_json::from_str(&raw).map_err(|e| format!("scan plugin {hook}: {e}")))
+            .transpose()
+    }
+
+    #[inline]
+    pub async fn load(&self, id: &str) -> Result<Option<String>, String> {
+        self.call("load", &[id]).await
+    }
+
+    /// The load hooks Vite runs before its core plugins (`enforce: "pre"`,
+    /// `order: "pre"`) for an id a Start bundle's own loader would claim.
+    #[inline]
+    pub async fn load_pre(&self, id: &str) -> Result<Option<String>, String> {
+        self.call("loadPhase", &[id, "pre"]).await
+    }
+
+    #[inline]
+    pub async fn handle_hot_update(
+        &self,
+        file: &str,
+        timestamp: u64,
+        change_type: &str,
+        modules_json: &str,
+    ) -> Result<Option<String>, String> {
+        self.call(
+            "handleHotUpdate",
+            &[file, &timestamp.to_string(), change_type, modules_json],
+        )
+        .await
+    }
+
+    /// `ctx_json` is Vite's IndexHtmlTransformContext; the host adds the dev
+    /// server. A throwing hook is an `Err`, as in Vite.
+    #[inline]
+    pub async fn transform_index_html(&self, html: &str, ctx_json: &str) -> Result<String, String> {
+        Ok(self
+            .call("transformIndexHtml", &[html, ctx_json])
+            .await?
+            .unwrap_or_else(|| html.to_string()))
+    }
+
+    #[inline]
+    pub async fn build_start(&self) -> Result<Vec<ChunkEmit>, String> {
+        let Some(raw) = self.call("buildStart", &[]).await? else {
+            return Ok(Vec::new());
+        };
+        Ok(serde_json::from_str::<serde_json::Value>(&raw)
+            .map(|v| emitted_chunks(&v))
+            .unwrap_or_default())
+    }
+
+    /// `buildEnd(error?)`: Rollup passes the error that failed the build, so
+    /// plugins see a failed build too (`None` for a successful one).
+    #[inline]
+    pub async fn build_end(&self, error: Option<&str>) -> Result<(), String> {
+        match error {
+            Some(e) => self.call_unit("buildEnd", &[e]).await,
+            None => self.call_unit("buildEnd", &[]).await,
+        }
+    }
+
+    #[inline]
+    pub async fn render_start(&self) -> Result<(), String> {
+        self.call_unit("renderStart", &[]).await
+    }
+
+    #[inline]
+    pub async fn watch_change(&self, file: &str, event: &str) -> Result<(), String> {
+        self.call_unit("watchChange", &[file, event]).await
+    }
+
+    #[inline]
+    pub async fn close_bundle(&self) -> Result<(), String> {
+        self.call_unit("closeBundle", &[]).await
+    }
+
+    /// The dev server's `close()`, which plugins wrap to dispose what `configureServer` started.
+    pub async fn close_dev_server(&self) -> Result<(), String> {
+        self.call_unit("closeDevServer", &[]).await
+    }
+
+    #[inline]
+    pub async fn watch_files(&self) -> Result<Vec<String>, String> {
+        let Some(json) = self.call("getWatchFiles", &[]).await? else {
+            return Ok(Vec::new());
+        };
+        serde_json::from_str(&json).map_err(|e| e.to_string())
+    }
+
+    #[inline]
+    pub async fn has_generate_bundle(&self) -> bool {
+        self.call_flag("hasGenerateBundle", false).await
+    }
+
+    /// Fails open: only an explicit "false" skips the hook, so a wedged host
+    /// still fails the build at the RPC instead of shipping untransformed HTML.
+    #[inline]
+    pub async fn has_transform_index_html(&self) -> bool {
+        !matches!(self.call("hasTransformIndexHtml", &[]).await, Ok(Some(s)) if s == "false")
+    }
+
+    /// One bounded per-host fetch of the hook filter plan, so gates run on real
+    /// filters from the first dispatch; a slow or wedged host degrades to fail-open.
+    pub async fn prime_hook_plan(self: &std::sync::Arc<Self>) {
+        use std::sync::atomic::Ordering;
+        if self.hook_plan_fetched.load(Ordering::Acquire) {
+            return;
+        }
+        if self.hook_plan_prime_started.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let fetch = self.ensure_hook_plan();
+        if tokio::time::timeout(std::time::Duration::from_millis(500), fetch)
+            .await
+            .is_err()
+        {
+            // Keep trying off the request path; gates stay fail-open until
+            // the plan lands.
+            let host = std::sync::Arc::clone(self);
+            tokio::spawn(async move { host.ensure_hook_plan().await });
+        }
+    }
+
+    pub async fn build_hook_plan(&self) -> BuildHookPlan {
+        self.ensure_hook_plan().await;
+        self.hook_plan.read().unwrap().clone()
+    }
+
+    /// Dispatch the app-Vite-side transform warm (fire-and-forget, like Vite's
+    /// warmup.ts); replies once dispatched. Returns `{environments, started}`, None when nothing was warmable.
+    pub async fn warm_environments(&self, urls: &[String]) -> Result<Option<String>, String> {
+        let payload = serde_json::to_string(urls).map_err(|e| e.to_string())?;
+        self.call("warmEnvironments", &[&payload]).await
+    }
+
+    async fn ensure_hook_plan(&self) {
+        use std::sync::atomic::Ordering;
+        if self.hook_plan_fetched.load(Ordering::Acquire) {
+            return;
+        }
+        // Only a successful fetch is cached; a failure leaves the fail-open
+        // default in place to be retried on the next call.
+        if let Some(v) = self.call_json("getBuildHookPlan").await {
+            let plan = BuildHookPlan {
+                transform: HookFilterPlan::from_json(v.get("transform")),
+                load: HookFilterPlan::from_json(v.get("load")),
+                resolve_id: HookFilterPlan::from_json(v.get("resolveId")),
+            };
+            *self.hook_plan.write().unwrap() = plan;
+            self.hook_plan_fetched.store(true, Ordering::Release);
+        }
+    }
+
+    #[inline]
+    pub fn hook_wants_transform(&self, id: &str, code: &str) -> bool {
+        self.hook_plan
+            .read()
+            .unwrap()
+            .transform
+            .wants(id, Some(code))
+    }
+
+    #[inline]
+    pub fn hook_wants_load(&self, id: &str) -> bool {
+        self.hook_plan.read().unwrap().load.wants(id, None)
+    }
+
+    #[inline]
+    pub fn hook_wants_resolve_id(&self, spec: &str) -> bool {
+        self.hook_plan.read().unwrap().resolve_id.wants(spec, None)
+    }
+
+    #[inline]
+    pub async fn generate_bundle(
+        &self,
+        bundle_json: &str,
+        is_write: bool,
+    ) -> Result<Option<String>, String> {
+        self.call("generateBundle", &[bundle_json, bool_arg(is_write)])
+            .await
+    }
+
+    #[inline]
+    pub async fn has_render_chunk(&self) -> bool {
+        self.call_flag("hasRenderChunk", false).await
+    }
+
+    pub async fn render_chunk(
+        &self,
+        code: &str,
+        chunk_json: &str,
+    ) -> Result<HostTransform, String> {
+        let raw = self.call("renderChunk", &[code, chunk_json]).await?;
+        Ok(HostTransform::parse(raw, code))
+    }
+
+    #[inline]
+    pub async fn has_write_bundle(&self) -> bool {
+        self.call_flag("hasWriteBundle", false).await
+    }
+
+    #[inline]
+    pub async fn write_bundle(&self, bundle_json: &str, is_write: bool) -> Result<(), String> {
+        self.call_unit("writeBundle", &[bundle_json, bool_arg(is_write)])
+            .await
+    }
+
+    /// How the host serves requests. An already-pushed value returns without a round
+    /// trip; only a host that blew the init deadline yields the default (watch `serve_info_updates` for the late push).
+    pub async fn serve_info(&self) -> ServeInfo {
+        if let Some(info) = *self.core.serve_info_push.borrow() {
+            return info;
+        }
+        let rpc = self.call("getServeInfo", &[]).await;
+        // The push may have landed while the RPC ran; it is the definitive value.
+        if let Some(info) = *self.core.serve_info_push.borrow() {
+            return info;
+        }
+        rpc.ok()
+            .flatten()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .map(|v| ServeInfo::from_json(&v))
+            .unwrap_or_default()
+    }
+
+    /// Subscribe to `{ ojServeInfo }`: `None` until init completes; lets the
+    /// caller activate the plugin-middleware path late.
+    pub fn serve_info_updates(&self) -> tokio::sync::watch::Receiver<Option<ServeInfo>> {
+        self.core.serve_info_push.subscribe()
+    }
+
+    /// Plugins still active after oj filters out natively reimplemented ones.
+    /// Defaults to 1 on RPC failure so an uncertain host is never dropped.
+    pub async fn plugin_count(&self) -> usize {
+        self.call_ok("getPluginCount")
+            .await
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1)
+    }
+
+    /// The active plugins' names, in order (Vite keys its dep pre-bundle on
+    /// them). Empty on RPC failure.
+    pub async fn plugin_names(&self) -> Vec<String> {
+        self.call_json("getPluginNames")
+            .await
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default()
+    }
+
+    /// `define` entries plugin `config()` hooks contributed, as (key, js
+    /// expression) pairs, reaching oj's compile like Vite's merged `config.define`. Empty on RPC failure.
+    pub async fn config_defines(&self) -> Vec<(String, String)> {
+        let Some(v) = self.call_json("getPluginConfig").await else {
+            return Vec::new();
+        };
+        v.get("define")
+            .and_then(|d| d.as_object())
+            .map(|d| {
+                d.iter()
+                    .map(|(k, v)| {
+                        let expr = match v {
+                            serde_json::Value::String(s) => s.clone(),
+                            other => other.to_string(),
+                        };
+                        (k.clone(), expr)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub async fn env_delta(&self) -> std::collections::BTreeMap<String, String> {
+        self.call_ok("getEnvDelta")
+            .await
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    /// Whether any active plugin has a `transform` hook. Defaults to true on RPC
+    /// failure so the per-module transform pass is never skipped by mistake.
+    pub async fn has_transform(&self) -> bool {
+        self.call_flag("getHasTransform", true).await
+    }
+
+    /// Whether any active plugin has a `resolveId` hook: only one can answer a
+    /// bare import oj's resolver cannot. Defaults to true on RPC failure, so a
+    /// plugin-served bare id is never failed by mistake.
+    pub async fn has_resolve_id(&self) -> bool {
+        self.call_flag("getHasResolveId", true).await
+    }
+
+    /// Whether any active plugin has a `load` hook (Vite runs load before the fs
+    /// read). Defaults to false on RPC failure (the fs read alone is always correct).
+    pub async fn has_load(&self) -> bool {
+        self.call_flag("getHasLoad", false).await
+    }
+
+    /// `filter.code` include patterns of every object-form transform hook;
+    /// dependency transforms are gated on these.
+    pub async fn dep_transform_filters(&self) -> Vec<HookFilter> {
+        self.call_ok("getDepTransformFilters")
+            .await
+            .map(|s| HookFilter::list_from_json(&s))
+            .unwrap_or_default()
+    }
+
+    /// `filter.id` include patterns of every object-form `load` hook: deps cost
+    /// no RPC unless a plugin asked for them.
+    pub async fn dep_load_filters(&self) -> Vec<HookFilter> {
+        self.call_ok("getDepLoadFilters")
+            .await
+            .map(|s| HookFilter::list_from_json(&s))
+            .unwrap_or_default()
+    }
+
+    /// `filter.id` include patterns of every object-form `resolveId` hook: a
+    /// non-bare import is offered to plugin resolveId only when it matches one.
+    pub async fn resolve_id_filters(&self) -> Vec<HookFilter> {
+        self.call_ok("getResolveIdFilters")
+            .await
+            .map(|s| HookFilter::list_from_json(&s))
+            .unwrap_or_default()
+    }
+
+    /// Which HMR hooks any active plugin defines: (watchChange, handleHotUpdate).
+    /// Defaults to (true, true) on failure so an HMR RPC is never skipped by mistake.
+    pub async fn hmr_hooks(&self) -> (bool, bool) {
+        let Some(v) = self.call_json("getHmrHooks").await else {
+            return (true, true);
+        };
+        let flag = |key: &str| v.get(key).and_then(|b| b.as_bool()).unwrap_or(true);
+        (flag("watchChange"), flag("handleHotUpdate"))
+    }
+
+    /// Where this container's async reverse RPCs go (each container answers
+    /// its own: a worker bundle's `this.resolve` ends in that bundle).
+    pub fn set_rpc_request_sender(&self, tx: tokio::sync::mpsc::UnboundedSender<HostRpc>) {
+        if self.is_stale() {
+            return;
+        }
+        self.core
+            .rpc_routes
+            .lock()
+            .unwrap()
+            .insert(self.container, tx);
+    }
+
+    #[inline]
+    pub async fn ws_message(&self, event: &str, data: &str) -> Result<(), String> {
+        self.call_unit("wsMessage", &[event, data]).await
+    }
+
+    /// An HMR client connected: the host fires `server.ws.on("connection")`
+    /// listeners (Vite's ws server emits one per accepted socket).
+    #[inline]
+    pub async fn ws_connection(&self) -> Result<(), String> {
+        self.call_unit("wsConnection", &[]).await
+    }
+
+    #[inline]
+    pub async fn emitted_files(&self) -> Result<Vec<EmittedFile>, String> {
+        let Some(json) = self.call("getEmittedFiles", &[]).await? else {
+            return Ok(Vec::new());
+        };
+        let arr: Vec<serde_json::Value> = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+        Ok(arr
+            .into_iter()
+            .filter_map(|v| {
+                Some(EmittedFile {
+                    file_name: v.get("fileName")?.as_str()?.to_string(),
+                    source: v.get("source")?.as_str()?.to_string(),
+                })
+            })
+            .collect())
+    }
+
+    /// CSS that plugins (e.g. UnoCSS) routed through oj's `vite:css-post` shim.
+    /// Returned as `(source_id, css)` pairs.
+    pub async fn get_plugin_css(&self) -> Vec<(String, String)> {
+        self.call_json("getPluginCss")
+            .await
+            .and_then(|v| {
+                v.as_array().map(|a| {
+                    a.iter()
+                        .filter_map(|e| {
+                            let css = e.get("css")?.as_str()?.to_string();
+                            let id = e
+                                .get("id")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            Some((id, css))
+                        })
+                        .collect()
+                })
+            })
+            .unwrap_or_default()
+    }
+
+    /// One hook call into this handle's container.
+    async fn call(&self, hook: &str, args: &[&str]) -> Result<Option<String>, String> {
+        if self.is_stale() {
+            return Err(format!(
+                "plugin container {} died with its plugin host's engine",
+                self.container
+            ));
+        }
+        self.core.call(self.container, hook, args).await
+    }
+
+    /// A worker container from an engine since revived: its id may name
+    /// another bundle's container in the new one.
+    fn is_stale(&self) -> bool {
+        self.generation
+            .is_some_and(|g| g != self.core.revive.lock().unwrap().generation)
+    }
+
+    async fn call_unit(&self, hook: &str, args: &[&str]) -> Result<(), String> {
+        self.call(hook, args).await.map(|_| ())
+    }
+
+    /// A no-arg query, with any failure or empty reply as `None`.
+    async fn call_ok(&self, hook: &str) -> Option<String> {
+        self.call(hook, &[]).await.ok().flatten()
+    }
+
+    /// A no-arg query parsed as JSON; `None` on failure or bad JSON.
+    async fn call_json(&self, hook: &str) -> Option<serde_json::Value> {
+        serde_json::from_str(&self.call_ok(hook).await?).ok()
+    }
+
+    /// A no-arg `"true"` query; `default` when the call fails or returns nothing.
+    async fn call_flag(&self, hook: &str, default: bool) -> bool {
+        match self.call(hook, &[]).await {
+            Ok(Some(s)) => s == "true",
+            _ => default,
+        }
+    }
+
+    /// A handle on `container` of `core`, its hook plan fail-open until fetched.
+    fn over(core: std::sync::Arc<HostCore>, container: u32, generation: Option<u64>) -> PluginHost {
+        PluginHost {
+            core,
+            container,
+            generation,
+            hook_plan: std::sync::RwLock::new(BuildHookPlan::fail_open()),
+            hook_plan_fetched: std::sync::atomic::AtomicBool::new(false),
+            hook_plan_prime_started: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// A worker entry's bundle (Vite's bundleWorkerEntry): a container of its
+    /// own on this host's engine, over `worker.plugins` called afresh, in the
+    /// realm of the app's plugins so the two share module state as under
+    /// Vite. Its resolved config is `isWorker` with `chain`, the bundle chain.
+    /// Close it with [`PluginHost::close_container`] once the bundle is done.
+    pub async fn open_worker_container(&self, chain: &[String]) -> Result<PluginHost, String> {
+        let chain = serde_json::to_string(chain).map_err(|e| e.to_string())?;
+        let id = self
+            .core
+            .call(MAIN_CONTAINER, "openWorkerContainer", &[&chain])
+            .await?
+            .and_then(|id| id.parse::<u32>().ok())
+            .ok_or("the plugin host opened no worker container")?;
+        let generation = self.core.revive.lock().unwrap().generation;
+        Ok(PluginHost::over(
+            std::sync::Arc::clone(&self.core),
+            id,
+            Some(generation),
+        ))
+    }
+
+    /// Drops this handle's worker container from the host (its plugins answer
+    /// no more hooks); the host's own container is never closed.
+    pub async fn close_container(&self) -> Result<(), String> {
+        // A stale handle's container died with its engine, and its id may
+        // be a live bundle's now.
+        if self.container == MAIN_CONTAINER || self.is_stale() {
+            return Ok(());
+        }
+        self.core.rpc_routes.lock().unwrap().remove(&self.container);
+        self.call_unit("closeContainer", &[]).await
+    }
+
+    /// Fail-open gates until the plan is fetched again (a respawned engine).
+    fn reset_hook_plan(&self) {
+        use std::sync::atomic::Ordering;
+        *self.hook_plan.write().unwrap() = BuildHookPlan::fail_open();
+        self.hook_plan_fetched.store(false, Ordering::Release);
+        self.hook_plan_prime_started.store(false, Ordering::Release);
+    }
+
+    /// Whether the host finished its top-level init (the serve-info push, or
+    /// any RPC reply, whichever came first).
+    pub fn is_initialized(&self) -> bool {
+        self.core.is_initialized()
+    }
+
+    /// Live updates of the initialized flag, for waiters keyed on the init
+    /// transition itself (the watcher's SSR catch-up replay).
+    pub fn initialized_updates(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.core.initialized_updates()
+    }
+
+    /// When an uninitialized boot turns loud, measured from spawn.
+    pub fn init_warn_at(&self) -> tokio::time::Instant {
+        self.core.init_warn_at()
+    }
+
+    /// Live updates of the host-gone flag.
+    pub fn host_gone_updates(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.core.host_gone_updates()
+    }
+
+    /// Init-failure evidence updates.
+    pub fn init_failure_updates(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.core.init_failure_updates()
+    }
+
+    /// Resync-executed counter updates.
+    pub fn resync_done_updates(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.core.resync_done_updates()
+    }
+
+    /// Resolves when the host is gone.
+    pub(crate) async fn host_gone_wait(&self) {
+        self.core.host_gone_wait().await
+    }
+
+    /// Whether a dead host may still come back.
+    pub fn can_revive(&self) -> bool {
+        self.core.can_revive()
+    }
+
+    /// Retire the engine now, with every container on it.
+    pub fn shutdown(&self) {
+        self.core.shutdown()
+    }
+
+    pub fn set_server_events_sender(
+        &self,
+        tx: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
+    ) {
+        self.core.set_server_events_sender(tx)
+    }
+
+    /// The dev server's defines for `moduleInfo` compiles (`oj build` leaves it unset).
+    pub fn set_import_meta_env(&self, env: Arc<oj_compiler::ImportMetaEnv>) {
+        self.core.set_import_meta_env(env)
+    }
+
+    pub fn set_ws_sender(&self, tx: tokio::sync::broadcast::Sender<String>) {
+        self.core.set_ws_sender(tx)
+    }
+
+    /// Answers the host's async reverse RPC `id`.
+    pub fn rpc_reply(&self, id: u64, result: Result<serde_json::Value, String>) {
+        self.core.rpc_reply(id, result)
+    }
+}
+
+impl HostCore {
+    /// The host's own container, while a handle on it lives.
+    fn main_container(&self) -> Option<std::sync::Arc<PluginHost>> {
+        self.main.get().and_then(std::sync::Weak::upgrade)
     }
 
     /// Boot one engine GENERATION onto `host` (initial spawn and every revive). A
     /// superseded `generation` abandons the just-spawned engine: racing ignites must never leave a live loser.
-    fn ignite(host: &std::sync::Arc<PluginHost>, generation: u64) -> Result<(), String> {
+    fn ignite(host: &std::sync::Arc<HostCore>, generation: u64) -> Result<(), String> {
         Self::ignite_with(host, generation, None)
     }
 
     fn ignite_with(
-        host: &std::sync::Arc<PluginHost>,
+        host: &std::sync::Arc<HostCore>,
         generation: u64,
         warm: Option<(
             std::sync::Arc<oj_js::JsEngine>,
@@ -679,10 +1448,18 @@ impl PluginHost {
         .map_err(|e| e.to_string())?;
         ensure_asset(
             oj_cache::cache_root(&self.boot.root).as_path(),
+            "native-plugins.mjs",
+            NATIVE_PLUGINS_JS,
+        )
+        .map_err(|e| e.to_string())?;
+        ensure_asset(
+            oj_cache::cache_root(&self.boot.root).as_path(),
             "vite-html.mjs",
             VITE_HTML_JS,
         )
         .map_err(|e| e.to_string())?;
+        super::ensure_glob_assets(oj_cache::cache_root(&self.boot.root).as_path())
+            .map_err(|e| e.to_string())?;
         if std::fs::read(&script).ok().as_deref() != Some(PLUGIN_HOST_JS.as_bytes()) {
             let tmp = script.with_extension(format!("tmp-{}.mjs", std::process::id()));
             std::fs::write(&tmp, PLUGIN_HOST_JS).map_err(|e| e.to_string())?;
@@ -709,7 +1486,7 @@ impl PluginHost {
     /// BOOT task: seed the host's identity, then trigger top-level init via a trivial
     /// export. No deadline (the Rust-side watches own boot patience); a top-level throw declares the host gone.
     fn spawn_boot_task(
-        host: &std::sync::Arc<PluginHost>,
+        host: &std::sync::Arc<HostCore>,
         engine: std::sync::Arc<oj_js::JsEngine>,
         generation: u64,
     ) {
@@ -754,7 +1531,7 @@ impl PluginHost {
     /// The PUSH DISPATCHER: control pushes arrive whole on the engine channel;
     /// hook replies come back on their own call futures.
     fn spawn_push_dispatcher(
-        host: &std::sync::Arc<PluginHost>,
+        host: &std::sync::Arc<HostCore>,
         mut post_rx: tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
         generation: u64,
     ) {
@@ -791,9 +1568,16 @@ impl PluginHost {
                 method: method.to_string(),
                 args,
             };
-            // Without a server to answer (`oj build`), fail the call: an
-            // unanswered one would leave its hook awaiting forever.
-            match self.rpc_requests.get() {
+            // The container whose bundle asks answers it. Without one to
+            // answer (`oj build`), fail the call: an unanswered one would
+            // leave its hook awaiting forever.
+            let container = msg
+                .get("container")
+                .and_then(|c| c.as_u64())
+                .and_then(|c| u32::try_from(c).ok())
+                .unwrap_or(MAIN_CONTAINER);
+            let route = self.rpc_routes.lock().unwrap().get(&container).cloned();
+            match route {
                 Some(tx) => {
                     if let Err(e) = tx.send(rpc) {
                         self.rpc_reply(id, Err(format!("no handler for {}", e.0.method)));
@@ -838,7 +1622,7 @@ impl PluginHost {
 
     /// Init STALL MONITOR, wedge evidence independent of any caller's window: a
     /// full RPC-scale window with NO milestone flips `init_failed`, progress clears it. Calls never consult it.
-    fn spawn_stall_monitor(host: &std::sync::Arc<PluginHost>) {
+    fn spawn_stall_monitor(host: &std::sync::Arc<HostCore>) {
         let host = std::sync::Arc::clone(host);
         let stall_wait = host.boot.stall_wait;
         tokio::spawn(async move {
@@ -962,9 +1746,10 @@ impl PluginHost {
             Ok(()) => {
                 // Lift the death flag last: a caller sees a dead host or a fully re-armed one.
                 let _ = self.host_gone.send_replace(false);
-                if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                    let host = std::sync::Arc::clone(&host);
-                    handle.spawn(async move { host.ensure_hook_plan().await });
+                if let (Ok(handle), Some(main)) =
+                    (tokio::runtime::Handle::try_current(), self.main_container())
+                {
+                    handle.spawn(async move { main.ensure_hook_plan().await });
                 }
                 true
             }
@@ -986,13 +1771,18 @@ impl PluginHost {
     /// again, evidence cleared, stale serve info dropped. The fresh engine
     /// re-evaluates the plugins file: hook plan fail-open now, the refetch restores precise gating.
     fn reset_generation_state(&self) {
-        use std::sync::atomic::Ordering;
         let _ = self.initialized.send_replace(false);
         let _ = self.init_failed.send_replace(false);
         self.serve_info_push.send_replace(None);
-        *self.hook_plan.write().unwrap() = BuildHookPlan::fail_open();
-        self.hook_plan_fetched.store(false, Ordering::Release);
-        self.hook_plan_prime_started.store(false, Ordering::Release);
+        // Worker containers died with the old engine, their routes with them;
+        // the host's own refetches.
+        self.rpc_routes
+            .lock()
+            .unwrap()
+            .retain(|&container, _| container == MAIN_CONTAINER);
+        if let Some(main) = self.main_container() {
+            main.reset_hook_plan();
+        }
         *self.spawned.lock().unwrap() = tokio::time::Instant::now();
     }
 
@@ -1003,17 +1793,27 @@ impl PluginHost {
         let interface = interface.to_string();
         tokio::spawn(async move {
             let _ = host
-                .call("serverListening", &[&port.to_string(), &interface])
+                .call(
+                    MAIN_CONTAINER,
+                    "serverListening",
+                    &[&port.to_string(), &interface],
+                )
                 .await;
         });
     }
 
-    async fn call(&self, hook: &str, args: &[&str]) -> Result<Option<String>, String> {
+    /// One hook call into `container`.
+    async fn call(
+        &self,
+        container: u32,
+        hook: &str,
+        args: &[&str],
+    ) -> Result<Option<String>, String> {
         if *self.host_gone.borrow() && !self.try_revive() {
             return Err("plugin host exited".into());
         }
         self.wait_for_init().await?;
-        self.run_hook(hook, args).await
+        self.run_hook(container, hook, args).await
     }
 
     /// Init gate, BEFORE anything reaches the engine: the host answers hooks
@@ -1077,7 +1877,12 @@ impl PluginHost {
     /// for two windows means the isolate thread is wedged — blocked in
     /// native code, or spinning in synchronous JS — so declare the host
     /// gone; the next call revives a fresh one.
-    async fn run_hook(&self, hook: &str, args: &[&str]) -> Result<Option<String>, String> {
+    async fn run_hook(
+        &self,
+        container: u32,
+        hook: &str,
+        args: &[&str],
+    ) -> Result<Option<String>, String> {
         // Generation read before the engine: a racing revive makes the pair stale
         // (probe verdict ignored), never a stale generation blaming a fresh engine.
         let generation = self.revive.lock().unwrap().generation;
@@ -1097,6 +1902,7 @@ impl PluginHost {
                         .map(|a| serde_json::Value::String((*a).to_string()))
                         .collect(),
                 ),
+                serde_json::Value::from(container),
             ],
             None,
         );
@@ -1283,392 +2089,9 @@ impl PluginHost {
         }
     }
 
-    pub async fn transform(
-        &self,
-        code: &str,
-        id: &str,
-        resolved: &str,
-    ) -> Result<(String, Vec<String>, Vec<String>, Vec<ChunkEmit>), String> {
-        let Some(raw) = self.call("transform", &[code, id, resolved]).await? else {
-            return Ok((code.to_string(), Vec::new(), Vec::new(), Vec::new()));
-        };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
-            return Ok((raw, Vec::new(), Vec::new(), Vec::new()));
-        };
-        let out = v
-            .get("code")
-            .and_then(|c| c.as_str())
-            .unwrap_or(code)
-            .to_string();
-        let str_array = |key: &str| {
-            v.get(key)
-                .and_then(|w| w.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|x| x.as_str().map(str::to_string))
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
-        Ok((
-            out,
-            str_array("watchFiles"),
-            str_array("maps"),
-            emitted_chunks(&v),
-        ))
-    }
-
-    pub async fn seed_chunk_names(&self, map_json: &str) -> Result<Option<String>, String> {
-        self.call("seedChunkNames", &[map_json]).await
-    }
-
-    #[inline]
-    pub async fn has_module_parsed(&self) -> bool {
-        self.call_flag("hasModuleParsed", false).await
-    }
-
-    #[inline]
-    pub async fn module_parsed(&self, id: &str) -> Result<(), String> {
-        self.call_unit("replayModuleParsed", &[id]).await
-    }
-
-    #[inline]
-    pub async fn resolve_id(&self, source: &str, importer: &str) -> Result<Option<String>, String> {
-        self.call("resolveId", &[source, importer]).await
-    }
-
-    /// The dep optimizer's scan, resolved through the plugins (optimize-deps.mjs
-    /// `scan`): JSON `{ dep: file }`. Unbounded like every call: a cold scan
-    /// of a large app runs as long as it needs, probed for liveness.
-    pub async fn optimize_scan(&self, input: &str) -> Result<Option<String>, String> {
-        self.call("optimizeScan", &[input]).await
-    }
-
-    #[inline]
-    pub async fn load(&self, id: &str) -> Result<Option<String>, String> {
-        self.call("load", &[id]).await
-    }
-
-    #[inline]
-    pub async fn handle_hot_update(
-        &self,
-        file: &str,
-        timestamp: u64,
-        change_type: &str,
-        modules_json: &str,
-    ) -> Result<Option<String>, String> {
-        self.call(
-            "handleHotUpdate",
-            &[file, &timestamp.to_string(), change_type, modules_json],
-        )
-        .await
-    }
-
-    /// `ctx_json` is Vite's IndexHtmlTransformContext; the host adds the dev
-    /// server. A throwing hook is an `Err`, as in Vite.
-    #[inline]
-    pub async fn transform_index_html(&self, html: &str, ctx_json: &str) -> Result<String, String> {
-        Ok(self
-            .call("transformIndexHtml", &[html, ctx_json])
-            .await?
-            .unwrap_or_else(|| html.to_string()))
-    }
-
-    #[inline]
-    pub async fn build_start(&self) -> Result<Vec<ChunkEmit>, String> {
-        let Some(raw) = self.call("buildStart", &[]).await? else {
-            return Ok(Vec::new());
-        };
-        Ok(serde_json::from_str::<serde_json::Value>(&raw)
-            .map(|v| emitted_chunks(&v))
-            .unwrap_or_default())
-    }
-
-    /// `buildEnd(error?)`: Rollup passes the error that failed the build, so
-    /// plugins see a failed build too (`None` for a successful one).
-    #[inline]
-    pub async fn build_end(&self, error: Option<&str>) -> Result<(), String> {
-        match error {
-            Some(e) => self.call_unit("buildEnd", &[e]).await,
-            None => self.call_unit("buildEnd", &[]).await,
-        }
-    }
-
-    #[inline]
-    pub async fn render_start(&self) -> Result<(), String> {
-        self.call_unit("renderStart", &[]).await
-    }
-
-    #[inline]
-    pub async fn watch_change(&self, file: &str, event: &str) -> Result<(), String> {
-        self.call_unit("watchChange", &[file, event]).await
-    }
-
-    #[inline]
-    pub async fn close_bundle(&self) -> Result<(), String> {
-        self.call_unit("closeBundle", &[]).await
-    }
-
-    /// The dev server's `close()`, which plugins wrap to dispose what `configureServer` started.
-    pub async fn close_dev_server(&self) -> Result<(), String> {
-        self.call_unit("closeDevServer", &[]).await
-    }
-
-    #[inline]
-    pub async fn watch_files(&self) -> Result<Vec<String>, String> {
-        let Some(json) = self.call("getWatchFiles", &[]).await? else {
-            return Ok(Vec::new());
-        };
-        serde_json::from_str(&json).map_err(|e| e.to_string())
-    }
-
-    #[inline]
-    pub async fn has_generate_bundle(&self) -> bool {
-        self.call_flag("hasGenerateBundle", false).await
-    }
-
-    /// Fails open: only an explicit "false" skips the hook, so a wedged host
-    /// still fails the build at the RPC instead of shipping untransformed HTML.
-    #[inline]
-    pub async fn has_transform_index_html(&self) -> bool {
-        !matches!(self.call("hasTransformIndexHtml", &[]).await, Ok(Some(s)) if s == "false")
-    }
-
-    /// One bounded per-host fetch of the hook filter plan, so gates run on real
-    /// filters from the first dispatch; a slow or wedged host degrades to fail-open.
-    pub async fn prime_hook_plan(self: &std::sync::Arc<Self>) {
-        use std::sync::atomic::Ordering;
-        if self.hook_plan_fetched.load(Ordering::Acquire) {
-            return;
-        }
-        if self.hook_plan_prime_started.swap(true, Ordering::AcqRel) {
-            return;
-        }
-        let fetch = self.ensure_hook_plan();
-        if tokio::time::timeout(std::time::Duration::from_millis(500), fetch)
-            .await
-            .is_err()
-        {
-            // Keep trying off the request path; gates stay fail-open until
-            // the plan lands.
-            let host = std::sync::Arc::clone(self);
-            tokio::spawn(async move { host.ensure_hook_plan().await });
-        }
-    }
-
-    pub async fn build_hook_plan(&self) -> BuildHookPlan {
-        self.ensure_hook_plan().await;
-        self.hook_plan.read().unwrap().clone()
-    }
-
-    /// Dispatch the app-Vite-side transform warm (fire-and-forget, like Vite's
-    /// warmup.ts); replies once dispatched. Returns `{environments, started}`, None when nothing was warmable.
-    pub async fn warm_environments(&self, urls: &[String]) -> Result<Option<String>, String> {
-        let payload = serde_json::to_string(urls).map_err(|e| e.to_string())?;
-        self.call("warmEnvironments", &[&payload]).await
-    }
-
-    async fn ensure_hook_plan(&self) {
-        use std::sync::atomic::Ordering;
-        if self.hook_plan_fetched.load(Ordering::Acquire) {
-            return;
-        }
-        // Only a successful fetch is cached; a failure leaves the fail-open
-        // default in place to be retried on the next call.
-        if let Some(v) = self.call_json("getBuildHookPlan").await {
-            let plan = BuildHookPlan {
-                transform: HookFilterPlan::from_json(v.get("transform")),
-                load: HookFilterPlan::from_json(v.get("load")),
-                resolve_id: HookFilterPlan::from_json(v.get("resolveId")),
-            };
-            *self.hook_plan.write().unwrap() = plan;
-            self.hook_plan_fetched.store(true, Ordering::Release);
-        }
-    }
-
-    #[inline]
-    pub fn hook_wants_transform(&self, id: &str, code: &str) -> bool {
-        self.hook_plan
-            .read()
-            .unwrap()
-            .transform
-            .wants(id, Some(code))
-    }
-
-    #[inline]
-    pub fn hook_wants_load(&self, id: &str) -> bool {
-        self.hook_plan.read().unwrap().load.wants(id, None)
-    }
-
-    #[inline]
-    pub fn hook_wants_resolve_id(&self, spec: &str) -> bool {
-        self.hook_plan.read().unwrap().resolve_id.wants(spec, None)
-    }
-
-    #[inline]
-    pub async fn generate_bundle(
-        &self,
-        bundle_json: &str,
-        is_write: bool,
-    ) -> Result<Option<String>, String> {
-        self.call("generateBundle", &[bundle_json, bool_arg(is_write)])
-            .await
-    }
-
-    #[inline]
-    pub async fn has_render_chunk(&self) -> bool {
-        self.call_flag("hasRenderChunk", false).await
-    }
-
-    pub async fn render_chunk(
-        &self,
-        code: &str,
-        chunk_json: &str,
-    ) -> Result<Option<String>, String> {
-        self.call("renderChunk", &[code, chunk_json]).await
-    }
-
-    #[inline]
-    pub async fn has_write_bundle(&self) -> bool {
-        self.call_flag("hasWriteBundle", false).await
-    }
-
-    #[inline]
-    pub async fn write_bundle(&self, bundle_json: &str, is_write: bool) -> Result<(), String> {
-        self.call_unit("writeBundle", &[bundle_json, bool_arg(is_write)])
-            .await
-    }
-
-    /// How the host serves requests. An already-pushed value returns without a round
-    /// trip; only a host that blew the init deadline yields the default (watch `serve_info_updates` for the late push).
-    pub async fn serve_info(&self) -> ServeInfo {
-        if let Some(info) = *self.serve_info_push.borrow() {
-            return info;
-        }
-        let rpc = self.call("getServeInfo", &[]).await;
-        // The push may have landed while the RPC ran; it is the definitive value.
-        if let Some(info) = *self.serve_info_push.borrow() {
-            return info;
-        }
-        rpc.ok()
-            .flatten()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .map(|v| ServeInfo::from_json(&v))
-            .unwrap_or_default()
-    }
-
-    /// Subscribe to `{ ojServeInfo }`: `None` until init completes; lets the
-    /// caller activate the plugin-middleware path late.
-    pub fn serve_info_updates(&self) -> tokio::sync::watch::Receiver<Option<ServeInfo>> {
-        self.serve_info_push.subscribe()
-    }
-
-    /// Plugins still active after oj filters out natively reimplemented ones.
-    /// Defaults to 1 on RPC failure so an uncertain host is never dropped.
-    pub async fn plugin_count(&self) -> usize {
-        self.call_ok("getPluginCount")
-            .await
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(1)
-    }
-
-    /// The active plugins' names, in order (Vite keys its dep pre-bundle on
-    /// them). Empty on RPC failure.
-    pub async fn plugin_names(&self) -> Vec<String> {
-        self.call_json("getPluginNames")
-            .await
-            .and_then(|v| serde_json::from_value(v).ok())
-            .unwrap_or_default()
-    }
-
-    /// `define` entries plugin `config()` hooks contributed, as (key, js
-    /// expression) pairs, reaching oj's compile like Vite's merged `config.define`. Empty on RPC failure.
-    pub async fn config_defines(&self) -> Vec<(String, String)> {
-        let Some(v) = self.call_json("getPluginConfig").await else {
-            return Vec::new();
-        };
-        v.get("define")
-            .and_then(|d| d.as_object())
-            .map(|d| {
-                d.iter()
-                    .map(|(k, v)| {
-                        let expr = match v {
-                            serde_json::Value::String(s) => s.clone(),
-                            other => other.to_string(),
-                        };
-                        (k.clone(), expr)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    pub async fn env_delta(&self) -> std::collections::BTreeMap<String, String> {
-        self.call_ok("getEnvDelta")
-            .await
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
-    }
-
-    /// Whether any active plugin has a `transform` hook. Defaults to true on RPC
-    /// failure so the per-module transform pass is never skipped by mistake.
-    pub async fn has_transform(&self) -> bool {
-        self.call_flag("getHasTransform", true).await
-    }
-
-    /// Whether any active plugin has a `resolveId` hook: only one can answer a
-    /// bare import oj's resolver cannot. Defaults to true on RPC failure, so a
-    /// plugin-served bare id is never failed by mistake.
-    pub async fn has_resolve_id(&self) -> bool {
-        self.call_flag("getHasResolveId", true).await
-    }
-
-    /// Whether any active plugin has a `load` hook (Vite runs load before the fs
-    /// read). Defaults to false on RPC failure (the fs read alone is always correct).
-    pub async fn has_load(&self) -> bool {
-        self.call_flag("getHasLoad", false).await
-    }
-
-    /// `filter.code` include patterns of every object-form transform hook, as
-    /// regex sources; dependency transforms are gated on these.
-    pub async fn dep_transform_filters(&self) -> Vec<String> {
-        self.call_ok("getDepTransformFilters")
-            .await
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
-    }
-
-    /// `filter.id` include patterns of every object-form `load` hook: deps cost
-    /// no RPC unless a plugin asked for them.
-    pub async fn dep_load_filters(&self) -> Vec<String> {
-        self.call_ok("getDepLoadFilters")
-            .await
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
-    }
-
-    /// `filter.id` include patterns of every object-form `resolveId` hook: a
-    /// non-bare import is offered to plugin resolveId only when it matches one.
-    pub async fn resolve_id_filters(&self) -> Vec<String> {
-        self.call_ok("getResolveIdFilters")
-            .await
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
-    }
-
-    /// Which HMR hooks any active plugin defines: (watchChange, handleHotUpdate).
-    /// Defaults to (true, true) on failure so an HMR RPC is never skipped by mistake.
-    pub async fn hmr_hooks(&self) -> (bool, bool) {
-        let Some(v) = self.call_json("getHmrHooks").await else {
-            return (true, true);
-        };
-        let flag = |key: &str| v.get(key).and_then(|b| b.as_bool()).unwrap_or(true);
-        (flag("watchChange"), flag("handleHotUpdate"))
-    }
-
     /// Retire the engine now. Abandon, not drop: dropping joins the thread; the
     /// push dispatcher's channel-closed path then latches `host_gone`.
-    pub fn shutdown(&self) {
+    pub(crate) fn shutdown(&self) {
         // Retired on purpose: never revived. The revive lock orders this against
         // an in-flight ignite, so a racing revive can never leave a live engine behind.
         self.shut_down
@@ -1691,10 +2114,6 @@ impl PluginHost {
         let _ = self.boot.import_meta_env.set(env);
     }
 
-    pub fn set_rpc_request_sender(&self, tx: tokio::sync::mpsc::UnboundedSender<HostRpc>) {
-        let _ = self.rpc_requests.set(tx);
-    }
-
     /// Answers the host's async reverse RPC `id`.
     pub fn rpc_reply(
         self: &std::sync::Arc<Self>,
@@ -1708,86 +2127,14 @@ impl PluginHost {
         .to_string();
         let host = std::sync::Arc::clone(self);
         tokio::spawn(async move {
-            let _ = host.call("rpcReply", &[&id.to_string(), &reply]).await;
+            let _ = host
+                .call(MAIN_CONTAINER, "rpcReply", &[&id.to_string(), &reply])
+                .await;
         });
     }
 
     pub fn set_ws_sender(&self, tx: tokio::sync::broadcast::Sender<String>) {
         let _ = self.ws_out.set(tx);
-    }
-
-    #[inline]
-    pub async fn ws_message(&self, event: &str, data: &str) -> Result<(), String> {
-        self.call_unit("wsMessage", &[event, data]).await
-    }
-
-    /// An HMR client connected: the host fires `server.ws.on("connection")`
-    /// listeners (Vite's ws server emits one per accepted socket).
-    #[inline]
-    pub async fn ws_connection(&self) -> Result<(), String> {
-        self.call_unit("wsConnection", &[]).await
-    }
-
-    #[inline]
-    pub async fn emitted_files(&self) -> Result<Vec<EmittedFile>, String> {
-        let Some(json) = self.call("getEmittedFiles", &[]).await? else {
-            return Ok(Vec::new());
-        };
-        let arr: Vec<serde_json::Value> = serde_json::from_str(&json).map_err(|e| e.to_string())?;
-        Ok(arr
-            .into_iter()
-            .filter_map(|v| {
-                Some(EmittedFile {
-                    file_name: v.get("fileName")?.as_str()?.to_string(),
-                    source: v.get("source")?.as_str()?.to_string(),
-                })
-            })
-            .collect())
-    }
-
-    /// CSS that plugins (e.g. UnoCSS) routed through oj's `vite:css-post` shim.
-    /// Returned as `(source_id, css)` pairs.
-    pub async fn get_plugin_css(&self) -> Vec<(String, String)> {
-        self.call_json("getPluginCss")
-            .await
-            .and_then(|v| {
-                v.as_array().map(|a| {
-                    a.iter()
-                        .filter_map(|e| {
-                            let css = e.get("css")?.as_str()?.to_string();
-                            let id = e
-                                .get("id")
-                                .and_then(|x| x.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            Some((id, css))
-                        })
-                        .collect()
-                })
-            })
-            .unwrap_or_default()
-    }
-
-    async fn call_unit(&self, hook: &str, args: &[&str]) -> Result<(), String> {
-        self.call(hook, args).await.map(|_| ())
-    }
-
-    /// A no-arg query, with any failure or empty reply as `None`.
-    async fn call_ok(&self, hook: &str) -> Option<String> {
-        self.call(hook, &[]).await.ok().flatten()
-    }
-
-    /// A no-arg query parsed as JSON; `None` on failure or bad JSON.
-    async fn call_json(&self, hook: &str) -> Option<serde_json::Value> {
-        serde_json::from_str(&self.call_ok(hook).await?).ok()
-    }
-
-    /// A no-arg `"true"` query; `default` when the call fails or returns nothing.
-    async fn call_flag(&self, hook: &str, default: bool) -> bool {
-        match self.call(hook, &[]).await {
-            Ok(Some(s)) => s == "true",
-            _ => default,
-        }
     }
 }
 
@@ -1805,4 +2152,63 @@ fn emitted_chunks(v: &serde_json::Value) -> Vec<ChunkEmit> {
         .and_then(|c| c.as_array())
         .map(|a| a.iter().filter_map(ChunkEmit::from_value).collect())
         .unwrap_or_default()
+}
+
+/// What a plugin chain (transform or renderChunk) made of a module or chunk.
+#[derive(Debug, Default)]
+pub struct HostTransform {
+    pub code: String,
+    pub watch_files: Vec<String>,
+    /// The maps the plugins returned, in chain order.
+    pub maps: Vec<String>,
+    /// The plugin that returned each of `maps`.
+    pub map_plugins: Vec<String>,
+    /// The first plugin that returned code without a map, which breaks the
+    /// chain as in Rollup (`map: null` does not).
+    pub map_broken: Option<String>,
+    pub chunks: Vec<ChunkEmit>,
+}
+
+impl HostTransform {
+    /// A reply that is not the host's JSON is the code itself; none leaves
+    /// `code` as it was.
+    fn parse(raw: Option<String>, code: &str) -> Self {
+        let Some(raw) = raw else {
+            return Self {
+                code: code.to_string(),
+                ..Self::default()
+            };
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            return Self {
+                code: raw,
+                ..Self::default()
+            };
+        };
+        let str_array = |key: &str| {
+            v.get(key)
+                .and_then(|w| w.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        Self {
+            code: v
+                .get("code")
+                .and_then(|c| c.as_str())
+                .unwrap_or(code)
+                .to_string(),
+            watch_files: str_array("watchFiles"),
+            maps: str_array("maps"),
+            map_plugins: str_array("mapPlugins"),
+            map_broken: v
+                .get("mapBroken")
+                .and_then(|n| n.as_str())
+                .map(str::to_string),
+            chunks: emitted_chunks(&v),
+        }
+    }
 }

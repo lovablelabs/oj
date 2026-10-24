@@ -28,6 +28,7 @@ use deno_resolver::loader::DenoNpmModuleLoaderRc;
 use deno_resolver::loader::LoadedModuleSource;
 use deno_resolver::npm::DenoInNpmPackageChecker;
 use deno_resolver::npm::NpmResolver;
+use deno_runtime::code_cache::CodeCache;
 use deno_runtime::code_cache::CodeCacheType;
 use deno_runtime::deno_node::NodeRequireLoader;
 use deno_runtime::deno_permissions::PermissionsContainer;
@@ -154,6 +155,20 @@ impl ModuleLoader for EngineModuleLoader {
         let referrer = maybe_referrer.map(|r| r.specifier.clone());
         let requested = options.requested_module_type;
         let code_cache = self.code_cache.clone();
+        // A package oj stands in for: its own code never runs in the engine.
+        if let Some(code) = deno_path_util::url_to_file_path(&specifier)
+            .ok()
+            .and_then(|path| {
+                crate::stand_ins::source_for(&path.to_string_lossy(), crate::stand_ins::Format::Esm)
+            })
+        {
+            return ModuleLoadResponse::Sync(Ok(ModuleSource::new(
+                ModuleType::JavaScript,
+                ModuleSourceCode::String(code.into()),
+                &specifier,
+                None,
+            )));
+        }
         ModuleLoadResponse::Async(
             async move {
                 if let Some(host) = &host {
@@ -204,7 +219,10 @@ impl ModuleLoader for EngineModuleLoader {
                         let data = cache
                             .get(&loaded.specifier, CodeCacheType::EsModule, hash)
                             .map(Cow::Owned);
-                        Some(deno_core::SourceCodeCacheInfo { hash, data })
+                        // No info on a consume-only miss: deno_core then
+                        // never serializes a cache for it.
+                        (data.is_some() || cache.produces())
+                            .then_some(deno_core::SourceCodeCacheInfo { hash, data })
                     }
                     _ => None,
                 };
@@ -254,12 +272,11 @@ impl ModuleLoader for EngineModuleLoader {
     ) -> Option<deno_core::SourceCodeCacheInfo> {
         let cache = self.code_cache.as_ref()?;
         let hash = FsCodeCache::source_hash(source.as_bytes());
-        Some(deno_core::SourceCodeCacheInfo {
-            data: cache
-                .get(specifier, CodeCacheType::EsModule, hash)
-                .map(Cow::Owned),
-            hash,
-        })
+        let data = cache
+            .get(specifier, CodeCacheType::EsModule, hash)
+            .map(Cow::Owned);
+        (data.is_some() || cache.produces())
+            .then_some(deno_core::SourceCodeCacheInfo { data, hash })
     }
 }
 
@@ -280,6 +297,13 @@ impl NodeRequireLoader for EngineRequireLoader {
 
     fn load_text_file_lossy(&self, path: &Path) -> Result<FastString, JsErrorBox> {
         use sys_traits::FsRead;
+        // A package oj stands in for, `require()`d: its own code never runs.
+        if let Some(code) = crate::stand_ins::source_for(
+            &path.to_string_lossy(),
+            crate::stand_ins::Format::CommonJs,
+        ) {
+            return Ok(code.into());
+        }
         let text = self
             .sys
             .fs_read_to_string_lossy(path)

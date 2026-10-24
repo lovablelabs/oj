@@ -6,7 +6,8 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
 import fs, { writeFileSync, readFileSync, existsSync, unlinkSync } from "node:fs";
 import { format } from "node:util";
-import { asNode } from "./vite-config-node.mjs";
+import { asNode, esmEntry } from "./vite-config-node.mjs";
+import { OJ_NATIVE_PLUGIN_NAMES, OJ_UNSUPPORTED_PLUGIN_NAMES } from "./native-plugins.mjs";
 
 // The slice of Vite's mergeConfigRecursively these assets need (twin copies:
 // one in vite-extract.mjs, one in plugin-host.mjs — keep them byte-identical):
@@ -167,7 +168,7 @@ const unsetOjNodeEnvForResolve = () => {
 // being worse than no cache entry.
 const observedConfigReads = new Set();
 let observedReadsTruncated = false;
-const OBSERVED_READS_MAX = Number(process.env.OJ_OBSERVED_READS_MAX) || 512;
+const OBSERVED_READS_MAX = 512;
 let recorderInstalled = false;
 function installConfigReadRecorder() {
   if (recorderInstalled) return;
@@ -633,7 +634,8 @@ async function loadConfig() {
   // An error raised while vite's own loader RAN the config file (as opposed
   // to vite itself being unusable, which lands in viteErr).
   let loadErr = null;
-  const vitePath = resolvePkg("vite");
+  const resolvedVite = resolvePkg("vite");
+  const vitePath = resolvedVite && esmEntry(resolvedVite, "vite");
   if (vitePath) {
     try {
       const vite = await import(pathToFileURL(vitePath).href);
@@ -899,6 +901,21 @@ function extractProxy(proxy) {
       if (typeof v.ws === "boolean") entry.ws = v.ws;
       if (typeof v.secure === "boolean") entry.secure = v.secure;
       if (typeof v.rewriteWsOrigin === "boolean") entry.rewriteWsOrigin = v.rewriteWsOrigin;
+      // http-proxy's opt-in redirect and cookie handling, which the built-in
+      // proxy applies too.
+      for (const key of ["followRedirects", "autoRewrite", "xfwd"]) {
+        if (typeof v[key] === "boolean") entry[key] = v[key];
+      }
+      for (const key of ["hostRewrite", "protocolRewrite"]) {
+        if (typeof v[key] === "string") entry[key] = v[key];
+      }
+      for (const key of ["cookieDomainRewrite", "cookiePathRewrite"]) {
+        if (typeof v[key] === "string" || v[key] === false) entry[key] = v[key];
+        else if (v[key] && typeof v[key] === "object") {
+          const map = stringMap(v[key]);
+          if (map) entry[key] = map;
+        }
+      }
       // A FUNCTION `rewrite` cannot cross this JSON config bridge, but it is no
       // longer dropped: when a plugin host runs it hosts the single
       // `server.proxy` from the app's real (un-serialized) config, where the
@@ -1108,8 +1125,8 @@ const declaresRunnerEnvironment = (cfg) =>
   Object.values(cfg.environments ?? {}).some((e) => e && e.dev && typeof e.dev.createEnvironment === "function");
 
 // Plugins whose `config` hooks this out-of-band re-run must not execute: the
-// exact rule the Start loader applies when IT re-runs config hooks on fresh
-// instances (start/vite-plugin-bridge.mjs `ojReimplemented`) — the framework
+// exact rule a Start plugin host applies when IT re-runs config hooks on
+// fresh instances (plugin-host.mjs `isReimplemented`) — the framework
 // plugins oj reimplements natively never ran hooks under oj, and their config
 // hooks have side effects that fight oj's own lifecycle (the TanStack router
 // plugin's config hook starts its route generator) — plus the dev-tooling
@@ -1426,8 +1443,9 @@ function extractCss(css) {
 // with the raw config file's export, not the resolved config: Vite's resolveConfig
 // fills every option with defaults (esbuild.jsxDev/charset/legalComments, worker,
 // ssr.resolve, cors.origin, optimizeDeps.esbuildOptions, terserOptions) and none of
-// those are configuration to warn about.
-function warnUnsupported(c) {
+// those are configuration to warn about. `worker` only reaches a build's
+// worker bundles, which only an SPA build (`spaBuild`) makes without it.
+function warnUnsupported(c, spaBuild = false) {
   if (!c || typeof c !== "object") return;
   if (c.build?.terserOptions) warn("build.terserOptions is not applied (oj minifies with oxc)");
   if (c.esbuild?.jsx === "preserve" || c.oxc?.jsx === "preserve") {
@@ -1437,7 +1455,7 @@ function warnUnsupported(c) {
     const rest = Object.keys(c.esbuild).filter((k) => !JSX_ESBUILD_KEYS.includes(k));
     if (rest.length) warn(`esbuild options ${rest.join(", ")} are not applied (jsx* are)`);
   }
-  if (c.worker) warn("worker config is not applied");
+  if (c.worker && spaBuild) warn("worker config is not applied");
   if (Array.isArray(c.optimizeDeps?.esbuildOptions?.plugins) && c.optimizeDeps.esbuildOptions.plugins.length) {
     warn("optimizeDeps.esbuildOptions.plugins are not applied (scalar esbuild options are)");
   }
@@ -1483,6 +1501,67 @@ export {
 /// broken config is not an empty config), `__deps`/`__depsTruncated` feed the
 /// extraction cache, and `__stderr` carries everything the run would have
 /// printed to stderr.
+// How many of the config's own plugins oj's plugin host would run: every one
+// outside oj's native and unsupported sets. `apply` is not applied, so this
+// can only over-count, which keeps a host. null when the list cannot be read.
+async function activePluginCount(raw) {
+  if (!raw) return null;
+  try {
+    let list = Array.isArray(raw.plugins) ? raw.plugins : raw.plugins ? [raw.plugins] : [];
+    do {
+      list = (await Promise.all(list)).flat(Infinity);
+    } while (list.some((v) => v && typeof v.then === "function"));
+    return list.filter((p) => p && !OJ_NATIVE_PLUGIN_NAMES.has(p.name) && !OJ_UNSUPPORTED_PLUGIN_NAMES.has(p.name))
+      .length;
+  } catch {
+    return null;
+  }
+}
+
+// The option values that cross to Rust: functions (cssInjectionTarget) and
+// other non-JSON values are dropped.
+function jsonOptions(value) {
+  try {
+    return JSON.parse(JSON.stringify(value, (_, v) => (typeof v === "function" ? undefined : v)));
+  } catch {
+    return {};
+  }
+}
+
+// The config's @stylexjs/unplugin, for oj's native StyleX: the options it was
+// given, or null when the config has none.
+async function stylexPlugin(raw) {
+  if (!raw) return null;
+  try {
+    let list = Array.isArray(raw.plugins) ? raw.plugins : raw.plugins ? [raw.plugins] : [];
+    do {
+      list = (await Promise.all(list)).flat(Infinity);
+    } while (list.some((v) => v && typeof v.then === "function"));
+    const plugin = list.find((p) => p && p.name === "@stylexjs/unplugin");
+    if (!plugin) return null;
+    // oj's stand-in for the package (oj_js stand_ins) records them, imported
+    // or require()d, from node_modules/@stylexjs/unplugin.
+    const options = plugin.__ojStylexOptions;
+    if (!options) {
+      warn(
+        "@stylexjs/unplugin was loaded from outside node_modules/@stylexjs/unplugin, so oj cannot read " +
+          "its options and compiles StyleX with the defaults",
+      );
+      return { options: {} };
+    }
+    if (typeof options.cssInjectionTarget === "function") {
+      warn("@stylexjs/unplugin cssInjectionTarget is not applied: the StyleX sheet joins the build's entry stylesheet");
+    }
+    const babel = options.babelConfig;
+    if (babel && ((babel.plugins ?? []).length || (babel.presets ?? []).length)) {
+      warn("@stylexjs/unplugin babelConfig plugins and presets are not applied (oj compiles StyleX natively)");
+    }
+    return { options: jsonOptions(options) };
+  } catch {
+    return null;
+  }
+}
+
 export async function extract(input) {
   configPath = String(input.vite);
   appRoot = String(input.root);
@@ -1509,7 +1588,7 @@ export async function extract(input) {
     installConfigReadRecorder();
     const { config, raw, deps, runnerBacked, merge } = (await loadConfig()) ?? {};
     const c = config ?? {};
-    warnUnsupported(raw ?? c);
+    warnUnsupported(raw ?? c, input.spaBuild === true);
     // Extraction is the single runner-backed detection authority (the plugin
     // host and every Rust consumer read what it publishes). On the resolveConfig
     // path the sentinel decided inside Vite's own hook run; otherwise the port
@@ -1606,6 +1685,8 @@ export async function extract(input) {
       preview: extractPreview(c.preview),
       appType: typeof c.appType === "string" ? c.appType : null,
       html: typeof c.html?.cspNonce === "string" ? { cspNonce: c.html.cspNonce } : null,
+      activePlugins: await activePluginCount(raw),
+      stylex: await stylexPlugin(raw),
     };
   } catch (e) {
     emitStderr(`oj: could not extract vite.config values: ${(e && e.stack) || e}\n`);

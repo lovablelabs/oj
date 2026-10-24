@@ -27,6 +27,8 @@ struct Built {
     main: String,
     lazy: String,
     main_css: String,
+    /// The modulepreload polyfill chunk, when the build has one.
+    polyfill: Option<String>,
 }
 
 fn app() -> std::path::PathBuf {
@@ -76,13 +78,16 @@ fn asset_names(dist: &Path) -> Vec<String> {
         .collect()
 }
 
-fn read_asset(dist: &Path, prefix: &str, ext: &str) -> String {
+/// The `prefix*ext` asset whose text contains `needle`: both pages' entry
+/// chunks are `index-*.js`, as each page is an `index` input in Vite.
+fn read_asset(dist: &Path, prefix: &str, ext: &str, needle: &str) -> String {
     let assets = asset_names(dist);
-    let f = assets
+    assets
         .iter()
-        .find(|a| a.starts_with(prefix) && a.ends_with(ext))
-        .unwrap_or_else(|| panic!("{prefix}*{ext} emitted: {assets:?}"));
-    fs::read_to_string(dist.join("assets").join(f)).unwrap()
+        .filter(|a| a.starts_with(prefix) && a.ends_with(ext))
+        .map(|f| fs::read_to_string(dist.join("assets").join(f)).unwrap())
+        .find(|text| text.contains(needle))
+        .unwrap_or_else(|| panic!("{prefix}*{ext} with {needle:?} emitted: {assets:?}"))
 }
 
 async fn build_with(root: &Path, config: &str) -> Built {
@@ -92,9 +97,13 @@ async fn build_with(root: &Path, config: &str) -> Built {
     Built {
         html: fs::read_to_string(dist.join("index.html")).unwrap(),
         nested: fs::read_to_string(dist.join("nested/index.html")).unwrap(),
-        main: read_asset(&dist, "main-", ".js"),
-        lazy: read_asset(&dist, "lazy-", ".js"),
-        main_css: read_asset(&dist, "main-", ".css"),
+        main: read_asset(&dist, "index-", ".js", "__LAZY_DONE"),
+        lazy: read_asset(&dist, "lazy-", ".js", ""),
+        main_css: read_asset(&dist, "index-", ".css", ""),
+        polyfill: asset_names(&dist)
+            .iter()
+            .find(|a| a.starts_with("modulepreload-polyfill-") && a.ends_with(".js"))
+            .map(|f| fs::read_to_string(dist.join("assets").join(f)).unwrap()),
     }
 }
 
@@ -136,32 +145,34 @@ async fn relative_base_urls_and_vite_preload_helper() {
     let rel = build_with(&root, &base_config("./")).await;
     assert_match(
         &rel.html,
-        r#"src="\./assets/main-[^"]+\.js""#,
+        r#"src="\./assets/index-[^"]+\.js""#,
         "root page script is ./assets/...",
     );
     assert_match(
         &rel.html,
-        r#"rel="stylesheet" href="\./assets/main-[^"]+\.css""#,
+        r#"rel="stylesheet" crossorigin href="\./assets/index-[^"]+\.css""#,
         "root page css is ./assets/...",
     );
     assert_match(
         &rel.nested,
-        r#"src="\.\./assets/nested-[^"]+\.js""#,
-        "nested page script is ../assets/...",
+        r#"src="\.\./assets/index-[^"]+\.js""#,
+        "nested page script is ../assets/... (an array input page is `index` too)",
     );
     assert_match(
         &rel.nested,
-        r#"rel="modulepreload" href="\.\./assets/util-[^"]+\.js""#,
+        r#"rel="modulepreload" crossorigin href="\.\./assets/util-[^"]+\.js""#,
         "nested modulepreload is ../assets/...",
     );
     assert_match(
         &rel.main_css,
-        r#"url\("\./bg-[a-z0-9]+\.png"\)"#,
+        r#"url\(\./bg-[A-Za-z0-9_-]{8}\.png\)"#,
         "css url() is a sibling reference",
     );
+    // Vite's preload helper, minified: the factory, the table entries and
+    // the importer's url under a relative base.
     assert_match(
         &rel.main,
-        r#"__vitePreload\(function\(\)\{return import\([`"']\./lazy-[^`"']+\.js[`"']\)\},__vite__mapDeps\(\[[\d,]+\]\),import\.meta\.url\)"#,
+        r#"\(\(\)=>import\(`\./lazy-[^`]+\.js`\)[^;]*,__vite__mapDeps\(\[0,1,2\]\),import\.meta\.url\)"#,
         "dynamic import wrapped",
     );
     assert_match(
@@ -171,7 +182,7 @@ async fn relative_base_urls_and_vite_preload_helper() {
     );
     assert_match(
         &rel.main,
-        r"new URL\(dep,importerUrl\)",
+        r"function\(e,t\)\{return new URL\(e,t\)\.href\}",
         "relative base resolves deps against the importer",
     );
     assert_match(
@@ -179,10 +190,18 @@ async fn relative_base_urls_and_vite_preload_helper() {
         r"vite:preloadError",
         "preload helper dispatches vite:preloadError",
     );
+    // Both pages import Vite's polyfill module, so it is their shared chunk.
     assert_match(
         &rel.main,
-        r"relList\.supports",
-        "page entry carries the modulepreload polyfill",
+        r#"import\s*["']\./modulepreload-polyfill-[^"']+\.js["']"#,
+        "the page entry imports the shared modulepreload polyfill",
+    );
+    assert_match(
+        rel.polyfill
+            .as_deref()
+            .expect("a modulepreload-polyfill chunk"),
+        r"supports\(.modulepreload.\)",
+        "the polyfill chunk is the polyfill",
     );
     assert_no_match(
         &rel.lazy,
@@ -210,6 +229,8 @@ async fn relative_base_urls_and_vite_preload_helper() {
         problems.extend(nested.errors());
         problems.extend(nested.console());
         nested.close().await;
+        // Chrome's favicon probe is not the page's.
+        problems.retain(|p| !p.contains("/favicon.ico"));
         assert_eq!(
             problems,
             Vec::<String>::new(),
@@ -220,7 +241,7 @@ async fn relative_base_urls_and_vite_preload_helper() {
     let abs = build_with(&root, &base_config("/app/")).await;
     assert_match(
         &abs.html,
-        r#"src="/app/assets/main-[^"]+\.js""#,
+        r#"src="/app/assets/index-[^"]+\.js""#,
         "absolute base kept",
     );
     assert_match(
@@ -230,7 +251,7 @@ async fn relative_base_urls_and_vite_preload_helper() {
     );
     assert_match(
         &abs.main,
-        r#"function\(dep\)\{return "/app/"\+dep\}"#,
+        r#"function\(e\)\{return`/app/`\+e\}"#,
         "absolute base is prefixed in the helper",
     );
 

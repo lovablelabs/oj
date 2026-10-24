@@ -3,6 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import path from "node:path";
 import { rpcSidecar, tmpProject } from "./harness.mjs";
 
@@ -19,14 +20,8 @@ test("plan serialization pins everything non-carryable as unfiltered", async () 
     `export default [
        // carryable: plain regex include on a load filter
        { name: "clean", load: { filter: { id: /\\.special\\.js$/ }, handler() { return null; } } },
-       // string pattern: a glob to rolldown, not a literal; must fail open
-       { name: "glob", transform: { filter: { id: "src/**/*.ts" }, handler() { return null; } } },
        // exclude-only filter: the plan carries includes only; must fail open
        { name: "excl", transform: { filter: { id: { exclude: [/skip/] } }, handler() { return null; } } },
-       // m flag: JS multiline anchors honor \\r and \\u2028, Rust's (?m) only \\n
-       { name: "mflag", transform: { filter: { code: /^use client$/m }, handler() { return null; } } },
-       // JS perl classes are ASCII, Rust's Unicode; \\b could under-match
-       { name: "word", transform: { filter: { code: /\\bimport\\b/ }, handler() { return null; } } },
        // function form: no filter, always called
        { name: "fn", transform(code) { return null; } },
      ];\n`,
@@ -49,10 +44,41 @@ test("plan serialization pins everything non-carryable as unfiltered", async () 
     assert.equal(plan.load.present, true);
     assert.equal(plan.load.unfiltered, false, JSON.stringify(plan.load));
     assert.equal(plan.load.plugins.length, 1);
-    assert.deepEqual(plan.load.plugins[0].id, ["\\.special\\.js$"]);
+    assert.deepEqual(plan.load.plugins[0].id, [{ source: "\\.special\\.js$", flags: "" }]);
 
     // No resolveId hooks at all: the gate may reject every id outright.
     assert.equal(plan.resolveId.present, false);
+  } finally {
+    host.close();
+    fx.cleanup();
+  }
+});
+
+// The host hands Rust each pattern as written (a RegExp's source and flags,
+// a string id as Vite's cwd-joined glob, a string code pattern as a literal);
+// Rust's HookFilter translates them and fails open on what it cannot carry.
+test("plan carries patterns as written", async () => {
+  const fx = tmpProject({ prefix: "oj-hookplan-" });
+  fx.write(
+    "oj.plugins.mjs",
+    `export default [
+       { name: "glob", load: { filter: { id: "src/**/*.svg" }, handler() { return null; } } },
+       { name: "flags", transform: { filter: { code: [/^use client$/m, "import.meta"] }, handler() { return null; } } },
+     ];\n`,
+  );
+  const host = rpcSidecar("plugin-host.mjs", {
+    args: [path.join(fx.root, "oj.plugins.mjs"), JSON.stringify({ root: fx.root })],
+    env: { OJ_CACHE_ROOT: fx.root },
+    cwd: fx.root,
+  });
+  try {
+    const res = await host.send({ id: 1, hook: "getBuildHookPlan", args: [] });
+    const plan = JSON.parse(res.result);
+    assert.deepEqual(plan.load.plugins[0].id, [{ glob: `${fs.realpathSync(fx.root)}/src/**/*.svg` }]);
+    assert.deepEqual(plan.transform.plugins[0].code, [
+      { source: "^use client$", flags: "m" },
+      { literal: "import.meta" },
+    ]);
   } finally {
     host.close();
     fx.cleanup();
