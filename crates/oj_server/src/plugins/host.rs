@@ -658,6 +658,21 @@ impl PluginHost {
         Ok(HostTransform::parse(raw, code))
     }
 
+    /// One slot of a stylesheet's transform chain, around Vite's core CSS
+    /// plugins: `"pre"` (the source, before vite:css compiles it), `"normal"`
+    /// (the compiled CSS) or `"post"` (the JS module vite:css-post makes).
+    pub async fn transform_phase(
+        &self,
+        code: &str,
+        id: &str,
+        phase: &str,
+    ) -> Result<HostTransform, String> {
+        let raw = self
+            .call("transformPhase", &[code, id, "{}", phase])
+            .await?;
+        Ok(HostTransform::parse(raw, code))
+    }
+
     pub async fn seed_chunk_names(&self, map_json: &str) -> Result<Option<String>, String> {
         self.call("seedChunkNames", &[map_json]).await
     }

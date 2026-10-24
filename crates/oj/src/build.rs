@@ -1171,8 +1171,43 @@ fn is_stylesheet_path(path: &str) -> bool {
         || oj_server::sidecar::is_stylus(path)
 }
 
-/// The build's stylesheet pipeline for one file: plugin transforms on the raw
-/// source, Sass/Less/Stylus, Tailwind/PostCSS, then lightningcss (minified).
+/// Whether the load hook compiled this stylesheet id, running its "pre" and
+/// "normal" plugin transforms there, so only the "post" ones are left for the
+/// module that stands in for it. A plugin-served `.css` is such a module too.
+/// Vite's vite:css leaves out `?raw`, `?url` and worker ids, which load as JS
+/// every transform sees; oj also loads `?no-inline` and public files as
+/// plain assets.
+fn is_compiled_stylesheet(id: &str) -> bool {
+    let (path, query) = id.split_once('?').unwrap_or((id, ""));
+    is_stylesheet_path(path)
+        && !id.starts_with(PUBLIC_FILE_ID)
+        && !query
+            .split('&')
+            .any(|p| matches!(p, "raw" | "url" | "no-inline" | "worker" | "sharedworker"))
+}
+
+/// One slot of the plugin transform chain over a stylesheet
+/// ([`PluginHost::transform_phase`](oj_server::plugins::PluginHost::transform_phase));
+/// a throwing plugin fails the build, as in Vite.
+async fn css_transform_phase(
+    host: Option<&oj_server::plugins::PluginHost>,
+    source: String,
+    id: &str,
+    phase: &str,
+) -> anyhow::Result<String> {
+    let Some(host) = host else {
+        return Ok(source);
+    };
+    host.transform_phase(&source, id, phase)
+        .await
+        .map(|t| t.code)
+        .map_err(|e| anyhow::anyhow!("plugin transform failed for {id}:\n{e}"))
+}
+
+/// The build's stylesheet pipeline for one file, in Vite's order: the "pre"
+/// plugin transforms on the raw source, Sass/Less/Stylus, Tailwind/PostCSS
+/// (vite:css), the "normal" transforms on that CSS, then lightningcss
+/// (minified). The "post" transforms run on the module oj bundles in its place.
 /// Shared by plain CSS imports, `?url` (emitted as a compiled `.css` asset) and
 /// `?inline` (the compiled text), so every form of importing a stylesheet ships
 /// the same CSS, as in Vite.
@@ -1195,19 +1230,17 @@ async fn compile_stylesheet(
     let is_stylus = oj_server::sidecar::is_stylus(path);
     let mut source =
         std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("cannot read {path}: {e}"))?;
-    // Run the plugin transform chain on the raw CSS source first, so directive
-    // transformers (UnoCSS `@apply`/`@unocss-include`, etc.) resolve before oj
-    // preprocesses and compiles it.
-    if let Some(host) = host {
-        let on = *css_transform_enabled
-            .get_or_init(|| async { host.has_transform().await })
-            .await;
-        if on {
-            if let Ok(t) = host.transform(&source, id, "{}").await {
-                source = t.code;
-            }
+    let host = match host {
+        Some(host)
+            if *css_transform_enabled
+                .get_or_init(|| async { host.has_transform().await })
+                .await =>
+        {
+            Some(host.as_ref())
         }
-    }
+        _ => None,
+    };
+    source = css_transform_phase(host, source, id, "pre").await?;
     if oj_css::is_sass(path) {
         let lang = if path.ends_with(".sass") {
             "sass"
@@ -1255,6 +1288,7 @@ async fn compile_stylesheet(
     if tailwind || has_postcss {
         source = expand_css_via_engine(root, std::path::Path::new(path), &source).await?;
     }
+    source = css_transform_phase(host, source, id, "normal").await?;
     let css_id = match std::path::Path::new(path).strip_prefix(root) {
         Ok(rel) => format!("/{}", rel.display()),
         Err(_) => path.to_string(),
@@ -1783,7 +1817,10 @@ impl Plugin for OjCssPlugin {
                 if is_stylesheet_path(file) {
                     // `import u from './a.scss?url'`: the URL of the COMPILED
                     // stylesheet, emitted as a `.css` asset (Vite css.ts), not the
-                    // raw preprocessor source.
+                    // raw preprocessor source. Vite compiles it as
+                    // `a.scss?transform-only`, the id its plugins see, a module
+                    // vite:css-post leaves empty for the "post" transforms.
+                    let transform_only = format!("{file}?transform-only");
                     let out = compile_stylesheet(
                         &root,
                         &host,
@@ -1792,9 +1829,18 @@ impl Plugin for OjCssPlugin {
                         &css_cfg,
                         &css_resolve,
                         file,
-                        &id,
+                        &transform_only,
                     )
                     .await?;
+                    if css_transform_enabled.get() == Some(&true) {
+                        css_transform_phase(
+                            host.as_deref(),
+                            String::new(),
+                            &transform_only,
+                            "post",
+                        )
+                        .await?;
+                    }
                     let stem = std::path::Path::new(file)
                         .file_stem()
                         .and_then(|n| n.to_str())
@@ -2690,7 +2736,12 @@ impl Plugin for OjUserPlugin {
             if id.split('?').next().unwrap_or(id).ends_with(".svg") {
                 return Ok(None);
             }
-            match host.transform(code, id, "{}").await {
+            let transformed = if is_compiled_stylesheet(id) {
+                host.transform_phase(code, id, "post").await
+            } else {
+                host.transform(code, id, "{}").await
+            };
+            match transformed {
                 Ok(t) => {
                     forward_emitted_chunks(&ctx.inner, &t.chunks, &emit);
                     if t.code != code {
@@ -8518,6 +8569,50 @@ mod tests {
             Some(("/x/w.ts", "SharedWorker", false, true))
         );
         assert_eq!(worker_id_parts("/x/w.ts?url"), None);
+    }
+
+    // Vite's vite:css and vite:css-post transform filter: include
+    // /\.(css|less|sass|scss|styl|stylus|pcss|postcss|sss)(?:$|\?)/, exclude
+    // /[?&](?:worker|sharedworker|raw|url)\b/. The ids it takes are the ones
+    // whose "post" transforms alone run on the module in the sheet's place.
+    #[test]
+    fn compiled_stylesheets_are_the_ids_vites_css_plugins_take() {
+        for id in [
+            "/x/a.css",
+            "/x/a.scss",
+            "/x/a.sass",
+            "/x/a.less",
+            "/x/a.styl",
+            "/x/a.stylus",
+            "/x/a.module.css",
+            "/x/a.css?inline",
+            "/x/a.scss?inline",
+            "/x/a.css?transform-only",
+            "/x/a.css?v=1",
+            "/x/a.css?direct",
+        ] {
+            assert!(is_compiled_stylesheet(id), "{id}");
+        }
+        for id in [
+            "/x/a.css?raw",
+            "/x/a.css?url",
+            "/x/a.scss?url",
+            "/x/a.css?worker",
+            "/x/a.css?sharedworker",
+            "/x/a.css?worker&url",
+            "/x/a.css?v=1&raw",
+            "/x/a.js",
+            "/x/a.css.js",
+            "/x/a.ts?inline",
+        ] {
+            assert!(!is_compiled_stylesheet(id), "{id}");
+        }
+        // oj loads these as plain assets, uncompiled, where Vite has no
+        // counterpart (`?no-inline`) or serves the file as is (public).
+        assert!(!is_compiled_stylesheet("/x/a.css?no-inline"));
+        assert!(!is_compiled_stylesheet(&format!(
+            "{PUBLIC_FILE_ID}a.css?url"
+        )));
     }
 
     #[test]

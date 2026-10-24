@@ -3753,7 +3753,19 @@ function oxcStripOptions(c) {
   return { ...opts, jsx, sourcemap: true };
 }
 
-async function transform(c, code, id, resolvedJson) {
+// A stylesheet's slot in Vite's transform order, around its core CSS plugins:
+// "pre" hooks (enforce or order "pre") see the source before vite:css compiles
+// it, "normal" ones the compiled CSS before vite:css-post turns it into JS,
+// "post" ones (enforce or order "post") that JS module.
+function cssPhaseOf(p, rank) {
+  if (rank < 0 || (rank === 0 && enforceRank(p) < 0)) return "pre";
+  if (rank > 0 || enforceRank(p) > 0) return "post";
+  return "normal";
+}
+
+// `phase` (a cssPhaseOf slot) runs only that slot's hooks; without one, the
+// whole chain. Module info is final after the whole chain or the "post" slot.
+async function transform(c, code, id, resolvedJson, phase) {
   const bucket = new Set();
   const chunkBucket = [];
   let resolveMap = null;
@@ -3777,6 +3789,7 @@ async function transform(c, code, id, resolvedJson) {
     // on top of the plugin's enforce; getSortedPluginsByHook applies to transform
     // like to every other hook.
     for (const { p, fn: handler, rank } of pluginsWithHook(c, "transform")) {
+      if (phase && cssPhaseOf(p, rank) !== phase) continue;
       // The strip runs BEFORE this plugin's filter is evaluated: Vite
       // evaluates a hook's filter against the code the hook would receive
       // (post-oxc for normal/post plugins), so a `filter.code` that matches
@@ -3820,6 +3833,16 @@ async function transform(c, code, id, resolvedJson) {
       } else if (r.code != null && r.map === undefined) mapBroken ??= p.name ?? "?";
       updateModuleInfo(c, id, r);
     }
+    const result = () =>
+      JSON.stringify({
+        code: current,
+        watchFiles: [...bucket],
+        maps,
+        mapPlugins,
+        mapBroken,
+        emittedChunks: chunkBucket,
+      });
+    if (phase && phase !== "post") return result();
     const prior = c.moduleInfoCache.get(id);
     const info = makeModuleInfo(
       id,
@@ -3836,14 +3859,7 @@ async function transform(c, code, id, resolvedJson) {
     c.seenIds.add(id);
     // A Start build's bundler reports every parsed module itself (bundleModuleParsed).
     if (!bundleBuild) for (const { p, fn } of pluginsWithHook(c, "moduleParsed")) await fn.call(ctxFor(c, p), info);
-    return JSON.stringify({
-      code: current,
-      watchFiles: [...bucket],
-      maps,
-      mapPlugins,
-      mapBroken,
-      emittedChunks: chunkBucket,
-    });
+    return result();
   };
   return transformWatchStore.run(bucket, () =>
     transformEmitStore.run(chunkBucket, () => transformResolveStore.run(resolveMap, runLoop)),
@@ -4822,6 +4838,8 @@ async function run(hook, args, c) {
     return null;
   }
   if (hook === "transform") return gateOnBuildStart(c).then(() => transform(c, args[0], args[1], args[2]));
+  if (hook === "transformPhase")
+    return gateOnBuildStart(c).then(() => transform(c, args[0], args[1], args[2], args[3]));
   if (hook === "resolveId") return gateOnBuildStart(c).then(() => resolveId(c, args[0], args[1]));
   if (hook === "resolveIdPhase")
     return gateOnBuildStart(c).then(() => resolveIdPhase(c, args[0], args[1], args[2], args[3]));
