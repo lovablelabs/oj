@@ -558,6 +558,25 @@ mod tests {
         }
     }
 
+    /// The dev server scopes a module, hands the sheet to its "normal"
+    /// plugins, then compiles it with urls rebased: the names are still
+    /// Vite's (recorded from Vite 8.3.5's dev server), in the map and the sheet.
+    #[test]
+    fn dev_scoping_then_compiling_keeps_vites_names() {
+        let url = "/src/Counter.module.css";
+        let src = ".button { color: red; }\n";
+        let cfg = CssResolveConfig::default();
+        let scoped = scope_css_module(url, src, src, &cfg.as_ref()).unwrap();
+        assert_eq!(
+            scoped.exports,
+            Some(vec![("button".to_string(), "_button_hwshl_1".to_string())])
+        );
+        let out = crate::compile_scoped_css_dev(url, &scoped.css, false, &cfg.as_ref()).unwrap();
+        assert_eq!(out.exports, None, "the scoped compile makes no class map");
+        assert!(out.css.contains("._button_hwshl_1"), "{}", out.css);
+        assert!(!out.css.contains(".button"), "{}", out.css);
+    }
+
     fn with_modules(modules: CssModulesOptions) -> CssResolveConfig {
         CssResolveConfig {
             modules,

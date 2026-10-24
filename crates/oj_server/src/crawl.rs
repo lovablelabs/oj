@@ -33,7 +33,7 @@ pub(crate) fn spawn_crawl(state: Arc<ServerState>, done_tx: tokio::sync::watch::
                 None => break,
                 Some(imports) => {
                     for import in imports.unwrap_or_default() {
-                        let import = import.split('?').next().unwrap_or(&import).to_string();
+                        let import = crawl_url(&import);
                         if import.starts_with('/')
                             && !import.starts_with("/@oj/")
                             && !visited.contains(&import)
@@ -76,8 +76,24 @@ pub(crate) fn served_module_paths(state: &ServerState) -> Vec<PathBuf> {
         .collect()
 }
 
+/// The url the crawl compiles for an import: its file, or a stylesheet's
+/// `?inline` request, a module of its own (see [`graph_url`]).
+fn crawl_url(import: &str) -> String {
+    let (path, query) = import.split_once('?').unwrap_or((import, ""));
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    if is_style_ext(ext) && query.split('&').any(|kv| kv == "inline") {
+        format!("{path}?inline")
+    } else {
+        path.to_string()
+    }
+}
+
 /// The file behind a crawled url, when it is one the eager crawl compiles.
 fn crawl_file(state: &ServerState, url: &str) -> Option<PathBuf> {
+    let url = url.split('?').next().unwrap_or(url);
     let file = if let Some(abs) = url.strip_prefix("/@fs") {
         let f = PathBuf::from(abs);
         let allowed = state
@@ -129,4 +145,20 @@ pub(crate) fn save_graph_snapshot(root: &Path, paths: &[PathBuf]) {
         let _ = std::fs::create_dir_all(parent);
     }
     let _ = std::fs::write(path, serde_json::to_vec(&urls).unwrap_or_default());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Vite warms the url a module imports: a stylesheet's `?inline` is a
+    /// module of its own, any other query is dropped to the file.
+    #[test]
+    fn the_crawl_compiles_a_stylesheets_inline_request_as_imported() {
+        assert_eq!(crawl_url("/src/b.scss?inline"), "/src/b.scss?inline");
+        assert_eq!(crawl_url("/src/b.css?t=1&inline"), "/src/b.css?inline");
+        assert_eq!(crawl_url("/src/b.css?t=1"), "/src/b.css");
+        assert_eq!(crawl_url("/src/a.ts?inline"), "/src/a.ts");
+        assert_eq!(crawl_url("/src/a.ts"), "/src/a.ts");
+    }
 }

@@ -80,11 +80,14 @@ pub(crate) async fn inline_css_module(
     url: &str,
 ) -> Result<String, String> {
     let clean = url.split('?').next().unwrap_or(url);
-    let (_, module) = Box::pin(ensure_module(state, file, clean)).await?;
-    Ok(format!(
+    let url = format!("{clean}?inline");
+    let (_, module) = Box::pin(ensure_module(state, file, &url)).await?;
+    let code = format!(
         "export default {};\n",
         serde_json::to_string(&module.code).unwrap()
-    ))
+    );
+    let id = format!("{}?inline", file.display());
+    css_post(state, file, &url, &id, code).await
 }
 
 pub(crate) fn base64_encode(bytes: &[u8]) -> String {

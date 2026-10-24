@@ -22,6 +22,7 @@ mod css_import_inline;
 mod css_importer_invalidation;
 mod css_modules_vite_names;
 mod css_outside_root_deps;
+mod css_plugin_slots;
 mod css_postcss_langs;
 mod css_preprocessor_options;
 mod css_url_inline;

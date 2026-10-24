@@ -3,13 +3,21 @@ use crate::css_engine::CssDeps;
 
 /// The compiled stylesheet as `text/css` (Vite's `?direct` / raw `<link>` request).
 pub(crate) async fn serve_css_direct(state: &Arc<ServerState>, file: &Path, url: &str) -> Response {
-    match ensure_module(state, file, url).await {
-        Ok((_, module)) => (
+    let url = format!("{url}?direct");
+    let css = match ensure_module(state, file, &url).await {
+        Ok((_, module)) => {
+            let id = format!("{}?direct", file.display());
+            css_post(state, file, &url, &id, module.code.clone()).await
+        }
+        Err(err) => Err(err),
+    };
+    match css {
+        Ok(css) => (
             [
                 (header::CONTENT_TYPE, "text/css"),
                 (header::CACHE_CONTROL, "no-cache"),
             ],
-            module.code.clone(),
+            css,
         )
             .into_response(),
         Err(err) => {
@@ -70,7 +78,25 @@ pub(crate) async fn compile_html_style(
     }
     let file = PathBuf::from(format!("{}.css", page_file.display()));
     let (_, module) = ensure_module_as(state, &file, &url, Some(code), Some(&transform_id)).await?;
-    Ok(module.code.clone())
+    css_post(state, &page_file, &url, &transform_id, module.code.clone()).await
+}
+
+/// A stylesheet's "post" plugins (enforce or order "post"), on what Vite's
+/// vite:css-post serves in dev: the CSS itself for a `?direct` request, the
+/// JS module for an import. The sheet's other slots ran in its compile.
+pub(crate) async fn css_post(
+    state: &ServerState,
+    file: &Path,
+    url: &str,
+    id: &str,
+    code: String,
+) -> Result<String, String> {
+    let is_dep = is_dep_module(url, file);
+    Ok(
+        plugin_transform_phase(state, file, id, code, is_dep, Some("post"))
+            .await?
+            .code,
+    )
 }
 
 pub(crate) async fn serve_css_wrapper(
@@ -108,6 +134,13 @@ pub(crate) async fn serve_css_wrapper(
          import.meta.hot.prune(() => __oj_removeStyle({url:?}));\n",
         css = serde_json::to_string(&module.code).unwrap(),
     );
+    let body = match css_post(state, file, url, &file.to_string_lossy(), body).await {
+        Ok(body) => body,
+        Err(err) => {
+            send_error(state, &err);
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("oj: {err}")).into_response();
+        }
+    };
     (
         [
             (header::CONTENT_TYPE, "text/javascript"),

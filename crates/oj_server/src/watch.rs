@@ -1044,7 +1044,9 @@ fn invalidate_changed(state: &ServerState, paths: &[PathBuf]) {
             .invalidate_on_change(Path::new(&url), |m| !is_style_url(&m.to_string_lossy()));
         let mut keys = state.mtime_keys.lock().unwrap();
         for module in hard {
-            keys.remove(&module.display().to_string());
+            for url in url_variants(&module.display().to_string()) {
+                keys.remove(&url);
+            }
         }
     }
 }

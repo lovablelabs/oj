@@ -163,12 +163,10 @@ pub fn compile_css_dev(
     compile_css_depth(url, source, None, mode, resolve, 0)
 }
 
-/// [`compile_css_dev`] for a CSS module whose default names hash
-/// `scope_source` (the sheet before its `@import`s were inlined).
-pub fn compile_css_dev_scoped(
+/// [`compile_css_dev`] for a CSS module [`scope_css_module`] already scoped.
+pub fn compile_scoped_css_dev(
     url: &str,
     source: &str,
-    scope_source: &str,
     source_map: bool,
     resolve: &CssResolve<'_>,
 ) -> Result<CssOutput, String> {
@@ -176,9 +174,9 @@ pub fn compile_css_dev_scoped(
         minify: false,
         rebase: true,
         source_map,
-        scoped: false,
+        scoped: true,
     };
-    compile_css_depth(url, source, Some(scope_source), mode, resolve, 0)
+    compile_css_depth(url, source, None, mode, resolve, 0)
 }
 
 /// Parse with error recovery: like Vite's postcss pipeline, a legacy hack

@@ -165,8 +165,10 @@ pub(crate) async fn handle_plugin_server_event(state: &Arc<ServerState>, ev: &se
             } else {
                 return;
             };
-            state.mtime_keys.lock().unwrap().remove(&url);
-            state.memory.lock().unwrap().remove(&url);
+            for url in url_variants(&url) {
+                state.mtime_keys.lock().unwrap().remove(&url);
+                state.memory.lock().unwrap().remove(&url);
+            }
             if path.is_file() && state.graph.lock().unwrap().contains(Path::new(&url)) {
                 for message in decide(state, &[path.to_path_buf()], &Default::default()).await {
                     let _ = state.reload_tx.send(message);
@@ -204,7 +206,9 @@ pub(crate) fn handle_client_message(state: &Arc<ServerState>, text: &str) {
             {
                 let mut keys = state.mtime_keys.lock().unwrap();
                 for d in &dirty {
-                    keys.remove(&d.display().to_string());
+                    for url in url_variants(&d.display().to_string()) {
+                        keys.remove(&url);
+                    }
                 }
             }
             match targets {
@@ -1237,7 +1241,9 @@ fn decide_file(
             {
                 let mut keys = state.mtime_keys.lock().unwrap();
                 for d in &dirty {
-                    keys.remove(&d.display().to_string());
+                    for url in url_variants(&d.display().to_string()) {
+                        keys.remove(&url);
+                    }
                 }
             }
             if targets.is_empty() {
