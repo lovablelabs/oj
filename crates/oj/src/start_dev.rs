@@ -1917,16 +1917,17 @@ pub async fn start_build(
         "production",
     );
     // The route tree is generated under the build's own config and env, as
-    // the router plugin does inside a Vite build: no second evaluation.
-    {
+    // the router plugin does inside a Vite build: no second evaluation. It
+    // runs while the plugin host boots, which leaves the router plugin out.
+    let codegen = {
         let gen_env = script_vars(oj_env::get(), &root, &app_env);
         let (r, c) = (root.clone(), cache.clone());
         tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
             generate_route_tree(&r, &c, &gen_env)?;
-            generate_server_fn_resolver(&r, &c)
+            generate_server_fn_resolver(&r, &c)?;
+            Ok(())
         })
-        .await??;
-    }
+    };
     let build_cfg = config.build.clone().unwrap_or_default();
     let out_dir = prepare_start_out_dir(&root, out, &build_cfg, empty_out_dir)?;
     let output = crate::start_bundle::prod::BuildOutput {
@@ -1946,7 +1947,7 @@ pub async fn start_build(
         config,
         app_env,
     };
-    crate::start_bundle::prod::build(start, config_file, output).await?;
+    crate::start_bundle::prod::build(start, config_file, output, codegen).await?;
     println!(
         "  {} build (tanstack start) -> {}",
         oj_server::oj_brand(),

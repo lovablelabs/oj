@@ -201,6 +201,8 @@ jobs:
         run: node e2e/start-build-outdir.mjs
       - name: start build evaluates vite.config once
         run: node e2e/start-build-config-once.mjs
+      - name: start build generates the route tree while the plugin host boots
+        run: node e2e/start-build-codegen-overlap.mjs
       - name: start build shares plugin instances, runs moduleParsed, buildApp and emitAssets
         run: node e2e/start-shared-plugins.mjs
       - name: start build bundles workers with worker.plugins, worker.format and worker.rolldownOptions

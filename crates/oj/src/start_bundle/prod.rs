@@ -260,10 +260,13 @@ async fn write_emitted(host: &oj_server::plugins::PluginHost, dir: &Path) -> any
     Ok(())
 }
 
+/// `codegen` writes the route tree and server-fn resolver the bundles read;
+/// it runs alongside the plugin host's boot.
 pub(crate) async fn build(
     start: StartConfig,
     config_file: Option<PathBuf>,
     out: BuildOutput,
+    codegen: tokio::task::JoinHandle<anyhow::Result<()>>,
 ) -> anyhow::Result<()> {
     let start = Arc::new(start);
     let dist = out.out_dir.clone();
@@ -274,7 +277,9 @@ pub(crate) async fn build(
     // TanStack Start's config hook sets Vite's `builder.sharedPlugins`, so
     // every environment builds on the same plugin instances: one host, moved
     // to the server environment once the client is written.
+    oj_server::boot_phase("start build: plugin host booting");
     let client_host = hosts::spawn(&start, config_file.as_deref(), "client").await?;
+    codegen.await??;
     // With @cloudflare/vite-plugin the server build is the Worker environment
     // the plugin declared (named from the wrangler config, or its
     // `viteEnvironment.name`); the plugin's hooks must see that environment.
