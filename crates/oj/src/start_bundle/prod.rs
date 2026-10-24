@@ -496,7 +496,9 @@ pub(crate) async fn build(
             ),
         )?;
 
-        // The server, on the client's plugin instances.
+        // The server, on the client's plugin instances. The switch moves the
+        // shared host's hook gates to the server's filters too, so the client
+        // bundle must be done by now.
         let server_host = match &client_host {
             Some(h) => Some(h.switch_environment(&server_env_name).await?),
             None => None,

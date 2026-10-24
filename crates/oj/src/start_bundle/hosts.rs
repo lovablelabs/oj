@@ -188,13 +188,24 @@ mod tests {
     use super::*;
 
     /// An app whose plugins are `plugins` (an `oj.plugins.mjs` body). Its root
-    /// is cleaned before use and never deleted: an in-process host moves the
-    /// whole test process into it.
+    /// is cleaned before use and outlives the test: an in-process host moves
+    /// the whole test process into it. Earlier runs' roots are swept a day on.
     fn app(name: &str, plugins: &str) -> PathBuf {
-        let root = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("oj-start-hosts-{name}-{}", std::process::id()));
+        let tmp = std::env::temp_dir().canonicalize().unwrap();
+        let prefix = format!("oj-start-hosts-{name}-");
+        for entry in std::fs::read_dir(&tmp).into_iter().flatten().flatten() {
+            let stale = entry.file_name().to_string_lossy().starts_with(&prefix)
+                && entry
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.elapsed().ok())
+                    .is_some_and(|age| age > std::time::Duration::from_secs(24 * 60 * 60));
+            if stale {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+        let root = tmp.join(format!("{prefix}{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("oj.plugins.mjs"), plugins).unwrap();

@@ -682,10 +682,10 @@ impl PluginHost {
 
     /// Moves a Start build's host to the next environment's build, on the
     /// same plugin instances (Vite's `builder.sharedPlugins`).
-    #[inline]
     /// The next environment brings its own plugin set (`applyToEnvironment`),
     /// so the hook gates take that set's filters, as rolldown takes each
     /// environment's plugins' filters in Vite.
+    #[inline]
     pub async fn switch_environment(&self, name: &str) -> Result<(), String> {
         self.call_unit("switchEnvironment", &[name]).await?;
         self.reset_hook_plan();
