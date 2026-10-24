@@ -1171,6 +1171,19 @@ fn is_stylesheet_path(path: &str) -> bool {
         || oj_server::sidecar::is_stylus(path)
 }
 
+/// Whether rolldown holds a JS module in place of this stylesheet: the load
+/// hook compiled it with [`compile_stylesheet`], which runs the plugin
+/// transforms on the source first, or a plugin served it and oj kept an empty
+/// stub. `?raw`, `?no-inline`, worker and public-file ids load without the
+/// transforms.
+fn is_compiled_stylesheet_id(id: &str) -> bool {
+    let (path, query) = id.split_once('?').unwrap_or((id, ""));
+    is_stylesheet_path(path)
+        && !id.starts_with(PUBLIC_FILE_ID)
+        && !matches!(query, "raw" | "no-inline")
+        && worker_id_parts(id).is_none()
+}
+
 /// The build's stylesheet pipeline for one file: plugin transforms on the raw
 /// source, Sass/Less/Stylus, Tailwind/PostCSS, then lightningcss (minified).
 /// Shared by plain CSS imports, `?url` (emitted as a compiled `.css` asset) and
@@ -2688,6 +2701,12 @@ impl Plugin for OjUserPlugin {
             // here would feed svgr its own component output (or an `export default`
             // asset stub) and corrupt it, so skip svg ids.
             if id.split('?').next().unwrap_or(id).ends_with(".svg") {
+                return Ok(None);
+            }
+            // Likewise a stylesheet: its transforms ran in the load hook, and a
+            // transformer that returns CSS (Tailwind's) would replace the JS stub
+            // with CSS that rolldown then parses as JavaScript.
+            if is_compiled_stylesheet_id(id) {
                 return Ok(None);
             }
             match host.transform(code, id, "{}").await {
