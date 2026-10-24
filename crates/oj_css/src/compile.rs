@@ -11,7 +11,9 @@ use lightningcss::printer::PrinterOptions;
 use lightningcss::stylesheet::{MinifyOptions, ParserFlags, ParserOptions, StyleSheet};
 
 use crate::lightning::LightningOptions;
-use crate::modules::{is_css_module, module_exports, module_is_scoped, scoped_name_pattern};
+use crate::modules::{
+    is_css_module, module_exports, module_is_scoped, scoped_name_pattern, ScopedNames,
+};
 use crate::rebase::{css_base_dir, dev_url_of, rewrite_css_image_set, rewrite_dependencies};
 use crate::resolve::CssResolve;
 use crate::targets::browser_targets;
@@ -41,7 +43,7 @@ pub fn compile_css(url: &str, source: &str, minify: bool) -> Result<CssOutput, S
         minify,
         ..Mode::default()
     };
-    compile_css_depth(url, source, mode, &CssResolve::default(), 0)
+    compile_css_depth(url, source, None, mode, &CssResolve::default(), 0)
 }
 
 /// The build compile: `build.cssMinify` and `build.cssTarget` from `resolve`.
@@ -54,7 +56,7 @@ pub fn compile_css_with(
         minify: resolve.minify,
         ..Mode::default()
     };
-    compile_css_depth(url, source, mode, resolve, 0)
+    compile_css_depth(url, source, None, mode, resolve, 0)
 }
 
 /// A build compile of a CSS module [`scope_css_module`] already scoped.
@@ -68,19 +70,22 @@ pub fn compile_scoped_css_with(
         scoped: true,
         ..Mode::default()
     };
-    compile_css_depth(url, source, mode, resolve, 0)
+    compile_css_depth(url, source, None, mode, resolve, 0)
 }
 
 /// What Vite's postcss-modules step leaves of a CSS module for the plugins
 /// after vite:css: the classes scoped and the class map built, the sheet
-/// otherwise as written (not lowered or minified).
+/// otherwise as written (not lowered or minified). `scope_source` is the
+/// sheet Vite's PostCSS would get, which the default names hash.
 pub fn scope_css_module(
     url: &str,
     source: &str,
+    scope_source: &str,
     resolve: &CssResolve<'_>,
 ) -> Result<CssOutput, String> {
-    let modules = module_is_scoped(url, resolve).then(|| css_modules::Config {
-        pattern: scoped_name_pattern(resolve.modules),
+    let scoped = module_is_scoped(url, resolve);
+    let modules = scoped.then(|| css_modules::Config {
+        pattern: scoped_name_pattern(),
         ..css_modules::Config::default()
     });
     let stylesheet = parse_stylesheet(source, url, modules, ParserFlags::empty())?;
@@ -91,10 +96,29 @@ pub fn scope_css_module(
         Some(map) => module_exports(map, url, resolve, 0),
         None => Vec::new(),
     };
-    Ok(CssOutput {
-        css: result.code,
-        exports: Some(exports),
-    })
+    Ok(named_by_default(
+        CssOutput {
+            css: result.code,
+            exports: Some(exports),
+        },
+        scoped.then(|| ScopedNames::new(scope_source, url, resolve)),
+    ))
+}
+
+/// A module's marked locals renamed in its sheet and class map.
+fn named_by_default(out: CssOutput, names: Option<ScopedNames<'_>>) -> CssOutput {
+    let Some(names) = names else {
+        return out;
+    };
+    CssOutput {
+        css: names.rename(&out.css),
+        exports: out.exports.map(|exports| {
+            exports
+                .into_iter()
+                .map(|(name, value)| (name, names.rename_value(&value)))
+                .collect()
+        }),
+    }
 }
 
 pub fn compile_css_rebased(url: &str, source: &str, minify: bool) -> Result<CssOutput, String> {
@@ -104,7 +128,7 @@ pub fn compile_css_rebased(url: &str, source: &str, minify: bool) -> Result<CssO
         source_map: false,
         scoped: false,
     };
-    compile_css_depth(url, source, mode, &CssResolve::default(), 0)
+    compile_css_depth(url, source, None, mode, &CssResolve::default(), 0)
 }
 
 /// `compile_css_rebased` plus an inline source map back to `url`.
@@ -119,7 +143,7 @@ pub fn compile_css_rebased_with_map(
         source_map: true,
         scoped: false,
     };
-    compile_css_depth(url, source, mode, &CssResolve::default(), 0)
+    compile_css_depth(url, source, None, mode, &CssResolve::default(), 0)
 }
 
 /// The dev-server compile: urls rebased to server-absolute ones, aliased ones
@@ -136,7 +160,25 @@ pub fn compile_css_dev(
         source_map,
         scoped: false,
     };
-    compile_css_depth(url, source, mode, resolve, 0)
+    compile_css_depth(url, source, None, mode, resolve, 0)
+}
+
+/// [`compile_css_dev`] for a CSS module whose default names hash
+/// `scope_source` (the sheet before its `@import`s were inlined).
+pub fn compile_css_dev_scoped(
+    url: &str,
+    source: &str,
+    scope_source: &str,
+    source_map: bool,
+    resolve: &CssResolve<'_>,
+) -> Result<CssOutput, String> {
+    let mode = Mode {
+        minify: false,
+        rebase: true,
+        source_map,
+        scoped: false,
+    };
+    compile_css_depth(url, source, Some(scope_source), mode, resolve, 0)
 }
 
 /// Parse with error recovery: like Vite's postcss pipeline, a legacy hack
@@ -177,18 +219,23 @@ fn report_warnings(name: &str, warnings: &RwLock<Vec<CssError<ParserError<'_>>>>
     }
 }
 
+/// `scope_source`: the sheet the default module names hash, when it is not
+/// `source` (see [`scope_css_module`]).
 pub(crate) fn compile_css_depth(
     url: &str,
     source: &str,
+    scope_source: Option<&str>,
     mode: Mode,
     resolve: &CssResolve<'_>,
     depth: u8,
 ) -> Result<CssOutput, String> {
     let is_module_file = is_css_module(url) && !mode.scoped;
-    let modules = (is_module_file && module_is_scoped(url, resolve)).then(|| css_modules::Config {
-        pattern: scoped_name_pattern(resolve.modules),
+    let scoped = is_module_file && module_is_scoped(url, resolve);
+    let modules = scoped.then(|| css_modules::Config {
+        pattern: scoped_name_pattern(),
         ..css_modules::Config::default()
     });
+    let names = scoped.then(|| ScopedNames::new(scope_source.unwrap_or(source), url, resolve));
     // `css.lightningcss` belongs to the build minify (Vite's minifyCSS), the
     // only lightningcss pass Vite runs under its default transformer.
     let lightning = mode.minify.then_some(resolve.lightning);
@@ -235,6 +282,9 @@ pub(crate) fn compile_css_depth(
         }
         _ => result.code,
     };
+    if let Some(names) = &names {
+        css = names.rename(&css);
+    }
     if mode.source_map {
         // `sourceRoot: "/"` makes devtools resolve `src/app.css` to the served url.
         let json = sm
@@ -247,7 +297,15 @@ pub(crate) fn compile_css_depth(
     }
 
     let exports = match result.exports {
-        Some(map) => Some(module_exports(map, url, resolve, depth)),
+        Some(map) => Some(
+            module_exports(map, url, resolve, depth)
+                .into_iter()
+                .map(|(name, value)| match &names {
+                    Some(names) => (name, names.rename_value(&value)),
+                    None => (name, value),
+                })
+                .collect(),
+        ),
         // A module compiled in global mode still exports an (empty) map.
         None if is_module_file => Some(Vec::new()),
         None => None,

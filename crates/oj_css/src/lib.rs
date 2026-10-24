@@ -7,6 +7,7 @@
 
 mod chunk;
 mod compile;
+mod generic_names;
 mod imports;
 mod lightning;
 mod modules;
@@ -18,8 +19,9 @@ mod targets;
 
 pub use chunk::{finalize_chunk_css, hoist_at_rules};
 pub use compile::{
-    compile_css, compile_css_dev, compile_css_rebased, compile_css_rebased_with_map,
-    compile_css_with, compile_scoped_css_with, minify_css, scope_css_module, CssOutput,
+    compile_css, compile_css_dev, compile_css_dev_scoped, compile_css_rebased,
+    compile_css_rebased_with_map, compile_css_with, compile_scoped_css_with, minify_css,
+    scope_css_module, CssOutput,
 };
 pub use imports::{
     inline_imports, inline_imports_collecting, inline_imports_with, resolve_css_import,

@@ -1239,10 +1239,22 @@ async fn compile_stylesheet(
         css: css.clone(),
         ..Default::default()
     };
-    let is_less = oj_server::sidecar::is_less(path);
-    let is_stylus = oj_server::sidecar::is_stylus(path);
-    let mut source =
-        std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("cannot read {path}: {e}"))?;
+    let preprocess_lang = oj_server::sidecar::preprocess_lang(path);
+    // The plugins' load hooks first (a virtual sheet, or one a plugin serves
+    // in place of the file), then the file.
+    let loaded = match host {
+        Some(host) if host.hook_wants_load(id) => host
+            .load(id)
+            .await
+            .map_err(|e| anyhow::anyhow!("plugin load failed for {id}:\n{e}"))?,
+        _ => None,
+    };
+    let mut source = match loaded {
+        Some(code) => code,
+        None => {
+            std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("cannot read {path}: {e}"))?
+        }
+    };
     let host = match host {
         Some(host)
             if *css_transform_enabled
@@ -1276,14 +1288,18 @@ async fn compile_stylesheet(
             },
         )
         .map_err(|e| anyhow::anyhow!(e))?;
-    } else if is_less || is_stylus {
-        let lang = if is_less { "less" } else { "stylus" };
+    } else if let Some(lang) = preprocess_lang {
         if let Some(data) = oj_config::css_additional_data(&cfg, lang).filter(|d| !d.is_empty()) {
             source = format!("{data}\n{source}");
         }
-        let opts = oj_config::css_preprocessor_json(&cfg, lang);
+        let opts = match lang {
+            "sss" => oj_server::sidecar::sss_engine_options(&resolve.as_ref()),
+            _ => oj_config::css_preprocessor_json(&cfg, lang),
+        };
         source = preprocess_via_engine(root, std::path::Path::new(path), &source, opts).await?;
     }
+    // What Vite hands PostCSS, whose CSS-module names hash it.
+    let postcss_input = source.clone();
     // Plain `@import`s are inlined (postcss-import parity) so the concatenated
     // chunk stylesheet does not carry imports that 404 from `assets/`. It runs
     // before PostCSS, as postcss-import is the first plugin of Vite's chain, so
@@ -1307,8 +1323,8 @@ async fn compile_stylesheet(
     };
     // Vite's "normal" plugins see a CSS module with its classes scoped
     // (postcss-modules runs inside vite:css), so the scoping comes first.
-    if host.is_some() && oj_css::is_css_module(path) {
-        let scoped = oj_css::scope_css_module(&css_id, &source, &resolve.as_ref())
+    if oj_css::is_css_module(path) {
+        let scoped = oj_css::scope_css_module(&css_id, &source, &postcss_input, &resolve.as_ref())
             .map_err(|e| anyhow::anyhow!(e))?;
         let css = css_transform_phase(host, scoped.css, id, "normal", emit).await?;
         let out = oj_css::compile_scoped_css_with(&css_id, &css, &resolve.as_ref())
@@ -2726,7 +2742,10 @@ impl Plugin for OjUserPlugin {
         _ctx: SharedLoadPluginContext,
         args: &HookLoadArgs<'_>,
     ) -> impl std::future::Future<Output = HookLoadReturn> + Send {
-        let pass = self.host.hook_wants_load(args.id);
+        // A stylesheet oj compiles asks the plugins' load hooks itself
+        // (compile_stylesheet), then runs every transform slot on what they
+        // return, as Vite runs vite:css on a plugin-served sheet.
+        let pass = self.host.hook_wants_load(args.id) && !is_compiled_stylesheet(args.id);
         if !pass && self.gate_count {
             self.skipped_load
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -3441,6 +3460,18 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
         bail!("build.rollupOptions.input resolved to no entries");
     }
 
+    // Before the pages: their `order: "pre"` transformIndexHtml hooks run as
+    // each page is read.
+    let plugin_host = user_plugin_host(
+        cli.config.as_deref(),
+        &root,
+        &base,
+        &serde_json::json!(config.define),
+        &serde_json::json!(config.environments),
+        "client",
+        mode,
+    )
+    .await;
     let mut html_docs: Vec<HtmlDoc> = Vec::new();
     let html_inline: Arc<Mutex<std::collections::HashMap<String, String>>> =
         Arc::new(Mutex::new(std::collections::HashMap::new()));
@@ -3481,6 +3512,27 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
                 }
             };
             had_html = true;
+            // Vite's vite:build-html: the `order: "pre"` transformIndexHtml
+            // hooks rewrite the source first, with `{ path, filename }`; the
+            // page's scripts, styles and links are read from what they return.
+            let content = match &plugin_host {
+                Some(host) => {
+                    let ctx = serde_json::json!({
+                        "path": format!("/{}", abs.strip_prefix(&root).unwrap_or(&abs).display().to_string().replace('\\', "/")),
+                        "filename": abs.display().to_string(),
+                    })
+                    .to_string();
+                    host.transform_index_html_phase(&content, &ctx, "pre")
+                        .await
+                        .map_err(|e| {
+                            anyhow::anyhow!(
+                                "plugin transformIndexHtml failed for {}:\n{e}",
+                                abs.display()
+                            )
+                        })?
+                }
+                None => content,
+            };
             let html_dir = abs.parent().unwrap_or(&root).to_path_buf();
             let (content, inline) = externalize_inline_scripts(&content, &abs);
             for (_, id, body) in &inline {
@@ -3562,16 +3614,6 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
 
     let collected_css: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
     let css_split = css_code_split_of(&config);
-    let plugin_host = user_plugin_host(
-        cli.config.as_deref(),
-        &root,
-        &base,
-        &serde_json::json!(config.define),
-        &serde_json::json!(config.environments),
-        "client",
-        mode,
-    )
-    .await;
     let plugin_defines = plugin_config_defines(&plugin_host).await;
     let env_delta = plugin_env_delta(&plugin_host).await;
     let emit = Arc::new(EmitState::new(root.to_path_buf()));
@@ -3751,14 +3793,20 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
             bail!("plugin buildEnd failed:\n{e}");
         }
         // CSS a plugin routed through the vite:css-post shim (e.g. UnoCSS's
-        // generated utilities) joins the build's stylesheet output.
+        // generated utilities) joins the build's stylesheet output. For a
+        // module oj compiled, it replaces that module's sheet, as vite:css-post
+        // keeps one per module (UnoCSS's layer placeholders).
         for (id, css) in host.get_plugin_css().await {
             let src = if id.is_empty() {
                 root.join("__plugin_css__").display().to_string()
             } else {
                 id.split(['?', '#']).next().unwrap_or(&id).to_string()
             };
-            collected_css.lock().unwrap().push((src, css));
+            let mut collected = collected_css.lock().unwrap();
+            match collected.iter_mut().find(|(k, _)| *k == src) {
+                Some(entry) => entry.1 = css,
+                None => collected.push((src, css)),
+            }
         }
         match host.emitted_files().await {
             Ok(files) => {
@@ -4194,8 +4242,9 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
                 "chunk": chunk,
             })
             .to_string();
+            // The "pre" hooks ran on the source as it was read.
             rewritten_html = host
-                .transform_index_html(&rewritten_html, &ctx)
+                .transform_index_html_phase(&rewritten_html, &ctx, "post")
                 .await
                 .map_err(|e| {
                     anyhow::anyhow!("plugin transformIndexHtml failed for {}:\n{e}", doc.out_rel)

@@ -29,7 +29,7 @@ pub struct StyleInputs<'a> {
 /// such a file.
 pub fn needs_preprocess_engine(path: &Path) -> bool {
     let url = path.to_string_lossy();
-    crate::sidecar::is_less(&url) || crate::sidecar::is_stylus(&url)
+    crate::sidecar::preprocess_lang(&url).is_some()
 }
 
 pub async fn compile_style_file(
@@ -71,17 +71,17 @@ pub async fn compile_style_file(
         )?
     } else if needs_preprocess_engine(path) {
         let engine = preprocess.ok_or_else(|| format!("{url}: no css preprocessor"))?;
-        let lang = if crate::sidecar::is_less(&url) {
-            "less"
-        } else {
-            "stylus"
-        };
+        let lang = crate::sidecar::preprocess_lang(&url).unwrap_or("stylus");
         let (data, opts) = match &config {
             Some(c) => (
                 oj_config::css_additional_data(c, lang),
                 oj_config::css_preprocessor_json(c, lang),
             ),
             None => (None, serde_json::Value::Null),
+        };
+        let opts = match lang {
+            "sss" => crate::sidecar::sss_engine_options(&inputs.resolve),
+            _ => opts,
         };
         let with_data = match data {
             Some(d) if !d.is_empty() => format!("{d}\n{source}"),

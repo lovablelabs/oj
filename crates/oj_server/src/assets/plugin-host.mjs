@@ -4574,7 +4574,12 @@ function hotUpdatePlugins() {
 // server; build (html.ts): `{ path: "/" + rel, filename: <abs file>, bundle,
 // chunk }`. A throwing hook fails the request / build under Vite (the error
 // reaches the error middleware), so it is rethrown decorated, not swallowed.
-async function transformIndexHtml(html, ctxJson) {
+// `phase` (a build): "pre" runs the `order: "pre"` hooks, which Vite's
+// vite:build-html applies to the page source in its transform, before it
+// reads the page's scripts (ctx `{ path, filename }`); "post" the normal and
+// post ones, which it applies in generateBundle with the bundle and chunk.
+// Without one, every hook in order.
+async function transformIndexHtml(html, ctxJson, phase) {
   let htmlCtx = null;
   try {
     htmlCtx = ctxJson ? JSON.parse(ctxJson) : null;
@@ -4588,7 +4593,16 @@ async function transformIndexHtml(html, ctxJson) {
       htmlCtx.path.replace(/^\//, ""),
     );
   const [preHooks, normalHooks, postHooks] = resolveHtmlTransforms(main.plugins, bindHtmlHook);
-  return applyHtmlTransforms(html, [...preHooks, ...normalHooks, ...postHooks], htmlCtx, htmlWarn);
+  const hooks =
+    phase === "pre"
+      ? preHooks
+      : phase === "post"
+        ? [...normalHooks, ...postHooks]
+        : [...preHooks, ...normalHooks, ...postHooks];
+  // Vite reaches the page after buildStart (UnoCSS's resets what it scanned).
+  if (hooks.length === 0) return html;
+  await gateOnBuildStart(main);
+  return applyHtmlTransforms(html, hooks, htmlCtx, htmlWarn);
 }
 
 // A plugin's transformIndexHtml handler with its plugin context, its error
@@ -4853,6 +4867,7 @@ async function run(hook, args, c) {
   if (hook === "loadPhase") return gateOnBuildStart(c).then(() => load(c, args[0], args[1]));
   if (hook === "handleHotUpdate") return handleHotUpdate(args[0], args[1], args[2], args[3]);
   if (hook === "transformIndexHtml") return gateOnBuildStart(main).then(() => transformIndexHtml(args[0], args[1]));
+  if (hook === "transformIndexHtmlPhase") return transformIndexHtml(args[0], args[1], args[2]);
   if (hook === "buildStart") return ensureBuildStart(c);
   if (hook === "buildEnd" || hook === "renderStart" || hook === "closeBundle") {
     return runLifecycle(c, hook, args);

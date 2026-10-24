@@ -177,7 +177,7 @@ pub(crate) async fn run_css_engine(
 }
 
 pub(crate) fn is_preprocessor(url: &str) -> bool {
-    sidecar::is_less(url) || sidecar::is_stylus(url)
+    sidecar::preprocess_lang(url).is_some()
 }
 
 /// A dependency module (dep/CJS-interop path): JS under node_modules, by url or
@@ -198,7 +198,10 @@ pub(crate) fn is_dep_module(url: &str, file: &Path) -> bool {
 /// Stylesheet extensions (public: the in-process Start module host classifies
 /// resolved paths with the same rule the dev server uses).
 pub fn is_style_ext(ext: &str) -> bool {
-    matches!(ext, "css" | "scss" | "sass" | "less" | "styl" | "stylus")
+    matches!(
+        ext,
+        "css" | "scss" | "sass" | "less" | "styl" | "stylus" | "pcss" | "postcss" | "sss"
+    )
 }
 
 pub(crate) fn is_style_url(url: &str) -> bool {
@@ -517,5 +520,25 @@ mod tailwind_sheet_tests {
         sheets.invalidate();
         sheets.put("/src/index.css", src, started, "a{}".into());
         assert!(sheets.get("/src/index.css", src).is_none());
+    }
+}
+
+#[cfg(test)]
+mod style_ext_tests {
+    use super::*;
+
+    // Vite's CSS_LANGS_RE: /\.(css|less|sass|scss|styl|stylus|pcss|postcss|sss)(?:$|\?)/.
+    #[test]
+    fn style_extensions_are_vites_css_langs() {
+        for ext in [
+            "css", "less", "sass", "scss", "styl", "stylus", "pcss", "postcss", "sss",
+        ] {
+            assert!(is_style_ext(ext), "{ext}");
+        }
+        for ext in ["js", "ts", "json", "svg", "html", "style", "ss"] {
+            assert!(!is_style_ext(ext), "{ext}");
+        }
+        assert!(is_style_url("/src/a.pcss?inline"));
+        assert!(is_style_url("/src/a.sss"));
     }
 }

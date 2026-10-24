@@ -110,16 +110,14 @@ try {
   assert.match(inlineScss, /#abcdef/, `?inline applies scss additionalData:\n${inlineScss}`);
   assert.match(inlineScss, /#123456/, "?inline resolves the sass alias");
   const inlineMod = await (await fetch(`http://localhost:${PORT}/src/ui/btn.module.css?inline`)).text();
-  assert.match(
-    inlineMod,
-    /^export default "[^]*btn-module_button_/,
-    `?inline of a css module is its css:\n${inlineMod}`,
-  );
+  assert.match(inlineMod, /^export default "[^]*_button_18cl5_1/, `?inline of a css module is its css:\n${inlineMod}`);
   assert.doesNotMatch(inlineMod, /export const/, "?inline of a css module must not export the class map");
   const mod = await (await fetch(`http://localhost:${PORT}/src/ui/btn.module.css`)).text();
-  assert.match(mod, /export const button = "btn-module_button_[A-Za-z0-9_-]+";/, `css module named export:\n${mod}`);
-  assert.match(mod, /export default \{"button":"btn-module_button_/, `css module default map kept:\n${mod}`);
-  assert.match(mod, /"my-class":"btn-module_my-class_/, "kebab class stays in the default map");
+  // Vite's names (postcss-modules' default, recorded from Vite 8.3.5):
+  // `_${local}_${hash of the sheet}_${line}`.
+  assert.match(mod, /export const button = "_button_18cl5_1";/, `css module named export:\n${mod}`);
+  assert.match(mod, /export default \{"button":"_button_18cl5_1"/, `css module default map kept:\n${mod}`);
+  assert.match(mod, /"my-class":"_my-class_18cl5_2"/, "kebab class stays in the default map");
   assert.doesNotMatch(mod, /export const (my-class|default) /, "illegal identifiers are not named exports");
   console.log("[dev] alias + root-absolute + error recovery + css module named exports OK");
   srv.kill("SIGKILL");
@@ -152,8 +150,8 @@ try {
     .filter((f) => f.endsWith(".js"))
     .map((f) => fs.readFileSync(path.join(assets, f), "utf8"))
     .join("\n");
-  assert.match(js, /btn-module_button_[A-Za-z0-9_-]+/, `named css module export bundled:\n${js.slice(0, 400)}`);
-  assert.match(built, /\.btn-module_button_[A-Za-z0-9_-]+\{color:red\}/, "css module rules in the stylesheet");
+  assert.match(js, /_button_18cl5_1/, `named css module export bundled:\n${js.slice(0, 400)}`);
+  assert.match(built, /\._button_18cl5_1\{color:red\}/, "css module rules in the stylesheet");
   assert.match(built, /\.imported\{color:#010203\}/, `@imported rules went through PostCSS in the build:\n${built}`);
   assert.match(built, /border-color:#abcdef/, "scss additionalData in build");
   assert.doesNotMatch(built, /MAGIC/, "postcss marker left in the build css");

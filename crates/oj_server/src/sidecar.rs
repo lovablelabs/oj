@@ -25,6 +25,33 @@ pub fn is_stylus(url: &str) -> bool {
     f.ends_with(".styl") || f.ends_with(".stylus")
 }
 
+/// SugarSS, which Vite parses with PostCSS and the app's `sugarss` parser.
+#[inline]
+pub fn is_sugarss(url: &str) -> bool {
+    without_query(url).ends_with(".sss")
+}
+
+/// The preprocess engine's options for a SugarSS sheet: what resolving its
+/// `@import`s needs, the app's `resolve.alias` (a replacement starting with
+/// `.` is root-relative) and root.
+pub fn sss_engine_options(resolve: &oj_css::CssResolve<'_>) -> serde_json::Value {
+    serde_json::json!({ "alias": resolve.alias, "root": resolve.root })
+}
+
+/// The JS preprocess engine's language for a sheet (the key of its
+/// `css.preprocessorOptions`), None for one it does not compile.
+pub fn preprocess_lang(url: &str) -> Option<&'static str> {
+    if is_less(url) {
+        Some("less")
+    } else if is_stylus(url) {
+        Some("stylus")
+    } else if is_sugarss(url) {
+        Some("sss")
+    } else {
+        None
+    }
+}
+
 pub fn is_tailwind_css(source: &str) -> bool {
     for (index, _) in source.match_indices('@') {
         let rest = &source[index..];
@@ -143,6 +170,21 @@ mod tests {
         assert!(is_tailwind_css("@import \"tailwindcss/theme\";"));
         assert!(!is_tailwind_css("@import \"tailwindcss-animate\";"));
         assert!(!is_tailwind_css("@import \"my-tailwindcss\";"));
+    }
+
+    // The preprocess engine's languages, and the `css.preprocessorOptions`
+    // key each one reads: SugarSS goes through PostCSS's `sugarss` parser.
+    #[test]
+    fn preprocess_languages_cover_less_stylus_and_sugarss() {
+        assert_eq!(preprocess_lang("/src/a.less"), Some("less"));
+        assert_eq!(preprocess_lang("/src/a.styl"), Some("stylus"));
+        assert_eq!(preprocess_lang("/src/a.stylus?inline"), Some("stylus"));
+        assert_eq!(preprocess_lang("/src/a.sss"), Some("sss"));
+        assert!(is_sugarss("/src/a.sss?inline"));
+        assert!(!is_sugarss("/src/a.css?x=.sss"));
+        for plain in ["/src/a.css", "/src/a.pcss", "/src/a.postcss", "/src/a.scss"] {
+            assert_eq!(preprocess_lang(plain), None, "{plain}");
+        }
     }
 
     #[test]

@@ -633,5 +633,6 @@ pub fn css_modules_options(config: &oj_config::OjConfig) -> oj_css::CssModulesOp
         generate_scoped_name: m.generate_scoped_name,
         global_scope: m.global_scope,
         global_module_paths: m.global_module_paths,
+        hash_prefix: m.hash_prefix,
     }
 }

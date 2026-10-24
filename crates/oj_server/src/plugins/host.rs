@@ -874,6 +874,22 @@ impl PluginHost {
             .unwrap_or_else(|| html.to_string()))
     }
 
+    /// One group of a build's transformIndexHtml hooks, as Vite's
+    /// vite:build-html runs them: `"pre"` (the `order: "pre"` ones, on the
+    /// page source before its scripts are read) or `"post"` (the rest, once
+    /// the bundle is written).
+    pub async fn transform_index_html_phase(
+        &self,
+        html: &str,
+        ctx_json: &str,
+        phase: &str,
+    ) -> Result<String, String> {
+        Ok(self
+            .call("transformIndexHtmlPhase", &[html, ctx_json, phase])
+            .await?
+            .unwrap_or_else(|| html.to_string()))
+    }
+
     #[inline]
     pub async fn build_start(&self) -> Result<Vec<ChunkEmit>, String> {
         let Some(raw) = self.call("buildStart", &[]).await? else {

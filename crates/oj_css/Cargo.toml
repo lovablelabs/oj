@@ -15,6 +15,12 @@ base64.workspace = true
 parcel_sourcemap = "2.1.1"
 regex = "1.11"
 oxc_resolver.workspace = true
+# generic-names / loader-utils hashes for `css.modules.generateScopedName`.
+xxhash-rust = { version = "0.8", features = ["xxh64"] }
+md-5 = "0.10"
+md4 = "0.10"
+sha1 = "0.10"
+sha2 = "0.10"
 
 [dev-dependencies]
 proptest.workspace = true

@@ -7,9 +7,10 @@ use super::{build_app, files_under, scratch, write_files};
 
 /// UnoCSS-style plugins find the `vite:css-post` plugin in `config.plugins`
 /// (captured in configResolved) and, in renderChunk, call its transform with
-/// their generated CSS so it routes into the output stylesheet. The virtual
-/// `.css` layer module stays a stub; oj's vite:css-post shim must be present
-/// and must carry the handed CSS into a linked stylesheet like Vite does.
+/// their generated CSS so it routes into the output stylesheet. oj's
+/// vite:css-post shim must be present and must carry the handed CSS into a
+/// linked stylesheet like Vite does, in place of the layer module's own
+/// (placeholder) sheet, as vite:css-post keeps one sheet per module.
 #[tokio::test]
 async fn css_handed_to_the_vite_css_post_shim_reaches_a_linked_stylesheet() {
     let root = scratch("vite-css-post-shim");
@@ -35,7 +36,7 @@ export default [{
   name: "fake-uno",
   configResolved(config) { allPlugins = config.plugins; },
   resolveId(id) { return id === "virtual:layer.css" ? "\0virtual:layer.css" : null; },
-  load(id) { return id === "\0virtual:layer.css" ? "/* layer placeholder */" : null; },
+  load(id) { return id === "\0virtual:layer.css" ? ".layer-placeholder { color: red; }" : null; },
   renderChunk(code, chunk) {
     const hasLayer = Object.keys(chunk.modules || {}).some((m) => m.includes("layer.css"));
     if (!hasLayer) return null;
@@ -63,6 +64,10 @@ export default [{
     assert!(
         css.contains(".gen"),
         "CSS handed to the vite:css-post shim reached the output stylesheet:\n{css}"
+    );
+    assert!(
+        !css.contains("layer-placeholder"),
+        "the handed CSS replaced the module's placeholder sheet:\n{css}"
     );
     let html = fs::read_to_string(root.join("dist/index.html")).expect("dist/index.html");
     assert!(
