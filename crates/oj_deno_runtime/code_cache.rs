@@ -23,4 +23,10 @@ pub trait CodeCache: Send + Sync {
     source_hash: u64,
     data: &[u8],
   );
+
+  /// Whether a miss should create an entry. A consume-only cache answers
+  /// hits and leaves misses uncached, so V8 never serializes one.
+  fn produces(&self) -> bool {
+    true
+  }
 }

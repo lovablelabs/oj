@@ -415,7 +415,17 @@ fn sniffed_manager_version(path: &std::path::Path, manager: &str, default_versio
     }
 }
 
+/// Runs Node's exit flush of the engines' code caches when `main` returns.
+struct FlushCodeCacheAtExit;
+
+impl Drop for FlushCodeCacheAtExit {
+    fn drop(&mut self) {
+        oj_js::code_cache::flush_at_exit();
+    }
+}
+
 fn main() -> anyhow::Result<()> {
+    let _flush_code_cache = FlushCodeCacheAtExit;
     raise_fd_limit();
     // Every engine and one-shot child that loads the app's vite.config through
     // rolldown-vite's native loader inherits this: the migration warning it
@@ -558,6 +568,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             Ok(())
         }
         Command::StartScript { script, root } => {
+            // A one-shot child: the parent waits on its exit.
+            oj_js::code_cache::consume_only();
             let root = root.canonicalize().context("engine root not found")?;
             let mut buf = String::new();
             std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut buf)
@@ -574,6 +586,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             timeout_secs,
             result,
         } => {
+            oj_js::code_cache::consume_only();
             let mut buf = String::new();
             std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut buf)
                 .context("engine-job payload on stdin")?;

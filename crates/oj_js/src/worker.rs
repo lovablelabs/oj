@@ -87,6 +87,11 @@ fn engine_loaders(
             node_analysis_cache: code_cache
                 .clone()
                 .map(|cache| cache as deno_resolver::cjs::analyzer::NodeAnalysisCacheRc),
+            // Node's package.json reader: each file parsed once per process,
+            // never invalidated. Without it every resolve re-read and
+            // re-parsed the closest package.json (the per-thread cache leaves
+            // each engine, on its own thread, with its own).
+            package_json_cache: Some(Arc::new(node_resolver::PackageJsonThreadLocalCache)),
             ..Default::default()
         },
     );

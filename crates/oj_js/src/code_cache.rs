@@ -10,8 +10,12 @@
 //! (`get_code_cache`) — plus deno_resolver's [`NodeAnalysisCache`], whose swc
 //! CJS-export analysis is a repeat cost of its own.
 
+use std::collections::HashMap;
 use std::hash::Hasher;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, Weak};
+use std::time::Duration;
 
 use deno_core::url::Url;
 use deno_resolver::cjs::analyzer::DenoCjsAnalysis;
@@ -22,6 +26,56 @@ use deno_runtime::code_cache::CodeCacheType;
 
 pub struct FsCodeCache {
     dir: PathBuf,
+    /// Node's compile cache, which Vite's CLI enables, keeps entries in
+    /// memory and writes them in one batch: when Vite's `bin/vite.js` calls
+    /// `module.flushCompileCache()` 10s after start, and at exit
+    /// ([`flush_at_exit`]). Written inline, a cold `import("vite")` spent a
+    /// third of its time creating 230 files. A dropped cache writes too.
+    pending: Arc<Mutex<Pending>>,
+    flush_after: Duration,
+    /// False in a process another one waits on (see [`consume_only`]).
+    produce: bool,
+}
+
+#[derive(Default)]
+struct Pending {
+    entries: HashMap<PathBuf, Vec<u8>>,
+    /// Vite's flush timer: armed by the first entry, and only once.
+    timer_armed: bool,
+}
+
+/// Vite's `setTimeout(() => module.flushCompileCache(), 10 * 1000)`.
+const FLUSH_AFTER: Duration = Duration::from_secs(10);
+
+/// Every cache with entries to write at exit. Engines outlive `main` on
+/// their own threads, so a cache's drop alone would miss the process end.
+static LIVE: Mutex<Vec<(PathBuf, Weak<Mutex<Pending>>)>> = Mutex::new(Vec::new());
+
+/// Node's exit flush (`AtExit` → `FlushCompileCache`), for the process
+/// ending on its own: like Node's, it does not run on `process::exit` or a
+/// signal, where only the timed flush has written anything.
+pub fn flush_at_exit() {
+    let live = std::mem::take(&mut *LIVE.lock().unwrap_or_else(|e| e.into_inner()));
+    for (dir, pending) in live {
+        if let Some(pending) = pending.upgrade() {
+            write_pending(&dir, &pending);
+        }
+    }
+    let drains = std::mem::take(&mut *DRAINS.lock().unwrap_or_else(|e| e.into_inner()));
+    for drain in drains {
+        let _ = drain.join();
+    }
+}
+
+static PRODUCE: AtomicBool = AtomicBool::new(true);
+
+/// For a one-shot child whose parent waits on its exit (an engine job, a
+/// start script): its caches read entries but never create them. Producing
+/// costs the cold run it happens on, which here is the parent's critical
+/// path, and the long-lived engines that load the same modules write those
+/// entries anyway.
+pub fn consume_only() {
+    PRODUCE.store(false, Ordering::Relaxed);
 }
 
 /// The key callers partition persistent engine caches by: the V8 version,
@@ -45,7 +99,30 @@ fn hash64(bytes: &[u8]) -> u64 {
 
 impl FsCodeCache {
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir }
+        Self::with_flush_after(dir, FLUSH_AFTER)
+    }
+
+    fn with_flush_after(dir: PathBuf, flush_after: Duration) -> Self {
+        Self::with_options(dir, flush_after, PRODUCE.load(Ordering::Relaxed))
+    }
+
+    fn with_options(dir: PathBuf, flush_after: Duration, produce: bool) -> Self {
+        let pending = Arc::default();
+        let mut live = LIVE.lock().unwrap_or_else(|e| e.into_inner());
+        live.retain(|(_, p)| p.strong_count() > 0);
+        live.push((dir.clone(), Arc::downgrade(&pending)));
+        Self {
+            dir,
+            pending,
+            flush_after,
+            produce,
+        }
+    }
+
+    /// Whether a miss should have V8 create an entry at all: a consume-only
+    /// cache skips the serialization too, not only the write.
+    pub fn produces(&self) -> bool {
+        self.produce
     }
 
     /// The engine-side hash for sources it caches itself (the ESM and
@@ -96,7 +173,18 @@ impl FsCodeCache {
     }
 
     fn get_entry(&self, specifier: &Url, suffix: &str, source_hash: u64) -> Option<Vec<u8>> {
-        let bytes = std::fs::read(self.entry_path(specifier, suffix)).ok()?;
+        let path = self.entry_path(specifier, suffix);
+        let held = self
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entries
+            .get(&path)
+            .cloned();
+        let bytes = match held {
+            Some(bytes) => bytes,
+            None => std::fs::read(&path).ok()?,
+        };
         let (head, data) = bytes.split_at_checked(8)?;
         if head != source_hash.to_le_bytes() {
             return None;
@@ -105,23 +193,37 @@ impl FsCodeCache {
     }
 
     fn put_entry(&self, specifier: &Url, suffix: &str, source_hash: u64, data: &[u8]) {
-        let path = self.entry_path(specifier, suffix);
-        if std::fs::create_dir_all(&self.dir).is_err() {
+        if !self.produce {
             return;
         }
-        // Atomic publish: write-then-rename, so a concurrent reader never
-        // sees a torn half-write. The tmp name carries a process-wide
-        // sequence beside the pid: worker threads share this cache, and a
-        // pid-only suffix let two threads rename a torn file into place.
-        static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let tmp = path.with_extension(format!("tmp{}-{seq}", std::process::id()));
+        let path = self.entry_path(specifier, suffix);
         let mut bytes = Vec::with_capacity(8 + data.len());
         bytes.extend_from_slice(&source_hash.to_le_bytes());
         bytes.extend_from_slice(data);
-        if std::fs::write(&tmp, bytes).is_ok() && std::fs::rename(&tmp, &path).is_err() {
-            let _ = std::fs::remove_file(&tmp);
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        pending.entries.insert(path, bytes);
+        if pending.timer_armed {
+            return;
         }
+        pending.timer_armed = true;
+        // Like Vite's unref'd timer, it never keeps a finished job waiting:
+        // a cache dropped first has written everything already.
+        let weak = Arc::downgrade(&self.pending);
+        let dir = self.dir.clone();
+        let after = self.flush_after;
+        let _ = std::thread::Builder::new()
+            .name("oj-code-cache-flush".into())
+            .spawn(move || {
+                std::thread::sleep(after);
+                if let Some(pending) = weak.upgrade() {
+                    write_pending(&dir, &pending);
+                }
+            });
+    }
+
+    /// Writes every entry held in memory (Node's `module.flushCompileCache()`).
+    pub fn flush(&self) {
+        write_pending(&self.dir, &self.pending);
     }
 
     pub fn get(&self, specifier: &Url, kind: CodeCacheType, source_hash: u64) -> Option<Vec<u8>> {
@@ -209,6 +311,62 @@ impl FsCodeCache {
     }
 }
 
+/// Writers started by dropped caches; the exit flush waits for them.
+static DRAINS: Mutex<Vec<std::thread::JoinHandle<()>>> = Mutex::new(Vec::new());
+
+impl Drop for FsCodeCache {
+    /// Hands what is held to a writer thread: an engine can drop on a boot's
+    /// critical path (a prewarmed host nothing needs), and writing its
+    /// entries there would cost the cold run the deferral exists to spare.
+    fn drop(&mut self) {
+        let entries = std::mem::take(
+            &mut self
+                .pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .entries,
+        );
+        if entries.is_empty() {
+            return;
+        }
+        let dir = self.dir.clone();
+        let drain = std::thread::Builder::new()
+            .name("oj-code-cache-drain".into())
+            .spawn(move || {
+                for (path, bytes) in entries {
+                    write_entry(&dir, &path, &bytes);
+                }
+            });
+        if let Ok(drain) = drain {
+            DRAINS.lock().unwrap_or_else(|e| e.into_inner()).push(drain);
+        }
+    }
+}
+
+/// Writes and clears the entries a cache holds in memory.
+fn write_pending(dir: &std::path::Path, pending: &Mutex<Pending>) {
+    let entries = std::mem::take(&mut pending.lock().unwrap_or_else(|e| e.into_inner()).entries);
+    for (path, bytes) in entries {
+        write_entry(dir, &path, &bytes);
+    }
+}
+
+/// Atomic publish: write-then-rename, so a concurrent reader never sees a
+/// torn half-write. The tmp name carries a process-wide sequence beside the
+/// pid: several caches can write the same entry, and a pid-only suffix let
+/// two writers rename a torn file into place.
+fn write_entry(dir: &std::path::Path, path: &std::path::Path, bytes: &[u8]) {
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_extension(format!("tmp{}-{seq}", std::process::id()));
+    if std::fs::write(&tmp, bytes).is_ok() && std::fs::rename(&tmp, path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
+
 /// One-shot bundle names collapse to a stable key. Vite's loadConfigFromFile
 /// writes `<config>.timestamp-<ms>-<hash>.mjs` and oj's fallback config
 /// loader `oj-vite-config-<pid>-<rand>.tmp.mjs`, a fresh name per load:
@@ -277,6 +435,10 @@ impl CodeCache for FsCodeCache {
     ) {
         self.put(&specifier, code_cache_type, source_hash, data);
     }
+
+    fn produces(&self) -> bool {
+        self.produce
+    }
 }
 
 impl NodeAnalysisCache for FsCodeCache {
@@ -317,6 +479,7 @@ mod tests {
 
         assert_eq!(cache.get(&url, CodeCacheType::EsModule, 7), None);
         cache.put(&url, CodeCacheType::EsModule, 7, b"bytecode");
+        cache.flush();
         assert_eq!(
             cache.get(&url, CodeCacheType::EsModule, 7).as_deref(),
             Some(b"bytecode".as_slice())
@@ -370,6 +533,7 @@ mod hygiene_tests {
                 format!("bytecode-{v}").as_bytes(),
             );
         }
+        cache.flush();
         let entries = std::fs::read_dir(dir.path()).unwrap().count();
         assert_eq!(entries, 1, "five version bumps must reuse one entry");
         // The latest generation is served; a stale source hash misses.
@@ -394,6 +558,7 @@ mod hygiene_tests {
             42,
             b"bytecode",
         );
+        cache.flush();
         assert_eq!(
             cache
                 .get(&url("oj:///src/App.tsx?v=1"), CodeCacheType::EsModule, 42)
@@ -437,6 +602,7 @@ mod hygiene_tests {
             3,
             b"plain",
         );
+        cache.flush();
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 3);
         assert_eq!(
             cache
@@ -474,6 +640,7 @@ mod hygiene_tests {
         for h in handles {
             h.join().unwrap();
         }
+        cache.flush();
         assert_eq!(
             cache.get(&spec, CodeCacheType::EsModule, 1).as_deref(),
             Some(payload.as_slice()),
@@ -509,6 +676,7 @@ mod hygiene_tests {
             ));
             cache.put(&spec, CodeCacheType::EsModule, 42, b"config-bytecode");
         }
+        cache.flush();
         assert_eq!(
             std::fs::read_dir(dir.path()).unwrap().count(),
             2,
@@ -541,6 +709,7 @@ mod hygiene_tests {
         for (i, s) in lookalikes.iter().enumerate() {
             cache.put(&url(s), CodeCacheType::EsModule, i as u64, b"x");
         }
+        cache.flush();
         assert_eq!(
             std::fs::read_dir(dir.path()).unwrap().count(),
             lookalikes.len(),
@@ -559,6 +728,7 @@ mod hygiene_tests {
         for i in 0..10u64 {
             let spec = url(&format!("file:///m{i}.js"));
             cache.put(&spec, CodeCacheType::EsModule, i, &payload);
+            cache.flush();
             let age = std::time::SystemTime::now() - std::time::Duration::from_secs(60 * (10 - i));
             std::fs::File::options()
                 .append(true)
@@ -593,6 +763,7 @@ mod hygiene_tests {
         std::fs::write(old.join("deadbeef-esm.bin"), b"old bytecode").unwrap();
         let cache = FsCodeCache::new(current.clone());
         cache.put(&url("file:///m.js"), CodeCacheType::EsModule, 1, b"new");
+        cache.flush();
         cache.sweep_stale_generations();
         assert!(!old.exists(), "the dead generation is removed");
         assert!(
@@ -615,6 +786,7 @@ mod hygiene_tests {
             1,
             b"bytecode",
         );
+        cache.flush();
         let stale = dir.path().join("deadbeef-esm.bin.tmp999");
         std::fs::write(&stale, b"torn").unwrap();
         let old = std::time::SystemTime::now() - std::time::Duration::from_secs(48 * 60 * 60);
@@ -643,6 +815,117 @@ mod hygiene_tests {
             names.iter().filter(|n| n.ends_with(".bin")).count(),
             1,
             "entry kept: {names:?}"
+        );
+    }
+
+    // Entries wait in memory, as in Node's compile cache; a cache dropped
+    // with its engine must still land every one, by the exit flush at the
+    // latest.
+    #[test]
+    fn dropping_the_cache_lands_every_queued_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = FsCodeCache::new(dir.path().to_path_buf());
+        for i in 0..200u64 {
+            cache.put(
+                &url(&format!("file:///m{i}.js")),
+                CodeCacheType::EsModule,
+                i,
+                b"x",
+            );
+        }
+        drop(cache);
+        flush_at_exit();
+        let reopened = FsCodeCache::new(dir.path().to_path_buf());
+        for i in 0..200u64 {
+            assert!(
+                reopened
+                    .get(
+                        &url(&format!("file:///m{i}.js")),
+                        CodeCacheType::EsModule,
+                        i
+                    )
+                    .is_some(),
+                "entry {i} never reached disk"
+            );
+        }
+    }
+
+    // Vite flushes the compile cache 10s after start, so a long-lived engine
+    // persists what it compiled at boot without ever exiting cleanly.
+    #[test]
+    fn the_timed_flush_writes_entries_without_a_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = FsCodeCache::with_flush_after(
+            dir.path().to_path_buf(),
+            std::time::Duration::from_millis(200),
+        );
+        let spec = url("file:///boot.js");
+        cache.put(&spec, CodeCacheType::EsModule, 1, b"x");
+        let on_disk = || std::fs::read_dir(dir.path()).map_or(0, |d| d.count());
+        assert_eq!(on_disk(), 0, "held in memory until the flush");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while on_disk() == 0 {
+            assert!(std::time::Instant::now() < deadline, "never flushed");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    // A finished one-shot process (`oj build`, an engine job) returns from
+    // main with its engines' caches still alive: the exit flush lands them.
+    #[test]
+    fn the_exit_flush_writes_a_live_caches_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = FsCodeCache::new(dir.path().to_path_buf());
+        let spec = url("file:///exit.js");
+        cache.put(&spec, CodeCacheType::EsModule, 1, b"x");
+        flush_at_exit();
+        assert!(cache.get(&spec, CodeCacheType::EsModule, 1).is_some());
+    }
+
+    // An entry is served from memory before the flush lands it, so a module
+    // a second engine compiles in the same window still hits.
+    #[test]
+    fn a_held_entry_is_served_before_the_flush() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = FsCodeCache::new(dir.path().to_path_buf());
+        let spec = url("file:///held.js");
+        cache.put(&spec, CodeCacheType::EsModule, 1, b"x");
+        assert_eq!(std::fs::read_dir(dir.path()).map_or(0, |d| d.count()), 0);
+        assert_eq!(
+            cache.get(&spec, CodeCacheType::EsModule, 1).as_deref(),
+            Some(b"x".as_slice())
+        );
+        assert!(
+            cache.get(&spec, CodeCacheType::EsModule, 2).is_none(),
+            "the source hash still guards"
+        );
+    }
+
+    // A one-shot child's parent waits on its exit: its cache reads what the
+    // long-lived engines wrote and never writes, even when dropped or flushed.
+    #[test]
+    fn a_consume_only_cache_reads_entries_and_never_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = url("file:///shared.js");
+        let writer = FsCodeCache::new(dir.path().to_path_buf());
+        writer.put(&spec, CodeCacheType::EsModule, 1, b"bytecode");
+        drop(writer);
+        flush_at_exit();
+        let reader = FsCodeCache::with_options(dir.path().to_path_buf(), FLUSH_AFTER, false);
+        assert!(!reader.produces());
+        assert_eq!(
+            reader.get(&spec, CodeCacheType::EsModule, 1).as_deref(),
+            Some(b"bytecode".as_slice())
+        );
+        let fresh = url("file:///fresh.js");
+        reader.put(&fresh, CodeCacheType::EsModule, 1, b"x");
+        reader.flush();
+        flush_at_exit();
+        drop(reader);
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            1,
+            "nothing new on disk"
         );
     }
 }
