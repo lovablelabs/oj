@@ -62,7 +62,7 @@ rustc-hash = "2.1.3"
 deno_telemetry = "0.81.0"
 opentelemetry = { version = "0.32.0", default-features = false, features = ["trace", "logs", "metrics"] }
 opentelemetry_sdk = { version = "0.32.1", default-features = false, features = ["trace", "logs", "metrics"] }
-sys_traits = { version = "0.1.28", features = ["real"] }
+sys_traits = { version = "0.1.29", features = ["real"] }
 
 [dev-dependencies]
 oxc_ast.workspace = true

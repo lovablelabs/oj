@@ -1384,11 +1384,12 @@ fn build_router(
         ));
     }
     // Outermost, so the span covers every other layer.
-    if otel::enabled() {
+    if let Some(tracer) = otel::RequestTracer::new() {
+        let tracer = Arc::new(tracer);
         let scheme = tls::url_scheme(server_cfg.https.as_ref());
         app = app.layer(axum::middleware::from_fn(
             move |req: axum::extract::Request, next: axum::middleware::Next| {
-                otel::trace_request(scheme, req, next)
+                tracer.clone().trace(scheme, req, next)
             },
         ));
     }
@@ -1483,7 +1484,6 @@ impl DevServer {
         // too or a supervisor restart strands every plugin child (workerd) on pid 1.
         deno_process::oj_hook::set_shutdown_sweep(|| {
             child_groups::kill_all();
-            otel::flush();
         });
         let engine_registry = oj_js::EngineRegistry::new();
         let plugin_file = plugin_file(&root, config_file.as_deref());
@@ -1959,7 +1959,7 @@ pub async fn close_plugins_on_shutdown(host: Arc<std::sync::OnceLock<Arc<PluginH
     // Own-group children no longer sit in the terminal's foreground group, so
     // the signal that ends oj never reaches them; forward it.
     child_groups::kill_all();
-    otel::flush();
+    otel::shutdown();
     std::process::exit(code);
 }
 

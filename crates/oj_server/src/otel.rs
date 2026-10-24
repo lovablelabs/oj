@@ -3,39 +3,43 @@
 //! Rides the embedded Deno's OTLP pipeline, so the standard
 //! `OTEL_EXPORTER_OTLP_*`, `OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES`
 //! variables configure it.
+//!
+//! oj keeps no state of its own here: the diagnostics exporter is a thread
+//! that owns its instruments and drains an [`oj_diag::subscribe`] queue, and
+//! the router layer owns a [`RequestTracer`]. The pipeline is deno_telemetry's
+//! (`OTEL_GLOBALS`), and so is its shutdown, the exit hook `Deno.exit()` runs.
 
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::OnceLock;
+use std::sync::Arc;
 use std::task::{Context, Poll};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Instant, SystemTime};
 
 use axum::body::{Body, Bytes, HttpBody};
 use axum::extract::Request;
 use axum::http::HeaderMap;
 use axum::middleware::Next;
 use axum::response::Response;
-use deno_telemetry::{OtelConfig, OtelRuntimeConfig, OTEL_GLOBALS};
-use http_body::{Frame, SizeHint};
+use deno_telemetry::{OtelConfig, OtelGlobals, OtelRuntimeConfig, OTEL_GLOBALS};
+use hyper::body::{Frame, SizeHint};
 use opentelemetry::logs::{LogRecord as _, Logger as _, LoggerProvider as _, Severity};
 use opentelemetry::metrics::{Counter, Histogram, MeterProvider as _};
 use opentelemetry::trace::{
     SpanContext, SpanId, SpanKind, Status, TraceFlags, TraceId, TraceState,
 };
 use opentelemetry::{InstrumentationScope, KeyValue};
-use opentelemetry_sdk::logs::{LogProcessor as _, SdkLogRecord, SdkLogger, SdkLoggerProvider};
+use opentelemetry_sdk::logs::{LogProcessor as _, SdkLogger, SdkLoggerProvider};
 use opentelemetry_sdk::trace::{
     IdGenerator as _, SpanData, SpanEvents, SpanLinks, SpanProcessor as _,
 };
 
-/// Longest a restart or shutdown waits for pending exports.
-const FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
+/// Diagnostics waiting for the exporter thread; past it they are counted as
+/// unsent in `/@oj/diagnostics` instead of blocking whoever emitted them.
+const DIAG_QUEUE: usize = 1024;
 
-struct Instruments {
-    scope: InstrumentationScope,
-    diag_events: Counter<u64>,
-    request_duration: Histogram<f64>,
-    sampler: Sampler,
+fn scope() -> InstrumentationScope {
+    InstrumentationScope::builder("oj")
+        .with_version(env!("CARGO_PKG_VERSION"))
+        .build()
 }
 
 /// Head sampler from `OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER_ARG`. Deno
@@ -88,11 +92,9 @@ impl Sampler {
     }
 }
 
-static INSTRUMENTS: OnceLock<Instruments> = OnceLock::new();
-
 /// Starts the exporter when `OJ_OTEL` is set; a bad configuration warns and
 /// leaves oj running without it.
-pub fn init(version: &'static str) {
+pub fn init() {
     if !oj_env::get().knobs.otel {
         return;
     }
@@ -103,12 +105,8 @@ pub fn init(version: &'static str) {
     };
     let runtime = OtelRuntimeConfig {
         runtime_name: "oj".into(),
-        runtime_version: version.into(),
+        runtime_version: env!("CARGO_PKG_VERSION").into(),
     };
-    // Ahead of deno_telemetry's own exit hook, which shuts the pipeline down
-    // with no bound: plugin children die and pending exports get a bounded
-    // flush before an unreachable collector can stall the exit.
-    deno_signals::before_exit(before_exit);
     if let Err(e) = deno_telemetry::init(&sys_traits::impls::RealSys, runtime, config) {
         eprintln!("oj: OpenTelemetry export disabled: {e}");
         return;
@@ -116,202 +114,214 @@ pub fn init(version: &'static str) {
     let Some(globals) = OTEL_GLOBALS.get() else {
         return;
     };
-    let scope = InstrumentationScope::builder("oj")
-        .with_version(version)
-        .build();
-    let meter = globals.meter_provider.meter_with_scope(scope.clone());
-    let instruments = Instruments {
-        scope,
-        diag_events: meter
+    let events = oj_diag::subscribe(DIAG_QUEUE);
+    let exporter = DiagExporter::new(globals);
+    let spawned = std::thread::Builder::new()
+        .name("oj-otel-diag".into())
+        .spawn(move || {
+            for event in events {
+                exporter.export(&event);
+            }
+        });
+    if let Err(e) = spawned {
+        eprintln!("oj: OpenTelemetry diagnostics export disabled: {e}");
+    }
+}
+
+/// Exports what is queued and closes the pipeline: deno_telemetry's exit
+/// hook, the one `Deno.exit()` runs. oj runs it at each of its own exits (the
+/// signal shutdown, a restart's re-exec, `main` returning). A signal can also
+/// have deno_signals run it first; the SDK providers ignore a second shutdown.
+pub fn shutdown() {
+    if OTEL_GLOBALS.get().is_some() {
+        deno_signals::run_exit();
+    }
+}
+
+/// Diagnostics as `oj.diag` log records and the `oj.diag.events` counter.
+struct DiagExporter {
+    globals: &'static OtelGlobals,
+    scope: InstrumentationScope,
+    events: Counter<u64>,
+    /// opentelemetry 0.32 mints records only through a logger; this one has
+    /// no processors, so records go out through Deno's batch processor.
+    records: SdkLogger,
+}
+
+impl DiagExporter {
+    fn new(globals: &'static OtelGlobals) -> Self {
+        let scope = scope();
+        let events = globals
+            .meter_provider
+            .meter_with_scope(scope.clone())
             .u64_counter("oj.diag.events")
             .with_description("Dev-server diagnostic events, folded repeats included")
-            .build(),
-        request_duration: meter
+            .build();
+        Self {
+            globals,
+            scope,
+            events,
+            records: SdkLoggerProvider::builder().build().logger("oj"),
+        }
+    }
+
+    fn export(&self, event: &oj_diag::Event) {
+        let level = match event.level {
+            oj_diag::Level::Warn => "warn",
+            oj_diag::Level::Error => "error",
+            oj_diag::Level::Fatal => "fatal",
+        };
+        let source = match event.source {
+            oj_diag::Source::Server => "server",
+            oj_diag::Source::Client => "client",
+            oj_diag::Source::Plugin => "plugin",
+            oj_diag::Source::Host => "host",
+        };
+        self.events.add(
+            1,
+            &[
+                KeyValue::new("oj.diag.kind", event.kind.as_str()),
+                KeyValue::new("oj.diag.level", level),
+                KeyValue::new("oj.diag.source", source),
+            ],
+        );
+        let mut record = self.records.create_log_record();
+        let now = SystemTime::now();
+        record.set_timestamp(now);
+        record.set_observed_timestamp(now);
+        record.set_event_name("oj.diag");
+        record.set_severity_number(match event.level {
+            oj_diag::Level::Warn => Severity::Warn,
+            oj_diag::Level::Error => Severity::Error,
+            oj_diag::Level::Fatal => Severity::Fatal,
+        });
+        record.set_severity_text(level);
+        record.set_body(event.message.clone().into());
+        record.add_attribute("oj.diag.kind", event.kind.as_str());
+        record.add_attribute("oj.diag.source", source);
+        if let Some(module) = &event.module {
+            record.add_attribute("oj.diag.module", module.clone());
+        }
+        if let Some(plugin) = &event.plugin {
+            record.add_attribute("oj.diag.plugin", plugin.clone());
+        }
+        self.globals.log_processor.emit(&mut record, &self.scope);
+    }
+}
+
+/// The router layer's state: one server span (a child of an incoming W3C
+/// `traceparent`) and one duration sample per request, both ending when the
+/// body has been sent (as Vite's request timer does on `res.end`), not at
+/// the headers. Attribute names follow the OTel HTTP server semantic
+/// conventions; there is no route template, so `oj.route.class` stands in
+/// for `http.route` and the span is named by the method alone.
+pub struct RequestTracer {
+    globals: &'static OtelGlobals,
+    scope: InstrumentationScope,
+    duration: Histogram<f64>,
+    sampler: Sampler,
+}
+
+impl RequestTracer {
+    /// `None` when export is off.
+    pub fn new() -> Option<Self> {
+        let globals = OTEL_GLOBALS.get()?;
+        let scope = scope();
+        let duration = globals
+            .meter_provider
+            .meter_with_scope(scope.clone())
             .f64_histogram("http.server.request.duration")
             .with_unit("s")
             .with_boundaries(vec![
                 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
             ])
-            .build(),
-        sampler: Sampler::from_vars(
-            oj_env::get().var("OTEL_TRACES_SAMPLER"),
-            oj_env::get().var("OTEL_TRACES_SAMPLER_ARG"),
-        ),
-    };
-    if INSTRUMENTS.set(instruments).is_ok() {
-        oj_diag::set_sink(export_diag);
-    }
-}
-
-pub fn enabled() -> bool {
-    INSTRUMENTS.get().is_some()
-}
-
-/// Exports what is queued, bounded so an unreachable collector cannot hold up
-/// a restart or shutdown.
-pub fn flush() {
-    let Some(globals) = OTEL_GLOBALS.get() else {
-        return;
-    };
-    // Past deno_telemetry's shutdown the metrics reader's channel is closed
-    // and its force_flush panics on the dropped reply.
-    if SHUT_DOWN.load(Ordering::SeqCst) {
-        return;
-    }
-    let (done_tx, done_rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = globals.span_processor.force_flush();
-        let _ = globals.log_processor.force_flush();
-        let _ = globals.meter_provider.force_flush();
-        let _ = done_tx.send(());
-    });
-    let _ = done_rx.recv_timeout(FLUSH_TIMEOUT);
-}
-
-/// Set once the engine's exit path is past oj's flush; deno_telemetry shuts
-/// the pipeline down right after.
-static SHUT_DOWN: AtomicBool = AtomicBool::new(false);
-
-fn before_exit() {
-    crate::child_groups::kill_all();
-    flush();
-    SHUT_DOWN.store(true, Ordering::SeqCst);
-}
-
-fn export_diag(event: &oj_diag::Event) {
-    let (Some(globals), Some(instruments)) = (OTEL_GLOBALS.get(), INSTRUMENTS.get()) else {
-        return;
-    };
-    let level = match event.level {
-        oj_diag::Level::Warn => "warn",
-        oj_diag::Level::Error => "error",
-        oj_diag::Level::Fatal => "fatal",
-    };
-    let source = match event.source {
-        oj_diag::Source::Server => "server",
-        oj_diag::Source::Client => "client",
-        oj_diag::Source::Plugin => "plugin",
-        oj_diag::Source::Host => "host",
-    };
-    instruments.diag_events.add(
-        1,
-        &[
-            KeyValue::new("oj.diag.kind", event.kind.as_str()),
-            KeyValue::new("oj.diag.level", level),
-            KeyValue::new("oj.diag.source", source),
-        ],
-    );
-    let mut record = new_log_record();
-    let now = SystemTime::now();
-    record.set_timestamp(now);
-    record.set_observed_timestamp(now);
-    record.set_event_name("oj.diag");
-    record.set_severity_number(match event.level {
-        oj_diag::Level::Warn => Severity::Warn,
-        oj_diag::Level::Error => Severity::Error,
-        oj_diag::Level::Fatal => Severity::Fatal,
-    });
-    record.set_severity_text(level);
-    record.set_body(event.message.clone().into());
-    record.add_attribute("oj.diag.kind", event.kind.as_str());
-    record.add_attribute("oj.diag.source", source);
-    if let Some(module) = &event.module {
-        record.add_attribute("oj.diag.module", module.clone());
-    }
-    if let Some(plugin) = &event.plugin {
-        record.add_attribute("oj.diag.plugin", plugin.clone());
-    }
-    globals.log_processor.emit(&mut record, &instruments.scope);
-}
-
-/// opentelemetry 0.32 mints records only through a logger; this one has no
-/// processors, so records go out through Deno's batch processor instead.
-fn new_log_record() -> SdkLogRecord {
-    static FACTORY: OnceLock<SdkLogger> = OnceLock::new();
-    FACTORY
-        .get_or_init(|| SdkLoggerProvider::builder().build().logger("oj"))
-        .create_log_record()
-}
-
-/// Router layer: one server span (a child of an incoming W3C `traceparent`)
-/// and one duration sample per request, both ending when the body has been
-/// sent (as Vite's request timer does on `res.end`), not at the headers.
-/// Attribute names follow the OTel HTTP server semantic conventions; there
-/// is no route template, so `oj.route.class` stands in for `http.route` and
-/// the span is named by the method alone.
-pub async fn trace_request(scheme: &'static str, req: Request, next: Next) -> Response {
-    let (Some(globals), Some(instruments)) = (OTEL_GLOBALS.get(), INSTRUMENTS.get()) else {
-        return next.run(req).await;
-    };
-    let start_time = SystemTime::now();
-    let started = Instant::now();
-    let method_original = req.method().as_str().to_owned();
-    let protocol = protocol_version(req.version());
-    let path = req.uri().path().to_owned();
-    let parent = parse_traceparent(req.headers());
-    let response = next.run(req).await;
-    let status = response.status();
-    on_body_end(response, move || {
-        let class = route_class(&path);
-        let method = known_method(&method_original);
-        let mut attributes = vec![
-            KeyValue::new("http.request.method", method),
-            KeyValue::new("http.response.status_code", i64::from(status.as_u16())),
-            KeyValue::new("url.scheme", scheme),
-            KeyValue::new("oj.route.class", class),
-        ];
-        if let Some(protocol) = protocol {
-            attributes.push(KeyValue::new("network.protocol.version", protocol));
-        }
-        if status.is_server_error() {
-            attributes.push(KeyValue::new("error.type", status.as_str().to_owned()));
-        }
-        instruments
-            .request_duration
-            .record(started.elapsed().as_secs_f64(), &attributes);
-        let trace_id = parent.as_ref().map_or_else(
-            || globals.id_generator.new_trace_id(),
-            SpanContext::trace_id,
-        );
-        if !instruments.sampler.should_sample(parent.as_ref(), trace_id) {
-            return;
-        }
-        let mut span_attributes = attributes;
-        span_attributes.push(KeyValue::new("url.path", path));
-        if method == "_OTHER" {
-            span_attributes.push(KeyValue::new(
-                "http.request.method_original",
-                method_original,
-            ));
-        }
-        globals.span_processor.on_end(SpanData {
-            span_context: SpanContext::new(
-                trace_id,
-                globals.id_generator.new_span_id(),
-                TraceFlags::SAMPLED,
-                false,
-                TraceState::default(),
+            .build();
+        Some(Self {
+            globals,
+            scope,
+            duration,
+            sampler: Sampler::from_vars(
+                oj_env::get().var("OTEL_TRACES_SAMPLER"),
+                oj_env::get().var("OTEL_TRACES_SAMPLER_ARG"),
             ),
-            parent_span_id: parent
-                .as_ref()
-                .map_or(SpanId::INVALID, SpanContext::span_id),
-            parent_span_is_remote: parent.is_some(),
-            span_kind: SpanKind::Server,
-            name: if method == "_OTHER" { "HTTP" } else { method }.into(),
-            start_time,
-            end_time: SystemTime::now(),
-            attributes: span_attributes,
-            dropped_attributes_count: 0,
-            events: SpanEvents::default(),
-            links: SpanLinks::default(),
-            status: if status.is_server_error() {
-                Status::error("")
-            } else {
-                Status::Unset
-            },
-            instrumentation_scope: instruments.scope.clone(),
-        });
-    })
+        })
+    }
+
+    pub async fn trace(
+        self: Arc<Self>,
+        scheme: &'static str,
+        req: Request,
+        next: Next,
+    ) -> Response {
+        let start_time = SystemTime::now();
+        let started = Instant::now();
+        let method_original = req.method().as_str().to_owned();
+        let protocol = protocol_version(req.version());
+        let path = req.uri().path().to_owned();
+        let parent = parse_traceparent(req.headers());
+        let response = next.run(req).await;
+        let status = response.status();
+        on_body_end(response, move || {
+            let class = route_class(&path);
+            let method = known_method(&method_original);
+            let mut attributes = vec![
+                KeyValue::new("http.request.method", method),
+                KeyValue::new("http.response.status_code", i64::from(status.as_u16())),
+                KeyValue::new("url.scheme", scheme),
+                KeyValue::new("oj.route.class", class),
+            ];
+            if let Some(protocol) = protocol {
+                attributes.push(KeyValue::new("network.protocol.version", protocol));
+            }
+            if status.is_server_error() {
+                attributes.push(KeyValue::new("error.type", status.as_str().to_owned()));
+            }
+            self.duration
+                .record(started.elapsed().as_secs_f64(), &attributes);
+            let trace_id = parent.as_ref().map_or_else(
+                || self.globals.id_generator.new_trace_id(),
+                SpanContext::trace_id,
+            );
+            if !self.sampler.should_sample(parent.as_ref(), trace_id) {
+                return;
+            }
+            let mut span_attributes = attributes;
+            span_attributes.push(KeyValue::new("url.path", path));
+            if method == "_OTHER" {
+                span_attributes.push(KeyValue::new(
+                    "http.request.method_original",
+                    method_original,
+                ));
+            }
+            self.globals.span_processor.on_end(SpanData {
+                span_context: SpanContext::new(
+                    trace_id,
+                    self.globals.id_generator.new_span_id(),
+                    TraceFlags::SAMPLED,
+                    false,
+                    TraceState::default(),
+                ),
+                parent_span_id: parent
+                    .as_ref()
+                    .map_or(SpanId::INVALID, SpanContext::span_id),
+                parent_span_is_remote: parent.is_some(),
+                span_kind: SpanKind::Server,
+                name: if method == "_OTHER" { "HTTP" } else { method }.into(),
+                start_time,
+                end_time: SystemTime::now(),
+                attributes: span_attributes,
+                dropped_attributes_count: 0,
+                events: SpanEvents::default(),
+                links: SpanLinks::default(),
+                status: if status.is_server_error() {
+                    Status::error("")
+                } else {
+                    Status::Unset
+                },
+                instrumentation_scope: self.scope.clone(),
+            });
+        })
+    }
 }
 
 /// `http.request.method`: the known methods as-is, anything else `_OTHER`
@@ -531,8 +541,7 @@ mod tests {
     #[tokio::test]
     async fn body_end_waits_for_the_last_frame() {
         use futures_util::StreamExt as _;
-        use std::sync::atomic::AtomicUsize;
-        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Bytes, std::io::Error>>();
         let stream = futures_util::stream::unfold(rx, |mut rx| async move {

@@ -494,16 +494,16 @@ fn main() -> anyhow::Result<()> {
         cli.command,
         Command::EngineJob { .. } | Command::StartScript { .. }
     ) {
-        oj_server::otel::init(env!("CARGO_PKG_VERSION"));
+        oj_server::otel::init();
     }
     let result = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(oj_compiler::COMPILE_STACK_SIZE)
         .build()?
         .block_on(run(cli));
-    // Commands that return (build, preview, a failed boot) leave their last
-    // batch queued; the dev server's exits flush on their own paths.
-    oj_server::otel::flush();
+    // Commands that return (build, preview, a failed boot); the dev server's
+    // exits shut the export down on their own paths.
+    oj_server::otel::shutdown();
     result
 }
 

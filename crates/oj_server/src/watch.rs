@@ -376,7 +376,7 @@ pub fn restart_process(reason: &str) -> ! {
     if killed > 0 {
         eprintln!("oj: restart killed {killed} child process(es)");
     }
-    crate::otel::flush();
+    crate::otel::shutdown();
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("oj"));
     let args: Vec<String> = std::env::args().skip(1).collect();
     // The next boot gets the env oj was launched with, not whatever the live

@@ -3,8 +3,9 @@
 
 //! Structured dev-server diagnostics. Every noteworthy failure is recorded as
 //! an [`Event`] in a bounded in-memory ring (the dev server lists it at
-//! `/@oj/diagnostics`) and, when NDJSON output is on ([`set_json_output`]),
-//! printed as one machine-parsable stderr line a supervisor can ingest.
+//! `/@oj/diagnostics`), handed to each [`subscribe`]r (an exporter), and,
+//! when NDJSON output is on ([`set_json_output`]), printed as one
+//! machine-parsable stderr line a supervisor can ingest.
 //! Human stderr output is a separate concern: call sites keep their own
 //! `eprintln!` lines and [`emit`] prints nothing outside NDJSON mode, so
 //! recording an event never changes what a person reads in the terminal.
@@ -12,6 +13,7 @@
 use serde::Serialize;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::sync::{Mutex, OnceLock};
 
 /// Events kept; the oldest is dropped (and counted) past this.
@@ -170,6 +172,9 @@ struct Inner {
     counters: BTreeMap<&'static str, u64>,
     /// Events the ring evicted (history loss is visible, never silent).
     dropped: u64,
+    subscribers: Vec<SyncSender<Event>>,
+    /// Events a full subscriber queue refused, counted like evictions.
+    unsent: u64,
 }
 
 #[derive(Default)]
@@ -198,6 +203,7 @@ impl Diagnostics {
     pub fn record(&self, event: Event) -> Option<String> {
         let mut inner = self.inner.lock().unwrap();
         *inner.counters.entry(event.kind.as_str()).or_default() += 1;
+        inner.publish(&event);
         if let Some(last) = inner.events.back_mut() {
             if last.kind == event.kind
                 && last.module == event.module
@@ -231,7 +237,34 @@ impl Diagnostics {
             "events": events,
             "counters": inner.counters,
             "dropped": inner.dropped,
+            "unsent": inner.unsent,
         })
+    }
+
+    /// Every event recorded from now on, folded repeats included, on a queue
+    /// of `capacity`: the consumer works on its own thread, never on the one
+    /// that emitted. A full queue drops the event (counted as `unsent`); a
+    /// dropped receiver unsubscribes.
+    pub fn subscribe(&self, capacity: usize) -> Receiver<Event> {
+        let (tx, rx) = std::sync::mpsc::sync_channel(capacity);
+        self.inner.lock().unwrap().subscribers.push(tx);
+        rx
+    }
+}
+
+impl Inner {
+    fn publish(&mut self, event: &Event) {
+        let mut unsent = 0;
+        self.subscribers
+            .retain(|tx| match tx.try_send(event.clone()) {
+                Ok(()) => true,
+                Err(TrySendError::Full(_)) => {
+                    unsent += 1;
+                    true
+                }
+                Err(TrySendError::Disconnected(_)) => false,
+            });
+        self.unsent += unsent;
     }
 }
 
@@ -246,22 +279,14 @@ pub fn set_json_output(on: bool) {
     global().set_json_output(on);
 }
 
-/// An exporter's view of every emitted event, folded repeats included.
-pub type Sink = fn(&Event);
-
-static SINK: OnceLock<Sink> = OnceLock::new();
-
-/// Installs the process sink (first call wins), e.g. OpenTelemetry export.
-pub fn set_sink(sink: Sink) {
-    let _ = SINK.set(sink);
+/// [`Diagnostics::subscribe`] on the process ring.
+pub fn subscribe(capacity: usize) -> Receiver<Event> {
+    global().subscribe(capacity)
 }
 
 /// Record into the process ring; in NDJSON mode a fresh (non-folded) event
 /// also prints one line to stderr.
 pub fn emit(event: Event) {
-    if let Some(sink) = SINK.get() {
-        sink(&event);
-    }
     if let Some(line) = global().record(event) {
         eprintln!("{line}");
     }
@@ -411,5 +436,31 @@ mod tests {
         let big = "x".repeat(DETAIL_CAP * 2);
         let e = Event::new(Kind::Panic, "p").detail(big);
         assert!(e.detail.unwrap().len() <= DETAIL_CAP + '…'.len_utf8());
+    }
+
+    // An exporter sees every occurrence (the ring folds repeats, a counter
+    // must not), never blocks the emitter, and leaves when it hangs up.
+    #[test]
+    fn subscribers_get_every_event_without_blocking_the_emitter() {
+        let diag = Diagnostics::new();
+        let rx = diag.subscribe(2);
+        for _ in 0..3 {
+            diag.record(event(Kind::CompileError, "boom"));
+        }
+        let got: Vec<Event> = rx.try_iter().collect();
+        assert_eq!(got.len(), 2, "the queue's capacity, the repeat included");
+        assert_eq!(
+            diag.snapshot(None)["unsent"],
+            1,
+            "the full queue's refusal is counted"
+        );
+        assert_eq!(
+            diag.snapshot(None)["events"][0]["count"],
+            3,
+            "the ring still folds"
+        );
+        drop(rx);
+        diag.record(event(Kind::CompileError, "later"));
+        assert!(diag.inner.lock().unwrap().subscribers.is_empty());
     }
 }
