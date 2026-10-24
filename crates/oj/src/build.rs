@@ -3522,7 +3522,6 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
                     relative,
                 )),
                 is_relative_base: relative,
-                worker_entries: Arc::clone(&worker_entries),
             },
         ));
     }

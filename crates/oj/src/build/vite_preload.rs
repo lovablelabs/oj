@@ -80,12 +80,6 @@ pub(super) fn preload_code(base: &str, polyfill: bool, relative_base: bool) -> S
 pub(super) struct BuildImportAnalysisPlugin {
     pub preload_code: ArcStr,
     pub is_relative_base: bool,
-    /// The worker entries the build emitted (recorded before rolldown loads
-    /// them). Vite bundles a worker on its own, where import analysis has
-    /// `isWorker` and inserts no preload (`insertPreload` is false): a worker
-    /// has no `document` to preload into. oj bundles workers in the client
-    /// build, so their entry modules are skipped here instead.
-    pub worker_entries: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
 impl Plugin for BuildImportAnalysisPlugin {
@@ -124,14 +118,6 @@ impl Plugin for BuildImportAnalysisPlugin {
         args: HookTransformAstArgs<'_>,
     ) -> HookTransformAstReturn {
         let mut ast = args.ast;
-        if self
-            .worker_entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains(args.id)
-        {
-            return Ok(ast);
-        }
         let is_modern = ctx.options().format.is_esm();
         ast.program.with_mut(|fields| {
             let mut visitor = ImportAnalysisVisitor {
