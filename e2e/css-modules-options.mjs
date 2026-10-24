@@ -69,9 +69,11 @@ function checkExports(mode, styles, theme, css) {
     styles["my-button"] && styles.myButton === styles["my-button"],
     JSON.stringify(styles),
   );
+  // generic-names over `[local]__[hash:base64:5]`, exactly as Vite 8.3.5
+  // names these (the hash covers the module's path and the local).
   check(
-    `${mode}: generateScopedName pattern`,
-    /^my-button__[A-Za-z0-9_-]+$/.test(styles["my-button"] ?? ""),
+    `${mode}: generateScopedName pattern gives Vite's names`,
+    styles["my-button"] === "my-button__HuMui" && styles.wide === "wide__P5f5e base__bYZhS",
     JSON.stringify(styles),
   );
   check(
@@ -138,11 +140,7 @@ function checkExports(mode, styles, theme, css) {
       .map((f) => fs.readFileSync(path.join(assets, f), "utf8"))
       .join("\n");
     check("build: myButton camelCase key is in the chunk", /myButton/.test(js), js.slice(0, 400));
-    check(
-      "build: scoped name follows the pattern",
-      /my-button__[A-Za-z0-9_-]+/.test(js) && /\.my-button__/.test(css),
-      css,
-    );
+    check("build: scoped names are Vite's", js.includes("my-button__HuMui") && css.includes(".my-button__HuMui{"), css);
     check(
       "build: composes value has two classes",
       /wide"?:["'`]wide__[^"'` ]+ base__[^"'` ]+["'`]/.test(js),

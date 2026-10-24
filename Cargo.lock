@@ -6398,12 +6398,17 @@ dependencies = [
  "browserslist-rs",
  "grass",
  "lightningcss",
+ "md-5",
+ "md4",
  "oxc_resolver",
  "parcel_sourcemap",
  "proptest",
  "regex",
  "serde_json",
+ "sha1",
+ "sha2",
  "tempfile",
+ "xxhash-rust",
 ]
 
 [[package]]

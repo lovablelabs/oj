@@ -275,6 +275,12 @@ struct OjCssPlugin {
     /// hash covers its stylesheet's name (vite:css-post's augmentChunkHash);
     /// None for builds that emit no split CSS.
     chunk_css_hashing: Option<(PathBuf, String)>,
+    /// Where a `?url` stylesheet is written and how it is named: finished
+    /// like a chunk's stylesheet (vite:css-post's renderChunk), so it is the
+    /// same file as a linked copy of the same sheet. None: emitted as compiled.
+    url_sheets: Option<(PathBuf, String)>,
+    /// The emitted-chunk registry the user plugins' hooks share.
+    emit: Option<Arc<EmitState>>,
 }
 
 /// The app build settings an inline worker bundle shares with its importer:
@@ -1165,14 +1171,55 @@ fn emit_or_inline(
 }
 
 fn is_stylesheet_path(path: &str) -> bool {
-    path.ends_with(".css")
-        || oj_css::is_sass(path)
-        || oj_server::sidecar::is_less(path)
-        || oj_server::sidecar::is_stylus(path)
+    is_css_request(path)
 }
 
-/// The build's stylesheet pipeline for one file: plugin transforms on the raw
-/// source, Sass/Less/Stylus, Tailwind/PostCSS, then lightningcss (minified).
+/// Whether the load hook compiled this stylesheet id, running its "pre" and
+/// "normal" plugin transforms there, so only the "post" ones are left for the
+/// module that stands in for it. A plugin-served `.css` is such a module too.
+/// It follows the load hook: a sheet is compiled unless it loads as `?raw`
+/// text, a `?url` or `?no-inline` asset, a worker or a public file. Those are
+/// the ids Vite's vite:css leaves out (worker, raw, url), as oj's resolver
+/// spells them.
+fn is_compiled_stylesheet(id: &str) -> bool {
+    let path = id.split('?').next().unwrap_or(id);
+    is_stylesheet_path(path)
+        && !id.starts_with(PUBLIC_FILE_ID)
+        && worker_id_parts(id).is_none()
+        && !["?raw", "?url", "?no-inline"]
+            .iter()
+            .any(|q| id.ends_with(q))
+}
+
+/// One slot of the plugin transform chain over a stylesheet
+/// ([`PluginHost::transform_phase`](oj_server::plugins::PluginHost::transform_phase));
+/// a throwing plugin fails the build, as in Vite.
+/// Chunks the hooks emit (`this.emitFile`) join the bundle through `emit`.
+async fn css_transform_phase(
+    host: Option<&oj_server::plugins::PluginHost>,
+    source: String,
+    id: &str,
+    phase: &str,
+    emit: Option<(&PluginContext, &EmitState)>,
+) -> anyhow::Result<String> {
+    let Some(host) = host else {
+        return Ok(source);
+    };
+    let t = host
+        .transform_phase(&source, id, phase)
+        .await
+        .map_err(|e| anyhow::anyhow!("plugin transform failed for {id}:\n{e}"))?;
+    if let Some((ctx, emit)) = emit {
+        forward_emitted_chunks(ctx, &t.chunks, emit);
+    }
+    Ok(t.code)
+}
+
+/// The build's stylesheet pipeline for one file, in Vite's order: the "pre"
+/// plugin transforms on the raw source, Sass/Less/Stylus, Tailwind/PostCSS
+/// (vite:css, a CSS module's classes scoped), the "normal" transforms on that
+/// CSS, then lightningcss (minified). The "post" transforms run on the module
+/// oj bundles in its place.
 /// Shared by plain CSS imports, `?url` (emitted as a compiled `.css` asset) and
 /// `?inline` (the compiled text), so every form of importing a stylesheet ships
 /// the same CSS, as in Vite.
@@ -1186,28 +1233,39 @@ async fn compile_stylesheet(
     resolve: &oj_css::CssResolveConfig,
     path: &str,
     id: &str,
+    emit: Option<(&PluginContext, &EmitState)>,
 ) -> anyhow::Result<oj_css::CssOutput> {
     let cfg = oj_config::OjConfig {
         css: css.clone(),
         ..Default::default()
     };
-    let is_less = oj_server::sidecar::is_less(path);
-    let is_stylus = oj_server::sidecar::is_stylus(path);
-    let mut source =
-        std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("cannot read {path}: {e}"))?;
-    // Run the plugin transform chain on the raw CSS source first, so directive
-    // transformers (UnoCSS `@apply`/`@unocss-include`, etc.) resolve before oj
-    // preprocesses and compiles it.
-    if let Some(host) = host {
-        let on = *css_transform_enabled
-            .get_or_init(|| async { host.has_transform().await })
-            .await;
-        if on {
-            if let Ok(t) = host.transform(&source, id, "{}").await {
-                source = t.code;
-            }
+    let preprocess_lang = oj_server::sidecar::preprocess_lang(path);
+    // The plugins' load hooks first (a virtual sheet, or one a plugin serves
+    // in place of the file), then the file.
+    let loaded = match host {
+        Some(host) if host.hook_wants_load(id) => host
+            .load(id)
+            .await
+            .map_err(|e| anyhow::anyhow!("plugin load failed for {id}:\n{e}"))?,
+        _ => None,
+    };
+    let mut source = match loaded {
+        Some(code) => code,
+        None => {
+            std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("cannot read {path}: {e}"))?
         }
-    }
+    };
+    let host = match host {
+        Some(host)
+            if *css_transform_enabled
+                .get_or_init(|| async { host.has_transform().await })
+                .await =>
+        {
+            Some(host.as_ref())
+        }
+        _ => None,
+    };
+    source = css_transform_phase(host, source, id, "pre", emit).await?;
     if oj_css::is_sass(path) {
         let lang = if path.ends_with(".sass") {
             "sass"
@@ -1230,14 +1288,18 @@ async fn compile_stylesheet(
             },
         )
         .map_err(|e| anyhow::anyhow!(e))?;
-    } else if is_less || is_stylus {
-        let lang = if is_less { "less" } else { "stylus" };
+    } else if let Some(lang) = preprocess_lang {
         if let Some(data) = oj_config::css_additional_data(&cfg, lang).filter(|d| !d.is_empty()) {
             source = format!("{data}\n{source}");
         }
-        let opts = oj_config::css_preprocessor_json(&cfg, lang);
+        let opts = match lang {
+            "sss" => oj_server::sidecar::sss_engine_options(&resolve.as_ref()),
+            _ => oj_config::css_preprocessor_json(&cfg, lang),
+        };
         source = preprocess_via_engine(root, std::path::Path::new(path), &source, opts).await?;
     }
+    // What Vite hands PostCSS, whose CSS-module names hash it.
+    let postcss_input = source.clone();
     // Plain `@import`s are inlined (postcss-import parity) so the concatenated
     // chunk stylesheet does not carry imports that 404 from `assets/`. It runs
     // before PostCSS, as postcss-import is the first plugin of Vite's chain, so
@@ -1259,6 +1321,20 @@ async fn compile_stylesheet(
         Ok(rel) => format!("/{}", rel.display()),
         Err(_) => path.to_string(),
     };
+    // Vite's "normal" plugins see a CSS module with its classes scoped
+    // (postcss-modules runs inside vite:css), so the scoping comes first.
+    if oj_css::is_css_module(path) {
+        let scoped = oj_css::scope_css_module(&css_id, &source, &postcss_input, &resolve.as_ref())
+            .map_err(|e| anyhow::anyhow!(e))?;
+        let css = css_transform_phase(host, scoped.css, id, "normal", emit).await?;
+        let out = oj_css::compile_scoped_css_with(&css_id, &css, &resolve.as_ref())
+            .map_err(|e| anyhow::anyhow!(e))?;
+        return Ok(oj_css::CssOutput {
+            css: out.css,
+            exports: scoped.exports,
+        });
+    }
+    source = css_transform_phase(host, source, id, "normal", emit).await?;
     oj_css::compile_css_with(&css_id, &source, &resolve.as_ref()).map_err(|e| anyhow::anyhow!(e))
 }
 
@@ -1745,7 +1821,10 @@ impl Plugin for OjCssPlugin {
         let worker = self.worker.clone();
         let base = self.base.clone();
         let page = self.pages.get(&id).cloned();
+        let url_sheets = self.url_sheets.clone();
+        let emit_state = self.emit.clone();
         let load = async move {
+            let emit = emit_state.as_deref().map(|e| (&ctx.inner, e));
             let js = |code: String| {
                 Ok(Some(rolldown_plugin::HookLoadOutput {
                     code: arcstr::ArcStr::from(code),
@@ -1783,7 +1862,10 @@ impl Plugin for OjCssPlugin {
                 if is_stylesheet_path(file) {
                     // `import u from './a.scss?url'`: the URL of the COMPILED
                     // stylesheet, emitted as a `.css` asset (Vite css.ts), not the
-                    // raw preprocessor source.
+                    // raw preprocessor source. Vite compiles it as
+                    // `a.scss?transform-only`, the id its plugins see, a module
+                    // the `?url` one imports and vite:css-post leaves empty.
+                    let transform_only = format!("{file}?transform-only");
                     let out = compile_stylesheet(
                         &root,
                         &host,
@@ -1792,27 +1874,54 @@ impl Plugin for OjCssPlugin {
                         &css_cfg,
                         &css_resolve,
                         file,
-                        &id,
+                        &transform_only,
+                        emit,
                     )
                     .await?;
                     let stem = std::path::Path::new(file)
                         .file_stem()
                         .and_then(|n| n.to_str())
                         .unwrap_or("style");
-                    let reference = ctx
-                        .emit_file(
-                            rolldown_common::EmittedAsset {
-                                name: Some(format!("{stem}.css")),
-                                source: rolldown_common::StrOrBytes::Str(out.css),
-                                ..Default::default()
+                    // Finished and named like a chunk's stylesheet, as Vite's
+                    // renderChunk emits it: the same sheet linked elsewhere is
+                    // the same file.
+                    let sheet = match &url_sheets {
+                        Some((out_dir, asset_names)) => chunk_stylesheet(
+                            stem,
+                            &[file.to_string()],
+                            &std::collections::HashMap::from([(file.to_string(), out.css.clone())]),
+                            &root,
+                            out_dir,
+                            &base,
+                            CssAssetOpts {
+                                inline_limit,
+                                asset_names: Some(asset_names.as_str()),
+                                resolve: css_resolve.as_ref(),
                             },
-                            None,
-                            None,
-                        )
+                            &mut Vec::new(),
+                            &mut std::collections::HashMap::new(),
+                        )?,
+                        None => None,
+                    };
+                    let asset = match sheet {
+                        Some(sheet) => rolldown_common::EmittedAsset {
+                            file_name: Some(sheet.name.into()),
+                            source: rolldown_common::StrOrBytes::Str(sheet.css),
+                            ..Default::default()
+                        },
+                        None => rolldown_common::EmittedAsset {
+                            name: Some(format!("{stem}.css")),
+                            source: rolldown_common::StrOrBytes::Str(out.css),
+                            ..Default::default()
+                        },
+                    };
+                    let reference = ctx
+                        .emit_file(asset, None, None)
                         .map_err(|e| anyhow::anyhow!(e))?;
                     return Ok(Some(rolldown_plugin::HookLoadOutput {
                         code: arcstr::ArcStr::from(format!(
-                            "export default import.meta.ROLLUP_FILE_URL_{reference};"
+                            "import {};\nexport default import.meta.ROLLUP_FILE_URL_{reference};",
+                            serde_json::Value::String(transform_only)
                         )),
                         module_type: Some(rolldown_common::ModuleType::Js),
                         ..Default::default()
@@ -1824,6 +1933,19 @@ impl Plugin for OjCssPlugin {
                 return Ok(Some(rolldown_plugin::HookLoadOutput {
                     code: arcstr::ArcStr::from(code),
                     module_type: Some(rolldown_common::ModuleType::Js),
+                    ..Default::default()
+                }));
+            }
+            if id
+                .strip_suffix("?transform-only")
+                .is_some_and(is_stylesheet_path)
+            {
+                // The module a `?url` stylesheet's imports: compiled with the
+                // `?url` one, and empty, as vite:css-post leaves it.
+                return Ok(Some(rolldown_plugin::HookLoadOutput {
+                    code: arcstr::ArcStr::from(""),
+                    module_type: Some(rolldown_common::ModuleType::Js),
+                    side_effects: Some(rolldown_common::side_effects::HookSideEffects::NoTreeshake),
                     ..Default::default()
                 }));
             }
@@ -1922,6 +2044,7 @@ impl Plugin for OjCssPlugin {
                         &css_resolve,
                         file,
                         &id,
+                        emit,
                     )
                     .await?;
                     return Ok(Some(rolldown_plugin::HookLoadOutput {
@@ -1996,7 +2119,9 @@ impl Plugin for OjCssPlugin {
                     client: true,
                     inline_limit,
                     css_code_split: false,
-                    host: host.clone(),
+                    // Vite builds a worker with `worker.plugins` alone: the app's
+                    // own plugins never see its modules or stylesheets.
+                    host: None,
                     css_transform_enabled: Arc::clone(&css_transform_enabled),
                     css: css_cfg.clone(),
                     html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -2007,6 +2132,8 @@ impl Plugin for OjCssPlugin {
                     base: base.clone(),
                     pages: Default::default(),
                     chunk_css_hashing: None,
+                    url_sheets: None,
+                    emit: None,
                 };
                 if inline {
                     // `?worker&inline`: the worker's bundled code travels inside
@@ -2088,6 +2215,7 @@ impl Plugin for OjCssPlugin {
                 &css_resolve,
                 path,
                 &id,
+                emit,
             )
             .await?;
             // A CSS module: the class map as default plus named exports per
@@ -2614,7 +2742,10 @@ impl Plugin for OjUserPlugin {
         _ctx: SharedLoadPluginContext,
         args: &HookLoadArgs<'_>,
     ) -> impl std::future::Future<Output = HookLoadReturn> + Send {
-        let pass = self.host.hook_wants_load(args.id);
+        // A stylesheet oj compiles asks the plugins' load hooks itself
+        // (compile_stylesheet), then runs every transform slot on what they
+        // return, as Vite runs vite:css on a plugin-served sheet.
+        let pass = self.host.hook_wants_load(args.id) && !is_compiled_stylesheet(args.id);
         if !pass && self.gate_count {
             self.skipped_load
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -2690,7 +2821,12 @@ impl Plugin for OjUserPlugin {
             if id.split('?').next().unwrap_or(id).ends_with(".svg") {
                 return Ok(None);
             }
-            match host.transform(code, id, "{}").await {
+            let transformed = if is_compiled_stylesheet(id) {
+                host.transform_phase(code, id, "post").await
+            } else {
+                host.transform(code, id, "{}").await
+            };
+            match transformed {
                 Ok(t) => {
                     forward_emitted_chunks(&ctx.inner, &t.chunks, &emit);
                     if t.code != code {
@@ -3324,6 +3460,18 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
         bail!("build.rollupOptions.input resolved to no entries");
     }
 
+    // Before the pages: their `order: "pre"` transformIndexHtml hooks run as
+    // each page is read.
+    let plugin_host = user_plugin_host(
+        cli.config.as_deref(),
+        &root,
+        &base,
+        &serde_json::json!(config.define),
+        &serde_json::json!(config.environments),
+        "client",
+        mode,
+    )
+    .await;
     let mut html_docs: Vec<HtmlDoc> = Vec::new();
     let html_inline: Arc<Mutex<std::collections::HashMap<String, String>>> =
         Arc::new(Mutex::new(std::collections::HashMap::new()));
@@ -3364,6 +3512,27 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
                 }
             };
             had_html = true;
+            // Vite's vite:build-html: the `order: "pre"` transformIndexHtml
+            // hooks rewrite the source first, with `{ path, filename }`; the
+            // page's scripts, styles and links are read from what they return.
+            let content = match &plugin_host {
+                Some(host) => {
+                    let ctx = serde_json::json!({
+                        "path": format!("/{}", abs.strip_prefix(&root).unwrap_or(&abs).display().to_string().replace('\\', "/")),
+                        "filename": abs.display().to_string(),
+                    })
+                    .to_string();
+                    host.transform_index_html_phase(&content, &ctx, "pre")
+                        .await
+                        .map_err(|e| {
+                            anyhow::anyhow!(
+                                "plugin transformIndexHtml failed for {}:\n{e}",
+                                abs.display()
+                            )
+                        })?
+                }
+                None => content,
+            };
             let html_dir = abs.parent().unwrap_or(&root).to_path_buf();
             let (content, inline) = externalize_inline_scripts(&content, &abs);
             for (_, id, body) in &inline {
@@ -3445,16 +3614,6 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
 
     let collected_css: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
     let css_split = css_code_split_of(&config);
-    let plugin_host = user_plugin_host(
-        cli.config.as_deref(),
-        &root,
-        &base,
-        &serde_json::json!(config.define),
-        &serde_json::json!(config.environments),
-        "client",
-        mode,
-    )
-    .await;
     let plugin_defines = plugin_config_defines(&plugin_host).await;
     let env_delta = plugin_env_delta(&plugin_host).await;
     let emit = Arc::new(EmitState::new(root.to_path_buf()));
@@ -3507,6 +3666,8 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
         worker_chain: Default::default(),
         pages: Arc::new(pages),
         chunk_css_hashing: css_split.then(|| (out_dir.clone(), asset_names_pattern.clone())),
+        url_sheets: Some((out_dir.clone(), asset_names_pattern.clone())),
+        emit: Some(Arc::clone(&emit)),
     }));
     let out_ov = ro_output_overrides(ro_opts);
     // Vite's build import analysis (preload wrapping, polyfill) only applies to
@@ -3632,14 +3793,20 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
             bail!("plugin buildEnd failed:\n{e}");
         }
         // CSS a plugin routed through the vite:css-post shim (e.g. UnoCSS's
-        // generated utilities) joins the build's stylesheet output.
+        // generated utilities) joins the build's stylesheet output. For a
+        // module oj compiled, it replaces that module's sheet, as vite:css-post
+        // keeps one per module (UnoCSS's layer placeholders).
         for (id, css) in host.get_plugin_css().await {
             let src = if id.is_empty() {
                 root.join("__plugin_css__").display().to_string()
             } else {
                 id.split(['?', '#']).next().unwrap_or(&id).to_string()
             };
-            collected_css.lock().unwrap().push((src, css));
+            let mut collected = collected_css.lock().unwrap();
+            match collected.iter_mut().find(|(k, _)| *k == src) {
+                Some(entry) => entry.1 = css,
+                None => collected.push((src, css)),
+            }
         }
         match host.emitted_files().await {
             Ok(files) => {
@@ -3982,6 +4149,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
                     &link_css_resolve,
                     &src_str,
                     &src_str,
+                    None,
                 )
                 .await
                 .with_context(|| format!("stylesheet {href} linked from {}", doc.out_rel))?;
@@ -4074,8 +4242,9 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
                 "chunk": chunk,
             })
             .to_string();
+            // The "pre" hooks ran on the source as it was read.
             rewritten_html = host
-                .transform_index_html(&rewritten_html, &ctx)
+                .transform_index_html_phase(&rewritten_html, &ctx, "post")
                 .await
                 .map_err(|e| {
                     anyhow::anyhow!("plugin transformIndexHtml failed for {}:\n{e}", doc.out_rel)
@@ -4942,6 +5111,8 @@ pub(crate) async fn build_ssr(
         worker_chain: Default::default(),
         pages: Default::default(),
         chunk_css_hashing: None,
+        url_sheets: None,
+        emit: Some(Arc::clone(&emit)),
     }));
     let mut bundler = BundlerBuilder::default()
         .with_plugins(oj_plugins)
@@ -5129,6 +5300,8 @@ async fn build_server_fns(
                 worker_chain: Default::default(),
                 pages: Default::default(),
                 chunk_css_hashing: None,
+                url_sheets: None,
+                emit: None,
             })])
             .with_options(BundlerOptions {
                 input: Some(vec![InputItem {
@@ -5540,6 +5713,8 @@ async fn build_client_entry(
         worker_chain: Default::default(),
         pages: Default::default(),
         chunk_css_hashing: None,
+        url_sheets: None,
+        emit: Some(Arc::clone(&emit)),
     }));
 
     let mut bundler = BundlerBuilder::default()
@@ -5814,6 +5989,8 @@ async fn build_library(
             worker_chain: Default::default(),
             pages: Default::default(),
             chunk_css_hashing: None,
+            url_sheets: None,
+            emit: None,
         }));
         let mut bundler = BundlerBuilder::default()
             .with_plugins(plugins)
@@ -8518,6 +8695,56 @@ mod tests {
             Some(("/x/w.ts", "SharedWorker", false, true))
         );
         assert_eq!(worker_id_parts("/x/w.ts?url"), None);
+    }
+
+    // Vite's vite:css and vite:css-post transform filter: include
+    // /\.(css|less|sass|scss|styl|stylus|pcss|postcss|sss)(?:$|\?)/, exclude
+    // /[?&](?:worker|sharedworker|raw|url)\b/. The ids it takes are the ones
+    // whose "post" transforms alone run on the module in the sheet's place.
+    #[test]
+    fn compiled_stylesheets_are_the_ids_vites_css_plugins_take() {
+        for id in [
+            "/x/a.css",
+            "/x/a.scss",
+            "/x/a.sass",
+            "/x/a.less",
+            "/x/a.styl",
+            "/x/a.stylus",
+            "/x/a.pcss",
+            "/x/a.postcss",
+            "/x/a.sss",
+            "/x/a.module.css",
+            "/x/a.css?inline",
+            "/x/a.scss?inline",
+            "/x/a.css?transform-only",
+            "/x/a.css?v=1",
+            "/x/a.css?direct",
+        ] {
+            assert!(is_compiled_stylesheet(id), "{id}");
+        }
+        for id in [
+            "/x/a.css?raw",
+            "/x/a.css?url",
+            "/x/a.scss?url",
+            "/x/a.css?worker",
+            "/x/a.css?sharedworker",
+            "/x/a.css?worker&url",
+            "/x/a.js",
+            "/x/a.css.js",
+            "/x/a.ts?inline",
+        ] {
+            assert!(!is_compiled_stylesheet(id), "{id}");
+        }
+        // oj loads these as plain assets, uncompiled, where Vite has no
+        // counterpart (`?no-inline`) or serves the file as is (public).
+        assert!(!is_compiled_stylesheet("/x/a.css?no-inline"));
+        assert!(!is_compiled_stylesheet(&format!(
+            "{PUBLIC_FILE_ID}a.css?url"
+        )));
+        // oj's resolver keeps `raw` and `url` only as the whole query, and its
+        // loader compiles any other spelling: the rule follows the loader, so
+        // such a sheet still runs each slot once.
+        assert!(is_compiled_stylesheet("/x/a.css?v=1&raw"));
     }
 
     #[test]

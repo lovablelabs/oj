@@ -70,7 +70,10 @@ const ASSET_EXTS: &[&str] = &[
     "png", "jpg", "jpeg", "gif", "webp", "avif", "ico", "woff", "woff2", "ttf", "otf", "eot",
     "mp4", "webm", "wasm",
 ];
-const STYLE_EXTS: &[&str] = &["css", "less", "sass", "scss", "styl", "stylus"];
+/// Vite's CSS_LANGS_RE.
+const STYLE_EXTS: &[&str] = &[
+    "css", "less", "sass", "scss", "styl", "stylus", "pcss", "postcss", "sss",
+];
 
 fn ext_of(path: &str) -> &str {
     Path::new(path)

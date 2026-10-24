@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
-// Less / Stylus compiler for oj's in-process JS engine. The engine loads this
+// Less / Stylus / SugarSS compiler for oj's in-process JS engine. The engine loads this
 // module once and calls `compile` per request; there is no process protocol
 // here.
 
@@ -133,6 +133,77 @@ async function stylus(base, css, from, opts = {}) {
   });
 }
 
+// PostCSS from the app, else the one Vite itself depends on.
+async function loadPostcss(base) {
+  try {
+    return await load(base, "postcss");
+  } catch (e) {
+    const req = createRequire(pathToFileURL(path.join(base, "package.json")).href);
+    let vite;
+    try {
+      vite = req.resolve("vite/package.json");
+    } catch {
+      throw e;
+    }
+    const fromVite = createRequire(vite);
+    return import(pathToFileURL(fromVite.resolve("postcss")).href).then((m) => m.default ?? m);
+  }
+}
+
+// An `@import` specifier through `resolve.alias` (@rollup/plugin-alias:
+// the whole specifier, or it followed by `/`), then from the root when it is
+// root-absolute, else from the importing file.
+function resolveSssImport(spec, from, opts) {
+  for (const [find, replacement] of opts.alias ?? []) {
+    if (spec === find || spec.startsWith(`${find}/`)) {
+      const target = replacement + spec.slice(find.length);
+      spec = target.startsWith(".") && opts.root ? path.join(opts.root, target) : target;
+      break;
+    }
+  }
+  if (path.isAbsolute(spec) && !existsSync(spec) && opts.root) spec = path.join(opts.root, spec);
+  return path.isAbsolute(spec) ? spec : path.resolve(path.dirname(from), spec);
+}
+
+const cssUrlRE = /url\(\s*(['"]?)([^'")]+)\1\s*\)/g;
+
+// Vite's sss: PostCSS with the app's `sugarss` as its parser (loadSss). An
+// imported `.sss` is parsed the same way (postcss-import hands imported files
+// the importer's parser), its relative `url()`s rebased to the importing
+// sheet (Vite's url rewrite resolves each against its own file). The CSS
+// printed goes on through the PostCSS config and the rest of the pipeline
+// like any sheet; other `@import`s stay for it.
+async function sugarss(base, css, from, opts = {}, seen = new Set()) {
+  // sugarss exports its syntax (`{ parse, stringify }`), which PostCSS's
+  // `parser` option takes as it is; older versions export `parse` itself.
+  const sss = await load(base, "sugarss");
+  const parse = typeof sss === "function" ? sss : sss.parse;
+  const postcss = await loadPostcss(base);
+  const root = parse(css, { from });
+  const imports = [];
+  root.walkAtRules("import", (rule) => {
+    const spec = /^\s*(?:url\()?\s*(['"])(.+?)\1/.exec(rule.params)?.[2];
+    if (spec && /\.sss$/.test(spec)) imports.push([rule, spec]);
+  });
+  for (const [rule, spec] of imports) {
+    const file = resolveSssImport(spec, from, opts);
+    if (seen.has(file)) {
+      rule.remove();
+      continue;
+    }
+    seen.add(file);
+    const inner = await sugarss(base, await readFile(file, "utf8"), file, opts, seen);
+    const rebased = inner.replace(cssUrlRE, (all, quote, url) => {
+      if (!url.startsWith(".")) return all;
+      let rel = path.relative(path.dirname(from), path.resolve(path.dirname(file), url)).replace(/\\/g, "/");
+      if (!rel.startsWith(".")) rel = `./${rel}`;
+      return `url(${quote}${rel}${quote})`;
+    });
+    rule.replaceWith(postcss.parse(rebased, { from: file }).nodes);
+  }
+  return root.toResult({ from }).css;
+}
+
 export async function compile(request) {
   const { base, css, from } = request;
   const opts = request.options && typeof request.options === "object" ? request.options : {};
@@ -143,5 +214,6 @@ export async function compile(request) {
     .toLowerCase();
   if (ext === "less") return less(base, css, from, opts);
   if (ext === "styl" || ext === "stylus") return stylus(base, css, from, opts);
+  if (ext === "sss") return sugarss(base, css, from, opts);
   return css;
 }

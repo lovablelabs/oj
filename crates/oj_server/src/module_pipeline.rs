@@ -529,11 +529,7 @@ async fn preprocess_less_stylus(
     url: &str,
     source: String,
 ) -> Result<String, String> {
-    let lang = if sidecar::is_less(url) {
-        "less"
-    } else {
-        "stylus"
-    };
+    let lang = sidecar::preprocess_lang(url).unwrap_or("stylus");
     let cfg = state.css_config.clone().map(|c| oj_config::OjConfig {
         css: Some(c),
         ..Default::default()
@@ -544,6 +540,10 @@ async fn preprocess_less_stylus(
             oj_config::css_preprocessor_json(c, lang),
         ),
         None => (None, serde_json::Value::Null),
+    };
+    let opts = match lang {
+        "sss" => sidecar::sss_engine_options(&state.css_resolve.as_ref()),
+        _ => opts,
     };
     let with_data = match data {
         Some(d) if !d.is_empty() => format!("{d}\n{source}"),
@@ -600,7 +600,10 @@ async fn css_prepass(
     };
     let css_like = css.sass_precompiled
         || is_preprocessor(url)
-        || file.extension().and_then(|e| e.to_str()) == Some("css");
+        || matches!(
+            file.extension().and_then(|e| e.to_str()),
+            Some("css" | "pcss" | "postcss")
+        );
     if !(state.has_postcss && css_like) {
         return Ok(source);
     }
@@ -716,6 +719,9 @@ impl CompileJob {
         };
         // Plain `@import`s are inlined (postcss-import parity) so the injected
         // stylesheet does not @import a bare specifier or a wrong-relative url.
+        // A CSS module's names hash the sheet from before (what Vite's PostCSS
+        // gets).
+        let postcss_input = css_src.clone();
         let css_src = if self.css.imports_inlined {
             css_src
         } else {
@@ -726,7 +732,13 @@ impl CompileJob {
             .as_ref()
             .and_then(|c| c.dev_sourcemap)
             .unwrap_or(false);
-        let output = oj_css::compile_css_dev(&self.url, &css_src, dev_sourcemap, &resolve)?;
+        let output = oj_css::compile_css_dev_scoped(
+            &self.url,
+            &css_src,
+            &postcss_input,
+            dev_sourcemap,
+            &resolve,
+        )?;
         let dep_imports = css_dep_imports(state, &self.file, &css_deps);
         // A CSS module's class map changes on edit, so it cannot self-accept
         // (Vite's css-analysis): the update climbs to the importing component.

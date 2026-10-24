@@ -658,6 +658,21 @@ impl PluginHost {
         Ok(HostTransform::parse(raw, code))
     }
 
+    /// One slot of a stylesheet's transform chain, around Vite's core CSS
+    /// plugins: `"pre"` (the source, before vite:css compiles it), `"normal"`
+    /// (the compiled CSS) or `"post"` (the JS module vite:css-post makes).
+    pub async fn transform_phase(
+        &self,
+        code: &str,
+        id: &str,
+        phase: &str,
+    ) -> Result<HostTransform, String> {
+        let raw = self
+            .call("transformPhase", &[code, id, "{}", phase])
+            .await?;
+        Ok(HostTransform::parse(raw, code))
+    }
+
     pub async fn seed_chunk_names(&self, map_json: &str) -> Result<Option<String>, String> {
         self.call("seedChunkNames", &[map_json]).await
     }
@@ -855,6 +870,22 @@ impl PluginHost {
     pub async fn transform_index_html(&self, html: &str, ctx_json: &str) -> Result<String, String> {
         Ok(self
             .call("transformIndexHtml", &[html, ctx_json])
+            .await?
+            .unwrap_or_else(|| html.to_string()))
+    }
+
+    /// One group of a build's transformIndexHtml hooks, as Vite's
+    /// vite:build-html runs them: `"pre"` (the `order: "pre"` ones, on the
+    /// page source before its scripts are read) or `"post"` (the rest, once
+    /// the bundle is written).
+    pub async fn transform_index_html_phase(
+        &self,
+        html: &str,
+        ctx_json: &str,
+        phase: &str,
+    ) -> Result<String, String> {
+        Ok(self
+            .call("transformIndexHtmlPhase", &[html, ctx_json, phase])
             .await?
             .unwrap_or_else(|| html.to_string()))
     }
