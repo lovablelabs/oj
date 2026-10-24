@@ -110,6 +110,7 @@ pub struct HostPrewarm {
     engine: std::sync::Arc<oj_js::JsEngine>,
     post_rx: tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
     import_meta_env: Arc<std::sync::OnceLock<Arc<oj_compiler::ImportMetaEnv>>>,
+    bundles: BundleGraphs,
     registry: Option<oj_js::EngineRegistry>,
 }
 
@@ -118,13 +119,17 @@ fn new_host_engine(
     memory_limit_bytes: usize,
     registry: Option<oj_js::EngineRegistry>,
     import_meta_env: Arc<std::sync::OnceLock<Arc<oj_compiler::ImportMetaEnv>>>,
+    bundles: BundleGraphs,
     post_tx: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
 ) -> Result<oj_js::JsEngine, String> {
     let root = root.to_path_buf();
     let resolver = std::sync::Arc::new(OjResolver::new(&root));
     let rpc_handler: oj_js::RpcHandler = {
         let root = root.clone();
-        Box::new(move |method, args| ctx_rpc(method, args, &resolver, &root, import_meta_env.get()))
+        Box::new(move |method, args| {
+            bundle_rpc(method, args, &bundles)
+                .unwrap_or_else(|| ctx_rpc(method, args, &resolver, &root, import_meta_env.get()))
+        })
     };
     let mut engine_config = oj_js::EngineConfig::new(&root);
     engine_config.code_cache_dir = Some(crate::engine_code_cache_dir(&root));
@@ -164,6 +169,8 @@ pub(crate) struct BootContext {
     registry: Option<oj_js::EngineRegistry>,
     /// The dev server's defines, for `moduleInfo` compiles; set once after spawn.
     import_meta_env: Arc<std::sync::OnceLock<Arc<oj_compiler::ImportMetaEnv>>>,
+    /// The bundle each container's hooks run inside (see [`BundleGraph`]).
+    bundles: BundleGraphs,
 }
 
 /// See [`HostCore::revive`].
@@ -387,6 +394,52 @@ pub(crate) fn ctx_rpc(
     }
 }
 
+/// The bundle a plugin container's hooks run inside. Its `this.getModuleInfo`
+/// and `this.getModuleIds` read this graph as Rollup's plugin context reads
+/// its own: every module the bundler has met is in it, whether or not a JS
+/// hook ran for the module (the hook gate skips most).
+pub trait BundleGraph: Send + Sync {
+    /// Rollup's ModuleInfo fields but `code`, as JSON, or None for a module
+    /// the bundle has not met.
+    fn module_info(&self, id: &str) -> Option<serde_json::Value>;
+    /// The module's code as plugins read it, once loaded.
+    fn module_code(&self, id: &str) -> Option<String>;
+    fn module_ids(&self) -> Vec<String>;
+}
+
+/// Each container's bundle, by container id.
+pub(crate) type BundleGraphs =
+    Arc<std::sync::Mutex<std::collections::HashMap<u32, Arc<dyn BundleGraph>>>>;
+
+/// `bundleModuleInfo`, `bundleModuleCode` and `bundleModuleIds` (the asking
+/// container first), answered SYNCHRONOUSLY on the isolate thread from that
+/// container's bundle; null while it has none. None for any other method.
+fn bundle_rpc(
+    method: &str,
+    args: &[serde_json::Value],
+    bundles: &BundleGraphs,
+) -> Option<Result<serde_json::Value, String>> {
+    if !matches!(
+        method,
+        "bundleModuleInfo" | "bundleModuleCode" | "bundleModuleIds"
+    ) {
+        return None;
+    }
+    let container = args.first().and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let graph = bundles.lock().unwrap().get(&container).cloned();
+    let Some(graph) = graph else {
+        return Some(Ok(serde_json::Value::Null));
+    };
+    let id = args.get(1).and_then(|v| v.as_str()).unwrap_or("");
+    Some(Ok(match method {
+        "bundleModuleInfo" => graph.module_info(id).unwrap_or_default(),
+        "bundleModuleCode" => graph
+            .module_code(id)
+            .map_or(serde_json::Value::Null, serde_json::Value::String),
+        _ => serde_json::json!(graph.module_ids()),
+    }))
+}
+
 /// How often a waiting call probes a running hook for engine liveness, and
 /// the stall monitor's default no-milestone window. Vite runs plugin work
 /// unbounded, so elapsed time alone never fails anything here: only process
@@ -546,11 +599,13 @@ impl PluginHost {
         let (post_tx, post_rx) = tokio::sync::mpsc::unbounded_channel();
         let import_meta_env: Arc<std::sync::OnceLock<Arc<oj_compiler::ImportMetaEnv>>> =
             Arc::default();
+        let bundles = BundleGraphs::default();
         let engine = new_host_engine(
             root,
             plugin_host_memory_mb() * 1024 * 1024,
             registry.clone(),
             Arc::clone(&import_meta_env),
+            Arc::clone(&bundles),
             post_tx,
         )
         .ok()?;
@@ -566,6 +621,7 @@ impl PluginHost {
             engine,
             post_rx,
             import_meta_env,
+            bundles,
             registry,
         })
     }
@@ -623,6 +679,10 @@ impl PluginHost {
                 import_meta_env: prewarm
                     .as_ref()
                     .map(|p| Arc::clone(&p.import_meta_env))
+                    .unwrap_or_default(),
+                bundles: prewarm
+                    .as_ref()
+                    .map(|p| Arc::clone(&p.bundles))
                     .unwrap_or_default(),
             },
             revive: Mutex::new(ReviveState {
@@ -1313,7 +1373,28 @@ impl PluginHost {
             return Ok(());
         }
         self.core.rpc_routes.lock().unwrap().remove(&self.container);
+        self.core
+            .boot
+            .bundles
+            .lock()
+            .unwrap()
+            .remove(&self.container);
         self.call_unit("closeContainer", &[]).await
+    }
+
+    /// The bundle this container's hooks run inside from now on (a bundle's
+    /// buildStart): its `this.getModuleInfo` and `this.getModuleIds` read
+    /// that bundle's graph.
+    pub fn set_bundle_graph(&self, graph: Arc<dyn BundleGraph>) {
+        if self.is_stale() {
+            return;
+        }
+        self.core
+            .boot
+            .bundles
+            .lock()
+            .unwrap()
+            .insert(self.container, graph);
     }
 
     /// Fail-open gates until the plan is fetched again (a respawned engine).
@@ -1496,6 +1577,7 @@ impl HostCore {
             self.boot.memory_limit_bytes,
             self.boot.registry.clone(),
             Arc::clone(&self.boot.import_meta_env),
+            Arc::clone(&self.boot.bundles),
             post_tx,
         )
     }

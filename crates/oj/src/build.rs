@@ -2338,6 +2338,8 @@ struct OjUserPlugin {
     skipped_resolve: std::sync::atomic::AtomicU64,
     skipped_load: std::sync::atomic::AtomicU64,
     skipped_transform: std::sync::atomic::AtomicU64,
+    /// Lowers the code `this.getModuleInfo` reads.
+    jsx: oj_compiler::JsxConfig,
 }
 
 impl OjUserPlugin {
@@ -2345,9 +2347,11 @@ impl OjUserPlugin {
         host: Arc<PluginHost>,
         emit: Arc<EmitState>,
         gate: oj_server::plugins::BuildHookPlan,
+        jsx: oj_compiler::JsxConfig,
     ) -> Self {
         Self {
             host,
+            jsx,
             render_chunk_enabled: Arc::new(tokio::sync::OnceCell::new()),
             emit,
             map_warnings: Arc::default(),
@@ -2577,6 +2581,8 @@ impl Plugin for OjUserPlugin {
         ctx: &PluginContext,
         _args: &rolldown_plugin::HookBuildStartArgs<'_>,
     ) -> rolldown_plugin::HookNoopReturn {
+        self.host
+            .set_bundle_graph(bundle_graph::RolldownGraph::new(ctx, self.jsx.clone()));
         // Vite/rolldown: a rejecting buildStart fails the build.
         match self.host.build_start().await {
             Ok(chunks) => forward_emitted_chunks(ctx, &chunks, &self.emit),
@@ -3469,6 +3475,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
             Arc::clone(host),
             Arc::clone(&emit),
             host.build_hook_plan().await,
+            bundle_graph::jsx_config(&config),
         )));
     }
     let client_minify =
@@ -4922,6 +4929,7 @@ pub(crate) async fn build_ssr(
             Arc::clone(host),
             Arc::clone(&emit),
             host.build_hook_plan().await,
+            bundle_graph::jsx_config(config),
         )));
     }
     oj_plugins.push(Pluginable::new_shared(OjCssPlugin {
@@ -5520,6 +5528,7 @@ async fn build_client_entry(
             Arc::clone(host),
             Arc::clone(&emit),
             host.build_hook_plan().await,
+            bundle_graph::jsx_config(config),
         )));
     }
     oj_plugins.push(Pluginable::new_shared(OjCssPlugin {
@@ -6845,6 +6854,7 @@ fn build_manifest(entries: &[ManifestEntry], assets: &[ManifestAsset]) -> serde_
     serde_json::Value::Object(map)
 }
 
+pub(crate) mod bundle_graph;
 mod html_tags;
 mod vite_preload;
 

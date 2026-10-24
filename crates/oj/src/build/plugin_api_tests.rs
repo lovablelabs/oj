@@ -38,6 +38,7 @@ mod jsx_import_source_build;
 mod load_error_build;
 mod manifest;
 mod manual_chunks_build;
+mod module_graph_build;
 mod modulepreload;
 mod multi_html_input;
 mod new_url_asset_build;

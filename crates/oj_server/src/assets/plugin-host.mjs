@@ -1612,7 +1612,8 @@ function pluginContext(c) {
       return info;
     },
     getModuleInfo(id) {
-      return c.moduleInfoCache.get(typeof id === "string" ? id : id.id) ?? null;
+      const key = typeof id === "string" ? id : id.id;
+      return bundleModuleInfo(c, key) ?? c.moduleInfoCache.get(key) ?? null;
     },
     addWatchFile(id) {
       if (!id) return;
@@ -1621,9 +1622,44 @@ function pluginContext(c) {
       if (bucket) bucket.add(String(id));
     },
     getModuleIds() {
-      return c.seenIds.values();
+      const graph = bundleRpc("bundleModuleIds", [c.id]);
+      return graph ? new Set([...graph, ...c.seenIds]).values() : c.seenIds.values();
     },
   };
+}
+
+// A container that runs inside a bundle (a Start bundle, `oj build`) reads
+// the bundle's module graph, as Rollup's this.getModuleInfo does: rolldown
+// has met every module it loads, a hook filter gate's skipped ones included,
+// while the container's own records only hold the modules its hooks saw.
+// Null while no bundle runs, or from a host without the engine bridge.
+function bundleRpc(method, args) {
+  if (!ojEngineRpc) return null;
+  const raw = ojEngineRpc(method, JSON.stringify(args));
+  return raw == null ? null : JSON.parse(raw);
+}
+// The bundle's ModuleInfo, on the container's own record of the module so
+// the `meta` plugins set (and mutate) stays the one object Rollup keeps.
+// `code` is read from the bundle when first asked for.
+function bundleModuleInfo(c, id) {
+  const graph = bundleRpc("bundleModuleInfo", [c.id, id]);
+  if (!graph) return null;
+  let info = c.moduleInfoCache.get(graph.id);
+  if (!info) c.moduleInfoCache.set(graph.id, (info = makeModuleInfo(graph.id, null)));
+  const { id: _, ...fields } = graph;
+  Object.assign(info, fields);
+  if (!Object.getOwnPropertyDescriptor(info, "code").get) {
+    let code;
+    Object.defineProperty(info, "code", {
+      configurable: true,
+      enumerable: true,
+      get: () => (code ??= bundleRpc("bundleModuleCode", [c.id, info.id])),
+      set: (v) => {
+        code = v;
+      },
+    });
+  }
+  return info;
 }
 
 // Vite gives every plugin its own context object whose `_plugin` is the plugin
@@ -4903,19 +4939,22 @@ async function run(hook, args, c) {
     // patterns gatePatterns cannot carry (Rust fails the ones it cannot
     // translate open on its side).
     const planFor = (name, withCode) => {
-      // The transform RPC is what fires moduleParsed AND fills the module-info
-      // map that this.getModuleInfo()/getModuleIds() read from later hooks, so
-      // gating it would starve them. Any plugin that could consume that map
-      // (moduleParsed itself, or a bundle-stage hook that may call the ctx
-      // getters, the manifest-plugin shape) pins transform unfiltered.
+      // Outside a Start build the transform RPC is what fires moduleParsed,
+      // so gating it would skip modules; any moduleParsed pins transform
+      // unfiltered. Outside a bundle (oj's dev server), it also fills the
+      // module-info map this.getModuleInfo()/getModuleIds() read, so a hook
+      // that may call them later (the manifest-plugin shape) pins it too. A
+      // bundle's getters read the bundle's own graph (bundleModuleInfo).
+      const inBundle = command === "build" || ojBundleHost;
       if (
         name === "transform" &&
         withCode &&
-        (anyModuleParsed(c) ||
-          pluginsWithHook(c, "generateBundle").length > 0 ||
-          pluginsWithHook(c, "renderChunk").length > 0 ||
-          pluginsWithHook(c, "writeBundle").length > 0 ||
-          pluginsWithHook(c, "buildEnd").length > 0)
+        ((!bundleBuild && anyModuleParsed(c)) ||
+          (!inBundle &&
+            (pluginsWithHook(c, "generateBundle").length > 0 ||
+              pluginsWithHook(c, "renderChunk").length > 0 ||
+              pluginsWithHook(c, "writeBundle").length > 0 ||
+              pluginsWithHook(c, "buildEnd").length > 0)))
       ) {
         return { present: true, unfiltered: true, plugins: [] };
       }

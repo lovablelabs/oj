@@ -199,8 +199,9 @@ fn client_plugins(
                 start.command,
                 &start.root,
                 Arc::clone(emit),
+                start.jsx_config(),
             )
-            .with_module_parsed(start.jsx_config()),
+            .with_module_parsed(),
         ));
     }
     plugins.push(Pluginable::new_shared(
@@ -531,8 +532,9 @@ pub(crate) async fn build(
                         start.command,
                         &start.root,
                         Arc::clone(&emit),
+                        start.jsx_config(),
                     )
-                    .with_module_parsed(start.jsx_config()),
+                    .with_module_parsed(),
                 ));
             }
             plugins.push(Pluginable::new_shared(

@@ -28,6 +28,7 @@ use rolldown_plugin::{
 
 use super::facts::Facts;
 use super::Command;
+use crate::build::bundle_graph::{graph_fields, module_code_as_js, RolldownGraph};
 use crate::build::EmitState;
 
 /// The rolldown context a host's `this.resolve` fallback resolves through:
@@ -154,9 +155,10 @@ pub(crate) struct StartHostPlugin {
     root: PathBuf,
     pre: bool,
     post: bool,
-    /// A build reports rolldown's moduleParsed, with TS and JSX lowered as
-    /// this JSX config says.
-    module_parsed: Option<oj_compiler::JsxConfig>,
+    /// Lowers the TS and JSX plugins read as module code.
+    jsx: oj_compiler::JsxConfig,
+    /// A build reports rolldown's moduleParsed.
+    module_parsed: bool,
     module_parsed_enabled: Arc<tokio::sync::OnceCell<bool>>,
     render_chunk_enabled: Arc<tokio::sync::OnceCell<bool>>,
     warned_virtual: Mutex<HashSet<String>>,
@@ -177,16 +179,18 @@ impl StartHostPlugin {
         command: Command,
         root: &Path,
         emit: Arc<EmitState>,
+        jsx: oj_compiler::JsxConfig,
     ) -> Self {
         Self {
             host,
+            jsx,
             bundler_ctx,
             emit,
             command,
             root: root.to_path_buf(),
             pre: facts.resolve_id_pre > 0,
             post: facts.resolve_id_post > 0,
-            module_parsed: None,
+            module_parsed: false,
             module_parsed_enabled: Arc::new(tokio::sync::OnceCell::new()),
             render_chunk_enabled: Arc::new(tokio::sync::OnceCell::new()),
             warned_virtual: Mutex::new(HashSet::new()),
@@ -195,8 +199,8 @@ impl StartHostPlugin {
     }
 
     /// Reports rolldown's moduleParsed to the host (a build), its code as JS.
-    pub fn with_module_parsed(mut self, jsx: oj_compiler::JsxConfig) -> Self {
-        self.module_parsed = Some(jsx);
+    pub fn with_module_parsed(mut self) -> Self {
+        self.module_parsed = true;
         self
     }
 
@@ -219,22 +223,6 @@ impl StartHostPlugin {
         }
         Ok(())
     }
-}
-
-/// The code a moduleParsed hook reads: JS, as after Vite's vite:oxc (a
-/// TypeScript or JSX module lowered; anything else, or a module that does
-/// not lower, as loaded).
-fn module_parsed_code(id: &str, code: &str, jsx: &oj_compiler::JsxConfig) -> String {
-    let file = id.split('?').next().unwrap_or(id);
-    let lowers = matches!(
-        Path::new(file).extension().and_then(|e| e.to_str()),
-        Some("ts" | "tsx" | "mts" | "cts" | "jsx")
-    );
-    if !lowers {
-        return code.to_string();
-    }
-    oj_compiler::transform_for_bundle(Path::new(file), code, jsx, false)
-        .map_or_else(|_| code.to_string(), |(js, _)| js)
 }
 
 /// A plugin resolveId answer as rolldown's.
@@ -320,7 +308,7 @@ impl Plugin for StartHostPlugin {
                 | HookUsage::RenderChunk
                 | HookUsage::GenerateBundle
                 | HookUsage::WriteBundle;
-            if self.module_parsed.is_some() {
+            if self.module_parsed {
                 usage |= HookUsage::ModuleParsed;
             }
         }
@@ -333,6 +321,8 @@ impl Plugin for StartHostPlugin {
         _args: &rolldown_plugin::HookBuildStartArgs<'_>,
     ) -> rolldown_plugin::HookNoopReturn {
         self.bundler_ctx.set(ctx);
+        self.host
+            .set_bundle_graph(RolldownGraph::new(ctx, self.jsx.clone()));
         // Before any module loads: a plugin compiling on startup (i18n
         // catalogs) has its state ready for the loads it serves. The host runs
         // buildStart once per session, as Vite's container does.
@@ -353,9 +343,9 @@ impl Plugin for StartHostPlugin {
         info: Arc<rolldown_common::ModuleInfo>,
         _module: &rolldown_common::NormalModule,
     ) -> rolldown_plugin::HookNoopReturn {
-        let Some(jsx) = &self.module_parsed else {
+        if !self.module_parsed {
             return Ok(());
-        };
+        }
         let host = Arc::clone(&self.host);
         if !*self
             .module_parsed_enabled
@@ -364,24 +354,12 @@ impl Plugin for StartHostPlugin {
         {
             return Ok(());
         }
-        let id = info.id.as_str();
-        let code = info
+        let mut json = graph_fields(&info);
+        json["code"] = info
             .code
             .as_deref()
-            .map(|code| module_parsed_code(id, code, jsx));
-        fn ids<'a>(set: impl IntoIterator<Item = &'a rolldown_common::ModuleId>) -> Vec<&'a str> {
-            set.into_iter().map(|m| m.as_str()).collect()
-        }
-        let json = serde_json::json!({
-            "id": id,
-            "code": code,
-            "isEntry": info.is_entry,
-            "importedIds": ids(&info.imported_ids),
-            "dynamicallyImportedIds": ids(&info.dynamically_imported_ids),
-            "importers": ids(&info.importers),
-            "dynamicImporters": ids(&info.dynamic_importers),
-            "exports": info.exports.iter().map(|e| e.as_str()).collect::<Vec<_>>(),
-        });
+            .map(|code| module_code_as_js(&info.id, code, &self.jsx))
+            .into();
         self.host
             .bundle_module_parsed(&json.to_string())
             .await
@@ -811,7 +789,7 @@ mod tests {
     #[test]
     fn module_parsed_reads_typescript_and_jsx_as_js() {
         let jsx = oj_compiler::JsxConfig::default();
-        let tsx = module_parsed_code(
+        let tsx = module_code_as_js(
             "/app/src/a.tsx",
             "const n: number = 1;\nexport const A = () => <p>{n}</p>;\n",
             &jsx,
@@ -819,18 +797,18 @@ mod tests {
         assert!(!tsx.contains(": number") && !tsx.contains("<p>"), "{tsx}");
         assert!(tsx.contains("react/jsx-runtime"), "{tsx}");
         // A query keeps the file's own kind.
-        let ts = module_parsed_code("/app/src/b.ts?v=1", "let x: string = \"\";\n", &jsx);
+        let ts = module_code_as_js("/app/src/b.ts?v=1", "let x: string = \"\";\n", &jsx);
         assert!(!ts.contains(": string"), "{ts}");
         // JS and virtual modules are reported as loaded.
         let js = "export const y = 1;\n";
         assert_eq!(
-            module_parsed_code("/app/node_modules/p/index.js", js, &jsx),
+            module_code_as_js("/app/node_modules/p/index.js", js, &jsx),
             js
         );
-        assert_eq!(module_parsed_code("\0virtual:x", js, &jsx), js);
+        assert_eq!(module_code_as_js("\0virtual:x", js, &jsx), js);
         // A module that does not lower is reported as loaded too.
         let broken = "const = ;";
-        assert_eq!(module_parsed_code("/app/src/c.ts", broken, &jsx), broken);
+        assert_eq!(module_code_as_js("/app/src/c.ts", broken, &jsx), broken);
     }
 
     #[test]

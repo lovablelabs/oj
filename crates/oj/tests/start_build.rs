@@ -91,3 +91,64 @@ fn a_cold_start_build_extracts_its_config_for_the_build_only() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// A plugin reading the module graph from a bundle hook, as a manifest
+/// plugin does: `this.getModuleIds` and `this.getModuleInfo` are the
+/// bundle's own under `vite build`, so they know the modules no JS hook ran
+/// for (node_modules), and a module's code reads as JS.
+const GRAPH_PROBE: &str = r#"
+import { writeFileSync } from "node:fs";
+function graphProbe(): Plugin {
+  let root = "";
+  return {
+    name: "graph-probe",
+    configResolved(c) {
+      root = c.root;
+    },
+    generateBundle() {
+      const ids = [...this.getModuleIds()];
+      const about = this.getModuleInfo(ids.find((id) => id.endsWith("/src/routes/about.tsx")) ?? "");
+      const dep = ids.find((id) => id.includes("/node_modules/") && this.getModuleInfo(id)?.importers.length);
+      writeFileSync(
+        `${root}/graph-${this.environment.name}.json`,
+        JSON.stringify({
+          nodeModules: ids.filter((id) => id.includes("/node_modules/")).length,
+          dep: dep ?? null,
+          aboutImporters: about?.importers.length ?? null,
+          aboutCode: about?.code ?? null,
+        }),
+      );
+    },
+  };
+}
+"#;
+
+#[test]
+fn bundle_hooks_read_the_start_bundles_whole_module_graph() {
+    let Some(root) = app("module-graph") else {
+        return;
+    };
+    let config = root.join("vite.config.ts");
+    let source = std::fs::read_to_string(&config).unwrap();
+    let source = source.replacen("  plugins: [\n", "  plugins: [\n    graphProbe(),\n", 1);
+    std::fs::write(&config, format!("{source}{GRAPH_PROBE}")).unwrap();
+    build(&root);
+    for env in ["client", "ssr"] {
+        let path = root.join(format!("graph-{env}.json"));
+        let graph: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(
+            graph["nodeModules"].as_u64().unwrap_or(0) > 0 && graph["dep"].is_string(),
+            "{env}: the node_modules modules and their importers: {graph}"
+        );
+        assert!(
+            graph["aboutImporters"].as_u64().unwrap_or(0) > 0,
+            "{env}: src/routes/about.tsx and its importers: {graph}"
+        );
+        let code = graph["aboutCode"].as_str().unwrap_or_default();
+        assert!(
+            code.contains("createRoute") && !code.contains("<main>"),
+            "{env}: src/routes/about.tsx's code reads as JS: {graph}"
+        );
+    }
+}
