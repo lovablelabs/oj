@@ -166,3 +166,43 @@ async fn apply_to_environment_cannot_return_framework_plugins_into_a_start_host(
     .await;
     assert_eq!(names, ["wrapped-user"]);
 }
+
+// A disabled factory may null its plugin's name: the Start filter must read
+// it as no name, not throw and leave the host with no plugins at all.
+#[tokio::test]
+async fn a_null_plugin_name_does_not_empty_a_start_host() {
+    let src = r#"export default {
+  plugins: [
+    { name: null, transform() {} },
+    { name: "user" },
+    { name: "wrap", applyToEnvironment: () => [{ name: null }, { name: "wrapped" }] },
+  ],
+};
+"#;
+    let names = hosted_names("null-name", "vite.config.mjs", src, bundle_host("client")).await;
+    assert!(
+        names.iter().any(|n| n == "user") && names.iter().any(|n| n == "wrapped"),
+        "the host's plugins: {names:?}"
+    );
+}
+
+// Promise.all treats an object whose `then` is no function as a value, so
+// the flatten must too, or it would await the same list forever.
+#[tokio::test]
+async fn a_plugin_with_a_non_function_then_does_not_hang_the_host() {
+    let src = r#"export default {
+  plugins: [{ name: "thenful", then: true }, Promise.resolve({ name: "after" })],
+};
+"#;
+    let extra = serde_json::json!({
+        "environment": { "name": "client", "mode": "build" },
+        "pluginsFormat": "vite",
+    });
+    let names = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        hosted_names("thenful", "vite.config.mjs", src, extra),
+    )
+    .await
+    .expect("the host finished loading its plugins");
+    assert_eq!(names, ["thenful", "after"]);
+}

@@ -21,7 +21,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, isAbsolute, join, posix, relative, resolve as pathResolve } from "node:path";
 import { foldIncludeSnapshot } from "./discovered-deps.mjs";
 import { appViteEntry, asNode } from "./vite-config-node.mjs";
-import { OJ_NATIVE_PLUGIN_NAMES, OJ_UNSUPPORTED_PLUGIN_NAMES } from "./native-plugins.mjs";
+import {
+  OJ_NATIVE_PLUGIN_NAMES,
+  OJ_UNSUPPORTED_PLUGIN_NAMES,
+  flattenPlugins,
+  isReimplemented,
+} from "./native-plugins.mjs";
 import { idFilterGlob, idFilterRegExp, loadViteGlobs } from "./start/vite-globs.mjs";
 import {
   applyHtmlTransforms,
@@ -277,7 +282,6 @@ const ojStartMode = initial.ojStartMode === true;
 const ojBundleHost = initial.ojBundleHost === true;
 // The plugins a Start host leaves to oj: Vite's own (`vite:*`) and TanStack's
 // compiler and router plugins, whose work the Start pipeline does natively.
-const isReimplemented = (name = "") => name.startsWith("vite:") || /^tanstack[-:]/.test(name);
 
 const _ojTTY = process.stderr.isTTY && !process.env.NO_COLOR;
 const OJ = _ojTTY ? "\x1b[48;2;255;255;255m\x1b[1;38;2;42;51;212m oj \x1b[0m" : "oj";
@@ -1225,8 +1229,7 @@ function hostedPlugins(list, userConfig) {
 // their work (server-fn rewrite, route tree, refresh) — while user plugins
 // (mdx, svgr, virtual modules) run. A Start bundle host leaves the same
 // plugins out: the native Start bundles do their work.
-const startLeavesOutReimplemented =
-  ojStartMode && ((initial.environment && initial.environment.name) === "ssr" || ojBundleHost);
+const startLeavesOutReimplemented = ojStartMode && (hostEnvName === "ssr" || ojBundleHost);
 // Whether oj does `p`'s work itself, so this host leaves it out: the
 // top-level list and what applyToEnvironment returns alike.
 function ojRunsNatively(p) {
@@ -4259,7 +4262,7 @@ function factValue(v, fns, seen = new Set()) {
   }
   return v;
 }
-function startFacts(c) {
+async function startFacts(c) {
   const fns = (c.startFns = []);
   const cfg = c.resolvedConfig ?? {};
   const envOf = (name) => cfg.environments?.[name] ?? {};
@@ -4280,7 +4283,7 @@ function startFacts(c) {
     serverHmr: cfg.server?.hmr === false ? false : true,
     serverWatch: cfg.server?.watch === null ? null : factValue(cfg.server?.watch ?? {}, fns),
     reactRefresh: names.includes("vite:react-refresh"),
-    cloudflare: cloudflareEnvironmentFacts(cfg, fns),
+    cloudflare: await cloudflareEnvironmentFacts(cfg, fns),
     worker: workerFacts(cfg, fns),
     // How many resolveId hooks run on each side of the core resolver.
     resolveIdPhases: pluginsWithHook(c, "resolveId").reduce(
@@ -4311,7 +4314,7 @@ function workerFacts(c, fns) {
 // @cloudflare/vite-plugin's Worker environment (its `config` hook declares
 // one per Worker, `resolve.builtins` naming the runtime's modules), or null.
 // With several Workers the entry Worker (the one writing the manifest) wins.
-function cloudflareEnvironmentFacts(c, fns) {
+async function cloudflareEnvironmentFacts(c, fns) {
   const environments = c.environments;
   if (!environments || typeof environments !== "object") return null;
   const workers = Object.entries(environments).filter(([name, options]) => {
@@ -4338,11 +4341,12 @@ function cloudflareEnvironmentFacts(c, fns) {
       : null,
     target: typeof options.build?.target === "string" ? options.build.target : null,
     // Rolldown builtin plugins the environment attached (Vite's
-    // esmExternalRequirePlugin): their names and options.
-    rolldownPlugins: [options.build?.rolldownOptions?.plugins]
-      .flat(Infinity)
-      .filter(Boolean)
-      .map((p) => ({ name: p.name ?? null, options: factValue(p._options ?? null, fns) })),
+    // esmExternalRequirePlugin): their names and options, read as Vite's
+    // build reads them (asyncFlatten(arraify(..))).
+    rolldownPlugins: (await flattenPlugins(options.build?.rolldownOptions?.plugins)).map((p) => ({
+      name: p.name ?? null,
+      options: factValue(p._options ?? null, fns),
+    })),
     // Where Vite puts the Worker: the plugin's config hook derives it from
     // the user's own config (`environments.<name>.build.outDir`, else
     // `<build.outDir>/<name>`), which a resolved base here already fills with
@@ -4391,17 +4395,6 @@ async function callStartFnBatch(c, index, idsJson, generation, infosJson, tolera
 // plugin container) and runs the config's live
 // optimizeDeps.rolldownOptions.plugins, which Vite puts in the scan's plugin
 // list, through scanPluginHook.
-// Vite's asyncFlatten over arraify, falsy entries dropped: plugin options may
-// nest arrays and promises, and a promise may resolve to an array of plugins
-// (`Promise.resolve([tanstackStart()])`), so the loop flattens what each
-// round of awaits produced until no thenable is left.
-async function flattenPlugins(value) {
-  let list = Array.isArray(value) ? value : [value];
-  do {
-    list = (await Promise.all(list)).flat(Infinity);
-  } while (list.some((v) => v?.then));
-  return list.filter(Boolean);
-}
 async function scanResolveId(source, importer) {
   const r = await resolveIdFull(main, source, importer || undefined, { scan: true });
   return r == null ? null : JSON.stringify({ id: r.id, external: r.external ?? false });

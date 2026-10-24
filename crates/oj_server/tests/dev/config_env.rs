@@ -253,3 +253,59 @@ async fn cloudflare_facts_read_a_lone_rolldown_plugin() {
         "{facts}"
     );
 }
+
+/// The same read awaits: a Worker's builtin handed in as
+/// `Promise.resolve([..])` is in the facts with its options, as Vite's
+/// build's asyncFlatten gives it to rolldown.
+#[tokio::test(flavor = "multi_thread")]
+async fn cloudflare_facts_await_a_promised_rolldown_plugin() {
+    require_fixture!("vite");
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"promisedcf","private":true,"type":"module"}"#,
+        ),
+        (
+            "vite.config.mjs",
+            r#"export default {
+  environments: {
+    worker: {
+      resolve: { builtins: ["cloudflare:workers"] },
+      build: {
+        rolldownOptions: {
+          plugins: [Promise.resolve([{ name: "builtin:esm-external-require", _options: { external: ["b"] } }]), null],
+        },
+      },
+    },
+  },
+};
+"#,
+        ),
+    ]);
+    app.link_fixture("vite");
+    let payload = serde_json::json!({
+        "config": { "root": app.root.display().to_string(), "base": "/", "mode": "production", "command": "build" },
+        "env": { "command": "build", "mode": "production" },
+        "environment": { "name": "client", "mode": "build" },
+        "pluginsFormat": "vite",
+        "ojStartMode": true,
+        "ojBundleHost": true,
+    })
+    .to_string();
+    let host = oj_server::plugins::PluginHost::spawn(
+        &app.root,
+        &app.root.join("vite.config.mjs"),
+        &payload,
+        None,
+    )
+    .await
+    .expect("the bundle host starts");
+    let facts = host.start_facts().await;
+    host.shutdown();
+    let facts = facts.expect("start facts are served");
+    assert_eq!(
+        facts["cloudflare"]["rolldownPlugins"],
+        serde_json::json!([{ "name": "builtin:esm-external-require", "options": { "external": ["b"] } }]),
+        "{facts}"
+    );
+}
