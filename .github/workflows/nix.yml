@@ -45,8 +45,24 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      # The oj binary's fat-LTO link outgrows the arm runner's 16GB and the
+      # kernel kills rustc; swap lets it finish.
+      - name: add swap
+        if: matrix.system == 'aarch64-linux'
+        run: |
+          sudo fallocate -l 24G /swap-oj
+          sudo chmod 600 /swap-oj
+          sudo mkswap /swap-oj
+          sudo swapon /swap-oj
+          free -h
+          df -h /
       - name: build
-        run: nix build .#oj -L
+        run: |
+          command -v free >/dev/null && (while sleep 30; do free -m | awk '/Mem:/{m=$3} /Swap:/{s=$3} END{print m+s}'; done > "$RUNNER_TEMP/mem.log") &
+          nix build .#oj -L
+      - name: peak memory (MB)
+        if: always() && runner.os == 'Linux'
+        run: sort -n "$RUNNER_TEMP/mem.log" | tail -1
       - name: smoke
         run: ./result/bin/oj --version
       # The store binary bundles Start apps with the rolldown linked into it:
