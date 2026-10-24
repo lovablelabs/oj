@@ -40,3 +40,25 @@ export const OJ_NATIVE_PLUGIN_NAMES = new Set([
 // provide, and they have no effect on the served or built output. Left in, the
 // worker they spawn throws asynchronously; skip them outright.
 export const OJ_UNSUPPORTED_PLUGIN_NAMES = new Set(["vite-plugin-checker"]);
+
+// Framework plugins oj reimplements natively (vite:*, TanStack's): a Start
+// host leaves them out, and config extraction counts their config hooks as
+// oj's work. A name that is not a string (`name: null` on a disabled
+// factory) is never one of them.
+export function isReimplemented(name) {
+  return typeof name === "string" && (name.startsWith("vite:") || /^tanstack[-:]/.test(name));
+}
+
+// Vite's asyncFlatten over arraify, falsy entries dropped: plugin options may
+// nest arrays and promises, and a promise may resolve to an array of plugins
+// (`Promise.resolve([tanstackStart()])`), so each round awaits what the last
+// one produced until no thenable is left. A thenable has a callable `then`
+// (Promise.all's own test): a plugin object carrying some other `then` field
+// is a value, not a reason to loop forever.
+export async function flattenPlugins(value) {
+  let list = Array.isArray(value) ? value : [value];
+  do {
+    list = (await Promise.all(list)).flat(Infinity);
+  } while (list.some((v) => v && typeof v.then === "function"));
+  return list.filter(Boolean);
+}

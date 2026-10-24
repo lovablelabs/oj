@@ -21,7 +21,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, isAbsolute, join, posix, relative, resolve as pathResolve } from "node:path";
 import { foldIncludeSnapshot } from "./discovered-deps.mjs";
 import { appViteEntry, asNode } from "./vite-config-node.mjs";
-import { OJ_NATIVE_PLUGIN_NAMES, OJ_UNSUPPORTED_PLUGIN_NAMES } from "./native-plugins.mjs";
+import {
+  OJ_NATIVE_PLUGIN_NAMES,
+  OJ_UNSUPPORTED_PLUGIN_NAMES,
+  flattenPlugins,
+  isReimplemented,
+} from "./native-plugins.mjs";
 import { idFilterGlob, idFilterRegExp, loadViteGlobs } from "./start/vite-globs.mjs";
 import {
   applyHtmlTransforms,
@@ -277,7 +282,6 @@ const ojStartMode = initial.ojStartMode === true;
 const ojBundleHost = initial.ojBundleHost === true;
 // The plugins a Start host leaves to oj: Vite's own (`vite:*`) and TanStack's
 // compiler and router plugins, whose work the Start pipeline does natively.
-const isReimplemented = (name = "") => name.startsWith("vite:") || /^tanstack[-:]/.test(name);
 
 const _ojTTY = process.stderr.isTTY && !process.env.NO_COLOR;
 const OJ = _ojTTY ? "\x1b[48;2;255;255;255m\x1b[1;38;2;42;51;212m oj \x1b[0m" : "oj";
@@ -815,9 +819,7 @@ async function loadUserResolvedViteConfig() {
         "silent",
       );
       const config = loaded?.config ?? {};
-      const kept = (await Promise.all([config.plugins ?? []].flat(Infinity))).filter(
-        (p) => p && !isReimplemented(p.name),
-      );
+      const kept = (await flattenPlugins(config.plugins)).filter((p) => !isReimplemented(p.name));
       return vite.resolveConfig(
         { ...config, plugins: kept, root: appRoot, configFile: false, mode: env.mode, logLevel: "silent" },
         env.command,
@@ -1195,7 +1197,7 @@ const unsupportedReported = new Set();
 // the user's loaded config file merged with the inline config (oj's values,
 // root, base, define and server, overlay the file's).
 function hostedPlugins(list, userConfig) {
-  let out = list.filter((p) => !OJ_NATIVE_PLUGIN_NAMES.has(p && p.name));
+  let out = list.filter((p) => !ojRunsNatively(p));
   out = out.filter((p) => {
     if (OJ_UNSUPPORTED_PLUGIN_NAMES.has(p && p.name)) {
       if (unsupportedReported.has(p.name)) return false;
@@ -1219,16 +1221,20 @@ function hostedPlugins(list, userConfig) {
       throw e;
     }
   });
-  // In start mode the ssr-environment host backs oj's in-process Start module
-  // host: framework plugins oj reimplements natively (vite:*, tanstack's
-  // compiler plugins) must not transform SSR modules — the Start pipeline does
-  // their work (server-fn rewrite, route tree, refresh) — while user plugins
-  // (mdx, svgr, virtual modules) run. A Start bundle host leaves the same
-  // plugins out: the native Start bundles do their work.
-  if (ojStartMode && ((initial.environment && initial.environment.name) === "ssr" || ojBundleHost)) {
-    out = out.filter((p) => !isReimplemented(p && p.name));
-  }
   return out.sort((a, b) => enforceRank(a) - enforceRank(b));
+}
+// In start mode the ssr-environment host backs oj's in-process Start module
+// host: framework plugins oj reimplements natively (vite:*, tanstack's
+// compiler plugins) must not transform SSR modules — the Start pipeline does
+// their work (server-fn rewrite, route tree, refresh) — while user plugins
+// (mdx, svgr, virtual modules) run. A Start bundle host leaves the same
+// plugins out: the native Start bundles do their work.
+const startLeavesOutReimplemented = ojStartMode && (hostEnvName === "ssr" || ojBundleHost);
+// Whether oj does `p`'s work itself, so this host leaves it out: the
+// top-level list and what applyToEnvironment returns alike.
+function ojRunsNatively(p) {
+  const name = p && p.name;
+  return OJ_NATIVE_PLUGIN_NAMES.has(name) || (startLeavesOutReimplemented && isReimplemented(name));
 }
 // Vite's picomatch, for plugin `filter` ids.
 await loadViteGlobs(initial.config?.root ?? process.cwd());
@@ -1240,12 +1246,12 @@ try {
     userConfig = cfg && typeof cfg === "object" ? cfg : null;
     userViteConfig = userConfig;
     userResolveAlias = cfg?.resolve?.alias ?? null;
-    list = await Promise.all((cfg?.plugins ?? []).flat(Infinity));
+    list = cfg?.plugins;
   } else {
     const mod = await import(pathToFileURL(pluginsPath).href);
-    list = mod.default ?? mod.plugins ?? [];
+    list = mod.default ?? mod.plugins;
   }
-  allPlugins = (Array.isArray(list) ? list : [list]).filter(Boolean);
+  allPlugins = await flattenPlugins(list);
   nativePlugins = allPlugins.filter((p) => OJ_NATIVE_PLUGIN_NAMES.has(p && p.name));
   main.rawPlugins = allPlugins;
   main.plugins = hostedPlugins(allPlugins, userConfig);
@@ -1848,9 +1854,7 @@ async function environmentPlugins(environment, candidates) {
       next.push(p);
       continue;
     }
-    const returned = (await Promise.all((Array.isArray(applied) ? applied : [applied]).flat(Infinity)))
-      .flat(Infinity)
-      .filter(Boolean);
+    const returned = (await flattenPlugins(applied)).filter((ap) => !ojRunsNatively(ap));
     for (const ap of returned) {
       const ignored = ignoredEnvironmentPluginHooks.filter((hook) => ap[hook]);
       if (ignored.length > 0) {
@@ -4258,7 +4262,7 @@ function factValue(v, fns, seen = new Set()) {
   }
   return v;
 }
-function startFacts(c) {
+async function startFacts(c) {
   const fns = (c.startFns = []);
   const cfg = c.resolvedConfig ?? {};
   const envOf = (name) => cfg.environments?.[name] ?? {};
@@ -4279,7 +4283,7 @@ function startFacts(c) {
     serverHmr: cfg.server?.hmr === false ? false : true,
     serverWatch: cfg.server?.watch === null ? null : factValue(cfg.server?.watch ?? {}, fns),
     reactRefresh: names.includes("vite:react-refresh"),
-    cloudflare: cloudflareEnvironmentFacts(cfg, fns),
+    cloudflare: await cloudflareEnvironmentFacts(cfg, fns),
     worker: workerFacts(cfg, fns),
     // How many resolveId hooks run on each side of the core resolver.
     resolveIdPhases: pluginsWithHook(c, "resolveId").reduce(
@@ -4310,7 +4314,7 @@ function workerFacts(c, fns) {
 // @cloudflare/vite-plugin's Worker environment (its `config` hook declares
 // one per Worker, `resolve.builtins` naming the runtime's modules), or null.
 // With several Workers the entry Worker (the one writing the manifest) wins.
-function cloudflareEnvironmentFacts(c, fns) {
+async function cloudflareEnvironmentFacts(c, fns) {
   const environments = c.environments;
   if (!environments || typeof environments !== "object") return null;
   const workers = Object.entries(environments).filter(([name, options]) => {
@@ -4337,11 +4341,12 @@ function cloudflareEnvironmentFacts(c, fns) {
       : null,
     target: typeof options.build?.target === "string" ? options.build.target : null,
     // Rolldown builtin plugins the environment attached (Vite's
-    // esmExternalRequirePlugin): their names and options.
-    rolldownPlugins: (options.build?.rolldownOptions?.plugins ?? [])
-      .flat(Infinity)
-      .filter(Boolean)
-      .map((p) => ({ name: p.name ?? null, options: factValue(p._options ?? null, fns) })),
+    // esmExternalRequirePlugin): their names and options, read as Vite's
+    // build reads them (asyncFlatten(arraify(..))).
+    rolldownPlugins: (await flattenPlugins(options.build?.rolldownOptions?.plugins)).map((p) => ({
+      name: p.name ?? null,
+      options: factValue(p._options ?? null, fns),
+    })),
     // Where Vite puts the Worker: the plugin's config hook derives it from
     // the user's own config (`environments.<name>.build.outDir`, else
     // `<build.outDir>/<name>`), which a resolved base here already fills with
@@ -4390,12 +4395,6 @@ async function callStartFnBatch(c, index, idsJson, generation, infosJson, tolera
 // plugin container) and runs the config's live
 // optimizeDeps.rolldownOptions.plugins, which Vite puts in the scan's plugin
 // list, through scanPluginHook.
-// Vite's asyncFlatten: plugin options may nest arrays and promises.
-async function flattenPlugins(value) {
-  const v = await value;
-  if (Array.isArray(v)) return (await Promise.all(v.map(flattenPlugins))).flat();
-  return v ? [v] : [];
-}
 async function scanResolveId(source, importer) {
   const r = await resolveIdFull(main, source, importer || undefined, { scan: true });
   return r == null ? null : JSON.stringify({ id: r.id, external: r.external ?? false });

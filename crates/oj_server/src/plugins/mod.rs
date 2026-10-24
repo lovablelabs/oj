@@ -200,4 +200,6 @@ mod ensure_asset_tests;
 #[cfg(test)]
 mod hook_plan_tests;
 #[cfg(test)]
+mod host_filter_tests;
+#[cfg(test)]
 mod vite_values_tests;
