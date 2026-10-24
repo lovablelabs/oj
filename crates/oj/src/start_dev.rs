@@ -1803,7 +1803,8 @@ fn script_inputs(
     Ok(ScriptInputs { config, app_env })
 }
 
-/// The `.env` vars of one command, resolved against the process snapshot.
+/// The `.env` vars of one command, resolved against the process snapshot:
+/// [`script_vars`] without the app root, cache root and NODE_ENV.
 #[cfg(test)]
 fn start_script_env(
     root: &Path,
@@ -1961,12 +1962,15 @@ pub async fn start_build(
 
 /// `script`: the codegen script whose bytes key its outputs (the route tree's
 /// generate.mjs); a generator built into oj is keyed by oj's version alone.
+/// `env`: what the codegen script's `process.env` holds; the route tree's
+/// generator runs app code (virtual route configs) that can read it.
 fn codegen_store(
     root: &Path,
     cache: &Path,
     kind: &str,
     script: Option<&str>,
     marker: Option<&str>,
+    env: &[(String, String)],
 ) -> oj_cache::start_codegen::StartCodegenStore {
     let mut extra = script
         .and_then(|s| std::fs::read(cache.join(s)).ok())
@@ -1978,6 +1982,14 @@ fn codegen_store(
             extra.extend_from_slice(entry.to_string_lossy().as_bytes());
         }
         extra.push(0);
+    }
+    let mut env: Vec<&(String, String)> = env.iter().collect();
+    env.sort();
+    for (k, v) in env {
+        for part in [k, v] {
+            extra.extend_from_slice(part.as_bytes());
+            extra.push(0);
+        }
     }
     for name in [
         "tsr.config.json",
@@ -2008,7 +2020,14 @@ fn generate_route_tree(
     cache: &Path,
     script_env: &[(String, String)],
 ) -> anyhow::Result<()> {
-    let store = codegen_store(root, cache, "route-tree", Some("generate.mjs"), None);
+    let store = codegen_store(
+        root,
+        cache,
+        "route-tree",
+        Some("generate.mjs"),
+        None,
+        script_env,
+    );
     let dest = root.join("src").join("routeTree.gen.ts");
     let outputs = [("routeTree.gen.ts", dest.as_path())];
     let inputs: Vec<PathBuf> = list_route_files(root).into_iter().collect();
@@ -2036,7 +2055,7 @@ fn generate_route_tree(
 }
 
 fn generate_server_fn_resolver(root: &Path, cache: &Path) -> anyhow::Result<()> {
-    let store = codegen_store(root, cache, "server-fn", None, Some("createServerFn"));
+    let store = codegen_store(root, cache, "server-fn", None, Some("createServerFn"), &[]);
     let dest = cache.join("server-fn-resolver.mjs");
     let outputs = [("server-fn-resolver.mjs", dest.as_path())];
     let inputs = list_src_ts_files(root);
@@ -3394,7 +3413,8 @@ mod tests {
         std::fs::write(&tree, "// tree").unwrap();
         let inputs = vec![root.join("src/routes/index.tsx")];
         let outputs = [("routeTree.gen.ts", tree.as_path())];
-        let store = |kind: &str| codegen_store(&root, &cache, kind, Some("generate.mjs"), None);
+        let store =
+            |kind: &str| codegen_store(&root, &cache, kind, Some("generate.mjs"), None, &[]);
 
         store("route-tree").persist(&inputs, &outputs).unwrap();
         store("server-fn").persist(&inputs, &outputs).unwrap();
@@ -3422,6 +3442,40 @@ mod tests {
             store("route-tree").restore(&inputs, &outputs).is_ok(),
             "removing it restores the entry-less tree"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // `oj dev` and `oj build` generate the route tree under their own env
+    // (development and production), which the generator's app code can read:
+    // one's tree must not restore for the other.
+    #[test]
+    fn route_tree_cache_keys_on_the_generator_env() {
+        let root = tmp("treeenv");
+        std::fs::create_dir_all(root.join("src/routes")).unwrap();
+        let cache = root.join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(root.join("src/routes/index.tsx"), "export const Route = 1;").unwrap();
+        let tree = root.join("src/routeTree.gen.ts");
+        std::fs::write(&tree, "// tree").unwrap();
+        let inputs = vec![root.join("src/routes/index.tsx")];
+        let outputs = [("routeTree.gen.ts", tree.as_path())];
+        let env = |node_env: &str| vec![("NODE_ENV".to_string(), node_env.to_string())];
+        let store = |env: &[(String, String)]| {
+            codegen_store(&root, &cache, "route-tree", Some("generate.mjs"), None, env)
+        };
+
+        store(&env("development"))
+            .persist(&inputs, &outputs)
+            .unwrap();
+        assert!(
+            store(&env("production"))
+                .restore(&inputs, &outputs)
+                .is_err(),
+            "a tree generated under development must not restore for a build"
+        );
+        assert!(store(&env("development"))
+            .restore(&inputs, &outputs)
+            .is_ok());
         let _ = std::fs::remove_dir_all(&root);
     }
 
