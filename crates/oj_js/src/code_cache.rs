@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::hash::Hasher;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use deno_core::url::Url;
@@ -26,44 +26,77 @@ use deno_runtime::code_cache::CodeCacheType;
 
 pub struct FsCodeCache {
     dir: PathBuf,
-    /// Node's compile cache, which Vite's CLI enables, keeps entries in
-    /// memory and writes them in one batch: when Vite's `bin/vite.js` calls
-    /// `module.flushCompileCache()` 10s after start, and at exit
-    /// ([`flush_at_exit`]). Written inline, a cold `import("vite")` spent a
-    /// third of its time creating 230 files. A dropped cache writes too.
-    pending: Arc<Mutex<Pending>>,
-    flush_after: Duration,
     /// False in a process another one waits on (see [`consume_only`]).
     produce: bool,
 }
 
-#[derive(Default)]
-struct Pending {
-    entries: HashMap<PathBuf, Vec<u8>>,
-    /// Vite's flush timer: armed by the first entry, and only once.
-    timer_armed: bool,
+/// Node's compile cache, which Vite's CLI enables, keeps entries in memory
+/// and writes them in batches (`module.flushCompileCache()`), not one file
+/// per module during the import: written inline, a cold import of Vite and
+/// the Start plugin spent a third of its time creating files. One store for
+/// the whole process, so an entry one engine compiled is a hit for every
+/// other engine before it reaches disk. Keyed by entry path: the newest
+/// bytes for a module win.
+struct Held {
+    entries: HashMap<PathBuf, Arc<[u8]>>,
+    /// A flush is scheduled. Each one re-arms on the next put, so a
+    /// long-lived engine writes what it compiles late as well.
+    armed: bool,
+}
+
+static HELD: LazyLock<Mutex<Held>> = LazyLock::new(|| {
+    Mutex::new(Held {
+        entries: HashMap::new(),
+        armed: false,
+    })
+});
+
+fn held() -> std::sync::MutexGuard<'static, Held> {
+    HELD.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// Vite's `setTimeout(() => module.flushCompileCache(), 10 * 1000)`.
-const FLUSH_AFTER: Duration = Duration::from_secs(10);
+const FLUSH_AFTER: Duration = if cfg!(test) {
+    Duration::from_millis(200)
+} else {
+    Duration::from_secs(10)
+};
 
-/// Every cache with entries to write at exit. Engines outlive `main` on
-/// their own threads, so a cache's drop alone would miss the process end.
-static LIVE: Mutex<Vec<(PathBuf, Weak<Mutex<Pending>>)>> = Mutex::new(Vec::new());
-
-/// Node's exit flush (`AtExit` → `FlushCompileCache`), for the process
-/// ending on its own: like Node's, it does not run on `process::exit` or a
-/// signal, where only the timed flush has written anything.
+/// Writes every held entry now. Runs at exit (a guard in `main`, and the
+/// dev server's signal shutdown before `process::exit`), so a session never
+/// loses what it compiled since the last timed flush.
 pub fn flush_at_exit() {
-    let live = std::mem::take(&mut *LIVE.lock().unwrap_or_else(|e| e.into_inner()));
-    for (dir, pending) in live {
-        if let Some(pending) = pending.upgrade() {
-            write_pending(&dir, &pending);
-        }
+    write_held();
+}
+
+/// Writes a snapshot of the held entries, then drops each one that was not
+/// replaced meanwhile: until its file exists, an entry stays readable from
+/// memory.
+fn write_held() {
+    // One flush at a time: two batches holding the same entry would write it
+    // twice, the later one over whatever replaced or pruned the file between.
+    static FLUSHING: Mutex<()> = Mutex::new(());
+    let _flushing = FLUSHING.lock().unwrap_or_else(|e| e.into_inner());
+    let batch: Vec<(PathBuf, Arc<[u8]>)> = {
+        let mut held = held();
+        held.armed = false;
+        held.entries
+            .iter()
+            .map(|(path, bytes)| (path.clone(), bytes.clone()))
+            .collect()
+    };
+    for (path, bytes) in &batch {
+        write_entry(path, bytes);
     }
-    let drains = std::mem::take(&mut *DRAINS.lock().unwrap_or_else(|e| e.into_inner()));
-    for drain in drains {
-        let _ = drain.join();
+    let mut held = held();
+    for (path, bytes) in batch {
+        if held
+            .entries
+            .get(&path)
+            .is_some_and(|b| Arc::ptr_eq(b, &bytes))
+        {
+            held.entries.remove(&path);
+        }
     }
 }
 
@@ -99,24 +132,11 @@ fn hash64(bytes: &[u8]) -> u64 {
 
 impl FsCodeCache {
     pub fn new(dir: PathBuf) -> Self {
-        Self::with_flush_after(dir, FLUSH_AFTER)
+        Self::with_produce(dir, PRODUCE.load(Ordering::Relaxed))
     }
 
-    fn with_flush_after(dir: PathBuf, flush_after: Duration) -> Self {
-        Self::with_options(dir, flush_after, PRODUCE.load(Ordering::Relaxed))
-    }
-
-    fn with_options(dir: PathBuf, flush_after: Duration, produce: bool) -> Self {
-        let pending = Arc::default();
-        let mut live = LIVE.lock().unwrap_or_else(|e| e.into_inner());
-        live.retain(|(_, p)| p.strong_count() > 0);
-        live.push((dir.clone(), Arc::downgrade(&pending)));
-        Self {
-            dir,
-            pending,
-            flush_after,
-            produce,
-        }
+    fn with_produce(dir: PathBuf, produce: bool) -> Self {
+        Self { dir, produce }
     }
 
     /// Whether a miss should have V8 create an entry at all: a consume-only
@@ -174,16 +194,14 @@ impl FsCodeCache {
 
     fn get_entry(&self, specifier: &Url, suffix: &str, source_hash: u64) -> Option<Vec<u8>> {
         let path = self.entry_path(specifier, suffix);
-        let held = self
-            .pending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entries
-            .get(&path)
-            .cloned();
-        let bytes = match held {
+        let held = held().entries.get(&path).cloned();
+        let read;
+        let bytes: &[u8] = match &held {
             Some(bytes) => bytes,
-            None => std::fs::read(&path).ok()?,
+            None => {
+                read = std::fs::read(&path).ok()?;
+                &read
+            }
         };
         let (head, data) = bytes.split_at_checked(8)?;
         if head != source_hash.to_le_bytes() {
@@ -196,34 +214,30 @@ impl FsCodeCache {
         if !self.produce {
             return;
         }
-        let path = self.entry_path(specifier, suffix);
         let mut bytes = Vec::with_capacity(8 + data.len());
         bytes.extend_from_slice(&source_hash.to_le_bytes());
         bytes.extend_from_slice(data);
-        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-        pending.entries.insert(path, bytes);
-        if pending.timer_armed {
+        let mut held = held();
+        held.entries
+            .insert(self.entry_path(specifier, suffix), bytes.into());
+        if held.armed {
             return;
         }
-        pending.timer_armed = true;
-        // Like Vite's unref'd timer, it never keeps a finished job waiting:
-        // a cache dropped first has written everything already.
-        let weak = Arc::downgrade(&self.pending);
-        let dir = self.dir.clone();
-        let after = self.flush_after;
+        held.armed = true;
+        drop(held);
+        // Like Vite's unref'd timer, it never keeps a finished process
+        // waiting: the exit flush writes whatever it would have.
         let _ = std::thread::Builder::new()
             .name("oj-code-cache-flush".into())
-            .spawn(move || {
-                std::thread::sleep(after);
-                if let Some(pending) = weak.upgrade() {
-                    write_pending(&dir, &pending);
-                }
+            .spawn(|| {
+                std::thread::sleep(FLUSH_AFTER);
+                write_held();
             });
     }
 
-    /// Writes every entry held in memory (Node's `module.flushCompileCache()`).
+    /// Writes every held entry (Node's `module.flushCompileCache()`).
     pub fn flush(&self) {
-        write_pending(&self.dir, &self.pending);
+        write_held();
     }
 
     pub fn get(&self, specifier: &Url, kind: CodeCacheType, source_hash: u64) -> Option<Vec<u8>> {
@@ -311,52 +325,15 @@ impl FsCodeCache {
     }
 }
 
-/// Writers started by dropped caches; the exit flush waits for them.
-static DRAINS: Mutex<Vec<std::thread::JoinHandle<()>>> = Mutex::new(Vec::new());
-
-impl Drop for FsCodeCache {
-    /// Hands what is held to a writer thread: an engine can drop on a boot's
-    /// critical path (a prewarmed host nothing needs), and writing its
-    /// entries there would cost the cold run the deferral exists to spare.
-    fn drop(&mut self) {
-        let entries = std::mem::take(
-            &mut self
-                .pending
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .entries,
-        );
-        if entries.is_empty() {
-            return;
-        }
-        let dir = self.dir.clone();
-        let drain = std::thread::Builder::new()
-            .name("oj-code-cache-drain".into())
-            .spawn(move || {
-                for (path, bytes) in entries {
-                    write_entry(&dir, &path, &bytes);
-                }
-            });
-        if let Ok(drain) = drain {
-            DRAINS.lock().unwrap_or_else(|e| e.into_inner()).push(drain);
-        }
-    }
-}
-
-/// Writes and clears the entries a cache holds in memory.
-fn write_pending(dir: &std::path::Path, pending: &Mutex<Pending>) {
-    let entries = std::mem::take(&mut pending.lock().unwrap_or_else(|e| e.into_inner()).entries);
-    for (path, bytes) in entries {
-        write_entry(dir, &path, &bytes);
-    }
-}
-
 /// Atomic publish: write-then-rename, so a concurrent reader never sees a
 /// torn half-write. The tmp name carries a process-wide sequence beside the
 /// pid: several caches can write the same entry, and a pid-only suffix let
 /// two writers rename a torn file into place.
-fn write_entry(dir: &std::path::Path, path: &std::path::Path, bytes: &[u8]) {
-    if std::fs::create_dir_all(dir).is_err() {
+fn write_entry(path: &std::path::Path, bytes: &[u8]) {
+    if path
+        .parent()
+        .is_some_and(|dir| std::fs::create_dir_all(dir).is_err())
+    {
         return;
     }
     static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -850,24 +827,30 @@ mod hygiene_tests {
         }
     }
 
-    // Vite flushes the compile cache 10s after start, so a long-lived engine
-    // persists what it compiled at boot without ever exiting cleanly.
+    // Vite flushes the compile cache 10s after start; here every flush
+    // re-arms, so a long-lived engine also persists what it compiles late (an
+    // SSR route on its first request) without ever exiting cleanly.
     #[test]
-    fn the_timed_flush_writes_entries_without_a_drop() {
+    fn timed_flushes_keep_landing_later_entries() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = FsCodeCache::with_flush_after(
-            dir.path().to_path_buf(),
-            std::time::Duration::from_millis(200),
-        );
-        let spec = url("file:///boot.js");
-        cache.put(&spec, CodeCacheType::EsModule, 1, b"x");
-        let on_disk = || std::fs::read_dir(dir.path()).map_or(0, |d| d.count());
-        assert_eq!(on_disk(), 0, "held in memory until the flush");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while on_disk() == 0 {
-            assert!(std::time::Instant::now() < deadline, "never flushed");
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
+        let cache = FsCodeCache::new(dir.path().to_path_buf());
+        let lands = |spec: &Url| {
+            let path = cache.entry_path(spec, "esm");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !path.exists() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "never flushed: {spec}"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        };
+        let boot = url("file:///boot.js");
+        cache.put(&boot, CodeCacheType::EsModule, 1, b"x");
+        lands(&boot);
+        let late = url("file:///late.js");
+        cache.put(&late, CodeCacheType::EsModule, 1, b"y");
+        lands(&late);
     }
 
     // A finished one-shot process (`oj build`, an engine job) returns from
@@ -882,21 +865,20 @@ mod hygiene_tests {
         assert!(cache.get(&spec, CodeCacheType::EsModule, 1).is_some());
     }
 
-    // An entry is served from memory before the flush lands it, so a module
-    // a second engine compiles in the same window still hits.
+    // Held entries belong to the process, not to the cache that made them:
+    // a second engine compiling the same module before the flush still hits.
     #[test]
-    fn a_held_entry_is_served_before_the_flush() {
+    fn a_held_entry_is_a_hit_for_another_cache() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = FsCodeCache::new(dir.path().to_path_buf());
         let spec = url("file:///held.js");
-        cache.put(&spec, CodeCacheType::EsModule, 1, b"x");
-        assert_eq!(std::fs::read_dir(dir.path()).map_or(0, |d| d.count()), 0);
+        FsCodeCache::new(dir.path().to_path_buf()).put(&spec, CodeCacheType::EsModule, 1, b"x");
+        let other = FsCodeCache::new(dir.path().to_path_buf());
         assert_eq!(
-            cache.get(&spec, CodeCacheType::EsModule, 1).as_deref(),
+            other.get(&spec, CodeCacheType::EsModule, 1).as_deref(),
             Some(b"x".as_slice())
         );
         assert!(
-            cache.get(&spec, CodeCacheType::EsModule, 2).is_none(),
+            other.get(&spec, CodeCacheType::EsModule, 2).is_none(),
             "the source hash still guards"
         );
     }
@@ -911,7 +893,7 @@ mod hygiene_tests {
         writer.put(&spec, CodeCacheType::EsModule, 1, b"bytecode");
         drop(writer);
         flush_at_exit();
-        let reader = FsCodeCache::with_options(dir.path().to_path_buf(), FLUSH_AFTER, false);
+        let reader = FsCodeCache::with_produce(dir.path().to_path_buf(), false);
         assert!(!reader.produces());
         assert_eq!(
             reader.get(&spec, CodeCacheType::EsModule, 1).as_deref(),

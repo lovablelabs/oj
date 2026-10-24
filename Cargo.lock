@@ -6566,6 +6566,7 @@ dependencies = [
  "deno_core",
  "deno_error",
  "deno_media_type",
+ "deno_package_json",
  "deno_path_util",
  "deno_resolver",
  "node_resolver",

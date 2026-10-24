@@ -1948,6 +1948,8 @@ pub async fn close_plugins_on_shutdown(host: Arc<std::sync::OnceLock<Arc<PluginH
     // Own-group children no longer sit in the terminal's foreground group, so
     // the signal that ends oj never reaches them; forward it.
     child_groups::kill_all();
+    // `process::exit` skips `main`'s guard.
+    oj_js::code_cache::flush_at_exit();
     std::process::exit(code);
 }
 

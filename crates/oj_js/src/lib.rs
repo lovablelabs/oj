@@ -17,6 +17,7 @@ mod engine;
 mod host;
 mod isolate;
 mod loader;
+mod package_json_memo;
 mod scheduler;
 mod stand_ins;
 mod watchdog;

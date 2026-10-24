@@ -386,6 +386,8 @@ pub fn restart_process(reason: &str) -> ! {
     // In-process plugin hosts chdir the process to their app root; restart from
     // the launch dir so relative CLI args (`oj dev ./web`) resolve correctly.
     let launch_dir = STARTUP_CWD.get().filter(|d| d.is_dir());
+    // The new image starts with an empty store: write what this one holds.
+    oj_js::code_cache::flush_at_exit();
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
