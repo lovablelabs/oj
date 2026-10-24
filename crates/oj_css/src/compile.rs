@@ -31,6 +31,9 @@ pub(crate) struct Mode {
     pub rebase: bool,
     /// Append an inline source map (`css.devSourcemap`).
     pub source_map: bool,
+    /// The classes are scoped already ([`scope_css_module`]): compile the
+    /// sheet as plain CSS.
+    pub scoped: bool,
 }
 
 pub fn compile_css(url: &str, source: &str, minify: bool) -> Result<CssOutput, String> {
@@ -54,11 +57,52 @@ pub fn compile_css_with(
     compile_css_depth(url, source, mode, resolve, 0)
 }
 
+/// A build compile of a CSS module [`scope_css_module`] already scoped.
+pub fn compile_scoped_css_with(
+    url: &str,
+    source: &str,
+    resolve: &CssResolve<'_>,
+) -> Result<CssOutput, String> {
+    let mode = Mode {
+        minify: resolve.minify,
+        scoped: true,
+        ..Mode::default()
+    };
+    compile_css_depth(url, source, mode, resolve, 0)
+}
+
+/// What Vite's postcss-modules step leaves of a CSS module for the plugins
+/// after vite:css: the classes scoped and the class map built, the sheet
+/// otherwise as written (not lowered or minified).
+pub fn scope_css_module(
+    url: &str,
+    source: &str,
+    resolve: &CssResolve<'_>,
+) -> Result<CssOutput, String> {
+    let modules = module_is_scoped(url, resolve).then(|| css_modules::Config {
+        pattern: scoped_name_pattern(resolve.modules),
+        ..css_modules::Config::default()
+    });
+    let stylesheet = parse_stylesheet(source, url, modules, ParserFlags::empty())?;
+    let result = stylesheet
+        .to_css(PrinterOptions::default())
+        .map_err(|err| format!("css print error in {url}: {err}"))?;
+    let exports = match result.exports {
+        Some(map) => module_exports(map, url, resolve, 0),
+        None => Vec::new(),
+    };
+    Ok(CssOutput {
+        css: result.code,
+        exports: Some(exports),
+    })
+}
+
 pub fn compile_css_rebased(url: &str, source: &str, minify: bool) -> Result<CssOutput, String> {
     let mode = Mode {
         minify,
         rebase: true,
         source_map: false,
+        scoped: false,
     };
     compile_css_depth(url, source, mode, &CssResolve::default(), 0)
 }
@@ -73,6 +117,7 @@ pub fn compile_css_rebased_with_map(
         minify,
         rebase: true,
         source_map: true,
+        scoped: false,
     };
     compile_css_depth(url, source, mode, &CssResolve::default(), 0)
 }
@@ -89,6 +134,7 @@ pub fn compile_css_dev(
         minify: false,
         rebase: true,
         source_map,
+        scoped: false,
     };
     compile_css_depth(url, source, mode, resolve, 0)
 }
@@ -138,7 +184,7 @@ pub(crate) fn compile_css_depth(
     resolve: &CssResolve<'_>,
     depth: u8,
 ) -> Result<CssOutput, String> {
-    let is_module_file = is_css_module(url);
+    let is_module_file = is_css_module(url) && !mode.scoped;
     let modules = (is_module_file && module_is_scoped(url, resolve)).then(|| css_modules::Config {
         pattern: scoped_name_pattern(resolve.modules),
         ..css_modules::Config::default()

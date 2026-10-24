@@ -374,6 +374,33 @@ mod tests {
         assert!(out.css.contains(scoped.as_str()), "{}", out.css);
     }
 
+    // The build scopes a CSS module first when plugins run between the two
+    // steps (Vite's "normal" slot); with nothing in between, the two steps
+    // ship what the one-step compile does, and the same class map.
+    #[test]
+    fn scoping_then_compiling_matches_the_one_step_compile() {
+        let url = "/src/Counter.module.css";
+        let plain = ".button { padding: 1rem; display: flex; }\n.button:hover { opacity: 0.9; }\n:global(.app) .label { color: rebeccapurple; user-select: none; }\n";
+        let composing = ".button { padding: 1rem; }\n.other { composes: button; color: red; }\n";
+        for minify in [true, false] {
+            let cfg = CssResolveConfig {
+                minify,
+                ..Default::default()
+            };
+            for src in [plain, composing] {
+                let one = compile_css_with(url, src, &cfg.as_ref()).unwrap();
+                let scoped = scope_css_module(url, src, &cfg.as_ref()).unwrap();
+                assert!(!scoped.css.contains(".button"), "scoped: {}", scoped.css);
+                assert_eq!(scoped.exports, one.exports, "minify {minify}: {src}");
+                let two = compile_scoped_css_with(url, &scoped.css, &cfg.as_ref()).unwrap();
+                assert_eq!(two.exports, None, "the scoped compile makes no class map");
+                if src == plain {
+                    assert_eq!(two.css, one.css, "minify {minify}");
+                }
+            }
+        }
+    }
+
     fn with_modules(modules: CssModulesOptions) -> CssResolveConfig {
         CssResolveConfig {
             modules,
