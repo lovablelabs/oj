@@ -144,3 +144,25 @@ async fn apply_to_environment_promised_array_is_flattened() {
     let names = hosted_names("apply-env", "vite.config.mjs", src, bundle_host("client")).await;
     assert_eq!(names, ["per-env:client", "per-env:extra"]);
 }
+
+// What applyToEnvironment returns passes the same filter as the top-level
+// list: a wrapper handing back TanStack's plugins does not smuggle them in.
+#[tokio::test]
+async fn apply_to_environment_cannot_return_framework_plugins_into_a_start_host() {
+    let src = r#"export default {
+  plugins: [{
+    name: "wrap",
+    applyToEnvironment: () =>
+      Promise.resolve([{ name: "tanstack-start-core:config" }, { name: "vite:react-babel" }, { name: "wrapped-user" }]),
+  }],
+};
+"#;
+    let names = hosted_names(
+        "apply-env-start",
+        "vite.config.mjs",
+        src,
+        bundle_host("client"),
+    )
+    .await;
+    assert_eq!(names, ["wrapped-user"]);
+}

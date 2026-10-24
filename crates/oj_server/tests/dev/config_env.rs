@@ -188,17 +188,68 @@ async fn start_bundle_host_leaves_out_promise_wrapped_tanstack_plugins() {
     .expect("the bundle host starts");
     let names = host.plugin_names().await;
     host.shutdown();
+    // A plugin list entry that is not a plugin reads as a nameless one.
     assert!(
-        names.iter().any(|n| n == "user-probe"),
-        "the user plugin did not load: {names:?}"
+        names.iter().any(|n| n == "user-probe") && !names.iter().any(|n| n.is_empty()),
+        "the host's plugins: {names:?}"
     );
     assert!(
         !names.iter().any(|n| n.starts_with("tanstack")),
         "a TanStack plugin is hosted: {names:?}"
     );
+    // The config hooks ran: once through Vite's resolveConfig, once in the host.
     let ran = std::fs::read_to_string(app.root.join("config-ran.txt")).unwrap_or_default();
-    assert!(
-        !ran.contains("tanstack"),
-        "a TanStack config hook ran in the bundle host:\n{ran}"
+    assert_eq!(ran, "user-probe\nuser-probe\n", "the config hooks that ran");
+}
+
+/// Vite's build reads `build.rolldownOptions.plugins` through
+/// asyncFlatten(arraify(..)) (build.ts): a lone plugin on a Worker
+/// environment is a one-entry list in the Start facts, not a throw.
+#[tokio::test(flavor = "multi_thread")]
+async fn cloudflare_facts_read_a_lone_rolldown_plugin() {
+    require_fixture!("vite");
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"lonecf","private":true,"type":"module"}"#,
+        ),
+        (
+            "vite.config.mjs",
+            r#"export default {
+  environments: {
+    worker: {
+      resolve: { builtins: ["cloudflare:workers"] },
+      build: { rolldownOptions: { plugins: { name: "builtin:esm-external-require", _options: { external: ["a"] } } } },
+    },
+  },
+};
+"#,
+        ),
+    ]);
+    app.link_fixture("vite");
+    let payload = serde_json::json!({
+        "config": { "root": app.root.display().to_string(), "base": "/", "mode": "production", "command": "build" },
+        "env": { "command": "build", "mode": "production" },
+        "environment": { "name": "client", "mode": "build" },
+        "pluginsFormat": "vite",
+        "ojStartMode": true,
+        "ojBundleHost": true,
+    })
+    .to_string();
+    let host = oj_server::plugins::PluginHost::spawn(
+        &app.root,
+        &app.root.join("vite.config.mjs"),
+        &payload,
+        None,
+    )
+    .await
+    .expect("the bundle host starts");
+    let facts = host.start_facts().await;
+    host.shutdown();
+    let facts = facts.expect("start facts are served");
+    assert_eq!(
+        facts["cloudflare"]["rolldownPlugins"],
+        serde_json::json!([{ "name": "builtin:esm-external-require", "options": { "external": ["a"] } }]),
+        "{facts}"
     );
 }

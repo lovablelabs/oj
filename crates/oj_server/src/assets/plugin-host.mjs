@@ -1193,7 +1193,7 @@ const unsupportedReported = new Set();
 // the user's loaded config file merged with the inline config (oj's values,
 // root, base, define and server, overlay the file's).
 function hostedPlugins(list, userConfig) {
-  let out = list.filter((p) => !OJ_NATIVE_PLUGIN_NAMES.has(p && p.name));
+  let out = list.filter((p) => !ojRunsNatively(p));
   out = out.filter((p) => {
     if (OJ_UNSUPPORTED_PLUGIN_NAMES.has(p && p.name)) {
       if (unsupportedReported.has(p.name)) return false;
@@ -1217,16 +1217,21 @@ function hostedPlugins(list, userConfig) {
       throw e;
     }
   });
-  // In start mode the ssr-environment host backs oj's in-process Start module
-  // host: framework plugins oj reimplements natively (vite:*, tanstack's
-  // compiler plugins) must not transform SSR modules — the Start pipeline does
-  // their work (server-fn rewrite, route tree, refresh) — while user plugins
-  // (mdx, svgr, virtual modules) run. A Start bundle host leaves the same
-  // plugins out: the native Start bundles do their work.
-  if (ojStartMode && ((initial.environment && initial.environment.name) === "ssr" || ojBundleHost)) {
-    out = out.filter((p) => !isReimplemented(p && p.name));
-  }
   return out.sort((a, b) => enforceRank(a) - enforceRank(b));
+}
+// In start mode the ssr-environment host backs oj's in-process Start module
+// host: framework plugins oj reimplements natively (vite:*, tanstack's
+// compiler plugins) must not transform SSR modules — the Start pipeline does
+// their work (server-fn rewrite, route tree, refresh) — while user plugins
+// (mdx, svgr, virtual modules) run. A Start bundle host leaves the same
+// plugins out: the native Start bundles do their work.
+const startLeavesOutReimplemented =
+  ojStartMode && ((initial.environment && initial.environment.name) === "ssr" || ojBundleHost);
+// Whether oj does `p`'s work itself, so this host leaves it out: the
+// top-level list and what applyToEnvironment returns alike.
+function ojRunsNatively(p) {
+  const name = p && p.name;
+  return OJ_NATIVE_PLUGIN_NAMES.has(name) || (startLeavesOutReimplemented && isReimplemented(name));
 }
 // Vite's picomatch, for plugin `filter` ids.
 await loadViteGlobs(initial.config?.root ?? process.cwd());
@@ -1846,7 +1851,7 @@ async function environmentPlugins(environment, candidates) {
       next.push(p);
       continue;
     }
-    const returned = await flattenPlugins(applied);
+    const returned = (await flattenPlugins(applied)).filter((ap) => !ojRunsNatively(ap));
     for (const ap of returned) {
       const ignored = ignoredEnvironmentPluginHooks.filter((hook) => ap[hook]);
       if (ignored.length > 0) {
@@ -4334,7 +4339,7 @@ function cloudflareEnvironmentFacts(c, fns) {
     target: typeof options.build?.target === "string" ? options.build.target : null,
     // Rolldown builtin plugins the environment attached (Vite's
     // esmExternalRequirePlugin): their names and options.
-    rolldownPlugins: (options.build?.rolldownOptions?.plugins ?? [])
+    rolldownPlugins: [options.build?.rolldownOptions?.plugins]
       .flat(Infinity)
       .filter(Boolean)
       .map((p) => ({ name: p.name ?? null, options: factValue(p._options ?? null, fns) })),
