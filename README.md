@@ -89,7 +89,7 @@ Memory is measured over the whole process tree, and reported two ways: resident 
 
 Against Vite's default dev, oj starts faster at every size: cold 1.4x at 1k to 1.9x at 10k, warm 1.9x to 2.2x. Reload is level with it. Vite's experimental bundled dev starts faster than oj and reloads far faster, because it serves one bundle instead of thousands of modules. HMR matches bundled dev at every size, and beats default dev from 5k up (default dev is faster at 1k). Memory is oj's largest and most consistent win: a 136-201MB footprint against Vite's 306MB-1.7GB, from 2.5x less than default dev at 1k to 6.6x less at 10k, measured over whole process trees.
 
-Production builds (`oj build` vs `vite build`) write byte-identical output: on the 10,000-component app the two `dist` directories match file for file. `oj build` is currently slower there: 697ms against Vite's 476ms with oj's cache cleared before each build, 523ms against 479ms primed (median of 7 interleaved runs).
+Production builds (`oj build` vs `vite build`) produce the same output on the 10,000-component app. `oj build` is currently slower there: 697ms against Vite's 476ms with oj's cache cleared before each build, 523ms against 479ms primed (median of 7 interleaved runs).
 
 ## Reference reading
 
