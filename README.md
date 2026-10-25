@@ -59,7 +59,7 @@ Windows MSVC x64/arm64.
 
 ## Benchmarks
 
-Generated fanout-10 React component trees, measured save-to-paint with Playwright against Vite 8.2.1 (Rolldown-based) on an M-series Mac, in both its default dev mode (vite) and its experimental bundled dev mode (vite-fbm). p50/p95 over 5 cold+warm restart cycles and 10 HMR edits.
+Generated fanout-10 React component trees, measured save-to-paint with Playwright against Vite 8.3.5 (Rolldown-based) on an Apple M5 Max, in both its default dev mode (vite) and its experimental bundled dev mode (vite-fbm). p50/p95 over 5 cold+warm restart cycles and 10 HMR edits. Measured with oj 0.2.46.
 
 Memory is measured over the whole process tree, and reported two ways: resident set (tree RSS) and macOS physical footprint, which excludes clean and reclaimable resident pages and so bounds retained memory. Forced-GC RSS is not a column because it cannot be measured symmetrically (Node exposes an external GC handle through its inspector; embedded V8 does not) — for reference, forcing GC before measuring lowered vite's tree RSS by roughly a third in our runs, still well above its footprint. Methodology corrections owe to [#202](https://github.com/lovablelabs/oj/issues/202).
 
@@ -67,29 +67,29 @@ Memory is measured over the whole process tree, and reported two ways: resident 
 
 | tool | cold start | warm start | reload | HMR | tree RSS | footprint |
 |---|---|---|---|---|---|---|
-| **oj** | **661/756ms** | **433/460ms** | **232/238ms** | **55/59ms** | **139MB** | **96MB** |
-| vite | 769/780ms | 724/728ms | 229/232ms | 54/92ms | 405MB | 325MB |
-| vite-fbm | 341/344ms | 340/342ms | 54/56ms | 55/59ms | 357MB | 288MB |
+| **oj** | **466/558ms** | **321/327ms** | **166/168ms** | **57/59ms** | **180MB** | **136MB** |
+| vite | 641/648ms | 600/606ms | 167/167ms | 38/76ms | 398MB | 338MB |
+| vite-fbm | 317/356ms | 317/323ms | 47/48ms | 56/59ms | 357MB | 306MB |
 
 **5,000 components (p50/p95):**
 
 | tool | cold start | warm start | reload | HMR | tree RSS | footprint |
 |---|---|---|---|---|---|---|
-| **oj** | **1711/1744ms** | **1477/1509ms** | **1037/1056ms** | **59/62ms** | **187MB** | **145MB** |
-| vite | 2966/3396ms | 2793/3020ms | 1002/1099ms | 55/60ms | 903MB | 699MB |
-| vite-fbm | 959/973ms | 954/969ms | 167/172ms | 57/61ms | 974MB | 770MB |
+| **oj** | **1280/1451ms** | **1024/1038ms** | **722/726ms** | **61/62ms** | **398MB** | **146MB** |
+| vite | 2312/2321ms | 2133/2153ms | 710/713ms | 156/158ms | 848MB | 731MB |
+| vite-fbm | 989/995ms | 998/1000ms | 177/179ms | 60/67ms | 978MB | 931MB |
 
 **10,000 components (p50/p95):**
 
 | tool | cold start | warm start | reload | HMR | tree RSS | footprint |
 |---|---|---|---|---|---|---|
-| **oj** | **4168/4487ms** | **3898/4075ms** | **2934/3115ms** | **59/184ms** | **231MB** | **190MB** |
-| vite | 6983/7413ms | 6479/7037ms | 2400/2454ms | 83/266ms | 1465MB | 1126MB |
-| vite-fbm | 1593/2130ms | 1585/1705ms | 307/329ms | 60/69ms | 1761MB | 1229MB |
+| **oj** | **2380/2395ms** | **1929/1942ms** | **1431/1452ms** | **66/175ms** | **684MB** | **201MB** |
+| vite | 4554/4559ms | 4163/4185ms | 1383/1407ms | 152/157ms | 1414MB | 1331MB |
+| vite-fbm | 1379/1381ms | 1373/1378ms | 266/273ms | 67/72ms | 1740MB | 1741MB |
 
-oj wins cold and warm start against Vite's default dev at every size (~1.7x at 10k). HMR is a wash across all three. oj's decisive, consistent win is memory: 96-190MB footprint against Vite's 288MB-1.2GB, roughly 3x at 1k growing to 6x at 10k, measured over whole process trees.
+Against Vite's default dev, oj starts faster at every size: cold 1.4x at 1k to 1.9x at 10k, warm 1.9x to 2.2x. Reload is level with it. Vite's experimental bundled dev starts faster than oj and reloads far faster, because it serves one bundle instead of thousands of modules. HMR matches bundled dev at every size, and beats default dev from 5k up (default dev is faster at 1k). Memory is oj's largest and most consistent win: a 136-201MB footprint against Vite's 306MB-1.7GB, from 2.5x less than default dev at 1k to 6.6x less at 10k, measured over whole process trees.
 
-Production builds (`oj build` vs `vite build`) land at parity: same engine (Rolldown), byte-identical output sizes.
+Production builds (`oj build` vs `vite build`) write byte-identical output: on the 10,000-component app the two `dist` directories match file for file. `oj build` is currently slower there: 697ms against Vite's 476ms with oj's cache cleared before each build, 523ms against 479ms primed (median of 7 interleaved runs).
 
 ## Reference reading
 
