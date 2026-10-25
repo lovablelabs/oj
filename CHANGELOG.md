@@ -5,12 +5,24 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.46] - 2026-10-25
+
+### Added
+
+- StyleX, compiled natively. An app keeps `@stylexjs/unplugin`'s `stylex.vite(options)` in its Vite config, and oj runs it on its own Rust StyleX compiler (targeting `@stylexjs/babel-plugin` 0.19.0) in dev, `oj build` and TanStack Start. In a Start build the rules join the app's first stylesheet, as the plugin's `generateBundle` does, instead of a separate linked sheet. `oj stylex <command>` and the standalone `fru` binary expose the compiler's CLI.
+- OpenTelemetry export, off by default. `OJ_OTEL=1` exports oj's diagnostics as log records, along with request spans and metrics, over OTLP, configured by the standard `OTEL_EXPORTER_OTLP_*`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` and `OTEL_TRACES_SAMPLER*` variables.
 
 ### Changed
 
 - Cold boots are faster. V8 code-cache entries are held in memory, shared by every engine in the process, and written in batches 10 seconds apart, like Node's compile cache under Vite. Before, every module wrote its entry during the import. Shutdown and restarts write what is still held. One-shot children the server waits on (config extraction, start scripts) read the cache but no longer create entries. package.json files are parsed once per process and read again only when the file changes. On a TanStack Start fixture the cold first response drops from 2.40s to 1.99s, and a cold import of Vite plus the Start plugin in an engine job from 461ms to 233ms.
 - `oj build` writes pages as Vite does. The entry `<script>`, its modulepreload links and its stylesheets go into `<head>`, serialized the way Vite writes them, and the module scripts leave the body. A page's local `<link rel="stylesheet">` is now imported by its entry and lands in the entry's stylesheet in document order, instead of becoming a hashed file of its own. A `media` or `disabled` one stays a plain asset. With `cssCodeSplit: false` the single sheet ends in Vite's hash marker, as Vite's does.
+- `oj build`'s JS output matches `vite build` (8.3.5) byte for byte, React apps and file names included. Dynamic imports go through a port of rolldown's build import analysis, with Vite's own preload helper bundled and minified like any module instead of prepended after the build. oj builds on rolldown 1.2.15 and oxc 0.155, the versions Vite 8.3.5 uses.
+- Assets oj names itself (stylesheets, CSS `url()` assets, Start's emitted files) are hashed as rolldown names them for Vite 8, in URL-safe base64, and `[hash:N]` works in file name patterns. A stylesheet's name hashes the sheet with Vite's `/*$vite$:1*/` marker, so names match Vite's.
+- Pages are the build's inputs, as in Vite. A page's entry chunk and stylesheet take the page's name (`index-*.js` and `index-*.css`, or the key of an object `input`) instead of its script's. A page whose scripts only import CSS or shared chunks gets no JS entry of its own, and the modulepreload polyfill is a module, shared as `modulepreload-polyfill-*.js` between pages.
+- `?worker`, `?worker&url` and `new Worker(new URL(...))` build each worker as its own bundle, as Vite's `bundleWorkerEntry` does, so a worker never carries the page's preload helper.
+- TanStack Start worker bundles run in containers of the app's plugin host, as Vite builds a worker with `worker.plugins` in the same process, instead of booting a new engine per worker.
+- TanStack Start bundle hosts skip plugin hooks whose filters reject a module, as Vite's plugin container and rolldown do. Every module used to cross into the JS engine for `load` and `transform`.
+- A TanStack Start build evaluates the Vite config once less: the route tree is generated under the build's own mode and env, as TanStack's router plugin does. `oj build --mode staging` used to generate it under `.env.development`, and a config that throws only under `serve` no longer fails the build.
 
 ### Removed
 
@@ -18,6 +30,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- With a non-root `base`, the dev server strips the base before routing, as Vite's base middleware does. oj's client, its HMR socket and the React refresh preamble answer under the base (Fast Refresh threw before the page rendered), `/` and `/index.html` redirect to the base, and a `server.proxy` bypass that returns a path serves that path.
+- `oj build` resolves JS imports that start with `/`: a file under the root (`/src/x`) first, then a public-dir file, whose module exports its URL (create-vite's `import viteLogo from '/vite.svg'`). Both failed with `UNRESOLVED_IMPORT`.
+- A TanStack Start `oj build` empties its outDir by Vite's `emptyOutDir` rule: an outDir outside the root is left alone with Vite's warning unless `--emptyOutDir` or `build.emptyOutDir` asks for it, `.git` is kept, and `build.emptyOutDir: false` is honored. It used to delete any outDir, `.git` included.
+- TanStack Start server code sees every var of the mode's `.env` files in `process.env`, in dev and in the build's prerender, as Start's load-env plugin provides them. `envPrefix` still gates `import.meta.env`.
+- Under TanStack Start, `enforce: "pre"` load hooks see image imports with a query (vite-imagetools' `x.webp?w=768`) before oj's asset handling, in dev SSR and in the bundles. Such routes returned 500.
+- `import.meta.glob` patterns that use an alias (`@/assets/*.png`) resolve through `resolve.alias` in dev, `oj build` and Start. They expanded to `{}`.
+- The dev server restarts only for the config file it loaded, that file's dependencies and the mode's env files in `envDir`, as Vite does. A `.env*` or `*.config.*` file anywhere under a watched directory, such as a nested folder or a monorepo sibling, used to restart it.
+- Dev asset preloads name an imported image by the `?url` form its import uses, and responses whose body depends on `Sec-Fetch-Dest` send `Vary: sec-fetch-dest`. Overwriting an imported image in place hot-updates its importers.
+- Plugins wrapped in a promise (`Promise.resolve([tanstackStart()])`) are flattened as Vite's `asyncFlatten` does, so TanStack's own plugins stay out of the Start bundle host. Plugins returned from `applyToEnvironment` go through the same filter.
+- `this.getModuleInfo` and `this.getModuleIds` know every module in the bundle, in `oj build` and Start bundles, as rolldown's do. A module whose transform a hook filter skipped returned `null`.
+- `chunk.modules` in `renderChunk`, `generateBundle` and `writeBundle` carries each module's `renderedLength`.
 - Pre-bundled dependencies declare their top-level bindings with `var`, as Vite's do. Vite's optimizer sets `optimizeDeps.rolldownOptions.output.topLevelVar` unless the app turns it off, keeping the hoisting esbuild always gave; oj reported the option as unsupported and kept every `let`, `const` and `class`, so a dep that reads a binding before its declaration threw a TDZ `ReferenceError` under oj only. `topLevelVar: false` still opts out. Existing pre-bundles are rebuilt once.
 - `oj build` runs plugin transforms on stylesheets in Vite's order: `enforce: "pre"` plugins on the source, normal ones on the compiled CSS (a CSS module's classes already scoped), `enforce: "post"` ones on the JS module that stands in for the sheet, each once. oj ran every plugin on the source and again on that module, so `@tailwindcss/vite`, which returns a stylesheet of its own, turned the module into CSS and the build failed with a `PARSE_ERROR`. Chunks a stylesheet's transform emits are bundled, a plugin that throws on a stylesheet fails the build instead of being skipped, and a worker's stylesheets no longer go through the app's plugins (Vite bundles a worker with `worker.plugins`).
 - `oj dev` runs plugin transforms on stylesheets in the same slots, as Vite's dev server does: `enforce: "pre"` plugins on the source, normal ones on the compiled CSS, `enforce: "post"` ones on what is served, the CSS for a `<link>` (`?direct`) and the JS module for an import or `?inline`. A sheet's `?direct` and `?inline` requests compile on their own, with their query in the id plugins see. A CSS module's class names under a PostCSS config hash the sheet before PostCSS, as Vite's do.
