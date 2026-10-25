@@ -918,9 +918,10 @@ async fn client_slot_records(command: super::Command) -> (Vec<String>, String) {
         ("src/a.scss", "$c: red;\n.a { color: $c; }\n"),
         ("src/b.scss", "$c: blue;\n.b { color: $c; }\n"),
         ("src/m.module.css", ".m { color: teal; }\n"),
+        ("src/u.scss", "$c: green;\n.u { color: $c; }\n"),
         (
             "src/entry.js",
-            "import \"./a.scss\";\nimport b from \"./b.scss?inline\";\nimport m from \"./m.module.css\";\nimport \"virtual:theme.css\";\nconsole.log(b, m.m);\n",
+            "import \"./a.scss\";\nimport b from \"./b.scss?inline\";\nimport m from \"./m.module.css\";\nimport \"virtual:theme.css\";\nimport u from \"./u.scss?url\";\nconsole.log(b, m.m, u);\n",
         ),
         ("oj.plugins.mjs", &spies),
     ]);
@@ -982,8 +983,10 @@ async fn client_slot_records(command: super::Command) -> (Vec<String>, String) {
 /// The client environment's lines Vite 8.3.5 records for this app under
 /// TanStack Start, in dev and in the build: each sheet once through each slot,
 /// "pre" plugins on the source, "normal" ones on the CSS (a module's classes
-/// scoped), "post" ones on the module standing in for it.
-const VITE_CLIENT_SLOTS: [&str; 12] = [
+/// scoped), "post" ones on the module standing in for it. A `?url` import is
+/// JS to every plugin; the build compiles its sheet as `?transform-only`
+/// ([`VITE_CLIENT_BUILD_URL_SLOTS`]).
+const VITE_CLIENT_SLOTS: [&str; 15] = [
     "client normal \0virtual:theme.css css",
     "client normal a.scss css",
     "client normal b.scss?inline css",
@@ -996,21 +999,44 @@ const VITE_CLIENT_SLOTS: [&str; 12] = [
     "client pre a.scss source",
     "client pre b.scss?inline source",
     "client pre m.module.css css",
+    "client normal u.scss?url js",
+    "client post u.scss?url js",
+    "client pre u.scss?url js",
 ];
+
+const VITE_CLIENT_BUILD_URL_SLOTS: [&str; 3] = [
+    "client normal u.scss?transform-only css",
+    "client post u.scss?transform-only js",
+    "client pre u.scss?transform-only source",
+];
+
+fn sorted(lines: &[&[&str]]) -> Vec<String> {
+    let mut all: Vec<String> = lines
+        .iter()
+        .flat_map(|l| l.iter().map(|s| s.to_string()))
+        .collect();
+    all.sort_unstable();
+    all
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn stylesheet_transforms_run_in_vites_slots_in_the_client_build() {
     let (seen, css) = client_slot_records(super::Command::Build).await;
-    assert_eq!(seen, VITE_CLIENT_SLOTS);
-    // Vite ships the plugin-served sheet with the client's CSS.
+    assert_eq!(
+        seen,
+        sorted(&[&VITE_CLIENT_SLOTS, &VITE_CLIENT_BUILD_URL_SLOTS])
+    );
+    // Vite ships the plugin-served sheet with the client's CSS, and the
+    // `?url` one compiled.
     assert!(css.contains(".from-plugin{color:#639}"), "{css}");
+    assert!(css.contains(".u{color:green}"), "{css}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn stylesheet_transforms_run_in_vites_slots_in_the_client_dev_bundle() {
     assert_eq!(
         client_slot_records(super::Command::Serve).await.0,
-        VITE_CLIENT_SLOTS
+        sorted(&[&VITE_CLIENT_SLOTS])
     );
 }
 

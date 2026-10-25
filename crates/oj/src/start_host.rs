@@ -833,7 +833,8 @@ impl StartHost {
         }
 
         if let Some(kind) = query.as_deref().and_then(|q| q.strip_prefix("ojasset=")) {
-            return Ok(js(self.asset_module(&clean, kind).await?));
+            let code = self.asset_module(&clean, kind).await?;
+            return Ok(js(self.asset_transform(&clean, kind, code).await?));
         }
 
         // An asset under a query no intent names (vite-imagetools'
@@ -967,6 +968,31 @@ impl StartHost {
         match Path::new(path).strip_prefix(&self.root) {
             Ok(rel) => format!("{base}/{}", rel.to_string_lossy()),
             Err(_) => format!("{base}/@fs{path}"),
+        }
+    }
+
+    /// The SSR environment's plugin transforms over an asset's module, under
+    /// Vite's id for it (`/abs/x.css?url`): vite:asset's JS goes through the
+    /// whole chain, as any module. A stylesheet's `?inline` and a CSS import
+    /// ran their own slots already.
+    async fn asset_transform(
+        &self,
+        path: &str,
+        kind: &str,
+        code: String,
+    ) -> Result<String, String> {
+        let style = oj_server::is_style_ext(&ext_of(path).to_ascii_lowercase());
+        if !matches!(kind, "raw" | "url") && !(kind == "inline" && !style) {
+            return Ok(code);
+        }
+        let id = format!("{path}?{kind}");
+        match self.bridge.plugin_host().await {
+            Some(host) if host.hook_wants_transform(&id, &code) => host
+                .transform(&code, &id, "{}")
+                .await
+                .map(|t| t.code)
+                .map_err(|e| format!("plugin transform error for {id}:\n{e}")),
+            _ => Ok(code),
         }
     }
 

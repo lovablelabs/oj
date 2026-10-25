@@ -86,10 +86,11 @@ import "../a.less";
 import b from "../b.less?inline";
 import m from "../m.module.css";
 import "virtual:theme.css";
+import u from "../u.less?url";
 
 export const Route = createFileRoute("/")({
   component: () => (
-    <p className={m.m} data-inline={b.length}>
+    <p className={m.m} data-inline={b.length} data-url={u}>
       slots
     </p>
   ),
@@ -99,6 +100,7 @@ export const Route = createFileRoute("/")({
 write("src/a.less", "@c: red;\n.a { color: @c; }\n");
 write("src/b.less", "@c: blue;\n.b { color: @c; }\n");
 write("src/m.module.css", ".m { color: teal; }\n");
+write("src/u.less", "@c: green;\n.u { color: @c; }\n");
 write(
   "spies.mjs",
   `import { appendFileSync } from "node:fs";
@@ -131,7 +133,13 @@ write(
 const records = () => (fs.existsSync(seenFile) ? fs.readFileSync(seenFile, "utf8").split("\n").filter(Boolean) : []);
 const sorted = (lines) => [...lines].sort();
 const reset = () => fs.rmSync(seenFile, { force: true });
-const CLIENT_MODULES = ["/src/a.less", "/src/b.less?inline", "/src/m.module.css", "/@id/__x00__virtual:theme.css"];
+const CLIENT_MODULES = [
+  "/src/a.less",
+  "/src/b.less?inline",
+  "/src/m.module.css",
+  "/@id/__x00__virtual:theme.css",
+  "/src/u.less?url",
+];
 
 let failed = false;
 let srv;
@@ -140,7 +148,7 @@ try {
   reset();
   execSync(`${oj} build ${app}`, { stdio: "ignore" });
   const ojBuild = sorted(records());
-  assert.equal(ojBuild.length, 24, ojBuild.join("\n"));
+  assert.equal(ojBuild.length, 36, ojBuild.join("\n"));
   const clientCss = (dir) =>
     fs
       .readdirSync(path.join(app, dir, "client", "assets"))
@@ -148,7 +156,18 @@ try {
       .map((f) => fs.readFileSync(path.join(app, dir, "client", "assets", f), "utf8"))
       .join("\n");
   assert.ok(clientCss("dist").includes(".from-plugin{color:#639}"), clientCss("dist"));
-  console.log("[oj build] 24 slot records, each sheet once per slot and environment; the plugin's sheet ships");
+  const urlSheet = (dir) => {
+    const assets = path.join(app, dir, "client", "assets");
+    const f = fs.readdirSync(assets).find((f) => /^u-.*\.css$/.test(f));
+    return f && [f, fs.readFileSync(path.join(assets, f), "utf8")];
+  };
+  const ojUrlSheet = urlSheet("dist");
+  assert.ok(ojUrlSheet && ojUrlSheet[1].includes(".u{color:green}"), `the ?url sheet compiled: ${ojUrlSheet}`);
+  const manifest = fs.readFileSync(path.join(app, ".oj-cache", "v1", "start", "manifest.ts"), "utf8");
+  assert.ok(!manifest.includes(ojUrlSheet[0]), `the page does not link the ?url sheet:\n${manifest}`);
+  console.log(
+    "[oj build] 36 slot records, each sheet once per slot and environment; the plugin's and the ?url sheets ship",
+  );
 
   // oj dev: the SSR render and the client bundle (with its linked sheets).
   reset();
@@ -166,9 +185,9 @@ try {
   };
   const linked = await fetchLinks();
   const ojDev = sorted(records());
-  assert.equal(ojDev.length, 24, ojDev.join("\n"));
+  assert.equal(ojDev.length, 30, ojDev.join("\n"));
   assert.ok(linked.includes(".from-plugin"), `the page links the plugin's sheet:\n${html}`);
-  console.log("[oj dev] 24 slot records, each sheet once per slot and environment; the page links the plugin's sheet");
+  console.log("[oj dev] 30 slot records, each sheet once per slot and environment; the page links the plugin's sheet");
 
   // An edit reaches the linked sheet: the next bundle compiles it again.
   write("src/a.less", "@c: green;\n.a { color: @c; }\n");
@@ -190,6 +209,7 @@ try {
   assert.deepEqual(ojBuild, sorted(records()), "each environment's slots, as in Vite's build");
   fs.renameSync(path.join(app, "dist"), path.join(app, "dist-vite"));
   assert.ok(clientCss("dist-vite").includes(".from-plugin{color:#639}"), "Vite ships it too");
+  assert.deepEqual(ojUrlSheet, urlSheet("dist-vite"), "the ?url sheet Vite writes, name and bytes");
   console.log("[vite build] identical records");
 
   reset();

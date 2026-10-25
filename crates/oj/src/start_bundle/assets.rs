@@ -496,6 +496,27 @@ impl Emitter {
         css: String,
         slots: Option<oj_server::StyleSlots<'_>>,
     ) -> Result<String, String> {
+        self.sheet(path, css, slots, true).await
+    }
+
+    /// [`Emitter::css`] for a `?url` import: the same file, which the page
+    /// does not link (Vite emits it as an asset, apart from the chunk's CSS).
+    pub async fn css_asset(
+        &self,
+        path: &Path,
+        css: String,
+        slots: Option<oj_server::StyleSlots<'_>>,
+    ) -> Result<String, String> {
+        self.sheet(path, css, slots, false).await
+    }
+
+    async fn sheet(
+        &self,
+        path: &Path,
+        css: String,
+        slots: Option<oj_server::StyleSlots<'_>>,
+        link: bool,
+    ) -> Result<String, String> {
         self.emitting.lock().unwrap().insert(path.to_path_buf());
         let result = async {
             let css = self.styles.tailwind(path, css).await?;
@@ -510,6 +531,9 @@ impl Emitter {
             };
             // A compiled .scss/.less sheet ships as .css.
             let url = self.write(&path.with_extension("css"), css.as_bytes())?;
+            if !link {
+                return Ok(url);
+            }
             let mut urls = self.css_urls.lock().unwrap();
             if !urls.contains(&url) {
                 urls.push(url.clone());
@@ -1022,6 +1046,28 @@ impl StartAssetsPlugin {
                     .map_err(|e| format!("{}: {e}", path.display()))?;
                 format!("export default {};", json(&text))
             }
+            // Vite's vite:css takes a built `?url` sheet as `?transform-only`:
+            // compiled through the plugins under that id and emitted like a
+            // linked sheet, its module importing that id for the "post" ones.
+            AssetTag::Url if is_style_path(&path_str) && !dev => {
+                let AssetMode::Build { emitter, .. } = &self.mode else {
+                    unreachable!("a build mode")
+                };
+                let only = format!("{}?transform-only", path.display());
+                let slots = self
+                    .plugins
+                    .as_deref()
+                    .map(|host| oj_server::StyleSlots { host, id: &only });
+                let source = oj_server::read_style_source(slots, path).await?;
+                let source = oj_server::style_slot(slots, source, "pre").await?;
+                let css = if is_css_module(&path_str) || !path_str.ends_with(".css") {
+                    self.styles.compile(path, source).await?.css
+                } else {
+                    source
+                };
+                let url = emitter.css_asset(path, css, slots).await?;
+                format!("import {};\nexport default {};", json(&only), json(&url))
+            }
             AssetTag::Url => format!("export default {};", json(&self.url_for(path).await?)),
             AssetTag::Inline if is_style_path(&path_str) => match &self.mode {
                 AssetMode::Dev { state, .. } => {
@@ -1169,6 +1215,16 @@ impl Plugin for StartAssetsPlugin {
     async fn load(&self, _ctx: SharedLoadPluginContext, args: &HookLoadArgs<'_>) -> HookLoadReturn {
         let id = args.id;
         let path = Path::new(id.split('?').next().unwrap_or(id));
+        // A `?url` sheet's compile, done by its `?url` module: what remains is
+        // the module the "post" plugins see, empty as vite:css-post leaves it.
+        if id.ends_with("?transform-only") && is_style_path(&path.to_string_lossy()) {
+            return Ok(Some(HookLoadOutput {
+                code: arcstr::ArcStr::from(""),
+                module_type: Some(ModuleType::Js),
+                side_effects: Some(rolldown_common::side_effects::HookSideEffects::NoTreeshake),
+                ..Default::default()
+            }));
+        }
         let served = self.plugins.is_some() && super::host::is_served_stylesheet(id);
         if !served && (id.starts_with('\0') || !path.is_absolute()) {
             return Ok(None);
