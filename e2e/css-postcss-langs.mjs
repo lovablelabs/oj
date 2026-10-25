@@ -53,9 +53,11 @@ fs.writeFileSync(path.join(app, "src/nested/icon.png"), Buffer.alloc(300, 7));
 write("src/a.pcss", `.pc { color: pink; }\n`);
 write("src/b.postcss", `.po { color: peru; }\n`);
 write("src/c.module.pcss", `.card { color: red; }\n`);
+// PostCSS parses SugarSS itself: postcss-modules hashes this text, not its CSS.
+write("src/d.module.sss", `.tile\n  color: red\n\n.label\n  color: blue\n`);
 write(
   "src/main.js",
-  `import "./sugarss.sss";\nimport "./a.pcss";\nimport "./b.postcss";\nimport c from "./c.module.pcss";\nwindow.__C = c;\n`,
+  `import "./sugarss.sss";\nimport "./a.pcss";\nimport "./b.postcss";\nimport c from "./c.module.pcss";\nimport d from "./d.module.sss";\nwindow.__C = c;\nwindow.__D = d;\n`,
 );
 write(
   "index.html",
@@ -83,6 +85,9 @@ try {
     /"card":"_card_[a-z0-9]{5}_1"/,
     "[dev] a .module.pcss is a CSS module",
   );
+  const dev = await (await fetch(`http://localhost:${PORT}/src/d.module.sss`)).text();
+  const devNames = [...dev.matchAll(/"(tile|label)":"([^"]+)"/g)].map((m) => m[2]);
+  assert.equal(devNames.length, 2, `[dev] a .module.sss is a CSS module:\n${dev}`);
   console.log("[dev] .sss, .pcss and .postcss served as stylesheets");
   srv.kill("SIGKILL");
   await sleep(300);
@@ -104,7 +109,8 @@ try {
   assert.match(css, /\.sugarss\{color:#00f\}/, css);
   assert.match(css, /\.pc\{color:pink\}/, css);
   assert.match(css, /\.po\{color:peru\}/, css);
-  console.log("[build] .sss, .pcss and .postcss compiled into the stylesheet");
+  for (const name of devNames) assert.ok(css.includes(`.${name}{`), `[build] ${name} as in dev:\n${css}`);
+  console.log("[build] .sss, .pcss and .postcss compiled into the stylesheet; .module.sss names agree with dev");
 
   const viteBin = path.join(repo, "e2e", "fixtures", "start-app", "node_modules", "vite", "bin", "vite.js");
   if (fs.existsSync(viteBin)) {

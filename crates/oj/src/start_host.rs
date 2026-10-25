@@ -332,9 +332,10 @@ fn classify_id(abs: &str, intent: Option<&'static str>, svg_react: bool) -> Stri
     if oj_server::is_style_ext(&ext) {
         return format!("{abs}?ojasset=css");
     }
-    // wasm is asset-classified like the loader (URL export only).
+    // wasm is asset-classified like the loader (URL export only). A plain
+    // import is `asset`: served like `?url`, but its id has no query.
     if oj_server::is_importable_asset_ext(&ext) || ext == "wasm" {
-        return format!("{abs}?ojasset=url");
+        return format!("{abs}?ojasset=asset");
     }
     abs.to_string()
 }
@@ -982,10 +983,14 @@ impl StartHost {
         code: String,
     ) -> Result<String, String> {
         let style = oj_server::is_style_ext(&ext_of(path).to_ascii_lowercase());
-        if !matches!(kind, "raw" | "url") && !(kind == "inline" && !style) {
+        if !matches!(kind, "raw" | "url" | "asset") && !(kind == "inline" && !style) {
             return Ok(code);
         }
-        let id = format!("{path}?{kind}");
+        // A plain asset import's id is the file's, as Vite's.
+        let id = match kind {
+            "asset" => path.to_string(),
+            _ => format!("{path}?{kind}"),
+        };
         match self.bridge.plugin_host().await {
             Some(host) if host.hook_wants_transform(&id, &code) => host
                 .transform(&code, &id, "{}")
@@ -1490,7 +1495,7 @@ mod tests {
         );
         assert_eq!(
             classify_id("/a/hero.png", None, false),
-            "/a/hero.png?ojasset=url"
+            "/a/hero.png?ojasset=asset"
         );
         assert_eq!(
             classify_id("/a/n.txt", Some("raw"), false),
@@ -1501,7 +1506,7 @@ mod tests {
         assert_eq!(classify_id("/a/x.tsx", None, false), "/a/x.tsx");
         assert_eq!(
             classify_id("/a/m.wasm", None, false),
-            "/a/m.wasm?ojasset=url"
+            "/a/m.wasm?ojasset=asset"
         );
     }
 

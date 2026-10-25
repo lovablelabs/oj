@@ -12,7 +12,8 @@ use lightningcss::stylesheet::{MinifyOptions, ParserFlags, ParserOptions, StyleS
 
 use crate::lightning::LightningOptions;
 use crate::modules::{
-    is_css_module, module_exports, module_is_scoped, scoped_name_pattern, ScopedNames,
+    declared_locals, is_css_module, module_exports, module_is_scoped, scoped_name_pattern,
+    ScopedNames,
 };
 use crate::rebase::{css_base_dir, dev_url_of, rewrite_css_image_set, rewrite_dependencies};
 use crate::resolve::CssResolve;
@@ -59,6 +60,22 @@ pub fn compile_css_with(
     compile_css_depth(url, source, None, mode, resolve, 0)
 }
 
+/// [`compile_css_with`] for a CSS module whose default names hash
+/// `scope_source` rather than `source`: a SugarSS sheet's own text, which
+/// PostCSS parses, where `source` is its CSS.
+pub fn compile_css_with_scope_source(
+    url: &str,
+    source: &str,
+    scope_source: &str,
+    resolve: &CssResolve<'_>,
+) -> Result<CssOutput, String> {
+    let mode = Mode {
+        minify: resolve.minify,
+        ..Mode::default()
+    };
+    compile_css_depth(url, source, Some(scope_source), mode, resolve, 0)
+}
+
 /// A build compile of a CSS module [`scope_css_module`] already scoped.
 pub fn compile_scoped_css_with(
     url: &str,
@@ -84,16 +101,19 @@ pub fn scope_css_module(
     resolve: &CssResolve<'_>,
 ) -> Result<CssOutput, String> {
     let scoped = module_is_scoped(url, resolve);
-    let modules = scoped.then(|| css_modules::Config {
-        pattern: scoped_name_pattern(),
-        ..css_modules::Config::default()
-    });
+    let modules = scoped.then(modules_config);
     let stylesheet = parse_stylesheet(source, url, modules, ParserFlags::empty())?;
     let result = stylesheet
         .to_css(PrinterOptions::default())
         .map_err(|err| format!("css print error in {url}: {err}"))?;
     let exports = match result.exports {
-        Some(map) => module_exports(map, url, resolve, 0),
+        Some(map) => {
+            let map = match scoped {
+                true => keep_declared(map, &declared_locals(&result.code)),
+                false => map,
+            };
+            module_exports(map, url, resolve, 0)
+        }
         None => Vec::new(),
     };
     Ok(named_by_default(
@@ -103,6 +123,21 @@ pub fn scope_css_module(
         },
         scoped.then(|| ScopedNames::new(scope_source, url, resolve)),
     ))
+}
+
+/// What postcss-modules scopes, as Vite runs it: classes, ids and animation
+/// names. Grid lines and container names stay global, and a grid line name
+/// never fails a pattern that does not end in `[local]`.
+fn modules_config() -> css_modules::Config {
+    // lightningcss scopes animation references only with `custom_idents` on;
+    // the rename keeps the other custom idents global (see
+    // [`ScopedNames::rename`]).
+    css_modules::Config {
+        pattern: scoped_name_pattern(),
+        grid: false,
+        container: false,
+        ..css_modules::Config::default()
+    }
 }
 
 /// A module's marked locals renamed in its sheet and class map.
@@ -119,6 +154,18 @@ fn named_by_default(out: CssOutput, names: Option<ScopedNames<'_>>) -> CssOutput
                 .collect()
         }),
     }
+}
+
+/// The locals postcss-modules exports: the ones the sheet declares as a
+/// class, an id or a `@keyframes` name (lightningcss also exports custom
+/// idents such as a `@counter-style` name).
+fn keep_declared(
+    map: css_modules::CssModuleExports,
+    declared: &std::collections::HashSet<String>,
+) -> css_modules::CssModuleExports {
+    map.into_iter()
+        .filter(|(name, _)| declared.contains(name))
+        .collect()
 }
 
 pub fn compile_css_rebased(url: &str, source: &str, minify: bool) -> Result<CssOutput, String> {
@@ -229,10 +276,7 @@ pub(crate) fn compile_css_depth(
 ) -> Result<CssOutput, String> {
     let is_module_file = is_css_module(url) && !mode.scoped;
     let scoped = is_module_file && module_is_scoped(url, resolve);
-    let modules = scoped.then(|| css_modules::Config {
-        pattern: scoped_name_pattern(),
-        ..css_modules::Config::default()
-    });
+    let modules = scoped.then(modules_config);
     let names = scoped.then(|| ScopedNames::new(scope_source.unwrap_or(source), url, resolve));
     // `css.lightningcss` belongs to the build minify (Vite's minifyCSS), the
     // only lightningcss pass Vite runs under its default transformer.
@@ -280,6 +324,7 @@ pub(crate) fn compile_css_depth(
         }
         _ => result.code,
     };
+    let declared = names.as_ref().map(|_| declared_locals(&css));
     if let Some(names) = &names {
         css = names.rename(&css);
     }
@@ -296,13 +341,21 @@ pub(crate) fn compile_css_depth(
 
     let exports = match result.exports {
         Some(map) => Some(
-            module_exports(map, url, resolve, depth)
-                .into_iter()
-                .map(|(name, value)| match &names {
-                    Some(names) => (name, names.rename_value(&value)),
-                    None => (name, value),
-                })
-                .collect(),
+            module_exports(
+                match &declared {
+                    Some(declared) => keep_declared(map, declared),
+                    None => map,
+                },
+                url,
+                resolve,
+                depth,
+            )
+            .into_iter()
+            .map(|(name, value)| match &names {
+                Some(names) => (name, names.rename_value(&value)),
+                None => (name, value),
+            })
+            .collect(),
         ),
         // A module compiled in global mode still exports an (empty) map.
         None if is_module_file => Some(Vec::new()),

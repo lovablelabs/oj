@@ -96,12 +96,16 @@ write(
   "src/routes/index.tsx",
   `import { createFileRoute } from "@tanstack/react-router";
 import "virtual:uno.css";
+import { Badge } from "../Badge";
 
 export const Route = createFileRoute("/")({
-  component: () => <p className="p-4 text-red-500 m-2">uno</p>,
+  component: () => <p className="p-4 text-red-500 m-2">uno <Badge /></p>,
 });
 `,
 );
+// A module the bundle transforms after UnoCSS's sheet: its classes still
+// reach the linked sheet.
+write("src/Badge.tsx", `export function Badge() {\n  return <span className="m-7">badge</span>;\n}\n`);
 write(
   "vite.config.ts",
   `import { tanstackStart } from "@tanstack/react-start/plugin/vite";
@@ -138,21 +142,24 @@ try {
   console.log("[oj build] UnoCSS's generated sheet ships and is linked");
 
   fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
-  srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: "ignore" });
-  await waitUp(`http://localhost:${PORT}/`);
-  const html = await (await fetch(`http://localhost:${PORT}/`)).text();
-  let linked = "";
-  for (const m of html.matchAll(/<link rel="stylesheet" href="([^"]+)"/g)) {
-    linked += await (await fetch(`http://localhost:${PORT}${m[1].replace(/&amp;/g, "&")}`)).text();
+  // A cold start, then a warm one (the client bundle's cache): UnoCSS
+  // collects the classes from the modules' transforms both times.
+  for (const run of ["cold", "warm"]) {
+    srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: "ignore" });
+    await waitUp(`http://localhost:${PORT}/`);
+    const html = await (await fetch(`http://localhost:${PORT}/`)).text();
+    let linked = "";
+    for (const m of html.matchAll(/<link rel="stylesheet" href="([^"]+)"/g)) {
+      linked += await (await fetch(`http://localhost:${PORT}${m[1].replace(/&amp;/g, "&")}`)).text();
+    }
+    for (const rule of [/\.p-4\s*\{\s*padding:\s*1rem/, /\.m-7\s*\{\s*margin:\s*1\.75rem/]) {
+      assert.match(linked, rule, `[${run}] the page links UnoCSS's sheet:\n${html}\n${linked.slice(0, 600)}`);
+    }
+    console.log(`[oj dev, ${run}] the page links UnoCSS's sheet with its utilities, a later module's too`);
+    srv.kill("SIGKILL");
+    srv = undefined;
+    await sleep(300);
   }
-  assert.match(
-    linked,
-    /\.p-4\s*\{\s*padding:\s*1rem/,
-    `the page links UnoCSS's sheet:\n${html}\n${linked.slice(0, 400)}`,
-  );
-  console.log("[oj dev] the page links UnoCSS's sheet with its utilities");
-  srv.kill("SIGKILL");
-  srv = undefined;
 
   execSync(`node ${path.join(fixture, "node_modules", "vite", "bin", "vite.js")} build --logLevel error`, {
     cwd: app,

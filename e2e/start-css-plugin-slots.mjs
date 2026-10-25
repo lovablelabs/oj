@@ -203,6 +203,23 @@ try {
   srv = undefined;
   await sleep(300);
 
+  // A warm start, the client bundle from cache (or rebuilt): the plugin's
+  // sheet is linked and served all the same.
+  srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: "ignore" });
+  await waitUp(`http://localhost:${PORT}/`);
+  const warmHtml = await (await fetch(`http://localhost:${PORT}/`)).text();
+  let warm = "";
+  for (const m of warmHtml.matchAll(/<link rel="stylesheet" href="([^"]+)"/g)) {
+    const res = await fetch(`http://localhost:${PORT}${m[1].replace(/&amp;/g, "&")}`);
+    assert.equal(res.status, 200, `[warm] ${m[1]}`);
+    warm += await res.text();
+  }
+  assert.ok(warm.includes(".from-plugin"), `[warm] the page links the plugin's sheet:\n${warmHtml}`);
+  console.log("[oj dev, warm] the plugin's sheet is linked and served");
+  srv.kill("SIGKILL");
+  srv = undefined;
+  await sleep(300);
+
   const viteDir = path.join(fixture, "node_modules", "vite");
   reset();
   execSync(`node ${path.join(viteDir, "bin", "vite.js")} build --logLevel error`, { cwd: app, stdio: "inherit" });

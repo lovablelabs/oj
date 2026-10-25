@@ -1694,6 +1694,7 @@ fn pinned_output(
     match start_bundle_store(root, mode).persist(cache) {
         Some((key, pinned)) => {
             save_stylex_rules(bundler, cache, &key);
+            save_generated_sheets(bundler, cache, &key);
             Some(pinned)
         }
         None => oj_cache::start_bundle::PinnedBundle::from_build_dir(cache),
@@ -1702,6 +1703,31 @@ fn pinned_output(
 
 /// The StyleX rules of the bundle just cached under `key`, saved beside it
 /// so a restore of it serves a complete sheet.
+/// Marks the bundle cached under `key` as holding a stylesheet a plugin
+/// serves (UnoCSS's): its CSS comes from what the plugin collects as modules
+/// transform, which a restored bundle never does, so it is rebuilt instead.
+const GENERATED_SHEETS: &str = "client-generated-sheets.json";
+
+fn save_generated_sheets(bundler: &ClientBundler, cache: &Path, key: &str) {
+    let file = cache.join(GENERATED_SHEETS);
+    let generated = bundler
+        .bundle_modules()
+        .iter()
+        .any(|id| crate::start_bundle::host::is_served_stylesheet(id));
+    if generated {
+        let _ = std::fs::write(file, serde_json::json!({ "key": key }).to_string());
+    } else {
+        let _ = std::fs::remove_file(file);
+    }
+}
+
+fn has_generated_sheets(cache: &Path, key: &str) -> bool {
+    std::fs::read(cache.join(GENERATED_SHEETS))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .is_some_and(|v| v["key"] == key)
+}
+
 fn save_stylex_rules(bundler: &ClientBundler, cache: &Path, key: &str) {
     if let Some(plugin) = bundler.stylex() {
         crate::stylex_plugin::save_rules(plugin, cache, key, &bundler.bundle_modules());
@@ -2245,6 +2271,9 @@ fn bundle_client_entry_cached(
         {
             println!("  oj start: client bundle cache miss (no StyleX rules saved for it)")
         }
+        Ok((stats, _)) if has_generated_sheets(cache, &stats.key) => println!(
+            "  oj start: client bundle cache miss (a plugin generates a stylesheet from its modules)"
+        ),
         Ok((stats, pinned)) => {
             let rehashed = match stats.rehashed {
                 0 => String::new(),
@@ -2264,6 +2293,7 @@ fn bundle_client_entry_cached(
     bundler.bundle(&[], false)?;
     if let Some((key, pinned)) = store.persist(cache) {
         save_stylex_rules(bundler, cache, &key);
+        save_generated_sheets(bundler, cache, &key);
         println!(
             "  oj start: client bundle cached (key {}…, {} chunks)",
             key.get(..8).unwrap_or(&key),
@@ -2492,7 +2522,13 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
         return serve_fs_asset(&state, &format!("/{rest}")).await;
     }
     if let Some(rest) = path.strip_prefix(crate::start_bundle::assets::DEV_ID_BASE) {
-        let id = crate::start_bundle::assets::id_of_dev_url(&percent_decode(rest));
+        let Some(id) = served_sheet_id(rest) else {
+            return (
+                StatusCode::FORBIDDEN,
+                "oj start: not a plugin-served stylesheet",
+            )
+                .into_response();
+        };
         return match css_body(&state, Path::new(&id)).await {
             Some(body) => css_response(body),
             None => (StatusCode::NOT_FOUND, "oj start: no such stylesheet").into_response(),
@@ -2928,7 +2964,7 @@ async fn css_body(state: &StartState, file: &Path) -> Option<Result<String, Stri
     if let Some(css) = state.bundler.linked_sheet(file) {
         return Some(Ok(css));
     }
-    let host = state.bundler.plugin_host();
+    let host = state.bundler.plugin_host().await;
     let id = file.display().to_string();
     let slots = host
         .as_deref()
@@ -2941,11 +2977,22 @@ async fn css_body(state: &StartState, file: &Path) -> Option<Result<String, Stri
             Err(e) => return Some(Err(e)),
         }
     } else {
+        let served = slots.is_some_and(|s| s.host.hook_wants_load(s.id));
         match oj_server::read_style_source(slots, file).await {
+            // The plugin still loads what the bundle ran through the plugins.
+            Ok(src) if !file.is_file() => match state.bundler.linked_served_sheet(file, &src) {
+                Some(css) => return Some(Ok(css)),
+                None => match oj_server::style_slot(slots, src, "pre").await {
+                    Ok(src) => src,
+                    Err(e) => return Some(Err(e)),
+                },
+            },
             Ok(src) => match oj_server::style_slot(slots, src, "pre").await {
                 Ok(src) => src,
                 Err(e) => return Some(Err(e)),
             },
+            // A plugin's load failing is its error to show, as Vite's 500.
+            Err(e) if served => return Some(Err(e)),
             Err(_) => return None,
         }
     };
@@ -2958,6 +3005,15 @@ async fn css_body(state: &StartState, file: &Path) -> Option<Result<String, Stri
     }
     let css = compiled.unwrap_or(src);
     Some(oj_server::style_slot(slots, css, "normal").await)
+}
+
+/// The id a `/@oj-start/id/` request names, when it is a sheet a plugin
+/// serves with no file behind it. Files go through `/@oj-start/fs/` and its
+/// workspace check, so this route never reads one.
+fn served_sheet_id(rest: &str) -> Option<String> {
+    let id = crate::start_bundle::assets::id_of_dev_url(&percent_decode(rest));
+    let module_id = id.starts_with('\0') || id.starts_with('/');
+    (module_id && crate::start_bundle::host::is_served_stylesheet(&id)).then_some(id)
 }
 
 fn css_response(body: Result<String, String>) -> Response {
@@ -4573,6 +4629,27 @@ mod tests {
         assert_eq!(document_url("/about"), "/about");
         assert_eq!(document_url("/guides/foo"), "/guides/foo");
         assert_eq!(document_url("/notindex.html"), "/notindex.html");
+    }
+
+    /// The id route serves only what a plugin serves: a `\0` id or a path
+    /// with no file behind it, never a file on disk (inside the workspace or
+    /// not) nor a relative id.
+    #[test]
+    fn the_id_route_serves_only_plugin_served_sheets() {
+        let dir = std::env::temp_dir().join(format!("oj-id-route-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("secret.css");
+        std::fs::write(&file, ".x{}").unwrap();
+        assert_eq!(
+            served_sheet_id("__x00__virtual:theme.css").as_deref(),
+            Some("\0virtual:theme.css")
+        );
+        assert_eq!(served_sheet_id("/__uno.css").as_deref(), Some("/__uno.css"));
+        assert_eq!(served_sheet_id(&file.display().to_string()[1..]), None);
+        assert_eq!(served_sheet_id(&file.display().to_string()), None);
+        assert_eq!(served_sheet_id("..%2Fsecret.css"), None);
+        assert_eq!(served_sheet_id("__x00__virtual:data.js"), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

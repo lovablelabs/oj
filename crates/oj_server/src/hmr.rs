@@ -148,6 +148,7 @@ pub(crate) async fn handle_plugin_server_event(state: &Arc<ServerState>, ev: &se
         Some("invalidateAll") => {
             state.mtime_keys.lock().unwrap().clear();
             state.memory.lock().unwrap().clear();
+            state.css_post.lock().unwrap().clear();
             let _ = state
                 .reload_tx
                 .send(full_reload_frame("plugin invalidateAll", None, None));
@@ -1174,12 +1175,13 @@ fn decide_file(
         let url = url_of(&state.root, path);
         // A stylesheet nothing imports is loaded by a `<link>`: swap the link
         // rather than dispatching a JS update it has no handler for.
+        // Nor imports its `?inline` module (a node of its own).
+        let inline = format!("{url}?inline");
         let link_loaded = {
             let g = state.graph.lock().unwrap();
-            match g.node(Path::new(&url)) {
-                None => true,
-                Some(n) => n.importers.is_empty(),
-            }
+            [url.as_str(), inline.as_str()]
+                .iter()
+                .all(|u| g.node(Path::new(u)).is_none_or(|n| n.importers.is_empty()))
         };
         if link_loaded {
             println!("oj: change {url} -> css-update");
@@ -1223,8 +1225,13 @@ fn decide_file(
     {
         return Flow::Done;
     }
-    if !state.graph.lock().unwrap().contains(Path::new(&url)) {
-        return Flow::Done;
+    let inline = is_style_ext(ext).then(|| format!("{url}?inline"));
+    {
+        let g = state.graph.lock().unwrap();
+        let inline_known = inline.as_ref().is_some_and(|i| g.contains(Path::new(i)));
+        if !g.contains(Path::new(&url)) && !inline_known {
+            return Flow::Done;
+        }
     }
     match graph_update_targets(state, &url, is_style_ext(ext)) {
         Ok(targets) => {
@@ -1233,11 +1240,14 @@ fn decide_file(
             let timestamp = now_millis() as u64;
             // Stamp the invalidated chain so re-fetched importers point at new versions
             // of unchanged deps; drop their mtime fast-path keys so they recompile with the stamps.
-            let dirty = state
-                .graph
-                .lock()
-                .unwrap()
-                .stamp_update(Path::new(&url), timestamp);
+            let dirty = {
+                let mut g = state.graph.lock().unwrap();
+                let mut dirty = g.stamp_update(Path::new(&url), timestamp);
+                if let Some(inline) = inline.as_ref().filter(|i| g.contains(Path::new(i))) {
+                    dirty.extend(g.stamp_update(Path::new(inline), timestamp));
+                }
+                dirty
+            };
             {
                 let mut keys = state.mtime_keys.lock().unwrap();
                 for d in &dirty {
@@ -1266,9 +1276,23 @@ fn graph_update_targets(
     url: &str,
     is_style: bool,
 ) -> Result<Vec<oj_graph::UpdateTarget>, String> {
-    let mut targets = state.graph.lock().unwrap().update_targets(Path::new(url))?;
     if !is_style {
-        return Ok(targets);
+        return state.graph.lock().unwrap().update_targets(Path::new(url));
+    }
+    // The sheet's own node (an import's `<style>`) and its `?inline` module,
+    // which never self-accepts: an edit reaches whatever imports its text.
+    let mut targets = Vec::new();
+    for node in [url.to_string(), format!("{url}?inline")] {
+        let known = state.graph.lock().unwrap().contains(Path::new(&node));
+        if known {
+            targets.extend(
+                state
+                    .graph
+                    .lock()
+                    .unwrap()
+                    .update_targets(Path::new(&node))?,
+            );
+        }
     }
     let css_importers: Vec<PathBuf> = {
         let g = state.graph.lock().unwrap();

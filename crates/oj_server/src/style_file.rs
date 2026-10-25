@@ -88,6 +88,7 @@ pub async fn compile_style_file(
     source: String,
     preprocess: Option<&CssEngine>,
 ) -> Result<StyleModule, String> {
+    let mut sss_source = None;
     let url = crate::rewrite::url_of(inputs.root, path);
     let config = inputs.css.map(|c| oj_config::OjConfig {
         css: Some(c.clone()),
@@ -120,6 +121,9 @@ pub async fn compile_style_file(
             &mut Vec::new(),
         )?
     } else if needs_preprocess_engine(path) {
+        if crate::sidecar::is_sugarss(&url) {
+            sss_source = Some(source.clone());
+        }
         let engine = preprocess.ok_or_else(|| format!("{url}: no css preprocessor"))?;
         let lang = crate::sidecar::preprocess_lang(&url).unwrap_or("stylus");
         let (data, opts) = match &config {
@@ -148,7 +152,11 @@ pub async fn compile_style_file(
         minify: false,
         ..inputs.resolve
     };
-    let output = oj_css::compile_css_with(&url, &css, &resolve)?;
+    // PostCSS parses a SugarSS sheet itself: its module names hash that text.
+    let output = match &sss_source {
+        Some(raw) => oj_css::compile_css_with_scope_source(&url, &css, raw, &resolve)?,
+        None => oj_css::compile_css_with(&url, &css, &resolve)?,
+    };
     let code = match output.exports {
         Some(exports) => oj_css::css_modules_esm(&exports),
         None => "export default {};".to_string(),

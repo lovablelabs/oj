@@ -289,6 +289,10 @@ struct ServerState {
     preprocess: tokio::sync::OnceCell<std::sync::Arc<CssEngine>>,
     svelte: tokio::sync::OnceCell<std::sync::Arc<CssEngine>>,
     tailwind_urls: Mutex<std::collections::HashSet<String>>,
+    /// A stylesheet's "post" plugin output by the id they saw, with a hash of
+    /// what they were given: they run once per change, as Vite's module
+    /// transform, not per request.
+    css_post: Mutex<HashMap<String, (u64, String)>>,
     tailwind_sheets: css_serve::TailwindSheets,
     has_postcss: bool,
     scss_additional_data: Option<String>,
@@ -1711,6 +1715,7 @@ impl DevServer {
             preprocess: tokio::sync::OnceCell::new(),
             svelte: tokio::sync::OnceCell::new(),
             tailwind_urls: Mutex::new(std::collections::HashSet::new()),
+            css_post: Mutex::new(HashMap::new()),
             tailwind_sheets: Default::default(),
             has_postcss: has_postcss_config(&root),
             scss_additional_data: oj_config::css_additional_data(&config, "scss"),

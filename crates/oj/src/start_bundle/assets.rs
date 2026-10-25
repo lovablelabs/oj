@@ -165,6 +165,23 @@ impl StyleEngines {
     }
 }
 
+/// A sheet the dev bundle ran through the plugins (see `Styles::dev_sheets`).
+struct DevSheet {
+    stamp: u64,
+    /// For a sheet a plugin serves, a hash of what its `load` returned: the
+    /// sheet is current while the plugin returns the same text, whatever the
+    /// stamp (UnoCSS's grows as modules transform, with no file edit).
+    loaded: Option<u64>,
+    css: String,
+}
+
+fn text_hash(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut h);
+    h.finish()
+}
+
 /// The stylesheet pipeline the dev server's SSR renders from (preprocessor,
 /// CSS-module scoping, lightningcss), so class names agree across the server
 /// render, the client and the build.
@@ -184,7 +201,7 @@ pub(crate) struct Styles {
     /// page's `<link>` serves one without running the plugins again until the
     /// next bundle or style edit, as Vite serves a sheet's import and its CSS
     /// from one transform.
-    dev_sheets: Mutex<HashMap<PathBuf, (u64, String)>>,
+    dev_sheets: Mutex<HashMap<PathBuf, DevSheet>>,
     dev_stamp: std::sync::atomic::AtomicU64,
 }
 
@@ -215,23 +232,52 @@ impl Styles {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
-    pub(crate) fn keep_dev_sheet(&self, path: &Path, css: String) {
-        let stamp = self.dev_stamp.load(std::sync::atomic::Ordering::SeqCst);
+    /// The current stamp, read before a sheet's sources are, so an edit that
+    /// lands mid-compile leaves what the compile keeps stale.
+    pub(crate) fn dev_stamp(&self) -> u64 {
+        self.dev_stamp.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// `loaded`: what a plugin's `load` returned for a sheet with no file.
+    pub(crate) fn keep_dev_sheet(
+        &self,
+        path: &Path,
+        css: String,
+        stamp: u64,
+        loaded: Option<&str>,
+    ) {
+        let sheet = DevSheet {
+            stamp,
+            loaded: loaded.map(text_hash),
+            css,
+        };
         self.dev_sheets
             .lock()
             .unwrap()
-            .insert(path.to_path_buf(), (stamp, css));
+            .insert(path.to_path_buf(), sheet);
     }
 
-    /// The sheet the current dev bundle compiled for `path`, if it did.
+    /// The sheet the current dev bundle compiled for the file at `path`, if
+    /// it did.
     pub fn dev_sheet(&self, path: &Path) -> Option<String> {
         let stamp = self.dev_stamp.load(std::sync::atomic::Ordering::SeqCst);
         self.dev_sheets
             .lock()
             .unwrap()
             .get(path)
-            .filter(|(at, _)| *at == stamp)
-            .map(|(_, css)| css.clone())
+            .filter(|s| s.loaded.is_none() && s.stamp == stamp)
+            .map(|s| s.css.clone())
+    }
+
+    /// The sheet the dev bundle compiled for a plugin-served `id`, if the
+    /// plugin still loads the same text for it.
+    pub fn dev_served_sheet(&self, id: &Path, loaded: &str) -> Option<String> {
+        self.dev_sheets
+            .lock()
+            .unwrap()
+            .get(id)
+            .filter(|s| s.loaded == Some(text_hash(loaded)))
+            .map(|s| s.css.clone())
     }
 
     fn inputs(&self) -> oj_server::StyleInputs<'_> {
@@ -579,6 +625,13 @@ impl Emitter {
             .lock()
             .unwrap()
             .insert(path.clone(), url.clone());
+        if let Some(old) = &old {
+            for u in self.emitted_css.lock().unwrap().iter_mut() {
+                if u == old {
+                    *u = url.clone();
+                }
+            }
+        }
         let mut urls = self.css_urls.lock().unwrap();
         match old.and_then(|old| urls.iter().position(|u| *u == old).map(|i| (i, old))) {
             Some((i, old)) if old != url => {
@@ -1153,7 +1206,10 @@ impl StartAssetsPlugin {
                 // pipeline; a plain `.css` is linked as written (a build
                 // emits it compiled).
                 let emits = matches!(self.mode, AssetMode::Build { server: false, .. });
+                let stamp = self.styles.dev_stamp();
                 let source = oj_server::read_style_source(slots, path).await?;
+                let on_disk = path.is_file();
+                let loaded = (!on_disk).then(|| source.clone());
                 // Only the client build ships this compile. A dev page links
                 // the sheet, and that `?direct` request runs every slot; the
                 // import (and the server build's) runs them too when a plugin
@@ -1182,7 +1238,8 @@ impl StartAssetsPlugin {
                         if slots.is_some() {
                             let css = self.styles.tailwind(path, css()).await?;
                             let css = oj_server::style_slot(slots, css, "normal").await?;
-                            self.styles.keep_dev_sheet(path, css);
+                            self.styles
+                                .keep_dev_sheet(path, css, stamp, loaded.as_deref());
                         }
                         let href = if path.is_file() {
                             self.url_for(path).await?

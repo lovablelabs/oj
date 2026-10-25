@@ -91,12 +91,37 @@ pub(crate) async fn css_post(
     id: &str,
     code: String,
 ) -> Result<String, String> {
+    let input = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        code.hash(&mut h);
+        h.finish()
+    };
+    if let Some((_, out)) = state
+        .css_post
+        .lock()
+        .unwrap()
+        .get(id)
+        .filter(|(at, _)| *at == input)
+    {
+        return Ok(out.clone());
+    }
     let is_dep = is_dep_module(url, file);
-    Ok(
-        plugin_transform_phase(state, file, id, code, is_dep, Some("post"))
-            .await?
-            .code,
-    )
+    let t = plugin_transform_phase(state, file, id, code, is_dep, Some("post")).await?;
+    if !t.watch_files.is_empty() {
+        let mut watched = state.plugin_watched.lock().unwrap();
+        for p in &t.watch_files {
+            let p = PathBuf::from(p);
+            ensure_watched_file(state, &p);
+            watched.insert(p);
+        }
+    }
+    state
+        .css_post
+        .lock()
+        .unwrap()
+        .insert(id.to_string(), (input, t.code.clone()));
+    Ok(t.code)
 }
 
 pub(crate) async fn serve_css_wrapper(
@@ -337,7 +362,7 @@ pub(crate) async fn compile_tailwind(
         .tailwind_urls
         .lock()
         .unwrap()
-        .insert(graph_url(url).to_string());
+        .insert(sheet_url(url).to_string());
     let mut imported = Vec::new();
     let inlined;
     let source = if state.has_postcss {

@@ -6,7 +6,8 @@
 //! the CSS vite:css makes of it (a CSS module's classes scoped), "post" ones
 //! what vite:css-post serves: the CSS for a `?direct` request, the JS module
 //! for an import or `?inline`. A hook's own `order` moves it between slots,
-//! and each request is a module of its own with its query in the id. The
+//! each request is a module of its own with its query in the id, and a
+//! repeated request runs no plugin again. The
 //! expected lines are what Vite 8.3.5's dev server records for this app.
 
 use crate::{App, INDEX_HTML};
@@ -67,6 +68,16 @@ async fn stylesheet_transforms_run_in_vites_dev_slots() {
     assert!(inline.starts_with("export default"), "{inline}");
     let module = server.text("/src/m.module.css").await;
     assert!(module.contains("\"m\":\"_m_"), "{module}");
+    // Asked again, each module is served from its transform: no plugin
+    // runs twice.
+    for url in [
+        "/src/a.scss",
+        "/src/a.scss?direct",
+        "/src/b.scss?inline",
+        "/src/m.module.css",
+    ] {
+        server.text(url).await;
+    }
 
     let seen = std::fs::read_to_string(&seen).expect("the plugins ran");
     let mut seen: Vec<&str> = seen.lines().collect();

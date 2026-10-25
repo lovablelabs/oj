@@ -20,6 +20,7 @@ mod config_temp_file;
 mod config_wrapper;
 mod css_import_inline;
 mod css_importer_invalidation;
+mod css_inline_hmr;
 mod css_modules_vite_names;
 mod css_outside_root_deps;
 mod css_plugin_slots;

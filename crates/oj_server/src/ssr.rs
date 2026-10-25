@@ -287,9 +287,15 @@ pub(crate) async fn ssr_module_inner(
             .is_some_and(|host| host.hook_wants_load(id))
     };
     if ext.is_some_and(is_style_ext) && (path.is_file() || served().await) {
-        return ssr_style_module(state, id, &path)
-            .await
-            .map_err(SsrModuleError::Failed);
+        let on_disk = path.is_file();
+        return ssr_style_module(state, id, &path).await.map_err(|e| {
+            // No file and no plugin serving it: missing, as before.
+            if on_disk {
+                SsrModuleError::Failed(e)
+            } else {
+                SsrModuleError::NotFound(e)
+            }
+        });
     }
     let (source, from_plugin) = match std::fs::read(&path).and_then(bytes_to_string) {
         Ok(s) => (s, false),

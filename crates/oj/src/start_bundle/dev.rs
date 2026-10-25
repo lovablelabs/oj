@@ -187,10 +187,20 @@ impl DevBundler {
         self.styles.dev_sheet(path)
     }
 
-    /// The client environment's plugin host, once the first bundle spawned
-    /// it.
-    pub(crate) fn plugin_host(&self) -> Option<Arc<oj_server::plugins::PluginHost>> {
-        self.host.get()?.as_ref().map(|h| Arc::clone(&h.host))
+    /// The same for a plugin-served sheet whose `load` returns `loaded`.
+    pub(crate) fn linked_served_sheet(&self, id: &Path, loaded: &str) -> Option<String> {
+        self.styles.dev_served_sheet(id, loaded)
+    }
+
+    /// The client environment's plugin host, spawned here when no bundle ran
+    /// yet (one restored from cache): a page's `<link>` still goes through
+    /// the client plugins.
+    pub(crate) async fn plugin_host(&self) -> Option<Arc<oj_server::plugins::PluginHost>> {
+        self.host()
+            .await
+            .ok()
+            .flatten()
+            .map(|h| Arc::clone(&h.host))
     }
 
     /// The session's plugin host, spawned by the first bundle.

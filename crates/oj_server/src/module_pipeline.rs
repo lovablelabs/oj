@@ -156,12 +156,16 @@ pub(crate) async fn ensure_module_as(
     if let Some(map) = stylex_map {
         transformed.maps.insert(0, map);
     }
+    let mut css = CssState::default();
+    // PostCSS parses a SugarSS sheet itself: its module names hash that text.
+    if sidecar::is_sugarss(url) {
+        css.scope_source = Some(transformed.code.clone());
+    }
     let source = if is_preprocessor(url) {
         preprocess_less_stylus(state, url, transformed.code).await?
     } else {
         transformed.code
     };
-    let mut css = CssState::default();
     let source = if is_stylesheet {
         let compiled = css_prepass(state, file, url, source, &mut css).await?;
         let normal = plugin_transform_phase(
@@ -501,7 +505,7 @@ fn persistent_hit(state: &ServerState, key: &str, is_dep: bool) -> Option<Arc<Ca
 
 pub(crate) struct Transformed {
     pub(crate) code: String,
-    watch_files: Vec<String>,
+    pub(crate) watch_files: Vec<String>,
     maps: Vec<String>,
 }
 
@@ -607,6 +611,9 @@ struct CssState {
     deps: Vec<PathBuf>,
     /// A CSS module's class map, its classes scoped in the sheet already.
     exports: Option<Vec<(String, String)>>,
+    /// The text a module's default names hash, when it is not the sheet
+    /// itself (a SugarSS sheet's source).
+    scope_source: Option<String>,
 }
 
 /// A stylesheet as Vite's "normal" plugins get it from vite:css: Sass run (the
@@ -647,7 +654,7 @@ async fn css_prepass(
         source
     };
     // What Vite hands PostCSS, whose CSS-module names hash it.
-    let postcss_input = source.clone();
+    let postcss_input = css.scope_source.take().unwrap_or_else(|| source.clone());
     let source = oj_css::inline_imports_collecting(
         &source,
         file,
@@ -768,8 +775,12 @@ impl CompileJob {
         // A CSS module's class map changes on edit, so it cannot self-accept
         // (Vite's css-analysis): the update climbs to the importing component.
         let is_css_module = self.css.exports.is_some();
+        let inline = self
+            .url
+            .split_once('?')
+            .is_some_and(|(_, q)| q.split('&').any(|kv| kv == "inline"));
         Ok(CachedModule {
-            is_boundary: !is_css_module,
+            is_boundary: !is_css_module && !inline,
             kind: "css".into(),
             imports: dep_imports,
             css_exports: self.css.exports.unwrap_or_default(),
@@ -1141,19 +1152,42 @@ pub(crate) fn fs_allow_from(imports: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// The module graph's url for a stylesheet's `?direct` or `?inline` request:
-/// the sheet's own. Each is a module of its own, compiled and cached apart
-/// (its plugins see its id, as in Vite), while edits to the file or its deps
-/// update the one sheet.
+/// The module graph's url for a stylesheet's `?direct` request: the sheet's
+/// own, a `<link>` updating with it. A `?inline` request is a node of its
+/// own, as Vite's module, and never self-accepts: its importer holds the
+/// text, so an edit reaches the importer.
 pub(crate) fn graph_url(url: &str) -> &str {
+    match url.split_once('?') {
+        Some((path, "direct")) => path,
+        _ => url,
+    }
+}
+
+/// A stylesheet's own url, without a `?direct` or `?inline` request's query.
+pub(crate) fn sheet_url(url: &str) -> &str {
     match url.split_once('?') {
         Some((path, "direct" | "inline")) => path,
         _ => url,
     }
 }
 
-/// A url and the `?direct` and `?inline` requests [`graph_url`] folds into
-/// it: what an invalidation of its graph node forgets.
+/// The graph node an import names: its file, or a stylesheet's `?inline`
+/// module.
+fn import_node(spec: &str) -> PathBuf {
+    let (path, query) = spec.split_once('?').unwrap_or((spec, ""));
+    let style = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(is_style_ext);
+    if style && query.split('&').any(|kv| kv == "inline") {
+        PathBuf::from(format!("{path}?inline"))
+    } else {
+        PathBuf::from(path)
+    }
+}
+
+/// A sheet's url and its `?direct` and `?inline` requests: what an
+/// invalidation of its file forgets.
 pub(crate) fn url_variants(url: &str) -> [String; 3] {
     [
         url.to_string(),
@@ -1185,11 +1219,11 @@ pub(crate) fn register_in_graph(state: &ServerState, url: &str, module: &CachedM
         }
     }
     let mut graph = state.graph.lock().unwrap();
-    let local_imports: Vec<&Path> = module
+    let local_imports: Vec<PathBuf> = module
         .imports
         .iter()
         .filter(|s| s.starts_with('/') && !s.starts_with("/@oj/") && !is_worker_query(s))
-        .map(|s| Path::new(s.split('?').next().unwrap_or(s)))
+        .map(|s| import_node(s))
         .collect();
     let pruned = graph.set_imports(Path::new(url), &local_imports);
     if !pruned.is_empty() {
@@ -1479,13 +1513,32 @@ pub(crate) fn interop_node_builtins(source: &str, file: &Path) -> Option<String>
 
 #[cfg(test)]
 mod tests {
-    use super::{graph_url, url_variants};
+    use super::{graph_url, import_node, sheet_url, url_variants};
+    use std::path::PathBuf;
 
     #[test]
-    fn a_sheets_direct_and_inline_requests_share_its_graph_node() {
+    fn a_sheets_direct_request_shares_its_graph_node() {
         assert_eq!(graph_url("/src/a.scss?direct"), "/src/a.scss");
-        assert_eq!(graph_url("/src/a.scss?inline"), "/src/a.scss");
+        // An `?inline` module is a node of its own, as in Vite.
+        assert_eq!(graph_url("/src/a.scss?inline"), "/src/a.scss?inline");
+        assert_eq!(sheet_url("/src/a.scss?inline"), "/src/a.scss");
         assert_eq!(graph_url("/src/a.scss"), "/src/a.scss");
+        assert_eq!(
+            import_node("/src/a.scss?inline"),
+            PathBuf::from("/src/a.scss?inline")
+        );
+        assert_eq!(
+            import_node("/src/a.scss?t=1&inline"),
+            PathBuf::from("/src/a.scss?inline")
+        );
+        assert_eq!(
+            import_node("/src/a.scss?import"),
+            PathBuf::from("/src/a.scss")
+        );
+        assert_eq!(
+            import_node("/src/a.png?inline"),
+            PathBuf::from("/src/a.png")
+        );
         // Other queries are modules of their own in the graph too.
         assert_eq!(
             graph_url("/index.html?html-proxy&direct&index=0.css"),
@@ -1493,7 +1546,7 @@ mod tests {
         );
         assert_eq!(graph_url("/src/a.ts?tsr-split=x"), "/src/a.ts?tsr-split=x");
         for url in url_variants("/src/a.scss") {
-            assert_eq!(graph_url(&url), "/src/a.scss", "{url}");
+            assert_eq!(sheet_url(&url), "/src/a.scss", "{url}");
         }
     }
 

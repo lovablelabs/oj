@@ -1083,7 +1083,7 @@ fn a_dev_sheet_is_kept_until_the_next_bundle_or_edit() {
     let a = app.dir.join("src/a.css");
     assert_eq!(styles.dev_sheet(&a), None);
     styles.dev_sheets_stale();
-    styles.keep_dev_sheet(&a, ".a{color:red}".into());
+    styles.keep_dev_sheet(&a, ".a{color:red}".into(), styles.dev_stamp(), None);
     assert_eq!(styles.dev_sheet(&a).as_deref(), Some(".a{color:red}"));
     assert_eq!(styles.dev_sheet(&app.dir.join("src/b.css")), None);
     styles.dev_sheets_stale();
@@ -1126,4 +1126,50 @@ async fn late_css_joins_a_url_sheet_when_nothing_is_linked() {
         !client.join("assets/stylex.css").exists(),
         "no separate sheet"
     );
+}
+
+/// UnoCSS's placeholder sheet replaced by its generated CSS, then StyleX's
+/// late CSS: it joins the generated sheet, the placeholder's file being gone.
+#[tokio::test(flavor = "multi_thread")]
+async fn late_css_joins_the_sheet_plugin_css_replaced() {
+    let app = App::new(&[]);
+    let start = app.start();
+    let client = app.dir.join("dist/client");
+    let emitter = Emitter::new(&client, "/", Arc::new(Styles::new(&start)));
+    let placeholder = app.dir.join("src/__uno.css");
+    emitter
+        .css(&placeholder, "#--unocss--{layer:__ALL__}".into(), None)
+        .await
+        .unwrap();
+    emitter
+        .plugin_css(&placeholder.display().to_string(), ".p-4{padding:1rem}")
+        .unwrap();
+    emitter
+        .append_generated_css("stylex.css", ".x1{margin:1px}")
+        .unwrap();
+    let urls = emitter.css_urls();
+    assert_eq!(urls.len(), 1, "{urls:?}");
+    let sheet = std::fs::read_to_string(client.join(urls[0].trim_start_matches('/'))).unwrap();
+    assert!(
+        sheet.contains(".p-4{padding:1rem}") && sheet.ends_with(".x1{margin:1px}"),
+        "{sheet}"
+    );
+}
+
+/// A sheet a plugin serves with no file is current while the plugin loads
+/// the same text for it, bundles and edits aside; once the plugin's text
+/// grows (UnoCSS's, as modules transform), it compiles again.
+#[test]
+fn a_served_sheet_is_kept_while_the_plugin_loads_the_same_text() {
+    let app = App::new(&[]);
+    let styles = Styles::new(&app.start());
+    let id = Path::new("\0virtual:theme.css");
+    styles.keep_dev_sheet(id, ".t{}".into(), styles.dev_stamp(), Some(".t {}"));
+    styles.dev_sheets_stale();
+    assert_eq!(
+        styles.dev_served_sheet(id, ".t {}").as_deref(),
+        Some(".t{}")
+    );
+    assert_eq!(styles.dev_served_sheet(id, ".t {} .u {}"), None);
+    assert_eq!(styles.dev_sheet(id), None, "not a file's sheet");
 }

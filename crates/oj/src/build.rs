@@ -1265,6 +1265,7 @@ async fn compile_stylesheet(
         _ => None,
     };
     source = css_transform_phase(host, source, id, "pre", emit).await?;
+    let mut sss_source = None;
     if oj_css::is_sass(path) {
         let lang = if path.ends_with(".sass") {
             "sass"
@@ -1288,6 +1289,9 @@ async fn compile_stylesheet(
         )
         .map_err(|e| anyhow::anyhow!(e))?;
     } else if let Some(lang) = preprocess_lang {
+        if lang == "sss" {
+            sss_source = Some(source.clone());
+        }
         if let Some(data) = oj_config::css_additional_data(&cfg, lang).filter(|d| !d.is_empty()) {
             source = format!("{data}\n{source}");
         }
@@ -1297,8 +1301,9 @@ async fn compile_stylesheet(
         };
         source = preprocess_via_engine(root, std::path::Path::new(path), &source, opts).await?;
     }
-    // What Vite hands PostCSS, whose CSS-module names hash it.
-    let postcss_input = source.clone();
+    // What Vite hands PostCSS, whose CSS-module names hash it: a SugarSS
+    // sheet's own text, which PostCSS parses.
+    let postcss_input = sss_source.unwrap_or_else(|| source.clone());
     // Plain `@import`s are inlined (postcss-import parity) so the concatenated
     // chunk stylesheet does not carry imports that 404 from `assets/`. It runs
     // before PostCSS, as postcss-import is the first plugin of Vite's chain, so
