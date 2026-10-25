@@ -2893,23 +2893,41 @@ async fn serve_js(path: &Path, what: &str) -> Response {
 /// scoped under the names SSR renders and the bundle's class map carries),
 /// and a Tailwind sheet is compiled after that, as the app's postcss plugins
 /// run after Vite's preprocessors and postcss-modules.
+/// The client environment's plugins see it as the sheet's own id, as under
+/// TanStack Start's dev styles on Vite, which take a sheet's CSS from the
+/// client's transform of it: "pre" transforms on the source, "normal" ones
+/// on the sheet (the "post" ones see the module the client bundle imports).
 async fn css_body(state: &StartState, file: &Path) -> Option<Result<String, String>> {
+    let host = state.bundler.plugin_host();
+    let id = file.display().to_string();
+    let slots = host
+        .as_deref()
+        .map(|host| oj_server::StyleSlots { host, id: &id });
     let pipeline = oj_css::is_css_module(&file.to_string_lossy())
         || file.extension().and_then(|e| e.to_str()) != Some("css");
     let src = if pipeline {
-        match state.ssr.style_sheet(file).await {
+        match state.ssr.style_sheet(file, slots).await {
             Ok(m) => m.css,
             Err(e) => return Some(Err(e)),
         }
     } else {
-        tokio::fs::read_to_string(file).await.ok()?
-    };
-    if let Some(host) = state.css_host.as_ref().filter(|_| needs_css_compile(&src)) {
-        if let Some(css) = compile_css(host, &src, file).await {
-            return Some(Ok(css));
+        match oj_server::read_style_source(slots, file).await {
+            Ok(src) => match oj_server::style_slot(slots, src, "pre").await {
+                Ok(src) => src,
+                Err(e) => return Some(Err(e)),
+            },
+            Err(_) => return None,
         }
+    };
+    let compiled = match state.css_host.as_ref().filter(|_| needs_css_compile(&src)) {
+        Some(host) => compile_css(host, &src, file).await,
+        None => None,
+    };
+    if compiled.is_none() && !pipeline && slots.is_none() {
+        return None;
     }
-    pipeline.then_some(Ok(src))
+    let css = compiled.unwrap_or(src);
+    Some(oj_server::style_slot(slots, css, "normal").await)
 }
 
 async fn serve_fs_asset(state: &StartState, abs: &str) -> Response {

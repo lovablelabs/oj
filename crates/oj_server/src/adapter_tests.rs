@@ -340,6 +340,24 @@ fn worker_beats_inline_in_asset_kind_classification() {
     assert_eq!(query_asset_kind(Some("worker")), Some("worker"));
 }
 
+/// Vite's rawRE takes `raw` anywhere in the query, and vite:asset reads it
+/// before `url` or `inline`; a worker query belongs to vite:worker first.
+#[test]
+fn raw_anywhere_in_the_query_classifies_as_raw() {
+    for q in [
+        "raw",
+        "v=1&raw",
+        "raw&v=1",
+        "raw&url",
+        "url&raw",
+        "inline&raw",
+    ] {
+        assert_eq!(query_asset_kind(Some(q)), Some("raw"), "{q}");
+    }
+    assert_eq!(query_asset_kind(Some("v=1&raw=1")), None);
+    assert_eq!(query_asset_kind(Some("worker&raw")), Some("worker"));
+}
+
 #[test]
 fn is_spa_navigation_rules() {
     let empty = HeaderMap::new();

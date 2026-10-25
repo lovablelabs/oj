@@ -145,6 +145,17 @@ async fn answer(
     })
 }
 
+/// A stylesheet id oj's asset plugin compiles (an import or `?inline`), the
+/// ids Vite's vite:css takes; `?raw`, `?url` and workers load as JS.
+fn is_compiled_stylesheet(id: &str) -> bool {
+    let path = id.split('?').next().unwrap_or(id);
+    match super::assets::asset_tag(id, false) {
+        Some(super::assets::AssetTag::Css) => true,
+        Some(super::assets::AssetTag::Inline) => super::assets::is_style_path(path),
+        _ => false,
+    }
+}
+
 /// A Start bundle's view of one plugin host.
 pub(crate) struct StartHostPlugin {
     host: Arc<PluginHost>,
@@ -571,14 +582,19 @@ impl Plugin for StartHostPlugin {
         let emit = Arc::clone(&self.emit);
         let sourcemap = ctx.inner.options().is_sourcemap_enabled();
         let warnings = (self.command == Command::Build).then(|| Arc::clone(&self.map_warnings));
+        // oj's asset plugin compiled a stylesheet through its "pre" and
+        // "normal" transforms; the module standing in for it gets the "post"
+        // ones, as Vite's vite:css-post output does.
+        let phase = is_compiled_stylesheet(id).then_some("post");
         async move {
             if !pass {
                 return Ok(None);
             }
-            let t = host
-                .transform(code, id, "{}")
-                .await
-                .map_err(|e| anyhow::anyhow!("plugin transform failed for {id}:\n{e}"))?;
+            let t = match phase {
+                Some(phase) => host.transform_phase(code, id, phase).await,
+                None => host.transform(code, id, "{}").await,
+            };
+            let t = t.map_err(|e| anyhow::anyhow!("plugin transform failed for {id}:\n{e}"))?;
             crate::build::forward_emitted_chunks(&ctx.inner, &t.chunks, &emit);
             Ok((t.code != code).then(|| HookTransformOutput {
                 map: crate::build::host_chain_map(
@@ -796,6 +812,32 @@ pub(crate) fn empty_virtual_stub(root: &Path, id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The ids vite:css and vite:css-post take (CSS_LANGS_RE, not `?raw`,
+    /// `?url` or a worker): their module gets only the "post" transforms.
+    #[test]
+    fn compiled_stylesheets_are_the_ids_vites_css_plugins_take() {
+        for id in [
+            "/app/a.css",
+            "/app/a.scss",
+            "/app/m.module.css",
+            "/app/b.less?inline",
+            "/app/c.pcss",
+            "/app/d.sss",
+        ] {
+            assert!(is_compiled_stylesheet(id), "{id}");
+        }
+        for id in [
+            "/app/a.css?raw",
+            "/app/a.css?url",
+            "/app/a.css?worker",
+            "/app/a.png?inline",
+            "/app/a.ts",
+            "\0virtual.css",
+        ] {
+            assert!(!is_compiled_stylesheet(id), "{id}");
+        }
+    }
 
     #[test]
     fn plugin_loads_parse_tolerantly_and_files_as_themselves() {

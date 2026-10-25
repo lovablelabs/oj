@@ -179,6 +179,12 @@ impl DevBundler {
             .collect()
     }
 
+    /// The client environment's plugin host, once the first bundle spawned
+    /// it.
+    pub(crate) fn plugin_host(&self) -> Option<Arc<oj_server::plugins::PluginHost>> {
+        self.host.get()?.as_ref().map(|h| Arc::clone(&h.host))
+    }
+
     /// The session's plugin host, spawned by the first bundle.
     async fn host(&self) -> anyhow::Result<Option<&BundleHost>> {
         self.host
@@ -373,15 +379,18 @@ impl DevBundler {
                 .with_alias(host.map(|h| h.facts.alias.clone()).unwrap_or_default())
                 .recording_globs(Arc::clone(&glob_scopes)),
         ));
-        plugins.push(Pluginable::new_shared(StartAssetsPlugin::new(
-            &start.root,
-            Arc::clone(&self.styles),
-            AssetMode::Dev {
-                css_urls: Arc::clone(&css_urls),
-                state: Arc::clone(&styles),
-                url_base: start.dev_url_base(),
-            },
-        )));
+        plugins.push(Pluginable::new_shared(
+            StartAssetsPlugin::new(
+                &start.root,
+                Arc::clone(&self.styles),
+                AssetMode::Dev {
+                    css_urls: Arc::clone(&css_urls),
+                    state: Arc::clone(&styles),
+                    url_base: start.dev_url_base(),
+                },
+            )
+            .with_plugins(host.map(|h| Arc::clone(&h.host))),
+        ));
         plugins.push(Pluginable::new_shared(NodeBuiltinShims {
             production: false,
         }));

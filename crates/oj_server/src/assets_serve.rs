@@ -11,7 +11,12 @@ pub(crate) fn is_worker_query(url: &str) -> bool {
 
 pub(crate) fn query_asset_kind(query: Option<&str>) -> Option<&'static str> {
     let q = query?;
-    for kind in ["url", "raw", "worker", "sharedworker", "inline", "init"] {
+    let has = |kind| q.split('&').any(|kv| kv == kind);
+    // Vite's vite:asset reads `raw` before `url`; vite:worker loads before it.
+    if has("raw") && !has("worker") && !has("sharedworker") {
+        return Some("raw");
+    }
+    for kind in ["url", "worker", "sharedworker", "raw", "inline", "init"] {
         if q.split('&').any(|kv| kv == kind) {
             return Some(kind);
         }

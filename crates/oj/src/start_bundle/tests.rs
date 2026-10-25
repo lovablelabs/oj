@@ -876,3 +876,123 @@ async fn stylex_compiles_app_modules_and_loads_its_runtime() {
     let class = sheet.trim_start_matches('.').split('{').next().unwrap();
     assert!(code.contains(class), "the bundle uses {class}:\n{code}");
 }
+
+const SLOT_SPIES: &str = r#"import { appendFileSync } from "node:fs";
+const record = (name) => function (code, id) {
+  if (!/\.(scss|css)(\?|$)/.test(id)) return null;
+  const kind = code.includes("$c")
+    ? "source"
+    : /export (default|const|\{)|^$/.test(code) || code.startsWith("import")
+      ? "js"
+      : /\.m[\s{]/.test(code) || !id.includes(".module.")
+        ? "css"
+        : "css-scoped";
+  appendFileSync(__SEEN__, `${this.environment?.name} ${name} ${id.slice(id.lastIndexOf("/") + 1)} ${kind}\n`);
+  return null;
+};
+const spy = (name, enforce) => ({ name, enforce, transform: record(name) });
+export default [spy("post", "post"), spy("normal"), spy("pre", "pre")];
+"#;
+
+/// What the spies record in the client bundle of a Start app importing a
+/// Sass sheet, an `?inline` one and a CSS module, in `command`.
+async fn client_slot_records(command: super::Command) -> Vec<String> {
+    // Outside the app, beside it.
+    let seen = std::env::temp_dir().join(format!(
+        "oj-start-slots-{}-{command:?}.txt",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&seen);
+    let spies = SLOT_SPIES.replace(
+        "__SEEN__",
+        &serde_json::to_string(&seen.display().to_string()).unwrap(),
+    );
+    let app = App::new(&[
+        ("package.json", r#"{"name":"start-slots","type":"module"}"#),
+        ("src/a.scss", "$c: red;\n.a { color: $c; }\n"),
+        ("src/b.scss", "$c: blue;\n.b { color: $c; }\n"),
+        ("src/m.module.css", ".m { color: teal; }\n"),
+        (
+            "src/entry.js",
+            "import \"./a.scss\";\nimport b from \"./b.scss?inline\";\nimport m from \"./m.module.css\";\nconsole.log(b, m.m);\n",
+        ),
+        ("oj.plugins.mjs", &spies),
+    ]);
+    let start = super::StartConfig {
+        command,
+        ..app.start()
+    };
+    let host = super::hosts::spawn(&start, None, "client")
+        .await
+        .unwrap()
+        .expect("the app's plugins");
+    let styles = Arc::new(Styles::new(&start));
+    let mode = match command {
+        super::Command::Serve => AssetMode::Dev {
+            css_urls: Arc::default(),
+            state: Arc::new(DevStyleState::default()),
+            url_base: String::new(),
+        },
+        super::Command::Build => AssetMode::Build {
+            emitter: Arc::new(Emitter::new(
+                &app.dir.join("dist/client"),
+                "/",
+                Arc::clone(&styles),
+            )),
+            server: false,
+            worker_chain: Vec::new(),
+        },
+    };
+    let plugins = vec![
+        Pluginable::new_shared(super::host::StartHostPlugin::new(
+            Arc::clone(&host.host),
+            host.ctx.clone(),
+            &host.facts,
+            command,
+            &app.dir,
+            Arc::new(crate::build::EmitState::new(app.dir.clone())),
+        )),
+        Pluginable::new_shared(
+            StartAssetsPlugin::new(&app.dir, styles, mode).with_plugins(Some(host.host)),
+        ),
+    ];
+    bundle(&app, "src/entry.js", plugins).await.unwrap();
+    let text = std::fs::read_to_string(&seen).expect("the spies ran");
+    let _ = std::fs::remove_file(&seen);
+    let seen = text;
+    let mut seen: Vec<String> = seen.lines().map(str::to_string).collect();
+    seen.sort_unstable();
+    seen
+}
+
+/// The client environment's lines Vite 8.3.5 records for this app under
+/// TanStack Start, in dev and in the build: each sheet once through each slot,
+/// "pre" plugins on the source, "normal" ones on the CSS (a module's classes
+/// scoped), "post" ones on the module standing in for it.
+const VITE_CLIENT_SLOTS: [&str; 9] = [
+    "client normal a.scss css",
+    "client normal b.scss?inline css",
+    "client normal m.module.css css-scoped",
+    "client post a.scss js",
+    "client post b.scss?inline js",
+    "client post m.module.css js",
+    "client pre a.scss source",
+    "client pre b.scss?inline source",
+    "client pre m.module.css css",
+];
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stylesheet_transforms_run_in_vites_slots_in_the_client_build() {
+    assert_eq!(
+        client_slot_records(super::Command::Build).await,
+        VITE_CLIENT_SLOTS
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stylesheet_transforms_run_in_vites_slots_in_the_client_dev_bundle() {
+    assert_eq!(
+        client_slot_records(super::Command::Serve).await,
+        VITE_CLIENT_SLOTS
+    );
+}

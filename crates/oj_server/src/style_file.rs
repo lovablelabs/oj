@@ -10,6 +10,56 @@ use std::sync::{Arc, LazyLock};
 use regex::Regex;
 
 use crate::css_engine::CssEngine;
+use crate::plugins::PluginHost;
+
+/// One Vite environment's plugins and the id they see a stylesheet under,
+/// for the transform slots around Vite's core CSS plugins: "pre" on the
+/// source, "normal" on the CSS vite:css makes of it, "post" on the module
+/// vite:css-post makes of that.
+#[derive(Clone, Copy)]
+pub struct StyleSlots<'a> {
+    pub host: &'a PluginHost,
+    pub id: &'a str,
+}
+
+/// A stylesheet's source: what a plugin `load` returns for its id (Vite runs
+/// load before the fs read), else the file.
+pub async fn read_style_source(
+    slots: Option<StyleSlots<'_>>,
+    path: &Path,
+) -> Result<String, String> {
+    if let Some(StyleSlots { host, id }) = slots {
+        if host.hook_wants_load(id) {
+            if let Some(code) = host
+                .load(id)
+                .await
+                .map_err(|e| format!("plugin load error for {id}:\n{e}"))?
+            {
+                return Ok(code);
+            }
+        }
+    }
+    std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// One slot (`"pre"`, `"normal"` or `"post"`) of a stylesheet's plugin
+/// transforms; a throwing plugin fails it, as in Vite.
+pub async fn style_slot(
+    slots: Option<StyleSlots<'_>>,
+    code: String,
+    phase: &str,
+) -> Result<String, String> {
+    let Some(StyleSlots { host, id }) = slots else {
+        return Ok(code);
+    };
+    if !host.hook_wants_transform(id, &code) {
+        return Ok(code);
+    }
+    host.transform_phase(&code, id, phase)
+        .await
+        .map(|t| t.code)
+        .map_err(|e| format!("plugin transform error for {id}:\n{e}"))
+}
 
 /// A stylesheet as a module: its JS (a CSS module's class map, else an empty
 /// module) and the compiled sheet, urls left as written.
@@ -138,7 +188,9 @@ pub fn start_dev_file_url(url_base: &str, file: &Path) -> String {
 /// then the app's postcss plugins, here Tailwind), its relative urls pointed
 /// at the files' dev URLs. SSR and the dev client bundle both build it here,
 /// so a rendered `<style>` hydrates as is. `tailwind` is asked for only when
-/// the sheet needs it.
+/// the sheet needs it. `slots`: the environment's "pre" and "normal" plugin
+/// transforms, around that compile (the url rewrite is vite:css's too).
+#[allow(clippy::too_many_arguments)]
 pub async fn start_dev_inline_style(
     inputs: &StyleInputs<'_>,
     path: &Path,
@@ -146,7 +198,9 @@ pub async fn start_dev_inline_style(
     preprocess: Option<&CssEngine>,
     tailwind: impl AsyncFnOnce() -> Result<Arc<CssEngine>, String>,
     url_base: &str,
+    slots: Option<StyleSlots<'_>>,
 ) -> Result<String, String> {
+    let source = style_slot(slots, source, "pre").await?;
     let mut css = compile_style_file(inputs, path, source, preprocess)
         .await?
         .css;
@@ -158,6 +212,7 @@ pub async fn start_dev_inline_style(
     }
     let dir = path.parent().unwrap_or(Path::new("/"));
     let css = rewrite_relative_urls(&css, dir, |file| start_dev_file_url(url_base, file));
+    let css = style_slot(slots, css, "normal").await?;
     Ok(format!(
         "export default {};",
         serde_json::Value::String(css)

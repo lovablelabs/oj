@@ -207,15 +207,18 @@ fn client_plugins(
         StartCodePlugin::new(&start.root, target)
             .with_alias(host.map(|h| h.facts.alias.clone()).unwrap_or_default()),
     ));
-    plugins.push(Pluginable::new_shared(StartAssetsPlugin::new(
-        &start.root,
-        Arc::clone(styles),
-        AssetMode::Build {
-            emitter: Arc::clone(emitter),
-            server: false,
-            worker_chain,
-        },
-    )));
+    plugins.push(Pluginable::new_shared(
+        StartAssetsPlugin::new(
+            &start.root,
+            Arc::clone(styles),
+            AssetMode::Build {
+                emitter: Arc::clone(emitter),
+                server: false,
+                worker_chain,
+            },
+        )
+        .with_plugins(host.map(|h| Arc::clone(&h.host))),
+    ));
     plugins.push(Pluginable::new_shared(NodeBuiltinShims {
         production: true,
     }));
@@ -541,15 +544,18 @@ pub(crate) async fn build(
                         .unwrap_or_default(),
                 ),
             ));
-            plugins.push(Pluginable::new_shared(StartAssetsPlugin::new(
-                &start.root,
-                Arc::clone(&styles),
-                AssetMode::Build {
-                    emitter: Arc::clone(&emitter),
-                    server: true,
-                    worker_chain: Vec::new(),
-                },
-            )));
+            plugins.push(Pluginable::new_shared(
+                StartAssetsPlugin::new(
+                    &start.root,
+                    Arc::clone(&styles),
+                    AssetMode::Build {
+                        emitter: Arc::clone(&emitter),
+                        server: true,
+                        worker_chain: Vec::new(),
+                    },
+                )
+                .with_plugins(server_host.as_ref().map(|h| Arc::clone(&h.host))),
+            ));
             plugins
         };
         let mut server_aliases = start.server_aliases();

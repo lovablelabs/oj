@@ -135,13 +135,12 @@ impl<'a> ScopedNames<'a> {
             .filter(|s| !s.is_empty())
         {
             Some(pattern) => {
-                // postcss-modules' context is `process.cwd()`: the root when
-                // Vite runs from the app.
-                let context = resolve.root.unwrap_or(Path::new("/"));
+                let root = resolve.root.unwrap_or(Path::new("/"));
+                let context = modules.context.as_deref().unwrap_or(root);
                 let path = strip_query(url);
                 let file = match Path::new(path) {
                     p if p.is_absolute() && p.is_file() => p.to_path_buf(),
-                    _ => context.join(path.trim_start_matches('/')),
+                    _ => root.join(path.trim_start_matches('/')),
                 };
                 Self::Pattern(GenericNames::new(pattern, &file, context, hash_prefix))
             }
@@ -893,6 +892,33 @@ mod tests {
             out.exports.unwrap(),
             vec![("button".to_string(), "_button_8ywyu_1".to_string())]
         );
+    }
+
+    /// A pattern's `[hash]` covers the file's path from postcss-modules'
+    /// context, `process.cwd()`: Vite 8.3.5 names `.btn` in
+    /// `app/src/a.module.css` `btn__vjDgO` run from `app`, `btn__3BinS` run
+    /// from its parent. The file still resolves from the app root.
+    #[test]
+    fn pattern_names_hash_the_path_from_the_working_directory() {
+        let name = |context: Option<&str>| {
+            let cfg = CssResolveConfig {
+                root: "/w/app".into(),
+                modules: CssModulesOptions {
+                    generate_scoped_name: Some("[local]__[hash:base64:5]".into()),
+                    context: context.map(Into::into),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            compile_css_with("/src/a.module.css", ".btn { color: red; }\n", &cfg.as_ref())
+                .unwrap()
+                .exports
+                .unwrap()
+        };
+        let btn = |v: &str| vec![("btn".to_string(), v.to_string())];
+        assert_eq!(name(Some("/w/app")), btn("btn__vjDgO"));
+        assert_eq!(name(None), btn("btn__vjDgO"), "no context: the app root");
+        assert_eq!(name(Some("/w")), btn("btn__3BinS"));
     }
 
     // string-hash 1.1.3, in JS: `(hash * 33) ^ str.charCodeAt(--i)` from

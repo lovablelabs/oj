@@ -49,10 +49,15 @@ impl SsrBridge {
     }
 
     /// A style file as SSR compiles it (see [`compile_style_file`]): the
-    /// sheet the Start dev server serves for it.
-    pub async fn style_sheet(&self, path: &Path) -> Result<StyleModule, String> {
-        let source =
-            std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    /// sheet the Start dev server serves for it, after the "pre" transforms
+    /// of `slots` (the client environment's, for a `<link>`).
+    pub async fn style_sheet(
+        &self,
+        path: &Path,
+        slots: Option<StyleSlots<'_>>,
+    ) -> Result<StyleModule, String> {
+        let source = read_style_source(slots, path).await?;
+        let source = style_slot(slots, source, "pre").await?;
         style_file(&self.state, path, source).await
     }
 
@@ -64,10 +69,13 @@ impl SsrBridge {
 
     /// A stylesheet's `?inline` module under Start dev (see
     /// [`start_dev_inline_style`]), on the server's engines.
+    /// The SSR environment's plugins see it as `<file>?inline`, in every slot.
     pub async fn start_dev_inline_style(&self, path: &Path) -> Result<String, String> {
         let state = &self.state;
-        let source =
-            std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let host = ssr_plugin_host(state).await;
+        let id = format!("{}?inline", path.display());
+        let slots = host.as_deref().map(|host| StyleSlots { host, id: &id });
+        let source = read_style_source(slots, path).await?;
         let engine = if needs_preprocess_engine(path) {
             Some(lazy_engine(state, EngineKind::Preprocess).await?.as_ref())
         } else {
@@ -80,7 +88,10 @@ impl SsrBridge {
         };
         let tailwind = async || lazy_engine(state, EngineKind::Tailwind).await.cloned();
         let url_base = crate::start_dev_url_base(state.base.as_deref().unwrap_or("/"));
-        start_dev_inline_style(&inputs, path, source, engine, tailwind, &url_base).await
+        let code =
+            start_dev_inline_style(&inputs, path, source, engine, tailwind, &url_base, slots)
+                .await?;
+        style_slot(slots, code, "post").await
     }
 
     pub async fn resolve(&self, importer: &str, spec: &str) -> Result<SsrResolution, String> {
@@ -268,6 +279,12 @@ pub(crate) async fn ssr_module_inner(
             "oj: module not allow-listed".into(),
         ));
     }
+    let ext = path.extension().and_then(|e| e.to_str());
+    if ext.is_some_and(is_style_ext) && path.is_file() {
+        return ssr_style_module(state, id, &path)
+            .await
+            .map_err(SsrModuleError::Failed);
+    }
     let (source, from_plugin) = match std::fs::read(&path).and_then(bytes_to_string) {
         Ok(s) => (s, false),
         Err(read_err) => match ssr_plugin_host(state).await {
@@ -278,18 +295,28 @@ pub(crate) async fn ssr_module_inner(
             Some(_) | None => return Err(SsrModuleError::NotFound(format!("{id}: {read_err}"))),
         },
     };
-    let ext = path.extension().and_then(|e| e.to_str());
-    if !from_plugin && ext.is_some_and(is_style_ext) {
-        return style_file(state, &path, source)
-            .await
-            .map(|m| m.code)
-            .map_err(SsrModuleError::Failed);
-    }
     if !from_plugin && ext == Some("json") {
         return oj_compiler::json::to_esm(&source, id)
             .map_err(|e| SsrModuleError::Failed(format!("{e}")));
     }
     ssr_transform_source(state, id, source, from_plugin, runner).await
+}
+
+/// A stylesheet as the SSR environment's module: its class map, through that
+/// environment's plugin slots ("pre" on the source, "normal" on the sheet,
+/// "post" on the module), as Vite's SSR runs vite:css and vite:css-post.
+async fn ssr_style_module(
+    state: &Arc<ServerState>,
+    id: &str,
+    path: &Path,
+) -> Result<String, String> {
+    let host = ssr_plugin_host(state).await;
+    let slots = host.as_deref().map(|host| StyleSlots { host, id });
+    let source = read_style_source(slots, path).await?;
+    let source = style_slot(slots, source, "pre").await?;
+    let module = style_file(state, path, source).await?;
+    style_slot(slots, module.css, "normal").await?;
+    style_slot(slots, module.code, "post").await
 }
 
 /// Plugin-transform + dev-ssr-compile tail of the SSR module pipeline, on a
@@ -634,5 +661,7 @@ pub fn css_modules_options(config: &oj_config::OjConfig) -> oj_css::CssModulesOp
         global_scope: m.global_scope,
         global_module_paths: m.global_module_paths,
         hash_prefix: m.hash_prefix,
+        // postcss-modules' `process.cwd()`: where oj was started, as Vite.
+        context: oj_env::get().cwd.clone(),
     }
 }

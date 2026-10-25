@@ -1182,13 +1182,12 @@ fn is_stylesheet_path(path: &str) -> bool {
 /// the ids Vite's vite:css leaves out (worker, raw, url), as oj's resolver
 /// spells them.
 fn is_compiled_stylesheet(id: &str) -> bool {
-    let path = id.split('?').next().unwrap_or(id);
+    let (path, query) = id.split_once('?').unwrap_or((id, ""));
     is_stylesheet_path(path)
         && !id.starts_with(PUBLIC_FILE_ID)
         && worker_id_parts(id).is_none()
-        && !["?raw", "?url", "?no-inline"]
-            .iter()
-            .any(|q| id.ends_with(q))
+        && !query.split('&').any(|p| p == "raw")
+        && !["?url", "?no-inline"].iter().any(|q| id.ends_with(q))
 }
 
 /// One slot of the plugin transform chain over a stylesheet
@@ -1366,10 +1365,15 @@ pub(crate) fn split_asset_query(spec: &str) -> Option<(String, String)> {
         }
         return Some((base.to_string(), q));
     }
+    // Vite's rawRE (`(\?|&)raw(?:&|$)`) takes `raw` anywhere in the query,
+    // and vite:asset reads it before `url` or `inline`.
+    if has("raw") {
+        return Some((base.to_string(), "raw".to_string()));
+    }
     // Vite's combinable asset queries (urlRE/inlineRE/noInlineRE match in any
     // position): `no-inline` always wins (the asset is emitted, never
     // data-URI'd -- asset.ts shouldInline checks it first), `inline` beats
-    // `url` otherwise. `init`/`raw`/`react` never combine in Vite's grammar.
+    // `url` otherwise. `init`/`react` never combine in Vite's grammar.
     if !params.is_empty()
         && params
             .iter()
@@ -1384,7 +1388,7 @@ pub(crate) fn split_asset_query(spec: &str) -> Option<(String, String)> {
         };
         return Some((base.to_string(), q.to_string()));
     }
-    for kind in ["init", "raw", "react"] {
+    for kind in ["init", "react"] {
         if params.len() == 1 && has(kind) {
             return Some((base.to_string(), kind.to_string()));
         }
@@ -8685,6 +8689,25 @@ mod tests {
             "foreign params are not oj queries"
         );
         assert_eq!(split_asset_query("./a.png?v=1"), None);
+        // Vite's rawRE: `raw` anywhere, ahead of `url`/`inline`, after workers.
+        for spec in [
+            "./a.css?v=1&raw",
+            "./a.css?raw&v=1",
+            "./a.png?raw&url",
+            "./a.css?inline&raw",
+        ] {
+            let file = spec.split('?').next().unwrap().to_string();
+            assert_eq!(
+                split_asset_query(spec),
+                Some((file, "raw".into())),
+                "{spec}"
+            );
+        }
+        assert_eq!(split_asset_query("./a.css?v=1&raw=1"), None);
+        assert_eq!(
+            split_asset_query("./w.ts?worker&raw"),
+            Some(("./w.ts".into(), "worker".into()))
+        );
         assert_eq!(split_asset_query("./a.png"), None);
         assert_eq!(
             worker_id_parts("/x/w.ts?worker&inline"),
@@ -8741,10 +8764,10 @@ mod tests {
         assert!(!is_compiled_stylesheet(&format!(
             "{PUBLIC_FILE_ID}a.css?url"
         )));
-        // oj's resolver keeps `raw` and `url` only as the whole query, and its
-        // loader compiles any other spelling: the rule follows the loader, so
-        // such a sheet still runs each slot once.
-        assert!(is_compiled_stylesheet("/x/a.css?v=1&raw"));
+        // `raw` anywhere in the query is raw text, as Vite's rawRE reads it.
+        assert!(!is_compiled_stylesheet("/x/a.css?v=1&raw"));
+        assert!(!is_compiled_stylesheet("/x/a.css?raw&v=1"));
+        assert!(is_compiled_stylesheet("/x/a.css?v=1&rawx"));
     }
 
     #[test]

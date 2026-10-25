@@ -211,11 +211,13 @@ impl Styles {
         }
     }
 
-    /// A CSS module's or a preprocessor file's compile: its JS (the class
-    /// map) and its CSS.
-    pub async fn compile(&self, path: &Path) -> Result<oj_server::StyleModule, String> {
-        let source =
-            std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    /// A CSS module's or a preprocessor file's compile, from its source
+    /// (after the "pre" plugin transforms): its JS (the class map) and its CSS.
+    pub async fn compile(
+        &self,
+        path: &Path,
+        source: String,
+    ) -> Result<oj_server::StyleModule, String> {
         let engine = if oj_server::needs_preprocess_engine(path) {
             Some(self.engines.preprocess(&self.root).await?)
         } else {
@@ -224,10 +226,14 @@ impl Styles {
         oj_server::compile_style_file(&self.inputs(), path, source, engine.as_deref()).await
     }
 
-    /// A dev `?inline` sheet: the module the dev server renders for SSR.
-    pub async fn dev_inline(&self, path: &Path) -> Result<String, String> {
-        let source =
-            std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    /// A dev `?inline` sheet: the module the dev server renders for SSR,
+    /// through the "pre" and "normal" slots of `slots`.
+    pub async fn dev_inline(
+        &self,
+        path: &Path,
+        slots: Option<oj_server::StyleSlots<'_>>,
+    ) -> Result<String, String> {
+        let source = oj_server::read_style_source(slots, path).await?;
         let engine = if oj_server::needs_preprocess_engine(path) {
             Some(self.engines.preprocess(&self.root).await?)
         } else {
@@ -242,6 +248,7 @@ impl Styles {
             engine.as_deref(),
             async || engines.tailwind(&root).await,
             &self.url_base,
+            slots,
         )
         .await
     }
@@ -433,7 +440,7 @@ impl Emitter {
             {
                 let css = std::fs::read_to_string(path)
                     .map_err(|e| format!("{}: {e}", path.display()))?;
-                return self.css(path, css).await;
+                return self.css(path, css, None).await;
             }
             let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
             self.write(path, &bytes)
@@ -441,13 +448,20 @@ impl Emitter {
     }
 
     /// A stylesheet's text emitted as the file at `path` (a CSS module's
-    /// scoped sheet is not the file's bytes): Tailwind when it uses it, its
-    /// `url()`s emitted, minified under the client's cssMinify (ending in a
-    /// newline, as Vite's finalizeCss), then hashed and recorded.
-    pub async fn css(&self, path: &Path, css: String) -> Result<String, String> {
+    /// scoped sheet is not the file's bytes): Tailwind when it uses it, the
+    /// "normal" plugin transforms of `slots`, its `url()`s emitted, minified
+    /// under the client's cssMinify (ending in a newline, as Vite's
+    /// finalizeCss), then hashed and recorded.
+    pub async fn css(
+        &self,
+        path: &Path,
+        css: String,
+        slots: Option<oj_server::StyleSlots<'_>>,
+    ) -> Result<String, String> {
         self.emitting.lock().unwrap().insert(path.to_path_buf());
         let result = async {
             let css = self.styles.tailwind(path, css).await?;
+            let css = oj_server::style_slot(slots, css, "normal").await?;
             let css = self
                 .rewrite_urls(&css, path.parent().unwrap_or(path))
                 .await?;
@@ -501,8 +515,10 @@ impl Emitter {
         path: &Path,
         css: String,
         server: bool,
+        slots: Option<oj_server::StyleSlots<'_>>,
     ) -> Result<String, String> {
         let css = self.styles.tailwind(path, css).await?;
+        let css = oj_server::style_slot(slots, css, "normal").await?;
         let css = self
             .rewrite_urls(&css, path.parent().unwrap_or(path))
             .await?;
@@ -829,6 +845,10 @@ pub(crate) struct StartAssetsPlugin {
     root: PathBuf,
     styles: Arc<Styles>,
     mode: AssetMode,
+    /// The bundle's plugin host, whose "pre" and "normal" transforms a
+    /// stylesheet runs through as it compiles ("post" ones run on the module
+    /// this loads, as rolldown transforms it).
+    plugins: Option<Arc<oj_server::plugins::PluginHost>>,
 }
 
 impl std::fmt::Debug for StartAssetsPlugin {
@@ -843,7 +863,13 @@ impl StartAssetsPlugin {
             root: root.to_path_buf(),
             styles,
             mode,
+            plugins: None,
         }
+    }
+
+    pub fn with_plugins(mut self, host: Option<Arc<oj_server::plugins::PluginHost>>) -> Self {
+        self.plugins = host;
+        self
     }
 
     async fn url_for(&self, path: &Path) -> Result<String, String> {
@@ -885,6 +911,10 @@ impl StartAssetsPlugin {
             return Ok(None);
         };
         let path_str = path.to_string_lossy();
+        let slots = self
+            .plugins
+            .as_deref()
+            .map(|host| oj_server::StyleSlots { host, id });
         Ok(Some(match tag {
             AssetTag::Raw => {
                 let text = std::fs::read_to_string(path)
@@ -897,17 +927,22 @@ impl StartAssetsPlugin {
                     state
                         .compiled_sheets
                         .store(true, std::sync::atomic::Ordering::SeqCst);
-                    self.styles.dev_inline(path).await?
+                    self.styles.dev_inline(path, slots).await?
                 }
                 AssetMode::Build {
                     emitter, server, ..
                 } => {
-                    let compiled = self.styles.compile(path).await?;
+                    let source = oj_server::read_style_source(slots, path).await?;
+                    let source = oj_server::style_slot(slots, source, "pre").await?;
+                    let compiled = self.styles.compile(path, source).await?;
                     // A build gives a CSS module's class map even inlined.
                     if is_css_module(&path_str) {
+                        oj_server::style_slot(slots, compiled.css, "normal").await?;
                         compiled.code
                     } else {
-                        let css = emitter.inline_css(path, compiled.css, *server).await?;
+                        let css = emitter
+                            .inline_css(path, compiled.css, *server, slots)
+                            .await?;
                         format!("export default {};", json(&css))
                     }
                 }
@@ -959,18 +994,35 @@ impl StartAssetsPlugin {
                 // A CSS module or a preprocessor file compiles on oj's CSS
                 // pipeline; a plain `.css` is linked as written (a build
                 // emits it compiled).
+                let emits = matches!(self.mode, AssetMode::Build { server: false, .. });
+                let source = oj_server::read_style_source(slots, path).await?;
+                // Only the client build ships this compile. A dev page links
+                // the sheet, and that `?direct` request runs every slot; the
+                // import (and the server build's) runs them too when a plugin
+                // takes the sheet, as in Vite, sparing a compile when none does.
+                let slots = slots.filter(|s| emits || s.host.hook_wants_transform(id, &source));
+                let source = oj_server::style_slot(slots, source, "pre").await?;
                 let compiled = if is_css_module(&path_str) || !path_str.ends_with(".css") {
                     if let AssetMode::Dev { state, .. } = &self.mode {
                         state
                             .compiled_sheets
                             .store(true, std::sync::atomic::Ordering::SeqCst);
                     }
-                    Some(self.styles.compile(path).await?)
+                    Some(self.styles.compile(path, source.clone()).await?)
                 } else {
                     None
                 };
+                let css = || {
+                    compiled
+                        .as_ref()
+                        .map_or_else(|| source.clone(), |c| c.css.clone())
+                };
                 match &self.mode {
                     AssetMode::Dev { css_urls, .. } => {
+                        if slots.is_some() {
+                            let css = self.styles.tailwind(path, css()).await?;
+                            oj_server::style_slot(slots, css, "normal").await?;
+                        }
                         let href = self.url_for(path).await?;
                         let mut urls = css_urls.lock().unwrap();
                         if !urls.contains(&href) {
@@ -981,15 +1033,15 @@ impl StartAssetsPlugin {
                         emitter,
                         server: false,
                         ..
-                    } => match &compiled {
-                        Some(c) => {
-                            emitter.css(path, c.css.clone()).await?;
+                    } => {
+                        emitter.css(path, css(), slots).await?;
+                    }
+                    AssetMode::Build { server: true, .. } => {
+                        if slots.is_some() {
+                            let css = self.styles.tailwind(path, css()).await?;
+                            oj_server::style_slot(slots, css, "normal").await?;
                         }
-                        None => {
-                            emitter.emit(path).await?;
-                        }
-                    },
-                    AssetMode::Build { server: true, .. } => {}
+                    }
                 }
                 compiled.map_or_else(|| "export default {};".to_string(), |c| c.code)
             }

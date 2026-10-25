@@ -261,6 +261,8 @@ jobs:
         run: node e2e/css-plugin-unocss.mjs
       - name: dev stylesheet plugin transforms run in Vite's pre/normal/post slots (live Vite check)
         run: node e2e/css-plugin-slots.mjs
+      - name: start stylesheet plugin transforms run in Vite's slots per environment (live Vite check)
+        run: node e2e/start-css-plugin-slots.mjs
       - name: start prod build for @cloudflare/vite-plugin is a Worker bundle that renders in workerd
         run: node e2e/start-cloudflare.mjs
       - name: start dev for @cloudflare/vite-plugin serves from the worker; an edit yields a fresh document
