@@ -1046,3 +1046,23 @@ async fn plugin_css_takes_the_place_of_its_modules_sheet() {
         .unwrap()
         .contains(".late{margin:1px}"));
 }
+
+/// A sheet the dev bundle ran through the plugins serves the page's `<link>`
+/// until the next bundle or edit, so each plugin sees it once, as in Vite.
+#[test]
+fn a_dev_sheet_is_kept_until_the_next_bundle_or_edit() {
+    let app = App::new(&[("src/a.css", ".a{}")]);
+    let styles = Styles::new(&app.start());
+    let a = app.dir.join("src/a.css");
+    assert_eq!(styles.dev_sheet(&a), None);
+    styles.dev_sheets_stale();
+    styles.keep_dev_sheet(&a, ".a{color:red}".into());
+    assert_eq!(styles.dev_sheet(&a).as_deref(), Some(".a{color:red}"));
+    assert_eq!(styles.dev_sheet(&app.dir.join("src/b.css")), None);
+    styles.dev_sheets_stale();
+    assert_eq!(
+        styles.dev_sheet(&a),
+        None,
+        "stale after the next bundle or edit"
+    );
+}

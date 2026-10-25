@@ -2905,6 +2905,10 @@ async fn serve_js(path: &Path, what: &str) -> Response {
 /// client's transform of it: "pre" transforms on the source, "normal" ones
 /// on the sheet (the "post" ones see the module the client bundle imports).
 async fn css_body(state: &StartState, file: &Path) -> Option<Result<String, String>> {
+    // The client bundle ran this sheet through the plugins already.
+    if let Some(css) = state.bundler.linked_sheet(file) {
+        return Some(Ok(css));
+    }
     let host = state.bundler.plugin_host();
     let id = file.display().to_string();
     let slots = host

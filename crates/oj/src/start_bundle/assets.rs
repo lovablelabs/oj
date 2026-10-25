@@ -179,6 +179,13 @@ pub(crate) struct Styles {
     targets: Vec<String>,
     /// The dev urls' prefix under `base`.
     url_base: String,
+    /// The sheets the dev client bundle ran through the plugins, after their
+    /// "normal" transforms, stamped with the bundle that compiled them: a
+    /// page's `<link>` serves one without running the plugins again until the
+    /// next bundle or style edit, as Vite serves a sheet's import and its CSS
+    /// from one transform.
+    dev_sheets: Mutex<HashMap<PathBuf, (u64, String)>>,
+    dev_stamp: std::sync::atomic::AtomicU64,
 }
 
 impl Styles {
@@ -192,11 +199,39 @@ impl Styles {
             minify_ssr: oj_config::build_css_minify(&start.config, true),
             targets: oj_config::build_css_targets(&start.config),
             url_base: start.dev_url_base(),
+            dev_sheets: Mutex::new(HashMap::new()),
+            dev_stamp: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// A dev bundle started, or a style input changed: every kept sheet may
+    /// be stale.
+    pub fn dev_sheets_stale(&self) {
+        self.dev_stamp
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub(crate) fn keep_dev_sheet(&self, path: &Path, css: String) {
+        let stamp = self.dev_stamp.load(std::sync::atomic::Ordering::SeqCst);
+        self.dev_sheets
+            .lock()
+            .unwrap()
+            .insert(path.to_path_buf(), (stamp, css));
+    }
+
+    /// The sheet the current dev bundle compiled for `path`, if it did.
+    pub fn dev_sheet(&self, path: &Path) -> Option<String> {
+        let stamp = self.dev_stamp.load(std::sync::atomic::Ordering::SeqCst);
+        self.dev_sheets
+            .lock()
+            .unwrap()
+            .get(path)
+            .filter(|(at, _)| *at == stamp)
+            .map(|(_, css)| css.clone())
     }
 
     fn inputs(&self) -> oj_server::StyleInputs<'_> {
@@ -1089,7 +1124,8 @@ impl StartAssetsPlugin {
                     } => {
                         if slots.is_some() {
                             let css = self.styles.tailwind(path, css()).await?;
-                            oj_server::style_slot(slots, css, "normal").await?;
+                            let css = oj_server::style_slot(slots, css, "normal").await?;
+                            self.styles.keep_dev_sheet(path, css);
                         }
                         let href = if path.is_file() {
                             self.url_for(path).await?

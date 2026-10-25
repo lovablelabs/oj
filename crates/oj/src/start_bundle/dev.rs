@@ -133,6 +133,8 @@ impl DevBundler {
 
     /// A watch batch's changed paths: any style input moves the style epoch.
     pub(crate) fn note_changes(&self, paths: &[PathBuf]) {
+        // Any edit can change a sheet (Tailwind reads the sources).
+        self.styles.dev_sheets_stale();
         if paths.iter().any(|p| crate::start_dev::is_style_input(p)) {
             self.style_epoch
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -179,6 +181,12 @@ impl DevBundler {
             .collect()
     }
 
+    /// The sheet the current bundle compiled for `path` through the client
+    /// plugins (see [`Styles::dev_sheet`]).
+    pub(crate) fn linked_sheet(&self, path: &Path) -> Option<String> {
+        self.styles.dev_sheet(path)
+    }
+
     /// The client environment's plugin host, once the first bundle spawned
     /// it.
     pub(crate) fn plugin_host(&self) -> Option<Arc<oj_server::plugins::PluginHost>> {
@@ -207,6 +215,7 @@ impl DevBundler {
         refresh: bool,
     ) -> anyhow::Result<bool> {
         let mut session = self.session.lock().await;
+        self.styles.dev_sheets_stale();
         let cache = &self.start.cache;
         // Only this run's failure may read as an app build error.
         let _ = std::fs::remove_file(cache.join(CLIENT_ERROR_FILE));

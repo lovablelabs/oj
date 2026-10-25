@@ -6,10 +6,10 @@
 // vite:css makes of it (a CSS module's classes scoped), "post" ones the
 // module vite:css-post makes of that. Plugins record what they see per
 // environment in oj's dev server and build; the same app then runs under
-// Vite's dev server and build, and the records must match. In dev, oj
-// compiles a sheet for its client import and again for its `<link>`, where
-// Vite serves both from one cached transform, so dev compares each
-// environment's distinct records.
+// Vite's dev server and build, and the records must match, each sheet once
+// per slot and environment (in dev, a sheet's `<link>` serves what its
+// client import ran through the plugins, as Vite serves both from one
+// transform). An edit still reaches the linked sheet.
 
 import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
@@ -130,7 +130,6 @@ write(
 
 const records = () => (fs.existsSync(seenFile) ? fs.readFileSync(seenFile, "utf8").split("\n").filter(Boolean) : []);
 const sorted = (lines) => [...lines].sort();
-const distinct = (lines) => sorted(new Set(lines));
 const reset = () => fs.rmSync(seenFile, { force: true });
 const CLIENT_MODULES = ["/src/a.less", "/src/b.less?inline", "/src/m.module.css", "/@id/__x00__virtual:theme.css"];
 
@@ -157,18 +156,33 @@ try {
   srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: "ignore" });
   await waitUp(`http://localhost:${PORT}/`);
   const html = await (await fetch(`http://localhost:${PORT}/`)).text();
-  let linked = "";
-  for (const m of html.matchAll(/<link rel="stylesheet" href="([^"]+)"/g)) {
-    linked += await (await fetch(`http://localhost:${PORT}${m[1].replace(/&amp;/g, "&")}`)).text();
-  }
+  // The page's client bundle, as a browser loading it would wait for.
   for (let i = 0; i < 60 && !records().some((l) => l.startsWith("client post")); i++) await sleep(250);
-  const ojDev = distinct(records());
+  const links = [...html.matchAll(/<link rel="stylesheet" href="([^"]+)"/g)].map((m) => m[1].replace(/&amp;/g, "&"));
+  const fetchLinks = async () => {
+    let css = "";
+    for (const href of links) css += await (await fetch(`http://localhost:${PORT}${href}`)).text();
+    return css;
+  };
+  const linked = await fetchLinks();
+  const ojDev = sorted(records());
+  assert.equal(ojDev.length, 24, ojDev.join("\n"));
+  assert.ok(linked.includes(".from-plugin"), `the page links the plugin's sheet:\n${html}`);
+  console.log("[oj dev] 24 slot records, each sheet once per slot and environment; the page links the plugin's sheet");
+
+  // An edit reaches the linked sheet: the next bundle compiles it again.
+  write("src/a.less", "@c: green;\n.a { color: @c; }\n");
+  let edited = "";
+  for (let i = 0; i < 80 && !/\.a\s*\{\s*color:\s*(green|#008000)/.test(edited); i++) {
+    await sleep(250);
+    edited = await fetchLinks();
+  }
+  assert.match(edited, /\.a\s*\{\s*color:\s*(green|#008000)/, `the edit reaches the linked sheet:\n${edited}`);
+  write("src/a.less", "@c: red;\n.a { color: @c; }\n");
+  console.log("[oj dev] an edit reaches the linked sheet");
   srv.kill("SIGKILL");
   srv = undefined;
   await sleep(300);
-  assert.equal(ojDev.length, 24, ojDev.join("\n"));
-  assert.ok(linked.includes(".from-plugin"), `the page links the plugin's sheet:\n${html}`);
-  console.log("[oj dev] 24 distinct slot records; the page links the plugin's sheet");
 
   const viteDir = path.join(fixture, "node_modules", "vite");
   reset();
@@ -189,8 +203,8 @@ try {
   } finally {
     await vite.close();
   }
-  assert.deepEqual(ojDev, distinct(records()), "each environment's slots, as in Vite's dev server");
-  console.log("[vite dev] identical distinct records");
+  assert.deepEqual(ojDev, sorted(records()), "each environment's slots, as in Vite's dev server");
+  console.log("[vite dev] identical records");
   console.log("START-CSS-PLUGIN-SLOTS E2E PASSED");
 } catch (err) {
   failed = true;
