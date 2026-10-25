@@ -49,6 +49,12 @@ impl App {
 
 impl Drop for App {
     fn drop(&mut self) {
+        // An in-process plugin host moves the whole test process into its
+        // app root: step out before the root goes, or every later
+        // `current_dir()` (rolldown's diagnostics) fails.
+        if std::env::current_dir().map_or(true, |cwd| cwd.starts_with(&self.dir)) {
+            let _ = std::env::set_current_dir(std::env::temp_dir());
+        }
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
