@@ -331,7 +331,13 @@ pub(crate) async fn compile_tailwind(
     url: &str,
     source: &str,
 ) -> Result<(String, Vec<PathBuf>), String> {
-    state.tailwind_urls.lock().unwrap().insert(url.to_string());
+    // The sheet's own url, as the page links it and HMR updates it (not a
+    // `?direct` or `?inline` request's).
+    state
+        .tailwind_urls
+        .lock()
+        .unwrap()
+        .insert(graph_url(url).to_string());
     let mut imported = Vec::new();
     let inlined;
     let source = if state.has_postcss {
