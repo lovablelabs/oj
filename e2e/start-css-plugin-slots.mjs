@@ -85,6 +85,7 @@ write(
 import "../a.less";
 import b from "../b.less?inline";
 import m from "../m.module.css";
+import "virtual:theme.css";
 
 export const Route = createFileRoute("/")({
   component: () => (
@@ -114,7 +115,12 @@ const record = (name) => function (code, id) {
   return null;
 };
 const spy = (name, enforce) => ({ name, enforce, transform: record(name) });
-export default [spy("post", "post"), spy("normal"), spy("pre", "pre")];
+const virtualCss = {
+  name: "virtual-css",
+  resolveId(id) { if (id === "virtual:theme.css") return "\\0virtual:theme.css"; },
+  load(id) { if (id === "\\0virtual:theme.css") return ".from-plugin { color: rebeccapurple; }\\n"; },
+};
+export default [spy("post", "post"), spy("normal"), spy("pre", "pre"), virtualCss];
 `,
 );
 write(
@@ -126,7 +132,7 @@ const records = () => (fs.existsSync(seenFile) ? fs.readFileSync(seenFile, "utf8
 const sorted = (lines) => [...lines].sort();
 const distinct = (lines) => sorted(new Set(lines));
 const reset = () => fs.rmSync(seenFile, { force: true });
-const CLIENT_MODULES = ["/src/a.less", "/src/b.less?inline", "/src/m.module.css"];
+const CLIENT_MODULES = ["/src/a.less", "/src/b.less?inline", "/src/m.module.css", "/@id/__x00__virtual:theme.css"];
 
 let failed = false;
 let srv;
@@ -135,8 +141,15 @@ try {
   reset();
   execSync(`${oj} build ${app}`, { stdio: "ignore" });
   const ojBuild = sorted(records());
-  assert.equal(ojBuild.length, 18, ojBuild.join("\n"));
-  console.log("[oj build] 18 slot records, each sheet once per slot and environment");
+  assert.equal(ojBuild.length, 24, ojBuild.join("\n"));
+  const clientCss = (dir) =>
+    fs
+      .readdirSync(path.join(app, dir, "client", "assets"))
+      .filter((f) => f.endsWith(".css"))
+      .map((f) => fs.readFileSync(path.join(app, dir, "client", "assets", f), "utf8"))
+      .join("\n");
+  assert.ok(clientCss("dist").includes(".from-plugin{color:#639}"), clientCss("dist"));
+  console.log("[oj build] 24 slot records, each sheet once per slot and environment; the plugin's sheet ships");
 
   // oj dev: the SSR render and the client bundle (with its linked sheets).
   reset();
@@ -144,21 +157,25 @@ try {
   srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: "ignore" });
   await waitUp(`http://localhost:${PORT}/`);
   const html = await (await fetch(`http://localhost:${PORT}/`)).text();
+  let linked = "";
   for (const m of html.matchAll(/<link rel="stylesheet" href="([^"]+)"/g)) {
-    await (await fetch(`http://localhost:${PORT}${m[1].replace(/&amp;/g, "&")}`)).text();
+    linked += await (await fetch(`http://localhost:${PORT}${m[1].replace(/&amp;/g, "&")}`)).text();
   }
   for (let i = 0; i < 60 && !records().some((l) => l.startsWith("client post")); i++) await sleep(250);
   const ojDev = distinct(records());
   srv.kill("SIGKILL");
   srv = undefined;
   await sleep(300);
-  assert.equal(ojDev.length, 18, ojDev.join("\n"));
-  console.log("[oj dev] 18 distinct slot records");
+  assert.equal(ojDev.length, 24, ojDev.join("\n"));
+  assert.ok(linked.includes(".from-plugin"), `the page links the plugin's sheet:\n${html}`);
+  console.log("[oj dev] 24 distinct slot records; the page links the plugin's sheet");
 
   const viteDir = path.join(fixture, "node_modules", "vite");
   reset();
   execSync(`node ${path.join(viteDir, "bin", "vite.js")} build --logLevel error`, { cwd: app, stdio: "inherit" });
   assert.deepEqual(ojBuild, sorted(records()), "each environment's slots, as in Vite's build");
+  fs.renameSync(path.join(app, "dist"), path.join(app, "dist-vite"));
+  assert.ok(clientCss("dist-vite").includes(".from-plugin{color:#639}"), "Vite ships it too");
   console.log("[vite build] identical records");
 
   reset();

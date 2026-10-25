@@ -280,7 +280,13 @@ pub(crate) async fn ssr_module_inner(
         ));
     }
     let ext = path.extension().and_then(|e| e.to_str());
-    if ext.is_some_and(is_style_ext) && path.is_file() {
+    // A sheet a plugin serves with no file behind it compiles like a file.
+    let served = || async {
+        ssr_plugin_host(state)
+            .await
+            .is_some_and(|host| host.hook_wants_load(id))
+    };
+    if ext.is_some_and(is_style_ext) && (path.is_file() || served().await) {
         return ssr_style_module(state, id, &path)
             .await
             .map_err(SsrModuleError::Failed);

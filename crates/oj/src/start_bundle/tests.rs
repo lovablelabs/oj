@@ -891,12 +891,18 @@ const record = (name) => function (code, id) {
   return null;
 };
 const spy = (name, enforce) => ({ name, enforce, transform: record(name) });
-export default [spy("post", "post"), spy("normal"), spy("pre", "pre")];
+const virtualCss = {
+  name: "virtual-css",
+  resolveId(id) { if (id === "virtual:theme.css") return "\0virtual:theme.css"; },
+  load(id) { if (id === "\0virtual:theme.css") return ".from-plugin { color: rebeccapurple; }\n"; },
+};
+export default [spy("post", "post"), spy("normal"), spy("pre", "pre"), virtualCss];
 "#;
 
 /// What the spies record in the client bundle of a Start app importing a
-/// Sass sheet, an `?inline` one and a CSS module, in `command`.
-async fn client_slot_records(command: super::Command) -> Vec<String> {
+/// Sass sheet, an `?inline` one, a CSS module and a sheet a plugin serves,
+/// in `command`; and the stylesheets a build emits.
+async fn client_slot_records(command: super::Command) -> (Vec<String>, String) {
     // Outside the app, beside it.
     let seen = std::env::temp_dir().join(format!(
         "oj-start-slots-{}-{command:?}.txt",
@@ -914,7 +920,7 @@ async fn client_slot_records(command: super::Command) -> Vec<String> {
         ("src/m.module.css", ".m { color: teal; }\n"),
         (
             "src/entry.js",
-            "import \"./a.scss\";\nimport b from \"./b.scss?inline\";\nimport m from \"./m.module.css\";\nconsole.log(b, m.m);\n",
+            "import \"./a.scss\";\nimport b from \"./b.scss?inline\";\nimport m from \"./m.module.css\";\nimport \"virtual:theme.css\";\nconsole.log(b, m.m);\n",
         ),
         ("oj.plugins.mjs", &spies),
     ]);
@@ -957,25 +963,35 @@ async fn client_slot_records(command: super::Command) -> Vec<String> {
         ),
     ];
     bundle(&app, "src/entry.js", plugins).await.unwrap();
+    let css = std::fs::read_dir(app.dir.join("dist/client/assets"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "css"))
+        .map(|e| std::fs::read_to_string(e.path()).unwrap())
+        .collect::<String>();
     let text = std::fs::read_to_string(&seen).expect("the spies ran");
     let _ = std::fs::remove_file(&seen);
     let seen = text;
     let mut seen: Vec<String> = seen.lines().map(str::to_string).collect();
     seen.sort_unstable();
-    seen
+    (seen, css)
 }
 
 /// The client environment's lines Vite 8.3.5 records for this app under
 /// TanStack Start, in dev and in the build: each sheet once through each slot,
 /// "pre" plugins on the source, "normal" ones on the CSS (a module's classes
 /// scoped), "post" ones on the module standing in for it.
-const VITE_CLIENT_SLOTS: [&str; 9] = [
+const VITE_CLIENT_SLOTS: [&str; 12] = [
+    "client normal \0virtual:theme.css css",
     "client normal a.scss css",
     "client normal b.scss?inline css",
     "client normal m.module.css css-scoped",
+    "client post \0virtual:theme.css js",
     "client post a.scss js",
     "client post b.scss?inline js",
     "client post m.module.css js",
+    "client pre \0virtual:theme.css css",
     "client pre a.scss source",
     "client pre b.scss?inline source",
     "client pre m.module.css css",
@@ -983,16 +999,50 @@ const VITE_CLIENT_SLOTS: [&str; 9] = [
 
 #[tokio::test(flavor = "multi_thread")]
 async fn stylesheet_transforms_run_in_vites_slots_in_the_client_build() {
-    assert_eq!(
-        client_slot_records(super::Command::Build).await,
-        VITE_CLIENT_SLOTS
-    );
+    let (seen, css) = client_slot_records(super::Command::Build).await;
+    assert_eq!(seen, VITE_CLIENT_SLOTS);
+    // Vite ships the plugin-served sheet with the client's CSS.
+    assert!(css.contains(".from-plugin{color:#639}"), "{css}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn stylesheet_transforms_run_in_vites_slots_in_the_client_dev_bundle() {
     assert_eq!(
-        client_slot_records(super::Command::Serve).await,
+        client_slot_records(super::Command::Serve).await.0,
         VITE_CLIENT_SLOTS
     );
+}
+
+/// CSS a plugin hands vite:css-post for a module (UnoCSS's layers) takes the
+/// place of the sheet emitted for it, in the links and on disk; CSS for no
+/// emitted sheet is linked as its own.
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_css_takes_the_place_of_its_modules_sheet() {
+    let app = App::new(&[("src/a.css", ".a{color:red}")]);
+    let start = app.start();
+    let client = app.dir.join("dist/client");
+    let emitter = Emitter::new(&client, "/", Arc::new(Styles::new(&start)));
+    let placeholder = app.dir.join("src/__uno.css");
+    let a = emitter.emit(&app.dir.join("src/a.css")).await.unwrap();
+    let old = emitter
+        .css(&placeholder, "#--unocss--{layer:__ALL__}".into(), None)
+        .await
+        .unwrap();
+    emitter
+        .plugin_css(&placeholder.display().to_string(), ".p-4{padding:1rem}")
+        .unwrap();
+    emitter.plugin_css("", ".late{margin:1px}").unwrap();
+
+    let urls = emitter.css_urls();
+    assert_eq!(urls.len(), 3, "{urls:?}");
+    assert_eq!(urls[0], a, "the other sheet keeps its place");
+    assert_ne!(urls[1], old, "a new name for the new content");
+    let file = |url: &str| client.join(url.trim_start_matches('/'));
+    assert!(!file(&old).exists(), "the placeholder sheet is gone");
+    assert!(std::fs::read_to_string(file(&urls[1]))
+        .unwrap()
+        .contains(".p-4{padding:1rem}"));
+    assert!(std::fs::read_to_string(file(&urls[2]))
+        .unwrap()
+        .contains(".late{margin:1px}"));
 }

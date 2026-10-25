@@ -456,6 +456,11 @@ pub(crate) async fn build(
         // its output is written, before the next environment builds.
         if let Some(h) = &client_host {
             write_emitted(&h.host, &client_dir).await?;
+            for (id, css) in h.host.get_plugin_css().await {
+                emitter
+                    .plugin_css(&id, &css)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+            }
             h.host
                 .close_bundle()
                 .await

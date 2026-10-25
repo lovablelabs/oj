@@ -2472,6 +2472,13 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
     if let Some(rest) = path.strip_prefix("/@oj-start/fs/") {
         return serve_fs_asset(&state, &format!("/{rest}")).await;
     }
+    if let Some(rest) = path.strip_prefix(crate::start_bundle::assets::DEV_ID_BASE) {
+        let id = crate::start_bundle::assets::id_of_dev_url(&percent_decode(rest));
+        return match css_body(&state, Path::new(&id)).await {
+            Some(body) => css_response(body),
+            None => (StatusCode::NOT_FOUND, "oj start: no such stylesheet").into_response(),
+        };
+    }
     if let Some(name) = path.strip_prefix("/@oj-start/") {
         return serve_client_chunk(&state, req.headers(), name).await;
     }
@@ -2930,6 +2937,24 @@ async fn css_body(state: &StartState, file: &Path) -> Option<Result<String, Stri
     Some(oj_server::style_slot(slots, css, "normal").await)
 }
 
+fn css_response(body: Result<String, String>) -> Response {
+    match body {
+        Ok(css) => (
+            [
+                (header::CONTENT_TYPE, "text/css; charset=utf-8"),
+                (header::CACHE_CONTROL, "no-cache"),
+            ],
+            css,
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("oj start: css: {e}"),
+        )
+            .into_response(),
+    }
+}
+
 async fn serve_fs_asset(state: &StartState, abs: &str) -> Response {
     let decoded = percent_decode(abs);
     let path = PathBuf::from(&decoded);
@@ -2946,21 +2971,7 @@ async fn serve_fs_asset(state: &StartState, abs: &str) -> Response {
         .is_some_and(oj_server::is_style_ext)
     {
         if let Some(body) = css_body(state, &canon).await {
-            return match body {
-                Ok(css) => (
-                    [
-                        (header::CONTENT_TYPE, "text/css; charset=utf-8"),
-                        (header::CACHE_CONTROL, "no-cache"),
-                    ],
-                    css,
-                )
-                    .into_response(),
-                Err(e) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("oj start: css: {e}"),
-                )
-                    .into_response(),
-            };
+            return css_response(body);
         }
     }
     match tokio::fs::read(&canon).await {
