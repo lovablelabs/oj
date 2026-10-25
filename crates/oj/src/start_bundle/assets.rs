@@ -360,6 +360,8 @@ pub(crate) struct Emitter {
     css_urls: Mutex<Vec<String>>,
     /// The URL each client stylesheet was emitted at, by its module.
     sheets: Mutex<HashMap<PathBuf, String>>,
+    /// Every stylesheet emitted, linked or a `?url` asset, in emit order.
+    emitted_css: Mutex<Vec<String>>,
     worker_bundler: Mutex<Option<WorkerBundler>>,
     /// `worker.format` is "es": workers start as modules, not classic scripts.
     worker_module: std::sync::atomic::AtomicBool,
@@ -386,6 +388,7 @@ impl Emitter {
             emitting: Mutex::new(Default::default()),
             css_urls: Mutex::new(Vec::new()),
             sheets: Mutex::new(HashMap::new()),
+            emitted_css: Mutex::new(Vec::new()),
             worker_bundler: Mutex::new(None),
             worker_module: std::sync::atomic::AtomicBool::new(false),
             worker_codes: Mutex::new(HashMap::new()),
@@ -531,6 +534,12 @@ impl Emitter {
             };
             // A compiled .scss/.less sheet ships as .css.
             let url = self.write(&path.with_extension("css"), css.as_bytes())?;
+            {
+                let mut emitted = self.emitted_css.lock().unwrap();
+                if !emitted.contains(&url) {
+                    emitted.push(url.clone());
+                }
+            }
             if !link {
                 return Ok(url);
             }
@@ -592,7 +601,9 @@ impl Emitter {
     /// the name it was hashed and linked under. With no stylesheet it is the
     /// plugin's writeBundle fallback, `assets/<name>`, linked from nowhere.
     pub fn append_generated_css(&self, name: &str, css: &str) -> Result<(), String> {
-        let first = self.css_urls.lock().unwrap().first().cloned();
+        // The first CSS asset in the bundle, a `?url` one as well (the app
+        // links that one itself).
+        let first = self.emitted_css.lock().unwrap().first().cloned();
         let file = match first.as_deref().and_then(|u| u.rsplit_once("assets/")) {
             Some((_, file)) => self.assets_dir.join(file),
             None => {

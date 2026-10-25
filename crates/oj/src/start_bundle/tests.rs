@@ -1093,3 +1093,37 @@ fn a_dev_sheet_is_kept_until_the_next_bundle_or_edit() {
         "stale after the next bundle or edit"
     );
 }
+
+/// With only a `?url` sheet emitted (`import appCss from "./styles.css?url"`,
+/// linked by the app's own `head`), late CSS joins that sheet, the first CSS
+/// asset in the bundle, as the StyleX plugin's generateBundle finds it; the
+/// page's links stay the app's.
+#[tokio::test(flavor = "multi_thread")]
+async fn late_css_joins_a_url_sheet_when_nothing_is_linked() {
+    let app = App::new(&[("src/styles.css", "body{margin:0}")]);
+    let start = app.start();
+    let client = app.dir.join("dist/client");
+    let emitter = Emitter::new(&client, "/", Arc::new(Styles::new(&start)));
+    let url = emitter
+        .css_asset(
+            &app.dir.join("src/styles.css"),
+            "body{margin:0}".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(emitter.css_urls().is_empty(), "a ?url sheet is not linked");
+    let file = client.join(url.trim_start_matches('/'));
+    let before = std::fs::read_to_string(&file).unwrap();
+    emitter
+        .append_generated_css("stylex.css", ".x1{color:green}")
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        format!("{before}\n.x1{{color:green}}")
+    );
+    assert!(
+        !client.join("assets/stylex.css").exists(),
+        "no separate sheet"
+    );
+}
