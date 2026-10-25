@@ -40,6 +40,7 @@ mod load_error_build;
 mod manifest;
 mod manual_chunks_build;
 mod mixed_raw_query;
+mod module_graph_build;
 mod modulepreload;
 mod multi_html_input;
 mod new_url_asset_build;

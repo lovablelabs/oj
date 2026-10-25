@@ -957,6 +957,7 @@ async fn client_slot_records(command: super::Command) -> (Vec<String>, String) {
             command,
             &app.dir,
             Arc::new(crate::build::EmitState::new(app.dir.clone())),
+            start.jsx_config(),
         )),
         Pluginable::new_shared(
             StartAssetsPlugin::new(&app.dir, styles, mode).with_plugins(Some(host.host)),

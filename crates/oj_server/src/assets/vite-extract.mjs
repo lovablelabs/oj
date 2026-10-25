@@ -7,7 +7,12 @@ import { dirname, isAbsolute, resolve, sep } from "node:path";
 import fs, { writeFileSync, readFileSync, existsSync, unlinkSync } from "node:fs";
 import { format } from "node:util";
 import { asNode, esmEntry } from "./vite-config-node.mjs";
-import { OJ_NATIVE_PLUGIN_NAMES, OJ_UNSUPPORTED_PLUGIN_NAMES } from "./native-plugins.mjs";
+import {
+  OJ_NATIVE_PLUGIN_NAMES,
+  OJ_UNSUPPORTED_PLUGIN_NAMES,
+  flattenPlugins,
+  isReimplemented,
+} from "./native-plugins.mjs";
 
 // The slice of Vite's mergeConfigRecursively these assets need (twin copies:
 // one in vite-extract.mjs, one in plugin-host.mjs — keep them byte-identical):
@@ -1126,7 +1131,7 @@ const declaresRunnerEnvironment = (cfg) =>
 
 // Plugins whose `config` hooks this out-of-band re-run must not execute: the
 // exact rule a Start plugin host applies when IT re-runs config hooks on
-// fresh instances (plugin-host.mjs `isReimplemented`) — the framework
+// fresh instances (native-plugins.mjs `isReimplemented`) — the framework
 // plugins oj reimplements natively never ran hooks under oj, and their config
 // hooks have side effects that fight oj's own lifecycle (the TanStack router
 // plugin's config hook starts its route generator) — plus the dev-tooling
@@ -1138,11 +1143,10 @@ const declaresRunnerEnvironment = (cfg) =>
 // the skipped set is oj-reimplemented framework plugins, whose runtimes oj
 // itself provides, and dev-only tooling, which declares no environments. The
 // Cloudflare plugins match neither rule, so their declaration is seen.
-const ojReimplemented = (name = "") => name.startsWith("vite:") || /^tanstack[-:]/.test(name);
 const SIDE_EFFECTFUL_CONFIG_PLUGIN_NAMES = new Set(["vite-plugin-checker"]);
 const skipsConfigHook = (p) => {
   const name = (p && p.name) || "";
-  return ojReimplemented(name) || SIDE_EFFECTFUL_CONFIG_PLUGIN_NAMES.has(name);
+  return isReimplemented(name) || SIDE_EFFECTFUL_CONFIG_PLUGIN_NAMES.has(name);
 };
 
 // Vite's BasicMinimalPluginContext surface, enough for a config hook to speak.
@@ -1178,15 +1182,12 @@ async function detectSsrRunnerBacked(raw, configEnv, merge = mergeConfigLite) {
   // then by the config hook's own `order` (getSortedPluginsByHook), and call
   // each `handler.call(ctx, config, env)`, merging every return into the
   // running config so later hooks see earlier merges (runConfigHook).
-  let list = Array.isArray(raw.plugins) ? raw.plugins : [];
+  let list;
   try {
-    do {
-      list = (await Promise.all(list)).flat(Infinity);
-    } while (list.some((v) => v && typeof v.then === "function"));
+    list = await flattenPlugins(raw.plugins);
   } catch {
     return false;
   }
-  list = list.filter(Boolean);
   const applyConfig = { ...raw, mode: env.mode };
   list = list.filter((p) => {
     if (!p.apply) return true;
@@ -1507,12 +1508,9 @@ export {
 async function activePluginCount(raw) {
   if (!raw) return null;
   try {
-    let list = Array.isArray(raw.plugins) ? raw.plugins : raw.plugins ? [raw.plugins] : [];
-    do {
-      list = (await Promise.all(list)).flat(Infinity);
-    } while (list.some((v) => v && typeof v.then === "function"));
-    return list.filter((p) => p && !OJ_NATIVE_PLUGIN_NAMES.has(p.name) && !OJ_UNSUPPORTED_PLUGIN_NAMES.has(p.name))
-      .length;
+    return (await flattenPlugins(raw.plugins)).filter(
+      (p) => !OJ_NATIVE_PLUGIN_NAMES.has(p.name) && !OJ_UNSUPPORTED_PLUGIN_NAMES.has(p.name),
+    ).length;
   } catch {
     return null;
   }
@@ -1533,11 +1531,7 @@ function jsonOptions(value) {
 async function stylexPlugin(raw) {
   if (!raw) return null;
   try {
-    let list = Array.isArray(raw.plugins) ? raw.plugins : raw.plugins ? [raw.plugins] : [];
-    do {
-      list = (await Promise.all(list)).flat(Infinity);
-    } while (list.some((v) => v && typeof v.then === "function"));
-    const plugin = list.find((p) => p && p.name === "@stylexjs/unplugin");
+    const plugin = (await flattenPlugins(raw.plugins)).find((p) => p.name === "@stylexjs/unplugin");
     if (!plugin) return null;
     // oj's stand-in for the package (oj_js stand_ins) records them, imported
     // or require()d, from node_modules/@stylexjs/unplugin.

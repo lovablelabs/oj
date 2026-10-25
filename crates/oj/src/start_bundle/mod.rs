@@ -238,13 +238,7 @@ impl StartConfig {
 
     /// The app's JSX settings for oj's own TS and JSX lowering.
     pub fn jsx_config(&self) -> oj_compiler::JsxConfig {
-        let jsx = oj_config::jsx_settings(&self.config);
-        oj_compiler::JsxConfig {
-            runtime: jsx.runtime,
-            import_source: jsx.import_source,
-            pragma: jsx.pragma,
-            pragma_frag: jsx.pragma_frag,
-        }
+        crate::build::bundle_graph::jsx_config(&self.config)
     }
 
     /// rolldown's JSX transform: automatic by default, the config's runtime,

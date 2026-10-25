@@ -21,7 +21,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, isAbsolute, join, posix, relative, resolve as pathResolve } from "node:path";
 import { foldIncludeSnapshot } from "./discovered-deps.mjs";
 import { appViteEntry, asNode } from "./vite-config-node.mjs";
-import { OJ_NATIVE_PLUGIN_NAMES, OJ_UNSUPPORTED_PLUGIN_NAMES } from "./native-plugins.mjs";
+import {
+  OJ_NATIVE_PLUGIN_NAMES,
+  OJ_UNSUPPORTED_PLUGIN_NAMES,
+  flattenPlugins,
+  isReimplemented,
+} from "./native-plugins.mjs";
 import { idFilterGlob, idFilterRegExp, loadViteGlobs } from "./start/vite-globs.mjs";
 import {
   applyHtmlTransforms,
@@ -275,9 +280,13 @@ const ojStartMode = initial.ojStartMode === true;
 // `this.resolve` that no plugin answers ends in that bundler's resolution
 // (the `bundlerResolve` reverse RPC), as it ends in Rollup's under Vite.
 const ojBundleHost = initial.ojBundleHost === true;
-// The plugins a Start host leaves to oj: Vite's own (`vite:*`) and TanStack's
-// compiler and router plugins, whose work the Start pipeline does natively.
-const isReimplemented = (name = "") => name.startsWith("vite:") || /^tanstack[-:]/.test(name);
+// In start mode the ssr-environment host backs oj's in-process Start module
+// host: framework plugins oj reimplements natively (vite:*, tanstack's
+// compiler plugins) must not transform SSR modules — the Start pipeline does
+// their work (server-fn rewrite, route tree, refresh) — while user plugins
+// (mdx, svgr, virtual modules) run. A Start bundle host leaves the same
+// plugins out: the native Start bundles do their work.
+const startLeavesOutReimplemented = ojStartMode && (hostEnvName === "ssr" || ojBundleHost);
 
 const _ojTTY = process.stderr.isTTY && !process.env.NO_COLOR;
 const OJ = _ojTTY ? "\x1b[48;2;255;255;255m\x1b[1;38;2;42;51;212m oj \x1b[0m" : "oj";
@@ -797,7 +806,7 @@ async function loadUserResolvedViteConfig() {
     // pre-set first so it computes isNodeEnvSet like a real CLI run.
     unsetOjNodeEnvForResolve();
     const rc = await asNode(async () => {
-      if (!ojBundleHost || typeof vite.loadConfigFromFile !== "function") {
+      if (!startLeavesOutReimplemented || typeof vite.loadConfigFromFile !== "function") {
         return vite.resolveConfig(
           { root: appRoot, configFile: pluginsPath, mode: env.mode, logLevel: "silent" },
           env.command,
@@ -805,7 +814,7 @@ async function loadUserResolvedViteConfig() {
           defaultNodeEnv,
         );
       }
-      // A Start bundle host resolves without the framework plugins oj
+      // A Start SSR or bundle host resolves without the framework plugins oj
       // reimplements, as it runs without them: their config hooks (the
       // router generator's among them) do work oj's own pipeline does.
       const loaded = await vite.loadConfigFromFile(
@@ -815,9 +824,7 @@ async function loadUserResolvedViteConfig() {
         "silent",
       );
       const config = loaded?.config ?? {};
-      const kept = (await Promise.all([config.plugins ?? []].flat(Infinity))).filter(
-        (p) => p && !isReimplemented(p.name),
-      );
+      const kept = (await flattenPlugins(config.plugins)).filter((p) => !isReimplemented(p.name));
       return vite.resolveConfig(
         { ...config, plugins: kept, root: appRoot, configFile: false, mode: env.mode, logLevel: "silent" },
         env.command,
@@ -1195,7 +1202,7 @@ const unsupportedReported = new Set();
 // the user's loaded config file merged with the inline config (oj's values,
 // root, base, define and server, overlay the file's).
 function hostedPlugins(list, userConfig) {
-  let out = list.filter((p) => !OJ_NATIVE_PLUGIN_NAMES.has(p && p.name));
+  let out = list.filter((p) => !ojRunsNatively(p));
   out = out.filter((p) => {
     if (OJ_UNSUPPORTED_PLUGIN_NAMES.has(p && p.name)) {
       if (unsupportedReported.has(p.name)) return false;
@@ -1219,16 +1226,13 @@ function hostedPlugins(list, userConfig) {
       throw e;
     }
   });
-  // In start mode the ssr-environment host backs oj's in-process Start module
-  // host: framework plugins oj reimplements natively (vite:*, tanstack's
-  // compiler plugins) must not transform SSR modules — the Start pipeline does
-  // their work (server-fn rewrite, route tree, refresh) — while user plugins
-  // (mdx, svgr, virtual modules) run. A Start bundle host leaves the same
-  // plugins out: the native Start bundles do their work.
-  if (ojStartMode && ((initial.environment && initial.environment.name) === "ssr" || ojBundleHost)) {
-    out = out.filter((p) => !isReimplemented(p && p.name));
-  }
   return out.sort((a, b) => enforceRank(a) - enforceRank(b));
+}
+// Whether oj does `p`'s work itself, so this host leaves it out: the
+// top-level list and what applyToEnvironment returns alike.
+function ojRunsNatively(p) {
+  const name = p && p.name;
+  return OJ_NATIVE_PLUGIN_NAMES.has(name) || (startLeavesOutReimplemented && isReimplemented(name));
 }
 // Vite's picomatch, for plugin `filter` ids.
 await loadViteGlobs(initial.config?.root ?? process.cwd());
@@ -1240,12 +1244,12 @@ try {
     userConfig = cfg && typeof cfg === "object" ? cfg : null;
     userViteConfig = userConfig;
     userResolveAlias = cfg?.resolve?.alias ?? null;
-    list = await Promise.all((cfg?.plugins ?? []).flat(Infinity));
+    list = cfg?.plugins;
   } else {
     const mod = await import(pathToFileURL(pluginsPath).href);
-    list = mod.default ?? mod.plugins ?? [];
+    list = mod.default ?? mod.plugins;
   }
-  allPlugins = (Array.isArray(list) ? list : [list]).filter(Boolean);
+  allPlugins = await flattenPlugins(list);
   nativePlugins = allPlugins.filter((p) => OJ_NATIVE_PLUGIN_NAMES.has(p && p.name));
   main.rawPlugins = allPlugins;
   main.plugins = hostedPlugins(allPlugins, userConfig);
@@ -1612,7 +1616,8 @@ function pluginContext(c) {
       return info;
     },
     getModuleInfo(id) {
-      return c.moduleInfoCache.get(typeof id === "string" ? id : id.id) ?? null;
+      const key = typeof id === "string" ? id : id.id;
+      return bundleModuleInfo(c, key) ?? c.moduleInfoCache.get(key) ?? null;
     },
     addWatchFile(id) {
       if (!id) return;
@@ -1621,9 +1626,44 @@ function pluginContext(c) {
       if (bucket) bucket.add(String(id));
     },
     getModuleIds() {
-      return c.seenIds.values();
+      const graph = bundleRpc("bundleModuleIds", [c.id]);
+      return graph ? new Set([...graph, ...c.seenIds]).values() : c.seenIds.values();
     },
   };
+}
+
+// A container that runs inside a bundle (a Start bundle, `oj build`) reads
+// the bundle's module graph, as Rollup's this.getModuleInfo does: rolldown
+// has met every module it loads, a hook filter gate's skipped ones included,
+// while the container's own records only hold the modules its hooks saw.
+// Null while no bundle runs, or from a host without the engine bridge.
+function bundleRpc(method, args) {
+  if (!ojEngineRpc) return null;
+  const raw = ojEngineRpc(method, JSON.stringify(args));
+  return raw == null ? null : JSON.parse(raw);
+}
+// The bundle's ModuleInfo, on the container's own record of the module so
+// the `meta` plugins set (and mutate) stays the one object Rollup keeps.
+// `code` is read from the bundle when first asked for.
+function bundleModuleInfo(c, id) {
+  const graph = bundleRpc("bundleModuleInfo", [c.id, id]);
+  if (!graph) return null;
+  let info = c.moduleInfoCache.get(graph.id);
+  if (!info) c.moduleInfoCache.set(graph.id, (info = makeModuleInfo(graph.id, null)));
+  const { id: _, ...fields } = graph;
+  Object.assign(info, fields);
+  if (!Object.getOwnPropertyDescriptor(info, "code").get) {
+    let code;
+    Object.defineProperty(info, "code", {
+      configurable: true,
+      enumerable: true,
+      get: () => (code ??= bundleRpc("bundleModuleCode", [c.id, info.id])),
+      set: (v) => {
+        code = v;
+      },
+    });
+  }
+  return info;
 }
 
 // Vite gives every plugin its own context object whose `_plugin` is the plugin
@@ -1835,7 +1875,9 @@ async function environmentPlugins(environment, candidates) {
     let applied;
     initStage(`applyToEnvironment:${p.name ?? "?"}`);
     try {
+      // A rejection nested in what it returned counts as its own throw.
       applied = await p.applyToEnvironment(environment);
+      if (applied && applied !== true) applied = await flattenPlugins(applied);
     } catch (e) {
       process.stderr.write(
         `${OJ} plugin host: applyToEnvironment(${p.name ?? "?"}) threw; keeping the plugin active: ${(e && e.message) || e}\n`,
@@ -1848,9 +1890,7 @@ async function environmentPlugins(environment, candidates) {
       next.push(p);
       continue;
     }
-    const returned = (await Promise.all((Array.isArray(applied) ? applied : [applied]).flat(Infinity)))
-      .flat(Infinity)
-      .filter(Boolean);
+    const returned = applied.filter((ap) => !ojRunsNatively(ap));
     for (const ap of returned) {
       const ignored = ignoredEnvironmentPluginHooks.filter((hook) => ap[hook]);
       if (ignored.length > 0) {
@@ -4274,7 +4314,7 @@ function factValue(v, fns, seen = new Set()) {
   }
   return v;
 }
-function startFacts(c) {
+async function startFacts(c) {
   const fns = (c.startFns = []);
   const cfg = c.resolvedConfig ?? {};
   const envOf = (name) => cfg.environments?.[name] ?? {};
@@ -4295,7 +4335,7 @@ function startFacts(c) {
     serverHmr: cfg.server?.hmr === false ? false : true,
     serverWatch: cfg.server?.watch === null ? null : factValue(cfg.server?.watch ?? {}, fns),
     reactRefresh: names.includes("vite:react-refresh"),
-    cloudflare: cloudflareEnvironmentFacts(cfg, fns),
+    cloudflare: await cloudflareEnvironmentFacts(cfg, fns),
     worker: workerFacts(cfg, fns),
     // How many resolveId hooks run on each side of the core resolver.
     resolveIdPhases: pluginsWithHook(c, "resolveId").reduce(
@@ -4326,7 +4366,7 @@ function workerFacts(c, fns) {
 // @cloudflare/vite-plugin's Worker environment (its `config` hook declares
 // one per Worker, `resolve.builtins` naming the runtime's modules), or null.
 // With several Workers the entry Worker (the one writing the manifest) wins.
-function cloudflareEnvironmentFacts(c, fns) {
+async function cloudflareEnvironmentFacts(c, fns) {
   const environments = c.environments;
   if (!environments || typeof environments !== "object") return null;
   const workers = Object.entries(environments).filter(([name, options]) => {
@@ -4353,11 +4393,12 @@ function cloudflareEnvironmentFacts(c, fns) {
       : null,
     target: typeof options.build?.target === "string" ? options.build.target : null,
     // Rolldown builtin plugins the environment attached (Vite's
-    // esmExternalRequirePlugin): their names and options.
-    rolldownPlugins: (options.build?.rolldownOptions?.plugins ?? [])
-      .flat(Infinity)
-      .filter(Boolean)
-      .map((p) => ({ name: p.name ?? null, options: factValue(p._options ?? null, fns) })),
+    // esmExternalRequirePlugin): their names and options, read as Vite's
+    // build reads them (asyncFlatten(arraify(..))).
+    rolldownPlugins: (await flattenPlugins(options.build?.rolldownOptions?.plugins)).map((p) => ({
+      name: p.name ?? null,
+      options: factValue(p._options ?? null, fns),
+    })),
     // Where Vite puts the Worker: the plugin's config hook derives it from
     // the user's own config (`environments.<name>.build.outDir`, else
     // `<build.outDir>/<name>`), which a resolved base here already fills with
@@ -4406,12 +4447,6 @@ async function callStartFnBatch(c, index, idsJson, generation, infosJson, tolera
 // plugin container) and runs the config's live
 // optimizeDeps.rolldownOptions.plugins, which Vite puts in the scan's plugin
 // list, through scanPluginHook.
-// Vite's asyncFlatten: plugin options may nest arrays and promises.
-async function flattenPlugins(value) {
-  const v = await value;
-  if (Array.isArray(v)) return (await Promise.all(v.map(flattenPlugins))).flat();
-  return v ? [v] : [];
-}
 async function scanResolveId(source, importer) {
   const r = await resolveIdFull(main, source, importer || undefined, { scan: true });
   return r == null ? null : JSON.stringify({ id: r.id, external: r.external ?? false });
@@ -4936,19 +4971,22 @@ async function run(hook, args, c) {
     // patterns gatePatterns cannot carry (Rust fails the ones it cannot
     // translate open on its side).
     const planFor = (name, withCode) => {
-      // The transform RPC is what fires moduleParsed AND fills the module-info
-      // map that this.getModuleInfo()/getModuleIds() read from later hooks, so
-      // gating it would starve them. Any plugin that could consume that map
-      // (moduleParsed itself, or a bundle-stage hook that may call the ctx
-      // getters, the manifest-plugin shape) pins transform unfiltered.
+      // Outside a Start build the transform RPC is what fires moduleParsed,
+      // so gating it would skip modules; any moduleParsed pins transform
+      // unfiltered. Outside a bundle (oj's dev server), it also fills the
+      // module-info map this.getModuleInfo()/getModuleIds() read, so a hook
+      // that may call them later (the manifest-plugin shape) pins it too. A
+      // bundle's getters read the bundle's own graph (bundleModuleInfo).
+      const inBundle = command === "build" || ojBundleHost;
       if (
         name === "transform" &&
         withCode &&
-        (anyModuleParsed(c) ||
-          pluginsWithHook(c, "generateBundle").length > 0 ||
-          pluginsWithHook(c, "renderChunk").length > 0 ||
-          pluginsWithHook(c, "writeBundle").length > 0 ||
-          pluginsWithHook(c, "buildEnd").length > 0)
+        ((!bundleBuild && anyModuleParsed(c)) ||
+          (!inBundle &&
+            (pluginsWithHook(c, "generateBundle").length > 0 ||
+              pluginsWithHook(c, "renderChunk").length > 0 ||
+              pluginsWithHook(c, "writeBundle").length > 0 ||
+              pluginsWithHook(c, "buildEnd").length > 0)))
       ) {
         return { present: true, unfiltered: true, plugins: [] };
       }
@@ -4961,14 +4999,18 @@ async function run(hook, args, c) {
         present = true;
         const f = h && typeof h === "object" ? h.filter : null;
         const id = f ? gatePatterns(f.id, "id") : null;
-        const code = withCode && f ? gatePatterns(f.code, "code") : null;
+        // A normal or post transform's filter.code is tested on the code after
+        // the vite:oxc strip (Vite's slot for it), which the gate never sees:
+        // only its id patterns can gate.
+        const afterStrip = withCode && viteTransformWithOxc && !runsBeforeOxcStrip(p, hookOrderRank(h));
+        const code = withCode && f && !afterStrip ? gatePatterns(f.code, "code") : null;
         const idHas = Array.isArray(id) && id.length > 0;
         const codeHas = Array.isArray(code) && code.length > 0;
         // A pattern set gatePatterns refused (null) or a filter with no usable
         // includes cannot gate; that plugin must always be offered the module.
         if (
           (id === null && f && f.id != null) ||
-          (withCode && code === null && f && f.code != null) ||
+          (withCode && !afterStrip && code === null && f && f.code != null) ||
           (!idHas && !codeHas)
         ) {
           unfiltered = true;

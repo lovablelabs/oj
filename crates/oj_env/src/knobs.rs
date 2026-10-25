@@ -35,6 +35,9 @@ pub struct Knobs {
     pub code_cache_max_bytes: Option<u64>,
     /// `OJ_LOG_JSON` truthy: diagnostics print as NDJSON lines on stderr.
     pub log_json: bool,
+    /// `OJ_OTEL` truthy: diagnostics and request spans export over OTLP,
+    /// configured by the standard `OTEL_EXPORTER_OTLP_*` variables.
+    pub otel: bool,
     /// `OJ_FORWARD_CONSOLE` as an override for `server.forwardConsole`:
     /// `1`/`true` on, `0`/`false` off, anything else unset.
     pub forward_console: Option<bool>,
@@ -89,6 +92,7 @@ impl Knobs {
             code_cache_max_bytes: var("OJ_CODE_CACHE_MAX_BYTES")
                 .and_then(|v| v.trim().parse().ok()),
             log_json: truthy("OJ_LOG_JSON"),
+            otel: truthy("OJ_OTEL"),
             forward_console: match var("OJ_FORWARD_CONSOLE").as_deref() {
                 Some("1") | Some("true") => Some(true),
                 Some("0") | Some("false") => Some(false),

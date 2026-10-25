@@ -57,6 +57,10 @@ struct EngineLoaders {
     sys: Sys,
 }
 
+/// One package.json memo for every engine in the process, as Node has one.
+static PACKAGE_JSONS: std::sync::LazyLock<Arc<crate::package_json_memo::PackageJsonMemo>> =
+    std::sync::LazyLock::new(Default::default);
+
 fn engine_loaders(
     root: &Path,
     code_cache_dir: Option<PathBuf>,
@@ -87,6 +91,7 @@ fn engine_loaders(
             node_analysis_cache: code_cache
                 .clone()
                 .map(|cache| cache as deno_resolver::cjs::analyzer::NodeAnalysisCacheRc),
+            package_json_cache: Some(PACKAGE_JSONS.clone()),
             ..Default::default()
         },
     );

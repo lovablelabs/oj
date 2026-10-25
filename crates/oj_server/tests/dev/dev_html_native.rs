@@ -7,9 +7,13 @@
 //! the same lifted module (env values, CSP nonces, the dev client, relative
 //! urls of a SPA fallback, inline modules and styles).
 
+use std::time::{Duration, Instant};
+
 use regex::Regex;
 
 use crate::App;
+
+const WAIT: Duration = Duration::from_secs(20);
 
 const PAGE: &str = r#"<!doctype html>
 <html>
@@ -45,7 +49,16 @@ fn app(plugins: &str) -> App {
 
 async fn page_and_module(app: &App) -> (String, String) {
     let server = app.serve().await;
-    let html = server.text("/dashboard/settings").await;
+    // The page's modulepreload links come from the eager crawl, which runs in
+    // the background: compare pages once it has listed the inline style.
+    let deadline = Instant::now() + WAIT;
+    let html = loop {
+        let html = server.text("/dashboard/settings").await;
+        if html.contains(r#"rel="modulepreload""#) || Instant::now() > deadline {
+            break html;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
     let src = Regex::new(r#"src="([^"]*html-proxy[^"]*)""#)
         .unwrap()
         .captures(&html)

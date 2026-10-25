@@ -858,6 +858,9 @@ async fn code_cache_persists_and_later_engines_still_run() {
     let value = engine.call("main.mjs", "run", vec![], None).await.unwrap();
     assert_eq!(value, serde_json::json!("hello cache"));
     drop(engine);
+    // A dropped engine's entries land on a writer thread; the exit flush
+    // waits for it.
+    oj_js::code_cache::flush_at_exit();
     let entries = std::fs::read_dir(&cache_dir)
         .expect("cache dir was created")
         .count();
@@ -872,6 +875,7 @@ async fn code_cache_persists_and_later_engines_still_run() {
     let value = engine.call("main.mjs", "run", vec![], None).await.unwrap();
     assert_eq!(value, serde_json::json!("hello cache"));
     drop(engine);
+    oj_js::code_cache::flush_at_exit();
     assert_eq!(std::fs::read_dir(&cache_dir).unwrap().count(), entries);
 
     // An edited source must not execute stale bytecode.

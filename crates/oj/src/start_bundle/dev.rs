@@ -381,6 +381,7 @@ impl DevBundler {
                 start.command,
                 &start.root,
                 Arc::clone(&emit),
+                start.jsx_config(),
             )));
         }
         plugins.push(Pluginable::new_shared(

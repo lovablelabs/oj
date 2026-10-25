@@ -12,11 +12,15 @@
 
 mod bridge;
 pub mod code_cache;
+/// The engine's OpenTelemetry pipeline, the very crate (and so the very
+/// `OTEL_GLOBALS`) the runtime was built with.
+pub use deno_runtime::deno_telemetry;
 mod convert;
 mod engine;
 mod host;
 mod isolate;
 mod loader;
+mod package_json_memo;
 mod scheduler;
 mod stand_ins;
 mod watchdog;

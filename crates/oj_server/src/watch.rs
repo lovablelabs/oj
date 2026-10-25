@@ -376,6 +376,7 @@ pub fn restart_process(reason: &str) -> ! {
     if killed > 0 {
         eprintln!("oj: restart killed {killed} child process(es)");
     }
+    crate::otel::shutdown();
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("oj"));
     let args: Vec<String> = std::env::args().skip(1).collect();
     // The next boot gets the env oj was launched with, not whatever the live
@@ -386,6 +387,8 @@ pub fn restart_process(reason: &str) -> ! {
     // In-process plugin hosts chdir the process to their app root; restart from
     // the launch dir so relative CLI args (`oj dev ./web`) resolve correctly.
     let launch_dir = STARTUP_CWD.get().filter(|d| d.is_dir());
+    // The new image starts with an empty store: write what this one holds.
+    oj_js::code_cache::flush_at_exit();
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;

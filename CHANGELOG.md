@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Cold boots are faster. V8 code-cache entries are held in memory, shared by every engine in the process, and written in batches 10 seconds apart, like Node's compile cache under Vite. Before, every module wrote its entry during the import. Shutdown and restarts write what is still held. One-shot children the server waits on (config extraction, start scripts) read the cache but no longer create entries. package.json files are parsed once per process and read again only when the file changes. On a TanStack Start fixture the cold first response drops from 2.40s to 1.99s, and a cold import of Vite plus the Start plugin in an engine job from 461ms to 233ms.
 - `oj build` writes pages as Vite does. The entry `<script>`, its modulepreload links and its stylesheets go into `<head>`, serialized the way Vite writes them, and the module scripts leave the body. A page's local `<link rel="stylesheet">` is now imported by its entry and lands in the entry's stylesheet in document order, instead of becoming a hashed file of its own. A `media` or `disabled` one stays a plain asset. With `cssCodeSplit: false` the single sheet ends in Vite's hash marker, as Vite's does.
 
 ### Removed

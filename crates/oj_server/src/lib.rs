@@ -53,6 +53,7 @@ use crawl::*;
 mod debug;
 use debug::*;
 mod diagnostics;
+pub mod otel;
 use diagnostics::*;
 mod css_serve;
 pub use css_serve::*;
@@ -651,6 +652,8 @@ pub struct BuiltApp {
     /// `server.https`: serve TLS with ALPN h2 + http/1.1 (Vite's secure dev
     /// server shape) instead of plain http.
     pub https: Option<oj_config::HttpsConfig>,
+    /// `base`, `None` for `/`.
+    pub base: Option<String>,
     /// The HMR gate (the editor-driven hold), when enabled: the Start
     /// server holds its page reload behind it like the plain path holds updates.
     pub hmr_gate: Option<HmrGateHandle>,
@@ -1426,7 +1429,12 @@ impl DevServer {
         if built.open {
             open_browser(&url);
         }
-        tls::serve_router(listener, built.router, built.https.as_ref()).await?;
+        let router = otel::traced(
+            built.router,
+            tls::url_scheme(built.https.as_ref()),
+            built.base.as_deref(),
+        );
+        tls::serve_router(listener, router, built.https.as_ref()).await?;
         Ok(())
     }
 
@@ -1842,6 +1850,7 @@ impl DevServer {
             state: Arc::clone(&state),
         };
         let watch_feed = state.watch_feed.clone();
+        let base = state.base.clone();
         let router = build_router(state, &server_cfg, &hmr.ws_path);
         Ok(BuiltApp {
             router,
@@ -1856,6 +1865,7 @@ impl DevServer {
             plugin_host,
             open,
             https: server_cfg.https.clone(),
+            base,
             hmr_gate,
             ssr,
             watch_feed,
@@ -1948,6 +1958,7 @@ pub async fn close_plugins_on_shutdown(host: Arc<std::sync::OnceLock<Arc<PluginH
     // Own-group children no longer sit in the terminal's foreground group, so
     // the signal that ends oj never reaches them; forward it.
     child_groups::kill_all();
+    otel::shutdown();
     std::process::exit(code);
 }
 

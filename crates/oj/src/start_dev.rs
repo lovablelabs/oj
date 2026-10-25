@@ -672,6 +672,12 @@ pub async fn start_dev(
         port
     );
     println!("  {}", oj_server::link(&url, &oj_server::cell(&url)));
+    // Outermost, around this server's own routes too.
+    let app = oj_server::otel::traced(
+        app,
+        oj_server::tls::url_scheme(built.https.as_ref()),
+        built.base.as_deref(),
+    );
     oj_server::tls::serve_router(listener, app, built.https.as_ref()).await?;
     Ok(())
 }
@@ -1803,14 +1809,8 @@ fn script_inputs(
     Ok(ScriptInputs { config, app_env })
 }
 
-/// The `.env` vars the Start scripts (route codegen, the SSR runtime's
-/// `process.env`) see: every var of the mode's files, the shell winning, as
-/// TanStack Start's load-env plugin assigns them to `process.env`.
-fn start_script_vars(env: &oj_env::Env, inputs: &ScriptInputs) -> Vec<(String, String)> {
-    crate::start_bundle::dotenv_process_vars(env, &inputs.app_env)
-}
-
-/// [`start_script_vars`] for one command, resolved against the process snapshot.
+/// The `.env` vars of one command, resolved against the process snapshot:
+/// [`script_vars`] without the app root, cache root and NODE_ENV.
 #[cfg(test)]
 fn start_script_env(
     root: &Path,
@@ -1819,9 +1819,10 @@ fn start_script_env(
     mode: &str,
 ) -> anyhow::Result<Vec<(String, String)>> {
     let env = oj_env::get();
-    Ok(start_script_vars(
+    let inputs = script_inputs(env, root, config_file, command, mode)?;
+    Ok(crate::start_bundle::dotenv_process_vars(
         env,
-        &script_inputs(env, root, config_file, command, mode)?,
+        &inputs.app_env,
     ))
 }
 
@@ -1896,21 +1897,6 @@ pub async fn start_build(
     let cache = oj_cache::cache_root(&root).join("start");
     oj_server::prepare_cache_root(&root);
     oj_server::write_start_assets(&cache)?;
-    {
-        let gen_env = script_env(
-            oj_env::get(),
-            &root,
-            config_file.as_deref(),
-            "serve",
-            "development",
-        )?;
-        let (r, c) = (root.clone(), cache.clone());
-        tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-            generate_route_tree(&r, &c, &gen_env)?;
-            generate_server_fn_resolver(&r, &c)
-        })
-        .await??;
-    }
     // The build options Vite resolves for a Start app too: `--out`/`build.outDir`,
     // `base`, `build.sourcemap`, `build.minify`.
     let mut config = oj_config::load_with(&root, "build", mode).unwrap_or_default();
@@ -1922,8 +1908,6 @@ pub async fn start_build(
         mode,
     )
     .map_err(|e| anyhow::anyhow!(e))?;
-    let build_cfg = config.build.clone().unwrap_or_default();
-    let out_dir = prepare_start_out_dir(&root, out, &build_cfg, empty_out_dir)?;
     // Vite's rule: the shell's NODE_ENV wins, else `.env[.mode]`
     // NODE_ENV=development makes a development build, else production. The
     // shell's NODE_ENV comes from the startup snapshot, so nothing an engine
@@ -1939,6 +1923,19 @@ pub async fn start_build(
         oj_config::env_prefixes(&config),
         "production",
     );
+    // The route tree is generated under the build's own config and env, as
+    // the router plugin does inside a Vite build: no second evaluation.
+    {
+        let gen_env = script_vars(oj_env::get(), &root, &app_env);
+        let (r, c) = (root.clone(), cache.clone());
+        tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+            generate_route_tree(&r, &c, &gen_env)?;
+            generate_server_fn_resolver(&r, &c)
+        })
+        .await??;
+    }
+    let build_cfg = config.build.clone().unwrap_or_default();
+    let out_dir = prepare_start_out_dir(&root, out, &build_cfg, empty_out_dir)?;
     let output = crate::start_bundle::prod::BuildOutput {
         out_dir: out_dir.clone(),
         sourcemap: oj_config::build_sourcemap(&config),
@@ -1971,12 +1968,15 @@ pub async fn start_build(
 
 /// `script`: the codegen script whose bytes key its outputs (the route tree's
 /// generate.mjs); a generator built into oj is keyed by oj's version alone.
+/// `env`: what the codegen script's `process.env` holds; the route tree's
+/// generator runs app code (virtual route configs) that can read it.
 fn codegen_store(
     root: &Path,
     cache: &Path,
     kind: &str,
     script: Option<&str>,
     marker: Option<&str>,
+    env: &[(String, String)],
 ) -> oj_cache::start_codegen::StartCodegenStore {
     let mut extra = script
         .and_then(|s| std::fs::read(cache.join(s)).ok())
@@ -1988,6 +1988,14 @@ fn codegen_store(
             extra.extend_from_slice(entry.to_string_lossy().as_bytes());
         }
         extra.push(0);
+    }
+    let mut env: Vec<&(String, String)> = env.iter().collect();
+    env.sort();
+    for (k, v) in env {
+        for part in [k, v] {
+            extra.extend_from_slice(part.as_bytes());
+            extra.push(0);
+        }
     }
     for name in [
         "tsr.config.json",
@@ -2018,7 +2026,14 @@ fn generate_route_tree(
     cache: &Path,
     script_env: &[(String, String)],
 ) -> anyhow::Result<()> {
-    let store = codegen_store(root, cache, "route-tree", Some("generate.mjs"), None);
+    let store = codegen_store(
+        root,
+        cache,
+        "route-tree",
+        Some("generate.mjs"),
+        None,
+        script_env,
+    );
     let dest = root.join("src").join("routeTree.gen.ts");
     let outputs = [("routeTree.gen.ts", dest.as_path())];
     let inputs: Vec<PathBuf> = list_route_files(root).into_iter().collect();
@@ -2046,7 +2061,7 @@ fn generate_route_tree(
 }
 
 fn generate_server_fn_resolver(root: &Path, cache: &Path) -> anyhow::Result<()> {
-    let store = codegen_store(root, cache, "server-fn", None, Some("createServerFn"));
+    let store = codegen_store(root, cache, "server-fn", None, Some("createServerFn"), &[]);
     let dest = cache.join("server-fn-resolver.mjs");
     let outputs = [("server-fn-resolver.mjs", dest.as_path())];
     let inputs = list_src_ts_files(root);
@@ -2282,6 +2297,13 @@ fn script_env(
     mode: &str,
 ) -> anyhow::Result<Vec<(String, String)>> {
     let inputs = script_inputs(env, root, config_file, command, mode)?;
+    Ok(script_vars(env, root, &inputs.app_env))
+}
+
+/// What the Start scripts (route codegen, the SSR runtime's `process.env`)
+/// see: the app root and cache, NODE_ENV, and every var of the mode's `.env`
+/// files, the shell winning, as TanStack Start's load-env plugin assigns them.
+fn script_vars(env: &oj_env::Env, root: &Path, app_env: &oj_env::AppEnv) -> Vec<(String, String)> {
     let mut vars = vec![
         (
             "OJ_APP_ROOT".to_string(),
@@ -2291,13 +2313,10 @@ fn script_env(
             "OJ_CACHE_ROOT".to_string(),
             oj_cache::cache_root(root).to_string_lossy().into_owned(),
         ),
-        (
-            "NODE_ENV".to_string(),
-            inputs.app_env.node_env().to_string(),
-        ),
+        ("NODE_ENV".to_string(), app_env.node_env().to_string()),
     ];
-    vars.extend(start_script_vars(env, &inputs));
-    Ok(vars)
+    vars.extend(crate::start_bundle::dotenv_process_vars(env, app_env));
+    vars
 }
 
 fn app_uses_tailwind(root: &Path) -> bool {
@@ -3433,7 +3452,8 @@ mod tests {
         std::fs::write(&tree, "// tree").unwrap();
         let inputs = vec![root.join("src/routes/index.tsx")];
         let outputs = [("routeTree.gen.ts", tree.as_path())];
-        let store = |kind: &str| codegen_store(&root, &cache, kind, Some("generate.mjs"), None);
+        let store =
+            |kind: &str| codegen_store(&root, &cache, kind, Some("generate.mjs"), None, &[]);
 
         store("route-tree").persist(&inputs, &outputs).unwrap();
         store("server-fn").persist(&inputs, &outputs).unwrap();
@@ -3461,6 +3481,40 @@ mod tests {
             store("route-tree").restore(&inputs, &outputs).is_ok(),
             "removing it restores the entry-less tree"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // `oj dev` and `oj build` generate the route tree under their own env
+    // (development and production), which the generator's app code can read:
+    // one's tree must not restore for the other.
+    #[test]
+    fn route_tree_cache_keys_on_the_generator_env() {
+        let root = tmp("treeenv");
+        std::fs::create_dir_all(root.join("src/routes")).unwrap();
+        let cache = root.join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(root.join("src/routes/index.tsx"), "export const Route = 1;").unwrap();
+        let tree = root.join("src/routeTree.gen.ts");
+        std::fs::write(&tree, "// tree").unwrap();
+        let inputs = vec![root.join("src/routes/index.tsx")];
+        let outputs = [("routeTree.gen.ts", tree.as_path())];
+        let env = |node_env: &str| vec![("NODE_ENV".to_string(), node_env.to_string())];
+        let store = |env: &[(String, String)]| {
+            codegen_store(&root, &cache, "route-tree", Some("generate.mjs"), None, env)
+        };
+
+        store(&env("development"))
+            .persist(&inputs, &outputs)
+            .unwrap();
+        assert!(
+            store(&env("production"))
+                .restore(&inputs, &outputs)
+                .is_err(),
+            "a tree generated under development must not restore for a build"
+        );
+        assert!(store(&env("development"))
+            .restore(&inputs, &outputs)
+            .is_ok());
         let _ = std::fs::remove_dir_all(&root);
     }
 

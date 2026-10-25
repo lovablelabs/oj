@@ -488,11 +488,30 @@ fn main() -> anyhow::Result<()> {
     oj_env::init();
     oj_diag::set_json_output(oj_env::get().knobs.log_json);
     oj_diag::install_panic_hook();
+    // One-shot children inherit OJ_OTEL; the process that spawned them owns
+    // the export.
+    if !matches!(
+        cli.command,
+        Command::EngineJob { .. } | Command::StartScript { .. }
+    ) {
+        oj_server::otel::init();
+    }
+    // Commands that return (build, preview, a failed boot) and panics that
+    // unwind out of here; the dev server's exits shut down on their own paths.
+    let _otel = ShutdownOtelOnDrop;
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(oj_compiler::COMPILE_STACK_SIZE)
         .build()?
         .block_on(run(cli))
+}
+
+struct ShutdownOtelOnDrop;
+
+impl Drop for ShutdownOtelOnDrop {
+    fn drop(&mut self) {
+        oj_server::otel::shutdown();
+    }
 }
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
@@ -558,6 +577,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             Ok(())
         }
         Command::StartScript { script, root } => {
+            // A one-shot child: the parent waits on its exit.
+            oj_js::code_cache::consume_only();
             let root = root.canonicalize().context("engine root not found")?;
             let mut buf = String::new();
             std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut buf)
@@ -574,6 +595,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             timeout_secs,
             result,
         } => {
+            oj_js::code_cache::consume_only();
             let mut buf = String::new();
             std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut buf)
                 .context("engine-job payload on stdin")?;

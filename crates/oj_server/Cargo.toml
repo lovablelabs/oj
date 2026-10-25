@@ -58,6 +58,12 @@ oxc_syntax.workspace = true
 arcstr = "1.2.0"
 rustc-hash = "2.1.3"
 
+# The OpenTelemetry API and SDK the embedded Deno's pipeline (oj_js's
+# deno_telemetry re-export) is built on (OJ_OTEL); a skew fails to compile.
+opentelemetry = { version = "0.32.0", default-features = false, features = ["trace", "logs", "metrics"] }
+opentelemetry_sdk = { version = "0.32.1", default-features = false, features = ["trace", "logs", "metrics"] }
+sys_traits = { version = "0.1.29", features = ["real"] }
+
 [dev-dependencies]
 oxc_ast.workspace = true
 tempfile.workspace = true

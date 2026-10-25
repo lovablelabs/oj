@@ -28,6 +28,7 @@ use deno_resolver::loader::DenoNpmModuleLoaderRc;
 use deno_resolver::loader::LoadedModuleSource;
 use deno_resolver::npm::DenoInNpmPackageChecker;
 use deno_resolver::npm::NpmResolver;
+use deno_runtime::code_cache::CodeCache;
 use deno_runtime::code_cache::CodeCacheType;
 use deno_runtime::deno_node::NodeRequireLoader;
 use deno_runtime::deno_permissions::PermissionsContainer;
@@ -218,7 +219,10 @@ impl ModuleLoader for EngineModuleLoader {
                         let data = cache
                             .get(&loaded.specifier, CodeCacheType::EsModule, hash)
                             .map(Cow::Owned);
-                        Some(deno_core::SourceCodeCacheInfo { hash, data })
+                        // No info on a consume-only miss: deno_core then
+                        // never serializes a cache for it.
+                        (data.is_some() || cache.produces())
+                            .then_some(deno_core::SourceCodeCacheInfo { hash, data })
                     }
                     _ => None,
                 };
@@ -268,12 +272,11 @@ impl ModuleLoader for EngineModuleLoader {
     ) -> Option<deno_core::SourceCodeCacheInfo> {
         let cache = self.code_cache.as_ref()?;
         let hash = FsCodeCache::source_hash(source.as_bytes());
-        Some(deno_core::SourceCodeCacheInfo {
-            data: cache
-                .get(specifier, CodeCacheType::EsModule, hash)
-                .map(Cow::Owned),
-            hash,
-        })
+        let data = cache
+            .get(specifier, CodeCacheType::EsModule, hash)
+            .map(Cow::Owned);
+        (data.is_some() || cache.produces())
+            .then_some(deno_core::SourceCodeCacheInfo { data, hash })
     }
 }
 
