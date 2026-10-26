@@ -126,6 +126,41 @@ fn externalize(id: &str) -> HookResolveIdReturn {
     }))
 }
 
+/// How many scan calls wait in the plugin host at once. Rolldown issues a
+/// whole crawl's resolves together, and each would queue a plugin-chain run
+/// in the host's one isolate: a dev request's hook arriving behind them would
+/// wait out the crawl (issue #332). Bounded, a request queues behind at
+/// most this many; enough of them overlap that a plugin awaiting its own
+/// work (`this.resolve`, fs) keeps the crawl near its unbounded pace.
+pub(super) const SCAN_HOST_TURNS: usize = 16;
+
+/// The plugin host as the scan calls it: through [`SCAN_HOST_TURNS`] turns.
+#[derive(Debug)]
+struct ScanHost {
+    host: Arc<PluginHost>,
+    turns: tokio::sync::Semaphore,
+}
+
+impl ScanHost {
+    async fn resolve_id(
+        &self,
+        source: &str,
+        importer: &str,
+    ) -> Result<Option<crate::plugins::ResolvedId>, String> {
+        let _turn = self.turns.acquire().await.map_err(|e| e.to_string())?;
+        self.host.scan_resolve_id(source, importer).await
+    }
+
+    async fn plugin_hook(
+        &self,
+        hook: &str,
+        args: &serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let _turn = self.turns.acquire().await.map_err(|e| e.to_string())?;
+        self.host.scan_plugin_hook(hook, args).await
+    }
+}
+
 impl Prebundle {
     /// The deps the app imports, each with its bundle entry file. With
     /// `optimizeDeps.noDiscovery` only the include list is resolved. A scan
@@ -153,15 +188,20 @@ impl Prebundle {
         }
         let state = Arc::new(ScanState {
             pre: Arc::clone(self),
-            host: host.cloned(),
+            host: host.map(|host| {
+                Arc::new(ScanHost {
+                    host: Arc::clone(host),
+                    turns: tokio::sync::Semaphore::new(SCAN_HOST_TURNS),
+                })
+            }),
             includes,
             found: Mutex::default(),
             resolved: Mutex::default(),
             html_scripts: Mutex::default(),
         });
         let mut plugins: Vec<SharedPluginable> = Vec::new();
-        if let Some(host) = host {
-            match host.scan_plugin_hooks().await {
+        if let Some(host) = &state.host {
+            match host.host.scan_plugin_hooks().await {
                 Ok(Some(hooks)) => plugins.push(Pluginable::new_shared(HostScanPlugins {
                     host: Arc::clone(host),
                     hooks,
@@ -229,7 +269,7 @@ fn first_message(errs: &[rolldown_error::BuildDiagnostic]) -> String {
 
 struct ScanState {
     pre: Arc<Prebundle>,
-    host: Option<Arc<PluginHost>>,
+    host: Option<Arc<ScanHost>>,
     includes: Vec<String>,
     found: Mutex<Scanned>,
     /// Keyed on id and importer file (a plugin may resolve the same id
@@ -280,7 +320,7 @@ impl ScanState {
         );
         cell.get_or_init(|| async {
             if let Some(host) = &self.host {
-                if let Ok(Some(r)) = host.scan_resolve_id(id, from).await {
+                if let Ok(Some(r)) = host.resolve_id(id, from).await {
                     let abs = Path::new(clean_url(&r.id)).is_absolute();
                     return (!r.is_external() && abs).then_some(r.id);
                 }
@@ -537,7 +577,7 @@ pub(crate) struct ScanPluginHooks {
 /// the scan's own plugin (Vite puts them first in the scan's plugin list).
 #[derive(Debug)]
 struct HostScanPlugins {
-    host: Arc<PluginHost>,
+    host: Arc<ScanHost>,
     hooks: ScanPluginHooks,
 }
 
@@ -567,7 +607,7 @@ impl Plugin for HostScanPlugins {
     ) -> HookResolveIdReturn {
         let r = self
             .host
-            .scan_plugin_hook(
+            .plugin_hook(
                 "resolveId",
                 &serde_json::json!([
                     args.specifier,
@@ -590,7 +630,7 @@ impl Plugin for HostScanPlugins {
     async fn load(&self, _ctx: SharedLoadPluginContext, args: &HookLoadArgs<'_>) -> HookLoadReturn {
         let r = self
             .host
-            .scan_plugin_hook("load", &serde_json::json!([args.id]))
+            .plugin_hook("load", &serde_json::json!([args.id]))
             .await
             .map_err(|e| {
                 crate::load_error::load_failed(self.name(), args.id, anyhow::Error::msg(e))
@@ -621,7 +661,7 @@ impl Plugin for HostScanPlugins {
     ) -> HookTransformReturn {
         let r = self
             .host
-            .scan_plugin_hook(
+            .plugin_hook(
                 "transform",
                 &serde_json::json!([args.code.as_str(), args.id]),
             )
