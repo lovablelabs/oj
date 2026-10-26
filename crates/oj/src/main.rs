@@ -416,6 +416,7 @@ fn sniffed_manager_version(path: &std::path::Path, manager: &str, default_versio
 }
 
 fn main() -> anyhow::Result<()> {
+    oj_server::rolldown_runtime::silence_tracing();
     raise_fd_limit();
     // Every engine and one-shot child that loads the app's vite.config through
     // rolldown-vite's native loader inherits this: the migration warning it

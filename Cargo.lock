@@ -6654,6 +6654,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-tungstenite",
  "tower",
+ "tracing",
 ]
 
 [[package]]

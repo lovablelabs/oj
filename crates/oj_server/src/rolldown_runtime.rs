@@ -35,6 +35,18 @@ pub fn build() -> std::io::Result<Runtime> {
         .build()
 }
 
+/// Installs a do-nothing global `tracing` dispatcher, before anything traces.
+///
+/// rolldown's spans carry field values computed per call (a fresh UUID for
+/// every `resolveId` and `load` hook). With no dispatcher set they would be
+/// skipped, except that `tracing`'s `log` feature, which oj's other
+/// dependencies turn on, then evaluates them for the `log` crate instead.
+/// rolldown's npm binding is built without that feature. Once a dispatcher
+/// is set, `tracing` asks it, and this one is interested in nothing.
+pub fn silence_tracing() {
+    let _ = tracing::subscriber::set_global_default(tracing::subscriber::NoSubscriber::default());
+}
+
 /// Polls `fut` with `rolldown` as the current runtime, so the tasks and
 /// blocking reads a build starts run there. The caller still awaits it from
 /// its own runtime; nothing needs to be `'static`.
@@ -188,6 +200,20 @@ mod tests {
         assert!(built.is_ok());
         assert_eq!(counts.loads.load(Ordering::Relaxed), 51);
         assert_eq!(counts.elsewhere.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn span_fields_go_unevaluated_once_tracing_is_silenced() {
+        silence_tracing();
+        let mut evaluated = false;
+        let _span = tracing::trace_span!(
+            "HookLoadCall",
+            call_id = {
+                evaluated = true;
+                1
+            }
+        );
+        assert!(!evaluated);
     }
 
     #[test]
