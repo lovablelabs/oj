@@ -102,14 +102,16 @@ about = about.replace(
 fs.writeFileSync(aboutPath, about);
 
 // Run `cmd` detached, wait for the port, run `check`, then group-kill and
-// await the exit so no server outlives the step.
+// await the exit so no server outlives the step. `check` reads stdout and
+// stderr together: either may carry an SSR error.
 async function served(cmd, args, opts, check) {
-  const srv = spawn(cmd, args, { stdio: ["ignore", "ignore", "pipe"], detached: true, ...opts });
+  const srv = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"], detached: true, ...opts });
   let stderr = "";
+  srv.stdout.on("data", (d) => (stderr += d));
   srv.stderr.on("data", (d) => (stderr += d));
   const exited = new Promise((r) => srv.once("exit", r));
   try {
-    const up = await waitUp(`http://localhost:${PORT}/`, { until: () => true }).then(
+    const up = await waitUp(`http://localhost:${PORT}/`, { until: () => true, proc: srv }).then(
       () => true,
       () => false,
     );
@@ -151,6 +153,7 @@ async function rendersAndCalls(label, stderr) {
       got === want,
       `${label}: the server fn answered ${JSON.stringify(got)}, want ${want}; page errors: ${errors.join(" | ")}\n${stderr().slice(-2000)}`,
     );
+    must(!/before initialization/.test(stderr()), `${label}: a module ran before its import:\n${stderr()}`);
     console.log(`${label}: a server fn whose middleware imports Start's server renders and runs`);
   } finally {
     await browser.close();
@@ -158,10 +161,7 @@ async function rendersAndCalls(label, stderr) {
 }
 
 try {
-  await served(oj, ["dev", app, "--port", String(PORT)], {}, async (stderr) => {
-    await rendersAndCalls("start-dev", stderr);
-    must(!/before initialization/.test(stderr()), `start-dev: a module ran before its import:\n${stderr()}`);
-  });
+  await served(oj, ["dev", app, "--port", String(PORT)], {}, async (stderr) => rendersAndCalls("start-dev", stderr));
 
   const out = path.join(app, "dist-e2e");
   execSync(`${JSON.stringify(oj)} build ${JSON.stringify(app)} --out ${JSON.stringify(out)}`, {

@@ -357,7 +357,7 @@ Three transform sites share that id:
 - The resolver. `write_server_fn_resolver` scans `src/` for the same declarations and
   writes a manifest mapping each id to its module's exported handler. Each
   module loads on the first call through a literal relative `import()`, which
-  the dev loader hook resolves and the prod server bundle splits, as Start's
+  the dev loader hook resolves and the prod server bundle bundles, as Start's
   own build resolver does. A static import would run every `*.functions.ts`
   inside the framework's import of the resolver, and a middleware that imports
   `@tanstack/react-start/server` closes a cycle there.
