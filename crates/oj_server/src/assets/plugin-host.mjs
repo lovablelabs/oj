@@ -936,29 +936,87 @@ function withConfigHook(p, handler, hidden) {
   standInFor.set(standIn, p);
   return standIn;
 }
+// What a config-phase hook did: the partial it returned, and its in-place
+// edits of the object it was handed (Vite honors both: runConfigHook merges
+// the partial into that very object).
+function hookRecord(before, after, returned) {
+  return { partial: returned === after ? null : plainCopy(returned), edits: editsOf(before, after) };
+}
+const DELETED = Symbol("deleted");
+function isPlainData(v) {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+  const proto = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
+}
+function sameValue(a, b) {
+  if (Object.is(a, b)) return true;
+  if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((x, i) => sameValue(x, b[i]));
+  if (isPlainData(a) && isPlainData(b)) {
+    const keys = Object.keys(a);
+    return keys.length === Object.keys(b).length && keys.every((k) => k in b && sameValue(a[k], b[k]));
+  }
+  return false;
+}
+// The edits that turn `before` (a plainCopy) into `after`, as [path, value]
+// pairs (DELETED for a removed key). The plugin array is the resolve's own.
+function editsOf(before, after, path = [], out = []) {
+  if (!isPlainData(after)) return out;
+  const had = isPlainData(before) ? before : {};
+  for (const key of Object.keys(after)) {
+    if (path.length === 0 && key === "plugins") continue;
+    const a = had[key];
+    const b = after[key];
+    if (isPlainData(a) && isPlainData(b)) editsOf(a, b, [...path, key], out);
+    else if (!(key in had) || !sameValue(a, b)) out.push([[...path, key], plainCopy(b)]);
+  }
+  for (const key of Object.keys(had)) {
+    if (!(key in after) && !(path.length === 0 && key === "plugins")) out.push([[...path, key], DELETED]);
+  }
+  return out;
+}
+function applyEdits(target, edits) {
+  for (const [path, value] of edits ?? []) {
+    let at = target;
+    for (const key of path.slice(0, -1)) {
+      if (!isPlainData(at[key])) at[key] = {};
+      at = at[key];
+    }
+    const last = path[path.length - 1];
+    if (value === DELETED) delete at[last];
+    else at[last] = plainCopy(value);
+  }
+  return target;
+}
+// The edits as a partial (what they set), for what the plugins contributed.
+const editsPartial = (edits) =>
+  applyEdits(
+    {},
+    (edits ?? []).filter(([, v]) => v !== DELETED),
+  );
 const hostRunHooks = {
   configEnvironment: { value: undefined },
   configResolved: { value: undefined },
   applyToEnvironment: { value: undefined },
 };
-// What `p`'s configEnvironment hook returned for each environment.
+// What `p`'s configEnvironment hook did for each environment.
 function environmentPartials(p) {
   if (!recordedEnvironmentPartials.has(p)) recordedEnvironmentPartials.set(p, new Map());
   return recordedEnvironmentPartials.get(p);
 }
-// `p`'s config hook, recording what it returned (or threw, for
-// runConfigHook to replay).
+// `p`'s config hook, recording what it did (its failure too: a hook runs
+// once, and the host takes its failure as it took its answer).
 function recordingConfigHook(p, fn) {
   return async function (config, configEnv) {
+    const before = plainCopy(config);
+    let partial;
     try {
-      const partial = await fn.call(this, config, configEnv);
-      // Returning the config itself is an in-place edit, already in the base.
-      recordedConfigPartials.set(p, { partial: partial === config ? null : plainCopy(partial) });
-      return partial;
-    } catch (error) {
-      recordedConfigPartials.set(p, { error });
-      throw error;
+      partial = await fn.call(this, config, configEnv);
+    } catch (e) {
+      recordedConfigPartials.set(p, { ...hookRecord(before, config, null), threw: e });
+      throw e;
     }
+    recordedConfigPartials.set(p, hookRecord(before, config, partial));
+    return partial;
   };
 }
 // The hooks `p` shows Vite's resolve: its config and configEnvironment hooks
@@ -972,8 +1030,9 @@ function resolveHooks(p) {
   const envHook = p.configEnvironment;
   const envFn = hookFn(p, "configEnvironment");
   const recordEnvironment = async function (name, options, configEnv) {
+    const before = plainCopy(options);
     const r = await envFn.call(this, name, options, configEnv);
-    environmentPartials(p).set(name, r);
+    environmentPartials(p).set(name, hookRecord(before, options, r));
     return r;
   };
   return {
@@ -1056,17 +1115,26 @@ function recordingConfig(p) {
   if (!fn) return p;
   return withConfigHook(p, recordingConfigHook(p, fn));
 }
-// `p` answering its config hook with what it returned the first time, for a
+// `p` answering its config hook with what it did the first time, for a
 // resolve that must not run any hook twice; with `environments` its
 // configEnvironment answers too.
 function replayingPlugin(p, environments = false) {
   const hidden = { ...hostRunHooks };
   if (environments && hookFn(p, "configEnvironment")) {
-    const replay = (name) => recordedEnvironmentPartials.get(p)?.get(name) ?? null;
+    const replay = (name, options) => {
+      const record = recordedEnvironmentPartials.get(p)?.get(name);
+      applyEdits(options, record?.edits);
+      return record?.partial ?? null;
+    };
     const hook = p.configEnvironment;
     hidden.configEnvironment = { value: typeof hook === "function" ? replay : { ...hook, handler: replay } };
   }
-  return withConfigHook(p, () => recordedConfigPartials.get(p)?.partial ?? null, hidden);
+  const replay = (config) => {
+    const record = recordedConfigPartials.get(p);
+    applyEdits(config, record?.edits);
+    return record?.partial ?? null;
+  };
+  return withConfigHook(p, replay, hidden);
 }
 // A copy of `v`'s plain data (object literals and arrays); functions, RegExps
 // and class instances are kept by reference, and so are the plugins of a
@@ -1995,17 +2063,22 @@ async function runConfigHook(config, list, { onPartial, keepPlugins, container =
   for (const { p, fn } of hooksOf(list, "config")) {
     initStage(`config:${p.name ?? "?"}`);
     try {
-      const rec = recorded?.get(p);
-      if (rec?.error) throw rec.error;
-      let partial = rec?.partial;
-      if (!rec && !replay) {
-        partial = await fn.call(configContext, config, env);
-        // Returning the config itself is an in-place edit, already in the base.
-        if (recorded) recorded.set(p, { partial: partial === config ? null : plainCopy(partial) });
+      let record = recorded?.get(p);
+      if (record) {
+        // Edits made inside the app's Vite resolve are already in a base
+        // that resolve made; a replay over another base makes them again.
+        if (replay) applyEdits(config, record.edits);
+        if (record.threw) throw record.threw;
+      } else if (!replay) {
+        const before = plainCopy(config);
+        const partial = await fn.call(configContext, config, env);
+        record = hookRecord(before, config, partial);
+        if (recorded) recorded.set(p, record);
       }
-      if (partial) {
-        config = mergeConfigLite(config, partial);
-        onPartial?.(partial);
+      if (record?.edits.length) onPartial?.(editsPartial(record.edits));
+      if (record?.partial) {
+        config = mergeConfigLite(config, record.partial);
+        onPartial?.(record.partial);
       }
     } catch (e) {
       if (!ojStartMode) throw e;
@@ -2096,10 +2169,16 @@ async function hostConfig(rc, list, { replay = false, container = main } = {}) {
       const seen = environmentPartials(p);
       for (const name of envNames) {
         try {
-          let r;
-          if (seen.has(name) || replay) r = seen.get(name);
-          else seen.set(name, (r = await fn.call(configContext, name, config.environments[name], opts)));
-          if (r) config.environments[name] = mergeConfigLite(config.environments[name], r);
+          let record = seen.get(name);
+          if (record) {
+            if (replay) applyEdits(config.environments[name], record.edits);
+          } else if (!replay) {
+            const options = config.environments[name];
+            const before = plainCopy(options);
+            const r = await fn.call(configContext, name, options, opts);
+            seen.set(name, (record = hookRecord(before, options, r)));
+          }
+          if (record?.partial) config.environments[name] = mergeConfigLite(config.environments[name], record.partial);
         } catch (e) {
           if (!ojStartMode) throw e;
           container.configHookSkipped = true;
