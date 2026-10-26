@@ -349,3 +349,138 @@ async fn cloudflare_facts_await_a_promised_rolldown_plugin() {
         "{facts}"
     );
 }
+
+/// A host over `config` (a vite.config.mjs body) with oj's `overlay` as its
+/// inline config; returns what the config wrote to `seen.log`.
+async fn host_run(name: &str, config: &str, command: &str, overlay: serde_json::Value) -> String {
+    let app = App::new(&[
+        (
+            "package.json",
+            &format!(r#"{{"name":"{name}","private":true,"type":"module"}}"#),
+        ),
+        ("vite.config.mjs", config),
+    ]);
+    app.link_fixture("vite");
+    let mode = if command == "build" {
+        "production"
+    } else {
+        "development"
+    };
+    let mut inline = serde_json::json!({
+        "root": app.root.display().to_string(), "mode": mode, "command": command,
+    });
+    for (k, v) in overlay.as_object().unwrap() {
+        inline[k] = v.clone();
+    }
+    let payload = serde_json::json!({
+        "config": inline,
+        "env": { "command": command, "mode": mode },
+        "environment": { "name": "client", "mode": if command == "build" { "build" } else { "dev" } },
+        "pluginsFormat": "vite",
+    })
+    .to_string();
+    let host = oj_server::plugins::PluginHost::spawn(
+        &app.root,
+        &app.root.join("vite.config.mjs"),
+        &payload,
+        None,
+    )
+    .await
+    .expect("the host starts");
+    host.plugin_names().await;
+    host.shutdown();
+    std::fs::read_to_string(app.root.join("seen.log")).unwrap_or_default()
+}
+
+/// Vite merges the CLI's inline config (`--base`, `--port`) over the loaded
+/// file before any config hook runs, so the hooks see it; oj's served base
+/// and port are that inline config. A hook's in-place edit of one of them
+/// stands, as it lands after the merge.
+#[tokio::test(flavor = "multi_thread")]
+async fn config_hooks_see_ojs_served_base_and_port() {
+    require_fixture!("vite");
+    let seen = host_run(
+        "cli-inline",
+        r#"import { appendFileSync } from "node:fs";
+import path from "node:path";
+const log = (s) => appendFileSync(path.join(__dirname, "seen.log"), s + "\n");
+export default {
+  base: "/file/",
+  server: { port: 1111 },
+  plugins: [{
+    name: "reads-cli",
+    config(config) {
+      log(`config ${config.base} ${config.server.port}`);
+      config.server.strictPort = true;
+    },
+    configResolved(config) {
+      log(`resolved ${config.base} ${config.server.port} ${config.server.strictPort}`);
+    },
+  }],
+};
+"#,
+        "serve",
+        serde_json::json!({ "base": "/from-oj/", "server": { "port": 4321, "strictPort": false } }),
+    )
+    .await;
+    assert_eq!(
+        seen,
+        "config /from-oj/ 4321\nresolved /from-oj/ 4321 true\n"
+    );
+}
+
+/// Vite's configEnv takes `isSsrBuild` from the inline config alone (the
+/// CLI's `--ssr`), never from the file's `build.ssr`, which the hooks still
+/// find in the config.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_files_build_ssr_is_not_an_ssr_build_for_the_config_hooks() {
+    require_fixture!("vite");
+    let seen = host_run(
+        "file-ssr",
+        r#"import { appendFileSync } from "node:fs";
+import path from "node:path";
+export default {
+  build: { ssr: "src/entry.js" },
+  plugins: [{
+    name: "reads-env",
+    config(config, env) {
+      appendFileSync(path.join(__dirname, "seen.log"), `${env.isSsrBuild} ${config.build.ssr}\n`);
+    },
+  }],
+};
+"#,
+        "build",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(seen, "false src/entry.js\n");
+}
+
+/// A config hook that gives its own plugin a configResolved while Vite's
+/// resolve runs keeps it: the host runs it once, on the host's resolved
+/// config (whose plugin list is the host's, not Vite's internal one).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hook_a_plugin_sets_during_the_resolve_stays_set() {
+    require_fixture!("vite");
+    let seen = host_run(
+        "lazy-hook",
+        r#"import { appendFileSync } from "node:fs";
+import path from "node:path";
+const plugin = {
+  name: "lazy",
+  config() {
+    plugin.configResolved = (config) =>
+      appendFileSync(
+        path.join(__dirname, "seen.log"),
+        `lazy configResolved, run inside Vite: ${config.plugins.some((p) => p.name === "vite:optimized-deps")}\n`,
+      );
+  },
+};
+export default { plugins: [plugin] };
+"#,
+        "serve",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(seen, "lazy configResolved, run inside Vite: false\n");
+}

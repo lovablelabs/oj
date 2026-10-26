@@ -203,3 +203,49 @@ export default {{
     assert!(names.iter().any(|n| n == "after"), "{names:?}");
     assert_eq!(counts(&log), (0, 1), "(evaluations, config hooks)");
 }
+
+/// Callers waiting on an extraction take its outcome, a failed one too: a
+/// config that throws is evaluated once, not once per waiting caller.
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_extractions_share_a_failure() {
+    crate::require_fixture!("vite");
+    let app = App::new(&[(
+        "package.json",
+        r#"{"name":"config-evals-failing","private":true,"type":"module"}"#,
+    )]);
+    let log = app.root.with_extension("evals.log");
+    app.write(&[(
+        "vite.config.ts",
+        &format!(
+            "import {{ appendFileSync }} from \"node:fs\";\nappendFileSync({log:?}, \"eval\\n\");\nthrow new Error(\"config failed\");\n"
+        ),
+    )]);
+    app.link_fixture("vite");
+
+    // How many evaluations one failing extraction makes.
+    assert!(
+        oj_server::plugins::extract_vite_values(&app.root, None, "serve", "development").is_none()
+    );
+    let one = counts(&log);
+    std::fs::remove_file(&log).unwrap();
+
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+    let extractions: Vec<_> = (0..3)
+        .map(|_| {
+            let (root, barrier) = (app.root.clone(), barrier.clone());
+            std::thread::spawn(move || {
+                barrier.wait();
+                oj_server::plugins::extract_vite_values(&root, None, "serve", "development")
+                    .is_some()
+            })
+        })
+        .collect();
+    for e in extractions {
+        assert!(!e.join().unwrap(), "a failing config returned values");
+    }
+    assert_eq!(
+        counts(&log),
+        one,
+        "(evaluations, config hooks) of three callers"
+    );
+}

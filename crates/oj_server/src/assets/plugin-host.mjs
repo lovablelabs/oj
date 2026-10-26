@@ -817,6 +817,24 @@ async function loadUserResolvedViteConfig() {
     restores.push(restore);
     return p;
   });
+  // The file under oj's CLI-level values, as resolveConfig merges a loaded
+  // file under the inline config before any config hook runs.
+  const fileConfig = plainCopy(userViteConfig);
+  // Vite's configEnv reads `isSsrBuild` off the inline config alone, before
+  // the file loads: a build's `build.ssr` from the file joins the config
+  // through the first config hook instead, so the hooks see it in the config
+  // but not in configEnv.
+  const fileSsr = env.command === "build" ? fileConfig.build?.ssr : undefined;
+  if (fileSsr) {
+    fileConfig.build = { ...fileConfig.build };
+    delete fileConfig.build.ssr;
+    plugins.unshift({
+      name: "oj:file-build-ssr",
+      enforce: "pre",
+      config: { order: "pre", handler: () => ({ build: { ssr: fileSsr } }) },
+    });
+  }
+  const merge = typeof vite.mergeConfig === "function" ? vite.mergeConfig : mergeConfigLite;
   try {
     // Vite's own NODE_ENV handling runs inside resolveConfig; hand it the
     // command-based defaultNodeEnv (never the mode) and lift oj's untouched
@@ -824,7 +842,14 @@ async function loadUserResolvedViteConfig() {
     unsetOjNodeEnvForResolve();
     const rc = await asNode(() =>
       vite.resolveConfig(
-        { ...plainCopy(userViteConfig), plugins, root: appRoot, configFile: false, mode: env.mode, logLevel: "silent" },
+        {
+          ...merge(fileConfig, cliInlineConfig()),
+          plugins,
+          root: appRoot,
+          configFile: false,
+          mode: env.mode,
+          logLevel: "silent",
+        },
         env.command,
         env.mode,
         defaultNodeEnv,
@@ -842,11 +867,36 @@ async function loadUserResolvedViteConfig() {
     );
     return null;
   } finally {
-    for (const restore of restores) restore();
+    for (const restore of restores) {
+      try {
+        restore();
+      } catch {}
+    }
     // A throwing resolveConfig may leave the unset behind; the fallback paths
     // below still evaluate config/plugin code that must see a value.
     if (!process.env.NODE_ENV) process.env.NODE_ENV = defaultNodeEnv;
   }
+}
+// The values oj serves with that a Vite CLI run passes inline (`--base`,
+// `--port`, `--strictPort`, `--host`).
+const CLI_SERVER_KEYS = ["port", "strictPort", "host"];
+function cliInlineConfig() {
+  const o = initial.config ?? {};
+  const inline = {};
+  if (typeof o.base === "string") inline.base = o.base;
+  const server = {};
+  for (const k of CLI_SERVER_KEYS) if (o.server?.[k] != null) server[k] = o.server[k];
+  if (Object.keys(server).length) inline.server = server;
+  return inline;
+}
+// oj's values without the CLI-level ones, which Vite's resolve already took
+// in under the config hooks (and a hook's in-place edit of one stands).
+function withoutCliInline(o) {
+  const { base: _base, server, ...rest } = o ?? {};
+  if (!server) return rest;
+  const kept = { ...server };
+  for (const k of CLI_SERVER_KEYS) delete kept[k];
+  return { ...rest, server: kept };
 }
 // The hooks `p` shows Vite's resolve: its config hook recorded (what it
 // returned, or threw, for runConfigHook to replay), its configEnvironment,
@@ -886,13 +936,34 @@ function recordInPlace(p) {
   try {
     for (const [key, value] of Object.entries(hooks)) {
       const own = Object.getOwnPropertyDescriptor(p, key);
-      Object.defineProperty(p, key, {
-        value,
-        writable: true,
-        configurable: true,
-        enumerable: own?.enumerable ?? false,
+      const enumerable = own?.enumerable ?? false;
+      // A hidden hook reads as unset to Vite's resolve; one the plugin
+      // assigns meanwhile (a config hook giving itself a configResolved) is
+      // held back for the host, which runs it once, as Vite would.
+      let assigned;
+      let wasAssigned = false;
+      const hidden = {
+        get: () => undefined,
+        set: (v) => {
+          assigned = v;
+          wasAssigned = true;
+        },
+      };
+      const swapped =
+        value === undefined
+          ? { ...hidden, configurable: true, enumerable }
+          : { value, writable: true, configurable: true, enumerable };
+      Object.defineProperty(p, key, swapped);
+      undo.push(() => {
+        const now = Object.getOwnPropertyDescriptor(p, key);
+        if (wasAssigned) {
+          Object.defineProperty(p, key, { value: assigned, writable: true, configurable: true, enumerable });
+        } else if (now && (now.get === hidden.get || (value !== undefined && now.value === value))) {
+          if (own) Object.defineProperty(p, key, own);
+          else delete p[key];
+        }
+        // Otherwise the plugin redefined the hook itself: it keeps that.
       });
-      undo.push(own ? () => Object.defineProperty(p, key, own) : () => delete p[key]);
     }
   } catch {
     restore();
@@ -1849,10 +1920,11 @@ async function runConfigHooks() {
   initStage("user-config-resolved");
   let config = initial.config ?? {};
   if (userResolvedViteConfig) {
-    // The user's resolved config is the base; oj's own values (root, base,
-    // define, server, environments) overlay it; the plugin list is replaced below.
+    // The user's resolved config is the base; oj's own values (root, define,
+    // server, environments) overlay it, but for the CLI-level ones Vite's
+    // resolve already took in; the plugin list is replaced below.
     const { plugins: _fresh, ...base } = userResolvedViteConfig;
-    config = mergeConfigLite(base, config);
+    config = mergeConfigLite(base, withoutCliInline(config));
   }
   // Coerce experimental.bundledDev off BEFORE the config/configResolved hooks
   // run, so TanStack's start-manifest-plugin emits the standard dev client entry

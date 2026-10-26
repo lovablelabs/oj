@@ -422,16 +422,52 @@ pub(crate) fn extract_vite_values_timed(
     let mode_key = mode_key.as_str();
     let vite = vite_config_file(root, config)?;
     // Concurrent boot callers asking for one key wait on a single evaluation
-    // and read its stored result, as Vite resolves the config once per start.
+    // and take its outcome, a failed one included, as Vite resolves the config
+    // once per start. A caller arriving after it finished runs its own.
     let flight = extraction_flight(&vite, command, mode_key);
-    let _flight = flight.lock().unwrap_or_else(|e| e.into_inner());
+    let seen = flight.finished.load(std::sync::atomic::Ordering::Acquire);
+    let mut outcome = flight.outcome.lock().unwrap_or_else(|e| e.into_inner());
+    if flight.finished.load(std::sync::atomic::Ordering::Acquire) != seen {
+        return outcome.as_ref().map(parse_vite_values);
+    }
+    let json = run_extraction(
+        root,
+        &vite,
+        command,
+        mode,
+        mode_explicit,
+        mode_key,
+        spa_build,
+        timeout,
+    );
+    *outcome = json.clone();
+    flight
+        .finished
+        .fetch_add(1, std::sync::atomic::Ordering::Release);
+    json.as_ref().map(parse_vite_values)
+}
+
+/// One evaluation of the config's values: the store's copy when it has one,
+/// else the extractor run in an engine (and stored). `None` when the config
+/// fails to evaluate.
+#[allow(clippy::too_many_arguments)]
+fn run_extraction(
+    root: &Path,
+    vite: &Path,
+    command: &str,
+    mode: &str,
+    mode_explicit: bool,
+    mode_key: &str,
+    spa_build: bool,
+    timeout: Option<std::time::Duration>,
+) -> Option<serde_json::Value> {
     let store = extraction_store(root);
-    if let Some(hit) = store.lookup(&vite, command, mode_key) {
+    if let Some(hit) = store.lookup(vite, command, mode_key) {
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&hit.output) {
             print_extraction_stderr(&hit.stderr);
             let _ = CONFIG_DEPS.set(hit.deps);
             crate::boot_phase("vite-extract cache hit");
-            return Some(parse_vite_values(&json));
+            return Some(json);
         }
     }
     let cache = oj_cache::cache_root(root);
@@ -473,19 +509,26 @@ pub(crate) fn extract_vite_values_timed(
     if json.get("__ok").and_then(|v| v.as_bool()) != Some(true) {
         return None;
     }
-    store_extraction(&store, &vite, command, mode_key, &json, &stderr);
+    store_extraction(&store, vite, command, mode_key, &json, &stderr);
     EXTRACTION_RAN_FRESH.store(true, std::sync::atomic::Ordering::Relaxed);
     crate::boot_phase("vite-extract cache miss (engine ran)");
-    Some(parse_vite_values(&json))
+    Some(json)
 }
 
-/// The lock one (config, command, mode) extraction runs under in this process.
+/// One (config, command, mode) extraction key in this process: the lock its
+/// evaluations run under, how many have finished, and the last one's outcome.
+#[derive(Default)]
+struct ExtractionFlight {
+    finished: std::sync::atomic::AtomicU64,
+    outcome: std::sync::Mutex<Option<serde_json::Value>>,
+}
+
 fn extraction_flight(
     vite: &Path,
     command: &str,
     mode_key: &str,
-) -> std::sync::Arc<std::sync::Mutex<()>> {
-    type Flights = std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<()>>>;
+) -> std::sync::Arc<ExtractionFlight> {
+    type Flights = std::collections::HashMap<String, std::sync::Arc<ExtractionFlight>>;
     static FLIGHTS: std::sync::LazyLock<std::sync::Mutex<Flights>> =
         std::sync::LazyLock::new(Default::default);
     let key = format!("{}\0{command}\0{mode_key}", vite.display());
