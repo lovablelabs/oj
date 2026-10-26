@@ -842,8 +842,7 @@ fn empty_plugin_file(root: &Path) -> Option<PluginFile> {
     })
 }
 
-/// Handed to buildEnvironments and vite.resolveConfig verbatim: the deps
-/// pre-seed child must resolve with the SAME string or cache hashes cannot match.
+/// The dev host's environment mode (Vite's `environment.mode`).
 const HOST_ENV_MODE: &str = "dev";
 
 /// The inline config a Vite CLI run with these flags would carry (cli.ts:
@@ -1599,7 +1598,7 @@ impl DevServer {
             .is_some_and(|f| f.format == PluginsFormat::Vite)
             && oj_config::ssr_runner_backed(&config)
         {
-            preseed::preseed_server_deps(&root, HOST_ENV_MODE).await;
+            preseed::preseed_server_deps(&root, &dev_mode).await;
         }
         boot_phase("plugin host spawning");
         let plugin_host = match &plugin_file {

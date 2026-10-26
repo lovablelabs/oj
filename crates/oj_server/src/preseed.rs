@@ -176,7 +176,7 @@ fn parse_report(raw: &str) -> Option<Vec<SeededEnv>> {
 /// rather than left holding rolldown's native retention.
 const PRESEED_KILL: std::time::Duration = std::time::Duration::from_secs(300);
 
-async fn run_child(root: &Path, env_mode: &str) -> anyhow::Result<Vec<SeededEnv>> {
+async fn run_child(root: &Path, mode: &str) -> anyhow::Result<Vec<SeededEnv>> {
     let cache = oj_cache::cache_root(root);
     std::fs::create_dir_all(&cache)?;
     // Atomic rename: an engine could import the script while a concurrent oj
@@ -215,7 +215,7 @@ async fn run_child(root: &Path, env_mode: &str) -> anyhow::Result<Vec<SeededEnv>
         use tokio::io::AsyncWriteExt;
         let env: Vec<(String, String)> = vec![
             ("OJ_APP_ROOT".into(), root.to_string_lossy().into_owned()),
-            ("OJ_ENV_MODE".into(), env_mode.to_string()),
+            ("OJ_ENV_MODE".into(), mode.to_string()),
             (
                 "OJ_PRESEED_REPORT".into(),
                 report.to_string_lossy().into_owned(),
@@ -256,7 +256,7 @@ async fn run_child(root: &Path, env_mode: &str) -> anyhow::Result<Vec<SeededEnv>
 
 /// Pre-seed the deps caches for runner-backed vite configs, before the host
 /// spawns. Failure is never fatal: the host's own optimizer remains the fallback.
-pub(crate) async fn preseed_server_deps(root: &Path, env_mode: &str) {
+pub(crate) async fn preseed_server_deps(root: &Path, mode: &str) {
     // A fresh config extraction means the config inputs changed (or were never
     // seen): Vite's configHash may have moved, which the stamp cannot see.
     if !crate::plugins::extraction_ran_fresh() && stamp_is_warm(root) {
@@ -265,7 +265,7 @@ pub(crate) async fn preseed_server_deps(root: &Path, env_mode: &str) {
     }
     crate::boot_phase("deps preseed begin");
     println!("  deps: pre-optimizing server environments in a one-shot child");
-    match run_child(root, env_mode).await {
+    match run_child(root, mode).await {
         Ok(seeded) => {
             write_stamp(root, &seeded);
             crate::boot_phase("deps preseed done");

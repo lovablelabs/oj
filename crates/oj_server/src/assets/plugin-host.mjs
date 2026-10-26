@@ -925,18 +925,27 @@ function withoutCliInline(o) {
   for (const k of Object.keys(cliServer)) delete kept[k];
   return { ...o, server: kept };
 }
+// The resolve's stand-ins, by the plugin each stands in for.
+const standInFor = new WeakMap();
 // `p` with its config hook in place of `config` (and `hidden` over the rest).
 function withConfigHook(p, handler, hidden) {
   const hook = p.config;
   const fields = { ...hidden };
   if (hookFn(p, "config")) fields.config = { value: typeof hook === "function" ? handler : { ...hook, handler } };
-  return Object.create(p, fields);
+  const standIn = Object.create(p, fields);
+  standInFor.set(standIn, p);
+  return standIn;
 }
 const hostRunHooks = {
   configEnvironment: { value: undefined },
   configResolved: { value: undefined },
   applyToEnvironment: { value: undefined },
 };
+// What `p`'s configEnvironment hook returned for each environment.
+function environmentPartials(p) {
+  if (!recordedEnvironmentPartials.has(p)) recordedEnvironmentPartials.set(p, new Map());
+  return recordedEnvironmentPartials.get(p);
+}
 // `p`'s config hook, recording what it returned (or threw, for
 // runConfigHook to replay).
 function recordingConfigHook(p, fn) {
@@ -952,16 +961,28 @@ function recordingConfigHook(p, fn) {
     }
   };
 }
-// The hooks `p` shows Vite's resolve: its config hook recorded, its
-// configEnvironment, configResolved and applyToEnvironment hidden, left to
-// the host, which runs them on its own resolved config.
+// The hooks `p` shows Vite's resolve: its config and configEnvironment hooks
+// recorded (the host replays their answers, and the environments Vite
+// resolves carry them), its configResolved and applyToEnvironment hidden,
+// left to the host, which runs them on its own resolved config.
 function resolveHooks(p) {
   const hook = p.config;
   const fn = hookFn(p, "config");
   const record = recordingConfigHook(p, fn);
+  const envHook = p.configEnvironment;
+  const envFn = hookFn(p, "configEnvironment");
+  const recordEnvironment = async function (name, options, configEnv) {
+    const r = await envFn.call(this, name, options, configEnv);
+    environmentPartials(p).set(name, r);
+    return r;
+  };
   return {
     config: fn ? (typeof hook === "function" ? record : { ...hook, handler: record }) : undefined,
-    configEnvironment: undefined,
+    configEnvironment: envFn
+      ? typeof envHook === "function"
+        ? recordEnvironment
+        : { ...envHook, handler: recordEnvironment }
+      : undefined,
     configResolved: undefined,
     applyToEnvironment: undefined,
   };
@@ -1024,7 +1045,9 @@ function recordInPlace(p, phase) {
 // cannot take them in place (frozen: no sibling can wrap its hooks either).
 function recordingPlugin(p) {
   const hooks = resolveHooks(p);
-  return Object.create(p, Object.fromEntries(Object.entries(hooks).map(([k, value]) => [k, { value }])));
+  const standIn = Object.create(p, Object.fromEntries(Object.entries(hooks).map(([k, value]) => [k, { value }])));
+  standInFor.set(standIn, p);
+  return standIn;
 }
 // A plugin the host does not run (one oj does natively), its config hook
 // recorded and the rest left to Vite.
@@ -1034,9 +1057,16 @@ function recordingConfig(p) {
   return withConfigHook(p, recordingConfigHook(p, fn));
 }
 // `p` answering its config hook with what it returned the first time, for a
-// resolve of a plugin subset that must not run any hook twice.
-function replayingPlugin(p) {
-  return withConfigHook(p, () => recordedConfigPartials.get(p)?.partial ?? null, hostRunHooks);
+// resolve that must not run any hook twice; with `environments` its
+// configEnvironment answers too.
+function replayingPlugin(p, environments = false) {
+  const hidden = { ...hostRunHooks };
+  if (environments && hookFn(p, "configEnvironment")) {
+    const replay = (name) => recordedEnvironmentPartials.get(p)?.get(name) ?? null;
+    const hook = p.configEnvironment;
+    hidden.configEnvironment = { value: typeof hook === "function" ? replay : { ...hook, handler: replay } };
+  }
+  return withConfigHook(p, () => recordedConfigPartials.get(p)?.partial ?? null, hidden);
 }
 // A copy of `v`'s plain data (object literals and arrays); functions, RegExps
 // and class instances are kept by reference, and so are the plugins of a
@@ -2063,12 +2093,12 @@ async function hostConfig(rc, list, { replay = false, container = main } = {}) {
     const configContext = minimalContext();
     for (const { p, fn } of configEnvHooks) {
       initStage(`configEnvironment:${p.name ?? "?"}`);
-      if (!recordedEnvironmentPartials.has(p)) recordedEnvironmentPartials.set(p, new Map());
-      const seen = recordedEnvironmentPartials.get(p);
+      const seen = environmentPartials(p);
       for (const name of envNames) {
         try {
-          const r = replay ? seen.get(name) : await fn.call(configContext, name, config.environments[name], opts);
-          if (!replay) seen.set(name, r);
+          let r;
+          if (seen.has(name) || replay) r = seen.get(name);
+          else seen.set(name, (r = await fn.call(configContext, name, config.environments[name], opts)));
           if (r) config.environments[name] = mergeConfigLite(config.environments[name], r);
         } catch (e) {
           if (!ojStartMode) throw e;
@@ -2145,6 +2175,25 @@ async function resolveEnvironment(c, name) {
 // a falsy result drops the plugin, `true` keeps it, and a plugin or plugin
 // array replaces it with what it returned (perEnvironmentPlugin), whose
 // config-phase hooks are ignored with a warning.
+// Vite asks a plugin's applyToEnvironment once per environment (in
+// resolveConfig); every container of that environment, and the real
+// DevEnvironment of a runner-backed one, takes that one answer.
+const appliedToEnvironments = new WeakMap();
+function applyToEnvironmentOnce(p, environment) {
+  let byName = appliedToEnvironments.get(p);
+  if (!byName) appliedToEnvironments.set(p, (byName = new Map()));
+  if (!byName.has(environment.name)) {
+    byName.set(
+      environment.name,
+      (async () => {
+        // A rejection nested in what it returned counts as its own throw.
+        const applied = await p.applyToEnvironment(environment);
+        return applied && applied !== true ? flattenPlugins(applied) : applied;
+      })(),
+    );
+  }
+  return byName.get(environment.name);
+}
 async function environmentPlugins(environment, candidates, c = main) {
   const ignoredEnvironmentPluginHooks = ["config", "configEnvironment", "configureServer", "configResolved"];
   const next = [];
@@ -2156,9 +2205,7 @@ async function environmentPlugins(environment, candidates, c = main) {
     let applied;
     initStage(`applyToEnvironment:${p.name ?? "?"}`);
     try {
-      // A rejection nested in what it returned counts as its own throw.
-      applied = await p.applyToEnvironment(environment);
-      if (applied && applied !== true) applied = await flattenPlugins(applied);
+      applied = await applyToEnvironmentOnce(p, environment);
     } catch (e) {
       process.stderr.write(
         `${OJ} plugin host: applyToEnvironment(${p.name ?? "?"}) threw; keeping the plugin active: ${(e && e.message) || e}\n`,
@@ -2547,39 +2594,31 @@ async function buildEnvironments(server) {
   const root =
     (main.resolvedConfig && main.resolvedConfig.root) || (initial.config && initial.config.root) || process.cwd();
   // Real DevEnvironments need a real resolved Vite config (root, cacheDir,
-  // resolve.builtins, per-env dev.createEnvironment factories). Hand-faking it
-  // is endless whack-a-mole, so ask the app's Vite to resolve it once.
+  // resolve.builtins, per-env dev.createEnvironment factories): the app's
+  // Vite resolved it once already, over these very plugin instances, for the
+  // config the host itself runs on. The environments are built from that
+  // resolve, as Vite's createServer builds them from its one resolveConfig:
+  // no second evaluation, no hook run twice on an instance (a second config
+  // hook corrupts stateful plugins, @cloudflare/vite-plugin's
+  // virtual:cloudflare/export-types among them).
   let rc;
   try {
-    // configFile:undefined lets Vite resolve fresh plugin instances. Reusing
-    // oj's instances (configFile:false + plugins) corrupts stateful plugins
-    // (e.g. @cloudflare/vite-plugin's virtual:cloudflare/export-types) when
-    // their config hooks run a second time, so we accept a second resolve. The
-    // environments bind to these fresh instances; oj drives its own instances
-    // in configureServer, and the two agree because both resolve from `root`.
-    hostPhase("cf: resolveConfig begin");
-    initStage("cf:resolveConfig");
-    rc = await asNode(() =>
-      vite.resolveConfig(
-        { root, configFile: undefined, mode: environment.mode },
-        "serve",
-        "development",
-        "development",
-      ),
-    );
-    hostPhase("cf: resolveConfig done");
-    initStage("cf:resolveConfig-done");
-    // The fresh resolve reads the app's vite.config again, so bundledDev is back
-    // on here (and Vite has stamped environments.client.isBundled). Coerce it off
-    // BEFORE the environments are built off `rc`: the DevEnvironment constructor
-    // makes the client env bundled from these fields, and the manifest plugin
-    // bound to these environments reads them at load time.
+    hostPhase("cf: environments config begin");
+    initStage("cf:environments-config");
+    rc = await environmentsConfig();
+    if (!rc) return undefined;
+    hostPhase("cf: environments config done");
+    initStage("cf:environments-config-done");
+    // Coerce bundledDev off BEFORE the environments are built off `rc`: the
+    // DevEnvironment constructor makes the client env bundled from these
+    // fields, and the manifest plugin bound to these environments reads them
+    // at load time.
     coerceBundledDevOff(rc);
     // BEFORE the environments are built: include must be in the config the
     // optimizer hashes, or the preseed child's metadata cannot validate.
     foldIncludeSnapshot(rc, initial.preseedIncludePath);
   } catch (e) {
-    process.stderr.write(`${OJ} plugin host: vite.resolveConfig failed: ${(e && e.message) || e}\n`);
+    process.stderr.write(`${OJ} plugin host: the environments' config failed: ${(e && e.message) || e}\n`);
     return undefined;
   }
   server.config = rc;
@@ -2624,6 +2663,100 @@ async function buildEnvironments(server) {
     }),
   );
   return environments;
+}
+
+// The resolve the host's config came from, as Vite's resolveConfig leaves
+// it: its plugin array the host's instances (not the resolve's recording
+// stand-ins), each environment's plugins what applyToEnvironment kept of them.
+async function environmentsConfig() {
+  const base = userResolvedViteConfig ?? (await replayedViteConfig());
+  if (!base) return null;
+  const plugins = (base.plugins ?? []).map((p) => standInFor.get(p) ?? p);
+  const rc = { ...base, plugins, ...pluginHookUtils(plugins), environments: {} };
+  // The host resolved silently; the environments log as the app's Vite would.
+  const vite = await loadAppVite();
+  if (typeof vite?.createLogger === "function") {
+    rc.logLevel = userViteConfig?.logLevel ?? "info";
+    rc.logger = vite.createLogger(rc.logLevel, {
+      allowClearScreen: false,
+      customLogger: userViteConfig?.customLogger,
+    });
+  }
+  for (const [name, options] of Object.entries(base.environments ?? {})) {
+    rc.environments[name] = { ...options, dev: { ...options?.dev }, optimizeDeps: { ...options?.optimizeDeps } };
+  }
+  for (const name of Object.keys(rc.environments)) {
+    rc.environments[name].plugins = await viteEnvironmentPlugins(name, rc);
+  }
+  return rc;
+}
+// The app's Vite resolving the host's own plugins (an oj plugins file has no
+// vite.config to resolve), each hook answering what it returned in the host.
+async function replayedViteConfig() {
+  const vite = await loadAppVite();
+  if (!vite || typeof vite.resolveConfig !== "function") return null;
+  const root = initial.config?.root ?? process.cwd();
+  try {
+    unsetOjNodeEnvForResolve();
+    return await asNode(() =>
+      vite.resolveConfig(
+        {
+          root,
+          configFile: false,
+          plugins: allPlugins.map((p) => replayingPlugin(p, true)),
+          mode: env.mode,
+          logLevel: "silent",
+        },
+        env.command,
+        env.mode,
+        defaultNodeEnv,
+      ),
+    );
+  } finally {
+    if (!process.env.NODE_ENV) process.env.NODE_ENV = defaultNodeEnv;
+  }
+}
+// Vite's resolveEnvironmentPlugins over a PartialEnvironment of `rc`.
+async function viteEnvironmentPlugins(name, rc) {
+  const options = rc.environments[name];
+  const environment = {
+    name,
+    config: new Proxy(options, { get: (target, key) => (key in target ? target[key] : rc[key]) }),
+    getTopLevelConfig: () => rc,
+    logger: rc.logger,
+  };
+  const out = [];
+  for (const p of rc.plugins) {
+    if (!p) continue;
+    if (typeof p.applyToEnvironment !== "function") {
+      out.push(p);
+      continue;
+    }
+    const applied = await applyToEnvironmentOnce(p, environment);
+    if (!applied) continue;
+    if (applied === true) out.push(p);
+    else out.push(...applied);
+  }
+  return out;
+}
+// Vite's createPluginHookUtils: a hook's plugins by its `order`.
+function pluginHookUtils(plugins) {
+  const sorted = new Map();
+  const getSortedPlugins = (hook) => {
+    if (!sorted.has(hook)) {
+      const rank = (p) => hookOrderRank(p[hook]);
+      sorted.set(
+        hook,
+        plugins.filter((p) => p && p[hook]).sort((a, b) => rank(a) - rank(b)),
+      );
+    }
+    return sorted.get(hook);
+  };
+  const getSortedPluginHooks = (hook) =>
+    getSortedPlugins(hook)
+      .map((p) => hookHandler(p[hook]))
+      .filter(Boolean);
+  return { getSortedPlugins, getSortedPluginHooks };
 }
 
 function hostPhase(label) {
@@ -3770,7 +3903,7 @@ async function setupConfigureServer() {
   // `initial.runnerBacked`. Extraction TRUE is authoritative and sufficient —
   // a declaring plugin whose config hook failed IN THIS HOST keeps the path:
   // the extractor's independent run already decided, and buildEnvironments
-  // re-resolves on fresh instances where the hook may well succeed. Extraction
+  // builds from what the app's Vite resolved. Extraction
   // FALSE or ABSENT is NOT final: it falls through to the host's own
   // declaration check (the raw user config, oj's initial config, and
   // pluginConfigDelta — never the Vite-RESOLVED config, whose every

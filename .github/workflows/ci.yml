@@ -277,6 +277,8 @@ jobs:
         run: node e2e/start-cloudflare-dev.mjs
       - name: start dev with ssr in workerd leaves client edits to the page's HMR (no rebundle, no reload)
         run: node e2e/start-cloudflare-hmr.mjs
+      - name: start dev for @cloudflare/vite-plugin evaluates vite.config once, one workerd
+        run: node e2e/start-cloudflare-config-once.mjs
       - name: experimental.bundledDev is coerced off; the standard dev client entry serves and the page hydrates
         run: node e2e/bundleddev-coerce.mjs
       - name: server.proxy covers the worker's outbound fetch (one proxy in the middleware stack), function rewrite applied

@@ -10,10 +10,11 @@
 // loads a warm cache and never builds in-process.
 //
 // Byte-level cache compatibility is the contract: the app's OWN Vite resolves
-// the config with the SAME arguments the plugin host uses (buildEnvironments
-// in plugin-host.mjs), and Vite's own optimizer runs through a real
-// DevEnvironment — the metadata's lockfileHash/configHash are computed by the
-// same code that later validates them in the host, so no hash is imitated.
+// the config in the mode the plugin host resolves it in (the environments it
+// builds come from that resolve), and Vite's own optimizer runs through a
+// real DevEnvironment — the metadata's lockfileHash/configHash are computed
+// by the same code that later validates them in the host, so no hash is
+// imitated.
 //
 // Known gap, on purpose: this covers the BOOT-TIME pass. A mid-session
 // re-optimization (a lockfile edit while serving, a discovery-mode
@@ -49,11 +50,10 @@ export async function run(env = null) {
 
 async function main() {
   const root = process.env.OJ_APP_ROOT ?? process.cwd();
-  // The exact mode string the plugin host passes to vite.resolveConfig in
-  // buildEnvironments (the spawn payload's environment.mode): the resolved
-  // config feeds Vite's configHash, so any divergence seeds a cache the
-  // in-host optimizer would reject as stale.
-  const mode = process.env.OJ_ENV_MODE || "dev";
+  // The mode the plugin host resolves the config in (the dev server's
+  // `--mode`): the resolved config feeds Vite's configHash, so any
+  // divergence seeds a cache the in-host optimizer would reject as stale.
+  const mode = process.env.OJ_ENV_MODE || "development";
   // Matches the spawner's kill bound (preseed.rs PRESEED_KILL): give up on a
   // metadata file that never lands before the parent reclaims this child.
   const timeoutMs = 300 * 1000;
