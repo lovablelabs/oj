@@ -57,6 +57,7 @@ mod new_url_asset;
 mod optimize_alias;
 mod optimize_linked;
 mod optimize_plan;
+mod optimize_reload;
 mod plugin_close_hooks;
 mod plugin_ctx_chain;
 mod plugin_error_surfaced;

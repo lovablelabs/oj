@@ -109,6 +109,13 @@ pub const OJ_ROUTES_JS: &str = include_str!("assets/oj-routes.js");
 const SERVER_FN_JS: &str = include_str!("assets/server-fn.js");
 const LINGUI_MACRO_SHIM_JS: &str = include_str!("assets/lingui-macro-shim.mjs");
 const REFRESH_RUNTIME_JS: &str = include_str!("assets/refresh-runtime.js");
+// Vite serves `/@react-refresh` importing its client (the runtime's
+// non-literal `import()`), so a preamble-only page, TanStack Start's dev
+// entry, still gets a full reload when its app graph fails to load.
+const REFRESH_RUNTIME_DEV_JS: &str = concat!(
+    "import \"/@oj/client.js\";\n",
+    include_str!("assets/refresh-runtime.js")
+);
 const REFRESH_PREAMBLE_JS: &str = include_str!("assets/refresh-preamble.js");
 // Vite's DEFAULT_EXTENSIONS probe order (js before ts) so the extensionless
 // quick path agrees with the resolver; .cts/.svelte are compilable, not probed.
@@ -1310,7 +1317,7 @@ fn build_router(
         .route("/@oj/client.js", get(serve_client_js))
         .route(
             "/@oj/refresh-runtime.js",
-            get(|| async { js(REFRESH_RUNTIME_JS) }),
+            get(|| async { js(REFRESH_RUNTIME_DEV_JS) }),
         )
         .route(
             "/@oj/refresh-preamble.js",
