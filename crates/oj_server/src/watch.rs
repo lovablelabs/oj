@@ -360,9 +360,6 @@ pub fn unregister_child(pid: u32) {
     child_groups::unregister(pid);
 }
 
-/// A watcher batch: the changed paths and the ones among them created.
-pub(crate) type HeldBatch = (Vec<PathBuf>, std::collections::HashSet<PathBuf>);
-
 /// A dev server's restarts: what the next boot starts from (the app root,
 /// the CLI's `--config`, the dev mode, whether it is a Start app) and the
 /// restart being checked.
@@ -373,15 +370,8 @@ pub struct Restarter {
     pub(crate) start: bool,
     /// A check is running; the newest reason asked for meanwhile.
     pending: Mutex<(bool, Option<String>)>,
-    /// Watcher batches that arrived while a restart was checked. The server
-    /// the check would replace is done with file events, as Vite's is once
-    /// its restart builds the new server from the files as they are (a
-    /// plugin of the old server would otherwise act on stale state, such as
-    /// a route generator rewriting the tree the check just wrote). They run
-    /// if the check fails and this server keeps serving.
-    held: Mutex<Vec<HeldBatch>>,
-    /// Runs the held batches on this server, set by its watcher.
-    replay: std::sync::OnceLock<Box<dyn Fn(Vec<HeldBatch>) + Send + Sync>>,
+    /// A check failed: the config on disk does not boot.
+    failed: std::sync::atomic::AtomicBool,
 }
 
 impl Restarter {
@@ -397,26 +387,28 @@ impl Restarter {
             mode,
             start,
             pending: Mutex::new((false, None)),
-            held: Mutex::new(Vec::new()),
-            replay: std::sync::OnceLock::new(),
+            failed: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
-    /// Holds a watcher batch while a restart is checked: true when held.
-    pub(crate) fn hold_batch(
-        &self,
-        paths: &[PathBuf],
-        created: &std::collections::HashSet<PathBuf>,
-    ) -> bool {
-        let pending = self.pending.lock().unwrap();
-        if !pending.0 {
-            return false;
+    /// Restart for an input the config did not change (the start entry
+    /// appearing or disappearing), without the check: the config is the one
+    /// this server booted from, and a check's evaluation would run the
+    /// framework's plugins while this server's own still react to file
+    /// events, so a route generator holding the old entry could write its
+    /// tree over the check's. A config that failed its check, or one being
+    /// checked, is checked as any request is.
+    pub fn request_unchecked(self: &Arc<Self>, reason: &str) {
+        {
+            let mut pending = self.pending.lock().unwrap();
+            if pending.0 || self.failed.load(std::sync::atomic::Ordering::SeqCst) {
+                drop(pending);
+                return self.request(reason);
+            }
+            // No check starts after this one: the process is replaced.
+            pending.0 = true;
         }
-        self.held
-            .lock()
-            .unwrap()
-            .push((paths.to_vec(), created.clone()));
-        true
+        restart_process(&self.root, reason)
     }
 
     /// Restart the dev server, as Vite's `server.restart()` does: the new
@@ -439,15 +431,8 @@ impl Restarter {
                 let mut pending = this.pending.lock().unwrap();
                 match pending.1.take() {
                     Some(reason) => reason,
-                    // Only a failed check gets here (a passing one execs):
-                    // this server keeps serving, so the batches it held run.
                     None => {
                         pending.0 = false;
-                        let held = std::mem::take(&mut *this.held.lock().unwrap());
-                        drop(pending);
-                        if let Some(replay) = this.replay.get().filter(|_| !held.is_empty()) {
-                            replay(held);
-                        }
                         return;
                     }
                 }
@@ -457,6 +442,7 @@ impl Restarter {
                 // came during this check is checked before the exec.
                 None if this.pending.lock().unwrap().1.is_some() => {}
                 Some(error) => {
+                    this.failed.store(true, std::sync::atomic::Ordering::SeqCst);
                     eprintln!("{} {error}", oj_brand());
                     eprintln!("{} server restart failed", oj_brand());
                     oj_diag::emit(
@@ -1122,10 +1108,6 @@ fn handle_batch(
     paths: &[PathBuf],
     created: &std::collections::HashSet<PathBuf>,
 ) {
-    // Held when a restart check was already running: the restart triggers
-    // in it still ask (Vite's restart loops while requests are pending, so a
-    // config saved during a passing check is checked too), the rest waits.
-    let held = state.restarter.hold_batch(paths, created);
     // Config/.env can't be hot-applied (read once at startup): restart, as
     // Vite does, naming the file relative to the launch dir as Vite's
     // "<file> changed, restarting server" does. Vite restarts from
@@ -1145,19 +1127,6 @@ fn handle_batch(
             .restarter
             .request(&format!("{} changed", shown.display()));
     }
-    if !held {
-        dispatch_batch(state, paths, created);
-    }
-}
-
-/// A batch's tsconfig reload, plugin watchChange, invalidation and HMR.
-fn dispatch_batch(
-    state: &Arc<ServerState>,
-    paths: &[PathBuf],
-    created: &std::collections::HashSet<PathBuf>,
-) {
-    let restarts =
-        |p: &PathBuf| is_restart_trigger(&state.restart_files, p) || is_config_dependency(p);
     // Vite's reloadOnTsconfigChange: clear caches, full reload. The compile
     // key folds class-field semantics in, so stale persistent-cache entries
     // become unreachable once discovery is cleared.
@@ -1235,17 +1204,6 @@ pub(crate) fn spawn_watcher(
     rx: std::sync::mpsc::Receiver<WatchMsg>,
     ready: tokio::sync::watch::Sender<bool>,
 ) {
-    {
-        let weak = Arc::downgrade(&state);
-        let _ = state.restarter.replay.set(Box::new(move |batches| {
-            let Some(state) = weak.upgrade() else {
-                return;
-            };
-            for (paths, created) in batches {
-                dispatch_batch(&state, &paths, &created);
-            }
-        }));
-    }
     std::thread::spawn(move || {
         use std::sync::mpsc::RecvTimeoutError;
 
