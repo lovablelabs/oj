@@ -32,7 +32,13 @@ async fn the_optimizer_plans_commits_and_reruns() {
         extensions: vec![".mjs".into(), ".js".into(), ".ts".into(), ".json".into()],
         ..Default::default()
     };
-    let deps = OptimizedDeps::prepare(root, "0.0.1", input(), None);
+    let deps = OptimizedDeps::prepare(
+        root,
+        "0.0.1",
+        input(),
+        None,
+        &tokio::runtime::Handle::current(),
+    );
     // The scan's plan releases compiles first; the dep's own request waits
     // for the bundle's commit.
     let map = deps.ready().await;
@@ -58,9 +64,15 @@ async fn the_optimizer_plans_commits_and_reruns() {
 
     // The manifest makes the next boot a warm cache (no second optimizer run
     // is observable here, but the warm load must agree with the first).
-    let warm = OptimizedDeps::prepare(root, "0.0.1", input(), None)
-        .ready()
-        .await;
+    let warm = OptimizedDeps::prepare(
+        root,
+        "0.0.1",
+        input(),
+        None,
+        &tokio::runtime::Handle::current(),
+    )
+    .ready()
+    .await;
     assert_eq!(
         warm.get("plaincjs").map(|m| &m.file),
         Some(&meta.file),
@@ -87,7 +99,13 @@ async fn the_optimizer_plans_commits_and_reruns() {
     // An ESM dep bundles standalone: the committed plaincjs entry stays
     // byte-identical, so this commit must take the no-reload path.
     write_dep("latedep", "export const l = 1;\n", true);
-    let deps = OptimizedDeps::prepare(root, "0.0.1", input(), None);
+    let deps = OptimizedDeps::prepare(
+        root,
+        "0.0.1",
+        input(),
+        None,
+        &tokio::runtime::Handle::current(),
+    );
     let before = deps.ready().await;
     assert!(!before.contains_key("latedep"), "not scanned, not bundled");
     let v0 = deps.browser_version();
@@ -160,7 +178,13 @@ async fn the_optimizer_plans_commits_and_reruns() {
     );
 
     // The next boot keeps the discovered deps and versions, no re-register.
-    let after = OptimizedDeps::prepare(root, "0.0.1", input(), None);
+    let after = OptimizedDeps::prepare(
+        root,
+        "0.0.1",
+        input(),
+        None,
+        &tokio::runtime::Handle::current(),
+    );
     let warm2 = after.ready().await;
     assert!(
         warm2.contains_key("latedep") && warm2.contains_key("latedep2"),
@@ -250,7 +274,13 @@ async fn a_failed_initial_run_turns_discovery_off() {
         include: vec!["broken".into()],
         ..Default::default()
     };
-    let deps = OptimizedDeps::prepare(root, "0.0.1", input, None);
+    let deps = OptimizedDeps::prepare(
+        root,
+        "0.0.1",
+        input,
+        None,
+        &tokio::runtime::Handle::current(),
+    );
     // The plan names the dep first; the failed commit replaces it.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while deps.may_register("lodash") || deps.ready().await.contains_key("broken") {

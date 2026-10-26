@@ -133,7 +133,7 @@ impl Drop for ContainerGuard {
         let Some(host) = self.0.take() else {
             return;
         };
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        if let Some(runtime) = host.runtime().cloned() {
             runtime.spawn(async move {
                 let _ = host.close_container().await;
             });

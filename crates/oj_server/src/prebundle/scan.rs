@@ -251,7 +251,7 @@ impl Prebundle {
             let _ = bundler.close().await;
             out
         };
-        if let Err(e) = crate::rolldown_runtime::on_rolldown(run).await {
+        if let Err(e) = crate::rolldown_runtime::on_rolldown(&self.rolldown, run).await {
             eprintln!("oj: dependency scan stopped early ({e})");
         }
         let found = state

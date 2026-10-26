@@ -57,9 +57,14 @@ fn app(name: &str) -> std::path::PathBuf {
 
 /// Builds `root` in `mode` and reads what the built page sees.
 async fn built(root: &Path, mode: Option<&str>) -> Seen {
-    build(root.to_path_buf(), mode, CliOptions::default())
-        .await
-        .unwrap_or_else(|e| panic!("build --mode {mode:?} failed: {e:#}"));
+    build(
+        root.to_path_buf(),
+        mode,
+        &tokio::runtime::Handle::current(),
+        CliOptions::default(),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("build --mode {mode:?} failed: {e:#}"));
     let server = preview(&root.join("dist"), "/").await;
     let page = Page::open(&server.url).await;
     page.wait_for("window.__MODE !== undefined", WAIT).await;

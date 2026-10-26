@@ -270,7 +270,7 @@ async fn an_ssr_build_compiles_and_writes_the_fallback_sheet() {
         ssr: Some("src/entry-server.ts".into()),
         ..Default::default()
     };
-    super::build(root.clone(), None, cli)
+    super::build(root.clone(), None, &tokio::runtime::Handle::current(), cli)
         .await
         .expect("the StyleX SSR build");
     let js: String = files_under(&root.join("dist"))

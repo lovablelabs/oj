@@ -192,6 +192,34 @@ fn clear_respawn_spacing(host: &PluginHost) {
         Some(std::time::Instant::now() - PLUGIN_HOST_RESPAWN_SPACING);
 }
 
+// A hook rolldown calls runs on rolldown's runtime. A revive that hook
+// triggers keeps the host's own work (the respawned engine, its spawns) on the
+// runtime the host was spawned on.
+#[test]
+fn a_revive_inside_a_rolldown_build_keeps_the_hosts_runtime() {
+    let rolldown = crate::rolldown_runtime::build().unwrap();
+    let main = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let ran_on = main.block_on(async {
+        let (_root, host) = spawn_live_host("rolldown-revive").await;
+        let generation = host.core.revive.lock().unwrap().generation;
+        host.core.declare_gone("test wedge", generation);
+        clear_respawn_spacing(&host);
+        crate::rolldown_runtime::on_rolldown(rolldown.handle(), host.resolve_id("x", ""))
+            .await
+            .expect("the call revives the host");
+        assert_eq!(host.core.revive.lock().unwrap().generation, generation + 1);
+        let runtime = host.runtime().expect("spawned on a runtime").clone();
+        runtime
+            .spawn(async { std::thread::current().name().map(str::to_owned) })
+            .await
+            .unwrap()
+    });
+    assert_ne!(ran_on.as_deref(), Some("oj-rolldown"));
+}
+
 // A wedge is no longer terminal: the next call revives the host with a
 // fresh engine generation through the same boot path, and serves.
 #[tokio::test]

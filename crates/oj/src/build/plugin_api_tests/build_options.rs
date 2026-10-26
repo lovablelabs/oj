@@ -42,7 +42,14 @@ fn app(name: &str, config_file: &str, config: &str) -> PathBuf {
 }
 
 async fn build_or_panic(root: &Path, cli: CliOptions) {
-    if let Err(err) = build(root.to_path_buf(), None, cli).await {
+    if let Err(err) = build(
+        root.to_path_buf(),
+        None,
+        &tokio::runtime::Handle::current(),
+        cli,
+    )
+    .await
+    {
         panic!("build of {} failed:\n{err:#}", root.display());
     }
 }

@@ -50,6 +50,8 @@ pub(crate) struct StartConfig {
     pub base: String,
     /// The config's `@stylexjs/unplugin`, run natively in every app bundle.
     pub stylex: Option<std::sync::Arc<oj_stylex::plugin::StylexPlugin>>,
+    /// The runtime the bundles run on (see `oj_server::rolldown_runtime`).
+    pub rolldown: tokio::runtime::Handle,
 }
 
 /// TanStack Start's load-env plugin: `Object.assign(process.env,

@@ -30,6 +30,7 @@ glob = "0.3.4"
 globset = "0.4.20"
 pathdiff = "0.2.3"
 regex = "1.11"
+num_cpus = "1.17"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream"] }
 # `rustls-tls-native-roots` gives tungstenite's TLS connect path; oj hands it a
 # ready ClientConfig, so the roots feature itself is unused. rustls stays on the

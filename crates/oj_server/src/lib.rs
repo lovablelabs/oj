@@ -260,6 +260,9 @@ pub struct DevServer {
     /// Vite's `--mode` for `serve` (default `development`): selects `.env.<mode>`,
     /// `import.meta.env.MODE`, and the mode plugin `config` hooks see.
     pub mode: Option<String>,
+    /// The runtime the dep optimizer's rolldown runs on (see
+    /// [`rolldown_runtime`]).
+    pub rolldown: tokio::runtime::Handle,
 }
 
 struct ServerState {
@@ -1205,6 +1208,7 @@ fn optimized_deps(
     node_env: &str,
     host: Option<Arc<plugins::PluginHost>>,
     plugin_names: Vec<String>,
+    rolldown: &tokio::runtime::Handle,
 ) -> optimize::OptimizedDeps {
     let (include, exclude, entries) = oj_config::optimize_deps_lists(config);
     optimize::OptimizedDeps::prepare(
@@ -1240,6 +1244,7 @@ fn optimized_deps(
             needs_interop: oj_config::optimize_deps_needs_interop(config),
         },
         host,
+        rolldown,
     )
 }
 
@@ -1862,6 +1867,7 @@ impl DevServer {
                 client_defines.app.node_env(),
                 plugin_host.clone(),
                 plugin_names,
+                &self.rolldown,
             )),
             optimize_view: {
                 let (_include, exclude, _entries) = oj_config::optimize_deps_lists(&config);

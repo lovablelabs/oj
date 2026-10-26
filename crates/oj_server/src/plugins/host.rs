@@ -137,11 +137,12 @@ fn new_host_engine(
     import_meta_env: Arc<std::sync::OnceLock<Arc<oj_compiler::ImportMetaEnv>>>,
     bundles: BundleGraphs,
     post_tx: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
+    runtime: Option<tokio::runtime::Handle>,
 ) -> Result<oj_js::JsEngine, String> {
     let root = root.to_path_buf();
     let resolver = std::sync::Arc::new(OjResolver::new(&root));
     let preseeds = Preseeds {
-        runtime: tokio::runtime::Handle::try_current().ok(),
+        runtime,
         ..Preseeds::default()
     };
     let rpc_handler: oj_js::RpcHandler = {
@@ -192,6 +193,10 @@ pub(crate) struct BootContext {
     import_meta_env: Arc<std::sync::OnceLock<Arc<oj_compiler::ImportMetaEnv>>>,
     /// The bundle each container's hooks run inside (see [`BundleGraph`]).
     bundles: BundleGraphs,
+    /// The runtime the host was spawned on: a respawn's engine and tasks
+    /// stay there even when a hook rolldown called (on its own runtime)
+    /// triggers it.
+    runtime: Option<tokio::runtime::Handle>,
 }
 
 /// See [`HostCore::revive`].
@@ -604,6 +609,12 @@ pub(crate) struct SpawnTimeouts {
 }
 
 impl PluginHost {
+    /// The runtime the host was spawned on, for work that must outlive a
+    /// hook (a hook rolldown calls runs on rolldown's runtime).
+    pub fn runtime(&self) -> Option<&tokio::runtime::Handle> {
+        self.core.boot.runtime.as_ref()
+    }
+
     /// Spawn a boot-time host.
     pub async fn spawn(
         root: &Path,
@@ -698,6 +709,7 @@ impl PluginHost {
             Arc::clone(&import_meta_env),
             Arc::clone(&bundles),
             post_tx,
+            tokio::runtime::Handle::try_current().ok(),
         )
         .ok()?;
         let engine = std::sync::Arc::new(engine);
@@ -785,6 +797,7 @@ impl PluginHost {
                     .as_ref()
                     .map(|p| Arc::clone(&p.bundles))
                     .unwrap_or_default(),
+                runtime: tokio::runtime::Handle::try_current().ok(),
             },
             revive: Mutex::new(ReviveState {
                 generation: 0,
@@ -1845,6 +1858,7 @@ impl HostCore {
             Arc::clone(&self.boot.import_meta_env),
             Arc::clone(&self.boot.bundles),
             post_tx,
+            self.boot.runtime.clone(),
         )
     }
 
@@ -2119,7 +2133,7 @@ impl HostCore {
             Ok(()) => {
                 // Lift the death flag last: a caller sees a dead host or a fully re-armed one.
                 let _ = self.host_gone.send_replace(false);
-                if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                if let Some(runtime) = &self.boot.runtime {
                     for handle in self.durable_containers() {
                         runtime.spawn(async move { handle.ensure_hook_plan().await });
                     }

@@ -70,7 +70,14 @@ async fn config_flag_mode_env_prefix_and_extensions_reach_the_build() {
         ],
     );
 
-    if let Err(err) = build(root.clone(), None, alt_config(&root)).await {
+    if let Err(err) = build(
+        root.clone(),
+        None,
+        &tokio::runtime::Handle::current(),
+        alt_config(&root),
+    )
+    .await
+    {
         panic!("the --config build failed:\n{err:#}");
     }
     assert!(
@@ -98,7 +105,14 @@ async fn config_flag_mode_env_prefix_and_extensions_reach_the_build() {
     );
 
     let _ = fs::remove_dir_all(root.join(".oj-cache"));
-    if let Err(err) = build(root.clone(), Some("production"), alt_config(&root)).await {
+    if let Err(err) = build(
+        root.clone(),
+        Some("production"),
+        &tokio::runtime::Handle::current(),
+        alt_config(&root),
+    )
+    .await
+    {
         panic!("the --config --mode production build failed:\n{err:#}");
     }
     assert!(

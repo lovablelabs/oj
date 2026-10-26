@@ -526,7 +526,7 @@ impl Prebundle {
             .with_plugins(plugins)
             .build()
             .map_err(|e| diagnostics(&e.into_vec()))?;
-        let written = crate::rolldown_runtime::on_rolldown(async {
+        let written = crate::rolldown_runtime::on_rolldown(&self.rolldown, async {
             let written = bundler.write().await;
             let _ = bundler.close().await;
             written

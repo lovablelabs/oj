@@ -499,11 +499,15 @@ fn main() -> anyhow::Result<()> {
     // Commands that return (build, preview, a failed boot) and panics that
     // unwind out of here; the dev server's exits shut down on their own paths.
     let _otel = ShutdownOtelOnDrop;
+    // Rolldown's builds run beside the main runtime, on one sized like its
+    // npm binding's (see oj_server::rolldown_runtime). Dropped after the main
+    // runtime, outside async code.
+    let rolldown = oj_server::rolldown_runtime::build()?;
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(oj_compiler::COMPILE_STACK_SIZE)
         .build()?
-        .block_on(run(cli))
+        .block_on(run(cli, rolldown.handle().clone()))
 }
 
 struct ShutdownOtelOnDrop;
@@ -514,7 +518,7 @@ impl Drop for ShutdownOtelOnDrop {
     }
 }
 
-async fn run(cli: Cli) -> anyhow::Result<()> {
+async fn run(cli: Cli, rolldown: tokio::runtime::Handle) -> anyhow::Result<()> {
     // One-shot engine jobs (config extraction) run in `oj engine-job`
     // children: a native addon a job loads can crash the process when it is
     // re-initialized after an earlier engine died (napi-rs before 3.10).
@@ -542,9 +546,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             });
             if let Some(entry) = ssr {
-                ssr_dev::ssr_dev(root, entry, port, host).await
+                ssr_dev::ssr_dev(root, entry, port, host, rolldown).await
             } else if oj_server::is_tanstack_start_app(&root) {
-                start_dev::start_dev(root, port, host, config, mode).await
+                start_dev::start_dev(root, port, host, config, mode, rolldown).await
             } else {
                 oj_server::DevServer {
                     root,
@@ -555,6 +559,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                     no_cache,
                     lazy,
                     mode,
+                    rolldown,
                 }
                 .run()
                 .await
@@ -658,11 +663,12 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let config = resolve_config_arg(&root, config);
             if oj_server::is_tanstack_start_app(&root) {
                 let mode = mode.unwrap_or_else(|| "production".to_string());
-                start_dev::start_build(root, config, &mode, out, empty_out_dir).await
+                start_dev::start_build(root, config, &mode, out, empty_out_dir, rolldown).await
             } else {
                 build::build(
                     root,
                     mode.as_deref(),
+                    &rolldown,
                     build::CliOptions {
                         out,
                         ssr,

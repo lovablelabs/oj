@@ -13,7 +13,6 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::LazyLock;
 use std::task::{Context, Poll};
 
 use tokio::runtime::{Handle, Runtime};
@@ -21,40 +20,43 @@ use tokio::runtime::{Handle, Runtime};
 /// rolldown's binding default.
 pub const MAX_BLOCKING_THREADS: usize = 4;
 
-static RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
-    let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
+/// A runtime for rolldown builds. `oj` builds one beside its main runtime and
+/// hands its [`Handle`] to whatever bundles.
+pub fn build() -> std::io::Result<Runtime> {
+    // The binding's count: 1.5 per physical core this process may use.
+    let cores =
+        num_cpus::get_physical().min(std::thread::available_parallelism().map_or(1, |n| n.get()));
     tokio::runtime::Builder::new_multi_thread()
-        .worker_threads((cpus * 3 / 2).max(1))
+        .worker_threads(cores * 3 / 2)
         .max_blocking_threads(MAX_BLOCKING_THREADS)
         .thread_name("oj-rolldown")
         .thread_stack_size(oj_compiler::COMPILE_STACK_SIZE)
         .enable_all()
         .build()
-        .expect("the rolldown runtime builds")
-});
-
-/// The rolldown runtime's handle.
-pub fn handle() -> &'static Handle {
-    RUNTIME.handle()
 }
 
-/// Polls `fut` with the rolldown runtime as the current one, so the tasks
-/// and blocking reads it starts run there. The caller still awaits it from
+/// Polls `fut` with `rolldown` as the current runtime, so the tasks and
+/// blocking reads a build starts run there. The caller still awaits it from
 /// its own runtime; nothing needs to be `'static`.
-pub fn on_rolldown<F: Future>(fut: F) -> OnRolldown<F> {
-    OnRolldown { fut: Box::pin(fut) }
+pub fn on_rolldown<F: Future>(rolldown: &Handle, fut: F) -> OnRolldown<F> {
+    OnRolldown {
+        rolldown: rolldown.clone(),
+        fut: Box::pin(fut),
+    }
 }
 
 pub struct OnRolldown<F> {
+    rolldown: Handle,
     fut: Pin<Box<F>>,
 }
 
 impl<F: Future> Future for OnRolldown<F> {
     type Output = F::Output;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
-        let _entered = handle().enter();
-        self.fut.as_mut().poll(cx)
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
+        let this = self.get_mut();
+        let _entered = this.rolldown.enter();
+        this.fut.as_mut().poll(cx)
     }
 }
 
@@ -65,24 +67,34 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn spawned_work_runs_on_the_rolldown_runtime() {
-        let names = on_rolldown(async {
+    /// The runtime a caller awaits from, as `oj`'s main one. Each test builds
+    /// its own runtimes and drops them outside async code.
+    fn caller() -> Runtime {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn spawned_work_runs_on_the_rolldown_runtime() {
+        let rolldown = build().unwrap();
+        let names = caller().block_on(on_rolldown(rolldown.handle(), async {
             let task = tokio::spawn(async { std::thread::current().name().map(str::to_owned) });
             let blocking = tokio::runtime::Handle::current()
                 .spawn_blocking(|| std::thread::current().name().map(str::to_owned));
             (task.await.unwrap(), blocking.await.unwrap())
-        })
-        .await;
+        }));
         assert_eq!(names.0.as_deref(), Some("oj-rolldown"));
         assert_eq!(names.1.as_deref(), Some("oj-rolldown"));
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_flood_of_blocking_reads_stays_within_the_cap() {
+    #[test]
+    fn a_flood_of_blocking_reads_stays_within_the_cap() {
         // What a build does: one blocking read per module, all at once.
+        let rolldown = build().unwrap();
         let threads = Arc::new(Mutex::new(HashSet::new()));
-        on_rolldown(async {
+        caller().block_on(on_rolldown(rolldown.handle(), async {
             let reads: Vec<_> = (0..400)
                 .map(|_| {
                     let threads = Arc::clone(&threads);
@@ -95,8 +107,7 @@ mod tests {
             for read in reads {
                 read.await.unwrap();
             }
-        })
-        .await;
+        }));
         let used = threads.lock().unwrap().len();
         assert!(
             used <= MAX_BLOCKING_THREADS,
@@ -138,8 +149,8 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_build_runs_its_module_tasks_on_the_rolldown_runtime() {
+    #[test]
+    fn a_build_runs_its_module_tasks_on_the_rolldown_runtime() {
         let dir = std::env::temp_dir().join(format!("oj-rolldown-rt-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut entry = String::new();
@@ -167,24 +178,27 @@ mod tests {
             )])
             .build()
             .unwrap();
-        let built = on_rolldown(async {
+        let rolldown = build().unwrap();
+        let built = caller().block_on(on_rolldown(rolldown.handle(), async {
             let out = bundler.generate().await;
             let _ = bundler.close().await;
             out
-        })
-        .await;
+        }));
         let _ = std::fs::remove_dir_all(&dir);
         assert!(built.is_ok());
         assert_eq!(counts.loads.load(Ordering::Relaxed), 51);
         assert_eq!(counts.elsewhere.load(Ordering::Relaxed), 0);
     }
 
-    #[tokio::test]
-    async fn the_callers_runtime_stays_current_outside() {
-        on_rolldown(async {}).await;
-        let name = tokio::spawn(async { std::thread::current().name().map(str::to_owned) })
-            .await
-            .unwrap();
+    #[test]
+    fn the_callers_runtime_stays_current_outside() {
+        let rolldown = build().unwrap();
+        let name = caller().block_on(async {
+            on_rolldown(rolldown.handle(), async {}).await;
+            tokio::spawn(async { std::thread::current().name().map(str::to_owned) })
+                .await
+                .unwrap()
+        });
         assert_ne!(name.as_deref(), Some("oj-rolldown"));
     }
 }

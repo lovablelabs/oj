@@ -94,6 +94,7 @@ impl HotSession {
     pub async fn start(
         mut parts: SessionParts,
         root: &Path,
+        rolldown: &tokio::runtime::Handle,
         runtime: String,
         watch: Option<&serde_json::Value>,
         epoch: u64,
@@ -163,7 +164,9 @@ impl HotSession {
         let engine = Arc::new(engine);
         // The initial full build; its result lands in `on_output`. A page
         // registers after it, as a session's evaluated modules start from it.
-        let _ = engine.run().await;
+        // `run` spawns the engine's coordinator, whose builds start rolldown's
+        // tasks: on the rolldown runtime.
+        let _ = oj_server::rolldown_runtime::on_rolldown(rolldown, engine.run()).await;
         // Published before the pages are read: a page connecting from here on
         // registers itself, one connected before is in the live set
         // (registering twice keeps the first session).

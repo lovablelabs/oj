@@ -102,6 +102,8 @@ impl App {
             &input,
             implicit.iter().map(|s| s.to_string()),
             false,
+            // The test's own runtime: these check what the bundle holds.
+            &tokio::runtime::Handle::current(),
         ))
     }
 

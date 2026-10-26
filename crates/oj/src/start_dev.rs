@@ -257,6 +257,7 @@ pub async fn start_dev(
     host: Option<String>,
     config: Option<PathBuf>,
     mode: Option<String>,
+    rolldown: tokio::runtime::Handle,
 ) -> anyhow::Result<()> {
     let root = root
         .canonicalize()
@@ -292,6 +293,7 @@ pub async fn start_dev(
             no_cache: false,
             lazy: false,
             mode: Some(mode.clone()),
+            rolldown: rolldown.clone(),
         };
         async move {
             let built = dev_server
@@ -342,6 +344,7 @@ pub async fn start_dev(
                 .map_err(|e| anyhow::anyhow!(e))?,
             config: inputs.config,
             app_env: inputs.app_env,
+            rolldown,
         };
         Arc::new(ClientBundler::new(start, config_file.clone()).on_dev_host(dev_host_rx))
     };
@@ -1886,6 +1889,7 @@ pub async fn start_build(
     mode: &str,
     out: Option<PathBuf>,
     empty_out_dir: bool,
+    rolldown: tokio::runtime::Handle,
 ) -> anyhow::Result<()> {
     let root = root
         .canonicalize()
@@ -1948,6 +1952,7 @@ pub async fn start_build(
             .map_err(|e| anyhow::anyhow!(e))?,
         config,
         app_env,
+        rolldown,
     };
     crate::start_bundle::prod::build(start, config_file, output).await?;
     println!(

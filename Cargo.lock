@@ -6613,6 +6613,7 @@ dependencies = [
  "json-strip-comments",
  "libc",
  "notify 9.0.0-rc.6",
+ "num_cpus",
  "oj_cache",
  "oj_compiler",
  "oj_config",

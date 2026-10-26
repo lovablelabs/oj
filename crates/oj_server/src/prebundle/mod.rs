@@ -151,6 +151,8 @@ pub(crate) struct Prebundle {
     alias: tsconfig::Aliases,
     options: DepOptions,
     keep_existing: bool,
+    /// Where the scan and the bundle run (see `crate::rolldown_runtime`).
+    rolldown: tokio::runtime::Handle,
 }
 
 impl std::fmt::Debug for Prebundle {
@@ -170,6 +172,7 @@ impl Prebundle {
         input: &OptimizeInput,
         implicit: impl IntoIterator<Item = String>,
         keep_existing: bool,
+        rolldown: &tokio::runtime::Handle,
     ) -> Prebundle {
         let real_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
         let mut include: Vec<String> = Vec::new();
@@ -217,6 +220,7 @@ impl Prebundle {
             alias: tsconfig::Aliases::load(root, &input.alias),
             options: DepOptions::new(input),
             keep_existing,
+            rolldown: rolldown.clone(),
         }
     }
 

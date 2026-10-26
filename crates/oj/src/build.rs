@@ -1469,7 +1469,8 @@ async fn bundle_worker_inline(
         })
         .build()
         .map_err(rolldown_failure!("inline worker init failed"))?;
-    let out = on_rolldown(bundler.generate())
+    let out = bundler
+        .generate()
         .await
         .map_err(rolldown_failure!("inline worker build failed for {file}"))?;
     let mut code = String::new();
@@ -1510,7 +1511,8 @@ async fn bundle_worker_entry(
         })
         .build()
         .map_err(rolldown_failure!("worker init failed"))?;
-    let out = on_rolldown(bundler.generate())
+    let out = bundler
+        .generate()
         .await
         .map_err(rolldown_failure!("worker build failed for {file}"))?;
     let emit = |file_name: String, source: rolldown_common::StrOrBytes| {
@@ -3356,7 +3358,12 @@ fn warn_unsupported_build_options(config: &oj_config::OjConfig) {
     }
 }
 
-pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> anyhow::Result<()> {
+pub async fn build(
+    root: PathBuf,
+    cli_mode: Option<&str>,
+    rolldown: &tokio::runtime::Handle,
+    cli: CliOptions,
+) -> anyhow::Result<()> {
     let root = root
         .canonicalize()
         .with_context(|| format!("app root not found: {}", root.display()))?;
@@ -3440,12 +3447,16 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
             build_cfg.prerender.clone(),
             empty_out_dir,
             &cli,
+            rolldown,
         )
         .await;
     }
 
     if let Some(lib) = build_cfg.lib.clone() {
-        return build_library(&root, &out_dir, &config, lib, &app_env, minify, sourcemap).await;
+        return build_library(
+            &root, &out_dir, &config, lib, &app_env, minify, sourcemap, rolldown,
+        )
+        .await;
     }
 
     let base = normalize_base(config.base.as_deref().unwrap_or("/"));
@@ -3757,7 +3768,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
         .build()
         .map_err(rolldown_failure!("rolldown init failed"))?;
 
-    let output = match on_rolldown(bundler.write()).await {
+    let output = match on_rolldown(rolldown, bundler.write()).await {
         Ok(output) => output,
         Err(errs) => {
             let detail = errs
@@ -3773,7 +3784,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
             .await);
         }
     };
-    on_rolldown(bundler.close())
+    on_rolldown(rolldown, bundler.close())
         .await
         .map_err(|errs| anyhow::anyhow!("close failed:\n{errs:?}"))?;
 
@@ -5010,6 +5021,7 @@ pub(crate) async fn build_ssr(
     app_env: &oj_env::AppEnv,
     sourcemap: oj_config::Sourcemap,
     cli: &CliOptions,
+    rolldown: &tokio::runtime::Handle,
 ) -> anyhow::Result<()> {
     use rolldown::{IsExternal, Platform};
 
@@ -5181,14 +5193,14 @@ pub(crate) async fn build_ssr(
         .build()
         .map_err(rolldown_failure!("rolldown init failed"))?;
 
-    let output = match on_rolldown(bundler.write())
+    let output = match on_rolldown(rolldown, bundler.write())
         .await
         .map_err(rolldown_failure!("ssr build failed"))
     {
         Ok(output) => output,
         Err(err) => return Err(fail_with_plugin_hooks(err, &plugin_host).await),
     };
-    on_rolldown(bundler.close())
+    on_rolldown(rolldown, bundler.close())
         .await
         .map_err(|errs| anyhow::anyhow!("ssr close failed:\n{errs:?}"))?;
 
@@ -5264,6 +5276,7 @@ async fn build_server_fns(
     out_dir: &Path,
     config: &oj_config::OjConfig,
     app_env: &oj_env::AppEnv,
+    rolldown: &tokio::runtime::Handle,
 ) -> anyhow::Result<()> {
     use rolldown::{IsExternal, Platform};
     let node_env = app_env.node_env().to_string();
@@ -5340,10 +5353,10 @@ async fn build_server_fns(
             })
             .build()
             .map_err(rolldown_failure!("server-fns init failed"))?;
-        on_rolldown(bundler.write())
+        on_rolldown(rolldown, bundler.write())
             .await
             .map_err(rolldown_failure!("server-fns build failed"))?;
-        on_rolldown(bundler.close())
+        on_rolldown(rolldown, bundler.close())
             .await
             .map_err(|errs| anyhow::anyhow!("server-fns close failed:\n{errs:?}"))?;
         Ok::<(), anyhow::Error>(())
@@ -5577,10 +5590,14 @@ pub(crate) async fn build_ssr_app(
     prerender: Option<Vec<String>>,
     empty_out_dir: Option<bool>,
     cli: &CliOptions,
+    rolldown: &tokio::runtime::Handle,
 ) -> anyhow::Result<()> {
     prepare_out_dir(root, out_dir, empty_out_dir)?;
 
-    build_ssr(root, out_dir, entry, mode, config, app_env, sourcemap, cli).await?;
+    build_ssr(
+        root, out_dir, entry, mode, config, app_env, sourcemap, cli, rolldown,
+    )
+    .await?;
 
     let Some(client_entry) = derive_client_entry(root, entry) else {
         println!("oj build (ssr): server bundle only (no *-client sibling to hydrate)");
@@ -5596,10 +5613,11 @@ pub(crate) async fn build_ssr_app(
         minify,
         sourcemap,
         cli,
+        rolldown,
     )
     .await?;
 
-    build_server_fns(root, out_dir, config, app_env).await?;
+    build_server_fns(root, out_dir, config, app_env, rolldown).await?;
     if has_server_modules(root) {
         println!(
             "  {:>9}  _oj_server_fns.mjs",
@@ -5663,6 +5681,7 @@ async fn build_client_entry(
     minify: bool,
     sourcemap: oj_config::Sourcemap,
     cli: &CliOptions,
+    rolldown: &tokio::runtime::Handle,
 ) -> anyhow::Result<(String, Option<String>)> {
     let entry_import = if entry.starts_with('.') {
         entry.to_string()
@@ -5769,14 +5788,14 @@ async fn build_client_entry(
         .build()
         .map_err(rolldown_failure!("rolldown init failed"))?;
 
-    let output = match on_rolldown(bundler.write())
+    let output = match on_rolldown(rolldown, bundler.write())
         .await
         .map_err(rolldown_failure!("client build failed"))
     {
         Ok(output) => output,
         Err(err) => return Err(fail_with_plugin_hooks(err, &plugin_host).await),
     };
-    on_rolldown(bundler.close())
+    on_rolldown(rolldown, bundler.close())
         .await
         .map_err(|errs| anyhow::anyhow!("client close failed:\n{errs:?}"))?;
 
@@ -5824,6 +5843,7 @@ async fn build_client_entry(
     Ok((js, css))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn build_library(
     root: &Path,
     out_dir: &Path,
@@ -5832,6 +5852,7 @@ async fn build_library(
     app_env: &oj_env::AppEnv,
     minify: bool,
     sourcemap: oj_config::Sourcemap,
+    rolldown: &tokio::runtime::Handle,
 ) -> anyhow::Result<()> {
     // No plugin host runs for a library build, so no config() env delta.
     let is_production = app_env.is_production();
@@ -6043,7 +6064,7 @@ async fn build_library(
             .build()
             .map_err(rolldown_failure!("rolldown init failed"))?;
 
-        let output = on_rolldown(bundler.write())
+        let output = on_rolldown(rolldown, bundler.write())
             .await
             .map_err(rolldown_failure!("lib build ({fmt}) failed"))?;
         for asset in &output.assets {
@@ -7308,7 +7329,7 @@ mod tests {
             .unwrap();
             fs::write(root.join("shared.js"), r#"export const shared = "ready";"#).unwrap();
 
-            build(root.clone(), Some("production"), CliOptions::default())
+            build(root.clone(), Some("production"), &tokio::runtime::Handle::current(), CliOptions::default())
                 .await
                 .expect("synthetic shared-chunk fixture should build");
 
@@ -7459,9 +7480,14 @@ mod tests {
         )
         .unwrap();
 
-        build(root.clone(), Some("production"), CliOptions::default())
-            .await
-            .expect("plain dynamic import fixture should build");
+        build(
+            root.clone(),
+            Some("production"),
+            &tokio::runtime::Handle::current(),
+            CliOptions::default(),
+        )
+        .await
+        .expect("plain dynamic import fixture should build");
 
         let map_path = fs::read_dir(root.join("dist/assets"))
             .unwrap()
@@ -7619,9 +7645,14 @@ mod tests {
             fs::write(root.join("main.js"), "window.ready = true;").unwrap();
             fs::write(root.join("public/asset.txt"), "public asset").unwrap();
 
-            build(root.clone(), Some("production"), CliOptions::default())
-                .await
-                .expect("synthetic public-directory fixture should build");
+            build(
+                root.clone(),
+                Some("production"),
+                &tokio::runtime::Handle::current(),
+                CliOptions::default(),
+            )
+            .await
+            .expect("synthetic public-directory fixture should build");
 
             assert_eq!(
                 root.join("dist/asset.txt").is_file(),
@@ -7656,9 +7687,14 @@ mod tests {
         )
         .unwrap();
 
-        build(root.clone(), Some("production"), CliOptions::default())
-            .await
-            .expect("client build");
+        build(
+            root.clone(),
+            Some("production"),
+            &tokio::runtime::Handle::current(),
+            CliOptions::default(),
+        )
+        .await
+        .expect("client build");
         let mut client = String::new();
         for entry in fs::read_dir(root.join("dist/assets")).unwrap() {
             let p = entry.unwrap().path();
@@ -7682,6 +7718,7 @@ mod tests {
             &app_env,
             oj_config::Sourcemap::Off,
             &CliOptions::default(),
+            &tokio::runtime::Handle::current(),
         )
         .await
         .expect("ssr build");
@@ -7738,9 +7775,14 @@ mod tests {
         .unwrap();
         fs::write(root.join("public/manifest.webmanifest"), "{}").unwrap();
 
-        build(root.clone(), Some("production"), CliOptions::default())
-            .await
-            .expect("html asset fixture should build");
+        build(
+            root.clone(),
+            Some("production"),
+            &tokio::runtime::Handle::current(),
+            CliOptions::default(),
+        )
+        .await
+        .expect("html asset fixture should build");
         let html = fs::read_to_string(root.join("dist/index.html")).unwrap();
         let big = fs::read_dir(root.join("dist/assets"))
             .unwrap()
@@ -7823,9 +7865,14 @@ mod tests {
             "export default { build: { lib: { entry: 'src/index.ts', name: 'MyLib' } } };",
         )
         .unwrap();
-        build(root.clone(), Some("production"), CliOptions::default())
-            .await
-            .expect("vite.config build.lib should build");
+        build(
+            root.clone(),
+            Some("production"),
+            &tokio::runtime::Handle::current(),
+            CliOptions::default(),
+        )
+        .await
+        .expect("vite.config build.lib should build");
         assert!(
             root.join("dist/my-lib.js").is_file(),
             "es output named after the unscoped package"
@@ -7848,9 +7895,14 @@ mod tests {
             "export default { build: { lib: { entry: { main: 'src/a.ts', extra: 'src/b.ts' }, cssFileName: 'theme' } } };",
         )
         .unwrap();
-        build(root.clone(), Some("production"), CliOptions::default())
-            .await
-            .expect("multi-entry lib should build");
+        build(
+            root.clone(),
+            Some("production"),
+            &tokio::runtime::Handle::current(),
+            CliOptions::default(),
+        )
+        .await
+        .expect("multi-entry lib should build");
         for f in ["main.mjs", "extra.mjs", "main.js", "extra.js"] {
             assert!(root.join("dist").join(f).is_file(), "missing {f}");
         }
@@ -7869,9 +7921,14 @@ mod tests {
             "export default { build: { lib: { entry: 'src/index.ts', formats: ['umd'] } } };",
         )
         .unwrap();
-        let err = build(root.clone(), Some("production"), CliOptions::default())
-            .await
-            .expect_err("umd needs build.lib.name");
+        let err = build(
+            root.clone(),
+            Some("production"),
+            &tokio::runtime::Handle::current(),
+            CliOptions::default(),
+        )
+        .await
+        .expect_err("umd needs build.lib.name");
         assert!(err.to_string().contains("build.lib.name"), "{err}");
     }
 
@@ -7910,9 +7967,14 @@ mod tests {
             r#"<html><body><script type="module" src="/src/main.js"></script></body></html>"#,
         )
         .unwrap();
-        build(root.clone(), Some("production"), CliOptions::default())
-            .await
-            .expect("inline worker fixture should build");
+        build(
+            root.clone(),
+            Some("production"),
+            &tokio::runtime::Handle::current(),
+            CliOptions::default(),
+        )
+        .await
+        .expect("inline worker fixture should build");
         let mut code = String::new();
         for entry in fs::read_dir(root.join("dist/assets")).unwrap() {
             let p = entry.unwrap().path();
@@ -7966,9 +8028,14 @@ mod tests {
             r#"<html><body><script type="module" src="/src/main.js"></script></body></html>"#,
         )
         .unwrap();
-        build(root.clone(), Some("production"), CliOptions::default())
-            .await
-            .expect("worker fixture should build");
+        build(
+            root.clone(),
+            Some("production"),
+            &tokio::runtime::Handle::current(),
+            CliOptions::default(),
+        )
+        .await
+        .expect("worker fixture should build");
         let assets: Vec<String> = fs::read_dir(root.join("dist/assets"))
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -8036,7 +8103,12 @@ mod tests {
         .unwrap();
         let err = tokio::time::timeout(
             std::time::Duration::from_secs(60),
-            build(root.clone(), Some("production"), CliOptions::default()),
+            build(
+                root.clone(),
+                Some("production"),
+                &tokio::runtime::Handle::current(),
+                CliOptions::default(),
+            ),
         )
         .await
         .expect("a worker cycle must fail, not hang")
@@ -8078,6 +8150,7 @@ mod tests {
             &app_env,
             oj_config::Sourcemap::Off,
             &CliOptions::default(),
+            &tokio::runtime::Handle::current(),
         )
         .await
         .expect("ssr build");

@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use oj_compiler::glob::GlobCall;
+use oj_server::rolldown_runtime::on_rolldown;
 use rolldown::{BundlerBuilder, BundlerOptions, InputItem, OutputFormat, Platform};
 use rolldown_common::AddonOutputOption;
 use rolldown_plugin::__inner::{Pluginable, SharedPluginable};
@@ -260,15 +261,7 @@ impl DevBundler {
         let _ = std::fs::remove_file(cache.join(CLIENT_ERROR_FILE));
         let _ = std::fs::remove_file(cache.join(CLIENT_HMR_FILE));
         let outcome = match self.host().await {
-            Ok(host) => {
-                oj_server::rolldown_runtime::on_rolldown(self.run(
-                    &mut session,
-                    host,
-                    changed,
-                    refresh,
-                ))
-                .await
-            }
+            Ok(host) => self.run(&mut session, host, changed, refresh).await,
             Err(e) => Err(BundleError::from_message(format!("{e:#}"))),
         };
         match outcome {
@@ -349,6 +342,7 @@ impl DevBundler {
             let live = HotSession::start(
                 parts,
                 &start.root,
+                &start.rolldown,
                 runtime,
                 host.map_or(Some(&serde_json::Value::Null), |h| {
                     h.facts.server_watch.as_ref()
@@ -539,14 +533,18 @@ impl DevBundler {
             .with_options(parts.options)
             .build()
             .map_err(|errs| BundleError::from_diagnostics(&errs.into_vec()))?;
-        let generated = bundler.generate().await;
-        let module_ids: Vec<String> = bundler
-            .module_infos()
-            .iter()
-            .map(|e| e.key().as_str().to_string())
-            .chain(bundler.watch_files().iter().map(|f| f.to_string()))
-            .collect();
-        let _ = bundler.close().await;
+        let (generated, module_ids) = on_rolldown(&start.rolldown, async {
+            let generated = bundler.generate().await;
+            let module_ids: Vec<String> = bundler
+                .module_infos()
+                .iter()
+                .map(|e| e.key().as_str().to_string())
+                .chain(bundler.watch_files().iter().map(|f| f.to_string()))
+                .collect();
+            let _ = bundler.close().await;
+            (generated, module_ids)
+        })
+        .await;
         let output = generated.map_err(|errs| BundleError::from_diagnostics(&errs.into_vec()))?;
         if let Some(err) = unresolved_import_in(&output.warnings) {
             return Err(err);
@@ -784,7 +782,16 @@ pub(crate) mod tests {
             ),
             base: "/".into(),
             stylex: None,
+            rolldown: test_runtime(),
         }
+    }
+
+    /// The test's own runtime; a synchronous test (which never bundles)
+    /// gets one kept for the test process.
+    fn test_runtime() -> tokio::runtime::Handle {
+        static IDLE: std::sync::LazyLock<tokio::runtime::Runtime> =
+            std::sync::LazyLock::new(|| tokio::runtime::Runtime::new().unwrap());
+        tokio::runtime::Handle::try_current().unwrap_or_else(|_| IDLE.handle().clone())
     }
 
     // A function `external` declares only what it answered external for: a

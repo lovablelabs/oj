@@ -27,6 +27,7 @@ pub async fn ssr_dev(
     entry: String,
     port: Option<u16>,
     host: Option<String>,
+    rolldown: tokio::runtime::Handle,
 ) -> anyhow::Result<()> {
     // Before boot: a signal while plugins are still spawning must still sweep.
     let host_slot = std::sync::Arc::new(std::sync::OnceLock::new());
@@ -40,6 +41,7 @@ pub async fn ssr_dev(
         no_cache: false,
         lazy: false,
         mode: None,
+        rolldown,
     }
     .build_app()
     .await?;

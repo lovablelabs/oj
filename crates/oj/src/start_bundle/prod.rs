@@ -15,6 +15,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use oj_server::rolldown_runtime::on_rolldown;
 use rolldown::{BundlerBuilder, BundlerOptions, InputItem, OutputFormat, Platform, SourceMapType};
 use rolldown_common::{AddonOutputOption, IsExternal};
 use rolldown_plugin::__inner::{Pluginable, SharedPluginable};
@@ -390,8 +391,7 @@ pub(crate) async fn build(
         emitter.set_worker_bundler(bundler, worker_options.is_module());
     }
 
-    // On the rolldown runtime: see `oj_server::rolldown_runtime`.
-    let build_all = oj_server::rolldown_runtime::on_rolldown(async {
+    let build_all = async {
         // The client.
         let policy = match &client_host {
             Some(h) => Some(super::chunks::chunk_policy(&h.facts, &h.host, false)?),
@@ -445,12 +445,10 @@ pub(crate) async fn build(
             })
             .build()
             .map_err(|errs| anyhow::Error::new(BundleError::from_diagnostics(&errs.into_vec())))?;
-        let output = client
-            .write()
+        let output = on_rolldown(&start.rolldown, client.write())
             .await
             .map_err(|errs| bundle_failed(&emitter, errs.into_vec()))?;
-        client
-            .close()
+        on_rolldown(&start.rolldown, client.close())
             .await
             .map_err(|errs| anyhow::Error::new(BundleError::from_diagnostics(&errs.into_vec())))?;
         let output = checked(output)?;
@@ -635,13 +633,14 @@ pub(crate) async fn build(
                     .map_err(|errs| {
                         anyhow::Error::new(BundleError::from_diagnostics(&errs.into_vec()))
                     })?;
-                let output = worker
-                    .write()
+                let output = on_rolldown(&start.rolldown, worker.write())
                     .await
                     .map_err(|errs| bundle_failed(&emitter, errs.into_vec()))?;
-                worker.close().await.map_err(|errs| {
-                    anyhow::Error::new(BundleError::from_diagnostics(&errs.into_vec()))
-                })?;
+                on_rolldown(&start.rolldown, worker.close())
+                    .await
+                    .map_err(|errs| {
+                        anyhow::Error::new(BundleError::from_diagnostics(&errs.into_vec()))
+                    })?;
                 checked(output)?;
                 Some(dir)
             }
@@ -677,13 +676,14 @@ pub(crate) async fn build(
                     })
                     .build()
                     .map_err(|errs| anyhow::Error::new(BundleError::from_diagnostics(&errs.into_vec())))?;
-                let output = server
-                    .write()
+                let output = on_rolldown(&start.rolldown, server.write())
                     .await
                     .map_err(|errs| bundle_failed(&emitter, errs.into_vec()))?;
-                server.close().await.map_err(|errs| {
-                    anyhow::Error::new(BundleError::from_diagnostics(&errs.into_vec()))
-                })?;
+                on_rolldown(&start.rolldown, server.close())
+                    .await
+                    .map_err(|errs| {
+                        anyhow::Error::new(BundleError::from_diagnostics(&errs.into_vec()))
+                    })?;
                 checked(output)?;
                 std::fs::write(dist.join("server.mjs"), node_server(&start.base))?;
                 std::fs::write(dist.join("worker.mjs"), WORKER_MJS)?;
@@ -737,7 +737,7 @@ pub(crate) async fn build(
             );
         }
         Ok::<(), anyhow::Error>(())
-    });
+    };
 
     let Some(host) = &client_host else {
         return build_all.await;
@@ -874,7 +874,7 @@ async fn bundle_worker(
         })
         .build()
         .map_err(|errs| BundleError::from_diagnostics(&errs.into_vec()).to_string())?;
-    let output = oj_server::rolldown_runtime::on_rolldown(async {
+    let output = on_rolldown(&start.rolldown, async {
         let output = bundler.generate().await;
         let _ = bundler.close().await;
         output

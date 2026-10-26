@@ -161,7 +161,13 @@ pub(super) fn write_files(root: &Path, files: &[(&str, &str)]) {
 
 /// `oj build <root>` (production mode unless given) with default CLI flags.
 pub(super) async fn build_app(root: &Path) -> anyhow::Result<()> {
-    build(root.to_path_buf(), None, CliOptions::default()).await
+    build(
+        root.to_path_buf(),
+        None,
+        &tokio::runtime::Handle::current(),
+        CliOptions::default(),
+    )
+    .await
 }
 
 /// Every file under `dir`, relative path to contents (lossy UTF-8), sorted.

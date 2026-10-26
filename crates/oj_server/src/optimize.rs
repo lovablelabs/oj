@@ -531,12 +531,14 @@ impl OptimizedDeps {
         }
     }
 
-    /// `host`: the app's plugin host, which runs the scan when there is one.
+    /// `host`: the app's plugin host, which runs the scan when there is one;
+    /// `rolldown`: the runtime the scan and bundles run on.
     pub fn prepare(
         root: &Path,
         version: &str,
         input: OptimizeInput,
         host: Option<Arc<crate::plugins::PluginHost>>,
+        rolldown: &tokio::runtime::Handle,
     ) -> Self {
         let dir = oj_cache::cache_root(root).join("deps");
         let hash = lockfile_hash(root, version, &input);
@@ -587,6 +589,7 @@ impl OptimizedDeps {
             let dir = dir.clone();
             let base_version = base_version.clone();
             let cached_map = cached.map(|m| m.map);
+            let rolldown = rolldown.clone();
             tokio::spawn(async move {
                 match cached_map {
                     Some(map) => {
@@ -607,6 +610,7 @@ impl OptimizedDeps {
                             &dir,
                             &input,
                             host.as_ref(),
+                            &rolldown,
                             &Default::default(),
                             &base_version,
                             false,
@@ -628,6 +632,7 @@ impl OptimizedDeps {
                                         &dir,
                                         &input,
                                         host.as_ref(),
+                                        &rolldown,
                                         &names,
                                         &base_version,
                                         true,
@@ -672,7 +677,7 @@ impl OptimizedDeps {
                 // flight ever, Vite's enqueuedRerun).
                 while wake_rx.recv().await.is_some() {
                     debounce_wakes(&mut wake_rx, DEBOUNCE).await;
-                    rerun_once(&rerun, &root, &dir, &hash, &input, host.as_ref()).await;
+                    rerun_once(&rerun, &root, &dir, &hash, &input, host.as_ref(), &rolldown).await;
                 }
             });
         }
@@ -825,6 +830,7 @@ async fn rerun_once(
     hash: &str,
     input: &OptimizeInput,
     host: Option<&Arc<crate::plugins::PluginHost>>,
+    rolldown: &tokio::runtime::Handle,
 ) {
     let provisional = rerun.discovered.lock().unwrap().clone();
     let pending: Vec<String> = rerun.pending.lock().unwrap().iter().cloned().collect();
@@ -833,7 +839,10 @@ async fn rerun_once(
     }
     let names: std::collections::BTreeSet<String> = provisional.keys().cloned().collect();
     let candidate = browser_hash(hash, &rerun.session, names.iter());
-    let Some(new_map) = run_optimizer(root, dir, input, host, &names, &candidate, true, None).await
+    let Some(new_map) = run_optimizer(
+        root, dir, input, host, rolldown, &names, &candidate, true, None,
+    )
+    .await
     else {
         // Park the batch as failed (importers recompile onto the per-file
         // path) instead of Vite's reset-and-retry, which can reload-loop a
@@ -1317,6 +1326,7 @@ async fn run_optimizer(
     dir: &Path,
     input: &OptimizeInput,
     host: Option<&Arc<crate::plugins::PluginHost>>,
+    rolldown: &tokio::runtime::Handle,
     discovered: &std::collections::BTreeSet<String>,
     browser_version: &str,
     keep_existing: bool,
@@ -1333,6 +1343,7 @@ async fn run_optimizer(
         input,
         implicit,
         keep_existing,
+        rolldown,
     ));
     let scanned = prebundle.scan(host).await;
     if let Some(plan) = on_plan {
