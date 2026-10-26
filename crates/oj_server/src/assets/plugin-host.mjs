@@ -5703,7 +5703,7 @@ async function run(hook, args, c) {
   if (hook === "openWorkerContainer") return String(await openWorkerContainer(c, JSON.parse(args[0] ?? "[]")));
   if (hook === "openEnvironmentContainer") return String(await openEnvironmentContainer(JSON.parse(args[0] ?? "{}")));
   if (hook === "closeContainer") {
-    if (c !== main && !c.durable) containers.delete(c.id);
+    if (c !== main && (!c.durable || args[0] === "environment")) containers.delete(c.id);
     return null;
   }
   if (hook === "transform") return gateOnBuildStart(c).then(() => transform(c, args[0], args[1], args[2]));

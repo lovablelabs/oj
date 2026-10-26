@@ -313,6 +313,71 @@ async fn a_revived_host_reopens_its_environment_containers() {
     }
 }
 
+// An engine that wedges while an environment container opens is declared
+// gone and comes back with it: the revived engine opens it from its seed,
+// and the open adopts that container rather than failing (and leaving it
+// orphaned there).
+#[tokio::test]
+async fn an_open_the_engine_dies_in_adopts_the_revived_container() {
+    let root = std::env::temp_dir().join(format!("oj-revive-open-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let flag = root.join("died-once");
+    let plugins = root.join("oj.plugins.mjs");
+    std::fs::write(
+        &plugins,
+        format!(
+            r#"import fs from "node:fs";
+export default [{{
+  name: "dies-once",
+  applyToEnvironment(environment) {{
+    if (environment.name === "ssr" && !fs.existsSync({flag:?})) {{
+      fs.writeFileSync({flag:?}, "");
+      const until = Date.now() + 5000;
+      while (Date.now() < until);
+    }}
+    return true;
+  }},
+  transform: {{ filter: {{ id: /\.md$/ }}, handler(code) {{ return code + " in " + this.environment.name; }} }},
+}}];
+"#
+        ),
+    )
+    .unwrap();
+    let config = serde_json::json!({
+        "config": { "root": root.display().to_string() },
+        "env": { "command": "serve", "mode": "development" },
+    })
+    .to_string();
+    let host = PluginHost::spawn_with_timeouts(
+        &root,
+        &plugins,
+        &config,
+        SpawnTimeouts {
+            probe: Some(std::time::Duration::from_millis(300)),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("the embedded engine spawns");
+    host.resolve_id("x", "").await.expect("a live host serves");
+    clear_respawn_spacing(&host);
+    let ssr = host
+        .open_environment_container("ssr", false, false)
+        .await
+        .expect("the open survives the engine's death");
+    let md = root.join("a.md").display().to_string();
+    assert_eq!(
+        ssr.transform("# a", &md, "").await.unwrap().code,
+        "# a in ssr"
+    );
+    assert_eq!(
+        host.core.environments.lock().unwrap().len(),
+        1,
+        "one container, the adopted one"
+    );
+}
+
 // A revived engine resets the gates to fail-open, then fetches the plan
 // again: the hooks are gated by their filters on the new generation too.
 #[tokio::test]

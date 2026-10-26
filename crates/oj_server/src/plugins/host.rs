@@ -94,7 +94,7 @@ pub(crate) struct HostCore {
     /// The environment containers opened on this host, as each boot reopens
     /// them (their specs ride the boot seed), with the handles whose hook
     /// plans a respawn resets.
-    environments: Mutex<Vec<(serde_json::Value, std::sync::Weak<PluginHost>)>>,
+    pub(crate) environments: Mutex<Vec<(serde_json::Value, std::sync::Weak<PluginHost>)>>,
     next_environment: std::sync::atomic::AtomicU32,
 }
 
@@ -1491,20 +1491,31 @@ impl PluginHost {
             .lock()
             .unwrap()
             .push((spec.clone(), std::sync::Arc::downgrade(&handle)));
-        if let Err(e) = self
-            .core
-            .call(
-                MAIN_CONTAINER,
-                "openEnvironmentContainer",
-                &[&spec.to_string()],
-            )
-            .await
-        {
+        let open = || async {
+            self.core
+                .call(
+                    MAIN_CONTAINER,
+                    "openEnvironmentContainer",
+                    &[&spec.to_string()],
+                )
+                .await
+        };
+        let mut opened = open().await;
+        // An engine that died meanwhile comes back with the container (its
+        // seed lists it): the next call revives it, and the open adopts it.
+        while opened.is_err() && *self.core.host_gone.borrow() && self.core.can_revive() {
+            opened = open().await;
+        }
+        if let Err(e) = opened {
             self.core
                 .environments
                 .lock()
                 .unwrap()
                 .retain(|(s, _)| s["id"] != id);
+            // A live engine that opened it anyway (from a seed) drops it.
+            if !*self.core.host_gone.borrow() {
+                let _ = self.core.call(id, "closeContainer", &["environment"]).await;
+            }
             return Err(e);
         }
         handle.ensure_hook_plan().await;
