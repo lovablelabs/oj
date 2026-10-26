@@ -109,7 +109,11 @@ case "$sub" in
         parse_opts "$@"
         script='set -e
 for dir in "$@"; do
-    [ -f "$dir/package-lock.json" ] && npm ci --prefix "$dir" || npm install --prefix "$dir"
+    if [ -f "$dir/package-lock.json" ]; then
+        npm ci --prefix "$dir"
+    else
+        npm install --no-package-lock --prefix "$dir"
+    fi
 done
 npx --prefix e2e playwright install chromium'
         container bash -c "$script" deps "${module_dirs[@]}"
