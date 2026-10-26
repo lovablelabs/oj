@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-pub const START_CODEGEN_FORMAT: u32 = 2;
+pub const START_CODEGEN_FORMAT: u32 = 3;
 pub const DEFAULT_KEEP_ENTRIES: usize = 8;
 
 const MEMO_FILE: &str = "memo.json";
