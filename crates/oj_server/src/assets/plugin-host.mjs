@@ -1543,6 +1543,7 @@ function pluginContext(c) {
         attributes: options && options.attributes,
         custom: options && options.custom,
         isEntry: !!(options && options.isEntry),
+        scan: !!(this && this._scan),
       });
       if (viaPlugin != null) return viaPlugin;
       const map = transformResolveStore.getStore();
@@ -1681,11 +1682,12 @@ function ctxFor(c, p) {
 }
 
 // Vite's ResolveIdContext carries the chain's skipCalls, so a nested
-// ctx.resolve accumulates onto the whole chain instead of starting over.
-function resolveHookCtx(c, p, skipCalls) {
+// ctx.resolve accumulates onto the whole chain instead of starting over, and
+// the chain's `scan`, which a nested ctx.resolve passes on (`scan: this._scan`).
+function resolveHookCtx(c, p, skipCalls, scan) {
   const base = ctxFor(c, p);
-  if (!skipCalls) return base;
-  return Object.create(base, { _resolveSkipCalls: { value: skipCalls } });
+  if (!skipCalls && !scan) return base;
+  return Object.create(base, { _resolveSkipCalls: { value: skipCalls }, _scan: { value: scan } });
 }
 
 // Vite's BasicMinimalPluginContext, the `this` of config, configEnvironment,
@@ -4251,7 +4253,7 @@ async function resolveIdFull(c, source, importer, opts) {
     if (!hookIdMatches(p.resolveId, source)) continue;
     let r;
     try {
-      r = await handler.call(resolveHookCtx(c, p, skipCalls), source, importer || undefined, options);
+      r = await handler.call(resolveHookCtx(c, p, skipCalls, options.scan), source, importer || undefined, options);
     } catch (e) {
       throw decoratePluginError(e, p, importer || source);
     }

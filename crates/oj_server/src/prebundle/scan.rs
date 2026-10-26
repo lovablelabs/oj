@@ -126,12 +126,15 @@ fn externalize(id: &str) -> HookResolveIdReturn {
     }))
 }
 
-/// How many scan calls wait in the plugin host at once. Rolldown issues a
-/// whole crawl's resolves together, and each would queue a plugin-chain run
-/// in the host's one isolate: a dev request's hook arriving behind them would
-/// wait out the crawl (issue #332). Bounded, a request queues behind at
-/// most this many; enough of them overlap that a plugin awaiting its own
-/// work (`this.resolve`, fs) keeps the crawl near its unbounded pace.
+/// How many scan calls the plugin host runs at once. Rolldown issues a whole
+/// crawl's resolves together, and each would start a plugin-chain run in the
+/// host's one isolate: a dev request's hook would share every event-loop turn
+/// with the whole crawl's work, and wait it out (issue #332). Bounded, each
+/// turn the request takes shares the isolate with at most this many scan
+/// calls; enough of them overlap that a plugin awaiting its own work
+/// (`this.resolve`, fs) keeps the crawl near its unbounded pace. The cost of
+/// a slow unit scales with it: a 6ms resolve chain delays a request ~100ms.
+/// Per scan; the optimizer runs one at a time.
 pub(super) const SCAN_HOST_TURNS: usize = 16;
 
 /// The plugin host as the scan calls it: through [`SCAN_HOST_TURNS`] turns.

@@ -1115,3 +1115,53 @@ export default [{{
         "scan resolves in the plugin host at once: {peak}"
     );
 }
+
+// Vite's ctx.resolve passes the chain's `scan` on (`scan: this._scan`,
+// pluginContainer.ts): a plugin that this.resolves during the scan reaches
+// the other plugins as a scan resolve too.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_nested_resolve_in_the_scan_is_a_scan_resolve() {
+    let app = App::new();
+    app.write(
+        "oj.plugins.mjs",
+        r#"export default [
+  {
+    name: "outer",
+    async resolveId(id, importer, options) {
+      if (id !== "probe") return null;
+      return this.resolve("nested", importer, { skipSelf: true });
+    },
+  },
+  {
+    name: "inner",
+    resolveId(id, importer, options) {
+      if (id === "nested") return { id: "/scan-" + options.scan, external: true };
+      return null;
+    },
+  },
+];
+"#,
+    );
+    let config = json!({
+        "config": { "root": app.root().display().to_string() },
+        "env": { "command": "serve", "mode": "development" },
+    })
+    .to_string();
+    let host = crate::plugins::PluginHost::spawn(
+        &app.root(),
+        &app.root().join("oj.plugins.mjs"),
+        &config,
+        None,
+    )
+    .await
+    .expect("the plugin host spawns");
+    let importer = app.root().join("main.js").to_string_lossy().into_owned();
+    let scanned = host.scan_resolve_id("probe", &importer).await;
+    let served = host.resolve_id("probe", &importer).await;
+    host.shutdown();
+    assert_eq!(
+        scanned.unwrap().map(|r| r.id),
+        Some("/scan-true".to_string())
+    );
+    assert_eq!(served.unwrap().as_deref(), Some("/scan-false"));
+}
