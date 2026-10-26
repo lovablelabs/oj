@@ -223,7 +223,7 @@ async fn a_restart_belongs_to_its_own_apps_server() {
             .lock()
             .unwrap()
             .iter()
-            .any(|r| r.ends_with("/.env changed"));
+            .any(|(_, r)| r.ends_with("/.env changed"));
         if restarted {
             break;
         }

@@ -208,35 +208,25 @@ pub struct Server {
     root: PathBuf,
 }
 
-/// Restarts asked for so far, by any server in this process.
-pub(crate) static RESTARTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// Restarts asked for so far, by any server in this process: the asking
+/// app's root and the reason.
+pub(crate) static RESTARTS: Mutex<Vec<(PathBuf, String)>> = Mutex::new(Vec::new());
 
-/// Whether a restart belongs to the app at `root`: a watcher restart names
-/// the file that changed ("<file> changed"), relative to the cwd or absolute.
-fn restart_is_under(reason: &str, root: &Path) -> bool {
-    let Some(file) = reason.strip_suffix(" changed") else {
-        return false;
-    };
-    let file = std::env::current_dir().unwrap().join(file);
-    let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    file.starts_with(root) || file.starts_with(&canonical)
+fn same_dir(a: &Path, b: &Path) -> bool {
+    let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    a == b || canonical(a) == canonical(b)
 }
 
-/// Takes out the recorded restarts `keep` claims, leaving the rest.
-fn take_restarts_where(keep: impl Fn(&str) -> bool) -> Vec<String> {
+/// The reasons of the restarts the app at `root` asked for so far, taken
+/// out: for a test that expects one. Any other server's restart stays for
+/// its own test, and its own drop.
+pub fn take_restarts_for(root: &Path) -> Vec<String> {
     let mut all = RESTARTS.lock().unwrap();
     let (ours, rest) = std::mem::take(&mut *all)
         .into_iter()
-        .partition(|r: &String| keep(r));
+        .partition(|(at, _)| same_dir(at, root));
     *all = rest;
-    ours
-}
-
-/// The restarts asked for so far over a file under `root`, taken out: for a
-/// test that expects one. Any other server's restart stays for its own drop
-/// to fail on.
-pub fn take_restarts_for(root: &Path) -> Vec<String> {
-    take_restarts_where(|r| restart_is_under(r, root))
+    ours.into_iter().map(|(_, reason)| reason).collect()
 }
 
 /// The "server restart failed" diagnostics so far whose message names
@@ -260,16 +250,12 @@ pub fn restart_failures(needle: &str) -> Vec<String> {
         .collect()
 }
 
-/// No test expects a restart, so one over this app's files fails the test
-/// as its server drops (a panic on the asking thread would never reach a
-/// test). A restart naming no file (a plugin's `server.restart()`) can't be
-/// told apart, so it fails whichever server drops next.
+/// A restart this app asked for that its test never claimed fails the test as
+/// its server drops (a panic on the asking thread would never reach a test).
 impl Drop for Server {
     fn drop(&mut self) {
         self.built.close_watcher();
-        let root = self.root.clone();
-        let restarts =
-            take_restarts_where(|r| restart_is_under(r, &root) || !r.ends_with(" changed"));
+        let restarts = take_restarts_for(&self.root);
         if !restarts.is_empty() && !std::thread::panicking() {
             panic!("a dev server asked for a restart: {restarts:?}");
         }
@@ -279,8 +265,11 @@ impl Drop for Server {
 /// A restart would exec the test binary over every running test: record it
 /// and park the asking thread (the watcher, or a plugin's server.restart()
 /// task), as the exec would have stopped it.
-fn restart_in_test(reason: &str) -> ! {
-    RESTARTS.lock().unwrap().push(reason.to_string());
+fn restart_in_test(root: &Path, reason: &str) -> ! {
+    RESTARTS
+        .lock()
+        .unwrap()
+        .push((root.to_path_buf(), reason.to_string()));
     loop {
         std::thread::park();
     }

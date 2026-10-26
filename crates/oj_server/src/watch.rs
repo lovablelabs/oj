@@ -429,7 +429,7 @@ impl Restarter {
                         .warn(),
                     );
                 }
-                None => restart_process(&reason),
+                None => restart_process(&this.root, &reason),
             }
         });
     }
@@ -471,9 +471,9 @@ impl Restarter {
     }
 }
 
-pub fn restart_process(reason: &str) -> ! {
+pub fn restart_process(root: &Path, reason: &str) -> ! {
     if let Some(hook) = RESTART_HOOK.get() {
-        hook(reason);
+        hook(root, reason);
     }
     eprintln!("{} {reason} — restarting dev server", oj_brand());
     oj_diag::emit(
@@ -524,12 +524,14 @@ pub fn restart_process(reason: &str) -> ! {
     }
 }
 
-static RESTART_HOOK: std::sync::OnceLock<fn(&str) -> !> = std::sync::OnceLock::new();
+static RESTART_HOOK: std::sync::OnceLock<fn(&Path, &str) -> !> = std::sync::OnceLock::new();
 
 /// Takes every restart in place of the exec, for a process hosting dev
 /// servers it must outlive (oj's integration tests): an exec there would
-/// replace the whole process. Set once; later calls are ignored.
-pub fn set_restart_hook(hook: fn(&str) -> !) {
+/// replace the whole process. The hook gets the restarting app's root, so a
+/// restart that names no file (a plugin's `server.restart()`) is still that
+/// app's. Set once; later calls are ignored.
+pub fn set_restart_hook(hook: fn(&Path, &str) -> !) {
     let _ = RESTART_HOOK.set(hook);
 }
 

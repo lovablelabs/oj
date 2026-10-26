@@ -156,13 +156,9 @@ async fn a_fixed_untracked_input_lets_the_same_config_restart() {
     app.write(&[("data.yaml", "good\n")]);
     server.text("/__restart").await;
     until("the same config restarted", || {
-        // A plugin's restart names no file: claimed here before any
-        // server's drop fails on it.
-        let mut all = crate::RESTARTS.lock().unwrap();
-        let at = all
+        take_restarts_for(&app.root)
             .iter()
-            .position(|r| r == "plugin requested server.restart()");
-        at.map(|at| all.remove(at)).is_some()
+            .any(|r| r == "plugin requested server.restart()")
     })
     .await;
     assert_eq!(restart_failures(&marker).len(), 1, "it failed again");
