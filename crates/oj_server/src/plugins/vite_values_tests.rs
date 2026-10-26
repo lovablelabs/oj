@@ -378,6 +378,75 @@ export default [{{
     );
 }
 
+// Another caller can revive the engine between the open's failure and its
+// retry check: the revived engine reopened the container from its seed, and
+// the open adopts it instead of closing it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_open_adopts_a_container_another_caller_revived() {
+    let root = std::env::temp_dir().join(format!("oj-revive-race-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let flag = root.join("died-once");
+    let plugins = root.join("oj.plugins.mjs");
+    std::fs::write(
+        &plugins,
+        format!(
+            r#"import fs from "node:fs";
+export default [{{
+  name: "dies-once",
+  applyToEnvironment(environment) {{
+    if (environment.name === "ssr" && !fs.existsSync({flag:?})) {{
+      fs.writeFileSync({flag:?}, "");
+      const until = Date.now() + 5000;
+      while (Date.now() < until);
+    }}
+    return true;
+  }},
+  transform: {{ filter: {{ id: /\.md$/ }}, handler(code) {{ return code + " in " + this.environment.name; }} }},
+}}];
+"#
+        ),
+    )
+    .unwrap();
+    let config = serde_json::json!({
+        "config": { "root": root.display().to_string() },
+        "env": { "command": "serve", "mode": "development" },
+    })
+    .to_string();
+    let host = PluginHost::spawn_with_timeouts(
+        &root,
+        &plugins,
+        &config,
+        SpawnTimeouts {
+            probe: Some(std::time::Duration::from_millis(300)),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("the embedded engine spawns");
+    host.resolve_id("x", "").await.expect("a live host serves");
+    clear_respawn_spacing(&host);
+    // The other caller: revives the engine the moment it is declared gone.
+    let reviver = {
+        let host = std::sync::Arc::clone(&host);
+        let mut gone = host.host_gone_updates();
+        tokio::spawn(async move {
+            let _ = gone.wait_for(|g| *g).await;
+            let _ = host.resolve_id("x", "").await;
+        })
+    };
+    let ssr = host
+        .open_environment_container("ssr", false, false)
+        .await
+        .expect("the open adopts the revived container");
+    reviver.await.unwrap();
+    let md = root.join("a.md").display().to_string();
+    assert_eq!(
+        ssr.transform("# a", &md, "").await.unwrap().code,
+        "# a in ssr"
+    );
+}
+
 // A revive held back by the respawn spacing fails a call at once: an open the
 // engine dies in waits for the revive instead of spinning on retries, and
 // still adopts the revived container.
