@@ -255,3 +255,65 @@ export default {{
         }
     }
 }
+
+/// A file event during a restart check is the next server's: the running
+/// one's plugins never see it (Vite builds the new server from the files as
+/// they are). When the check fails and the running server stays, the event
+/// is delivered then.
+#[tokio::test(flavor = "multi_thread")]
+async fn edits_during_a_restart_check_wait_for_its_outcome() {
+    capture_failures();
+    let log_dir = tempfile::tempdir().unwrap();
+    let log = log_dir.path().join("hooks.log");
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"restart-holds-edits","private":true,"type":"module"}"#,
+        ),
+        ("index.html", INDEX_HTML),
+        ("src/main.js", "window.__ok = 1;\n"),
+    ]);
+    let (started, release) = (app.root.join("started"), app.root.join("release"));
+    let plugin = format!(
+        r#"import fs from "node:fs";
+const plugin = {{
+  name: "logs-watch",
+  watchChange(id) {{ fs.appendFileSync({log}, "watchChange " + id.split("/").pop() + "\n"); }},
+}};
+"#,
+        log = js(&log),
+    );
+    app.write(&[(
+        "vite.config.mjs",
+        &format!("{plugin}export default {{ plugins: [plugin] }};\n"),
+    )]);
+    let server = app.serve().await;
+    assert!(server.text("/src/main.js").await.contains("__ok"));
+    // The edited config's check waits for `release`, then fails.
+    let slow = format!(
+        r#"{plugin}fs.writeFileSync({started}, "");
+while (!fs.existsSync({release})) await new Promise((r) => setTimeout(r, 20));
+throw new Error("broken-after-wait");
+"#,
+        started = js(&started),
+        release = js(&release),
+    );
+    app.write(&[("vite.config.mjs", &slow)]);
+    until("the slow check started", || started.exists()).await;
+    app.write(&[("src/main.js", "window.__ok = 2;\n")]);
+    let read = || std::fs::read_to_string(&log).unwrap_or_default();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(
+        !read().contains("watchChange main.js"),
+        "the running server's plugins saw an edit during the check:\n{}",
+        read()
+    );
+    std::fs::write(&release, "").unwrap();
+    let root = app.root.display().to_string();
+    until("the check failed", || !restart_failures(&root).is_empty()).await;
+    until("the held edit reached the kept server", || {
+        read().contains("watchChange main.js")
+    })
+    .await;
+    assert_eq!(take_restarts_for(&app.root), Vec::<String>::new());
+}
