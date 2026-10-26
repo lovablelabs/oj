@@ -11,6 +11,11 @@ use crate::{require_fixture, App};
 /// The ssr container's external list for `plugins`, as a vite.config (the
 /// fixture's Vite resolves it) or an oj plugins file.
 async fn ssr_external(plugins: &str, vite: bool, leave_out: bool) -> serde_json::Value {
+    ssr_facts(plugins, vite, leave_out).await["external"].clone()
+}
+
+/// The ssr container's startFacts for `plugins`.
+async fn ssr_facts(plugins: &str, vite: bool, leave_out: bool) -> serde_json::Value {
     let (file, src) = if vite {
         (
             "vite.config.mjs",
@@ -45,7 +50,7 @@ async fn ssr_external(plugins: &str, vite: bool, leave_out: bool) -> serde_json:
         .expect("the ssr container opens");
     let facts = ssr.start_facts().await.expect("startFacts answers");
     host.shutdown();
-    facts["external"].clone()
+    facts
 }
 
 /// A hook's in-place array edit is made once: Vite reaches one array as both
@@ -164,4 +169,29 @@ export default [
         text.lines().any(|l| l == "buildStart ssr"),
         "the ssr environment never started:\n{text}"
     );
+}
+
+/// An object-form alias a config hook returns lands in Vite's resolved alias
+/// array once, as Vite's mergeAlias normalizes it: never merged again over
+/// the resolve that already holds it (a malformed entry, a duplicate).
+#[tokio::test]
+async fn a_returned_alias_object_is_in_the_resolved_alias_once() {
+    require_fixture!("vite");
+    let plugins = r#"[{
+  name: "aliases",
+  config: () => ({ resolve: { alias: { "@c": "/abs/c" } } }),
+  configEnvironment: (name) => (name === "ssr" ? { resolve: { conditions: ["ssr-only"] } } : null),
+}]"#;
+    for leave_out in [true, false] {
+        let facts = ssr_facts(plugins, true, leave_out).await;
+        let alias = facts["alias"].as_array().cloned().unwrap_or_default();
+        assert!(
+            alias
+                .iter()
+                .all(|a| a.get("find").is_some() && a.get("replacement").is_some()),
+            "a malformed alias entry (leave-out {leave_out}): {alias:?}"
+        );
+        let ours = alias.iter().filter(|a| a["find"] == "@c").count();
+        assert_eq!(ours, 1, "leave-out {leave_out}: {alias:?}");
+    }
 }
