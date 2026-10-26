@@ -104,3 +104,51 @@ test(
     }
   },
 );
+
+// A hook that edits an array in place records what it added, not the whole
+// array: items a left-out plugin put there before it stay out.
+test("a leave-out container's array edits carry no left-out plugin's items", async () => {
+  const fx = tmpProject({ prefix: "oj-leave-out-array-" });
+  fx.write(
+    "oj.plugins.mjs",
+    `export default [
+  { name: "tanstack-start-core:config", config: () => ({ build: { rollupOptions: { external: ["framework"] } } }) },
+  {
+    name: "pushes",
+    config(config) {
+      config.build.rollupOptions.external.push("user");
+      config.build.rollupOptions.external.unshift("first");
+    },
+  },
+];\n`,
+  );
+  const host = rpcSidecar("plugin-host.mjs", {
+    args: [
+      path.join(fx.root, "oj.plugins.mjs"),
+      JSON.stringify({
+        pluginsFormat: "oj",
+        config: { root: fx.root, base: "/", mode: "development", command: "serve" },
+        env: { command: "serve", mode: "development" },
+        environment: { name: "client", mode: "dev" },
+        ojStartMode: true,
+      }),
+    ],
+    env: { OJ_CACHE_ROOT: fx.root },
+    cwd: fx.root,
+  });
+  try {
+    await host.initSignal();
+    const opened = await host.send({
+      id: 1,
+      hook: "openEnvironmentContainer",
+      args: [JSON.stringify({ id: 1 << 20, name: "ssr", leaveOut: true })],
+    });
+    assert.equal(opened.error, undefined, host.stderr());
+    const r = await host.send({ id: 2, hook: "startFacts", args: [], container: Number(opened.result) });
+    assert.equal(r.error, undefined, host.stderr());
+    assert.deepEqual(JSON.parse(r.result).external, ["first", "user"]);
+  } finally {
+    host.close();
+    fx.cleanup();
+  }
+});

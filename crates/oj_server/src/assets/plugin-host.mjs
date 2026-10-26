@@ -957,6 +957,23 @@ function sameValue(a, b) {
   }
   return false;
 }
+// An in-place array edit that kept what the hook saw, in order, between new
+// items: replayed around the replay's own array, so items another plugin put
+// there earlier (one the replay leaves out) stay out.
+class Wrapped {
+  constructor(head, tail) {
+    this.head = head;
+    this.tail = tail;
+  }
+}
+function arrayEdit(before, after) {
+  for (let at = 0; at + before.length <= after.length; at++) {
+    if (before.every((x, i) => sameValue(x, after[at + i]))) {
+      return new Wrapped(plainCopy(after.slice(0, at)), plainCopy(after.slice(at + before.length)));
+    }
+  }
+  return plainCopy(after);
+}
 // The edits that turn `before` (a plainCopy) into `after`, as [path, value]
 // pairs (DELETED for a removed key). The plugin array is the resolve's own.
 function editsOf(before, after, path = [], out = []) {
@@ -967,7 +984,9 @@ function editsOf(before, after, path = [], out = []) {
     const a = had[key];
     const b = after[key];
     if (isPlainData(a) && isPlainData(b)) editsOf(a, b, [...path, key], out);
-    else if (!(key in had) || !sameValue(a, b)) out.push([[...path, key], plainCopy(b)]);
+    else if (Array.isArray(a) && Array.isArray(b)) {
+      if (!sameValue(a, b)) out.push([[...path, key], arrayEdit(a, b)]);
+    } else if (!(key in had) || !sameValue(a, b)) out.push([[...path, key], plainCopy(b)]);
   }
   for (const key of Object.keys(had)) {
     if (!(key in after) && !(path.length === 0 && key === "plugins")) out.push([[...path, key], DELETED]);
@@ -983,7 +1002,10 @@ function applyEdits(target, edits) {
     }
     const last = path[path.length - 1];
     if (value === DELETED) delete at[last];
-    else at[last] = plainCopy(value);
+    else if (value instanceof Wrapped) {
+      const own = Array.isArray(at[last]) ? at[last] : [];
+      at[last] = [...plainCopy(value.head), ...own, ...plainCopy(value.tail)];
+    } else at[last] = plainCopy(value);
   }
   return target;
 }
