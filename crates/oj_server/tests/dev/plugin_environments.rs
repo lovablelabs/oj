@@ -98,3 +98,78 @@ export default [
         "perEnvironmentStartEndDuringDev starts it per environment:\n{text}"
     );
 }
+
+// Vite dispatches watchChange to every environment's container and hotUpdate
+// to each environment over its own plugins, the ssr environment existing from
+// boot: an ssr-only plugin's hooks fire on an edit made before any SSR request,
+// and a client-only plugin's watchChange fires once per change.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ssr_only_plugin_gets_watch_and_hot_updates_from_boot() {
+    let log_dir = tempfile::tempdir().unwrap();
+    let log = log_dir.path().join("hooks.log");
+    let literal = serde_json::to_string(&log.display().to_string()).unwrap();
+    let plugins = format!(
+        r#"import fs from "node:fs";
+const log = (line) => fs.appendFileSync({literal}, line + "\n");
+export default [
+  {{
+    name: "ssr-only",
+    applyToEnvironment: (environment) => environment.name === "ssr",
+    watchChange(id) {{
+      if (id.endsWith("/src/main.js")) log("ssr-only watchChange " + this.environment.name);
+    }},
+    hotUpdate({{ file }}) {{
+      if (file.endsWith("/src/main.js")) log("ssr-only hotUpdate " + this.environment.name);
+    }},
+  }},
+  {{
+    name: "client-only",
+    applyToEnvironment: (environment) => environment.name === "client",
+    watchChange(id) {{
+      if (id.endsWith("/src/main.js")) log("client-only watchChange " + this.environment.name);
+    }},
+  }},
+];
+"#
+    );
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"plugin-environments-hmr","private":true,"type":"module"}"#,
+        ),
+        ("index.html", INDEX_HTML),
+        ("src/main.js", "window.__ok = 1;\n"),
+        ("oj.plugins.mjs", &plugins),
+    ]);
+    let server = app.serve().await;
+    assert!(server.text("/src/main.js").await.contains("__ok"));
+    app.write(&[("src/main.js", "window.__ok = 2;\n")]);
+    let expected = [
+        "client-only watchChange client",
+        "ssr-only hotUpdate ssr",
+        "ssr-only watchChange ssr",
+    ];
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    let lines = loop {
+        let text = std::fs::read_to_string(&log).unwrap_or_default();
+        let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+        lines.sort();
+        if expected.iter().all(|e| lines.iter().any(|l| l == e)) {
+            break lines;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the ssr environment's hooks never ran: {lines:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    // Any duplicate would have landed with the first dispatch.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let text = std::fs::read_to_string(&log).unwrap_or_default();
+    let mut lines_now: Vec<&str> = text.lines().collect();
+    lines_now.sort();
+    assert_eq!(
+        lines_now, expected,
+        "each hook once, in its own environment (was {lines:?})"
+    );
+}

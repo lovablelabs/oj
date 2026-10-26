@@ -5710,6 +5710,8 @@ async function run(hook, args, c) {
       transform: planFor("transform", true),
       load: planFor("load", false),
       resolveId: planFor("resolveId", false),
+      watchChange: pluginsWithHook(c, "watchChange").length > 0,
+      hotUpdate: hotUpdatePlugins(c).length > 0,
     });
   }
   if (hook === "hasGenerateBundle") {
@@ -5804,11 +5806,6 @@ async function run(hook, args, c) {
   if (hook === "getHasLoad") {
     const has = c.plugins.some((p) => typeof hookHandler(p.load) === "function");
     return String(has);
-  }
-  if (hook === "getHmrHooks") {
-    const watchChangeHook = pluginsWithHook(c, "watchChange").length > 0;
-    const hotUpdateHook = hotUpdatePlugins(c).length > 0;
-    return JSON.stringify({ watchChange: watchChangeHook, handleHotUpdate: hotUpdateHook });
   }
   if (hook === "getServeInfo") {
     return JSON.stringify({ middlewarePort, runnerEnvironments: runnerEnvironmentsBuilt });

@@ -970,10 +970,23 @@ fn change_type(
     }
 }
 
-/// The ssr environment's container for `watchChange` (Vite dispatches it to
-/// every environment).
-fn ssr_host_for_hooks(state: &ServerState) -> Option<Arc<PluginHost>> {
-    state.plugins_ssr.clone()
+/// The environments' containers a hook goes to, client first (Vite's
+/// order): each container whose own plugins have it. A Start client bundle's
+/// container is the client environment's, whose hooks the dev host's own
+/// container already runs (its plugins are a subset of the same instances).
+fn hook_hosts(
+    state: &ServerState,
+    wants: fn(&PluginHost) -> bool,
+) -> Vec<(&'static str, &Arc<PluginHost>)> {
+    let ssr = state.plugins_ssr.as_ref().map(|h| ("ssr", h));
+    state
+        .plugins
+        .as_ref()
+        .map(|h| ("client", h))
+        .into_iter()
+        .chain(ssr)
+        .filter(|(_, h)| wants(h))
+        .collect()
 }
 
 /// The `modules` argument of `hotUpdate` for a path, as JSON.
@@ -1005,12 +1018,11 @@ pub(crate) async fn run_watch_change(
     paths: &[PathBuf],
     created: &std::collections::HashSet<PathBuf>,
 ) {
-    if !state.plugins_watch_change {
+    let hosts = hook_hosts(state, PluginHost::wants_watch_change);
+    if hosts.is_empty() {
         return;
     }
-    let Some(host) = &state.plugins else {
-        return;
-    };
+    let hosts = &hosts;
     // Concurrent across files, as Vite's watcher handles each event on its own.
     let changes = paths
         .iter()
@@ -1018,15 +1030,15 @@ pub(crate) async fn run_watch_change(
         .map(|path| async move {
             let file = path.display().to_string();
             let change_type = change_type(state, path, created);
-            let ssr_host = ssr_host_for_hooks(state);
-            if let Err(e) = host.watch_change(&file, change_type).await {
-                eprintln!("oj: watchChange failed for {file}: {e}");
-                emit_hook_failure("watchChange", &file, &e);
-            }
-            if let Some(ssr) = &ssr_host {
-                if let Err(e) = ssr.watch_change(&file, change_type).await {
-                    eprintln!("oj: watchChange (ssr) failed for {file}: {e}");
-                    emit_hook_failure("watchChange (ssr)", &file, &e);
+            for (env, host) in hosts {
+                if let Err(e) = host.watch_change(&file, change_type).await {
+                    let hook = if *env == "client" {
+                        "watchChange".to_string()
+                    } else {
+                        format!("watchChange ({env})")
+                    };
+                    eprintln!("oj: {hook} failed for {file}: {e}");
+                    emit_hook_failure(&hook, &file, &e);
                 }
             }
         });
@@ -1042,20 +1054,23 @@ async fn run_plugin_hooks(
     messages: &mut Vec<String>,
     updates: &mut Vec<serde_json::Value>,
 ) -> Flow {
-    if !state.plugins_hot_update {
+    let ssr_host = state.plugins_ssr.as_ref().filter(|h| h.wants_hot_update());
+    if !host.wants_hot_update() && ssr_host.is_none() {
         return Flow::Next;
     }
     let file = path.display().to_string();
     let change_type = change_type(state, path, created);
-    let ssr_host = ssr_host_for_hooks(state);
     let ts = now_millis() as u64;
     let modules_json = hot_update_modules_json(state, path);
-    // The client's hooks first, then the ssr host's, as Vite's
+    // The client's hooks first, then the ssr environment's, as Vite's
     // handleHMRUpdate runs the client environment before the others.
-    let client = host
-        .handle_hot_update(&file, ts, change_type, &modules_json)
-        .await;
-    if let Some(ssr) = &ssr_host {
+    let client = if host.wants_hot_update() {
+        host.handle_hot_update(&file, ts, change_type, &modules_json)
+            .await
+    } else {
+        Ok(None)
+    };
+    if let Some(ssr) = ssr_host {
         // Its result steers no client update (the ssr environment has
         // no browser); only a throwing hook is worth reporting.
         if let Err(e) = ssr

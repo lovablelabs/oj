@@ -374,7 +374,6 @@ struct ServerState {
     // A relative or absolute import is offered to plugin `resolveId` before oj's
     // resolver when it matches one of these (object-form resolveId `filter.id`).
     resolve_id_res: Vec<plugins::HookFilter>,
-    plugins_watch_change: bool,
     /// A plugin hooks `transformIndexHtml`: dev pages run the host's transform,
     /// its hooks interleaved with Vite's; otherwise oj's native one (dev_html).
     plugins_have_transform_index_html: bool,
@@ -382,7 +381,6 @@ struct ServerState {
     html_proxy: dev_html::HtmlProxyCache,
     /// `envPrefix`, for the HTML env hook's undefined-variable warning.
     env_prefixes: Vec<String>,
-    plugins_hot_update: bool,
     html_env: std::collections::BTreeMap<String, String>,
     parsed_fired: Mutex<std::collections::HashSet<String>>,
     rt: tokio::runtime::Handle,
@@ -982,8 +980,6 @@ struct PluginCaps {
     dep_transform_res: Vec<plugins::HookFilter>,
     dep_load_res: Vec<plugins::HookFilter>,
     resolve_id_res: Vec<plugins::HookFilter>,
-    watch_change: bool,
-    hot_update: bool,
     have_transform_index_html: bool,
 }
 
@@ -999,7 +995,6 @@ impl PluginCaps {
         // Prime the per-plugin filter plan (hook_wants_* gates read it live): a filtered
         // hook's RPC is skipped for app modules its filter can never claim.
         let _ = host.build_hook_plan().await;
-        let (watch_change, hot_update) = host.hmr_hooks().await;
         let have_transform_index_html = host.has_transform_index_html().await;
         PluginCaps {
             use_module_parsed,
@@ -1009,8 +1004,6 @@ impl PluginCaps {
             dep_transform_res,
             dep_load_res,
             resolve_id_res,
-            watch_change,
-            hot_update,
             have_transform_index_html,
         }
     }
@@ -1810,11 +1803,9 @@ impl DevServer {
             dep_transform_res: caps.dep_transform_res,
             dep_load_res: caps.dep_load_res,
             resolve_id_res: caps.resolve_id_res,
-            plugins_watch_change: caps.watch_change,
             plugins_have_transform_index_html: caps.have_transform_index_html,
             html_proxy: Default::default(),
             env_prefixes: oj_config::env_prefixes(&config),
-            plugins_hot_update: caps.hot_update,
             html_env: installed.html_env,
             parsed_fired: Mutex::new(std::collections::HashSet::new()),
             rt: tokio::runtime::Handle::current(),

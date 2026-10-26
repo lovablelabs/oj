@@ -27,6 +27,11 @@ pub struct PluginHost {
     /// refetch racing an environment switch) answered for the old plugin set
     /// and must not land.
     hook_plan_epoch: std::sync::atomic::AtomicU64,
+    /// Whether this container's plugins have `watchChange` / `hotUpdate`,
+    /// fetched with the hook plan; true until fetched (an HMR dispatch is
+    /// never skipped by mistake).
+    watch_change: std::sync::atomic::AtomicBool,
+    hot_update: std::sync::atomic::AtomicBool,
 }
 
 /// A plugin host's engine and its lifecycle (boot, pushes, revive), shared by
@@ -1124,12 +1129,28 @@ impl PluginHost {
                 load: HookFilterPlan::from_json(v.get("load")),
                 resolve_id: HookFilterPlan::from_json(v.get("resolveId")),
             };
+            let flag = |key: &str| v.get(key).and_then(|b| b.as_bool()).unwrap_or(true);
             let mut slot = self.hook_plan.write().unwrap();
             if self.hook_plan_epoch.load(Ordering::Acquire) == epoch {
                 *slot = plan;
+                self.watch_change
+                    .store(flag("watchChange"), Ordering::Release);
+                self.hot_update.store(flag("hotUpdate"), Ordering::Release);
                 self.hook_plan_fetched.store(true, Ordering::Release);
             }
         }
+    }
+
+    /// Whether this container's plugins take `watchChange` (fetched with
+    /// the hook plan, refetched on a revive; true until then).
+    pub fn wants_watch_change(&self) -> bool {
+        self.watch_change.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Whether this container's plugins take `hotUpdate` (see
+    /// [`PluginHost::wants_watch_change`]).
+    pub fn wants_hot_update(&self) -> bool {
+        self.hot_update.load(std::sync::atomic::Ordering::Acquire)
     }
 
     #[inline]
@@ -1303,16 +1324,6 @@ impl PluginHost {
             .unwrap_or_default()
     }
 
-    /// Which HMR hooks any active plugin defines: (watchChange, handleHotUpdate).
-    /// Defaults to (true, true) on failure so an HMR RPC is never skipped by mistake.
-    pub async fn hmr_hooks(&self) -> (bool, bool) {
-        let Some(v) = self.call_json("getHmrHooks").await else {
-            return (true, true);
-        };
-        let flag = |key: &str| v.get(key).and_then(|b| b.as_bool()).unwrap_or(true);
-        (flag("watchChange"), flag("handleHotUpdate"))
-    }
-
     /// Where this container's async reverse RPCs go (each container answers
     /// its own: a worker bundle's `this.resolve` ends in that bundle).
     pub fn set_rpc_request_sender(&self, tx: tokio::sync::mpsc::UnboundedSender<HostRpc>) {
@@ -1428,6 +1439,8 @@ impl PluginHost {
             hook_plan_fetched: std::sync::atomic::AtomicBool::new(false),
             hook_plan_prime_started: std::sync::atomic::AtomicBool::new(false),
             hook_plan_epoch: std::sync::atomic::AtomicU64::new(0),
+            watch_change: std::sync::atomic::AtomicBool::new(true),
+            hot_update: std::sync::atomic::AtomicBool::new(true),
         }
     }
 
@@ -1547,6 +1560,8 @@ impl PluginHost {
         let mut slot = self.hook_plan.write().unwrap();
         self.hook_plan_epoch.fetch_add(1, Ordering::AcqRel);
         *slot = BuildHookPlan::fail_open();
+        self.watch_change.store(true, Ordering::Release);
+        self.hot_update.store(true, Ordering::Release);
         drop(slot);
         self.hook_plan_fetched.store(false, Ordering::Release);
         self.hook_plan_prime_started.store(false, Ordering::Release);
