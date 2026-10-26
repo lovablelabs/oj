@@ -809,7 +809,14 @@ async function loadUserResolvedViteConfig() {
   // generator's among them) do work oj's own pipeline does.
   const candidates = startLeavesOutReimplemented ? allPlugins.filter((p) => !isReimplemented(p.name)) : allPlugins;
   const hosted = new Set(main.plugins);
-  const plugins = candidates.map((p) => (hosted.has(p) ? recordingPlugin(p) : p));
+  const restores = [];
+  const plugins = candidates.map((p) => {
+    if (!hosted.has(p)) return p;
+    const restore = recordInPlace(p);
+    if (!restore) return recordingPlugin(p);
+    restores.push(restore);
+    return p;
+  });
   try {
     // Vite's own NODE_ENV handling runs inside resolveConfig; hand it the
     // command-based defaultNodeEnv (never the mode) and lift oj's untouched
@@ -835,32 +842,73 @@ async function loadUserResolvedViteConfig() {
     );
     return null;
   } finally {
+    for (const restore of restores) restore();
     // A throwing resolveConfig may leave the unset behind; the fallback paths
     // below still evaluate config/plugin code that must see a value.
     if (!process.env.NODE_ENV) process.env.NODE_ENV = defaultNodeEnv;
   }
 }
-// `p` as Vite's resolve sees it: its config hook recorded, its
-// configEnvironment, configResolved and applyToEnvironment left to the host,
-// which runs them on its own resolved config.
-function recordingPlugin(p) {
+// The hooks `p` shows Vite's resolve: its config hook recorded (what it
+// returned, or threw, for runConfigHook to replay), its configEnvironment,
+// configResolved and applyToEnvironment hidden, left to the host, which runs
+// them on its own resolved config.
+function resolveHooks(p) {
   const hook = p.config;
   const fn = hookFn(p, "config");
   const record = async function (config, configEnv) {
-    const partial = await fn.call(this, config, configEnv);
-    // Returning the config itself is an in-place edit, already in the base.
-    recordedConfigPartials.set(p, partial === config ? null : plainCopy(partial));
-    return partial;
+    try {
+      const partial = await fn.call(this, config, configEnv);
+      // Returning the config itself is an in-place edit, already in the base.
+      recordedConfigPartials.set(p, { partial: partial === config ? null : plainCopy(partial) });
+      return partial;
+    } catch (error) {
+      recordedConfigPartials.set(p, { error });
+      throw error;
+    }
   };
-  return Object.create(p, {
-    config: { value: fn ? (typeof hook === "function" ? record : { ...hook, handler: record }) : undefined },
-    configEnvironment: { value: undefined },
-    configResolved: { value: undefined },
-    applyToEnvironment: { value: undefined },
-  });
+  return {
+    config: fn ? (typeof hook === "function" ? record : { ...hook, handler: record }) : undefined,
+    configEnvironment: undefined,
+    configResolved: undefined,
+    applyToEnvironment: undefined,
+  };
+}
+// Swaps `p`'s hooks for the resolve's on the instance itself, so the plugin
+// list Vite hands the config hooks holds the real objects (a sibling lookup
+// or identity check sees the plugin the host runs). Returns the undo, or
+// null when `p` cannot take the swap (frozen).
+function recordInPlace(p) {
+  const hooks = resolveHooks(p);
+  const undo = [];
+  const restore = () => {
+    for (const u of undo.reverse()) u();
+  };
+  try {
+    for (const [key, value] of Object.entries(hooks)) {
+      const own = Object.getOwnPropertyDescriptor(p, key);
+      Object.defineProperty(p, key, {
+        value,
+        writable: true,
+        configurable: true,
+        enumerable: own?.enumerable ?? false,
+      });
+      undo.push(own ? () => Object.defineProperty(p, key, own) : () => delete p[key]);
+    }
+  } catch {
+    restore();
+    return null;
+  }
+  return restore;
+}
+// `p` behind a wrapper carrying the resolve's hooks, for a plugin that
+// cannot take them in place.
+function recordingPlugin(p) {
+  const hooks = resolveHooks(p);
+  return Object.create(p, Object.fromEntries(Object.entries(hooks).map(([k, value]) => [k, { value }])));
 }
 // A copy of `v`'s plain data (object literals and arrays); functions, RegExps
-// and class instances are kept by reference.
+// and class instances are kept by reference, and so are the plugins of a
+// `plugins` list: a copy of a plugin is another instance.
 function plainCopy(v, seen = new WeakMap()) {
   if (!v || typeof v !== "object") return v;
   const cached = seen.get(v);
@@ -875,8 +923,11 @@ function plainCopy(v, seen = new WeakMap()) {
   if (proto !== Object.prototype && proto !== null) return v;
   const out = {};
   seen.set(v, out);
-  for (const [k, x] of Object.entries(v)) out[k] = plainCopy(x, seen);
+  for (const [k, x] of Object.entries(v)) out[k] = k === "plugins" ? pluginListCopy(x) : plainCopy(x, seen);
   return out;
+}
+function pluginListCopy(v) {
+  return Array.isArray(v) ? v.map(pluginListCopy) : v;
 }
 
 // Vite's `externalize-deps` config-bundling plugin, mirrored (one copy lives
@@ -1763,7 +1814,9 @@ async function runConfigHook(config, list, { onPartial, keepPlugins, container =
   for (const { p, fn } of hooksOf(list, "config")) {
     initStage(`config:${p.name ?? "?"}`);
     try {
-      const partial = recorded?.has(p) ? recorded.get(p) : await fn.call(configContext, config, env);
+      const rec = recorded?.get(p);
+      if (rec?.error) throw rec.error;
+      const partial = rec ? rec.partial : await fn.call(configContext, config, env);
       if (partial) {
         config = mergeConfigLite(config, partial);
         onPartial?.(partial);
@@ -1805,14 +1858,16 @@ async function runConfigHooks() {
   // run, so TanStack's start-manifest-plugin emits the standard dev client entry
   // (not `/assets/index.js`) and any bundled-dev middleware early-returns.
   coerceBundledDevOff(config);
-  // Vite hands the config hook the user config, whose `plugins` is the flat
-  // plugin array; plugins like @crxjs read `config.plugins` to find sibling
-  // plugins. Use the apply-filtered active set (not allPlugins) so command-
-  // inappropriate plugins are absent, matching Vite's resolved config — e.g.
-  // `@crxjs`'s serve-only `crx:hmr` must not appear during a build, or crx calls
-  // its `transformCrxManifest` (which reads an unset `config`) and throws.
-  // The exposed plugin array: the apply-filtered active set plus the css-post
-  // shim. Pinned across the config-hook merges below so mergeConfigLite (which
+  // A config hook that ran inside Vite's resolve saw Vite's user config and
+  // its plugin list; the hooks the host runs itself (no Vite in the app, or a
+  // hook Vite's apply skipped) see this config, and configResolved sees it as
+  // the resolved plugin array. Plugins like @crxjs read `config.plugins` to
+  // find sibling plugins. Use the apply-filtered active set (not allPlugins)
+  // so command-inappropriate plugins are absent, matching Vite's resolved
+  // config — e.g. `@crxjs`'s serve-only `crx:hmr` must not appear during a
+  // build, or crx calls its `transformCrxManifest` (which reads an unset
+  // `config`) and throws. The exposed plugin array: the apply-filtered active
+  // set plus the css-post shim. Pinned across the config-hook merges below so mergeConfigLite (which
   // concatenates arrays) can't accumulate it into duplicates.
   // The natively reimplemented React plugins stay listed (hooks unrun), in
   // enforce order like Vite's resolved plugin array.

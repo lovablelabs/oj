@@ -112,3 +112,94 @@ async fn concurrent_extractions_evaluate_once() {
     }
     assert_eq!(counts(&log), (1, 1), "(evaluations, config hooks)");
 }
+
+/// Vite's resolve runs the config hooks on the host's own instances: the
+/// plugin list a hook sees holds those objects, the plugins of a config
+/// `plugins` list are the config's own, and the hooks the resolve hid
+/// (configResolved here) are back for the host to run, once.
+#[tokio::test(flavor = "multi_thread")]
+async fn config_hooks_see_the_plugin_instances_the_host_runs() {
+    crate::require_fixture!("vite");
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"config-identity","private":true,"type":"module"}"#,
+        ),
+        ("index.html", INDEX_HTML),
+        ("src/main.js", "window.__seen = __SEEN__;\n"),
+        (
+            "vite.config.mjs",
+            r#"const seen = { resolved: 0 };
+const scan = { name: "scan-probe" };
+const probe = {
+  name: "identity-probe",
+  config(config) {
+    seen.self = config.plugins.flat(Infinity).includes(probe);
+  },
+  configResolved(config) {
+    seen.resolved++;
+    seen.scan = config.optimizeDeps.rolldownOptions?.plugins?.[0] === scan;
+  },
+  transform(code, id) {
+    if (id.endsWith("/src/main.js")) return code.replace("__SEEN__", JSON.stringify(seen));
+  },
+};
+export default { optimizeDeps: { rolldownOptions: { plugins: [scan] } }, plugins: [probe] };
+"#,
+        ),
+    ]);
+    app.link_fixture("vite");
+    let server = app.serve().await;
+    let main = server.text("/src/main.js").await;
+    let compact: String = main.split_whitespace().collect();
+    assert!(
+        compact.contains(r#"{"resolved":1,"self":true,"scan":true}"#),
+        "what the hooks saw:\n{main}"
+    );
+}
+
+/// A config hook that throws inside Vite's resolve is not run again by the
+/// host: a Start host skips it, as it skips any failing config hook.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_throwing_config_hook_runs_once() {
+    crate::require_fixture!("vite");
+    let app = App::new(&[(
+        "package.json",
+        r#"{"name":"config-throws","private":true,"type":"module"}"#,
+    )]);
+    let log = app.root.with_extension("throws.log");
+    app.write(&[(
+        "vite.config.mjs",
+        &format!(
+            r#"import {{ appendFileSync }} from "node:fs";
+export default {{
+  plugins: [
+    {{ name: "throws", config() {{ appendFileSync({log:?}, "config\n"); throw new Error("config failed"); }} }},
+    {{ name: "after", transform() {{}} }},
+  ],
+}};
+"#
+        ),
+    )]);
+    app.link_fixture("vite");
+    let payload = serde_json::json!({
+        "config": { "root": app.root.display().to_string(), "base": "/", "mode": "development", "command": "serve" },
+        "env": { "command": "serve", "mode": "development" },
+        "environment": { "name": "ssr", "mode": "dev" },
+        "pluginsFormat": "vite",
+        "ojStartMode": true,
+    })
+    .to_string();
+    let host = oj_server::plugins::PluginHost::spawn(
+        &app.root,
+        &app.root.join("vite.config.mjs"),
+        &payload,
+        None,
+    )
+    .await
+    .expect("the host starts");
+    let names = host.plugin_names().await;
+    host.shutdown();
+    assert!(names.iter().any(|n| n == "after"), "{names:?}");
+    assert_eq!(counts(&log), (0, 1), "(evaluations, config hooks)");
+}

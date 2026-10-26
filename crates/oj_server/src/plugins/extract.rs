@@ -485,13 +485,13 @@ fn extraction_flight(
     command: &str,
     mode_key: &str,
 ) -> std::sync::Arc<std::sync::Mutex<()>> {
-    static FLIGHTS: std::sync::Mutex<
-        Option<std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<()>>>>,
-    > = std::sync::Mutex::new(None);
+    type Flights = std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<()>>>;
+    static FLIGHTS: std::sync::LazyLock<std::sync::Mutex<Flights>> =
+        std::sync::LazyLock::new(Default::default);
     let key = format!("{}\0{command}\0{mode_key}", vite.display());
-    let mut guard = FLIGHTS.lock().unwrap_or_else(|e| e.into_inner());
-    guard
-        .get_or_insert_with(std::collections::HashMap::new)
+    FLIGHTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
         .entry(key)
         .or_default()
         .clone()
