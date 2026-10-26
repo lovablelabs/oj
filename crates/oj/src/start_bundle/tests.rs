@@ -1179,3 +1179,69 @@ fn a_served_sheet_is_kept_while_the_plugin_loads_the_same_text() {
     assert_eq!(styles.dev_served_sheet(id, ".t {} .u {}"), None);
     assert_eq!(styles.dev_sheet(id), None, "not a file's sheet");
 }
+
+/// How often a plugin's renderStart ran over three bundles (a boot and two
+/// edits' rebundles) of a Start client in `command`.
+async fn render_starts(command: super::Command) -> usize {
+    let seen = std::env::temp_dir().join(format!(
+        "oj-start-render-start-{}-{command:?}.txt",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&seen);
+    let plugins = format!(
+        r#"import fs from "node:fs";
+export default [{{
+  name: "render-start-spy",
+  renderStart() {{ fs.appendFileSync({}, "renderStart\n"); }},
+}}];
+"#,
+        serde_json::to_string(&seen.display().to_string()).unwrap()
+    );
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"start-render-start","type":"module"}"#,
+        ),
+        ("src/entry.js", "console.log(1);\n"),
+        ("oj.plugins.mjs", &plugins),
+    ]);
+    let start = super::StartConfig {
+        command,
+        ..app.start()
+    };
+    let host = super::hosts::spawn(&start, None, "client")
+        .await
+        .unwrap()
+        .expect("the app's plugins");
+    for edit in 0..3 {
+        std::fs::write(
+            app.dir.join("src/entry.js"),
+            format!("console.log({edit});\n"),
+        )
+        .unwrap();
+        let plugin = super::host::StartHostPlugin::new(
+            Arc::clone(&host.host),
+            host.ctx.clone(),
+            &host.facts,
+            command,
+            &app.dir,
+            Arc::new(crate::build::EmitState::new(app.dir.clone())),
+            start.jsx_config(),
+        );
+        bundle(&app, "src/entry.js", vec![Pluginable::new_shared(plugin)])
+            .await
+            .unwrap();
+    }
+    let text = std::fs::read_to_string(&seen).unwrap_or_default();
+    let _ = std::fs::remove_file(&seen);
+    text.lines().count()
+}
+
+/// Vite's dev server runs no output-generation hook: the Start dev bundles,
+/// over the dev server's own plugin instances, never call renderStart; the
+/// build does, per bundle.
+#[tokio::test(flavor = "multi_thread")]
+async fn render_start_runs_in_the_build_only() {
+    assert_eq!(render_starts(super::Command::Serve).await, 0);
+    assert_eq!(render_starts(super::Command::Build).await, 3);
+}

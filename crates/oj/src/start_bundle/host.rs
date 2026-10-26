@@ -324,13 +324,13 @@ impl Plugin for StartHostPlugin {
 
     fn register_hook_usage(&self) -> rolldown_plugin::HookUsage {
         use rolldown_plugin::HookUsage;
-        let mut usage = HookUsage::ResolveId
-            | HookUsage::Load
-            | HookUsage::Transform
-            | HookUsage::BuildStart
-            | HookUsage::RenderStart;
+        let mut usage =
+            HookUsage::ResolveId | HookUsage::Load | HookUsage::Transform | HookUsage::BuildStart;
+        // Vite's dev server runs no output-generation hook; the dev bundles
+        // run over the dev server's own plugin instances.
         if self.command == Command::Build {
-            usage |= HookUsage::BuildEnd
+            usage |= HookUsage::RenderStart
+                | HookUsage::BuildEnd
                 | HookUsage::RenderChunk
                 | HookUsage::GenerateBundle
                 | HookUsage::WriteBundle;
