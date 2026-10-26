@@ -132,10 +132,15 @@ fn new_host_engine(
 ) -> Result<oj_js::JsEngine, String> {
     let root = root.to_path_buf();
     let resolver = std::sync::Arc::new(OjResolver::new(&root));
+    let preseeds = Preseeds {
+        runtime: tokio::runtime::Handle::try_current().ok(),
+        ..Preseeds::default()
+    };
     let rpc_handler: oj_js::RpcHandler = {
         let root = root.clone();
         Box::new(move |method, args| {
             bundle_rpc(method, args, &bundles)
+                .or_else(|| preseeds.rpc(method, args, &root))
                 .unwrap_or_else(|| ctx_rpc(method, args, &resolver, &root, import_meta_env.get()))
         })
     };
@@ -399,6 +404,67 @@ pub(crate) fn ctx_rpc(
             Ok(serde_json::json!({ "id": id, "code": code, "importedIds": imported_ids }))
         }
         other => Err(format!("unknown ctx method: {other}")),
+    }
+}
+
+/// The deps pre-seeds of the dev server setup's registrations (plugin-host.mjs
+/// `seedBootRegistrations`): asked for and polled over the synchronous
+/// bridge, which a host still in its top-level init can use (a hook reply
+/// cannot reach it then, and the setup may be what waits on the seed).
+#[derive(Default)]
+struct Preseeds {
+    runs: Arc<std::sync::Mutex<std::collections::HashMap<u64, Option<bool>>>>,
+    next: std::sync::atomic::AtomicU64,
+    /// The runtime the engine was made on: the bridge runs on the isolate's thread.
+    runtime: Option<tokio::runtime::Handle>,
+}
+
+impl Preseeds {
+    /// `preseedRegistered(mode, registrations)` starts one and returns its
+    /// id; `preseedRegisteredDone(id)` is null while it runs, then whether
+    /// the child committed. None for any other method.
+    fn rpc(
+        &self,
+        method: &str,
+        args: &[serde_json::Value],
+        root: &Path,
+    ) -> Option<Result<serde_json::Value, String>> {
+        let arg = |i: usize| {
+            args.get(i)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        match method {
+            "preseedRegistered" => {
+                let Some(runtime) = &self.runtime else {
+                    return Some(Ok(serde_json::Value::Null));
+                };
+                let id = self.next.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                self.runs.lock().unwrap().insert(id, None);
+                let (runs, root, mode, registered) =
+                    (Arc::clone(&self.runs), root.to_path_buf(), arg(0), arg(1));
+                runtime.spawn(async move {
+                    let seeded = crate::preseed::seed_registered(&root, &mode, &registered).await;
+                    runs.lock().unwrap().insert(id, Some(seeded));
+                });
+                Some(Ok(serde_json::json!(id)))
+            }
+            "preseedRegisteredDone" => {
+                let id = args.first().and_then(|v| v.as_u64()).unwrap_or(u64::MAX);
+                let mut runs = self.runs.lock().unwrap();
+                Some(Ok(match runs.get(&id) {
+                    Some(Some(seeded)) => {
+                        let seeded = *seeded;
+                        runs.remove(&id);
+                        serde_json::Value::Bool(seeded)
+                    }
+                    Some(None) => serde_json::Value::Null,
+                    None => serde_json::Value::Bool(false),
+                }))
+            }
+            _ => None,
+        }
     }
 }
 

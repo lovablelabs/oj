@@ -2662,7 +2662,191 @@ async function buildEnvironments(server) {
       }
     }),
   );
+  deferBootRegistrations(environments);
   return environments;
+}
+
+// The deps a server environment's optimizer is handed while the server sets
+// up (a plugin's configureServer registering the polyfills its runtime
+// injects, @cloudflare/vite-plugin's nodejs_compat ones among them) are part
+// of the boot-time pass the deps pre-seed child runs out of process: Vite's
+// optimizer would rerun for them in this process, and rolldown keeps the
+// native memory of every build until the process exits. So until setup ends
+// they are collected, optimized by a one-shot child with the same config and
+// the same registrations, and the environment's optimizer takes the child's
+// committed metadata. A registration after setup is the session discovering
+// a dep, which the optimizer handles here as Vite does.
+let bootRegistrationsOpen = false;
+const bootRegistrationBatches = [];
+function deferBootRegistrations(environments) {
+  if (!ojEnginePost) return;
+  bootRegistrationsOpen = true;
+  let batch = null;
+  for (const [name, environment] of Object.entries(environments)) {
+    const optimizer = environment?.depsOptimizer;
+    if (!optimizer || typeof optimizer.registerMissingImport !== "function") continue;
+    const register = optimizer.registerMissingImport;
+    optimizer.registerMissingImport = (id, resolved) => {
+      const metadata = optimizer.metadata;
+      const known = metadata?.optimized?.[id] ?? metadata?.chunks?.[id] ?? metadata?.discovered?.[id];
+      if (known || !bootRegistrationsOpen) return known ?? register(id, resolved);
+      if (!batch) {
+        batch = { deps: {}, done: null };
+        const current = batch;
+        // One child at a time: each commits over the last one's metadata.
+        const previous = bootRegistrationBatches.at(-1) ?? Promise.resolve();
+        current.done = new Promise((resolve) => setTimeout(resolve, 50))
+          .then(() => {
+            batch = null;
+            return previous;
+          })
+          .then(() => seedBootRegistrations(environments, current.deps));
+        bootRegistrationBatches.push(current.done);
+      }
+      const deps = (batch.deps[name] ??= {});
+      if (!deps[id]) {
+        // A discovered dep as Vite's addMissingDep makes it: what an import
+        // of it resolves to meanwhile, its loads waiting out `processing`.
+        const info = {
+          id,
+          file: normalizePath(pathResolve(depsCacheDir(environment), `${flattenDepId(id)}.js`)),
+          src: resolved,
+          browserHash: metadata.browserHash,
+          processing: batch.done.then(() => {
+            const now = optimizer.metadata;
+            return (now.optimized[id] ?? now.discovered[id])?.processing;
+          }),
+        };
+        metadata.discovered[id] = info;
+        metadata.depInfoList.push(info);
+        deps[id] = info;
+      }
+      return deps[id];
+    };
+    optimizer.registerMissingImport.ojRegister = register;
+  }
+}
+// One batch of setup-time registrations: the child optimizes them, then each
+// optimizer reads the metadata it committed; a failed child leaves them to
+// this process's optimizer, as without the pre-seed.
+async function seedBootRegistrations(environments, deps) {
+  const request = {};
+  for (const [name, byId] of Object.entries(deps)) request[name] = Object.values(byId).map((d) => [d.id, d.src]);
+  // Over the synchronous bridge, polled: the setup may still be running,
+  // waiting on these very deps, before any hook reply could reach the host.
+  let seeded = false;
+  try {
+    const run = bundleRpc("preseedRegistered", [env.mode, JSON.stringify(request)]);
+    while (run != null) {
+      const done = bundleRpc("preseedRegisteredDone", [run]);
+      if (done != null) {
+        seeded = done === true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  } catch (e) {
+    process.stderr.write(`${OJ} plugin host: boot deps pre-optimization failed: ${(e && e.message) || e}\n`);
+  }
+  for (const [name, byId] of Object.entries(deps)) {
+    const optimizer = environments[name]?.depsOptimizer;
+    if (!optimizer) continue;
+    if (seeded && reloadOptimizerMetadata(environments[name], optimizer, Object.keys(byId))) continue;
+    // Left to this process's optimizer: the stand-ins make way for its own.
+    const metadata = optimizer.metadata;
+    const standIns = new Set(Object.values(byId));
+    for (const id of Object.keys(byId)) if (standIns.has(metadata.discovered[id])) delete metadata.discovered[id];
+    metadata.depInfoList = metadata.depInfoList.filter((info) => !standIns.has(info));
+    for (const dep of standIns) optimizer.registerMissingImport.ojRegister(dep.id, dep.src);
+  }
+}
+// The optimizer takes what the child committed as Vite's rerun commits its
+// own result (createDepsOptimizer runOptimizer): unchanged deps keep the
+// browser hash their importers already use, the discovered stand-ins learn
+// their final shape, and a change to a dep already served reloads the
+// environment. In place: the optimizer reads that one metadata object.
+// False when the committed metadata is missing one of `ids`.
+function reloadOptimizerMetadata(environment, optimizer, ids) {
+  const dir = depsCacheDir(environment);
+  let raw;
+  try {
+    raw = readFileSync(join(dir, "_metadata.json"), "utf8");
+  } catch {
+    return false;
+  }
+  // Vite's parseDepsOptimizerMetadata.
+  const parsed = JSON.parse(raw, (key, value) =>
+    key === "file" || key === "src" ? normalizePath(pathResolve(dir, value)) : value,
+  );
+  if (!parsed.chunks || !parsed.optimized || ids.some((id) => !parsed.optimized[id])) return false;
+  const next = { optimized: {}, chunks: {}, discovered: {}, depInfoList: [] };
+  const add = (type, info) => {
+    next[type][info.id] = info;
+    next.depInfoList.push(info);
+  };
+  for (const [id, info] of Object.entries(parsed.optimized))
+    add("optimized", { ...info, id, browserHash: parsed.browserHash });
+  for (const [id, info] of Object.entries(parsed.chunks)) {
+    add("chunks", { ...info, id, browserHash: parsed.browserHash, needsInterop: false });
+  }
+  const metadata = optimizer.metadata;
+  const interopMismatch = Object.entries(metadata.discovered).some(
+    ([id, info]) =>
+      info.needsInterop !== undefined && next.optimized[id] && next.optimized[id].needsInterop !== info.needsInterop,
+  );
+  const needsReload =
+    interopMismatch ||
+    metadata.hash !== parsed.hash ||
+    Object.keys(metadata.optimized).some((id) => metadata.optimized[id].fileHash !== next.optimized[id]?.fileHash);
+  for (const [id, info] of Object.entries(metadata.discovered)) if (!next.optimized[id]) add("discovered", info);
+  let browserHash = parsed.browserHash;
+  if (!needsReload) {
+    browserHash = metadata.browserHash;
+    for (const info of Object.values(next.chunks)) info.browserHash = browserHash;
+    for (const [id, info] of Object.entries(next.optimized)) {
+      info.browserHash = (metadata.optimized[id] || metadata.discovered[id])?.browserHash ?? browserHash;
+    }
+  }
+  for (const [id, optimized] of Object.entries(next.optimized)) {
+    const discovered = metadata.discovered[id];
+    if (!discovered) continue;
+    discovered.browserHash = optimized.browserHash;
+    discovered.fileHash = optimized.fileHash;
+    discovered.needsInterop = optimized.needsInterop;
+    discovered.processing = undefined;
+  }
+  Object.assign(metadata, {
+    hash: parsed.hash,
+    lockfileHash: parsed.lockfileHash,
+    configHash: parsed.configHash,
+    browserHash,
+    ...next,
+  });
+  if (needsReload) {
+    environment.logger?.info?.("optimized dependencies changed. reloading", { timestamp: true });
+    environment.moduleGraph?.invalidateAll?.();
+    environment.hot?.send?.({ type: "full-reload", path: "*" });
+  }
+  return true;
+}
+// Vite's normalizePath, getDepsCacheDir and flattenId.
+function normalizePath(p) {
+  return p.replace(/\\/g, "/");
+}
+function depsCacheDir(environment) {
+  const { cacheDir } = environment.config;
+  return normalizePath(pathResolve(cacheDir, environment.name === "client" ? "deps" : `deps_${environment.name}`));
+}
+function flattenDepId(id) {
+  const flat = id
+    .replaceAll(/_+/g, "$&__")
+    .replaceAll("/", "_")
+    .replaceAll(".", "__")
+    .replace(/\s*>\s*/g, "_n_")
+    .replace(/[\u0000-\u001F"#$%&*+,:;<=>?[\]^`{|}\u007F]/g, (c) => "_0" + c.charCodeAt(0).toString(16) + "_");
+  return flat.length > 170
+    ? `${flat.slice(0, 161)}_${createHash("sha256").update(flat).digest("hex").slice(0, 8)}`
+    : flat;
 }
 
 // The resolve the host's config came from, as Vite's resolveConfig leaves
@@ -4071,6 +4255,8 @@ async function setupConfigureServer() {
       process.stderr.write(`${OJ} plugin host: post configureServer skipped: ${(e && e.message) || e}\n`);
     }
   }
+  // Setup is over: later registrations are the session's own discoveries.
+  bootRegistrationsOpen = false;
   ojConfigureServerDone = true;
   // The middleware server exists as soon as configureServer registered
   // anything, like Vite's connect stack exists at createServer — never

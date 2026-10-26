@@ -176,7 +176,11 @@ fn parse_report(raw: &str) -> Option<Vec<SeededEnv>> {
 /// rather than left holding rolldown's native retention.
 const PRESEED_KILL: std::time::Duration = std::time::Duration::from_secs(300);
 
-async fn run_child(root: &Path, mode: &str) -> anyhow::Result<Vec<SeededEnv>> {
+async fn run_child(
+    root: &Path,
+    mode: &str,
+    registered: Option<&str>,
+) -> anyhow::Result<Vec<SeededEnv>> {
     let cache = oj_cache::cache_root(root);
     std::fs::create_dir_all(&cache)?;
     // Atomic rename: an engine could import the script while a concurrent oj
@@ -213,7 +217,7 @@ async fn run_child(root: &Path, mode: &str) -> anyhow::Result<Vec<SeededEnv>> {
         .spawn()?;
     {
         use tokio::io::AsyncWriteExt;
-        let env: Vec<(String, String)> = vec![
+        let mut env: Vec<(String, String)> = vec![
             ("OJ_APP_ROOT".into(), root.to_string_lossy().into_owned()),
             ("OJ_ENV_MODE".into(), mode.to_string()),
             (
@@ -230,6 +234,9 @@ async fn run_child(root: &Path, mode: &str) -> anyhow::Result<Vec<SeededEnv>> {
                     .into_owned(),
             ),
         ];
+        if let Some(registered) = registered {
+            env.push(("OJ_PRESEED_REGISTER".into(), registered.to_string()));
+        }
         let mut stdin = child.stdin.take().expect("piped stdin");
         stdin
             .write_all(serde_json::to_string(&env)?.as_bytes())
@@ -265,7 +272,7 @@ pub(crate) async fn preseed_server_deps(root: &Path, mode: &str) {
     }
     crate::boot_phase("deps preseed begin");
     println!("  deps: pre-optimizing server environments in a one-shot child");
-    match run_child(root, mode).await {
+    match run_child(root, mode, None).await {
         Ok(seeded) => {
             write_stamp(root, &seeded);
             crate::boot_phase("deps preseed done");
@@ -277,6 +284,50 @@ pub(crate) async fn preseed_server_deps(root: &Path, mode: &str) {
             crate::boot_phase("deps preseed failed");
         }
     }
+}
+
+/// The deps a server environment's optimizer was handed while the dev server
+/// set up (plugin-host.mjs `deferBootRegistrations`, `registered` as
+/// `{ env: [[id, resolved], ..] }`), optimized by the same one-shot child as
+/// the boot-time pass, so the host takes its metadata instead of building in
+/// process. Whether the child committed them.
+pub(crate) async fn seed_registered(root: &Path, mode: &str, registered: &str) -> bool {
+    crate::boot_phase("deps preseed (setup registrations) begin");
+    match run_child(root, mode, Some(registered)).await {
+        Ok(_) => {
+            restamp(root);
+            println!("  deps: optimized the dev server setup's dependencies in a one-shot child");
+            crate::boot_phase("deps preseed (setup registrations) done");
+            true
+        }
+        Err(e) => {
+            eprintln!("oj: deps pre-optimization of the setup's dependencies incomplete ({e}); the plugin host optimizes them in-process");
+            false
+        }
+    }
+}
+
+/// The stamp's environments over their metadata as it now stands.
+fn restamp(root: &Path) {
+    let Ok(raw) = std::fs::read_to_string(stamp_path(root)) else {
+        return;
+    };
+    let Some(envs) = serde_json::from_str::<serde_json::Value>(&raw)
+        .ok()
+        .and_then(|v| v.get("envs").and_then(|e| e.as_array()).cloned())
+    else {
+        return;
+    };
+    let seeded: Vec<SeededEnv> = envs
+        .iter()
+        .filter_map(|e| {
+            Some(SeededEnv {
+                name: e.get("name")?.as_str()?.to_string(),
+                metadata_path: PathBuf::from(e.get("metadataPath")?.as_str()?),
+            })
+        })
+        .collect();
+    write_stamp(root, &seeded);
 }
 
 #[cfg(test)]

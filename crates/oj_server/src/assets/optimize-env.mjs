@@ -16,10 +16,16 @@
 // by the same code that later validates them in the host, so no hash is
 // imitated.
 //
-// Known gap, on purpose: this covers the BOOT-TIME pass. A mid-session
-// re-optimization (a lockfile edit while serving, a discovery-mode
-// environment finding new deps) still runs inside the host; intercepting
-// every such path would mean owning Vite's optimizer scheduling.
+// The boot-time pass includes what the dev server's setup hands an
+// environment's optimizer (a plugin's configureServer registering the
+// polyfills its runtime injects): the host collects those registrations and
+// runs this script again with them (OJ_PRESEED_REGISTER), which registers
+// them on the same optimizer here and commits what Vite's rerun would.
+//
+// Known gap, on purpose: a mid-session re-optimization (a lockfile edit while
+// serving, a discovery-mode environment finding new deps) still runs inside
+// the host; intercepting every such path would mean owning Vite's optimizer
+// scheduling.
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -70,13 +76,24 @@ async function main() {
     return report([], false);
   }
 
+  // The setup's registrations, by environment: `[[id, resolved], ..]`.
+  const registered = process.env.OJ_PRESEED_REGISTER ? JSON.parse(process.env.OJ_PRESEED_REGISTER) : null;
   const rc = await asNode(() =>
-    vite.resolveConfig({ root, configFile: undefined, mode }, "serve", "development", "development"),
+    vite.resolveConfig(
+      // The setup pass runs while the dev server boots: its optimizer's
+      // progress is not news (logLevel is no input of Vite's configHash).
+      { root, configFile: undefined, mode, ...(registered ? { logLevel: "warn" } : {}) },
+      "serve",
+      "development",
+      "development",
+    ),
   );
   // Snapshot BEFORE folding: the host folds the same file, and this child's
-  // own optimize rewrites the metadata the snapshot was derived from.
+  // own optimize rewrites the metadata the snapshot was derived from. The
+  // setup pass folds the boot pass's snapshot unchanged, the one the host
+  // folded: the same configHash.
   const snapshotPath = process.env.OJ_PRESEED_INCLUDE;
-  if (snapshotPath) writeIncludeSnapshot(snapshotPath, priorDepIds(rc), rc.root);
+  if (snapshotPath && !registered) writeIncludeSnapshot(snapshotPath, priorDepIds(rc), rc.root);
   const folded = foldIncludeSnapshot(rc, snapshotPath);
 
   // One environment's pass: construct, init, wait for the committed metadata.
@@ -108,6 +125,24 @@ async function main() {
         }
       }
       if (!existsSync(metadataPath)) throw new Error("the optimizer produced no metadata");
+      const deps = registered?.[name] ?? [];
+      if (deps.length) {
+        // As the host's plugins registered them: Vite reruns the optimizer
+        // with the new deps and commits, as it would have in the host.
+        const infos = deps.map(([id, resolved]) => de.depsOptimizer.registerMissingImport(id, resolved));
+        await Promise.all(infos.map((info) => info?.processing));
+        const committed = () => {
+          try {
+            const optimized = JSON.parse(readFileSync(metadataPath, "utf8")).optimized ?? {};
+            return deps.every(([id]) => optimized[id]);
+          } catch {
+            return false;
+          }
+        };
+        const deadline = Date.now() + timeoutMs;
+        while (!committed() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+        if (!committed()) throw new Error("the optimizer did not commit the registered deps");
+      }
       return { name, metadataPath };
     } finally {
       // Only after the commit: depsOptimizer.close() CANCELS an in-flight
@@ -127,6 +162,7 @@ async function main() {
     // consumers can run an in-host pass.
     const consumer = envOpts?.consumer ?? (name === "client" ? "client" : "server");
     if (consumer === "client") continue;
+    if (registered && !registered[name]?.length) continue;
     let entry;
     try {
       entry = await seedEnvironment(name);
