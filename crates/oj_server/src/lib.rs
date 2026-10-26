@@ -346,9 +346,6 @@ struct ServerState {
     hmr_enabled: bool,
     /// The files whose change restarts the server ([`restart_files`]).
     restart_files: Vec<PathBuf>,
-    /// What a restart boots from (the CLI's `--config`, the dev mode, a
-    /// Start app), checked before a running server is replaced.
-    restart_config: (Option<PathBuf>, String, bool),
     /// The engines the debug GC endpoint fans over (plugin hosts, CSS, SSR,
     /// Start, addon keeper); every long-lived spawn joins it.
     engine_registry: oj_js::EngineRegistry,
@@ -1674,10 +1671,13 @@ impl DevServer {
             }
             caps = PluginCaps::probe(host).await;
         }
-        // Vite's createServer creates and inits every environment before it
-        // listens, the ssr one included: its container opens here, with its
-        // `environments.ssr.define` (and config()-hook deltas) layered over
-        // the shared define for SSR compiles.
+        // What a restart of this server boots from, checked before it replaces it.
+        let _ = watch::RESTART_CHECK.set(watch::RestartCheck {
+            root: root.clone(),
+            config_file: config_file.clone(),
+            mode: dev_mode.clone(),
+            start: is_start,
+        });
         // The ssr container the host's init opened, its
         // `environments.ssr.define` (and config()-hook deltas) layered over
         // the shared define for SSR compiles.
@@ -1813,7 +1813,6 @@ impl DevServer {
                 .unwrap_or(0),
             hmr_enabled: hmr.enabled,
             restart_files: restart_files(&root, &env_dir, &dev_mode, config_file.as_deref()),
-            restart_config: (config_file.clone(), dev_mode.clone(), is_start),
             plugins: plugin_host.clone(),
             plugin_serve: Arc::clone(&plugin_serve),
             plugins_ssr,

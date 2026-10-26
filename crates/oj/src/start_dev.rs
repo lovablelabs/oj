@@ -1246,7 +1246,7 @@ fn spawn_start_watcher(
             if paths.iter().any(|p| start_entry_candidate(p))
                 && crate::start_host::app_start_entry(&watch_root) != boot_entry
             {
-                oj_server::restart_process("the start entry changed");
+                oj_server::request_restart("the start entry changed");
             }
             // Rebuild only on a real source-file change. Ignore the generated
             // route tree and its atomic-write temp siblings, plus bare directory
