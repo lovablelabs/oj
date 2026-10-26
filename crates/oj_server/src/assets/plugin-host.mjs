@@ -27,7 +27,7 @@ import {
   flattenPlugins,
   isReimplemented,
 } from "./native-plugins.mjs";
-import { idFilterGlob, idFilterRegExp, loadViteGlobs } from "./start/vite-globs.mjs";
+import { idFilterGlob, idFilterRegExp, loadViteGlobs, viteGlobs } from "./start/vite-globs.mjs";
 import {
   applyHtmlTransforms,
   createHtmlProxy,
@@ -2739,6 +2739,60 @@ async function viteEnvironmentPlugins(name, rc) {
   }
   return out;
 }
+// Vite's warmupFiles for the runner environments: each environment's own
+// `dev.warmup` (`server.warmup.ssrFiles` for ssr), fire-and-forget as in
+// Vite (transformRequest dedups, warmupRequest swallows outdated-dep and
+// closed-server errors). The reply reports what STARTED. The client
+// environment is never warmed: oj's own pipeline serves the browser, and the
+// in-host client environment's module graph is read by nothing.
+async function warmEnvironments() {
+  const envs = devServer?.environments ?? {};
+  const config = devServer?.config ?? main.resolvedConfig ?? {};
+  const root = config.root ?? initial.config?.root ?? process.cwd();
+  const names = [];
+  let started = 0;
+  for (const [name, environment] of Object.entries(envs)) {
+    if (typeof environment?.warmupRequest !== "function") continue;
+    const options = config.environments?.[name] ?? {};
+    if ((options.consumer ?? (name === "client" ? "client" : "server")) === "client") continue;
+    const patterns = environment.config?.dev?.warmup ?? options.dev?.warmup ?? [];
+    const files = await warmupFiles(Array.isArray(patterns) ? patterns : [], root);
+    if (!files.length) continue;
+    names.push(name);
+    for (const file of files) {
+      started++;
+      const rel = relative(root, file).replace(/\\/g, "/");
+      const url = rel.startsWith("..") || isAbsolute(rel) ? `/@fs/${file.replace(/^\//, "")}` : `/${rel}`;
+      // A custom environment's synchronously throwing warmupRequest must not
+      // escape the dispatch (Vite's own never rejects).
+      void (async () => environment.warmupRequest(url))().catch(() => {});
+    }
+  }
+  return names.length ? JSON.stringify({ environments: names, started }) : null;
+}
+// Vite's mapFiles: plain entries resolved from the root, globs expanded.
+async function warmupFiles(files, root) {
+  const { tinyglobby } = viteGlobs();
+  const out = [];
+  const globs = [];
+  for (const file of files) {
+    if (typeof file !== "string") continue;
+    if (tinyglobby.isDynamicPattern(file)) globs.push(file);
+    else out.push(isAbsolute(file) ? file : pathResolve(root, file));
+  }
+  if (globs.length) {
+    out.push(
+      ...(await tinyglobby.glob(globs, {
+        absolute: true,
+        cwd: root,
+        expandDirectories: false,
+        ignore: ["**/.git/**", "**/node_modules/**"],
+      })),
+    );
+  }
+  return out;
+}
+
 // Vite's createPluginHookUtils: a hook's plugins by its `order`.
 function pluginHookUtils(plugins) {
   const sorted = new Map();
@@ -5396,39 +5450,7 @@ async function run(hook, args, c) {
     await devServer?.close?.();
     return null;
   }
-  if (hook === "warmEnvironments") {
-    // Vite's warmup shape (server/warmup.ts): fire-and-forget. Nobody awaits
-    // warmupFiles' promises there; transformRequest dedups concurrent
-    // requests and warmupRequest swallows outdated-dep/closed-server errors.
-    // The reply reports what STARTED: awaiting completion here would park a
-    // whole cold-graph warm behind one RPC window and time out on exactly the
-    // boots the warm exists for. Every environment with a real warmupRequest
-    // is warmed, INCLUDING client (Vite's clientFiles warm exactly it, and
-    // Start route modules execute on both sides); an auxiliary worker
-    // environment that never imports the routes pays a bounded extra
-    // transform per url, the price of not guessing which environments render.
-    // A host without a dev server, or an empty url list, replies null; the
-    // caller reads that as nothing-warmable. (This hook is only ever invoked
-    // for the runner-environment shape, so warming the host's default
-    // environments is never a stray non-runner cost.)
-    let urls = [];
-    try {
-      const parsed = JSON.parse(args[0] ?? "[]");
-      if (Array.isArray(parsed)) urls = parsed.filter((u) => typeof u === "string");
-    } catch {}
-    const envs = devServer?.environments ?? {};
-    const names = Object.keys(envs).filter((n) => typeof envs[n]?.warmupRequest === "function");
-    if (!names.length || !urls.length) return null;
-    for (const n of names) {
-      for (const u of urls) {
-        // The async wrapper contains a CUSTOM environment's synchronously
-        // throwing warmupRequest (Vite's own never rejects), which would
-        // otherwise escape and fail the whole call.
-        void (async () => envs[n].warmupRequest(u))().catch(() => {});
-      }
-    }
-    return JSON.stringify({ environments: names, started: names.length * urls.length });
-  }
+  if (hook === "warmEnvironments") return warmEnvironments();
   if (hook === "getWatchFiles") return JSON.stringify([...watchedFiles]);
   if (hook === "hasModuleParsed") return String(anyModuleParsed(c));
   if (hook === "bundleModuleParsed") return bundleModuleParsed(c, args[0]);

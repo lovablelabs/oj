@@ -4,13 +4,16 @@
 // Runner-environment prewarm: when a plugin's worker environments serve the
 // documents, warming oj's own engine is wasted — but skipping entirely left
 // the first request to pay the whole cold graph (81s on a contended sandbox).
-// oj now fires two warms with no request in sight: every route module's
-// transform through `environment.warmupRequest` (Vite's warmup shape, all at
-// once), and one real GET / through its own listener (the full serving path:
-// middleware forward, worker render). This runs a copy of the
-// start-gating-app fixture whose config declares a fake runner environment
-// that records warmupRequest urls, plus a configureServer middleware that
-// records document hits — and asserts both fire without any client request.
+// oj fires two warms with no request in sight: the app's own `server.warmup`
+// files through each runner environment's `warmupRequest` (Vite's warmup:
+// the environment's own list, never every route), and one real GET / through
+// its own listener (the full serving path: middleware forward, worker
+// render). The in-host client environment is never warmed: oj's own pipeline
+// serves the browser. This runs a copy of the start-gating-app fixture whose
+// config declares a fake runner environment that records warmupRequest urls,
+// a plugin recording the client environment's transforms, and a
+// configureServer middleware that records document hits — and asserts the
+// warms fire without any client request and warm only what Vite would.
 // The config also mentions @cloudflare/vite-plugin (a comment): the static
 // cf hint that arms the prewarm hold, exactly as a real Cloudflare app would.
 
@@ -23,7 +26,7 @@ import { fileURLToPath } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
 const fixture = path.join(here, "fixtures", "start-gating-app");
-const OJ = path.join(repo, "target", "debug", "oj");
+const OJ = process.env.OJ_BIN ?? path.join(repo, "target", "debug", "oj");
 const PORT = 5351;
 
 const sharedDeps = path.join(here, "fixtures", "start-app", "node_modules");
@@ -42,6 +45,7 @@ fs.symlinkSync(sharedDeps, path.join(app, "node_modules"));
 
 const warmLog = path.join(app, "warmed.log");
 const hitLog = path.join(app, "hits.log");
+const clientLog = path.join(app, "client-transforms.log");
 fs.writeFileSync(
   path.join(app, "vite.config.ts"),
   `// runner-shaped config; the cf hint below arms the prewarm hold like a
@@ -52,6 +56,7 @@ import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import react from "@vitejs/plugin-react";
 
 export default defineConfig({
+  server: { warmup: { ssrFiles: ["./src/router.tsx"] } },
   environments: {
     ssr: {
       dev: {
@@ -69,6 +74,15 @@ export default defineConfig({
     },
   },
   plugins: [
+    {
+      name: "client-environment-transforms",
+      transform(code: string, id: string) {
+        const env = (this as any).environment;
+        if (env?.name === "client" && typeof env.warmupRequest === "function") {
+          appendFileSync(${JSON.stringify(clientLog)}, id + "\\n");
+        }
+      },
+    },
     {
       name: "runner-doc-middleware",
       configureServer(server) {
@@ -113,7 +127,7 @@ try {
   for (;;) {
     warmed = fs.existsSync(warmLog) ? fs.readFileSync(warmLog, "utf8") : "";
     hits = fs.existsSync(hitLog) ? fs.readFileSync(hitLog, "utf8") : "";
-    if (warmed.includes("/src/routes/index.tsx") && /^\/(\?|$)/m.test(hits)) break;
+    if (warmed.includes("/src/router.tsx") && /^\/(\?|$)/m.test(hits)) break;
     if (spawnErr) throw spawnErr;
     if (child.exitCode !== null) throw new Error(`oj exited early\n${stderr.slice(-4000)}`);
     if (Date.now() - t0 > 180_000) {
@@ -125,13 +139,17 @@ try {
     }
     await sleep(250);
   }
-  if (!warmed.includes("/src/router.tsx")) {
-    throw new Error(`router entry missing from the transform warm: ${warmed}`);
+  if (warmed.includes("/src/routes/")) {
+    throw new Error(`route modules warmed beyond server.warmup: ${warmed}`);
   }
+  // Long enough for a warm of the client environment to have transformed.
+  await sleep(3000);
+  const client = fs.existsSync(clientLog) ? fs.readFileSync(clientLog, "utf8") : "";
+  if (client) throw new Error(`the in-host client environment transformed at boot:\n${client}`);
   if (!stderr.includes("prewarm: engine skipped (worker environments)")) {
     throw new Error(`engine prewarm was not skipped for the runner env\n${stderr.slice(-2000)}`);
   }
-  console.log("runner-env-prewarm: ok (transform warm + render warm fired unprompted)");
+  console.log("runner-env-prewarm: ok (server.warmup + render warm fired unprompted, client environment untouched)");
 } catch (e) {
   failed = true;
   console.error(e.message ?? e);

@@ -1037,11 +1037,11 @@ impl PluginHost {
         self.hook_plan.read().unwrap().clone()
     }
 
-    /// Dispatch the app-Vite-side transform warm (fire-and-forget, like Vite's
-    /// warmup.ts); replies once dispatched. Returns `{environments, started}`, None when nothing was warmable.
-    pub async fn warm_environments(&self, urls: &[String]) -> Result<Option<String>, String> {
-        let payload = serde_json::to_string(urls).map_err(|e| e.to_string())?;
-        self.call("warmEnvironments", &[&payload]).await
+    /// Dispatch the runner environments' `server.warmup` transforms
+    /// (fire-and-forget, like Vite's warmup.ts); replies once dispatched.
+    /// Returns `{environments, started}`, None when nothing was warmable.
+    pub async fn warm_environments(&self) -> Result<Option<String>, String> {
+        self.call("warmEnvironments", &[]).await
     }
 
     async fn ensure_hook_plan(&self) {
