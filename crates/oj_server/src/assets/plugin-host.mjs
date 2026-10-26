@@ -2802,7 +2802,9 @@ function deferBootRegistrations(environments) {
             batch = null;
             return previous;
           })
-          .then(() => seedBootRegistrations(environments, current.deps));
+          .then(() => seedBootRegistrations(environments, current.deps))
+          // A failed batch is logged; it never holds the ones after it.
+          .catch((e) => process.stderr.write(`${OJ} plugin host: boot deps batch failed: ${(e && e.message) || e}\n`));
         bootRegistrationBatches.push(current.done);
       }
       const deps = (batch.deps[name] ??= {});
@@ -2853,13 +2855,23 @@ async function seedBootRegistrations(environments, deps) {
   for (const [name, byId] of Object.entries(deps)) {
     const optimizer = environments[name]?.depsOptimizer;
     if (!optimizer) continue;
-    if (seeded && reloadOptimizerMetadata(environments[name], optimizer, Object.keys(byId))) continue;
+    try {
+      if (seeded && reloadOptimizerMetadata(environments[name], optimizer, Object.keys(byId))) continue;
+    } catch (e) {
+      process.stderr.write(`${OJ} plugin host: the pre-seeded deps metadata is unreadable: ${(e && e.message) || e}\n`);
+    }
     // Left to this process's optimizer: the stand-ins make way for its own.
     const metadata = optimizer.metadata;
     const standIns = new Set(Object.values(byId));
     for (const id of Object.keys(byId)) if (standIns.has(metadata.discovered[id])) delete metadata.discovered[id];
     metadata.depInfoList = metadata.depInfoList.filter((info) => !standIns.has(info));
-    for (const dep of standIns) optimizer.registerMissingImport.ojRegister(dep.id, dep.src);
+    for (const dep of standIns) {
+      try {
+        optimizer.registerMissingImport.ojRegister(dep.id, dep.src);
+      } catch (e) {
+        process.stderr.write(`${OJ} plugin host: optimizing ${dep.id} failed: ${(e && e.message) || e}\n`);
+      }
+    }
   }
 }
 // The optimizer takes what the child committed as Vite's rerun commits its

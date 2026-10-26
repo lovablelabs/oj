@@ -224,3 +224,78 @@ export default [{
         "the ssr environment's own graph and hot channel:\n{ssr}"
     );
 }
+
+// The deps a runner environment's optimizer is handed while the server sets
+// up are optimized in batches, each after the last: a batch whose work fails
+// (the pre-seed child and the in-process fallback alike) never stops the
+// batches after it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_boot_dep_batch_leaves_the_next_one_running() {
+    crate::require_fixture!("vite");
+    let config = r#"import { DevEnvironment } from "vite";
+const registered = [];
+const optimizer = {
+  metadata: { optimized: {}, chunks: {}, discovered: {}, depInfoList: [], browserHash: "h" },
+  registerMissingImport(id) {
+    if (id === "dep-a") throw new Error("this process's optimizer failed too");
+    registered.push(id);
+    return { id, processing: Promise.resolve() };
+  },
+};
+const runner = {
+  name: "runner-env",
+  config() {
+    return {
+      environments: {
+        worker: {
+          consumer: "server",
+          dev: {
+            createEnvironment(name, config) {
+              const environment = new DevEnvironment(name, config, { hot: true });
+              environment.depsOptimizer = optimizer;
+              return environment;
+            },
+          },
+        },
+      },
+    };
+  },
+  async configureServer(server) {
+    server.middlewares.use((req, res, next) => {
+      if (req.url !== "/__registered") return next();
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(registered));
+    });
+    const deps = server.environments.worker.depsOptimizer;
+    deps.registerMissingImport("dep-a", "/a.js");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    deps.registerMissingImport("dep-b", "/b.js");
+  },
+};
+export default { plugins: [runner] };
+"#;
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"boot-dep-batches","private":true,"type":"module"}"#,
+        ),
+        ("index.html", INDEX_HTML),
+        ("src/main.js", "window.__ok = 1;\n"),
+        ("vite.config.mjs", config),
+    ]);
+    app.link_fixture("vite");
+    let server = app.serve().await;
+    crate::plugin_middleware::middleware_ready(&server).await;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let registered = server.text("/__registered").await;
+        if registered.contains("dep-b") {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the batch after a failed one never ran: {registered}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+}
