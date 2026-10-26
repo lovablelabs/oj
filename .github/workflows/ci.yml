@@ -178,6 +178,8 @@ jobs:
         run: node e2e/plugin-file-hmr.mjs
       - name: client env define (dotenv + process env + plugin config mutations)
         run: node e2e/env-define.mjs
+      - name: a config edit whose plugins fail to resolve keeps the running server, like Vite's restart
+        run: node e2e/config-restart-failure.mjs
       - name: a vite.config that fails to load is an error, not an empty config
         run: node e2e/config-load-failure.mjs
       # These drive a dev server (and svgr-plugin also a browser via playwright),

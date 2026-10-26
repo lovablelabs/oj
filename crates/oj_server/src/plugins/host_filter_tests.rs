@@ -208,10 +208,11 @@ async fn a_plugin_with_a_non_function_then_does_not_hang_the_host() {
 }
 
 // A rejection inside what applyToEnvironment returned is the hook failing,
-// like a throw from the hook itself: the plugin stays active and the host
-// comes up, instead of the whole boot failing on one plugin.
+// like a throw from the hook itself: Start mode (which tolerates a framework
+// config's lifecycle hooks per plugin) keeps the plugin active and the host
+// comes up; elsewhere it fails the boot, as it rejects Vite's createServer.
 #[tokio::test]
-async fn a_rejection_inside_an_apply_to_environment_result_keeps_the_plugin() {
+async fn in_start_mode_a_rejection_inside_an_apply_to_environment_result_keeps_the_plugin() {
     let src = r#"export default {
   plugins: [
     { name: "user" },
@@ -222,6 +223,7 @@ async fn a_rejection_inside_an_apply_to_environment_result_keeps_the_plugin() {
     let extra = serde_json::json!({
         "environment": { "name": "client", "mode": "build" },
         "pluginsFormat": "vite",
+        "ojStartMode": true,
     });
     let names = hosted_names("nested-reject", "vite.config.mjs", src, extra).await;
     assert_eq!(names, ["user", "rejects"]);

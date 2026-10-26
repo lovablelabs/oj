@@ -360,6 +360,29 @@ pub fn unregister_child(pid: u32) {
     child_groups::unregister(pid);
 }
 
+/// Why the dev server a restart would boot fails to start, as far as Vite's
+/// createServer would: the vite.config does not load, or (outside Start, which
+/// tolerates a framework config's hook failures per plugin) the app's Vite
+/// cannot resolve it. The evaluation is the next boot's own (it is cached).
+fn restart_failure(state: &ServerState) -> Option<String> {
+    let (config_file, mode, start) = &state.restart_config;
+    let Some(crate::plugins::PluginSource::ViteConfig(vite)) =
+        crate::plugins::plugin_source(&state.root, config_file.as_deref())
+    else {
+        return None;
+    };
+    let values =
+        crate::plugins::extract_vite_values(&state.root, config_file.as_deref(), "serve", mode);
+    // The next boot reads this evaluation from the cache, so it cannot tell
+    // the config changed: the deps pre-seed it keys must run again.
+    crate::preseed::forget_stamp(&state.root);
+    match values {
+        None => Some(format!("failed to load config from {}", vite.display())),
+        Some(values) if !*start => values.resolve_error,
+        Some(_) => None,
+    }
+}
+
 pub fn restart_process(reason: &str) -> ! {
     if let Some(hook) = RESTART_HOOK.get() {
         hook(reason);
@@ -984,7 +1007,23 @@ fn handle_batch(
             .get()
             .and_then(|cwd| pathdiff::diff_paths(file, cwd))
             .unwrap_or_else(|| file.clone());
-        restart_process(&format!("{} changed", shown.display()));
+        // Vite's restartServer creates the new server first and keeps the
+        // running one when that fails, logging why.
+        match restart_failure(state) {
+            Some(error) => {
+                eprintln!("{} {error}", oj_brand());
+                eprintln!("{} server restart failed", oj_brand());
+                oj_diag::emit(
+                    oj_diag::Event::new(
+                        oj_diag::Kind::Restart,
+                        format!("server restart failed: {error}"),
+                    )
+                    .warn(),
+                );
+            }
+            None => restart_process(&format!("{} changed", shown.display())),
+        }
+        return;
     }
     // Vite's reloadOnTsconfigChange: clear caches, full reload. The compile
     // key folds class-field semantics in, so stale persistent-cache entries

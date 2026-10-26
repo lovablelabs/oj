@@ -342,3 +342,30 @@ export default [{
         "server.environments.ssr is the ssr environment:\n{ssr}"
     );
 }
+
+// A plugin whose applyToEnvironment throws fails the dev server's start, as it
+// rejects Vite's createServer (resolveEnvironmentPlugins): never a server
+// whose ssr environment silently runs without the app's plugins.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_throwing_apply_to_environment_fails_the_boot() {
+    let plugins = r#"export default [{
+  name: "refuses-ssr",
+  applyToEnvironment(environment) {
+    if (environment.name === "ssr") throw new Error("refuses-ssr-environment");
+    return true;
+  },
+  transform(code) { return code; },
+}];
+"#;
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"plugin-environments-refuses","private":true,"type":"module"}"#,
+        ),
+        ("index.html", INDEX_HTML),
+        ("src/main.js", "window.__ok = 1;\n"),
+        ("oj.plugins.mjs", plugins),
+    ]);
+    let built = app.dev().build_app().await;
+    assert!(built.is_err(), "the boot must fail");
+}

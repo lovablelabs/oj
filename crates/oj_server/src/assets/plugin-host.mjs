@@ -2286,6 +2286,10 @@ async function environmentPlugins(environment, candidates, c = main) {
     try {
       applied = await applyToEnvironmentOnce(p, environment);
     } catch (e) {
+      // Vite's resolveEnvironmentPlugins lets it reject the resolve, and
+      // with it createServer. Start mode tolerates a framework config's
+      // lifecycle hooks per plugin, keeping the plugin active.
+      if (!ojStartMode) throw decoratePluginError(e, p);
       process.stderr.write(
         `${OJ} plugin host: applyToEnvironment(${p.name ?? "?"}) threw; keeping the plugin active: ${(e && e.message) || e}\n`,
       );

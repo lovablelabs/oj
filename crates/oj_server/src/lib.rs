@@ -346,6 +346,9 @@ struct ServerState {
     hmr_enabled: bool,
     /// The files whose change restarts the server ([`restart_files`]).
     restart_files: Vec<PathBuf>,
+    /// What a restart boots from (the CLI's `--config`, the dev mode, a
+    /// Start app), checked before a running server is replaced.
+    restart_config: (Option<PathBuf>, String, bool),
     /// The engines the debug GC endpoint fans over (plugin hosts, CSS, SSR,
     /// Start, addon keeper); every long-lived spawn joins it.
     engine_registry: oj_js::EngineRegistry,
@@ -943,6 +946,13 @@ async fn spawn_plugin_host(
         }
     };
     let count = host.plugin_count().await;
+    // A plugin that fails the host's init (a throwing config hook, an
+    // environment it cannot apply to) fails the boot, as it fails Vite's
+    // createServer: never a server running without the app's plugins.
+    if *host.host_gone_updates().borrow() {
+        host.shutdown();
+        anyhow::bail!("the plugin host failed to initialize (see the error above)");
+    }
     // With no plugin active in any environment, the dev HTML transform runs
     // natively and the host goes, unless it hosts `server.proxy`.
     if count == 0 && host.top_level_plugin_count().await == 0 {
@@ -1803,6 +1813,7 @@ impl DevServer {
                 .unwrap_or(0),
             hmr_enabled: hmr.enabled,
             restart_files: restart_files(&root, &env_dir, &dev_mode, config_file.as_deref()),
+            restart_config: (config_file.clone(), dev_mode.clone(), is_start),
             plugins: plugin_host.clone(),
             plugin_serve: Arc::clone(&plugin_serve),
             plugins_ssr,

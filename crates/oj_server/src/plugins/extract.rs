@@ -60,6 +60,9 @@ pub struct ViteValues {
     pub active_plugins: Option<usize>,
     /// The config's `@stylexjs/unplugin` (`{ options }`), which oj runs natively.
     pub stylex: Option<serde_json::Value>,
+    /// Why the app's Vite failed to resolve the config (a throwing plugin
+    /// hook), which fails Vite's createServer.
+    pub resolve_error: Option<String>,
 }
 
 /// The oj executable one-shot engine jobs run in, set once by the binary's main.
@@ -757,6 +760,7 @@ pub(crate) fn parse_vite_values(json: &serde_json::Value) -> ViteValues {
             .and_then(|v| v.as_u64())
             .map(|n| n as usize),
         stylex: non_null(json, "stylex"),
+        resolve_error: str_field(json, "resolveError"),
     }
 }
 

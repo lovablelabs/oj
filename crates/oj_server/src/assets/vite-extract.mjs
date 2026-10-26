@@ -634,6 +634,8 @@ function snapshotPlainData(v, seen = new WeakMap()) {
   return out;
 }
 
+// Why Vite's own resolveConfig of the config threw, when it did.
+let resolveFailure = null;
 async function loadConfig() {
   let viteErr = null;
   // An error raised while vite's own loader RAN the config file (as opposed
@@ -740,6 +742,9 @@ async function loadConfig() {
             };
           }
         } catch (e) {
+          // What fails Vite's createServer (its resolveConfig throws): the
+          // dev server's restart checks it before replacing a running server.
+          resolveFailure = e;
           if (detect && detect.started()) {
             // resolveConfig threw AFTER plugin config hooks began running on
             // these instances (a throwing configResolved, a mid-run hook
@@ -1680,6 +1685,7 @@ export async function extract(input) {
       appType: typeof c.appType === "string" ? c.appType : null,
       html: typeof c.html?.cspNonce === "string" ? { cspNonce: c.html.cspNonce } : null,
       activePlugins: await activePluginCount(raw),
+      resolveError: resolveFailure ? String((resolveFailure && resolveFailure.message) || resolveFailure) : null,
       stylex: await stylexPlugin(raw),
     };
   } catch (e) {

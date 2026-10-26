@@ -95,6 +95,11 @@ pub(crate) struct SeededEnv {
     metadata_path: PathBuf,
 }
 
+/// The next boot's pre-seed runs again (its config inputs moved).
+pub(crate) fn forget_stamp(root: &Path) {
+    let _ = std::fs::remove_file(stamp_path(root));
+}
+
 fn stamp_path(root: &Path) -> PathBuf {
     oj_cache::cache_root(root).join(STAMP_FILE)
 }
