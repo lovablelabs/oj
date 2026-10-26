@@ -534,6 +534,54 @@ fn memo_verifies_settled_files_without_reading_them() {
     }
 }
 
+// A dev rebundle persists after every edit: settled inputs the current
+// generation's memo vouches for keep their digests without being read.
+#[cfg(unix)]
+#[test]
+fn a_repeat_persist_takes_settled_digests_from_the_memo() {
+    use std::os::unix::fs::PermissionsExt;
+    let fx = Fixture::new("persist-memo");
+    fx.settle_modules();
+    let (key, _) = fx.store().persist(&fx.start).unwrap();
+    for name in ["a.tsx", "b.tsx"] {
+        fs::set_permissions(fx.module(name), fs::Permissions::from_mode(0o000)).unwrap();
+    }
+    fx.write_build("bundle-v2");
+    let persisted = fx.store().persist(&fx.start);
+    for name in ["a.tsx", "b.tsx"] {
+        fs::set_permissions(fx.module(name), fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    let (again, _) = persisted.expect("the memo vouches for the unreadable inputs");
+    assert_eq!(again, key);
+}
+
+#[test]
+fn a_persist_after_an_edit_rehashes_the_edited_file() {
+    let fx = Fixture::new("persist-edit");
+    fx.settle_modules();
+    let (key, _) = fx.store().persist(&fx.start).unwrap();
+    fx.write_module("a.tsx", "export const a = 2;");
+    fx.write_build("bundle-v2");
+    let (edited, _) = fx.store().persist(&fx.start).unwrap();
+    assert_ne!(edited, key);
+}
+
+#[test]
+fn a_persist_still_sees_a_stat_identical_edit_to_a_fresh_file() {
+    let fx = Fixture::new("persist-racy");
+    // Written moments ago: inside the freshness window, so left out of the
+    // memo, and the next persist hashes them again.
+    let (key, _) = fx.store().persist(&fx.start).unwrap();
+    let mtime = fs::metadata(fx.module("a.tsx"))
+        .unwrap()
+        .modified()
+        .unwrap();
+    fx.write_module("a.tsx", "export const a = 9;");
+    set_mtime(&fx.module("a.tsx"), mtime);
+    let (edited, _) = fx.store().persist(&fx.start).unwrap();
+    assert_ne!(edited, key);
+}
+
 #[test]
 fn touched_but_unchanged_file_rehashes_to_the_same_key() {
     let fx = Fixture::new("memo-touch");
