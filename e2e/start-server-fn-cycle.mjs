@@ -154,6 +154,24 @@ async function rendersAndCalls(label, stderr) {
       `${label}: the server fn answered ${JSON.stringify(got)}, want ${want}; page errors: ${errors.join(" | ")}\n${stderr().slice(-2000)}`,
     );
     must(!/before initialization/.test(stderr()), `${label}: a module ran before its import:\n${stderr()}`);
+    // An id naming an Object.prototype member is unknown, not a TypeError.
+    await fetch(`http://localhost:${PORT}/_serverFn/constructor`, {
+      method: "POST",
+      headers: {
+        origin: `http://localhost:${PORT}`,
+        "x-tsr-serverFn": "true",
+        "content-type": "application/json",
+      },
+      body: "{}",
+    });
+    const deadline = Date.now() + 5000;
+    while (!/Server function info not found for constructor/.test(stderr()) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    must(
+      /Server function info not found for constructor/.test(stderr()),
+      `${label}: /_serverFn/constructor did not fail as an unknown id:\n${stderr().slice(-2000)}`,
+    );
     console.log(`${label}: a server fn whose middleware imports Start's server renders and runs`);
   } finally {
     await browser.close();
