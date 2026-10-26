@@ -226,7 +226,7 @@ async fn a_burst_runs_watch_change_hooks_concurrently() {
         .replace("async hotUpdate({ file })", "async watchChange(file)")
         .replace(
             "((this && this.environment && this.environment.name) || \"default\")",
-            "\"watch\"",
+            "(\"watch:\" + this.environment.name)",
         );
     let plugins = format!("import fs from \"node:fs\";\n{plugin}\nexport default [debounced];\n");
     let mut files: Vec<(String, String)> = vec![
@@ -259,7 +259,7 @@ async fn a_burst_runs_watch_change_hooks_concurrently() {
 
     let counts = settle(&log, FILES).await;
     assert!(
-        counts.keys().all(|tag| tag.ends_with(":watch")),
+        counts.len() == 2 && counts.keys().all(|tag| tag.contains(":watch:")),
         "{counts:?}"
     );
     assert_one_rebuild_each(&counts);

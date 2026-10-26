@@ -351,11 +351,9 @@ struct ServerState {
     engine_registry: oj_js::EngineRegistry,
     plugins: Option<std::sync::Arc<PluginHost>>,
     plugin_serve: Arc<PluginServe>,
-    /// The ssr environment's container on `plugins`, opened on first demand.
-    plugins_ssr: tokio::sync::OnceCell<Option<std::sync::Arc<PluginHost>>>,
-    /// A TanStack Start app: the ssr container leaves the framework plugins
-    /// oj reimplements out.
-    start_mode: bool,
+    /// The ssr environment's container on `plugins`, opened at boot as Vite's
+    /// createServer creates every environment before it listens.
+    plugins_ssr: Option<std::sync::Arc<PluginHost>>,
     plugin_watched: Arc<Mutex<std::collections::HashSet<PathBuf>>>,
     /// Into the watcher thread's inbox (`WatchMsg`): directories of files
     /// served from outside the root (`ensure_watched_file`).
@@ -1654,6 +1652,30 @@ impl DevServer {
             }
             caps = PluginCaps::probe(host).await;
         }
+        // Vite's createServer creates and inits every environment before it
+        // listens, the ssr one included: its container opens here, with its
+        // `environments.ssr.define` (and config()-hook deltas) layered over
+        // the shared define for SSR compiles.
+        let plugins_ssr = match &plugin_host {
+            Some(host) => match host
+                .open_environment_container("ssr", is_start, false)
+                .await
+            {
+                Ok(ssr) => {
+                    let ssr_defines = ssr.config_defines().await;
+                    if !ssr_defines.is_empty() {
+                        import_meta_env.merge_ssr(ssr_defines);
+                    }
+                    boot_phase("ssr environment open");
+                    Some(ssr)
+                }
+                Err(e) => {
+                    eprintln!("oj: the ssr plugin environment failed to open: {e}");
+                    None
+                }
+            },
+            None => None,
+        };
 
         let jsx = jsx_config_of(&config);
         let jsx_overrides = match &plugin_host {
@@ -1777,8 +1799,7 @@ impl DevServer {
             restart_files: restart_files(&root, &env_dir, &dev_mode, config_file.as_deref()),
             plugins: plugin_host.clone(),
             plugin_serve: Arc::clone(&plugin_serve),
-            plugins_ssr: tokio::sync::OnceCell::new(),
-            start_mode: is_start,
+            plugins_ssr,
             plugin_watched: Arc::new(Mutex::new(std::collections::HashSet::new())),
             watch_tx: watch_tx.clone(),
             watch_feed: WatchFeed::default(),

@@ -971,9 +971,9 @@ fn change_type(
 }
 
 /// The ssr environment's container for `watchChange` (Vite dispatches it to
-/// every environment), once SSR opened it.
+/// every environment).
 fn ssr_host_for_hooks(state: &ServerState) -> Option<Arc<PluginHost>> {
-    state.plugins_ssr.get().and_then(|h| h.clone())
+    state.plugins_ssr.clone()
 }
 
 /// The `modules` argument of `hotUpdate` for a path, as JSON.

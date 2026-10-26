@@ -458,44 +458,13 @@ pub(crate) async fn ssr_module(
     }
 }
 
-/// The ssr environment's container on the dev server's plugin host, opened
-/// on first SSR demand: the same plugin instances as the client's (Vite's
-/// one plugin array), the framework plugins oj reimplements left out under
-/// Start.
+/// The ssr environment's container on the dev server's plugin host (opened
+/// at boot): the same plugin instances as the client's (Vite's one plugin
+/// array), the framework plugins oj reimplements left out under Start.
 pub(crate) async fn ssr_plugin_host(
     state: &Arc<ServerState>,
 ) -> Option<std::sync::Arc<PluginHost>> {
-    let host = state
-        .plugins_ssr
-        .get_or_init(|| async {
-            let host = state.plugins.as_ref()?;
-            match host
-                .open_environment_container("ssr", state.start_mode, false)
-                .await
-            {
-                Ok(ssr) => {
-                    // `environments.ssr.define` (plus config()-hook deltas)
-                    // layers over the shared define for SSR compiles.
-                    let ssr_defines = ssr.config_defines().await;
-                    if !ssr_defines.is_empty() {
-                        state.import_meta_env.merge_ssr(ssr_defines);
-                    }
-                    Some(ssr)
-                }
-                Err(e) => {
-                    eprintln!("oj ssr: the ssr plugin environment failed to open: {e}");
-                    None
-                }
-            }
-        })
-        .await
-        .clone();
-    // Every consumer acquires the host here, so prime the hook plan at this
-    // one seam before any gated dispatch; a no-op once live.
-    if let Some(h) = &host {
-        h.prime_hook_plan().await;
-    }
-    host
+    state.plugins_ssr.clone()
 }
 
 pub(crate) fn sass_additional_data_for(state: &ServerState, url: &str) -> Option<String> {
