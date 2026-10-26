@@ -350,8 +350,9 @@ async fn cloudflare_facts_await_a_promised_rolldown_plugin() {
     );
 }
 
-/// A host over `config` (a vite.config.mjs body) with oj's `overlay` as its
-/// inline config; returns what the config wrote to `seen.log`.
+/// A host over `config` (a vite.config.mjs body) with oj's `overlay` merged
+/// into its config (but for `cliInline`, the command line's values, which
+/// ride beside it); returns what the config wrote to `seen.log`.
 async fn host_run(name: &str, config: &str, command: &str, overlay: serde_json::Value) -> String {
     let app = App::new(&[
         (
@@ -369,14 +370,20 @@ async fn host_run(name: &str, config: &str, command: &str, overlay: serde_json::
     let mut inline = serde_json::json!({
         "root": app.root.display().to_string(), "mode": mode, "command": command,
     });
+    let mut cli = serde_json::json!({});
     for (k, v) in overlay.as_object().unwrap() {
-        inline[k] = v.clone();
+        if k == "cliInline" {
+            cli = v.clone();
+        } else {
+            inline[k] = v.clone();
+        }
     }
     let payload = serde_json::json!({
         "config": inline,
         "env": { "command": command, "mode": mode },
         "environment": { "name": "client", "mode": if command == "build" { "build" } else { "dev" } },
         "pluginsFormat": "vite",
+        "cliInline": cli,
     })
     .to_string();
     let host = oj_server::plugins::PluginHost::spawn(
@@ -392,12 +399,13 @@ async fn host_run(name: &str, config: &str, command: &str, overlay: serde_json::
     std::fs::read_to_string(app.root.join("seen.log")).unwrap_or_default()
 }
 
-/// Vite merges the CLI's inline config (`--base`, `--port`) over the loaded
-/// file before any config hook runs, so the hooks see it; oj's served base
-/// and port are that inline config. A hook's in-place edit of one of them
+/// Vite merges the command line's inline config (`--port`) over the loaded
+/// file before any config hook runs, so the hooks see it, and only what was
+/// passed: the file's own `base` here. The host then serves oj's values
+/// (its resolved base), and a hook's in-place edit of a command-line value
 /// stands, as it lands after the merge.
 #[tokio::test(flavor = "multi_thread")]
-async fn config_hooks_see_ojs_served_base_and_port() {
+async fn config_hooks_see_the_command_lines_values() {
     require_fixture!("vite");
     let seen = host_run(
         "cli-inline",
@@ -410,23 +418,86 @@ export default {
   plugins: [{
     name: "reads-cli",
     config(config) {
-      log(`config ${config.base} ${config.server.port}`);
-      config.server.strictPort = true;
+      log(`config ${config.base} ${config.server.port} ${config.server.host}`);
+      config.server.host = "edited";
     },
     configResolved(config) {
-      log(`resolved ${config.base} ${config.server.port} ${config.server.strictPort}`);
+      log(`resolved ${config.base} ${config.server.port} ${config.server.host}`);
     },
   }],
 };
 "#,
         "serve",
-        serde_json::json!({ "base": "/from-oj/", "server": { "port": 4321, "strictPort": false } }),
+        serde_json::json!({
+            "base": "/from-oj/",
+            "server": { "port": 4321, "strictPort": false, "host": "0.0.0.0" },
+            "cliInline": { "server": { "port": 4321, "host": "0.0.0.0" } },
+        }),
     )
     .await;
     assert_eq!(
         seen,
-        "config /from-oj/ 4321\nresolved /from-oj/ 4321 true\n"
+        "config /file/ 4321 0.0.0.0\nresolved /from-oj/ 4321 edited\n"
     );
+}
+
+/// oj's base is the config's resolved one, every config hook applied: a hook
+/// that builds on the base it is given sees the file's, not that result, so
+/// the host lands on the base oj serves.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_base_building_hook_is_applied_once() {
+    require_fixture!("vite");
+    let seen = host_run(
+        "base-once",
+        r#"import { appendFileSync } from "node:fs";
+import path from "node:path";
+export default {
+  plugins: [{
+    name: "sub-base",
+    config(config) {
+      return { base: (config.base ?? "/") + "sub/" };
+    },
+    configResolved(config) {
+      appendFileSync(path.join(__dirname, "seen.log"), config.base + "\n");
+    },
+  }],
+};
+"#,
+        "serve",
+        serde_json::json!({ "base": "/sub/" }),
+    )
+    .await;
+    assert_eq!(seen, "/sub/\n");
+}
+
+/// A config hook that wraps a sibling's configResolved wraps the real one:
+/// the host runs the wrapper, which reaches the original, once each.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hook_a_sibling_wraps_during_the_resolve_keeps_its_original() {
+    require_fixture!("vite");
+    let seen = host_run(
+        "wrap-sibling",
+        r#"import { appendFileSync } from "node:fs";
+import path from "node:path";
+const log = (s) => appendFileSync(path.join(__dirname, "seen.log"), s + "\n");
+const inner = { name: "inner", configResolved() { log("inner"); } };
+const wrapper = {
+  name: "wrapper",
+  config() {
+    const original = inner.configResolved;
+    inner.configResolved = function (config) {
+      log("wrapped");
+      return original.call(this, config);
+    };
+  },
+};
+export default { plugins: [wrapper, inner] };
+"#,
+        "serve",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(seen, "wrapped\ninner\n");
 }
 
 /// Vite's configEnv takes `isSsrBuild` from the inline config alone (the

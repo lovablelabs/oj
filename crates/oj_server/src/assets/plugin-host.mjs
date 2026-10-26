@@ -810,9 +810,12 @@ async function loadUserResolvedViteConfig() {
   const candidates = startLeavesOutReimplemented ? allPlugins.filter((p) => !isReimplemented(p.name)) : allPlugins;
   const hosted = new Set(main.plugins);
   const restores = [];
+  // Through the config hooks the hidden hooks still read as the plugin's own
+  // (a sibling may wrap one); Vite reads them only after, by when they hide.
+  const phase = { hidden: false };
   const plugins = candidates.map((p) => {
     if (!hosted.has(p)) return p;
-    const restore = recordInPlace(p);
+    const restore = recordInPlace(p, phase);
     if (!restore) return recordingPlugin(p);
     restores.push(restore);
     return p;
@@ -834,6 +837,16 @@ async function loadUserResolvedViteConfig() {
       config: { order: "pre", handler: () => ({ build: { ssr: fileSsr } }) },
     });
   }
+  plugins.push({
+    name: "oj:config-hooks-done",
+    enforce: "post",
+    config: {
+      order: "post",
+      handler() {
+        phase.hidden = true;
+      },
+    },
+  });
   const merge = typeof vite.mergeConfig === "function" ? vite.mergeConfig : mergeConfigLite;
   try {
     // Vite's own NODE_ENV handling runs inside resolveConfig; hand it the
@@ -877,26 +890,22 @@ async function loadUserResolvedViteConfig() {
     if (!process.env.NODE_ENV) process.env.NODE_ENV = defaultNodeEnv;
   }
 }
-// The values oj serves with that a Vite CLI run passes inline (`--base`,
-// `--port`, `--strictPort`, `--host`).
-const CLI_SERVER_KEYS = ["port", "strictPort", "host"];
+// What oj's command line set (`--port`, `--host`), as a Vite CLI run puts
+// it in the inline config: the config hooks see it over the file's values.
 function cliInlineConfig() {
-  const o = initial.config ?? {};
-  const inline = {};
-  if (typeof o.base === "string") inline.base = o.base;
-  const server = {};
-  for (const k of CLI_SERVER_KEYS) if (o.server?.[k] != null) server[k] = o.server[k];
-  if (Object.keys(server).length) inline.server = server;
-  return inline;
+  const cli = initial.cliInline;
+  return cli && typeof cli === "object" ? plainCopy(cli) : {};
 }
-// oj's values without the CLI-level ones, which Vite's resolve already took
-// in under the config hooks (and a hook's in-place edit of one stands).
+// oj's values without the command line's, which Vite's resolve already took
+// in under the config hooks (a hook's in-place edit of one stands). The rest
+// (base, the bound port when none was passed) overlay the resolved config,
+// so the host serves what oj serves.
 function withoutCliInline(o) {
-  const { base: _base, server, ...rest } = o ?? {};
-  if (!server) return rest;
-  const kept = { ...server };
-  for (const k of CLI_SERVER_KEYS) delete kept[k];
-  return { ...rest, server: kept };
+  const cliServer = cliInlineConfig().server;
+  if (!cliServer || !o?.server) return o ?? {};
+  const kept = { ...o.server };
+  for (const k of Object.keys(cliServer)) delete kept[k];
+  return { ...o, server: kept };
 }
 // The hooks `p` shows Vite's resolve: its config hook recorded (what it
 // returned, or threw, for runConfigHook to replay), its configEnvironment,
@@ -927,23 +936,29 @@ function resolveHooks(p) {
 // list Vite hands the config hooks holds the real objects (a sibling lookup
 // or identity check sees the plugin the host runs). Returns the undo, or
 // null when `p` cannot take the swap (frozen).
-function recordInPlace(p) {
+function recordInPlace(p, phase) {
   const hooks = resolveHooks(p);
   const undo = [];
   const restore = () => {
-    for (const u of undo.reverse()) u();
+    for (const u of undo.reverse()) {
+      try {
+        u();
+      } catch {}
+    }
   };
   try {
     for (const [key, value] of Object.entries(hooks)) {
       const own = Object.getOwnPropertyDescriptor(p, key);
       const enumerable = own?.enumerable ?? false;
-      // A hidden hook reads as unset to Vite's resolve; one the plugin
-      // assigns meanwhile (a config hook giving itself a configResolved) is
-      // held back for the host, which runs it once, as Vite would.
+      const original = p[key];
+      // A hidden hook reads as unset to Vite (which reads it after the config
+      // hooks); one the plugin assigns meanwhile (a config hook giving itself
+      // a configResolved, or wrapping a sibling's) is held back for the host,
+      // which runs it once, as Vite would.
       let assigned;
       let wasAssigned = false;
       const hidden = {
-        get: () => undefined,
+        get: () => (phase.hidden ? undefined : wasAssigned ? assigned : original),
         set: (v) => {
           assigned = v;
           wasAssigned = true;
@@ -972,7 +987,7 @@ function recordInPlace(p) {
   return restore;
 }
 // `p` behind a wrapper carrying the resolve's hooks, for a plugin that
-// cannot take them in place.
+// cannot take them in place (frozen: no sibling can wrap its hooks either).
 function recordingPlugin(p) {
   const hooks = resolveHooks(p);
   return Object.create(p, Object.fromEntries(Object.entries(hooks).map(([k, value]) => [k, { value }])));

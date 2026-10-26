@@ -854,12 +854,30 @@ struct PluginHostPayloads {
     ssr: String,
 }
 
+/// The inline config a Vite CLI run with these flags would carry (cli.ts:
+/// `server: cleanGlobalCLIOptions(options)`): only what was passed.
+fn cli_inline(port: Option<u16>, host: Option<&str>) -> serde_json::Value {
+    let mut server = serde_json::Map::new();
+    if let Some(port) = port {
+        server.insert("port".into(), port.into());
+    }
+    if let Some(host) = host {
+        server.insert("host".into(), host.into());
+    }
+    if server.is_empty() {
+        return serde_json::json!({});
+    }
+    serde_json::json!({ "server": server })
+}
+
+#[allow(clippy::too_many_arguments)]
 fn plugin_host_payloads(
     root: &Path,
     config: &oj_config::OjConfig,
     server_cfg: &oj_config::ServerConfig,
     dev_mode: &str,
     port: u16,
+    cli: &serde_json::Value,
     format: PluginsFormat,
     is_start: bool,
 ) -> PluginHostPayloads {
@@ -891,6 +909,9 @@ fn plugin_host_payloads(
         // configHash matches and a cold boot never re-optimizes in-host (server.restart()).
         "preseedIncludePath": oj_cache::cache_root(root).join("preseed-include.json").to_string_lossy(),
         "ojStartMode": is_start,
+        // What the command line set (`--port`, `--host`): Vite's CLI puts these in
+        // the inline config its config hooks run under.
+        "cliInline": cli,
     });
     if format == PluginsFormat::Vite {
         // The extractor's verdict rides the spawn payload: TRUE is authoritative, FALSE
@@ -1564,6 +1585,7 @@ impl DevServer {
             &server_cfg,
             &dev_mode,
             port,
+            &cli_inline(self.port, self.host.as_deref()),
             plugin_file.as_ref().map_or(PluginsFormat::Oj, |f| f.format),
             is_start,
         );

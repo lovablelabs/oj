@@ -2367,3 +2367,17 @@ fn rescan_changes_diff_against_the_known_files() {
     assert!(sub.changed.is_empty() && sub.removed.is_empty());
     let _ = std::fs::remove_dir_all(&base);
 }
+
+// Vite's CLI puts only the flags it was given in the inline config.
+#[test]
+fn cli_inline_carries_only_the_flags_passed() {
+    assert_eq!(cli_inline(None, None), serde_json::json!({}));
+    assert_eq!(
+        cli_inline(Some(4000), None),
+        serde_json::json!({ "server": { "port": 4000 } })
+    );
+    assert_eq!(
+        cli_inline(Some(4000), Some("0.0.0.0")),
+        serde_json::json!({ "server": { "port": 4000, "host": "0.0.0.0" } })
+    );
+}

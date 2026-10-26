@@ -217,7 +217,7 @@ async fn concurrent_extractions_share_a_failure() {
     app.write(&[(
         "vite.config.ts",
         &format!(
-            "import {{ appendFileSync }} from \"node:fs\";\nappendFileSync({log:?}, \"eval\\n\");\nthrow new Error(\"config failed\");\n"
+            "import {{ appendFileSync }} from \"node:fs\";\nappendFileSync({log:?}, \"eval\\n\");\n// Slow, so the waiting callers are all queued behind it.\nconst until = Date.now() + 300;\nwhile (Date.now() < until) {{}}\nthrow new Error(\"config failed\");\n"
         ),
     )]);
     app.link_fixture("vite");
