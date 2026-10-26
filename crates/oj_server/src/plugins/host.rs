@@ -1550,8 +1550,17 @@ impl PluginHost {
         };
         let mut opened = open().await;
         // An engine that died meanwhile comes back with the container (its
-        // seed lists it): the next call revives it, and the open adopts it.
-        while opened.is_err() && *self.core.host_gone.borrow() && self.core.can_revive() {
+        // seed lists it): a later call revives it, and the open adopts it.
+        // A revive held back (respawn spacing, an addon that cannot be
+        // re-registered) fails the call at once, so the retries wait between
+        // calls, within a bound.
+        let deadline = tokio::time::Instant::now() + 3 * PLUGIN_HOST_RESPAWN_SPACING;
+        while opened.is_err()
+            && *self.core.host_gone.borrow()
+            && self.core.can_revive()
+            && tokio::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
             opened = open().await;
         }
         if let Err(e) = opened {
