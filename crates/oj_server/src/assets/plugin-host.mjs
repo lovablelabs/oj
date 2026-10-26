@@ -796,9 +796,9 @@ environment.transformRequest = transformRequestFor(main);
 // runConfigHooks to replay (the later config-phase hooks run only in the
 // host). Without Vite the synthesized defaults stand.
 let userResolvedViteConfig = null;
-// What each hosted plugin's config hook returned inside Vite's resolve.
+// What each hosted plugin's config hook did inside Vite's resolve.
 const recordedConfigPartials = new Map();
-// What each plugin's configEnvironment hook returned, by environment.
+// What each plugin's configEnvironment hook did, by environment.
 const recordedEnvironmentPartials = new Map();
 // The app's Vite, for a resolve over the user's config.
 async function appViteForResolve() {
@@ -2254,8 +2254,13 @@ async function runConfigHooks() {
   pluginConfigDelta = delta;
   hookedUserConfig = config;
   main.resolvedConfig = resolved;
+  const before = plainCopy(resolved);
   await runConfigResolved(main.plugins, main.resolvedConfig);
+  configResolvedEdits = editsOf(before, main.resolvedConfig);
 }
+// What the configResolved hooks changed on the resolved config: Vite builds
+// the environments after them, off the object they changed.
+let configResolvedEdits = [];
 // The config a container leaving the reimplemented framework plugins out
 // reads its own values from, made once from the hooks' first answers.
 let leftOutConfig = null;
@@ -3041,6 +3046,8 @@ function flattenDepId(id) {
 async function environmentsConfig() {
   const base = userResolvedViteConfig ?? (await replayedViteConfig());
   if (!base) return null;
+  applyEdits(base, configResolvedEdits);
+  configResolvedEdits = [];
   const plugins = (base.plugins ?? []).map((p) => standInFor.get(p) ?? p);
   const rc = { ...base, plugins, ...pluginHookUtils(plugins), environments: {} };
   // The host resolved silently; the environments log as the app's Vite would.

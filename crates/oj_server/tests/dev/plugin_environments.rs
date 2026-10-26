@@ -749,3 +749,59 @@ export default {{
     lines.sort();
     assert_eq!(lines, expected, "each environment's hooks once per save");
 }
+
+// Vite resolves the environments after configResolved (config.ts), so what a
+// configResolved hook changes reaches the runner-backed environments' config.
+#[tokio::test(flavor = "multi_thread")]
+async fn configresolved_edits_reach_the_runner_environments() {
+    crate::require_fixture!("vite");
+    let config = r#"import { DevEnvironment } from "vite";
+let seen = null;
+export default {
+  plugins: [{
+    name: "runner-env",
+    config: () => ({
+      environments: {
+        worker: {
+          consumer: "server",
+          dev: { createEnvironment: (name, config) => new DevEnvironment(name, config, { hot: true }) },
+        },
+      },
+    }),
+    configResolved(config) {
+      config.environments.worker.optimizeDeps.include ??= [];
+      config.environments.worker.optimizeDeps.include.push("from-config-resolved");
+      config.server.fs.allow.push("/from-config-resolved");
+    },
+    configureServer(server) {
+      const worker = server.environments.worker.config;
+      seen = [...(worker.optimizeDeps.include ?? []), ...worker.server.fs.allow];
+      server.middlewares.use((req, res, next) => {
+        if (req.url !== "/__seen") return next();
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify(seen));
+      });
+    },
+  }],
+};
+"#;
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"config-resolved-runner","private":true,"type":"module"}"#,
+        ),
+        ("index.html", INDEX_HTML),
+        ("src/main.js", "window.__ok = 1;\n"),
+        ("vite.config.mjs", config),
+    ]);
+    app.link_fixture("vite");
+    let server = app.serve().await;
+    crate::plugin_middleware::middleware_ready(&server).await;
+    let seen: Vec<String> = serde_json::from_str(&server.text("/__seen").await).unwrap();
+    for want in ["from-config-resolved", "/from-config-resolved"] {
+        assert!(
+            seen.iter().any(|s| s == want),
+            "{want} missing from the worker environment's config: {seen:?}"
+        );
+    }
+}
