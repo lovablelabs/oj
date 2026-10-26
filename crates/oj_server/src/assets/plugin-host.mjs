@@ -994,6 +994,9 @@ function editsOf(before, after, path = [], out = []) {
   return out;
 }
 function applyEdits(target, edits) {
+  // One array reached under two names (Vite aliases build.rollupOptions to
+  // rolldownOptions) carries the edit under both: it is made once.
+  const wrapped = new Map();
   for (const [path, value] of edits ?? []) {
     let at = target;
     for (const key of path.slice(0, -1)) {
@@ -1004,7 +1007,11 @@ function applyEdits(target, edits) {
     if (value === DELETED) delete at[last];
     else if (value instanceof Wrapped) {
       const own = Array.isArray(at[last]) ? at[last] : [];
-      at[last] = [...plainCopy(value.head), ...own, ...plainCopy(value.tail)];
+      if (!wrapped.has(own)) {
+        const out = [...plainCopy(value.head), ...own, ...plainCopy(value.tail)];
+        wrapped.set(own, out).set(out, out);
+      }
+      at[last] = wrapped.get(own);
     } else at[last] = plainCopy(value);
   }
   return target;
@@ -2096,10 +2103,11 @@ async function runConfigHook(
     initStage(`config:${p.name ?? "?"}`);
     try {
       let record = recorded?.get(p);
+      // What a hook did inside the resolve the base came from (edits and the
+      // partial both) is already in it; over any other base (no resolve, or
+      // one that failed) it is made again, once.
+      const inBase = !!record && !rebase;
       if (record) {
-        // Edits made inside the app's Vite resolve are already in a base
-        // that resolve made; over any other base (a replay, or a resolve
-        // that failed) they are made again.
         if (rebase) applyEdits(config, record.edits);
         if (record.threw) throw record.threw;
       } else if (!replay) {
@@ -2110,7 +2118,8 @@ async function runConfigHook(
       }
       if (record?.edits.length) onPartial?.(editsPartial(record.edits));
       if (record?.partial) {
-        config = mergeConfigLite(config, record.partial);
+        // A copy: later hooks edit the merged config in place.
+        if (!inBase) config = mergeConfigLite(config, plainCopy(record.partial));
         onPartial?.(record.partial);
       }
     } catch (e) {
@@ -2143,9 +2152,11 @@ async function runConfigResolved(list, resolved, container = main) {
 // each hook answers what it returned the first time: a container leaving
 // plugins out reads the config the rest made, and no hook runs twice.
 async function hostConfig(rc, list, { replay = false, container = main } = {}) {
-  // Whether the base is not the resolve the recorded hooks ran in.
-  const rebase = replay || !rc;
-  let config = initial.config ?? {};
+  // Whether the base is not a resolve the recorded hooks ran in (the app's,
+  // or a replay of their answers).
+  const rebase = !rc;
+  // A copy: the hooks edit it in place, and every hostConfig starts from it.
+  let config = plainCopy(initial.config ?? {});
   if (rc) {
     // The user's resolved config is the base; oj's own values (root, define,
     // server, environments) overlay it, but for the CLI-level ones Vite's
@@ -2206,6 +2217,7 @@ async function hostConfig(rc, list, { replay = false, container = main } = {}) {
       for (const name of envNames) {
         try {
           let record = seen.get(name);
+          const inBase = !!record && !rebase;
           if (record) {
             if (rebase) applyEdits(config.environments[name], record.edits);
             if (record.threw) throw record.threw;
@@ -2215,7 +2227,8 @@ async function hostConfig(rc, list, { replay = false, container = main } = {}) {
             const r = await fn.call(configContext, name, options, opts);
             seen.set(name, (record = hookRecord(before, options, r)));
           }
-          if (record?.partial) config.environments[name] = mergeConfigLite(config.environments[name], record.partial);
+          if (record?.partial && !inBase)
+            config.environments[name] = mergeConfigLite(config.environments[name], plainCopy(record.partial));
         } catch (e) {
           if (!ojStartMode) throw e;
           container.configHookSkipped = true;
@@ -2249,7 +2262,7 @@ let leftOutConfig = null;
 function leaveOutConfig() {
   return (leftOutConfig ??= (async () => {
     const kept = (p) => !isReimplemented(p && p.name);
-    const rc = await resolveUserViteConfig(allPlugins.filter(kept).map(replayingPlugin));
+    const rc = await resolveUserViteConfig(allPlugins.filter(kept).map((p) => replayingPlugin(p, true)));
     return hostConfig(rc, main.topLevelPlugins.filter(kept), { replay: true, container: {} });
   })());
 }

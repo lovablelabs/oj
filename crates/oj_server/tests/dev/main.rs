@@ -52,6 +52,7 @@ mod html_env;
 mod html_proxy;
 mod jsx_import_source;
 mod lazy_flag;
+mod leave_out_config;
 mod lingui_macro_shim;
 mod listen;
 mod new_url_asset;

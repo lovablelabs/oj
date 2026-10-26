@@ -1,0 +1,106 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Raphael Amorim
+
+//! What the Start dev host's ssr containers read from the config: each
+//! config-phase hook's work made once, as Vite's resolveConfig makes it, in
+//! the host's own ssr container and in one leaving the reimplemented framework
+//! plugins out.
+
+use crate::{require_fixture, App};
+
+/// The ssr container's external list for `plugins`, as a vite.config (the
+/// fixture's Vite resolves it) or an oj plugins file.
+async fn ssr_external(plugins: &str, vite: bool, leave_out: bool) -> serde_json::Value {
+    let (file, src) = if vite {
+        (
+            "vite.config.mjs",
+            format!("export default {{ plugins: {plugins} }};\n"),
+        )
+    } else {
+        ("oj.plugins.mjs", format!("export default {plugins};\n"))
+    };
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"leave-out","private":true,"type":"module"}"#,
+        ),
+        (file, src.as_str()),
+    ]);
+    app.link_fixture("vite");
+    let payload = serde_json::json!({
+        "config": { "root": app.root.display().to_string(), "base": "/", "mode": "development", "command": "serve" },
+        "env": { "command": "serve", "mode": "development" },
+        "environment": { "name": "client", "mode": "dev" },
+        "pluginsFormat": if vite { "vite" } else { "oj" },
+        "ojStartMode": true,
+    })
+    .to_string();
+    let host =
+        oj_server::plugins::PluginHost::spawn(&app.root, &app.root.join(file), &payload, None)
+            .await
+            .expect("the Start dev host starts");
+    let ssr = host
+        .open_environment_container("ssr", leave_out, false)
+        .await
+        .expect("the ssr container opens");
+    let facts = ssr.start_facts().await.expect("startFacts answers");
+    host.shutdown();
+    facts["external"].clone()
+}
+
+/// A hook's in-place array edit is made once: Vite reaches one array as both
+/// build.rollupOptions and build.rolldownOptions, and a leave-out container's
+/// replay resolve already holds what the hooks did.
+#[tokio::test]
+async fn an_in_place_array_edit_is_made_once() {
+    require_fixture!("vite");
+    let plugins = r#"[
+  { name: "tanstack-start-core:config", config: () => ({ build: { rollupOptions: { external: ["framework"] } } }) },
+  {
+    name: "pushes",
+    config(config) {
+      config.build ??= {};
+      config.build.rollupOptions ??= {};
+      config.build.rollupOptions.external ??= [];
+      config.build.rollupOptions.external.push("user");
+      config.build.rollupOptions.external.unshift("first");
+    },
+  },
+]"#;
+    for vite in [true, false] {
+        assert_eq!(
+            ssr_external(plugins, vite, true).await,
+            serde_json::json!(["first", "user"]),
+            "vite.config {vite}"
+        );
+    }
+}
+
+/// An environment's list is what Vite makes of it: the config hook's returned
+/// environments.ssr partial, then configEnvironment's in-place push, each
+/// once, whichever index the plugin sits at, in a leave-out ssr container and
+/// in the host's own.
+#[tokio::test]
+async fn an_ssr_environment_list_matches_vite_at_every_plugin_index() {
+    require_fixture!("vite");
+    let pushes = r#"{
+    name: "envpush",
+    config: () => ({ environments: { ssr: { build: { rolldownOptions: { external: ["base"] } } } } }),
+    configEnvironment(name, options) { if (name === "ssr") options.build.rolldownOptions.external.push("pushed"); },
+  }"#;
+    let filler = r#"{ name: "filler", config() {} }"#;
+    for (at, plugins) in [
+        (0, format!("[{pushes}, {filler}]")),
+        (1, format!("[{filler}, {pushes}]")),
+    ] {
+        for vite in [true, false] {
+            for leave_out in [true, false] {
+                assert_eq!(
+                    ssr_external(&plugins, vite, leave_out).await,
+                    serde_json::json!(["base", "pushed"]),
+                    "plugin at index {at}, vite.config {vite}, leave-out {leave_out}"
+                );
+            }
+        }
+    }
+}
