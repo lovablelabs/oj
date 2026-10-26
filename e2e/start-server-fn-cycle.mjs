@@ -102,21 +102,21 @@ about = about.replace(
 fs.writeFileSync(aboutPath, about);
 
 // Run `cmd` detached, wait for the port, run `check`, then group-kill and
-// await the exit so no server outlives the step. `check` reads stdout and
-// stderr together: either may carry an SSR error.
+// await the exit so no server outlives the step. `check` reads the server's
+// output, stdout and stderr together: either may carry an SSR error.
 async function served(cmd, args, opts, check) {
   const srv = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"], detached: true, ...opts });
-  let stderr = "";
-  srv.stdout.on("data", (d) => (stderr += d));
-  srv.stderr.on("data", (d) => (stderr += d));
+  let output = "";
+  srv.stdout.on("data", (d) => (output += d));
+  srv.stderr.on("data", (d) => (output += d));
   const exited = new Promise((r) => srv.once("exit", r));
   try {
     const up = await waitUp(`http://localhost:${PORT}/`, { until: () => true, proc: srv }).then(
       () => true,
       () => false,
     );
-    must(up, `server on :${PORT} did not start\n${stderr.slice(-2000)}`);
-    await check(() => stderr);
+    must(up, `server on :${PORT} did not start\n${output.slice(-2000)}`);
+    await check(() => output);
   } finally {
     try {
       process.kill(-srv.pid, "SIGKILL");
@@ -125,12 +125,12 @@ async function served(cmd, args, opts, check) {
   }
 }
 
-async function rendersAndCalls(label, stderr) {
+async function rendersAndCalls(label, output) {
   const res = await fetch(`http://localhost:${PORT}/about`);
   const html = await res.text();
   must(
     res.status === 200 && html.includes("about-page-marker"),
-    `${label}: /about answered ${res.status}, want the rendered page\n${html.slice(0, 500)}\n${stderr().slice(-2000)}`,
+    `${label}: /about answered ${res.status}, want the rendered page\n${html.slice(0, 500)}\n${output().slice(-2000)}`,
   );
   const browser = await pw.chromium.launch();
   try {
@@ -151,11 +151,11 @@ async function rendersAndCalls(label, stderr) {
       );
     must(
       got === want,
-      `${label}: the server fn answered ${JSON.stringify(got)}, want ${want}; page errors: ${errors.join(" | ")}\n${stderr().slice(-2000)}`,
+      `${label}: the server fn answered ${JSON.stringify(got)}, want ${want}; page errors: ${errors.join(" | ")}\n${output().slice(-2000)}`,
     );
-    must(!/before initialization/.test(stderr()), `${label}: a module ran before its import:\n${stderr()}`);
+    must(!/before initialization/.test(output()), `${label}: a module ran before its import:\n${output()}`);
     // An id naming an Object.prototype member is unknown, not a TypeError.
-    await fetch(`http://localhost:${PORT}/_serverFn/constructor`, {
+    const unknown = await fetch(`http://localhost:${PORT}/_serverFn/constructor`, {
       method: "POST",
       headers: {
         origin: `http://localhost:${PORT}`,
@@ -164,13 +164,14 @@ async function rendersAndCalls(label, stderr) {
       },
       body: "{}",
     });
+    must(unknown.status === 500, `${label}: /_serverFn/constructor answered ${unknown.status}, want 500`);
     const deadline = Date.now() + 5000;
-    while (!/Server function info not found for constructor/.test(stderr()) && Date.now() < deadline) {
+    while (!/Server function info not found for constructor/.test(output()) && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 100));
     }
     must(
-      /Server function info not found for constructor/.test(stderr()),
-      `${label}: /_serverFn/constructor did not fail as an unknown id:\n${stderr().slice(-2000)}`,
+      /Server function info not found for constructor/.test(output()),
+      `${label}: /_serverFn/constructor did not fail as an unknown id:\n${output().slice(-2000)}`,
     );
     console.log(`${label}: a server fn whose middleware imports Start's server renders and runs`);
   } finally {
@@ -179,7 +180,7 @@ async function rendersAndCalls(label, stderr) {
 }
 
 try {
-  await served(oj, ["dev", app, "--port", String(PORT)], {}, async (stderr) => rendersAndCalls("start-dev", stderr));
+  await served(oj, ["dev", app, "--port", String(PORT)], {}, async (output) => rendersAndCalls("start-dev", output));
 
   const out = path.join(app, "dist-e2e");
   execSync(`${JSON.stringify(oj)} build ${JSON.stringify(app)} --out ${JSON.stringify(out)}`, {
@@ -189,7 +190,7 @@ try {
     "node",
     [path.join(out, "server.mjs")],
     { cwd: out, env: { ...process.env, PORT: String(PORT) } },
-    async (stderr) => rendersAndCalls("start build", stderr),
+    async (output) => rendersAndCalls("start build", output),
   );
   console.log("\nSTART SERVER FN CYCLE PASSED");
 } catch (e) {
