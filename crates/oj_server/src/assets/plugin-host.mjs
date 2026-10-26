@@ -4943,8 +4943,17 @@ function htmlHookFn(p) {
 }
 
 async function watchChange(c, id, event) {
-  for (const { p, fn } of pluginsWithHook(c, "watchChange")) await fn.call(ctxFor(c, p), id, { event });
+  for (const { p, fn } of pluginsWithHook(c, "watchChange")) {
+    if (!runsInDevEnvironment(c, p, "perEnvironmentWatchChangeDuringDev")) continue;
+    await fn.call(ctxFor(c, p), id, { event });
+  }
   return null;
+}
+// Vite's dev rule for buildStart, buildEnd and watchChange: every plugin runs
+// them on the client environment, another environment's container only the
+// plugins that ask for it per environment (`flag`, or the server option).
+function runsInDevEnvironment(c, p, flag) {
+  return !c.startAfter || !!c.resolvedConfig?.server?.[flag] || !!p[flag];
 }
 
 // Any hook can be a bare function or Vite's object form { order, filter, handler }
@@ -5420,7 +5429,7 @@ async function handleHotUpdate(c, file, timestamp, type, modulesJson) {
     server: devServer,
   };
   let filtered = null;
-  for (const { p, fn } of hotUpdatePlugins(c)) {
+  for (const { p, fn } of hotUpdatePlugins(c, hmrContext.type)) {
     let r;
     try {
       r = await fn.call(ctxFor(c, p), hmrContext);
@@ -5442,12 +5451,14 @@ async function handleHotUpdate(c, file, timestamp, type, modulesJson) {
   return JSON.stringify({ action: "filter", modules: filtered });
 }
 
-// Vite 6+: `plugin.hotUpdate ?? plugin.handleHotUpdate` (the Environment API hook
-// takes precedence, with the same context shape plus this.environment).
-function hotUpdatePlugins(c) {
+// Vite 6+ (handleHMRUpdate): a plugin's `hotUpdate`, with this.environment,
+// in every environment; the legacy `handleHotUpdate` in its stead runs once,
+// in the client environment's pass, and only for an `update`.
+function hotUpdatePlugins(c, type) {
   const out = [];
   for (const p of c.plugins) {
-    const hook = p.hotUpdate != null ? p.hotUpdate : p.handleHotUpdate;
+    const legacy = p.hotUpdate == null && !c.startAfter && (type === undefined || type === "update");
+    const hook = p.hotUpdate != null ? p.hotUpdate : legacy ? p.handleHotUpdate : null;
     const fn = hookHandler(hook);
     if (fn) out.push({ p, fn, rank: hookOrderRank(hook) });
   }
@@ -5602,7 +5613,11 @@ async function runLifecycle(c, hook, args) {
     err.code = "BUILD_FAILED";
     hookArgs = [err];
   }
-  for (const { p, fn } of pluginsWithHook(c, hook)) await runHookOrThrow(c, p, fn, hookArgs);
+  for (const { p, fn } of pluginsWithHook(c, hook)) {
+    // Vite's EnvironmentPluginContainer.close: buildEnd by buildStart's rule.
+    if (hook === "buildEnd" && !runsInDevEnvironment(c, p, "perEnvironmentStartEndDuringDev")) continue;
+    await runHookOrThrow(c, p, fn, hookArgs);
+  }
   return null;
 }
 
@@ -5616,10 +5631,9 @@ async function runBuildStart(c) {
   };
   // Vite's dev server starts every plugin on the client environment; another
   // environment's buildStart runs only the plugins that ask for it.
-  const perEnvironment = c.startAfter && !c.resolvedConfig?.server?.perEnvironmentStartEndDuringDev;
   await transformEmitStore.run(chunkBucket, async () => {
     for (const { p, fn } of pluginsWithHook(c, "buildStart")) {
-      if (perEnvironment && !p.perEnvironmentStartEndDuringDev) continue;
+      if (!runsInDevEnvironment(c, p, "perEnvironmentStartEndDuringDev")) continue;
       await runHookOrThrow(c, p, fn, [options]);
     }
   });
@@ -5853,7 +5867,9 @@ async function run(hook, args, c) {
       transform: planFor("transform", true),
       load: planFor("load", false),
       resolveId: planFor("resolveId", false),
-      watchChange: pluginsWithHook(c, "watchChange").length > 0,
+      watchChange: pluginsWithHook(c, "watchChange").some(({ p }) =>
+        runsInDevEnvironment(c, p, "perEnvironmentWatchChangeDuringDev"),
+      ),
       hotUpdate: hotUpdatePlugins(c).length > 0,
     });
   }

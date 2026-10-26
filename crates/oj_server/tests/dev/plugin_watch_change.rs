@@ -5,9 +5,10 @@
 //! module graph invalidation and before HMR (`onFileChange`, then
 //! `onHMRUpdate` in server/index.ts). `server.hmr: false` skips only the HMR
 //! part (`hotUpdate`), and the editor gate only holds it: `watchChange` still
-//! runs once per change in each environment (Vite dispatches it to every
-//! environment's container), never again at the flush, and with HMR on it
-//! lands before `hotUpdate`. Its event is `create`, `update` or `delete`.
+//! runs once per change (on the client environment: another environment's
+//! container runs it only for a plugin that asks per environment), never
+//! again at the flush, and with HMR on it lands before `hotUpdate`. Its event
+//! is `create`, `update` or `delete`.
 
 use std::time::Duration;
 
@@ -108,8 +109,8 @@ async fn hmr_off_still_calls_watch_change_but_not_hot_update() {
     );
     assert_eq!(
         count(&entries, "watch ssr update ", MAIN),
-        1,
-        "once in the ssr environment too: {entries:?}"
+        0,
+        "not again in the ssr environment: {entries:?}"
     );
     assert_eq!(
         count(&entries, "hot ", MAIN),

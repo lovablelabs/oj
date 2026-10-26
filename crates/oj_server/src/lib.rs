@@ -2025,11 +2025,18 @@ pub async fn close_plugins(host: &PluginHost) {
     if let Err(e) = host.close_dev_server().await {
         eprintln!("oj: dev server close on shutdown failed: {e}");
     }
-    if let Err(e) = host.build_end(None).await {
-        eprintln!("oj: plugin buildEnd on close failed: {e}");
-    }
-    if let Err(e) = host.close_bundle().await {
-        eprintln!("oj: plugin closeBundle on close failed: {e}");
+    // Vite closes every environment's container: buildEnd by buildStart's
+    // rule (the ssr one only for the plugins that start per environment),
+    // closeBundle for all.
+    let ssr = host.environment("ssr");
+    let environments = std::iter::once(("client", host)).chain(ssr.as_deref().map(|h| ("ssr", h)));
+    for (env, container) in environments {
+        if let Err(e) = container.build_end(None).await {
+            eprintln!("oj: plugin buildEnd ({env}) on close failed: {e}");
+        }
+        if let Err(e) = container.close_bundle().await {
+            eprintln!("oj: plugin closeBundle ({env}) on close failed: {e}");
+        }
     }
 }
 

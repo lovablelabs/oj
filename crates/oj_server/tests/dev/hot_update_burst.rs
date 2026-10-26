@@ -259,7 +259,7 @@ async fn a_burst_runs_watch_change_hooks_concurrently() {
 
     let counts = settle(&log, FILES).await;
     assert!(
-        counts.len() == 2 && counts.keys().all(|tag| tag.contains(":watch:")),
+        counts.len() == 1 && counts.keys().all(|tag| tag.ends_with(":watch:client")),
         "{counts:?}"
     );
     assert_one_rebuild_each(&counts);

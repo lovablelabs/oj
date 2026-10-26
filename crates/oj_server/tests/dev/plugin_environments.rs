@@ -99,10 +99,12 @@ export default [
     );
 }
 
-// Vite dispatches watchChange to every environment's container and hotUpdate
-// to each environment over its own plugins, the ssr environment existing from
-// boot: an ssr-only plugin's hooks fire on an edit made before any SSR request,
-// and a client-only plugin's watchChange fires once per change.
+// Vite's dev server runs watchChange on the client environment and, in
+// another environment, only for a plugin that asks for it per environment
+// (EnvironmentPluginContainer.watchChange); hotUpdate runs in each
+// environment over its own plugins, the legacy handleHotUpdate once, in the
+// client's pass. The ssr environment exists from boot: an edit made before
+// any SSR request reaches it.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_ssr_only_plugin_gets_watch_and_hot_updates_from_boot() {
     let log_dir = tempfile::tempdir().unwrap();
@@ -111,22 +113,33 @@ async fn an_ssr_only_plugin_gets_watch_and_hot_updates_from_boot() {
     let plugins = format!(
         r#"import fs from "node:fs";
 const log = (line) => fs.appendFileSync({literal}, line + "\n");
+const main = (id) => id.endsWith("/src/main.js");
 export default [
   {{
-    name: "ssr-only",
+    name: "ssr-per-environment",
     applyToEnvironment: (environment) => environment.name === "ssr",
+    perEnvironmentWatchChangeDuringDev: true,
     watchChange(id) {{
-      if (id.endsWith("/src/main.js")) log("ssr-only watchChange " + this.environment.name);
+      if (main(id)) log("ssr-per-environment watchChange " + this.environment.name);
     }},
     hotUpdate({{ file }}) {{
-      if (file.endsWith("/src/main.js")) log("ssr-only hotUpdate " + this.environment.name);
+      if (main(file)) log("ssr-per-environment hotUpdate " + this.environment.name);
     }},
   }},
   {{
-    name: "client-only",
-    applyToEnvironment: (environment) => environment.name === "client",
+    name: "ssr-plain",
+    applyToEnvironment: (environment) => environment.name === "ssr",
     watchChange(id) {{
-      if (id.endsWith("/src/main.js")) log("client-only watchChange " + this.environment.name);
+      if (main(id)) log("ssr-plain watchChange " + this.environment.name);
+    }},
+  }},
+  {{
+    name: "shared",
+    watchChange(id) {{
+      if (main(id)) log("shared watchChange " + this.environment.name);
+    }},
+    handleHotUpdate({{ file }}) {{
+      if (main(file)) log("shared handleHotUpdate");
     }},
   }},
 ];
@@ -145,33 +158,29 @@ export default [
     assert!(server.text("/src/main.js").await.contains("__ok"));
     app.write(&[("src/main.js", "window.__ok = 2;\n")]);
     let expected = [
-        "client-only watchChange client",
-        "ssr-only hotUpdate ssr",
-        "ssr-only watchChange ssr",
+        "shared handleHotUpdate",
+        "shared watchChange client",
+        "ssr-per-environment hotUpdate ssr",
+        "ssr-per-environment watchChange ssr",
     ];
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
-    let lines = loop {
+    loop {
         let text = std::fs::read_to_string(&log).unwrap_or_default();
-        let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-        lines.sort();
-        if expected.iter().all(|e| lines.iter().any(|l| l == e)) {
-            break lines;
+        if expected.iter().all(|e| text.lines().any(|l| l == *e)) {
+            break;
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "the ssr environment's hooks never ran: {lines:?}"
+            "the hooks never all ran: {text}"
         );
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    };
+    }
     // Any duplicate would have landed with the first dispatch.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     let text = std::fs::read_to_string(&log).unwrap_or_default();
-    let mut lines_now: Vec<&str> = text.lines().collect();
-    lines_now.sort();
-    assert_eq!(
-        lines_now, expected,
-        "each hook once, in its own environment (was {lines:?})"
-    );
+    let mut lines: Vec<&str> = text.lines().collect();
+    lines.sort();
+    assert_eq!(lines, expected, "each hook once, where Vite runs it");
 }
 
 // Each Vite DevEnvironment carries its own module graph and hot channel; the
@@ -368,4 +377,56 @@ async fn a_throwing_apply_to_environment_fails_the_boot() {
     ]);
     let built = app.dev().build_app().await;
     assert!(built.is_err(), "the boot must fail");
+}
+
+// Vite closes every environment's container on server close: buildEnd by
+// buildStart's rule (in ssr only for a plugin that starts per environment),
+// closeBundle for every plugin.
+#[tokio::test(flavor = "multi_thread")]
+async fn close_ends_every_environment() {
+    let log_dir = tempfile::tempdir().unwrap();
+    let log = log_dir.path().join("hooks.log");
+    let literal = serde_json::to_string(&log.display().to_string()).unwrap();
+    let plugins = format!(
+        r#"import fs from "node:fs";
+const log = (line) => fs.appendFileSync({literal}, line + "\n");
+export default [
+  {{
+    name: "per-environment",
+    perEnvironmentStartEndDuringDev: true,
+    buildEnd() {{ log("per-environment buildEnd " + this.environment.name); }},
+  }},
+  {{
+    name: "plain",
+    buildEnd() {{ log("plain buildEnd " + this.environment.name); }},
+    closeBundle() {{ log("plain closeBundle " + this.environment.name); }},
+  }},
+];
+"#
+    );
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"plugin-environments-close","private":true,"type":"module"}"#,
+        ),
+        ("index.html", INDEX_HTML),
+        ("src/main.js", "window.__ok = 1;\n"),
+        ("oj.plugins.mjs", &plugins),
+    ]);
+    let server = app.serve().await;
+    let host = server.built.plugin_host.clone().expect("a plugin host");
+    oj_server::close_plugins(&host).await;
+    let text = std::fs::read_to_string(&log).unwrap_or_default();
+    let mut lines: Vec<&str> = text.lines().collect();
+    lines.sort();
+    assert_eq!(
+        lines,
+        [
+            "per-environment buildEnd client",
+            "per-environment buildEnd ssr",
+            "plain buildEnd client",
+            "plain closeBundle client",
+            "plain closeBundle ssr",
+        ]
+    );
 }
