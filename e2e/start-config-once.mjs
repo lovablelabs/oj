@@ -2,11 +2,11 @@
 // Copyright (c) 2026 Raphael Amorim
 
 // Vite's createServer evaluates vite.config once and runs each plugin's
-// config hook once. Start dev evaluates it in each plugin host (their plugin
-// instances cannot cross engines) and in a cold config extraction, but never
-// for instances nothing serves: every evaluation but the extraction's must
-// be one whose plugins run. Checked on the first boot and after a config edit
-// restarts the server. Run with a built target/debug/oj (or OJ_BIN).
+// config hook once. Start dev evaluates it once, in the plugin host every
+// environment (client, ssr, the client bundle) runs on, plus a cold config
+// extraction whose instances nothing serves. Checked on the first boot and
+// after a config edit restarts the server. Run with a built target/debug/oj
+// (or OJ_BIN).
 import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -101,6 +101,8 @@ async function checkBoot(label, from) {
       `${label}: ${t.ids.length} evaluations, ${t.unserved.length} never served: ${t.unserved.join(", ")}`,
     );
   }
+  const served = t.ids.length - t.unserved.length;
+  if (served !== 1) throw new Error(`${label}: ${served} evaluations serve plugins, Vite's one expected`);
   if (t.reconfigured.length) throw new Error(`${label}: config hook not run once for ${t.reconfigured.join(", ")}`);
   console.log(`${label}: ${t.ids.length} evaluation(s), ${t.unserved.length} unserved`);
 }

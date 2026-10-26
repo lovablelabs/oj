@@ -274,18 +274,18 @@ process.on("unhandledRejection", (e) => {
 // themselves, so their config lifecycle hooks are tolerated per-plugin instead
 // of aborting the load, keeping the editor middleware (dev-server bridge) alive.
 const ojStartMode = initial.ojStartMode === true;
-// A Start bundle host backs one of oj's native Start bundles (the client
-// bundle in dev, the client/server/worker bundles of a build): the bundler is
-// rolldown in Rust, which drives this host's hooks, and a plugin's
+// A Start bundle host backs the bundles of a Start build (client, server,
+// workers; the dev client bundle is a container of the dev server's host):
+// the bundler is rolldown in Rust, which drives this host's hooks, and a plugin's
 // `this.resolve` that no plugin answers ends in that bundler's resolution
 // (the `bundlerResolve` reverse RPC), as it ends in Rollup's under Vite.
 const ojBundleHost = initial.ojBundleHost === true;
-// In start mode the ssr-environment host backs oj's in-process Start module
-// host: framework plugins oj reimplements natively (vite:*, tanstack's
-// compiler plugins) must not transform SSR modules — the Start pipeline does
-// their work (server-fn rewrite, route tree, refresh) — while user plugins
-// (mdx, svgr, virtual modules) run. A Start bundle host leaves the same
-// plugins out: the native Start bundles do their work.
+// In start mode framework plugins oj reimplements natively (vite:*,
+// tanstack's compiler plugins) must not transform SSR modules or a native
+// Start bundle's — the Start pipeline does their work (server-fn rewrite,
+// route tree, refresh) — while user plugins (mdx, svgr, virtual modules)
+// run. A host of its own for either leaves them out; so does a container
+// opened for either on the dev server's host (openEnvironmentContainer).
 const startLeavesOutReimplemented = ojStartMode && (hostEnvName === "ssr" || ojBundleHost);
 
 const _ojTTY = process.stderr.isTTY && !process.env.NO_COLOR;
@@ -3635,10 +3635,9 @@ async function createProxyMiddleware(proxyConfig, appRoot) {
 // Vite runs the server-level setup once per dev server (server/index.ts:
 // configureServer hooks, the proxy, the environments), on plugin instances
 // every environment shares; a per-environment plugin's configureServer is
-// ignored (plugin.ts resolveEnvironmentPlugins). oj's ssr host holds its own
-// instances of the same plugins, and the client host is the server oj routes
-// to, so only the client host does that setup. Running it in both started
-// every plugin's side effects twice (e.g. a second devtools event bus).
+// ignored (plugin.ts resolveEnvironmentPlugins). The dev server's host is
+// the client's, and its other environments are containers on it, so the
+// setup runs once, there; a host of the ssr environment (a build's) runs none.
 const ownsServer = hostEnvName === "client";
 
 async function setupConfigureServer() {

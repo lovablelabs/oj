@@ -44,6 +44,11 @@ pub(crate) struct DevBundler {
     start: Arc<StartConfig>,
     config_file: Option<PathBuf>,
     host: tokio::sync::OnceCell<Option<BundleHost>>,
+    /// The dev server's plugin host, once it is up (`Some(None)`: it runs
+    /// none), whose client environment the bundle runs in. Without one (the
+    /// tests) the bundle spawns a host of its own.
+    dev_host:
+        Option<tokio::sync::watch::Receiver<Option<Option<Arc<oj_server::plugins::PluginHost>>>>>,
     styles: Arc<Styles>,
     /// The hot-update engine, while one runs; one bundle at a time holds it
     /// (rebundles and output refreshes share the cache directory).
@@ -82,6 +87,7 @@ impl DevBundler {
             start: Arc::new(start),
             config_file,
             host: tokio::sync::OnceCell::new(),
+            dev_host: None,
             styles,
             session: tokio::sync::Mutex::new(None),
             engine: EngineSlot::default(),
@@ -92,6 +98,15 @@ impl DevBundler {
             fn_externals: Arc::default(),
             bundle_modules: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Runs the bundle's plugins on the dev server's host (see `dev_host`).
+    pub(crate) fn on_dev_host(
+        mut self,
+        dev_host: tokio::sync::watch::Receiver<Option<Option<Arc<oj_server::plugins::PluginHost>>>>,
+    ) -> DevBundler {
+        self.dev_host = Some(dev_host);
+        self
     }
 
     #[cfg(test)]
@@ -203,10 +218,24 @@ impl DevBundler {
             .map(|h| Arc::clone(&h.host))
     }
 
-    /// The session's plugin host, spawned by the first bundle.
+    /// The session's plugin container, opened by the first bundle.
     async fn host(&self) -> anyhow::Result<Option<&BundleHost>> {
         self.host
-            .get_or_try_init(|| hosts::spawn(&self.start, self.config_file.as_deref(), "client"))
+            .get_or_try_init(|| async {
+                let Some(dev_host) = &self.dev_host else {
+                    return hosts::spawn(&self.start, self.config_file.as_deref(), "client").await;
+                };
+                let mut dev_host = dev_host.clone();
+                // A server build that failed before its host came up drops the sender.
+                let dev = match dev_host.wait_for(Option::is_some).await {
+                    Ok(dev) => dev.clone().flatten(),
+                    Err(_) => None,
+                };
+                match dev {
+                    Some(dev) => hosts::open(&dev, "client").await.map(Some),
+                    None => Ok(None),
+                }
+            })
             .await
             .map(Option::as_ref)
     }

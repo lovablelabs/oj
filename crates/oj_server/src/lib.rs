@@ -1469,6 +1469,16 @@ impl DevServer {
     }
 
     pub async fn build_app(self) -> anyhow::Result<BuiltApp> {
+        self.build_app_with(|_| {}).await
+    }
+
+    /// [`DevServer::build_app`], handing `on_plugin_host` the plugin host the
+    /// moment it is up (`None` when the app runs none), before the rest of the
+    /// build: other environments open their containers on it meanwhile.
+    pub async fn build_app_with(
+        self,
+        on_plugin_host: impl FnOnce(Option<Arc<PluginHost>>) + Send,
+    ) -> anyhow::Result<BuiltApp> {
         let root = self
             .root
             .canonicalize()
@@ -1600,6 +1610,7 @@ impl DevServer {
             None => None,
         };
         boot_phase("plugin host ready");
+        on_plugin_host(plugin_host.clone());
         let plugin_names = match &plugin_host {
             Some(host) => host.plugin_names().await,
             None => Vec::new(),

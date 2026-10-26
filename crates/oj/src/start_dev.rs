@@ -278,6 +278,8 @@ pub async fn start_dev(
     // plugin children (workerd) spawn well before the server listens.
     let host_slot = std::sync::Arc::new(std::sync::OnceLock::new());
     tokio::spawn(oj_server::close_plugins_on_shutdown(host_slot.clone()));
+    // The client bundle's plugins run on the dev server's host, as soon as it is up.
+    let (dev_host_tx, dev_host_rx) = tokio::sync::watch::channel(None);
     let built_task = tokio::spawn({
         let dev_server = oj_server::DevServer {
             root: root.clone(),
@@ -290,7 +292,11 @@ pub async fn start_dev(
             mode: Some(mode.clone()),
         };
         async move {
-            let built = dev_server.build_app().await?;
+            let built = dev_server
+                .build_app_with(move |host| {
+                    let _ = dev_host_tx.send(Some(host));
+                })
+                .await?;
             // Subscribed the moment the server (and its watcher) exists, not
             // after the client bundle joins: an edit landing during the rest
             // of boot queues for the Start watcher instead of being lost.
@@ -335,7 +341,7 @@ pub async fn start_dev(
             config: inputs.config,
             app_env: inputs.app_env,
         };
-        Arc::new(ClientBundler::new(start, config_file.clone()))
+        Arc::new(ClientBundler::new(start, config_file.clone()).on_dev_host(dev_host_rx))
     };
     // A Cloudflare app's documents come from the worker environments, which
     // render them from TanStack's own manifest: their pages load the dev

@@ -57,7 +57,9 @@ The bundles (`crates/oj/src/start_bundle/`):
   out), driven from rolldown's hooks with Vite's order around its core
   resolver; a plugin's `this.resolve` ends in the bundle's own resolution
   through a reverse RPC. A build shares one host across its environments; a
-  worker bundle gets a plugin container of its own on that host.
+  worker bundle gets a plugin container of its own on that host. The dev
+  client bundle runs in a container of the dev server's own host, its client
+  environment (one buildStart, configureServer run once).
 - `alias.rs`: the app's `resolve.alias`, ahead of every plugin.
 - `assets.rs`: Vite's asset, stylesheet and worker conventions (`?raw`, `?url`,
   `?inline`, `?worker`, bare asset imports, CSS and CSS modules) and the
@@ -103,8 +105,9 @@ Dev SSR:
   compile with `define` / `import.meta.env` / `import.meta.glob`); CommonJS
   interop and node_modules loading are the engine's byonm semantics. The JS
   half is `crates/oj/src/assets/start-bootstrap.mjs` (the `fetch(Request)`
-  protocol only). The user's Vite plugins run in the ssr-environment plugin
-  host, reached over its ordinary stdio RPC.
+  protocol only). The user's Vite plugins run in the ssr environment's
+  container on the dev server's plugin host, on the same plugin instances
+  as the client's.
 
 Framework entries (synthesized, what the TanStack Vite plugin would inject):
 
@@ -121,7 +124,8 @@ Framework entries (synthesized, what the TanStack Vite plugin would inject):
 1. Write the assets into `.oj-cache/start/`.
 2. Generate the route tree (a one-shot child) and the server-fn resolver.
 3. Bundle the browser client entry in process; the session keeps one plugin
-   host for it (one buildStart, plugin state across rebundles) and, once a
+   container for it on the dev server's host (one buildStart, plugin state
+   across rebundles) and, once a
    page connects, one `DevEngine` that turns each edit into a hot update.
 4. Build on top of the normal oj dev server for module and asset serving.
 5. Boot the in-process SSR engine (`StartEngine`) on the built app's

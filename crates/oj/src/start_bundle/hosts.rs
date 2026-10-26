@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
-//! The plugin hosts a Start bundle runs the app's Vite plugins in: one per
-//! Vite environment, in Start bundle mode (the framework plugins oj
-//! reimplements left out, a plugin's `this.resolve` ending in the bundle's
-//! own resolution).
+//! Where a Start bundle runs the app's Vite plugins: a build's own host,
+//! shared by its environments, or a container of the dev server's host for
+//! the dev client bundle, in Start bundle mode either way (the framework
+//! plugins oj reimplements left out, a plugin's `this.resolve` ending in the
+//! bundle's own resolution).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -81,6 +82,26 @@ pub(crate) async fn spawn(
         defines,
         env_delta,
     }))
+}
+
+/// The dev server's client bundle on the dev server's own plugin host: a
+/// container of its client environment (one buildStart, configureServer run
+/// once, by the server), the framework plugins oj reimplements left out.
+pub(crate) async fn open(dev: &PluginHost, env_name: &str) -> anyhow::Result<BundleHost> {
+    let host = dev
+        .open_environment_container(env_name, true, true)
+        .await
+        .map_err(|e| anyhow::anyhow!("the {env_name} plugin container failed to open: {e}"))?;
+    host.build_hook_plan().await;
+    let ctx = serve_bundler_resolve(&host);
+    let (facts, defines, env_delta) = read_facts(&host, env_name).await?;
+    Ok(BundleHost {
+        host,
+        ctx,
+        facts,
+        defines,
+        env_delta,
+    })
 }
 
 async fn read_facts(
