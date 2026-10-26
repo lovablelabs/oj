@@ -2869,10 +2869,13 @@ function deferBootRegistrations(environments) {
           id,
           file: normalizePath(pathResolve(depsCacheDir(environment), `${flattenDepId(id)}.js`)),
           src: resolved,
-          browserHash: metadata.browserHash,
+          browserHash: discoveredBrowserHash(metadata),
+          // What took its place: the child's dep, or this process's
+          // optimizer's. Never itself (a batch that failed left it there).
           processing: batch.done.then(() => {
             const now = optimizer.metadata;
-            return (now.optimized[id] ?? now.discovered[id])?.processing;
+            const next = now.optimized[id] ?? now.discovered[id];
+            return next && next !== info ? next.processing : undefined;
           }),
         };
         metadata.discovered[id] = info;
@@ -2883,6 +2886,21 @@ function deferBootRegistrations(environments) {
     };
     optimizer.registerMissingImport.ojRegister = register;
   }
+}
+// Vite's getDiscoveredBrowserHash, over this session's start: a new
+// discovery set gets a new hash, so the browser never reuses a stale dep.
+const discoverySession = String(Date.now());
+function discoveredBrowserHash(metadata) {
+  const srcs = (infos) => Object.fromEntries(Object.entries(infos ?? {}).map(([k, v]) => [k, v.src]));
+  return createHash("sha256")
+    .update(
+      metadata.hash +
+        JSON.stringify(srcs(metadata.optimized)) +
+        JSON.stringify(srcs(metadata.discovered)) +
+        discoverySession,
+    )
+    .digest("hex")
+    .substring(0, 8);
 }
 // One batch of setup-time registrations: the child optimizes them, then each
 // optimizer reads the metadata it committed; a failed child leaves them to

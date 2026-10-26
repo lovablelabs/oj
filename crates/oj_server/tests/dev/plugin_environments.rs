@@ -309,6 +309,86 @@ export default { plugins: [runner] };
     }
 }
 
+// A setup-time dep's stand-in is what Vite's addMissingDep makes: a browser
+// hash of its own discovery (getDiscoveredBrowserHash, never the metadata's),
+// and a `processing` that settles even when no optimizer took the dep over.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_boot_dep_stand_in_has_its_own_hash_and_always_settles() {
+    crate::require_fixture!("vite");
+    let config = r#"import { DevEnvironment } from "vite";
+let seen = null;
+const optimizer = {
+  metadata: { hash: "m", optimized: {}, chunks: {}, discovered: {}, depInfoList: [], browserHash: "h" },
+  registerMissingImport(id) {
+    return { id, processing: Promise.resolve() };
+  },
+};
+const runner = {
+  name: "runner-env",
+  config() {
+    return {
+      environments: {
+        worker: {
+          consumer: "server",
+          dev: {
+            createEnvironment(name, config) {
+              const environment = new DevEnvironment(name, config, { hot: true });
+              environment.depsOptimizer = optimizer;
+              return environment;
+            },
+          },
+        },
+      },
+    };
+  },
+  configureServer(server) {
+    server.middlewares.use((req, res, next) => {
+      if (req.url !== "/__seen") return next();
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(seen));
+    });
+    const environment = server.environments.worker;
+    const info = environment.depsOptimizer.registerMissingImport("dep-a", "/a.js");
+    // The environment drops its optimizer before the batch runs: nothing
+    // takes the stand-in over.
+    environment.depsOptimizer = undefined;
+    info.processing.then(
+      () => (seen = { hash: info.browserHash, processing: "settled" }),
+      (e) => (seen = { hash: info.browserHash, processing: String(e && e.message) }),
+    );
+  },
+};
+export default { plugins: [runner] };
+"#;
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"boot-dep-stand-in","private":true,"type":"module"}"#,
+        ),
+        ("index.html", INDEX_HTML),
+        ("src/main.js", "window.__ok = 1;\n"),
+        ("vite.config.mjs", config),
+    ]);
+    app.link_fixture("vite");
+    let server = app.serve().await;
+    crate::plugin_middleware::middleware_ready(&server).await;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    let seen = loop {
+        let seen: serde_json::Value = serde_json::from_str(&server.text("/__seen").await).unwrap();
+        if !seen.is_null() {
+            break seen;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the stand-in's processing never settled"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    };
+    assert_eq!(seen["processing"], "settled", "{seen}");
+    let hash = seen["hash"].as_str().unwrap();
+    assert!(hash != "h" && hash.len() == 8, "{seen}");
+}
+
 // Vite's createServer inits every environment before configureServer runs:
 // `server.environments.ssr` is the environment the ssr hooks see as
 // `this.environment`, whose module graph knows what they transformed.
