@@ -346,6 +346,7 @@ struct ServerState {
     hmr_enabled: bool,
     /// The files whose change restarts the server ([`restart_files`]).
     restart_files: Vec<PathBuf>,
+    restarter: Arc<watch::Restarter>,
     /// The engines the debug GC endpoint fans over (plugin hosts, CSS, SSR,
     /// Start, addon keeper); every long-lived spawn joins it.
     engine_registry: oj_js::EngineRegistry,
@@ -638,6 +639,8 @@ pub struct BuiltApp {
     /// Live plugin-middleware state (port + runner environments), shared with
     /// the router's state; a slow plugin host activates it after boot.
     pub plugin_serve: Arc<PluginServe>,
+    /// This server's restarts, checked before they replace it.
+    pub restarter: Arc<Restarter>,
     pub root: PathBuf,
     pub started: Instant,
     /// Sender for the `/__ws` broadcast: the channel the editor reads
@@ -1672,12 +1675,12 @@ impl DevServer {
             caps = PluginCaps::probe(host).await;
         }
         // What a restart of this server boots from, checked before it replaces it.
-        let _ = watch::RESTART_CHECK.set(watch::RestartCheck {
-            root: root.clone(),
-            config_file: config_file.clone(),
-            mode: dev_mode.clone(),
-            start: is_start,
-        });
+        let restarter = Arc::new(watch::Restarter::new(
+            root.clone(),
+            config_file.clone(),
+            dev_mode.clone(),
+            is_start,
+        ));
         // The ssr container the host's init opened, its
         // `environments.ssr.define` (and config()-hook deltas) layered over
         // the shared define for SSR compiles.
@@ -1813,6 +1816,7 @@ impl DevServer {
                 .unwrap_or(0),
             hmr_enabled: hmr.enabled,
             restart_files: restart_files(&root, &env_dir, &dev_mode, config_file.as_deref()),
+            restarter: Arc::clone(&restarter),
             plugins: plugin_host.clone(),
             plugin_serve: Arc::clone(&plugin_serve),
             plugins_ssr,
@@ -1915,6 +1919,7 @@ impl DevServer {
             strict_port,
             proxy_prefixes,
             plugin_serve,
+            restarter,
             root,
             started,
             reload_tx,

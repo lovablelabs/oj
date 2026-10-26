@@ -21,6 +21,8 @@ use crate::start_chunks::{respond, Chunk};
 use crate::start_host::{StartEngine, StartRequest, StartResponse};
 
 struct StartState {
+    /// The dev server's restarts, checked before they replace it.
+    restarter: Arc<oj_server::Restarter>,
     /// The scripts' env (see `script_env`), resolved once at boot for the
     /// watch-reload codegen and rebundles.
     script_env: Arc<[(String, String)]>,
@@ -526,6 +528,7 @@ pub async fn start_dev(
     // The dev urls' prefix under `base` (see oj_server::start_dev_url_base).
     let base = oj_server::start_dev_url_base(bundler.base());
     let state = Arc::new(StartState {
+        restarter: Arc::clone(&built.restarter),
         script_env: Arc::clone(&script_vars),
         bundler,
         proxy_prefixes: built.proxy_prefixes.clone(),
@@ -1246,7 +1249,7 @@ fn spawn_start_watcher(
             if paths.iter().any(|p| start_entry_candidate(p))
                 && crate::start_host::app_start_entry(&watch_root) != boot_entry
             {
-                oj_server::request_restart("the start entry changed");
+                state.restarter.request("the start entry changed");
             }
             // Rebuild only on a real source-file change. Ignore the generated
             // route tree and its atomic-write temp siblings, plus bare directory

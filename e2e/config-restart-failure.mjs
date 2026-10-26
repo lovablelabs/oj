@@ -113,7 +113,7 @@ try {
   await sleep(2000);
   const hung = log.length;
   main("after-a-hanging-config");
-  if (!(await watched(hung))) throw new Error("a hanging config check froze the watcher");
+  if (!(await watched(hung))) throw new Error(`a hanging config check froze the watcher:\n${log.slice(fixed)}`);
   console.log("hanging config: the watcher keeps going");
   console.log("CONFIG-RESTART-FAILURE E2E PASSED");
 } catch (e) {

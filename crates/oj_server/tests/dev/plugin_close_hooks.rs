@@ -2,7 +2,9 @@
 // Copyright (c) 2026 Raphael Amorim
 
 //! Closing the dev server runs every plugin's buildEnd (no error) then
-//! closeBundle, exactly once, and booting it runs neither. The trigger (a
+//! closeBundle, and booting it runs neither. As Vite's server.close closes
+//! every environment's container, buildEnd runs in the client only and
+//! closeBundle once per environment (client, ssr). The trigger (a
 //! signal handled by `close_plugins_on_shutdown`, which then exits 130) ends
 //! the process, so this runs `close_plugins`, the sequence that handler
 //! runs. The build half is
@@ -62,7 +64,7 @@ async fn dev_close_runs_build_end_then_close_bundle() {
     oj_server::close_plugins(&host).await;
     assert_eq!(
         events(&log),
-        ["buildEnd:ok", "closeBundle"],
+        ["buildEnd:ok", "closeBundle", "closeBundle"],
         "dev close runs buildEnd then closeBundle"
     );
 }

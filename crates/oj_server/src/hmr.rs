@@ -150,7 +150,7 @@ pub(crate) async fn handle_plugin_server_event(state: &Arc<ServerState>, ev: &se
     match ev.get("action").and_then(|a| a.as_str()) {
         Some("restart") => {
             println!("oj: plugin requested server.restart()");
-            request_restart("plugin requested server.restart()");
+            state.restarter.request("plugin requested server.restart()");
         }
         Some("invalidateAll") => {
             state.mtime_keys.lock().unwrap().clear();
