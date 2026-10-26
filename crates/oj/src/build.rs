@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{bail, Context};
 use html_tags::{PageRef, Tag};
 use oj_server::plugins::PluginHost;
+use oj_server::rolldown_runtime::on_rolldown;
 use rolldown::{
     BundlerBuilder, BundlerOptions, InputItem, OutputFormat, RawMinifyOptions, SourceMapType,
 };
@@ -1468,8 +1469,7 @@ async fn bundle_worker_inline(
         })
         .build()
         .map_err(rolldown_failure!("inline worker init failed"))?;
-    let out = bundler
-        .generate()
+    let out = on_rolldown(bundler.generate())
         .await
         .map_err(rolldown_failure!("inline worker build failed for {file}"))?;
     let mut code = String::new();
@@ -1510,8 +1510,7 @@ async fn bundle_worker_entry(
         })
         .build()
         .map_err(rolldown_failure!("worker init failed"))?;
-    let out = bundler
-        .generate()
+    let out = on_rolldown(bundler.generate())
         .await
         .map_err(rolldown_failure!("worker build failed for {file}"))?;
     let emit = |file_name: String, source: rolldown_common::StrOrBytes| {
@@ -3758,7 +3757,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
         .build()
         .map_err(rolldown_failure!("rolldown init failed"))?;
 
-    let output = match bundler.write().await {
+    let output = match on_rolldown(bundler.write()).await {
         Ok(output) => output,
         Err(errs) => {
             let detail = errs
@@ -3774,8 +3773,7 @@ pub async fn build(root: PathBuf, cli_mode: Option<&str>, cli: CliOptions) -> an
             .await);
         }
     };
-    bundler
-        .close()
+    on_rolldown(bundler.close())
         .await
         .map_err(|errs| anyhow::anyhow!("close failed:\n{errs:?}"))?;
 
@@ -5183,16 +5181,14 @@ pub(crate) async fn build_ssr(
         .build()
         .map_err(rolldown_failure!("rolldown init failed"))?;
 
-    let output = match bundler
-        .write()
+    let output = match on_rolldown(bundler.write())
         .await
         .map_err(rolldown_failure!("ssr build failed"))
     {
         Ok(output) => output,
         Err(err) => return Err(fail_with_plugin_hooks(err, &plugin_host).await),
     };
-    bundler
-        .close()
+    on_rolldown(bundler.close())
         .await
         .map_err(|errs| anyhow::anyhow!("ssr close failed:\n{errs:?}"))?;
 
@@ -5344,12 +5340,10 @@ async fn build_server_fns(
             })
             .build()
             .map_err(rolldown_failure!("server-fns init failed"))?;
-        bundler
-            .write()
+        on_rolldown(bundler.write())
             .await
             .map_err(rolldown_failure!("server-fns build failed"))?;
-        bundler
-            .close()
+        on_rolldown(bundler.close())
             .await
             .map_err(|errs| anyhow::anyhow!("server-fns close failed:\n{errs:?}"))?;
         Ok::<(), anyhow::Error>(())
@@ -5775,16 +5769,14 @@ async fn build_client_entry(
         .build()
         .map_err(rolldown_failure!("rolldown init failed"))?;
 
-    let output = match bundler
-        .write()
+    let output = match on_rolldown(bundler.write())
         .await
         .map_err(rolldown_failure!("client build failed"))
     {
         Ok(output) => output,
         Err(err) => return Err(fail_with_plugin_hooks(err, &plugin_host).await),
     };
-    bundler
-        .close()
+    on_rolldown(bundler.close())
         .await
         .map_err(|errs| anyhow::anyhow!("client close failed:\n{errs:?}"))?;
 
@@ -6051,8 +6043,7 @@ async fn build_library(
             .build()
             .map_err(rolldown_failure!("rolldown init failed"))?;
 
-        let output = bundler
-            .write()
+        let output = on_rolldown(bundler.write())
             .await
             .map_err(rolldown_failure!("lib build ({fmt}) failed"))?;
         for asset in &output.assets {

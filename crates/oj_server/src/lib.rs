@@ -25,6 +25,7 @@ pub mod optimize;
 pub mod plugins;
 mod prebundle;
 mod preseed;
+pub mod rolldown_runtime;
 pub use preseed::PACKAGE_MANAGER_LOCKFILES;
 pub mod sidecar;
 pub mod svgr;

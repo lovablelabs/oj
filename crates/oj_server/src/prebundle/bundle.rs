@@ -526,11 +526,13 @@ impl Prebundle {
             .with_plugins(plugins)
             .build()
             .map_err(|e| diagnostics(&e.into_vec()))?;
-        let written = bundler
-            .write()
-            .await
-            .map_err(|e| diagnostics(&e.into_vec()));
-        let _ = bundler.close().await;
+        let written = crate::rolldown_runtime::on_rolldown(async {
+            let written = bundler.write().await;
+            let _ = bundler.close().await;
+            written
+        })
+        .await
+        .map_err(|e| diagnostics(&e.into_vec()));
         let mut built = BTreeMap::new();
         for output in written?.assets {
             let Output::Chunk(chunk) = output else {

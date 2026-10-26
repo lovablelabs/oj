@@ -390,7 +390,8 @@ pub(crate) async fn build(
         emitter.set_worker_bundler(bundler, worker_options.is_module());
     }
 
-    let build_all = async {
+    // On the rolldown runtime: see `oj_server::rolldown_runtime`.
+    let build_all = oj_server::rolldown_runtime::on_rolldown(async {
         // The client.
         let policy = match &client_host {
             Some(h) => Some(super::chunks::chunk_policy(&h.facts, &h.host, false)?),
@@ -736,7 +737,7 @@ pub(crate) async fn build(
             );
         }
         Ok::<(), anyhow::Error>(())
-    };
+    });
 
     let Some(host) = &client_host else {
         return build_all.await;
@@ -873,11 +874,13 @@ async fn bundle_worker(
         })
         .build()
         .map_err(|errs| BundleError::from_diagnostics(&errs.into_vec()).to_string())?;
-    let output = bundler
-        .generate()
-        .await
-        .map_err(|errs| BundleError::from_diagnostics(&errs.into_vec()).to_string())?;
-    let _ = bundler.close().await;
+    let output = oj_server::rolldown_runtime::on_rolldown(async {
+        let output = bundler.generate().await;
+        let _ = bundler.close().await;
+        output
+    })
+    .await
+    .map_err(|errs| BundleError::from_diagnostics(&errs.into_vec()).to_string())?;
     let output = checked(output).map_err(|e| e.to_string())?;
     if let Some(h) = host {
         write_emitted(&h.host, client_dir)

@@ -260,7 +260,15 @@ impl DevBundler {
         let _ = std::fs::remove_file(cache.join(CLIENT_ERROR_FILE));
         let _ = std::fs::remove_file(cache.join(CLIENT_HMR_FILE));
         let outcome = match self.host().await {
-            Ok(host) => self.run(&mut session, host, changed, refresh).await,
+            Ok(host) => {
+                oj_server::rolldown_runtime::on_rolldown(self.run(
+                    &mut session,
+                    host,
+                    changed,
+                    refresh,
+                ))
+                .await
+            }
             Err(e) => Err(BundleError::from_message(format!("{e:#}"))),
         };
         match outcome {
