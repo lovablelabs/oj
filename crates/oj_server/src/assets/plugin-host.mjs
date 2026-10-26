@@ -357,6 +357,7 @@ function ctl(obj) {
 let ojInitDone = false;
 const initStage = (stage) => {
   if (!ojInitDone) ctl({ ojInitProgress: stage });
+  hostPhase(stage);
 };
 initStage("start");
 
@@ -2764,11 +2765,9 @@ async function buildEnvironments(server) {
   // virtual:cloudflare/export-types among them).
   let rc;
   try {
-    hostPhase("cf: environments config begin");
     initStage("cf:environments-config");
     rc = await environmentsConfig();
     if (!rc) return undefined;
-    hostPhase("cf: environments config done");
     initStage("cf:environments-config-done");
     // Coerce bundledDev off BEFORE the environments are built off `rc`: the
     // DevEnvironment constructor makes the client env bundled from these
@@ -2805,17 +2804,16 @@ async function buildEnvironments(server) {
         ei = factory
           ? await factory(name, rc, { ws: server.ws })
           : new vite.DevEnvironment(name, rc, { hot: true, transport: server.ws });
-        hostPhase(`cf: createEnvironment(${name}) done`);
         initStage(`cf:createEnvironment:${name}`);
       } catch (e) {
         process.stderr.write(`${OJ} plugin host: createEnvironment(${name}) failed: ${(e && e.message) || e}\n`);
         return;
       }
       environments[name] = ei;
+      timeFetches(name, ei);
       try {
         if (ei && typeof ei.init === "function") {
           await ei.init({ watcher: server.watcher });
-          hostPhase(`cf: init(${name}) done`);
           initStage(`cf:init:${name}`);
         }
       } catch (e) {
@@ -3190,8 +3188,32 @@ function pluginHookUtils(plugins) {
   return { getSortedPlugins, getSortedPluginHooks };
 }
 
+// An OJ_BOOT_PHASES line on the dev server's timeline (ms since oj started).
 function hostPhase(label) {
-  if (process.env.OJ_BOOT_PHASES) process.stderr.write(`[oj-phase] ${Date.now()} ${label}\n`);
+  if (!process.env.OJ_BOOT_PHASES) return;
+  const ms = String(Date.now() - (initial.bootEpochMs ?? 0)).padStart(7);
+  process.stderr.write(`[oj-phase] ${ms}ms host: ${label}\n`);
+}
+
+// Under OJ_BOOT_PHASES, how a runner environment's module graph loads: its
+// first fetched module, then a running count with the time spent inside
+// fetchModule (the module runner walks the graph through it).
+function timeFetches(name, env) {
+  if (!process.env.OJ_BOOT_PHASES || typeof env?.fetchModule !== "function") return;
+  const fetchModule = env.fetchModule.bind(env);
+  let count = 0;
+  let busy = 0;
+  env.fetchModule = async (...args) => {
+    const t = Date.now();
+    try {
+      return await fetchModule(...args);
+    } finally {
+      count++;
+      busy += Date.now() - t;
+      if (count === 1) hostPhase(`${name}: first module fetched`);
+      if (count % 1000 === 0) hostPhase(`${name}: ${count} modules fetched (${busy}ms summed in fetchModule)`);
+    }
+  };
 }
 
 function userSetPreTransformRequests(name) {
@@ -4478,6 +4500,7 @@ async function setupConfigureServer() {
   // Setup is over: later registrations are the session's own discoveries.
   bootRegistrationsOpen = false;
   ojConfigureServerDone = true;
+  hostPhase("configureServer done");
   // The middleware server exists as soon as configureServer registered
   // anything, like Vite's connect stack exists at createServer — never
   // behind the emit below, whose buildStart gate may be slow.
@@ -6164,4 +6187,5 @@ if (!ojEngineBoot) {
 // per-call timeout. Rust treats ojInit, ojServeInfo, or the first reply —
 // whichever lands first — as initialized.
 ojInitDone = true;
+hostPhase("init done");
 ctl({ ojInit: true });

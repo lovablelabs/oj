@@ -68,6 +68,10 @@ export default defineConfig({
               appendFileSync(${JSON.stringify(warmLog)}, url + "\\n");
               return Promise.resolve();
             },
+            // What a module runner asks its environment for, as a worker does.
+            async fetchModule(id: string) {
+              return { externalize: id, type: "module" };
+            },
           } as any;
         },
       },
@@ -86,9 +90,10 @@ export default defineConfig({
     {
       name: "runner-doc-middleware",
       configureServer(server) {
-        server.middlewares.use((req, res, next) => {
+        server.middlewares.use(async (req, res, next) => {
           if (req.url === "/" || req.url?.startsWith("/?")) {
             appendFileSync(${JSON.stringify(hitLog)}, req.url + "\\n");
+            await server.environments.ssr.fetchModule("/src/router.tsx");
             res.setHeader("content-type", "text/html");
             res.end("<html><body>runner ok</body></html>");
             return;
@@ -149,6 +154,20 @@ try {
   if (!stderr.includes("prewarm: engine skipped (worker environments)")) {
     throw new Error(`engine prewarm was not skipped for the runner env\n${stderr.slice(-2000)}`);
   }
+  // OJ_BOOT_PHASES: oj and its plugin host print on one timeline (ms since oj
+  // started), with the host's init stages and the runner's module fetches.
+  const phases = [...stderr.matchAll(/^\[oj-phase\]\s+(\d+)ms (.*)$/gm)].map((m) => [Number(m[1]), m[2]]);
+  for (const label of ["host: init done", "host: configureServer done", "runner render warm begin"]) {
+    if (!phases.some(([, l]) => l === label)) throw new Error(`no "${label}" phase\n${stderr.slice(-3000)}`);
+  }
+  if (!phases.some(([, l]) => /^host: \w+: first module fetched$/.test(l))) {
+    throw new Error(`no runner fetchModule phase\n${stderr.slice(-3000)}`);
+  }
+  const at = (label) => phases.find(([, l]) => l === label)?.[0];
+  if (!(at("plugin host spawning") <= at("host: init done") && at("host: init done") <= at("listening"))) {
+    throw new Error(`oj and host phases are not on one timeline:\n${phases.map((p) => p.join(" ")).join("\n")}`);
+  }
+  if (phases.some(([ms]) => ms > 600_000)) throw new Error(`a phase prints a clock, not elapsed ms`);
   console.log("runner-env-prewarm: ok (server.warmup + render warm fired unprompted, client environment untouched)");
 } catch (e) {
   failed = true;

@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 use std::sync::OnceLock;
+use std::time::SystemTime;
 
 use crate::Knobs;
 
@@ -17,6 +18,9 @@ pub struct Env {
     /// The directory oj was started in: Vite's `process.cwd()`, which a
     /// plugin host later moves to the app root for the plugins' sake.
     pub cwd: Option<PathBuf>,
+    /// When the snapshot was taken, early in `main`: the zero of the
+    /// `OJ_BOOT_PHASES` timeline.
+    pub started: Option<SystemTime>,
 }
 
 impl Env {
@@ -27,6 +31,7 @@ impl Env {
             vars,
             knobs,
             cwd: None,
+            started: None,
         }
     }
 
@@ -71,6 +76,7 @@ static ENV: OnceLock<Env> = OnceLock::new();
 pub fn init() -> &'static Env {
     ENV.get_or_init(|| Env {
         cwd: std::env::current_dir().ok(),
+        started: Some(SystemTime::now()),
         ..Env::from_vars_os(std::env::vars_os())
     })
 }
@@ -78,4 +84,17 @@ pub fn init() -> &'static Env {
 /// The process snapshot ([`init`] on first use).
 pub fn get() -> &'static Env {
     init()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_process_snapshot_records_when_it_was_taken() {
+        assert!(Env::from_vars::<&str, &str>([]).started.is_none());
+        let started = init().started.expect("the process snapshot's time");
+        assert!(started <= SystemTime::now());
+        assert_eq!(get().started, Some(started));
+    }
 }

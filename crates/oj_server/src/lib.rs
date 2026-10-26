@@ -910,6 +910,8 @@ fn plugin_host_payload(
         // What the command line set (`--port`, `--host`): Vite's CLI puts these in
         // the inline config its config hooks run under.
         "cliInline": cli,
+        // The zero of the `OJ_BOOT_PHASES` timeline the host prints on.
+        "bootEpochMs": boot_epoch_ms(),
     });
     if format == PluginsFormat::Vite {
         // The extractor's verdict rides the spawn payload: TRUE is authoritative, FALSE
