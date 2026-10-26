@@ -3622,6 +3622,30 @@ function stubHttpServer() {
 // moduleGraph, hot, plugins, pluginContainer over the host's chains). The client
 // stub shares server.moduleGraph; others get their own graph. Marked so oj's
 // invalidation of runner-backed environments skips it.
+// Vite's `server.environments.<name>` is the very environment the hooks see
+// as `this.environment` (createServer inits them before configureServer): a
+// container of that environment's, filled out to the DevEnvironment surface
+// the stand-in below offers, its own graph, channel and plugins kept. Like
+// the stand-in it is oj's (`__ojStub`), never a runner-backed Vite one.
+function containerEnvironment(name, server) {
+  const c =
+    main.environment.name === name
+      ? main
+      : [...containers.values()].find((x) => x.durable && !x.buildStartOwner && x.environment.name === name);
+  if (!c) return null;
+  const environment = c.environment;
+  const stub = stubEnvironment(name, server);
+  for (const [key, value] of Object.entries(stub)) {
+    if (environment[key] === undefined) environment[key] = value;
+  }
+  environment.pluginContainer = {
+    ...stub.pluginContainer,
+    resolveId: async (source, importer, options) => resolveIdFull(c, source, importer, options),
+    load: async (id) => loadFull(c, id),
+    transform: async (code, id) => ({ code: JSON.parse(await transform(c, code, id, null)).code }),
+  };
+  return environment;
+}
 function stubEnvironment(name, server) {
   const isClient = name === "client";
   const base = main.resolvedConfig ?? {};
@@ -4313,7 +4337,8 @@ async function setupConfigureServer() {
   if (!server.environments) {
     server.environments = {};
     const envNames = new Set(["client", "ssr", ...Object.keys(main.resolvedConfig?.environments ?? {})]);
-    for (const name of envNames) server.environments[name] = stubEnvironment(name, server);
+    for (const name of envNames)
+      server.environments[name] = containerEnvironment(name, server) ?? stubEnvironment(name, server);
   }
   devServer = server;
   const post = [];

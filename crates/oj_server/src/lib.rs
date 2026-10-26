@@ -919,12 +919,22 @@ async fn spawn_plugin_host(
     registry: &oj_js::EngineRegistry,
     prewarm: Option<plugins::HostPrewarm>,
     keep_for_proxy: bool,
+    is_start: bool,
 ) -> anyhow::Result<Option<Arc<PluginHost>>> {
     let label = &file.label;
-    let spawned = match prewarm {
-        Some(warm) => PluginHost::spawn_prewarmed(root, &file.path, payload, warm).await,
-        None => PluginHost::spawn(root, &file.path, payload, Some(registry.clone())).await,
-    };
+    // Vite's createServer creates and inits every environment before its
+    // configureServer hooks run, the ssr one included: the host's own init
+    // opens the ssr container (the framework plugins oj reimplements left out
+    // under Start).
+    let spawned = PluginHost::spawn_dev(
+        root,
+        &file.path,
+        payload,
+        Some(registry.clone()),
+        prewarm,
+        &[("ssr", is_start)],
+    )
+    .await;
     let host = match spawned {
         Ok(host) => host,
         Err(e) => {
@@ -932,9 +942,10 @@ async fn spawn_plugin_host(
             return Ok(None);
         }
     };
+    let count = host.plugin_count().await;
     // With no plugin active in any environment, the dev HTML transform runs
     // natively and the host goes, unless it hosts `server.proxy`.
-    if host.plugin_count().await == 0 && host.top_level_plugin_count().await == 0 {
+    if count == 0 && host.top_level_plugin_count().await == 0 {
         if keep_for_proxy {
             println!("  plugins: {label} (none active; host kept for server.proxy)");
             return Ok(Some(host));
@@ -1594,8 +1605,16 @@ impl DevServer {
         boot_phase("plugin host spawning");
         let plugin_host = match &plugin_file {
             Some(file) => {
-                spawn_plugin_host(&root, file, &payload, &engine_registry, prewarm, has_proxy)
-                    .await?
+                spawn_plugin_host(
+                    &root,
+                    file,
+                    &payload,
+                    &engine_registry,
+                    prewarm,
+                    has_proxy,
+                    is_start,
+                )
+                .await?
             }
             None => None,
         };
@@ -1649,26 +1668,20 @@ impl DevServer {
         // listens, the ssr one included: its container opens here, with its
         // `environments.ssr.define` (and config()-hook deltas) layered over
         // the shared define for SSR compiles.
-        let plugins_ssr = match &plugin_host {
-            Some(host) => match host
-                .open_environment_container("ssr", is_start, false)
-                .await
-            {
-                Ok(ssr) => {
-                    let ssr_defines = ssr.config_defines().await;
-                    if !ssr_defines.is_empty() {
-                        import_meta_env.merge_ssr(ssr_defines);
-                    }
-                    boot_phase("ssr environment open");
-                    Some(ssr)
-                }
-                Err(e) => {
-                    eprintln!("oj: the ssr plugin environment failed to open: {e}");
-                    None
-                }
-            },
-            None => None,
-        };
+        // The ssr container the host's init opened, its
+        // `environments.ssr.define` (and config()-hook deltas) layered over
+        // the shared define for SSR compiles.
+        let plugins_ssr = plugin_host
+            .as_ref()
+            .and_then(|host| host.environment("ssr"));
+        if let Some(ssr) = &plugins_ssr {
+            ssr.build_hook_plan().await;
+            let ssr_defines = ssr.config_defines().await;
+            if !ssr_defines.is_empty() {
+                import_meta_env.merge_ssr(ssr_defines);
+            }
+            boot_phase("ssr environment open");
+        }
 
         let jsx = jsx_config_of(&config);
         let jsx_overrides = match &plugin_host {

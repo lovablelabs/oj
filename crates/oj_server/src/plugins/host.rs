@@ -32,6 +32,9 @@ pub struct PluginHost {
     /// never skipped by mistake).
     watch_change: std::sync::atomic::AtomicBool,
     hot_update: std::sync::atomic::AtomicBool,
+    /// The environment containers declared at spawn (the host's own handle
+    /// only): opened by the host's own init, before its configureServer.
+    declared: std::sync::OnceLock<Vec<(String, std::sync::Arc<PluginHost>)>>,
 }
 
 /// A plugin host's engine and its lifecycle (boot, pushes, revive), shared by
@@ -636,16 +639,45 @@ impl PluginHost {
         config_json: &str,
         prewarm: HostPrewarm,
     ) -> anyhow::Result<std::sync::Arc<PluginHost>> {
-        let registry = prewarm.registry.clone();
+        Self::spawn_dev(root, plugins_file, config_json, None, Some(prewarm), &[]).await
+    }
+
+    /// The dev server's host: on a prewarmed engine when there is one, with
+    /// `environments` (name, leave out the reimplemented framework plugins)
+    /// declared up front, so its own init opens them before its
+    /// configureServer runs, as Vite's createServer creates and inits every
+    /// environment first. [`PluginHost::environment`] hands them out.
+    pub async fn spawn_dev(
+        root: &Path,
+        plugins_file: &Path,
+        config_json: &str,
+        registry: Option<oj_js::EngineRegistry>,
+        prewarm: Option<HostPrewarm>,
+        environments: &[(&str, bool)],
+    ) -> anyhow::Result<std::sync::Arc<PluginHost>> {
+        let registry = prewarm
+            .as_ref()
+            .map(|p| p.registry.clone())
+            .unwrap_or(registry);
         Self::spawn_inner(
             root,
             plugins_file,
             config_json,
             SpawnTimeouts::default(),
             registry,
-            Some(prewarm),
+            prewarm,
+            environments,
         )
         .await
+    }
+
+    /// A container [`PluginHost::spawn_dev`] declared.
+    pub fn environment(&self, name: &str) -> Option<std::sync::Arc<PluginHost>> {
+        self.declared
+            .get()?
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, h)| std::sync::Arc::clone(h))
     }
 
     /// The host's engine, started before its config payload exists: the
@@ -692,7 +724,16 @@ impl PluginHost {
         timeouts: SpawnTimeouts,
         registry: Option<oj_js::EngineRegistry>,
     ) -> anyhow::Result<std::sync::Arc<PluginHost>> {
-        Self::spawn_inner(root, plugins_file, config_json, timeouts, registry, None).await
+        Self::spawn_inner(
+            root,
+            plugins_file,
+            config_json,
+            timeouts,
+            registry,
+            None,
+            &[],
+        )
+        .await
     }
 
     async fn spawn_inner(
@@ -702,6 +743,7 @@ impl PluginHost {
         timeouts: SpawnTimeouts,
         registry: Option<oj_js::EngineRegistry>,
         mut prewarm: Option<HostPrewarm>,
+        environments: &[(&str, bool)],
     ) -> anyhow::Result<std::sync::Arc<PluginHost>> {
         let script = oj_cache::cache_root(root).join("plugin-host.mjs");
 
@@ -764,6 +806,18 @@ impl PluginHost {
             None,
         ));
         let _ = core.main.set(std::sync::Arc::downgrade(&host));
+        let declared = environments
+            .iter()
+            .map(|(name, leave_out)| {
+                let (spec, handle) = core.declare_environment(name, *leave_out, false);
+                core.environments
+                    .lock()
+                    .unwrap()
+                    .push((spec, std::sync::Arc::downgrade(&handle)));
+                (name.to_string(), handle)
+            })
+            .collect();
+        let _ = host.declared.set(declared);
         LIVE_HOSTS
             .lock()
             .unwrap()
@@ -1441,6 +1495,7 @@ impl PluginHost {
             hook_plan_epoch: std::sync::atomic::AtomicU64::new(0),
             watch_change: std::sync::atomic::AtomicBool::new(true),
             hot_update: std::sync::atomic::AtomicBool::new(true),
+            declared: std::sync::OnceLock::new(),
         }
     }
 
@@ -1476,15 +1531,8 @@ impl PluginHost {
         leave_out: bool,
         bundle: bool,
     ) -> Result<std::sync::Arc<PluginHost>, String> {
-        use std::sync::atomic::Ordering;
-        let id = self.core.next_environment.fetch_add(1, Ordering::AcqRel);
-        let spec =
-            serde_json::json!({ "id": id, "name": name, "leaveOut": leave_out, "bundle": bundle });
-        let handle = std::sync::Arc::new(PluginHost::over(
-            std::sync::Arc::clone(&self.core),
-            id,
-            None,
-        ));
+        let (spec, handle) = self.core.declare_environment(name, leave_out, bundle);
+        let id = handle.container;
         // Recorded first: a revive racing the open reopens it from the seed.
         self.core
             .environments
@@ -1648,6 +1696,22 @@ impl PluginHost {
 }
 
 impl HostCore {
+    /// A fresh environment container's spec and handle (not yet recorded).
+    fn declare_environment(
+        self: &std::sync::Arc<Self>,
+        name: &str,
+        leave_out: bool,
+        bundle: bool,
+    ) -> (serde_json::Value, std::sync::Arc<PluginHost>) {
+        let id = self
+            .next_environment
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        let spec =
+            serde_json::json!({ "id": id, "name": name, "leaveOut": leave_out, "bundle": bundle });
+        let handle = std::sync::Arc::new(PluginHost::over(std::sync::Arc::clone(self), id, None));
+        (spec, handle)
+    }
+
     /// The host's own container, while a handle on it lives.
     fn main_container(&self) -> Option<std::sync::Arc<PluginHost>> {
         self.main.get().and_then(std::sync::Weak::upgrade)

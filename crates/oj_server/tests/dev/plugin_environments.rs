@@ -299,3 +299,46 @@ export default { plugins: [runner] };
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 }
+
+// Vite's createServer inits every environment before configureServer runs:
+// `server.environments.ssr` is the environment the ssr hooks see as
+// `this.environment`, whose module graph knows what they transformed.
+#[tokio::test(flavor = "multi_thread")]
+async fn configure_server_sees_the_ssr_environment_itself() {
+    let plugins = r#"let captured = null;
+export default [{
+  name: "captures-ssr",
+  configureServer(server) {
+    captured = server.environments.ssr;
+  },
+  transform(code, id) {
+    if (!id.endsWith("/src/main.js") || this.environment.name !== "ssr") return;
+    const seen = {
+      same: this.environment === captured,
+      known: !!captured?.moduleGraph?.getModuleById(id),
+    };
+    return code.replace("__STATE__", JSON.stringify(seen));
+  },
+}];
+"#;
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"plugin-environments-identity","private":true,"type":"module"}"#,
+        ),
+        ("index.html", INDEX_HTML),
+        ("src/main.js", "export const state = __STATE__;\n"),
+        ("oj.plugins.mjs", plugins),
+    ]);
+    let server = app.serve().await;
+    let main = app.root.join("src/main.js");
+    let ssr: String = server
+        .text(&format!("/@ssr-module?id={}", main.display()))
+        .await
+        .split_whitespace()
+        .collect();
+    assert!(
+        ssr.contains(r#"{"same":true,"known":true}"#),
+        "server.environments.ssr is the ssr environment:\n{ssr}"
+    );
+}
