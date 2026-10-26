@@ -356,6 +356,9 @@ struct ServerState {
     /// createServer creates every environment before it listens.
     plugins_ssr: Option<std::sync::Arc<PluginHost>>,
     plugin_watched: Arc<Mutex<std::collections::HashSet<PathBuf>>>,
+    /// The files the ssr pipeline compiled: the ssr environment's module
+    /// graph, which its hotUpdate reads.
+    ssr_modules: Mutex<std::collections::HashSet<PathBuf>>,
     /// Into the watcher thread's inbox (`WatchMsg`): directories of files
     /// served from outside the root (`ensure_watched_file`).
     watch_tx: std::sync::mpsc::Sender<WatchMsg>,
@@ -1821,6 +1824,7 @@ impl DevServer {
             plugin_serve: Arc::clone(&plugin_serve),
             plugins_ssr,
             plugin_watched: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            ssr_modules: Mutex::default(),
             watch_tx: watch_tx.clone(),
             watch_feed: WatchFeed::default(),
             plugins_use_module_parsed: caps.use_module_parsed,

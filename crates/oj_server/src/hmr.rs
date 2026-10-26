@@ -996,6 +996,23 @@ fn hook_hosts(
         .collect()
 }
 
+/// The `modules` argument of the ssr environment's `hotUpdate`: its own
+/// graph's module for the file (Vite hands each environment its own).
+fn ssr_hot_update_modules_json(state: &ServerState, path: &Path) -> String {
+    if !state.ssr_modules.lock().unwrap().contains(path) {
+        return "[]".to_string();
+    }
+    let file = path.display().to_string();
+    serde_json::json!([{
+        "url": url_of(&state.root, path),
+        "id": file,
+        "file": file,
+        "isSelfAccepting": false,
+        "importers": [],
+    }])
+    .to_string()
+}
+
 /// The `modules` argument of `hotUpdate` for a path, as JSON.
 fn hot_update_modules_json(state: &ServerState, path: &Path) -> String {
     let hmr_url = url_of(&state.root, path);
@@ -1081,7 +1098,12 @@ async fn run_plugin_hooks(
         // Its result steers no client update (the ssr environment has
         // no browser); only a throwing hook is worth reporting.
         if let Err(e) = ssr
-            .handle_hot_update(&file, ts, change_type, &modules_json)
+            .handle_hot_update(
+                &file,
+                ts,
+                change_type,
+                &ssr_hot_update_modules_json(state, path),
+            )
             .await
         {
             eprintln!("oj: hotUpdate (ssr) failed for {file}: {e}");

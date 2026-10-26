@@ -434,6 +434,14 @@ fn compile_ssr(
         id,
         stylex_rules.as_deref().unwrap_or(&out.stylex_rules),
     );
+    if !from_plugin {
+        let file = id.split('?').next().unwrap_or(id);
+        state
+            .ssr_modules
+            .lock()
+            .unwrap()
+            .insert(PathBuf::from(file));
+    }
     let code = if runner {
         oj_compiler::ssr::ssr_transform(&out.code, &compile_path)
     } else {

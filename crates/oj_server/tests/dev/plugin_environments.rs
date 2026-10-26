@@ -530,3 +530,58 @@ export default [{{
         ]
     );
 }
+
+// Vite's hotUpdate gets the environment's own graph's modules for the file:
+// a file only the ssr environment loaded is in its modules and not the
+// client's.
+#[tokio::test(flavor = "multi_thread")]
+async fn each_environments_hot_update_gets_its_own_graphs_modules() {
+    let log_dir = tempfile::tempdir().unwrap();
+    let log = log_dir.path().join("hooks.log");
+    let literal = serde_json::to_string(&log.display().to_string()).unwrap();
+    let plugins = format!(
+        r#"import fs from "node:fs";
+const log = (line) => fs.appendFileSync({literal}, line + "\n");
+const base = (id) => id.split("/").pop();
+export default [{{
+  name: "modules",
+  hotUpdate({{ file, modules }}) {{
+    if (file.endsWith("/src/server.js")) {{
+      log(this.environment.name + " [" + modules.map((m) => base(m.id ?? m.url)).join(",") + "]");
+    }}
+  }},
+}}];
+"#
+    );
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"plugin-environments-hot-modules","private":true,"type":"module"}"#,
+        ),
+        ("index.html", INDEX_HTML),
+        ("src/main.js", "window.__ok = 1;\n"),
+        ("src/server.js", "export const s = 1;\n"),
+        ("oj.plugins.mjs", &plugins),
+    ]);
+    let server = app.serve().await;
+    let file = app.root.join("src/server.js");
+    server
+        .text(&format!("/@ssr-module?id={}", file.display()))
+        .await;
+    app.write(&[("src/server.js", "export const s = 2;\n")]);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    let text = loop {
+        let text = std::fs::read_to_string(&log).unwrap_or_default();
+        if text.lines().count() >= 2 {
+            break text;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the hooks never both ran: {text}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    let mut lines: Vec<&str> = text.lines().collect();
+    lines.sort();
+    assert_eq!(lines, ["client []", "ssr [server.js]"]);
+}
