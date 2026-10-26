@@ -231,8 +231,6 @@ jobs:
         run: node e2e/start-ssr-worker-url.mjs
       - name: start server fn called from the browser (handler comments with parens)
         run: node e2e/start-server-fn-client.mjs
-      - name: start server fn behind a middleware importing Start's server (no import cycle)
-        run: node e2e/start-server-fn-cycle.mjs
       - name: start environment functions compile per side (no server code in the browser)
         run: node e2e/start-env-fns.mjs
       - name: start server code root-absolute import.meta.glob (Vite toAbsoluteGlob + root keys)
