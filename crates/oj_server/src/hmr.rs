@@ -140,6 +140,13 @@ pub(crate) fn hmr_socket(
 /// Host-driven invalidateModule/restart. Invalidation drops compiled output and,
 /// for an app file, propagates HMR like an edit; a virtual id only loses its cache (Vite parity).
 pub(crate) async fn handle_plugin_server_event(state: &Arc<ServerState>, ev: &serde_json::Value) {
+    // Another environment's graph (Vite: ssr's own moduleGraph) never reaches
+    // the browser's: oj's SSR compiles are not cached (each request runs the
+    // pipeline), so its invalidation has nothing of the client's to drop.
+    let environment = ev.get("environment").and_then(|e| e.as_str());
+    if environment.is_some_and(|e| e != "client") {
+        return;
+    }
     match ev.get("action").and_then(|a| a.as_str()) {
         Some("restart") => {
             println!("oj: plugin requested server.restart()");

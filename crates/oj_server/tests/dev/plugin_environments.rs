@@ -379,6 +379,51 @@ async fn a_throwing_apply_to_environment_fails_the_boot() {
     assert!(built.is_err(), "the boot must fail");
 }
 
+// The ssr environment's module graph is its own: invalidating it (Vite: the
+// ssr environment's moduleGraph) never reaches the browser.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ssr_graph_invalidation_never_reloads_the_browser() {
+    let plugins = r#"export default [{
+  name: "invalidates-ssr",
+  applyToEnvironment: (environment) => environment.name === "ssr",
+  transform(code, id) {
+    if (!id.endsWith("/src/main.js")) return;
+    this.environment.moduleGraph.invalidateAll();
+    const mod = this.environment.moduleGraph.getModuleById(id);
+    if (mod) this.environment.moduleGraph.invalidateModule(mod);
+    return code;
+  },
+}];
+"#;
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"plugin-environments-ssr-graph","private":true,"type":"module"}"#,
+        ),
+        ("index.html", INDEX_HTML),
+        ("src/main.js", "window.__ok = 1;\n"),
+        ("oj.plugins.mjs", plugins),
+    ]);
+    let server = app.serve().await;
+    let mut frames = server.built.reload_tx.subscribe();
+    let main = app.root.join("src/main.js");
+    server
+        .text(&format!("/@ssr-module?id={}", main.display()))
+        .await;
+    let reload = regex::Regex::new(r#""type":"(update|full-reload)""#).unwrap();
+    let got = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            match frames.recv().await {
+                Ok(f) if reload.is_match(&f) => return f,
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(e) => panic!("ws broadcast closed: {e}"),
+            }
+        }
+    })
+    .await;
+    assert!(got.is_err(), "the browser got {:?}", got.ok());
+}
+
 // Vite closes every environment's container on server close: buildEnd by
 // buildStart's rule (in ssr only for a plugin that starts per environment),
 // closeBundle for every plugin.

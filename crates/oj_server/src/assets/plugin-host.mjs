@@ -2462,14 +2462,14 @@ function createModuleGraph(c = main) {
       mod.lastInvalidationTimestamp = Date.now();
       mod.transformResult = null;
       mod.ssrTransformResult = null;
-      ojServerEvent("invalidate", { id: mod.id });
+      ojServerEvent("invalidate", { id: mod.id, environment: c.environment.name });
     },
     invalidateAll() {
       for (const m of graphNodes.values()) m.transformResult = null;
-      ojServerEvent("invalidateAll");
+      ojServerEvent("invalidateAll", { environment: c.environment.name });
     },
     onFileChange(file) {
-      ojServerEvent("invalidate", { id: String(file) });
+      ojServerEvent("invalidate", { id: String(file), environment: c.environment.name });
     },
     urlToModuleMap: urlNodes,
     idToModuleMap: graphNodes,
@@ -3658,7 +3658,7 @@ function stubEnvironment(name, server) {
   // inherits the host environment's tag, so set it per environment.
   if (isClient) config.consumer = config.consumer ?? "client";
   else config.consumer = (base.environments ?? {})[name]?.consumer ?? "server";
-  const mg = isClient ? moduleGraph : createModuleGraph();
+  const mg = isClient ? moduleGraph : createModuleGraph({ seenIds: main.seenIds, environment: { name } });
   return {
     __ojStub: true,
     name,
