@@ -3334,7 +3334,9 @@ async function invalidateChange(environments, watcher, file, type) {
   for (const env of Object.values(environments)) {
     // oj's own HMR already covers the stub environments; only runner-backed
     // (real Vite) environments need their graph invalidated and updates sent.
-    if (!env || env.__ojStub) continue;
+    // The client environment is oj's own: the dev server's pass runs its
+    // hooks once (Vite's single pass per environment).
+    if (!env || env.__ojStub || env.name === "client") continue;
     try {
       let hit = await hotUpdateEnvironment(env, file, timestamp, type);
       if (!hit && real) hit = await hotUpdateEnvironment(env, real, timestamp, type);
@@ -4992,7 +4994,16 @@ function htmlHookFn(p) {
   return typeof fn === "function" ? fn : null;
 }
 
+// A container of an environment the app's Vite runs for real (a plugin's
+// dev.createEnvironment, the Cloudflare shape) is not a second one: that
+// environment's own container runs its hooks, as in Vite's single pass.
+function runnerOwns(c) {
+  if (!c.startAfter || !runnerEnvironmentsBuilt) return false;
+  const real = devServer?.environments?.[c.environment.name];
+  return !!real && !real.__ojStub && real !== c.environment;
+}
 async function watchChange(c, id, event) {
+  if (runnerOwns(c)) return null;
   for (const { p, fn } of pluginsWithHook(c, "watchChange")) {
     if (!runsInDevEnvironment(c, p, "perEnvironmentWatchChangeDuringDev")) continue;
     await fn.call(ctxFor(c, p), id, { event });
@@ -5462,6 +5473,7 @@ async function readModifiedFile(file) {
 }
 
 async function handleHotUpdate(c, file, timestamp, type, modulesJson) {
+  if (runnerOwns(c)) return null;
   let modules;
   try {
     modules = modulesJson ? JSON.parse(modulesJson) : [];
@@ -5653,6 +5665,7 @@ async function runHookOrThrow(c, p, fn, args) {
 // Vite's EnvironmentPluginContainer.close: buildEnd, then closeBundle with
 // what buildEnd threw, which the close then rejects with.
 async function closeEnvironment(c) {
+  if (runnerOwns(c)) return null;
   let buildEndError;
   try {
     await runLifecycle(c, "buildEnd", []);
@@ -5718,11 +5731,14 @@ async function runBuildStart(c) {
 // homes — an explicit buildStart caller gets the rejection (Rust fails the
 // boot, or logs-and-skips on the Start path) while a gated hook proceeds past
 // a failed buildStart and serves on, as the old world did after logging.
+// Vite awaits the client's buildStart before the server listens; another
+// environment's container starts on its own first use, whatever the client's
+// start came to.
 function ensureBuildStart(c) {
   if (c.buildStartOwner) return ensureBuildStart(c.buildStartOwner);
-  return (c.buildStartRun ??= c.startAfter
-    ? ensureBuildStart(c.startAfter).then(() => runBuildStart(c))
-    : runBuildStart(c));
+  if (runnerOwns(c)) return Promise.resolve();
+  const run = () => runBuildStart(c);
+  return (c.buildStartRun ??= c.startAfter ? ensureBuildStart(c.startAfter).then(run, run) : run());
 }
 async function gateOnBuildStart(c) {
   try {
@@ -5932,10 +5948,12 @@ async function run(hook, args, c) {
       transform: planFor("transform", true),
       load: planFor("load", false),
       resolveId: planFor("resolveId", false),
-      watchChange: pluginsWithHook(c, "watchChange").some(({ p }) =>
-        runsInDevEnvironment(c, p, "perEnvironmentWatchChangeDuringDev"),
-      ),
-      hotUpdate: hotUpdatePlugins(c).length > 0,
+      watchChange:
+        !runnerOwns(c) &&
+        pluginsWithHook(c, "watchChange").some(({ p }) =>
+          runsInDevEnvironment(c, p, "perEnvironmentWatchChangeDuringDev"),
+        ),
+      hotUpdate: !runnerOwns(c) && hotUpdatePlugins(c).length > 0,
     });
   }
   if (hook === "hasGenerateBundle") {

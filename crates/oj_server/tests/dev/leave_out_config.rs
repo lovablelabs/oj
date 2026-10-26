@@ -104,3 +104,64 @@ async fn an_ssr_environment_list_matches_vite_at_every_plugin_index() {
         }
     }
 }
+
+/// Vite awaits the client's buildStart before the server listens and starts
+/// another environment on its own first use: under Start (which tolerates a
+/// failed buildStart per plugin), a client buildStart that threw never keeps
+/// the ssr environment's per-environment plugins from starting.
+#[tokio::test]
+async fn a_failed_client_build_start_leaves_the_ssr_start_running() {
+    let log_dir = tempfile::tempdir().unwrap();
+    let log = log_dir.path().join("hooks.log");
+    let literal = serde_json::to_string(&log.display().to_string()).unwrap();
+    let plugins = format!(
+        r#"import fs from "node:fs";
+export default [
+  {{
+    name: "fails-on-the-client",
+    buildStart() {{ if (this.environment.name === "client") throw new Error("client-start-failed"); }},
+  }},
+  {{
+    name: "per-environment",
+    perEnvironmentStartEndDuringDev: true,
+    buildStart() {{ fs.appendFileSync({literal}, "buildStart " + this.environment.name + "\n"); }},
+  }},
+];
+"#
+    );
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"start-build-start","private":true,"type":"module"}"#,
+        ),
+        ("oj.plugins.mjs", plugins.as_str()),
+    ]);
+    let payload = serde_json::json!({
+        "config": { "root": app.root.display().to_string(), "base": "/", "mode": "development", "command": "serve" },
+        "env": { "command": "serve", "mode": "development" },
+        "environment": { "name": "client", "mode": "dev" },
+        "pluginsFormat": "oj",
+        "ojStartMode": true,
+    })
+    .to_string();
+    let host = oj_server::plugins::PluginHost::spawn(
+        &app.root,
+        &app.root.join("oj.plugins.mjs"),
+        &payload,
+        None,
+    )
+    .await
+    .expect("the Start dev host starts");
+    assert!(host.build_start().await.is_err(), "the client start failed");
+    let ssr = host
+        .open_environment_container("ssr", false, false)
+        .await
+        .expect("the ssr container opens");
+    let _ = ssr.build_start().await;
+    host.shutdown();
+    let text = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        text.lines().any(|l| l == "buildStart ssr"),
+        "the ssr environment never started:\n{text}"
+    );
+}

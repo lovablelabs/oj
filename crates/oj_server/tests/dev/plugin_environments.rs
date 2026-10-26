@@ -585,3 +585,87 @@ export default [{{
     lines.sort();
     assert_eq!(lines, ["client []", "ssr [server.js]"]);
 }
+
+// A runner-backed ssr environment (a plugin's own dev.createEnvironment, the
+// Cloudflare shape) is the app's one ssr environment: a save runs each
+// environment's watchChange and hotUpdate once, as Vite's single pass does.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_runner_backed_ssr_environment_gets_one_pass_per_save() {
+    crate::require_fixture!("vite");
+    let log_dir = tempfile::tempdir().unwrap();
+    let log = log_dir.path().join("hooks.log");
+    let literal = serde_json::to_string(&log.display().to_string()).unwrap();
+    let config = format!(
+        r#"import fs from "node:fs";
+import {{ DevEnvironment }} from "vite";
+const log = (line) => fs.appendFileSync({literal}, line + "\n");
+const main = (id) => id.endsWith("/src/main.js");
+export default {{
+  plugins: [{{
+    name: "runner-ssr",
+    perEnvironmentWatchChangeDuringDev: true,
+    config: () => ({{
+      environments: {{
+        ssr: {{ dev: {{ createEnvironment: (name, config) => new DevEnvironment(name, config, {{ hot: true }}) }} }},
+      }},
+    }}),
+    configureServer(server) {{
+      server.middlewares.use((req, res, next) => next());
+    }},
+    watchChange(id) {{
+      if (main(id)) log("watchChange " + this.environment.name);
+    }},
+    hotUpdate({{ file }}) {{
+      if (main(file)) log("hotUpdate " + this.environment.name);
+    }},
+  }}],
+}};
+"#
+    );
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"runner-ssr-one-pass","private":true,"type":"module"}"#,
+        ),
+        ("index.html", INDEX_HTML),
+        ("src/main.js", "window.__ok = 1;\n"),
+        ("vite.config.mjs", &config),
+    ]);
+    app.link_fixture("vite");
+    let server = app.serve().await;
+    crate::plugin_middleware::middleware_ready(&server).await;
+    assert!(
+        server.built.plugin_serve.runner_environments(),
+        "the runner-backed ssr environment never came up"
+    );
+    assert!(server.text("/src/main.js").await.contains("__ok"));
+    app.write(&[("src/main.js", "window.__ok = 2;\n")]);
+    // Start's dev server hands the runner-backed environments each saved
+    // batch, beside the dev server's own watcher.
+    let port = server.built.plugin_serve.mw_port().unwrap();
+    let main = app.root.join("src/main.js").display().to_string();
+    oj_server::notify_plugin_mw_invalidate(port, &[(main, "update")]).await;
+    let expected = [
+        "hotUpdate client",
+        "hotUpdate ssr",
+        "watchChange client",
+        "watchChange ssr",
+    ];
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let text = std::fs::read_to_string(&log).unwrap_or_default();
+        if expected.iter().all(|e| text.lines().any(|l| l == *e)) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the hooks never all ran: {text}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+    let text = std::fs::read_to_string(&log).unwrap_or_default();
+    let mut lines: Vec<&str> = text.lines().collect();
+    lines.sort();
+    assert_eq!(lines, expected, "each environment's hooks once per save");
+}
