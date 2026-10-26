@@ -178,7 +178,7 @@ async fn spawn_live_host(tag: &str) -> (PathBuf, std::sync::Arc<PluginHost>) {
         "env": { "command": "serve", "mode": "development" },
     })
     .to_string();
-    let host = PluginHost::spawn_lazy(&root, &plugins, &config, None)
+    let host = PluginHost::spawn(&root, &plugins, &config, None)
         .await
         .expect("the embedded engine spawns");
     host.resolve_id("x", "").await.expect("a live host serves");
@@ -252,6 +252,67 @@ async fn a_worker_container_handle_dies_with_its_engine() {
     new.close_container().await.expect("closed");
 }
 
+// An environment container is part of the host: a revived engine reopens it
+// under the same id, on its plugins, and its gates refetch their filters.
+#[tokio::test]
+async fn a_revived_host_reopens_its_environment_containers() {
+    let root = std::env::temp_dir().join(format!("oj-revive-env-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let plugins = root.join("oj.plugins.mjs");
+    std::fs::write(
+        &plugins,
+        r#"export default [{
+  name: "ssr-md",
+  applyToEnvironment: (environment) => environment.name === "ssr",
+  transform: { filter: { id: /\.md$/ }, handler(code) { return code + " in " + this.environment.name; } },
+}];
+"#,
+    )
+    .unwrap();
+    let config = serde_json::json!({
+        "config": { "root": root.display().to_string() },
+        "env": { "command": "serve", "mode": "development" },
+    })
+    .to_string();
+    let host = PluginHost::spawn(&root, &plugins, &config, None)
+        .await
+        .expect("the embedded engine spawns");
+    let ssr = host
+        .open_environment_container("ssr", false, false)
+        .await
+        .expect("an ssr container");
+    let md = root.join("a.md").display().to_string();
+    let tsx = root.join("a.tsx").display().to_string();
+    let served = |t: HostTransform| t.code;
+    assert_eq!(
+        served(ssr.transform("# a", &md, "").await.unwrap()),
+        "# a in ssr"
+    );
+    assert_eq!(
+        served(host.transform("# a", &md, "").await.unwrap()),
+        "# a",
+        "the client runs no ssr-only plugin"
+    );
+
+    let generation = host.core.revive.lock().unwrap().generation;
+    host.core.declare_gone("test wedge", generation);
+    clear_respawn_spacing(&host);
+    assert_eq!(
+        served(ssr.transform("# b", &md, "").await.expect("revived")),
+        "# b in ssr",
+        "the revived engine reopened the container"
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while ssr.hook_wants_transform(&tsx, "export default 1") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the reopened container never fetched its plan again"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
 // A revived engine resets the gates to fail-open, then fetches the plan
 // again: the hooks are gated by their filters on the new generation too.
 #[tokio::test]
@@ -270,7 +331,7 @@ async fn a_revived_host_gates_by_the_plugins_filters_again() {
         "env": { "command": "serve", "mode": "development" },
     })
     .to_string();
-    let host = PluginHost::spawn_lazy(&root, &plugins, &config, None)
+    let host = PluginHost::spawn(&root, &plugins, &config, None)
         .await
         .expect("the embedded engine spawns");
     host.build_hook_plan().await;
@@ -921,7 +982,7 @@ async fn plugin_env_writes_and_cwd_stay_inside_the_host_shadow() {
         "env": { "command": "serve", "mode": "development" },
     })
     .to_string();
-    let host = PluginHost::spawn_lazy(&root, &plugins, &config, None)
+    let host = PluginHost::spawn(&root, &plugins, &config, None)
         .await
         .expect("the embedded engine spawns");
     let delta = host.env_delta().await;
@@ -983,7 +1044,7 @@ return null;
         "env": { "command": "serve", "mode": "development" },
     })
     .to_string();
-    let host = PluginHost::spawn_lazy(&root, &plugins, &config, None)
+    let host = PluginHost::spawn(&root, &plugins, &config, None)
         .await
         .expect("the embedded engine spawns");
     let (a, b, c, d) = tokio::join!(
@@ -1030,7 +1091,7 @@ server.restart();
         "env": { "command": "serve", "mode": "development" },
     })
     .to_string();
-    let host = PluginHost::spawn_lazy(&root, &plugins, &config, None)
+    let host = PluginHost::spawn(&root, &plugins, &config, None)
         .await
         .expect("the embedded engine spawns");
     let (ws_tx, mut ws_rx) = tokio::sync::broadcast::channel(16);

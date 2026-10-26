@@ -970,31 +970,10 @@ fn change_type(
     }
 }
 
-/// The ssr environment's plugin instances for `watchChange` (Vite dispatches
-/// it to every environment) when that host is up.
-async fn ssr_host_for_hooks(
-    state: &ServerState,
-    file: &str,
-    change_type: &str,
-) -> Option<Arc<PluginHost>> {
-    let ssr = state.plugins_ssr.get().and_then(|h| h.clone())?;
-    // Pre-init fast-skip: each hook toward a still-initializing lazy host
-    // would await a full per-call init window on this serial path (a wedged
-    // init froze every save's HMR). Queue a watchChange catch-up instead,
-    // replayed at host init; the re-check after queuing closes the race
-    // where init lands between the decision and the push.
-    if !ssr.is_initialized() {
-        note_ssr_watch_skip(&state.ssr_watch, file, change_type);
-        if ssr.is_initialized() {
-            replay_ssr_watch_backlog(&ssr, &state.ssr_watch).await;
-        }
-        return None;
-    }
-    // Initialized: replay queued catch-up events FIRST, under the
-    // queue's order lock, so a stale queued watchChange never
-    // lands after this newer live event for the same file.
-    replay_ssr_watch_backlog(&ssr, &state.ssr_watch).await;
-    Some(ssr)
+/// The ssr environment's container for `watchChange` (Vite dispatches it to
+/// every environment), once SSR opened it.
+fn ssr_host_for_hooks(state: &ServerState) -> Option<Arc<PluginHost>> {
+    state.plugins_ssr.get().and_then(|h| h.clone())
 }
 
 /// The `modules` argument of `hotUpdate` for a path, as JSON.
@@ -1039,7 +1018,7 @@ pub(crate) async fn run_watch_change(
         .map(|path| async move {
             let file = path.display().to_string();
             let change_type = change_type(state, path, created);
-            let ssr_host = ssr_host_for_hooks(state, &file, change_type).await;
+            let ssr_host = ssr_host_for_hooks(state);
             if let Err(e) = host.watch_change(&file, change_type).await {
                 eprintln!("oj: watchChange failed for {file}: {e}");
                 emit_hook_failure("watchChange", &file, &e);
@@ -1054,9 +1033,7 @@ pub(crate) async fn run_watch_change(
     futures_util::future::join_all(changes).await;
 }
 
-/// Dispatch `hotUpdate` for a path to the client and ssr plugin hosts. A
-/// still-initializing ssr host is skipped: its catch-up replays only
-/// `watchChange`, which [`run_watch_change`] already queued.
+/// Dispatch `hotUpdate` for a path to the client and ssr environments.
 async fn run_plugin_hooks(
     state: &ServerState,
     host: &PluginHost,
@@ -1070,11 +1047,7 @@ async fn run_plugin_hooks(
     }
     let file = path.display().to_string();
     let change_type = change_type(state, path, created);
-    let ssr_host = state
-        .plugins_ssr
-        .get()
-        .and_then(|h| h.clone())
-        .filter(|h| h.is_initialized());
+    let ssr_host = ssr_host_for_hooks(state);
     let ts = now_millis() as u64;
     let modules_json = hot_update_modules_json(state, path);
     // The client's hooks first, then the ssr host's, as Vite's

@@ -458,46 +458,32 @@ pub(crate) async fn ssr_module(
     }
 }
 
+/// The ssr environment's container on the dev server's plugin host, opened
+/// on first SSR demand: the same plugin instances as the client's (Vite's
+/// one plugin array), the framework plugins oj reimplements left out under
+/// Start.
 pub(crate) async fn ssr_plugin_host(
     state: &Arc<ServerState>,
 ) -> Option<std::sync::Arc<PluginHost>> {
     let host = state
         .plugins_ssr
         .get_or_init(|| async {
-            let file = match plugins::plugin_source(&state.root, state.config_file.as_deref())? {
-                plugins::PluginSource::OjPlugins(p) | plugins::PluginSource::ViteConfig(p) => p,
-            };
-            // Lazy spawn: the host boots on first SSR demand. Watcher events
-            // never wait on its init (they fast-skip into SsrWatchQueue), and
-            // transforms wait it out like a Vite request, which can only ever
-            // arrive after plugin init since the socket opens after initServer.
-            match PluginHost::spawn_lazy(
-                &state.root,
-                &file,
-                &state.ssr_plugin_config,
-                Some(state.engine_registry.clone()),
-            )
-            .await
+            let host = state.plugins.as_ref()?;
+            match host
+                .open_environment_container("ssr", state.start_mode, false)
+                .await
             {
-                Ok(host) => {
-                    host.set_import_meta_env(Arc::clone(&state.import_meta_env));
-                    eprintln!("oj ssr: plugins (ssr environment) from {}", file.display());
-                    // Catch-up half of the watcher's pre-init fast-skip
-                    // (see SsrWatchQueue).
-                    spawn_ssr_watch_catch_up(
-                        std::sync::Arc::clone(&host),
-                        Arc::clone(&state.ssr_watch),
-                    );
+                Ok(ssr) => {
                     // `environments.ssr.define` (plus config()-hook deltas)
                     // layers over the shared define for SSR compiles.
-                    let ssr_defines = host.config_defines().await;
+                    let ssr_defines = ssr.config_defines().await;
                     if !ssr_defines.is_empty() {
                         state.import_meta_env.merge_ssr(ssr_defines);
                     }
-                    Some(host)
+                    Some(ssr)
                 }
                 Err(e) => {
-                    eprintln!("oj ssr: plugin host failed to start: {e}");
+                    eprintln!("oj ssr: the ssr plugin environment failed to open: {e}");
                     None
                 }
             }
@@ -510,92 +496,6 @@ pub(crate) async fn ssr_plugin_host(
         h.prime_hook_plan().await;
     }
     host
-}
-
-/// Watcher events the pre-init lazy SSR host could not take yet: the watcher
-/// fast-skips and queues them here for a watchChange replay at init. The
-/// backlog dedups by file (latest change type wins). `order` serializes EVERY
-/// watchChange dispatch toward the host, replay and live alike (live drains
-/// the backlog first), so a stale queued event never lands after a newer live
-/// event for the same file.
-#[derive(Default)]
-pub(crate) struct SsrWatchQueue {
-    pub(crate) backlog: Mutex<Vec<(String, String)>>,
-    order: tokio::sync::Mutex<()>,
-    /// One line for the first skip, not one per save.
-    logged: std::sync::atomic::AtomicBool,
-}
-
-/// Record a skipped watcher event (see [`SsrWatchQueue`]): deduped by file,
-/// latest change type wins (a delete after an update must replay as delete).
-pub(crate) fn note_ssr_watch_skip(queue: &SsrWatchQueue, file: &str, change_type: &str) {
-    {
-        let mut b = queue.backlog.lock().unwrap();
-        if let Some(entry) = b.iter_mut().find(|(f, _)| f == file) {
-            entry.1 = change_type.to_string();
-        } else {
-            b.push((file.to_string(), change_type.to_string()));
-        }
-    }
-    if !queue.logged.swap(true, std::sync::atomic::Ordering::SeqCst) {
-        println!(
-            "oj: ssr plugin host still initializing; queuing file changes for a catch-up replay at its init"
-        );
-    }
-}
-
-/// Replay skipped events as `watchChange` to the initialized host; hotUpdate
-/// is deliberately not replayed (client updates already went through oj's own
-/// pipeline). Holds the order lock for the whole replay so queued (older)
-/// events reach the host before live (newer) ones; the loop catches a skip
-/// racing the drain.
-pub(crate) async fn replay_ssr_watch_backlog(host: &PluginHost, queue: &SsrWatchQueue) {
-    let _order = queue.order.lock().await;
-    loop {
-        let batch: Vec<(String, String)> = {
-            let mut b = queue.backlog.lock().unwrap();
-            b.drain(..).collect()
-        };
-        if batch.is_empty() {
-            return;
-        }
-        println!(
-            "oj: ssr plugin host caught up: replaying {} file change(s) missed during its init",
-            batch.len()
-        );
-        for (file, ev) in batch {
-            if let Err(e) = host.watch_change(&file, &ev).await {
-                eprintln!("oj: watchChange (ssr catch-up) failed for {file}: {e}");
-            }
-        }
-    }
-}
-
-/// Wait for the lazy host's init, then replay the watcher backlog. A pre-init
-/// death keeps the wait alive while revivable; only permanent death releases it.
-pub(crate) fn spawn_ssr_watch_catch_up(
-    host: std::sync::Arc<PluginHost>,
-    queue: Arc<SsrWatchQueue>,
-) {
-    tokio::spawn(async move {
-        let mut init = host.initialized_updates();
-        let mut gone = host.host_gone_updates();
-        loop {
-            if *init.borrow_and_update() {
-                break;
-            }
-            if *gone.borrow_and_update() && !host.can_revive() {
-                return;
-            }
-            tokio::select! {
-                changed = init.changed() => { if changed.is_err() { return; } }
-                changed = gone.changed() => { if changed.is_err() { return; } }
-                // Permanent death makes no watch change of its own: re-check slowly.
-                _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {}
-            }
-        }
-        replay_ssr_watch_backlog(&host, &queue).await;
-    });
 }
 
 pub(crate) fn sass_additional_data_for(state: &ServerState, url: &str) -> Option<String> {

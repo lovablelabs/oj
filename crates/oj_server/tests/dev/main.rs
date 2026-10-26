@@ -61,6 +61,7 @@ mod optimize_plan;
 mod optimize_reload;
 mod plugin_close_hooks;
 mod plugin_ctx_chain;
+mod plugin_environments;
 mod plugin_error_surfaced;
 mod plugin_filter_globs;
 mod plugin_middleware;

@@ -3,6 +3,9 @@ use std::sync::Arc;
 
 /// The host's own plugin container: the environment it boots in.
 pub(crate) const MAIN_CONTAINER: u32 = 0;
+/// The first id of the containers [`PluginHost::open_environment_container`]
+/// opens; worker containers count up from 1 below it.
+const ENVIRONMENT_CONTAINERS: u32 = 1 << 20;
 
 /// A handle on one plugin container of a plugin host: the host's own
 /// (MAIN_CONTAINER), or a worker bundle's ([`PluginHost::open_worker_container`]).
@@ -83,6 +86,11 @@ pub(crate) struct HostCore {
     self_ref: std::sync::OnceLock<std::sync::Weak<HostCore>>,
     /// The handle on the host's own container, whose hook plan a respawn resets.
     main: std::sync::OnceLock<std::sync::Weak<PluginHost>>,
+    /// The environment containers opened on this host, as each boot reopens
+    /// them (their specs ride the boot seed), with the handles whose hook
+    /// plans a respawn resets.
+    environments: Mutex<Vec<(serde_json::Value, std::sync::Weak<PluginHost>)>>,
+    next_environment: std::sync::atomic::AtomicU32,
 }
 
 /// The dev listener's bound (port, interface): hosts booting after the bind
@@ -539,26 +547,6 @@ impl PluginHost {
         .await
     }
 
-    /// Spawn a lazily created host (e.g. the SSR environment host), booted on
-    /// first demand. Its calls wait init out like a boot host's; the watcher
-    /// never waits here at all (pre-init events fast-skip into
-    /// `SsrWatchQueue` for a catch-up replay).
-    pub async fn spawn_lazy(
-        root: &Path,
-        plugins_file: &Path,
-        config_json: &str,
-        registry: Option<oj_js::EngineRegistry>,
-    ) -> anyhow::Result<std::sync::Arc<PluginHost>> {
-        Self::spawn_with_policy(
-            root,
-            plugins_file,
-            config_json,
-            SpawnTimeouts::default(),
-            registry,
-        )
-        .await
-    }
-
     /// Test-only spawn with the probe and stall windows explicit (see `SpawnTimeouts`).
     #[cfg(test)]
     pub(crate) async fn spawn_with_timeouts(
@@ -695,6 +683,8 @@ impl PluginHost {
             shut_down: std::sync::atomic::AtomicBool::new(false),
             self_ref: std::sync::OnceLock::new(),
             main: std::sync::OnceLock::new(),
+            environments: Mutex::new(Vec::new()),
+            next_environment: std::sync::atomic::AtomicU32::new(ENVIRONMENT_CONTAINERS),
         });
         let _ = core.self_ref.set(std::sync::Arc::downgrade(&core));
         let host = std::sync::Arc::new(PluginHost::over(
@@ -1384,7 +1374,7 @@ impl PluginHost {
         let chain = serde_json::to_string(chain).map_err(|e| e.to_string())?;
         let id = self
             .core
-            .call(MAIN_CONTAINER, "openWorkerContainer", &[&chain])
+            .call(self.container, "openWorkerContainer", &[&chain])
             .await?
             .and_then(|id| id.parse::<u32>().ok())
             .ok_or("the plugin host opened no worker container")?;
@@ -1395,12 +1385,69 @@ impl PluginHost {
         Ok(worker)
     }
 
+    /// Another Vite environment on this host's plugin instances (Vite's
+    /// createServer gives every environment a container over the one plugin
+    /// array): `name`'s, with the framework plugins oj reimplements left out
+    /// when `leave_out`, its `this.resolve` ending in a bundle's own
+    /// resolution when `bundle`. One of the host's own environment is that
+    /// environment (one buildStart). A respawned engine reopens it.
+    pub async fn open_environment_container(
+        &self,
+        name: &str,
+        leave_out: bool,
+        bundle: bool,
+    ) -> Result<std::sync::Arc<PluginHost>, String> {
+        use std::sync::atomic::Ordering;
+        let id = self.core.next_environment.fetch_add(1, Ordering::AcqRel);
+        let spec =
+            serde_json::json!({ "id": id, "name": name, "leaveOut": leave_out, "bundle": bundle });
+        let handle = std::sync::Arc::new(PluginHost::over(
+            std::sync::Arc::clone(&self.core),
+            id,
+            None,
+        ));
+        // Recorded first: a revive racing the open reopens it from the seed.
+        self.core
+            .environments
+            .lock()
+            .unwrap()
+            .push((spec.clone(), std::sync::Arc::downgrade(&handle)));
+        if let Err(e) = self
+            .core
+            .call(
+                MAIN_CONTAINER,
+                "openEnvironmentContainer",
+                &[&spec.to_string()],
+            )
+            .await
+        {
+            self.core
+                .environments
+                .lock()
+                .unwrap()
+                .retain(|(s, _)| s["id"] != id);
+            return Err(e);
+        }
+        handle.ensure_hook_plan().await;
+        Ok(handle)
+    }
+
+    /// How many plugins the host's config lists before any environment
+    /// drops one (`applyToEnvironment`): a host whose client runs none may
+    /// still run some elsewhere. Defaults to 1 on RPC failure.
+    pub async fn top_level_plugin_count(&self) -> usize {
+        self.call_ok("getTopLevelPluginCount")
+            .await
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1)
+    }
+
     /// Drops this handle's worker container from the host (its plugins answer
-    /// no more hooks); the host's own container is never closed.
+    /// no more hooks); the host's own and its environment containers are never closed.
     pub async fn close_container(&self) -> Result<(), String> {
         // A stale handle's container died with its engine, and its id may
         // be a live bundle's now.
-        if self.container == MAIN_CONTAINER || self.is_stale() {
+        if self.generation.is_none() || self.is_stale() {
             return Ok(());
         }
         self.core.rpc_routes.lock().unwrap().remove(&self.container);
@@ -1514,6 +1561,19 @@ impl HostCore {
         self.main.get().and_then(std::sync::Weak::upgrade)
     }
 
+    /// The live handles on the containers every generation re-creates.
+    fn durable_containers(&self) -> Vec<std::sync::Arc<PluginHost>> {
+        let mut out: Vec<_> = self.main_container().into_iter().collect();
+        out.extend(
+            self.environments
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|(_, h)| h.upgrade()),
+        );
+        out
+    }
+
     /// Boot one engine GENERATION onto `host` (initial spawn and every revive). A
     /// superseded `generation` abandons the just-spawned engine: racing ignites must never leave a live loser.
     fn ignite(host: &std::sync::Arc<HostCore>, generation: u64) -> Result<(), String> {
@@ -1621,7 +1681,15 @@ impl HostCore {
         generation: u64,
     ) {
         let host = std::sync::Arc::clone(host);
-        let seed = host.boot.boot_seed.clone();
+        let mut seed = host.boot.boot_seed.clone();
+        seed["containers"] = serde_json::Value::Array(
+            host.environments
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(spec, _)| spec.clone())
+                .collect(),
+        );
         let host_module = host.host_module.clone();
         tokio::spawn(async move {
             let seeded = match ensure_boot_module(&host.boot.root) {
@@ -1876,10 +1944,10 @@ impl HostCore {
             Ok(()) => {
                 // Lift the death flag last: a caller sees a dead host or a fully re-armed one.
                 let _ = self.host_gone.send_replace(false);
-                if let (Ok(handle), Some(main)) =
-                    (tokio::runtime::Handle::try_current(), self.main_container())
-                {
-                    handle.spawn(async move { main.ensure_hook_plan().await });
+                if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                    for handle in self.durable_containers() {
+                        runtime.spawn(async move { handle.ensure_hook_plan().await });
+                    }
                 }
                 true
             }
@@ -1905,13 +1973,12 @@ impl HostCore {
         let _ = self.init_failed.send_replace(false);
         self.serve_info_push.send_replace(None);
         // Worker containers died with the old engine, their routes with them;
-        // the host's own refetches.
-        self.rpc_routes
-            .lock()
-            .unwrap()
-            .retain(|&container, _| container == MAIN_CONTAINER);
-        if let Some(main) = self.main_container() {
-            main.reset_hook_plan();
+        // the host's own and its environment containers come back and refetch.
+        self.rpc_routes.lock().unwrap().retain(|&container, _| {
+            container == MAIN_CONTAINER || container >= ENVIRONMENT_CONTAINERS
+        });
+        for handle in self.durable_containers() {
+            handle.reset_hook_plan();
         }
         *self.spawned.lock().unwrap() = tokio::time::Instant::now();
     }

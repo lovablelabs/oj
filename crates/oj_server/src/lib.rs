@@ -346,19 +346,16 @@ struct ServerState {
     hmr_enabled: bool,
     /// The files whose change restarts the server ([`restart_files`]).
     restart_files: Vec<PathBuf>,
-    /// The CLI's `--config` file (resolved against root), for the lazily
-    /// spawned SSR host's plugin-source pick.
-    config_file: Option<PathBuf>,
     /// The engines the debug GC endpoint fans over (plugin hosts, CSS, SSR,
     /// Start, addon keeper); every long-lived spawn joins it.
     engine_registry: oj_js::EngineRegistry,
     plugins: Option<std::sync::Arc<PluginHost>>,
     plugin_serve: Arc<PluginServe>,
+    /// The ssr environment's container on `plugins`, opened on first demand.
     plugins_ssr: tokio::sync::OnceCell<Option<std::sync::Arc<PluginHost>>>,
-    /// Watcher events the lazily spawned SSR host could not take yet, plus
-    /// the dispatch-order lock; see [`SsrWatchQueue`].
-    ssr_watch: Arc<SsrWatchQueue>,
-    ssr_plugin_config: String,
+    /// A TanStack Start app: the ssr container leaves the framework plugins
+    /// oj reimplements out.
+    start_mode: bool,
     plugin_watched: Arc<Mutex<std::collections::HashSet<PathBuf>>>,
     /// Into the watcher thread's inbox (`WatchMsg`): directories of files
     /// served from outside the root (`ensure_watched_file`).
@@ -849,12 +846,6 @@ fn empty_plugin_file(root: &Path) -> Option<PluginFile> {
 /// pre-seed child must resolve with the SAME string or cache hashes cannot match.
 const HOST_ENV_MODE: &str = "dev";
 
-/// The plugin host spawn payloads for the client and ssr environments.
-struct PluginHostPayloads {
-    client: String,
-    ssr: String,
-}
-
 /// The inline config a Vite CLI run with these flags would carry (cli.ts:
 /// `server: cleanGlobalCLIOptions(options)`): only what was passed.
 fn cli_inline(port: Option<u16>, host: Option<&str>) -> serde_json::Value {
@@ -871,8 +862,9 @@ fn cli_inline(port: Option<u16>, host: Option<&str>) -> serde_json::Value {
     serde_json::json!({ "server": server })
 }
 
+/// The dev plugin host's spawn payload (its own environment is the client).
 #[allow(clippy::too_many_arguments)]
-fn plugin_host_payloads(
+fn plugin_host_payload(
     root: &Path,
     config: &oj_config::OjConfig,
     server_cfg: &oj_config::ServerConfig,
@@ -881,7 +873,7 @@ fn plugin_host_payloads(
     cli: &serde_json::Value,
     format: PluginsFormat,
     is_start: bool,
-) -> PluginHostPayloads {
+) -> String {
     let mut cfg = serde_json::json!({
         "config": {
             "root": root.display().to_string(),
@@ -919,12 +911,7 @@ fn plugin_host_payloads(
         // falls through to the host's own declaration check; omitted for oj plugin files.
         cfg["runnerBacked"] = serde_json::json!(oj_config::ssr_runner_backed(config));
     }
-    let client = cfg.to_string();
-    cfg["environment"]["name"] = serde_json::json!("ssr");
-    PluginHostPayloads {
-        client,
-        ssr: cfg.to_string(),
-    }
+    cfg.to_string()
 }
 
 /// Spawn the client plugin host. Nothing left after native filtering = an idle
@@ -950,9 +937,9 @@ async fn spawn_plugin_host(
             return Ok(None);
         }
     };
-    // With no plugin active, the dev HTML transform runs natively and the
-    // host goes, unless it hosts `server.proxy`.
-    if host.plugin_count().await == 0 {
+    // With no plugin active in any environment, the dev HTML transform runs
+    // natively and the host goes, unless it hosts `server.proxy`.
+    if host.plugin_count().await == 0 && host.top_level_plugin_count().await == 0 {
         if keep_for_proxy {
             println!("  plugins: {label} (none active; host kept for server.proxy)");
             return Ok(Some(host));
@@ -1584,7 +1571,7 @@ impl DevServer {
         // TanStack Start owns its module graph and SSR; oj runs the plugin host only
         // for configureServer middleware, in start mode so lifecycle hooks are tolerated.
         let is_start = is_tanstack_start_app(&root);
-        let payloads = plugin_host_payloads(
+        let payload = plugin_host_payload(
             &root,
             &config,
             &server_cfg,
@@ -1607,15 +1594,8 @@ impl DevServer {
         boot_phase("plugin host spawning");
         let plugin_host = match &plugin_file {
             Some(file) => {
-                spawn_plugin_host(
-                    &root,
-                    file,
-                    &payloads.client,
-                    &engine_registry,
-                    prewarm,
-                    has_proxy,
-                )
-                .await?
+                spawn_plugin_host(&root, file, &payload, &engine_registry, prewarm, has_proxy)
+                    .await?
             }
             None => None,
         };
@@ -1720,7 +1700,6 @@ impl DevServer {
         }
         let state = Arc::new(ServerState {
             persistent_cache,
-            config_file: config_file.clone(),
             engine_registry: engine_registry.clone(),
             root: root.clone(),
             public_dir,
@@ -1789,8 +1768,7 @@ impl DevServer {
             plugins: plugin_host.clone(),
             plugin_serve: Arc::clone(&plugin_serve),
             plugins_ssr: tokio::sync::OnceCell::new(),
-            ssr_watch: Arc::new(SsrWatchQueue::default()),
-            ssr_plugin_config: payloads.ssr,
+            start_mode: is_start,
             plugin_watched: Arc::new(Mutex::new(std::collections::HashSet::new())),
             watch_tx: watch_tx.clone(),
             watch_feed: WatchFeed::default(),
