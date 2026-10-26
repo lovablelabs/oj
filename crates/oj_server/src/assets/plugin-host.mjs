@@ -4470,11 +4470,13 @@ async function scanPluginHook(hook, argsJson) {
   for (const p of await scanPluginList()) {
     const fn = hookFn(p, hook);
     if (!fn) continue;
+    // Under Vite these plugins run in the scan's own rolldown build: a
+    // `this.resolve` from any of their hooks goes through vite:dep-scan:resolve,
+    // which asks the app's plugins with `scan: true`.
+    const ctx = resolveHookCtx(main, p, null, true);
     if (hook === "resolveId") {
       if (!hookIdMatches(p.resolveId, args[0])) continue;
-      // Under Vite these plugins run in the scan's own rolldown build, whose
-      // resolve reaches the app's plugins with `scan: true`.
-      const r = await fn.call(resolveHookCtx(main, p, null, true), args[0], args[1] ?? undefined, {
+      const r = await fn.call(ctx, args[0], args[1] ?? undefined, {
         attributes: {},
         custom: {},
         isEntry: !!args[2]?.isEntry,
@@ -4486,13 +4488,13 @@ async function scanPluginHook(hook, argsJson) {
       if (r.id != null) return JSON.stringify({ id: r.id, external: r.external ?? false });
     } else if (hook === "load") {
       if (!hookIdMatches(p.load, args[0])) continue;
-      const r = await fn.call(ctxFor(main, p), args[0]);
+      const r = await fn.call(ctx, args[0]);
       if (r == null) continue;
       if (typeof r === "string") return JSON.stringify({ code: r });
       if (r.code != null) return JSON.stringify({ code: r.code, moduleType: r.moduleType });
     } else if (hook === "transform") {
       if (!hookTransformMatches(p.transform, args[1], args[0])) continue;
-      const r = await fn.call(ctxFor(main, p), args[0], args[1]);
+      const r = await fn.call(ctx, args[0], args[1]);
       const code = typeof r === "string" ? r : r?.code;
       if (code != null) args[0] = code;
     }

@@ -455,8 +455,8 @@ async fn a_warm_session_preloads_every_entry_under_its_import_url() {
 }
 
 /// Vite runs `optimizeDeps.rolldownOptions.plugins` in the scan's own
-/// rolldown build: a `this.resolve` from one of them reaches the app's
-/// plugins as a scan resolve (`scan: true`).
+/// rolldown build: a `this.resolve` from any of their hooks reaches the
+/// app's plugins as a scan resolve (`scan: true`).
 #[tokio::test(flavor = "multi_thread")]
 async fn a_scan_plugins_resolve_reaches_the_app_plugins_as_a_scan_resolve() {
     crate::require_fixture!("vite");
@@ -479,7 +479,15 @@ export default {{
       plugins: [{{
         name: "scan-only",
         async resolveId(id, importer) {{
-          if (id === "scan-probe") await this.resolve("nested-probe", importer, {{ skipSelf: true }});
+          if (id === "scan-probe") await this.resolve("from-resolveId", importer, {{ skipSelf: true }});
+          return null;
+        }},
+        async load(id) {{
+          if (id.endsWith("/main.js")) await this.resolve("from-load", id);
+          return null;
+        }},
+        async transform(code, id) {{
+          if (id.endsWith("/main.js")) await this.resolve("from-transform", id);
           return null;
         }},
       }}],
@@ -488,7 +496,7 @@ export default {{
   plugins: [{{
     name: "app-plugin",
     resolveId(id, importer, options) {{
-      if (id === "nested-probe") appendFileSync({seen:?}, String(options.scan) + "\n");
+      if (id.startsWith("from-")) appendFileSync({seen:?}, id + ":" + options.scan + "\n");
       return null;
     }},
   }}],
@@ -501,14 +509,21 @@ export default {{
     let deadline = Instant::now() + Duration::from_secs(20);
     let seen = loop {
         let text = std::fs::read_to_string(&seen).unwrap_or_default();
-        if !text.is_empty() || Instant::now() > deadline {
+        if text.lines().count() >= 3 || Instant::now() > deadline {
             break text;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
+    let mut lines: Vec<&str> = seen.lines().collect();
+    lines.sort_unstable();
+    lines.dedup();
     assert_eq!(
-        seen.lines().next(),
-        Some("true"),
+        lines,
+        [
+            "from-load:true",
+            "from-resolveId:true",
+            "from-transform:true"
+        ],
         "options.scan the app plugin saw"
     );
 }
