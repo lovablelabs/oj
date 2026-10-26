@@ -426,12 +426,15 @@ export default [{{
     host.resolve_id("x", "").await.expect("a live host serves");
     // A revive just ran: the next is held back for the respawn spacing.
     host.core.revive.lock().unwrap().last = Some(std::time::Instant::now());
+    // The open's loop runs on this thread (a current-thread runtime), so this
+    // thread's CPU is the wait's, whatever other tests run alongside.
     let cpu = || {
-        let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
-        unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) };
-        let u = unsafe { usage.assume_init() };
-        let t = |tv: libc::timeval| tv.tv_sec as f64 + tv.tv_usec as f64 / 1e6;
-        t(u.ru_utime) + t(u.ru_stime)
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
+        ts.tv_sec as f64 + ts.tv_nsec as f64 / 1e9
     };
     let (cpu0, wall0) = (cpu(), std::time::Instant::now());
     host.open_environment_container("ssr", false, false)

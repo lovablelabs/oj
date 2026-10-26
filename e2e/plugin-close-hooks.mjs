@@ -51,7 +51,9 @@ const events = () =>
 let failed = false;
 let srv = null;
 try {
-  // Interrupting `oj dev` runs buildEnd then closeBundle before exiting.
+  // Interrupting `oj dev` runs buildEnd then closeBundle before exiting: Vite's
+  // server.close closes every environment's container, so buildEnd runs in the
+  // client only and closeBundle once per environment (client, ssr).
   srv = spawn(oj, ["dev", app, "--port", String(PORT)], { stdio: "ignore" });
   await waitUp(`http://localhost:${PORT}/`);
   const exited = new Promise((res) => srv.on("exit", (code, signal) => res({ code, signal })));
@@ -60,7 +62,11 @@ try {
   assert.ok(outcome, "the dev server exits on SIGINT");
   assert.equal(outcome.code, 130, `exit code follows the shell convention: ${JSON.stringify(outcome)}`);
   const ev = events();
-  assert.deepEqual(ev, ["buildEnd:ok", "closeBundle"], `dev close runs buildEnd then closeBundle:\n${ev.join("\n")}`);
+  assert.deepEqual(
+    ev,
+    ["buildEnd:ok", "closeBundle", "closeBundle"],
+    `dev close runs buildEnd then closeBundle:\n${ev.join("\n")}`,
+  );
   srv = null;
   console.log("PLUGIN-CLOSE-HOOKS E2E PASSED");
 } catch (err) {
