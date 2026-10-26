@@ -83,7 +83,7 @@ jobs:
             e2e/fixtures/start-app/package-lock.json
       - run: npm ci --prefix playground
       - run: npm install --prefix e2e
-      # The Start-app scripts (start.mjs, start-define-mode, start-ssr-external,
+      # The Start-app scripts (start-define-mode, start-ssr-external,
       # start-build-options) skip themselves when the fixture is not installed.
       - name: install start-app fixture
         run: npm ci --prefix e2e/fixtures/start-app
@@ -195,8 +195,6 @@ jobs:
         run: node e2e/cjs-require-condition.mjs
       - name: optimizeDeps.exclude'd packages run through every plugin load/transform
         run: node e2e/plugin-excluded-dep.mjs
-      - name: start dev SSR, client bundle and prod build of the fixture app
-        run: node e2e/start.mjs
       - name: start prod build honors outDir, base, sourcemap, minify
         run: node e2e/start-build-options.mjs
       - name: start build empties outDir by Vite's emptyOutDir rule

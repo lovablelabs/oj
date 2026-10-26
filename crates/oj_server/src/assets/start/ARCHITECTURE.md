@@ -397,13 +397,16 @@ JS unit tests are `node --test e2e/unit/*.test.mjs`: `resolve-pkg` covers the
 pnpm-anchor resolver, `cf-vars` the Cloudflare shim's JSONC / toml / dotenv
 var parsers.
 
-The integration test is `node e2e/start.mjs`. It runs oj against a self-contained
-Start app (`e2e/fixtures/start-app`) in dev and prod and asserts a server-rendered
-`/` wires together routing, server functions, `import.meta.glob`, `?raw` / `?url`,
-svgr (bare and `?react`), MDX, Tailwind, a plugin virtual module, tsconfig paths
-and package `imports` aliases, a CommonJS dep, the Cloudflare context, and a
-non-default publicDir. The fixture's dependencies are not vendored; the test
-skips when they are not installed (`cd e2e/fixtures/start-app && npm install`).
+The integration tests are `cargo test -p oj --test start`. They run oj
+against a self-contained Start app (`e2e/fixtures/start-app`) in dev and prod
+and assert that a server-rendered `/` wires together routing, server
+functions, `import.meta.glob`, `?raw` / `?url`, svgr (bare and `?react`), MDX,
+Tailwind, a plugin virtual module, tsconfig paths and package `imports` aliases,
+a CommonJS dep, the Cloudflare context, and a non-default publicDir. Each check
+is its own test on its own copy of the app. The fixture's dependencies are not
+vendored; the tests skip when they are not installed
+(`npm ci --prefix e2e/fixtures/start-app`), unless `OJ_REQUIRE_FIXTURES` is
+set, as CI does.
 
 ## Known limits
 

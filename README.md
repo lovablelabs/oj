@@ -109,7 +109,7 @@ cargo test --workspace                            # rust unit tests
 node --test e2e/unit/*.test.mjs                   # js unit tests (adapter helpers)
 node e2e/run.mjs                                  # browser e2e suite
 node e2e/ssr-dev.mjs                              # SSR dev e2e, e2e/ssr-prod.mjs for the built server
-node e2e/start.mjs                                # tanstack start integration (see e2e/fixtures/start-app)
+cargo test -p oj --test start                     # tanstack start integration (see e2e/fixtures/start-app)
 node e2e/dep-optimize.mjs                         # dependency pre-bundle + cjs interop integration
 cargo test -p oj --bin oj plugin_api_tests       # build plugin API, rollupOptions, ssr, css and assetsDir options (in-process)
 cargo test -p oj_server --test dev                # dev server config, css, plugin hooks, ws and HMR sockets (in-process)
