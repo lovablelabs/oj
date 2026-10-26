@@ -421,6 +421,10 @@ pub(crate) fn extract_vite_values_timed(
     let mode_key = extraction_mode_key(mode, mode_explicit, spa_build);
     let mode_key = mode_key.as_str();
     let vite = vite_config_file(root, config)?;
+    // Concurrent boot callers asking for one key wait on a single evaluation
+    // and read its stored result, as Vite resolves the config once per start.
+    let flight = extraction_flight(&vite, command, mode_key);
+    let _flight = flight.lock().unwrap_or_else(|e| e.into_inner());
     let store = extraction_store(root);
     if let Some(hit) = store.lookup(&vite, command, mode_key) {
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&hit.output) {
@@ -473,6 +477,24 @@ pub(crate) fn extract_vite_values_timed(
     EXTRACTION_RAN_FRESH.store(true, std::sync::atomic::Ordering::Relaxed);
     crate::boot_phase("vite-extract cache miss (engine ran)");
     Some(parse_vite_values(&json))
+}
+
+/// The lock one (config, command, mode) extraction runs under in this process.
+fn extraction_flight(
+    vite: &Path,
+    command: &str,
+    mode_key: &str,
+) -> std::sync::Arc<std::sync::Mutex<()>> {
+    static FLIGHTS: std::sync::Mutex<
+        Option<std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<()>>>>,
+    > = std::sync::Mutex::new(None);
+    let key = format!("{}\0{command}\0{mode_key}", vite.display());
+    let mut guard = FLIGHTS.lock().unwrap_or_else(|e| e.into_inner());
+    guard
+        .get_or_insert_with(std::collections::HashMap::new)
+        .entry(key)
+        .or_default()
+        .clone()
 }
 
 /// Writes the extractor script into `cache`. Extractions run concurrently at
