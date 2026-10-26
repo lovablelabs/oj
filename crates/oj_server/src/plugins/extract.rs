@@ -417,6 +417,30 @@ pub(crate) fn extract_vite_values_timed(
     mode_explicit: bool,
     timeout: Option<std::time::Duration>,
 ) -> Option<ViteValues> {
+    extraction(root, config, command, mode, mode_explicit, timeout, false).map(|(v, _)| v)
+}
+
+/// A restart's evaluation: always fresh, as Vite's restartServer resolves the
+/// config again whatever it read, and stored for the next boot. With whether
+/// its output differs from what the cache held.
+pub(crate) fn reextract_vite_values(
+    root: &Path,
+    config: Option<&Path>,
+    command: &str,
+    mode: &str,
+) -> Option<(ViteValues, bool)> {
+    extraction(root, config, command, mode, true, None, true)
+}
+
+fn extraction(
+    root: &Path,
+    config: Option<&Path>,
+    command: &str,
+    mode: &str,
+    mode_explicit: bool,
+    timeout: Option<std::time::Duration>,
+    fresh: bool,
+) -> Option<(ViteValues, bool)> {
     if plugins_file(root).is_some() {
         return None;
     }
@@ -426,14 +450,17 @@ pub(crate) fn extract_vite_values_timed(
     let vite = vite_config_file(root, config)?;
     // Concurrent boot callers asking for one key wait on a single evaluation
     // and take its outcome, a failed one included, as Vite resolves the config
-    // once per start. A caller arriving after it finished runs its own.
+    // once per start. A caller arriving after it finished runs its own, and so
+    // does a restart's.
     let flight = extraction_flight(&vite, command, mode_key);
     let seen = flight.finished.load(std::sync::atomic::Ordering::Acquire);
     let mut outcome = flight.outcome.lock().unwrap_or_else(|e| e.into_inner());
-    if flight.finished.load(std::sync::atomic::Ordering::Acquire) != seen {
-        return outcome.as_ref().map(parse_vite_values);
+    if !fresh && flight.finished.load(std::sync::atomic::Ordering::Acquire) != seen {
+        return outcome
+            .as_ref()
+            .map(|json| (parse_vite_values(json), false));
     }
-    let json = run_extraction(
+    let ran = run_extraction(
         root,
         &vite,
         command,
@@ -442,17 +469,19 @@ pub(crate) fn extract_vite_values_timed(
         mode_key,
         spa_build,
         timeout,
+        fresh,
     );
-    *outcome = json.clone();
+    *outcome = ran.as_ref().map(|(json, _)| json.clone());
     flight
         .finished
         .fetch_add(1, std::sync::atomic::Ordering::Release);
-    json.as_ref().map(parse_vite_values)
+    ran.map(|(json, changed)| (parse_vite_values(&json), changed))
 }
 
-/// One evaluation of the config's values: the store's copy when it has one,
-/// else the extractor run in an engine (and stored). `None` when the config
-/// fails to evaluate.
+/// One evaluation of the config's values: the store's copy when it has one
+/// (unless `fresh`), else the extractor run in an engine (and stored), with
+/// whether its output differs from the store's. `None` when the config fails
+/// to evaluate.
 #[allow(clippy::too_many_arguments)]
 fn run_extraction(
     root: &Path,
@@ -463,14 +492,20 @@ fn run_extraction(
     mode_key: &str,
     spa_build: bool,
     timeout: Option<std::time::Duration>,
-) -> Option<serde_json::Value> {
+    fresh: bool,
+) -> Option<(serde_json::Value, bool)> {
     let store = extraction_store(root);
+    let mut held = None;
     if let Some(hit) = store.lookup(vite, command, mode_key) {
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&hit.output) {
-            print_extraction_stderr(&hit.stderr);
-            let _ = CONFIG_DEPS.set(hit.deps);
-            crate::boot_phase("vite-extract cache hit");
-            return Some(json);
+            if fresh {
+                held = Some(json);
+            } else {
+                print_extraction_stderr(&hit.stderr);
+                let _ = CONFIG_DEPS.set(hit.deps);
+                crate::boot_phase("vite-extract cache hit");
+                return Some((json, false));
+            }
         }
     }
     let cache = oj_cache::cache_root(root);
@@ -515,7 +550,12 @@ fn run_extraction(
     store_extraction(&store, vite, command, mode_key, &json, &stderr);
     EXTRACTION_RAN_FRESH.store(true, std::sync::atomic::Ordering::Relaxed);
     crate::boot_phase("vite-extract cache miss (engine ran)");
-    Some(json)
+    let mut output = json.clone();
+    if let Some(obj) = output.as_object_mut() {
+        obj.remove("__stderr");
+    }
+    let changed = held.as_ref() != Some(&output);
+    Some((json, changed))
 }
 
 /// One (config, command, mode) extraction key in this process: the lock its

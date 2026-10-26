@@ -80,6 +80,7 @@ mod preprocessors;
 mod query_assets;
 mod redirect_passthrough;
 mod resolve_created_files;
+mod restart_check;
 mod stylex;
 mod svelte;
 mod svgr;
@@ -236,6 +237,27 @@ fn take_restarts_where(keep: impl Fn(&str) -> bool) -> Vec<String> {
 /// to fail on.
 pub fn take_restarts_for(root: &Path) -> Vec<String> {
     take_restarts_where(|r| restart_is_under(r, root))
+}
+
+/// The "server restart failed" diagnostics so far whose message names
+/// `needle` (an app's root, or a marker its config throws).
+pub fn restart_failures(needle: &str) -> Vec<String> {
+    static FAILED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static CAPTURE: std::sync::Once = std::sync::Once::new();
+    CAPTURE.call_once(|| {
+        oj_diag::add_output(std::sync::Arc::new(|event: &oj_diag::Event| {
+            if event.message.starts_with("server restart failed") {
+                FAILED.lock().unwrap().push(event.message.clone());
+            }
+        }));
+    });
+    FAILED
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|m| m.contains(needle))
+        .cloned()
+        .collect()
 }
 
 /// No test expects a restart, so one over this app's files fails the test
