@@ -512,13 +512,7 @@ impl StartHost {
                     return;
                 };
                 if let Err(e) = host.build_start().await {
-                    let name = e
-                        .split_once("[plugin:")
-                        .and_then(|(_, rest)| rest.split_once(']'))
-                        .map(|(name, _)| name.to_string())
-                        .unwrap_or_else(|| "unknown".into());
-                    let msg = e.lines().next().unwrap_or(&e).to_string();
-                    eprintln!("oj: plugin \"{name}\" buildStart failed (skipped): {msg}");
+                    eprintln!("{}", crate::start_bundle::host::build_start_skipped(&e));
                 }
             })
             .await;

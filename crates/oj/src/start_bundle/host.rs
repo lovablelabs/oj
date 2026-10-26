@@ -237,13 +237,27 @@ impl StartHostPlugin {
             std::sync::LazyLock::new(Default::default);
         let key = Arc::as_ptr(host) as usize;
         if LOGGED.lock().unwrap_or_else(|p| p.into_inner()).insert(key) {
-            eprintln!(
-                "{}: plugin buildStart failed (skipped): {e}",
-                oj_server::oj_brand()
-            );
+            eprintln!("{}", build_start_skipped(e));
         }
         Ok(())
     }
+}
+
+/// The dev server's line for a buildStart it skipped, naming the plugin from
+/// the host's `[plugin:<name>]` prefix: one line, whichever environment's
+/// container ran the hook first (they share one host, which settles
+/// buildStart once).
+pub(crate) fn build_start_skipped(e: &str) -> String {
+    let name = e
+        .split_once("[plugin:")
+        .and_then(|(_, rest)| rest.split_once(']'))
+        .map(|(name, _)| name.to_string())
+        .unwrap_or_else(|| "unknown".into());
+    let msg = e.lines().next().unwrap_or(e);
+    format!(
+        "{}: plugin \"{name}\" buildStart failed (skipped): {msg}",
+        oj_server::oj_brand()
+    )
 }
 
 /// A plugin resolveId answer as rolldown's.
@@ -799,6 +813,22 @@ pub(crate) fn empty_virtual_stub(root: &Path, id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A skipped buildStart names its plugin, from either environment's
+    /// container, and keeps only the error's first line.
+    #[test]
+    fn a_skipped_build_start_names_its_plugin() {
+        let line = build_start_skipped(
+            "Error: [plugin:fixture-fresh-module] boom-from-buildStart\n    at ojRun (plugin-host.mjs:1:1)",
+        );
+        assert!(
+            line.ends_with(
+                ": plugin \"fixture-fresh-module\" buildStart failed (skipped): Error: [plugin:fixture-fresh-module] boom-from-buildStart"
+            ),
+            "{line}"
+        );
+        assert!(build_start_skipped("boom").contains("plugin \"unknown\" buildStart failed"));
+    }
 
     /// The ids vite:css and vite:css-post take (CSS_LANGS_RE, not `?raw`,
     /// `?url` or a worker): their module gets only the "post" transforms.
