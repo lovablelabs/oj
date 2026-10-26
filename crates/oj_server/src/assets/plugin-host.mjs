@@ -4472,7 +4472,9 @@ async function scanPluginHook(hook, argsJson) {
     if (!fn) continue;
     if (hook === "resolveId") {
       if (!hookIdMatches(p.resolveId, args[0])) continue;
-      const r = await fn.call(ctxFor(main, p), args[0], args[1] ?? undefined, {
+      // Under Vite these plugins run in the scan's own rolldown build, whose
+      // resolve reaches the app's plugins with `scan: true`.
+      const r = await fn.call(resolveHookCtx(main, p, null, true), args[0], args[1] ?? undefined, {
         attributes: {},
         custom: {},
         isEntry: !!args[2]?.isEntry,

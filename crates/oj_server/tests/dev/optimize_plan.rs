@@ -453,3 +453,62 @@ async fn a_warm_session_preloads_every_entry_under_its_import_url() {
     assert_eq!(imports.len(), 3, "{imports:?}");
     assert_preloads_match_imports(&server, &imports).await;
 }
+
+/// Vite runs `optimizeDeps.rolldownOptions.plugins` in the scan's own
+/// rolldown build: a `this.resolve` from one of them reaches the app's
+/// plugins as a scan resolve (`scan: true`).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_scan_plugins_resolve_reaches_the_app_plugins_as_a_scan_resolve() {
+    crate::require_fixture!("vite");
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"scan-ctx","private":true,"type":"module"}"#,
+        ),
+        ("index.html", INDEX),
+        ("main.js", "import \"scan-probe\";\n"),
+    ]);
+    let seen = app.root.with_extension("scan-seen.log");
+    app.write(&[(
+        "vite.config.mjs",
+        &format!(
+            r#"import {{ appendFileSync }} from "node:fs";
+export default {{
+  optimizeDeps: {{
+    rolldownOptions: {{
+      plugins: [{{
+        name: "scan-only",
+        async resolveId(id, importer) {{
+          if (id === "scan-probe") await this.resolve("nested-probe", importer, {{ skipSelf: true }});
+          return null;
+        }},
+      }}],
+    }},
+  }},
+  plugins: [{{
+    name: "app-plugin",
+    resolveId(id, importer, options) {{
+      if (id === "nested-probe") appendFileSync({seen:?}, String(options.scan) + "\n");
+      return null;
+    }},
+  }}],
+}};
+"#
+        ),
+    )]);
+    app.link_fixture("vite");
+    let _server = app.serve().await;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let seen = loop {
+        let text = std::fs::read_to_string(&seen).unwrap_or_default();
+        if !text.is_empty() || Instant::now() > deadline {
+            break text;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(
+        seen.lines().next(),
+        Some("true"),
+        "options.scan the app plugin saw"
+    );
+}

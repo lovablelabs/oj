@@ -150,7 +150,11 @@ impl ScanHost {
         source: &str,
         importer: &str,
     ) -> Result<Option<crate::plugins::ResolvedId>, String> {
-        let _turn = self.turns.acquire().await.map_err(|e| e.to_string())?;
+        let _turn = self
+            .turns
+            .acquire()
+            .await
+            .expect("the scan never closes its turns");
         self.host.scan_resolve_id(source, importer).await
     }
 
@@ -159,7 +163,11 @@ impl ScanHost {
         hook: &str,
         args: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
-        let _turn = self.turns.acquire().await.map_err(|e| e.to_string())?;
+        let _turn = self
+            .turns
+            .acquire()
+            .await
+            .expect("the scan never closes its turns");
         self.host.scan_plugin_hook(hook, args).await
     }
 }
