@@ -4,6 +4,52 @@ pub(crate) fn js(body: impl IntoResponse) -> Response {
     ([(header::CONTENT_TYPE, "text/javascript")], body).into_response()
 }
 
+/// oj's own page-wide modules (the HMR client, the refresh runtime and its
+/// preamble) under the base, as Vite's `clientPublicPath`
+/// (`path.posix.join(base, CLIENT_PUBLIC_PATH)`, importAnalysis.ts): the
+/// injected tags and every import of them name one URL, so a page runs one
+/// instance of each.
+pub(crate) struct OjPublicPaths {
+    pub(crate) client: String,
+    pub(crate) refresh_runtime: String,
+    pub(crate) refresh_preamble: String,
+    /// The served runtime, importing the client first: Vite's import analysis
+    /// adds `import { injectQuery } from clientPublicPath` for the runtime's
+    /// non-literal `import()`, so a preamble-only page (TanStack Start's dev
+    /// entry) still gets a full reload when its app graph fails to load.
+    pub(crate) refresh_runtime_js: Bytes,
+    pub(crate) refresh_preamble_js: Bytes,
+}
+
+impl OjPublicPaths {
+    pub(crate) fn new(base: Option<&str>) -> Self {
+        let at = |path: &str| crate::dev_html::posix_join(&[base.unwrap_or("/"), path]);
+        let (client, refresh_runtime) = (at("/@oj/client.js"), at("/@oj/refresh-runtime.js"));
+        let refresh_runtime_js = format!("import {client:?};\n{REFRESH_RUNTIME_JS}");
+        let refresh_preamble_js = REFRESH_PREAMBLE_JS.replacen(
+            "\"/@oj/refresh-runtime.js\"",
+            &format!("{refresh_runtime:?}"),
+            1,
+        );
+        OjPublicPaths {
+            refresh_preamble: at("/@oj/refresh-preamble.js"),
+            refresh_runtime_js: Bytes::from(refresh_runtime_js),
+            refresh_preamble_js: Bytes::from(refresh_preamble_js),
+            client,
+            refresh_runtime,
+        }
+    }
+
+    /// Whether an import names one of oj's own modules, with or without the
+    /// base: those are served by routes, never module-graph nodes.
+    pub(crate) fn owns(&self, url: &str) -> bool {
+        url.starts_with("/@oj/")
+            || url == self.client
+            || url == self.refresh_runtime
+            || url == self.refresh_preamble
+    }
+}
+
 pub(crate) async fn serve_client_js(
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,

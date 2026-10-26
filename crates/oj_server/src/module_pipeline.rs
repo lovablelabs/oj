@@ -936,9 +936,9 @@ impl ImportRewrite<'_> {
         // @vitejs/plugin-react's refresh runtime and its virtual preamble (the
         // react-refresh and virtual-preamble plugins, which oj does natively).
         match spec {
-            "/@react-refresh" => return Some("/@oj/refresh-runtime.js".to_string()),
+            "/@react-refresh" => return Some(state.oj_paths.refresh_runtime.clone()),
             "@vitejs/plugin-react/preamble" | "@vitejs/plugin-react-swc/preamble" => {
-                return Some("/@oj/refresh-preamble.js".to_string())
+                return Some(state.oj_paths.refresh_preamble.clone())
             }
             _ => {}
         }
@@ -1222,7 +1222,7 @@ pub(crate) fn register_in_graph(state: &ServerState, url: &str, module: &CachedM
     let local_imports: Vec<PathBuf> = module
         .imports
         .iter()
-        .filter(|s| s.starts_with('/') && !s.starts_with("/@oj/") && !is_worker_query(s))
+        .filter(|s| s.starts_with('/') && !state.oj_paths.owns(s) && !is_worker_query(s))
         .map(|s| import_node(s))
         .collect();
     let pruned = graph.set_imports(Path::new(url), &local_imports);
@@ -1259,7 +1259,7 @@ pub(crate) fn register_in_graph(state: &ServerState, url: &str, module: &CachedM
     let bindings = module
         .import_bindings
         .iter()
-        .filter(|(s, _)| s.starts_with('/') && !s.starts_with("/@oj/") && !is_worker_query(s))
+        .filter(|(s, _)| s.starts_with('/') && !state.oj_paths.owns(s) && !is_worker_query(s))
         .map(|(s, names)| {
             (
                 Path::new(s.split('?').next().unwrap_or(s)),

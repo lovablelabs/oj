@@ -559,7 +559,7 @@ async fn serve_compiled_from(
     }
 
     let mut body = if module.kind == "svelte" {
-        format!("{}{}", svelte_hot_glue(url), module.code)
+        format!("{}{}", svelte_hot_glue(url, &state.oj_paths), module.code)
     } else {
         let ctx_predefined = module.hot.is_some();
         let mut body = if ctx_predefined {
@@ -571,7 +571,7 @@ async fn serve_compiled_from(
             };
             format!(
                 "{}{}",
-                svelte_hot_glue(&strip_hmr_timestamp(&full)),
+                svelte_hot_glue(&strip_hmr_timestamp(&full), &state.oj_paths),
                 module.code
             )
         } else {
@@ -582,6 +582,7 @@ async fn serve_compiled_from(
             query,
             module.is_boundary,
             ctx_predefined,
+            &state.oj_paths,
         ));
         body
     };

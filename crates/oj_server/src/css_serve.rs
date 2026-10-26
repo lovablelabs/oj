@@ -151,13 +151,14 @@ pub(crate) async fn serve_css_wrapper(
         ""
     };
     let body = format!(
-        "import {{ createHotContext as __oj_hot, updateStyle as __oj_updateStyle, removeStyle as __oj_removeStyle }} from \"/@oj/client.js\";\n\
+        "import {{ createHotContext as __oj_hot, updateStyle as __oj_updateStyle, removeStyle as __oj_removeStyle }} from {client:?};\n\
          import.meta.hot = __oj_hot({url:?});\n\
          __oj_updateStyle({url:?}, {css});\n\
          {exports}\
          {accept}\
          import.meta.hot.prune(() => __oj_removeStyle({url:?}));\n",
         css = serde_json::to_string(&module.code).unwrap(),
+        client = state.oj_paths.client,
     );
     let body = match css_post(state, file, url, &file.to_string_lossy(), body).await {
         Ok(body) => body,

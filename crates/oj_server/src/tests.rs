@@ -783,8 +783,21 @@ fn ts_source_outside_root_is_not_treated_as_a_dep() {
 
 #[test]
 fn glue_only_added_for_boundary_modules() {
-    assert!(hot_glue("/src/util.ts", None, false, false).is_empty());
-    let glue = hot_glue("/src/App.tsx", Some("t=1700000000000"), true, false);
+    assert!(hot_glue(
+        "/src/util.ts",
+        None,
+        false,
+        false,
+        &OjPublicPaths::new(None)
+    )
+    .is_empty());
+    let glue = hot_glue(
+        "/src/App.tsx",
+        Some("t=1700000000000"),
+        true,
+        false,
+        &OjPublicPaths::new(None),
+    );
     assert!(glue.contains(r#"createHotContext("/src/App.tsx")"#));
     assert!(
         glue.contains(r#"from "/src/App.tsx?t=1700000000000""#),
@@ -802,8 +815,14 @@ fn glue_only_added_for_boundary_modules() {
 // files, whose router plugin injects its own import.meta.hot handler).
 #[test]
 fn glue_reuses_a_predefined_hot_context_instead_of_redeclaring_it() {
-    let banner = svelte_hot_glue("/src/routes/a.tsx");
-    let glue = hot_glue("/src/routes/a.tsx", Some("t=1700000000000"), true, true);
+    let banner = svelte_hot_glue("/src/routes/a.tsx", &OjPublicPaths::new(None));
+    let glue = hot_glue(
+        "/src/routes/a.tsx",
+        Some("t=1700000000000"),
+        true,
+        true,
+        &OjPublicPaths::new(None),
+    );
     assert!(!glue.contains("__oj_createHotContext"), "{glue}");
     assert!(glue.contains("registerExportsForReactRefresh"), "{glue}");
     let combined = format!("{banner}{glue}");
@@ -827,6 +846,7 @@ fn glue_never_doubles_a_query_the_url_already_carries() {
         Some("t=1700000000000"),
         true,
         false,
+        &OjPublicPaths::new(None),
     );
     assert!(
         glue.contains(r#"createHotContext("/src/App.tsx")"#),
@@ -848,6 +868,7 @@ fn glue_never_doubles_a_query_the_url_already_carries() {
         Some("tsr-shared=1&t=1700000000000"),
         true,
         false,
+        &OjPublicPaths::new(None),
     );
     assert!(
         v.contains(r#"createHotContext("/src/r.tsx?tsr-shared=1")"#),
@@ -857,6 +878,44 @@ fn glue_never_doubles_a_query_the_url_already_carries() {
         v.contains(r#"from "/src/r.tsx?tsr-shared=1&t=1700000000000""#),
         "{v}"
     );
+}
+
+// Vite's clientPublicPath: every import oj writes of its client and refresh
+// runtime carries the base, as the page's injected tags do, so one module
+// instance serves the page.
+#[test]
+fn oj_modules_are_imported_under_the_base() {
+    let paths = OjPublicPaths::new(Some("/app/"));
+    assert_eq!(paths.client, "/app/@oj/client.js");
+    assert_eq!(paths.refresh_runtime, "/app/@oj/refresh-runtime.js");
+    assert_eq!(paths.refresh_preamble, "/app/@oj/refresh-preamble.js");
+    let glue = hot_glue("/src/App.tsx", None, true, false, &paths);
+    assert!(glue.contains(r#"from "/app/@oj/client.js""#), "{glue}");
+    assert!(
+        glue.contains(r#"from "/app/@oj/refresh-runtime.js""#),
+        "{glue}"
+    );
+    let banner = svelte_hot_glue("/src/a.svelte", &paths);
+    assert!(banner.contains(r#"from "/app/@oj/client.js""#), "{banner}");
+    let runtime = std::str::from_utf8(&paths.refresh_runtime_js).unwrap();
+    assert!(
+        runtime.starts_with("import \"/app/@oj/client.js\";\n"),
+        "{runtime}"
+    );
+    let preamble = std::str::from_utf8(&paths.refresh_preamble_js).unwrap();
+    assert!(
+        preamble.contains(r#"from "/app/@oj/refresh-runtime.js""#),
+        "{preamble}"
+    );
+    assert!(!preamble.contains(r#""/@oj/"#), "{preamble}");
+    assert!(paths.owns("/app/@oj/refresh-runtime.js") && paths.owns("/@oj/routes.js"));
+    assert!(!paths.owns("/app/src/main.tsx"));
+
+    let root = OjPublicPaths::new(None);
+    assert_eq!(root.client, "/@oj/client.js");
+    assert!(std::str::from_utf8(&root.refresh_runtime_js)
+        .unwrap()
+        .starts_with("import \"/@oj/client.js\";\n"));
 }
 
 #[test]

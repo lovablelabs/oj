@@ -35,7 +35,7 @@ pub(crate) fn spawn_crawl(state: Arc<ServerState>, done_tx: tokio::sync::watch::
                     for import in imports.unwrap_or_default() {
                         let import = crawl_url(&import);
                         if import.starts_with('/')
-                            && !import.starts_with("/@oj/")
+                            && !state.oj_paths.owns(&import)
                             && !visited.contains(&import)
                         {
                             queue.push(import);

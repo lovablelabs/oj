@@ -328,6 +328,7 @@ pub(crate) fn hot_glue(
     query: Option<&str>,
     is_boundary: bool,
     ctx_predefined: bool,
+    paths: &OjPublicPaths,
 ) -> String {
     if !is_boundary {
         return String::new();
@@ -343,12 +344,14 @@ pub(crate) fn hot_glue(
         String::new()
     } else {
         format!(
-            "import {{ createHotContext as __oj_createHotContext }} from \"/@oj/client.js\";\nimport.meta.hot ??= __oj_createHotContext({id:?});\n"
+            "import {{ createHotContext as __oj_createHotContext }} from {client:?};\nimport.meta.hot ??= __oj_createHotContext({id:?});\n",
+            client = paths.client,
         )
     };
+    let runtime = &paths.refresh_runtime;
     format!(
         r#"
-{ctx}import * as RefreshRuntime from "/@oj/refresh-runtime.js";
+{ctx}import * as RefreshRuntime from {runtime:?};
 const inWebWorker = typeof WorkerGlobalScope !== "undefined" && self instanceof WorkerGlobalScope;
 import * as __oj_currentExports from {self_specifier:?};
 if (import.meta.hot && !inWebWorker) {{
@@ -484,9 +487,10 @@ pub(crate) fn full_reload_frame(
     frame.to_string()
 }
 
-pub(crate) fn svelte_hot_glue(url: &str) -> String {
+pub(crate) fn svelte_hot_glue(url: &str, paths: &OjPublicPaths) -> String {
     format!(
-        "\nimport {{ createHotContext as __oj_createHotContext }} from \"/@oj/client.js\";\nimport.meta.hot = __oj_createHotContext({url:?});\n"
+        "\nimport {{ createHotContext as __oj_createHotContext }} from {client:?};\nimport.meta.hot = __oj_createHotContext({url:?});\n",
+        client = paths.client,
     )
 }
 

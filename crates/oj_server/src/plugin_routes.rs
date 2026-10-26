@@ -255,12 +255,13 @@ pub(crate) async fn serve_plugin_load_fallback(
     if is_css {
         let url = id_path.to_string();
         let body = format!(
-            "import {{ createHotContext as __oj_hot, updateStyle as __oj_updateStyle }} from \"/@oj/client.js\";\n\
+            "import {{ createHotContext as __oj_hot, updateStyle as __oj_updateStyle }} from {client:?};\n\
              import.meta.hot = __oj_hot({url:?});\n\
              __oj_updateStyle({url:?}, {css});\n\
              export default void 0;\n\
              import.meta.hot.accept(() => {{}});\n",
             css = serde_json::Value::String(source),
+            client = state.oj_paths.client,
         );
         return Some(js_response(body));
     }
