@@ -173,3 +173,54 @@ export default [
         "each hook once, in its own environment (was {lines:?})"
     );
 }
+
+// Each Vite DevEnvironment carries its own module graph and hot channel; the
+// ssr environment's are not the client's.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_ssr_environment_has_its_own_module_graph_and_hot_channel() {
+    let plugins = r#"let client = null;
+export default [{
+  name: "graph-probe",
+  transform(code, id) {
+    if (!id.endsWith("/src/main.js")) return;
+    const env = this.environment;
+    if (env.name === "client") client = env;
+    const graph = env.moduleGraph;
+    const seen = {
+      env: env.name,
+      graph: typeof graph?.getModuleById === "function" && typeof graph?.invalidateModule === "function",
+      hot: typeof env.hot?.send === "function" && typeof env.hot?.on === "function",
+      own: env.name === "client" || (!!client && graph !== client.moduleGraph && env.hot !== client.hot),
+      known: !!graph?.getModuleById(id),
+    };
+    return code.replace("__STATE__", JSON.stringify(seen));
+  },
+}];
+"#;
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"plugin-environments-graph","private":true,"type":"module"}"#,
+        ),
+        ("index.html", INDEX_HTML),
+        ("src/main.js", "export const state = __STATE__;\n"),
+        ("oj.plugins.mjs", plugins),
+    ]);
+    let server = app.serve().await;
+    let compact = |s: String| s.split_whitespace().collect::<String>();
+    let client = compact(server.text("/src/main.js").await);
+    assert!(
+        client.contains(r#"{"env":"client","graph":true,"hot":true,"own":true,"known":true}"#),
+        "{client}"
+    );
+    let main = app.root.join("src/main.js");
+    let ssr = compact(
+        server
+            .text(&format!("/@ssr-module?id={}", main.display()))
+            .await,
+    );
+    assert!(
+        ssr.contains(r#"{"env":"ssr","graph":true,"hot":true,"own":true,"known":true}"#),
+        "the ssr environment's own graph and hot channel:\n{ssr}"
+    );
+}

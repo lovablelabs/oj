@@ -2271,6 +2271,8 @@ async function openEnvironmentContainer(spec) {
     c.plugins = await environmentPlugins(environment, c.topLevelPlugins, c);
   } else {
     environment.transformRequest = transformRequestFor(c);
+    environment.moduleGraph = createModuleGraph(c);
+    environment.hot = serverHotChannel();
     await resolveEnvironment(c, spec.name);
     if (command === "serve") c.startAfter = main;
   }
@@ -2294,8 +2296,8 @@ function ojServerEvent(action, data) {
 // undefined for anything else (an unknown virtual id) so plugins guarding on it
 // take the same branch as under Vite. `invalidateModule` tells oj to drop the
 // module's compiled output and propagate an update, as Vite's graph does.
-function knownModuleId(id) {
-  if (main.seenIds.has(id)) return true;
+function knownModuleId(id, c = main) {
+  if (c.seenIds.has(id)) return true;
   const file = String(id).split("?", 1)[0];
   if (!file || file.startsWith("\0") || !isAbsolute(file)) return false;
   try {
@@ -2323,7 +2325,9 @@ function applicationModuleUrl(id) {
     ? `/@fs${file.replaceAll("\\", "/")}`
     : `/${rel.replaceAll("\\", "/")}`;
 }
-function createModuleGraph() {
+// One per environment, as each Vite DevEnvironment has its own: `c` is the
+// container whose hooks it knows ids from.
+function createModuleGraph(c = main) {
   const graphNodes = new Map();
   const urlNodes = new Map();
   const fileToModulesMap = new Map();
@@ -2358,16 +2362,16 @@ function createModuleGraph() {
     return n;
   }
   return {
-    getModuleById: (id) => (id == null || !knownModuleId(String(id)) ? undefined : moduleNode(String(id))),
+    getModuleById: (id) => (id == null || !knownModuleId(String(id), c) ? undefined : moduleNode(String(id))),
     // By the served URL first (a node's own `url` round-trips, as in Vite),
     // falling back to the id-shaped lookup plugins used before.
     getModuleByUrl: async (url) =>
       url == null
         ? undefined
-        : (urlNodes.get(String(url)) ?? (knownModuleId(String(url)) ? moduleNode(String(url)) : undefined)),
+        : (urlNodes.get(String(url)) ?? (knownModuleId(String(url), c) ? moduleNode(String(url)) : undefined)),
     getModulesByFile: (file) =>
       fileToModulesMap.get(String(file)) ??
-      (knownModuleId(String(file)) ? new Set([moduleNode(String(file))]) : undefined),
+      (knownModuleId(String(file), c) ? new Set([moduleNode(String(file))]) : undefined),
     // Vite creates the node on demand here (used by plugins that pre-seed urls).
     ensureEntryFromUrl: async (url) => moduleNode(String(url)),
     invalidateModule(mod) {
@@ -2416,6 +2420,25 @@ const wsApi = {
 // MinimalPluginContext); the config/logger were attached once config hooks ran.
 environment.moduleGraph = moduleGraph;
 environment.hot = wsApi;
+// A server environment's hot channel (Vite's createServerHotChannel): its
+// messages are its module runner's, never the browser's, and oj's runners
+// take none, so a send reaches only what listens on the channel itself.
+function serverHotChannel() {
+  const listeners = new Map();
+  return {
+    on(event, cb) {
+      let a = listeners.get(event);
+      if (!a) listeners.set(event, (a = new Set()));
+      a.add(cb);
+    },
+    off(event, cb) {
+      listeners.get(event)?.delete(cb);
+    },
+    send() {},
+    listen() {},
+    close() {},
+  };
+}
 
 // `server.ws.on("connection", cb)` (Vite: the raw ws server's connection event,
 // per client). oj's Rust listener accepts the socket; it tells the host, which
