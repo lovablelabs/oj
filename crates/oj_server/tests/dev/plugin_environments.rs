@@ -475,3 +475,58 @@ export default [
         ]
     );
 }
+
+// Vite closes the environments at once (allSettled), and each environment's
+// closeBundle gets what its buildEnd threw.
+#[tokio::test(flavor = "multi_thread")]
+async fn close_runs_the_environments_at_once_and_hands_close_bundle_the_error() {
+    let log_dir = tempfile::tempdir().unwrap();
+    let log = log_dir.path().join("hooks.log");
+    let literal = serde_json::to_string(&log.display().to_string()).unwrap();
+    let plugins = format!(
+        r#"import fs from "node:fs";
+const log = (line) => fs.appendFileSync({literal}, line + "\n");
+let ssrClosing;
+const ssrClosed = new Promise((resolve) => (ssrClosing = resolve));
+export default [{{
+  name: "fails-to-end",
+  buildEnd() {{ throw new Error("end-failed"); }},
+  async closeBundle(error) {{
+    log("closeBundle " + this.environment.name + " " + (error ? error.message : "none"));
+    // The client's close waits on the ssr one's: closing one after the
+    // other never gets here.
+    if (this.environment.name === "ssr") ssrClosing();
+    else await ssrClosed;
+  }},
+}}];
+"#
+    );
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"plugin-environments-close-error","private":true,"type":"module"}"#,
+        ),
+        ("index.html", INDEX_HTML),
+        ("src/main.js", "window.__ok = 1;\n"),
+        ("oj.plugins.mjs", &plugins),
+    ]);
+    let server = app.serve().await;
+    let host = server.built.plugin_host.clone().expect("a plugin host");
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        oj_server::close_plugins(&host),
+    )
+    .await
+    .expect("the environments close at once");
+    let text = std::fs::read_to_string(&log).unwrap_or_default();
+    let mut lines: Vec<&str> = text.lines().collect();
+    lines.sort();
+    // oj names the plugin in the message, as its other hook errors.
+    assert_eq!(
+        lines,
+        [
+            "closeBundle client [plugin:fails-to-end] end-failed",
+            "closeBundle ssr none"
+        ]
+    );
+}

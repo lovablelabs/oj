@@ -5650,7 +5650,20 @@ async function runHookOrThrow(c, p, fn, args) {
 // `buildEnd(error?)`: Rollup hands the hook the error that failed the build
 // (Vite's pluginContainer.close and rolldown both do), so a failed build still
 // reaches every plugin's cleanup with the cause.
-async function runLifecycle(c, hook, args) {
+// Vite's EnvironmentPluginContainer.close: buildEnd, then closeBundle with
+// what buildEnd threw, which the close then rejects with.
+async function closeEnvironment(c) {
+  let buildEndError;
+  try {
+    await runLifecycle(c, "buildEnd", []);
+  } catch (e) {
+    buildEndError = e;
+  }
+  await runLifecycle(c, "closeBundle", [], buildEndError);
+  if (buildEndError) throw buildEndError;
+  return null;
+}
+async function runLifecycle(c, hook, args, closeError) {
   // Rollup runs closeBundle once per build; oj reaches it from rolldown's own
   // failure path and from its explicit call, so the second is a no-op.
   if (hook === "closeBundle") {
@@ -5663,6 +5676,7 @@ async function runLifecycle(c, hook, args) {
     err.code = "BUILD_FAILED";
     hookArgs = [err];
   }
+  if (hook === "closeBundle" && closeError) hookArgs = [closeError];
   for (const { p, fn } of pluginsWithHook(c, hook)) {
     // Vite's EnvironmentPluginContainer.close: buildEnd by buildStart's rule.
     if (hook === "buildEnd" && !runsInDevEnvironment(c, p, "perEnvironmentStartEndDuringDev")) continue;
@@ -5829,6 +5843,7 @@ async function run(hook, args, c) {
   if (hook === "transformIndexHtml") return gateOnBuildStart(main).then(() => transformIndexHtml(args[0], args[1]));
   if (hook === "transformIndexHtmlPhase") return transformIndexHtml(args[0], args[1], args[2]);
   if (hook === "buildStart") return ensureBuildStart(c);
+  if (hook === "closeEnvironment") return closeEnvironment(c);
   if (hook === "buildEnd" || hook === "renderStart" || hook === "closeBundle") {
     return runLifecycle(c, hook, args);
   }

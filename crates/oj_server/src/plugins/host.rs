@@ -1110,6 +1110,12 @@ impl PluginHost {
         self.call_unit("closeBundle", &[]).await
     }
 
+    /// Vite's environment close: buildEnd, then closeBundle with what
+    /// buildEnd threw (the close fails with it).
+    pub async fn close_environment(&self) -> Result<(), String> {
+        self.call_unit("closeEnvironment", &[]).await
+    }
+
     /// The dev server's `close()`, which plugins wrap to dispose what `configureServer` started.
     pub async fn close_dev_server(&self) -> Result<(), String> {
         self.call_unit("closeDevServer", &[]).await
