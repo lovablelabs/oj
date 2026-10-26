@@ -438,8 +438,14 @@ export default [{{
         .await
         .expect("the open adopts the container once the revive is allowed");
     let (spent, waited) = (cpu() - cpu0, wall0.elapsed().as_secs_f64());
-    assert!(waited >= 3.0, "the spacing held the revive back ({waited:.1}s)");
-    assert!(spent < waited / 2.0, "{spent:.1}s of CPU over {waited:.1}s: the wait spun");
+    assert!(
+        waited >= 3.0,
+        "the spacing held the revive back ({waited:.1}s)"
+    );
+    assert!(
+        spent < waited / 2.0,
+        "{spent:.1}s of CPU over {waited:.1}s: the wait spun"
+    );
 }
 
 // A revived engine resets the gates to fail-open, then fetches the plan

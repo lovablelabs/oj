@@ -1031,7 +1031,13 @@ function resolveHooks(p) {
   const envFn = hookFn(p, "configEnvironment");
   const recordEnvironment = async function (name, options, configEnv) {
     const before = plainCopy(options);
-    const r = await envFn.call(this, name, options, configEnv);
+    let r;
+    try {
+      r = await envFn.call(this, name, options, configEnv);
+    } catch (e) {
+      environmentPartials(p).set(name, { ...hookRecord(before, options, null), threw: e });
+      throw e;
+    }
     environmentPartials(p).set(name, hookRecord(before, options, r));
     return r;
   };
@@ -2058,7 +2064,11 @@ let hookedUserConfig = {};
 // `onPartial` sees each plugin's contribution; `keepPlugins` pins the plugin
 // array across the merges (mergeConfigLite concatenates arrays). A skipped
 // hook marks `container`.
-async function runConfigHook(config, list, { onPartial, keepPlugins, container = main, recorded, replay } = {}) {
+async function runConfigHook(
+  config,
+  list,
+  { onPartial, keepPlugins, container = main, recorded, replay, rebase = replay } = {},
+) {
   const configContext = minimalContext();
   for (const { p, fn } of hooksOf(list, "config")) {
     initStage(`config:${p.name ?? "?"}`);
@@ -2066,8 +2076,9 @@ async function runConfigHook(config, list, { onPartial, keepPlugins, container =
       let record = recorded?.get(p);
       if (record) {
         // Edits made inside the app's Vite resolve are already in a base
-        // that resolve made; a replay over another base makes them again.
-        if (replay) applyEdits(config, record.edits);
+        // that resolve made; over any other base (a replay, or a resolve
+        // that failed) they are made again.
+        if (rebase) applyEdits(config, record.edits);
         if (record.threw) throw record.threw;
       } else if (!replay) {
         const before = plainCopy(config);
@@ -2110,6 +2121,8 @@ async function runConfigResolved(list, resolved, container = main) {
 // each hook answers what it returned the first time: a container leaving
 // plugins out reads the config the rest made, and no hook runs twice.
 async function hostConfig(rc, list, { replay = false, container = main } = {}) {
+  // Whether the base is not the resolve the recorded hooks ran in.
+  const rebase = replay || !rc;
   let config = initial.config ?? {};
   if (rc) {
     // The user's resolved config is the base; oj's own values (root, define,
@@ -2148,6 +2161,7 @@ async function hostConfig(rc, list, { replay = false, container = main } = {}) {
     // The hooks Vite's resolve already ran on these instances.
     recorded: recordedConfigPartials,
     replay,
+    rebase,
     container,
   });
   // Vite runs `configEnvironment(name, options, env)` for every environment after
@@ -2171,7 +2185,8 @@ async function hostConfig(rc, list, { replay = false, container = main } = {}) {
         try {
           let record = seen.get(name);
           if (record) {
-            if (replay) applyEdits(config.environments[name], record.edits);
+            if (rebase) applyEdits(config.environments[name], record.edits);
+            if (record.threw) throw record.threw;
           } else if (!replay) {
             const options = config.environments[name];
             const before = plainCopy(options);
