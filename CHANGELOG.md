@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.48] - 2026-10-27
+
 ### Added
 
 - Each release attaches `oj` binaries for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` and `aarch64-apple-darwin` as `oj-<target>.tar.gz`, with build provenance attestations. The Linux binaries run on glibc 2.35 and newer, so builds without nix, such as Bazel remote execution, can download oj by sha256 instead of compiling it.
