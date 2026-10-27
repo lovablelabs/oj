@@ -51,14 +51,14 @@ pub(super) fn write_memo(entry: &Path, memo: &Memo) {
     let _ = integrity::atomic_write(&entry.join(MEMO_FILE), &bytes);
 }
 
-pub(super) fn build_memo(files: &[PathBuf], digests: &[Option<blake3::Hash>]) -> Memo {
-    let written_at_ns = now_ns();
-    let stats = par_map(files, |p| {
-        let meta = fs::metadata(p).ok()?;
-        Some((meta.len(), mtime_ns(&meta)?))
-    });
+/// The memo of a [`verified_digests`] pass: each file under the stat it had
+/// before it was read. A stat taken after (once the persist's blob copies are
+/// done) would pair an edit made meanwhile with the digest of the bytes
+/// before it, and every later persist would take that digest as settled.
+pub(super) fn build_memo(files: &[PathBuf], digests: &Digests) -> Memo {
+    let written_at_ns = digests.statted_at_ns;
     let mut map = HashMap::new();
-    for ((path, digest), stat) in files.iter().zip(digests).zip(&stats) {
+    for ((path, digest), stat) in files.iter().zip(&digests.hashes).zip(&digests.stats) {
         let (Some(digest), Some((size, mtime_ns)), Some(path)) = (digest, stat, path.to_str())
         else {
             continue;
@@ -81,27 +81,45 @@ pub(super) fn build_memo(files: &[PathBuf], digests: &[Option<blake3::Hash>]) ->
     }
 }
 
-/// Digests for `files`, taken from the memo when size and mtime still match,
-/// plus how many had to be rehashed.
-pub(super) fn verified_digests(
-    files: &[PathBuf],
-    memo: Option<&Memo>,
-) -> (Vec<Option<blake3::Hash>>, usize) {
-    let rehashed = AtomicUsize::new(0);
-    let digests = par_map(files, |p| {
-        if let Some(digest) = memo.and_then(|m| memoized_digest(m, p)) {
-            return Some(digest);
-        }
-        rehashed.fetch_add(1, Ordering::Relaxed);
-        hash_file(p)
-    });
-    (digests, rehashed.into_inner())
+/// The digests of a closure's files, each with the stat taken before its
+/// bytes were read, and how many had to be rehashed.
+pub(super) struct Digests {
+    pub(super) hashes: Vec<Option<blake3::Hash>>,
+    stats: Vec<Option<(u64, u64)>>,
+    /// Taken before any stat: the freshness window counts from here.
+    statted_at_ns: u64,
+    pub(super) rehashed: usize,
 }
 
-fn memoized_digest(memo: &Memo, p: &Path) -> Option<blake3::Hash> {
+/// Digests for `files`, taken from the memo when size and mtime still match.
+pub(super) fn verified_digests(files: &[PathBuf], memo: Option<&Memo>) -> Digests {
+    let statted_at_ns = now_ns();
+    let rehashed = AtomicUsize::new(0);
+    let both = par_map(files, |p| {
+        let stat = fs::metadata(p)
+            .ok()
+            .and_then(|meta| Some((meta.len(), mtime_ns(&meta)?)));
+        if let Some(digest) = memo
+            .zip(stat)
+            .and_then(|(m, stat)| memoized_digest(m, p, stat))
+        {
+            return Some((stat, Some(digest)));
+        }
+        rehashed.fetch_add(1, Ordering::Relaxed);
+        Some((stat, hash_file(p)))
+    });
+    let (stats, hashes) = both.into_iter().map(|b| b.unwrap_or((None, None))).unzip();
+    Digests {
+        hashes,
+        stats,
+        statted_at_ns,
+        rehashed: rehashed.into_inner(),
+    }
+}
+
+fn memoized_digest(memo: &Memo, p: &Path, (size, mtime_ns): (u64, u64)) -> Option<blake3::Hash> {
     let known = memo.files.get(p.to_str()?)?;
-    let meta = fs::metadata(p).ok()?;
-    if meta.len() != known.size || mtime_ns(&meta) != Some(known.mtime_ns) {
+    if size != known.size || mtime_ns != known.mtime_ns {
         return None;
     }
     blake3::Hash::from_hex(&known.digest).ok()

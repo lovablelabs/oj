@@ -19,8 +19,8 @@ impl StartBundleStore {
         // generation's memo still vouches for (same size and mtime, settled
         // past its freshness window) keep their digest unread.
         let memo = read_current(&self.dir).and_then(|key| read_memo(&self.dir.join(key)));
-        let (digests, _) = verified_digests(&files, memo.as_ref());
-        let key = self.key_from(&files, &digests).ok()?;
+        let digests = verified_digests(&files, memo.as_ref());
+        let key = self.key_from(&files, &digests.hashes).ok()?;
         let index = read_chunk_index(start_dir)?;
         let css_urls = read_css_urls(start_dir);
         let chunk_dir = start_dir.join(CHUNKS_DIR);

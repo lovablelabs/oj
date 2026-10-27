@@ -582,6 +582,29 @@ fn a_persist_still_sees_a_stat_identical_edit_to_a_fresh_file() {
     assert_ne!(edited, key);
 }
 
+// A persist hashes its inputs, then copies blobs for as long as that takes:
+// an edit landing in between, already past the freshness window by the time
+// the memo is written, must not enter it as settled under the old digest.
+#[test]
+fn an_edit_after_the_hash_is_rehashed_next_time() {
+    let fx = Fixture::new("memo-edit-after-hash");
+    fx.settle_modules();
+    let files = vec![fx.module("a.tsx")];
+    let digests = memo::verified_digests(&files, None);
+    fx.write_module("a.tsx", "export const a = 7;");
+    set_mtime(
+        &fx.module("a.tsx"),
+        SystemTime::now() - Duration::from_secs(60),
+    );
+    let memo = memo::build_memo(&files, &digests);
+    let again = memo::verified_digests(&files, Some(&memo));
+    assert_eq!(
+        again.rehashed, 1,
+        "the memo vouched for the pre-edit digest"
+    );
+    assert_eq!(again.hashes[0], hash_file(&files[0]));
+}
+
 #[test]
 fn touched_but_unchanged_file_rehashes_to_the_same_key() {
     let fx = Fixture::new("memo-touch");

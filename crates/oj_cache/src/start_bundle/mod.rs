@@ -257,8 +257,8 @@ impl StartBundleStore {
             return Err(Miss::GlobGrew(added));
         }
         let memo = read_memo(&current_dir);
-        let (digests, rehashed) = verified_digests(&files, memo.as_ref());
-        let key = self.key_from(&files, &digests)?;
+        let digests = verified_digests(&files, memo.as_ref());
+        let key = self.key_from(&files, &digests.hashes)?;
         let entry = self.dir.join(&key);
         if !entry.is_dir() {
             return Err(Miss::NoEntryForKey(key));
@@ -272,7 +272,7 @@ impl StartBundleStore {
             return Err(Miss::ChunkCorrupt { key, name, detail });
         }
         restore_artifacts(&entry, start_dir, &manifest, &key)?;
-        if rehashed > 0 || !entry.join(MEMO_FILE).is_file() {
+        if digests.rehashed > 0 || !entry.join(MEMO_FILE).is_file() {
             write_memo(&entry, &build_memo(&files, &digests));
         }
         touch(&entry);
@@ -283,7 +283,7 @@ impl StartBundleStore {
             key,
             files: files.len(),
             chunks: manifest.files.len(),
-            rehashed,
+            rehashed: digests.rehashed,
             elapsed_ms: started.elapsed().as_millis(),
         };
         Ok((stats, self.pin(&manifest)))
