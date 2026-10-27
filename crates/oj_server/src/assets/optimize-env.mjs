@@ -35,6 +35,7 @@ import {
   foldIncludeSnapshot,
   includeSnapshotIds,
   priorDepIds,
+  priorDepSources,
   writeIncludeSnapshot,
 } from "./discovered-deps.mjs";
 import { appViteEntry, asNode } from "./vite-config-node.mjs";
@@ -94,9 +95,14 @@ async function main() {
   // setup pass folds the boot pass's snapshot unchanged, the one the host
   // folded: the same configHash.
   const snapshotPath = process.env.OJ_PRESEED_INCLUDE;
+  // The previous session's deps that only an importer resolves, registered
+  // on this pass's optimizer instead of replayed by name.
+  let viaImporter = {};
   if (snapshotPath && !registered) {
     const byEnv = includeSnapshotIds(snapshotPath, priorDepIds(rc), rc.root);
-    writeIncludeSnapshot(snapshotPath, await replayableIds(vite, rc, byEnv), rc.root);
+    const { replay, dropped } = await replayableIds(vite, rc, byEnv);
+    writeIncludeSnapshot(snapshotPath, replay, rc.root);
+    viaImporter = importerOnlyDeps(rc, dropped);
   }
   const folded = foldIncludeSnapshot(rc, snapshotPath);
 
@@ -130,22 +136,19 @@ async function main() {
       }
       if (!existsSync(metadataPath)) throw new Error("the optimizer produced no metadata");
       const deps = registered?.[name] ?? [];
-      if (deps.length) {
-        // As the host's plugins registered them: Vite reruns the optimizer
-        // with the new deps and commits, as it would have in the host.
-        const infos = deps.map(([id, resolved]) => de.depsOptimizer.registerMissingImport(id, resolved));
-        await Promise.all(infos.map((info) => info?.processing));
-        const committed = () => {
-          try {
-            const optimized = JSON.parse(readFileSync(metadataPath, "utf8")).optimized ?? {};
-            return deps.every(([id]) => optimized[id]);
-          } catch {
-            return false;
-          }
-        };
-        const deadline = Date.now() + timeoutMs;
-        while (!committed() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
-        if (!committed()) throw new Error("the optimizer did not commit the registered deps");
+      // As the host's plugins registered them: Vite reruns the optimizer
+      // with the new deps and commits, as it would have in the host.
+      if (deps.length && !(await commitRegistrations(de, metadataPath, deps))) {
+        throw new Error("the optimizer did not commit the registered deps");
+      }
+      // As the host's session would find them, through their importer: a
+      // discovery optimizer registers the import with the file it resolved
+      // to. Best effort; the session still finds any that do not commit.
+      const found = registered ? [] : (viaImporter[name] ?? []);
+      if (found.length && !de.depsOptimizer.options?.noDiscovery) {
+        if (!(await commitRegistrations(de, metadataPath, found))) {
+          warn(`deps pre-optimization (${name}): the previous session's imported deps did not commit`);
+        }
       }
       return { name, metadataPath };
     } finally {
@@ -156,6 +159,24 @@ async function main() {
         await de?.close();
       } catch {}
     }
+  }
+
+  // Registers `deps` (`[[id, resolved], ..]`) on the environment's optimizer
+  // and waits for the rerun to commit them all. Whether it did.
+  async function commitRegistrations(de, metadataPath, deps) {
+    const infos = deps.map(([id, resolved]) => de.depsOptimizer.registerMissingImport(id, resolved));
+    await Promise.all(infos.map((info) => info?.processing));
+    const committed = () => {
+      try {
+        const optimized = JSON.parse(readFileSync(metadataPath, "utf8")).optimized ?? {};
+        return deps.every(([id]) => optimized[id]);
+      } catch {
+        return false;
+      }
+    };
+    const deadline = Date.now() + timeoutMs;
+    while (!committed() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+    return committed();
   }
 
   const seeded = [];
@@ -229,12 +250,13 @@ async function main() {
 // the session reaches it through the import, as Vite does. Nested `a > b` ids
 // pass through unchecked.
 async function replayableIds(vite, rc, byEnv) {
-  const out = {};
+  const replay = {};
+  const dropped = {};
   await Promise.all(
     Object.entries(byEnv).map(async ([name, ids]) => {
       const optimizeDeps = rc.environments?.[name]?.optimizeDeps;
       if (!optimizeDeps) {
-        out[name] = ids;
+        replay[name] = ids;
         return;
       }
       let environment;
@@ -263,9 +285,10 @@ async function replayableIds(vite, rc, byEnv) {
         // use, and concurrent first calls would each build their own.
         const kept = ids.length ? [await replayable(ids[0])] : [];
         kept.push(...(await Promise.all(ids.slice(1).map(replayable))));
-        out[name] = ids.filter((_, i) => kept[i]);
+        replay[name] = ids.filter((_, i) => kept[i]);
+        dropped[name] = ids.filter((_, i) => !kept[i]);
       } catch {
-        out[name] = ids;
+        replay[name] = ids;
       } finally {
         // Never initialized: only its optimizer holds anything to close
         // (DevEnvironment.close() reads the plugin container init creates).
@@ -275,6 +298,22 @@ async function replayableIds(vite, rc, byEnv) {
       }
     }),
   );
+  return { replay, dropped };
+}
+
+// Of the `dropped` ids, the previous session's deps whose entry file is still
+// there and optimizable: `{ env: [[id, file], ..] }`, as registerMissingImport
+// takes them.
+function importerOnlyDeps(rc, dropped) {
+  const sources = priorDepSources(rc);
+  const out = {};
+  for (const [name, ids] of Object.entries(dropped)) {
+    const optimizeDeps = rc.environments?.[name]?.optimizeDeps;
+    const found = ids
+      .map((id) => [id, sources[name]?.[id]])
+      .filter(([, file]) => file && existsSync(file) && isOptimizable(file, optimizeDeps));
+    if (found.length) out[name] = found;
+  }
   return out;
 }
 

@@ -25,7 +25,7 @@ const script = path.join(repo, "crates", "oj_server", "src", "assets", "optimize
 const viteDist = path.join(fixture, "node_modules", "vite", "package.json");
 const installed = fs.existsSync(viteDist) && fs.existsSync(path.join(fixture, "node_modules", "react"));
 
-function makeApp() {
+function makeApp({ environments = '    ssr: { optimizeDeps: { include: ["react"] } },' } = {}) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "oj-optimize-env-"));
   const app = path.join(tmp, "app");
   fs.mkdirSync(app);
@@ -42,7 +42,7 @@ function makeApp() {
       "export default {",
       `  cacheDir: ${JSON.stringify(path.join(app, ".vite-cache"))},`,
       "  environments: {",
-      '    ssr: { optimizeDeps: { include: ["react"] } },',
+      environments,
       "  },",
       "};",
       "",
@@ -327,6 +327,40 @@ test(
       const run = spawnSync(process.execPath, [script], { cwd: app, encoding: "utf8", env: seedEnv(app) });
       assert.equal(run.status, 0, run.stderr);
       assert.deepEqual(JSON.parse(fs.readFileSync(snapshot, "utf8")).environments.ssr, ["react"]);
+      assert.doesNotMatch(`${run.stdout}${run.stderr}`, /Failed to resolve dependency|Cannot optimize dependency/);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  },
+);
+
+// An environment other than client and ssr resolves through Vite's
+// createIdResolver over that environment (createBackCompatIdResolver), and
+// the replay keeps the same ids for it.
+test(
+  "a custom environment's replay keeps only ids its resolver reaches from the root",
+  { skip: !installed && "fixture deps not installed" },
+  async () => {
+    const { tmp, app } = makeApp({
+      environments: '    worker: { consumer: "server", optimizeDeps: { include: ["react"] } },',
+    });
+    const snapshot = path.join(app, "preseed-include.json");
+    fs.writeFileSync(
+      snapshot,
+      JSON.stringify({
+        lockfile: viteLockfileHash(app),
+        environments: { worker: ["react", "react/presets", "oj-not-installed-dep"] },
+      }),
+    );
+    try {
+      const run = spawnSync(process.execPath, [script], { cwd: app, encoding: "utf8", env: seedEnv(app) });
+      assert.equal(run.status, 0, run.stderr);
+      assert.deepEqual(JSON.parse(fs.readFileSync(snapshot, "utf8")).environments.worker, ["react"]);
+      const report = JSON.parse(fs.readFileSync(path.join(app, "optimize-env-report.json"), "utf8"));
+      assert.deepEqual(
+        report.seeded.map((s) => s.name),
+        ["worker"],
+      );
       assert.doesNotMatch(`${run.stdout}${run.stderr}`, /Failed to resolve dependency|Cannot optimize dependency/);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });

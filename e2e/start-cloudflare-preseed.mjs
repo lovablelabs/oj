@@ -163,8 +163,10 @@ try {
     const rehashed = lines(log(), /Re-optimizing dependencies/);
     if (rehashed.length) throw new Error(`the dev server rejected the child's deps cache:\n${rehashed.join("\n")}`);
   });
-  // A second cold boot replays the first session's deps through the
-  // include snapshot: only ids Vite's include resolver reaches from the root.
+  // A second cold boot replays the first session's deps: by name through the
+  // include snapshot, only ids Vite's include resolver reaches from the root;
+  // the workspace package's dep through the file it resolved to, registered
+  // on the child's optimizer, so the dev server never optimizes it again.
   fs.rmSync(path.join(app, ".oj-cache", "v1", "optimize-env-stamp.json"));
   await boot(async (log) => {
     await sleep(3000);
@@ -172,6 +174,11 @@ try {
     if (unresolved.length) throw new Error(`the replay named unresolvable deps:\n${unresolved.join("\n")}`);
     const rehashed = lines(afterSeed(log()), /Re-optimizing dependencies/);
     if (rehashed.length) throw new Error(`the dev server rejected the child's deps cache:\n${rehashed.join("\n")}`);
+    const inProcess = lines(afterSeed(log()), /dependenc(y|ies) optimized/);
+    if (inProcess.length) throw new Error(`the dev server's optimizer ran in process:\n${inProcess.join("\n")}`);
+    if (!optimized().includes("oj-e2e-inner-dep")) {
+      throw new Error(`the child did not commit the workspace package's dep: ${optimized().join(", ")}`);
+    }
     if (!/deps: pre-optimizing/.test(log()))
       throw new Error(`the second boot never ran the child:\n${log().slice(-3000)}`);
     // The replay itself still carries every dep the root resolves.

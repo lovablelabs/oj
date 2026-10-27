@@ -35,7 +35,7 @@
 
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 // Vite's lockfileFormats (optimizer/index.ts): the package managers' INSTALL
 // STATE files, not the repo lockfiles, so a manual install without a lockfile
@@ -107,6 +107,35 @@ export function viteLockfileHash(root) {
 // resolved back then may not resolve at all now.
 export function priorDepIds(rc) {
   const out = {};
+  for (const [name, optimized] of priorOptimized(rc)) {
+    // On-disk metadata carries every committed dep — including mid-session
+    // discoveries — under `optimized` (stringifyDepsOptimizerMetadata writes
+    // no `discovered` section). Capped deterministically: sorted, so the
+    // include set is stable across boots even past the cap.
+    const ids = Object.keys(optimized);
+    if (ids.length > 0) out[name] = ids.sort().slice(0, 500);
+  }
+  return out;
+}
+
+// The entry file each of those deps was optimized from, by environment
+// (`{ env: { id: path } }`): Vite records it as `src`, relative to the
+// environment's deps directory.
+export function priorDepSources(rc) {
+  const out = {};
+  for (const [name, optimized, dir] of priorOptimized(rc)) {
+    out[name] = {};
+    for (const [id, info] of Object.entries(optimized)) {
+      if (typeof info?.src === "string") out[name][id] = resolve(dir, info.src);
+    }
+  }
+  return out;
+}
+
+// [name, optimized, depsDir] for every environment whose metadata Vite would
+// still serve.
+function priorOptimized(rc) {
+  const out = [];
   const current = viteLockfileHash(rc.root);
   for (const name of Object.keys(rc.environments ?? {})) {
     const dir = join(rc.cacheDir, name === "client" ? "deps" : `deps_${name}`);
@@ -117,12 +146,7 @@ export function priorDepIds(rc) {
       continue;
     }
     if (metadata?.lockfileHash !== current) continue;
-    // On-disk metadata carries every committed dep — including mid-session
-    // discoveries — under `optimized` (stringifyDepsOptimizerMetadata writes
-    // no `discovered` section). Capped deterministically: sorted, so the
-    // include set is stable across boots even past the cap.
-    const ids = new Set(Object.keys(metadata?.optimized ?? {}));
-    if (ids.size > 0) out[name] = [...ids].sort().slice(0, 500);
+    out.push([name, metadata?.optimized ?? {}, dir]);
   }
   return out;
 }
