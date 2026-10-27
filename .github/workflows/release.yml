@@ -90,6 +90,59 @@ jobs:
         # the build gate.
         run: cargo publish --workspace --locked --no-verify
 
+  # Standalone fru binaries for consumers that cannot run nix, such as Bazel
+  # remote executors, which fetch them by sha256 (the API's asset digest).
+  # Linux builds are static musl, so they run without the build host's glibc.
+  fru-binaries:
+    name: fru binary (${{ matrix.target }})
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+          - runner: macos-14
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: install the musl toolchain
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: add the rust target
+        run: rustup target add ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ matrix.target }}
+      - name: build
+        run: cargo build --release --locked -p fru --target ${{ matrix.target }}
+      - name: stage the binary
+        id: stage
+        run: |
+          out="fru-${{ matrix.target }}"
+          cp "target/${{ matrix.target }}/release/fru" "$out"
+          "./$out" --version
+          if [ "$RUNNER_OS" = Linux ]; then
+            file "$out" | grep -q 'statically linked' || { file "$out"; exit 1; }
+          fi
+          echo "file=$out" >> "$GITHUB_OUTPUT"
+      - name: attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ steps.stage.outputs.file }}
+      - name: upload to this release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" "${{ steps.stage.outputs.file }}"
+
   # The pinned V8 snapshot bundle (issue #211): snapshot creation is
   # run-nondeterministic, so reproducible nix builds consume a prebuilt bundle
   # that flake.nix fetches by SRI hash from a version release. When this

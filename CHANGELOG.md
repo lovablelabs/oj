@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Each release attaches standalone `fru` binaries (the `oj stylex` command set) for `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl` and `aarch64-apple-darwin`, with build provenance attestations. The Linux binaries are statically linked, so builds without nix, such as Bazel remote execution, can download one by sha256 instead of compiling the compiler.
+
 ### Changed
 
 - Debug output moves to Vite's `--debug` flag. `oj dev --debug` (also `build` and `preview`, or `-d`) turns on every oj debug scope; `--debug=boot,mem` names some. The flag adds `oj:<scope>` to `DEBUG`, which oj reads the way the `debug` package does (`*` wildcards, `-` exclusions), so `DEBUG=oj:boot` works too. The scopes replace three variables: `OJ_BOOT_PHASES` is `boot`, `OJ_DEBUG_MEM` is `mem`, and `OJ_DEBUG_HOOK_GATE` is `hook-gate`. The old variables are no longer read.
