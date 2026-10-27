@@ -1,6 +1,7 @@
 use super::*;
 use notify::RecursiveMode::{NonRecursive, Recursive};
 use std::sync::Mutex;
+#[cfg(target_os = "macos")]
 use std::time::Duration;
 
 fn paths(list: &[&str]) -> Vec<PathBuf> {
