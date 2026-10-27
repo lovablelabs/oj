@@ -486,6 +486,7 @@ pub async fn start_dev(
                             };
                             let render = async {
                                 if let Ok(app) = app_rx.await {
+                                    oj_server::boot_phase("runner render warm begin");
                                     if runner_render_warm(app).await {
                                         oj_server::boot_phase("runner render warm complete");
                                     } else {

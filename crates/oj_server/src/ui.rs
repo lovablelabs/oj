@@ -43,15 +43,26 @@ pub(crate) fn oj_tag() -> String {
     }
 }
 
+/// An `OJ_BOOT_PHASES` line: milliseconds since oj started, then `label`.
+/// The plugin host prints its own on the same timeline (see
+/// [`boot_epoch_ms`]).
 pub fn boot_phase(label: &str) {
-    if !oj_env::get().knobs.boot_phases {
+    let env = oj_env::get();
+    if !env.knobs.boot_phases {
         return;
     }
-    let ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    eprintln!("[oj-phase] {ms} {label}");
+    let ms = env
+        .started
+        .and_then(|t| t.elapsed().ok())
+        .map_or(0, |d| d.as_millis());
+    eprintln!("[oj-phase] {ms:>7}ms {label}");
+}
+
+/// When oj started, as Unix milliseconds: the zero of the phase timeline.
+pub fn boot_epoch_ms() -> Option<u64> {
+    let started = oj_env::get().started?;
+    let since = started.duration_since(std::time::UNIX_EPOCH).ok()?;
+    u64::try_from(since.as_millis()).ok()
 }
 
 /// Vite's `server.open`: launch the browser once bound. `BROWSER=none` disables,
