@@ -31,23 +31,25 @@ use clap::{Parser, Subcommand};
 struct Cli {
     #[command(subcommand)]
     command: Command,
-    /// Show debug logs: every oj scope, or only the comma-separated ones named
-    /// (`--debug=boot,mem`). Vite's `--debug`: adds `oj:<scope>` to `DEBUG`.
+    /// Show debug logs: boot timings and the memory endpoints, or only the
+    /// comma-separated scopes named (`--debug=hook-gate`, `--debug=*` for all).
+    /// Vite's `--debug`: adds `oj:<scope>` to `DEBUG`. A bare flag leaves out
+    /// hook-gate, which logs a line per gated module.
     #[arg(
         short,
         long,
         global = true,
         num_args = 0..=1,
         require_equals = true,
-        default_missing_value = "*",
+        default_missing_value = "boot,mem",
         value_name = "SCOPES"
     )]
     debug: Option<String>,
 }
 
-/// `DEBUG` with `--debug`'s scopes added, as Vite's bin does: `oj:*` for a bare
-/// flag, else `oj:<scope>` each. Scopes it already names are not repeated (a
-/// restart re-execs with both the flag and the `DEBUG` it set).
+/// `DEBUG` with `--debug`'s scopes added as `oj:<scope>` each, as Vite's bin
+/// does. Scopes it already names are not repeated (a restart re-execs with
+/// both the flag and the `DEBUG` it set).
 fn debug_with_scopes(debug: Option<&str>, scopes: &str) -> String {
     let mut names: Vec<String> = debug
         .unwrap_or_default()
@@ -889,9 +891,19 @@ mod debug_flag_tests {
     fn debug_is_a_global_flag_with_optional_scopes() {
         Cli::command().debug_assert();
         assert_eq!(debug_of(&["oj", "dev"]), None);
-        assert_eq!(debug_of(&["oj", "dev", "--debug"]).as_deref(), Some("*"));
-        assert_eq!(debug_of(&["oj", "--debug", "dev"]).as_deref(), Some("*"));
-        assert_eq!(debug_of(&["oj", "build", "-d"]).as_deref(), Some("*"));
+        assert_eq!(
+            debug_of(&["oj", "dev", "--debug"]).as_deref(),
+            Some("boot,mem")
+        );
+        assert_eq!(
+            debug_of(&["oj", "--debug", "dev"]).as_deref(),
+            Some("boot,mem")
+        );
+        assert_eq!(
+            debug_of(&["oj", "build", "-d"]).as_deref(),
+            Some("boot,mem")
+        );
+        assert_eq!(debug_of(&["oj", "dev", "--debug=*"]).as_deref(), Some("*"));
         assert_eq!(
             debug_of(&["oj", "dev", "--debug=boot,mem", "web"]).as_deref(),
             Some("boot,mem")
