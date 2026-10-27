@@ -18,7 +18,7 @@ pub struct Knobs {
     pub no_color: bool,
     /// `BROWSER`, when not blank; `none` disables opening.
     pub browser: Option<String>,
-    /// `OJ_BOOT_PHASES` set: `[oj-phase]` timing logs.
+    /// `DEBUG` names `oj:boot` (`--debug boot`): `[oj-phase]` timing logs.
     pub boot_phases: bool,
 
     /// `OJ_CACHE_DIR`, when non-empty: the cache base instead of `<app>/.oj-cache`.
@@ -44,9 +44,9 @@ pub struct Knobs {
     /// An AI-agent environment, per the env variables Vite's `determineAgent`
     /// checks (`server.forwardConsole` defaults on under one).
     pub agent_env: bool,
-    /// `OJ_DEBUG_MEM` truthy.
+    /// `DEBUG` names `oj:mem` (`--debug mem`): the `/@oj/debug` endpoints.
     pub debug_mem: bool,
-    /// `OJ_DEBUG_HOOK_GATE` is exactly `1`.
+    /// `DEBUG` names `oj:hook-gate` (`--debug hook-gate`): gated-out RPC logs.
     pub debug_hook_gate: bool,
 
     /// `OJ_PLUGIN_MEMORY_MB`, when positive.
@@ -73,13 +73,14 @@ impl Knobs {
         let truthy = |key: &str| var(key).is_some_and(|v| !v.is_empty() && v != "0");
         let one_or_true = |key: &str| matches!(var(key).as_deref(), Some("1") | Some("true"));
         let trimmed = |key: &str| var(key).and_then(|v| v.trim().parse::<u64>().ok());
+        let debug = var("DEBUG").unwrap_or_default();
         Knobs {
             node_env: var("NODE_ENV").filter(|v| !v.is_empty()),
             babel_env: var("BABEL_ENV").filter(|v| !v.is_empty()),
             node_options: var("NODE_OPTIONS"),
             no_color: get("NO_COLOR").is_some(),
             browser: var("BROWSER").filter(|v| !v.trim().is_empty()),
-            boot_phases: get("OJ_BOOT_PHASES").is_some(),
+            boot_phases: debug_enabled(&debug, "oj:boot"),
             cache_dir: get("OJ_CACHE_DIR")
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from),
@@ -119,8 +120,8 @@ impl Knobs {
             .iter()
             .any(|key| var(key).is_some_and(|v| !v.trim().is_empty()))
                 || var("CURSOR_EXTENSION_HOST_ROLE").as_deref() == Some("agent-exec"),
-            debug_mem: truthy("OJ_DEBUG_MEM"),
-            debug_hook_gate: var("OJ_DEBUG_HOOK_GATE").as_deref() == Some("1"),
+            debug_mem: debug_enabled(&debug, "oj:mem"),
+            debug_hook_gate: debug_enabled(&debug, "oj:hook-gate"),
             plugin_memory_mb: trimmed("OJ_PLUGIN_MEMORY_MB")
                 .map(|v| v as usize)
                 .filter(|v| *v > 0),
@@ -133,6 +134,38 @@ impl Knobs {
             stylex_cache_off: var("STYLEX_CACHE").as_deref() == Some("0"),
         }
     }
+}
+
+/// Whether `DEBUG` enables `scope`, as the `debug` package Vite logs through
+/// reads it: names split on commas and whitespace, `*` matches any run, and a
+/// `-` prefixed name excludes whatever it matches.
+fn debug_enabled(debug: &str, scope: &str) -> bool {
+    let names = debug
+        .split([',', ' ', '\t', '\n'])
+        .filter(|n| !n.is_empty());
+    let (skips, names): (Vec<&str>, Vec<&str>) = names.partition(|n| n.starts_with('-'));
+    !skips.iter().any(|n| matches_template(scope, &n[1..]))
+        && names.iter().any(|n| matches_template(scope, n))
+}
+
+/// `debug`'s `matchesTemplate`: `*` matches any run of characters.
+fn matches_template(scope: &str, template: &str) -> bool {
+    let mut parts = template.split('*');
+    let first = parts.next().unwrap_or_default();
+    let Some(mut rest) = scope.strip_prefix(first) else {
+        return false;
+    };
+    let parts: Vec<&str> = parts.collect();
+    let Some((last, middle)) = parts.split_last() else {
+        return rest.is_empty();
+    };
+    for part in middle {
+        match rest.find(part) {
+            Some(at) => rest = &rest[at + part.len()..],
+            None => return false,
+        }
+    }
+    rest.ends_with(last)
 }
 
 #[cfg(test)]
@@ -178,10 +211,7 @@ mod tests {
         assert!(!knobs(&[("CURSOR_EXTENSION_HOST_ROLE", "ui")]).agent_env);
         // Presence: any value, even empty.
         assert!(knobs(&[("NO_COLOR", "")]).no_color);
-        assert!(knobs(&[("OJ_BOOT_PHASES", "")]).boot_phases);
-        // Exactly "1" / "1" or "true".
-        assert!(!knobs(&[("OJ_DEBUG_HOOK_GATE", "true")]).debug_hook_gate);
-        assert!(knobs(&[("OJ_DEBUG_HOOK_GATE", "1")]).debug_hook_gate);
+        // Exactly "1" or "true".
         assert!(knobs(&[("LOVABLE_DEV_SERVER", "true")]).hmr_gate);
         assert!(!knobs(&[("OJ_HMR_GATE", "yes")]).hmr_gate);
         // The first full-reload variable wins; only "false" turns it off.
@@ -230,5 +260,20 @@ mod tests {
             knobs(&[("OJ_CODE_CACHE_MAX_BYTES", "0")]).code_cache_max_bytes,
             Some(0)
         );
+    }
+
+    // `DEBUG` as the `debug` package reads it (Vite's `--debug` sets it).
+    #[test]
+    fn debug_scopes_follow_the_debug_packages_rules() {
+        let k = |v: &str| knobs(&[("DEBUG", v)]);
+        assert!(!knobs(&[]).boot_phases);
+        assert!(k("oj:boot").boot_phases && !k("oj:boot").debug_mem);
+        assert!(k("oj:*").boot_phases && k("oj:*").debug_mem && k("oj:*").debug_hook_gate);
+        assert!(k("*").debug_hook_gate);
+        assert!(k("vite:*, oj:mem").debug_mem, "comma and space separated");
+        assert!(!k("vite:*").boot_phases);
+        assert!(!k("oj:*,-oj:mem").debug_mem && k("oj:*,-oj:mem").boot_phases);
+        assert!(!k("oj:boo").boot_phases && !k("oj:boot2").boot_phases);
+        assert!(k("oj:*-gate").debug_hook_gate && !k("oj:*-gate").debug_mem);
     }
 }

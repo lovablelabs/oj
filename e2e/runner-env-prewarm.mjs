@@ -108,11 +108,10 @@ let failed = false;
 let child;
 try {
   let stderr = "";
-  child = spawn(OJ, ["dev", ".", "--port", String(PORT)], {
+  child = spawn(OJ, ["dev", ".", "--port", String(PORT), "--debug=boot"], {
     cwd: app,
     stdio: ["ignore", "ignore", "pipe"],
     detached: true,
-    env: { ...process.env, OJ_BOOT_PHASES: "1" },
   });
   child.stderr.on("data", (d) => (stderr += d.toString()));
   // A missing/non-executable binary emits an async 'error' event; unhandled,

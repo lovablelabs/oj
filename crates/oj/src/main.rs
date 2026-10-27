@@ -31,6 +31,37 @@ use clap::{Parser, Subcommand};
 struct Cli {
     #[command(subcommand)]
     command: Command,
+    /// Show debug logs: every oj scope, or only the comma-separated ones named
+    /// (`--debug=boot,mem`). Vite's `--debug`: adds `oj:<scope>` to `DEBUG`.
+    #[arg(
+        short,
+        long,
+        global = true,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "*",
+        value_name = "SCOPES"
+    )]
+    debug: Option<String>,
+}
+
+/// `DEBUG` with `--debug`'s scopes added, as Vite's bin does: `oj:*` for a bare
+/// flag, else `oj:<scope>` each. Scopes it already names are not repeated (a
+/// restart re-execs with both the flag and the `DEBUG` it set).
+fn debug_with_scopes(debug: Option<&str>, scopes: &str) -> String {
+    let mut names: Vec<String> = debug
+        .unwrap_or_default()
+        .split(',')
+        .filter(|n| !n.is_empty())
+        .map(str::to_owned)
+        .collect();
+    for scope in scopes.split(',').filter(|s| !s.is_empty()) {
+        let name = format!("oj:{scope}");
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names.join(",")
 }
 
 #[derive(Subcommand)]
@@ -443,6 +474,10 @@ fn main() -> anyhow::Result<()> {
     // The parsed CLI is the single source for the app root: a second argv
     // parser would drift from clap the moment a flag is added.
     let cli = Cli::parse();
+    if let Some(scopes) = &cli.debug {
+        let debug = std::env::var("DEBUG").ok();
+        std::env::set_var("DEBUG", debug_with_scopes(debug.as_deref(), scopes));
+    }
     // Synchronous and self-contained (its own worker threads, no engine), so
     // it runs before any runtime exists, on an env snapshot of its own.
     let cli = match cli.command {
@@ -451,7 +486,7 @@ fn main() -> anyhow::Result<()> {
             oj_stylex::cli::run(command);
             return Ok(());
         }
-        command => Cli { command },
+        command => Cli { command, ..cli },
     };
     // An EMPTY agent counts as unset: Vite's lockfile-preference sort treats
     // "" exactly like a missing agent (falsy), so leaving it would keep the
@@ -837,5 +872,48 @@ mod preview_tests {
         assert!(!o.strict_port, "an explicit preview.strictPort wins");
         assert!(o.spa_fallback);
         assert_eq!(o.base, "/");
+    }
+}
+
+#[cfg(test)]
+mod debug_flag_tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    fn debug_of(args: &[&str]) -> Option<String> {
+        Cli::try_parse_from(args).unwrap().debug
+    }
+
+    // Vite's `--debug [feat]`, with `=` so a bare flag never swallows the root.
+    #[test]
+    fn debug_is_a_global_flag_with_optional_scopes() {
+        Cli::command().debug_assert();
+        assert_eq!(debug_of(&["oj", "dev"]), None);
+        assert_eq!(debug_of(&["oj", "dev", "--debug"]).as_deref(), Some("*"));
+        assert_eq!(debug_of(&["oj", "--debug", "dev"]).as_deref(), Some("*"));
+        assert_eq!(debug_of(&["oj", "build", "-d"]).as_deref(), Some("*"));
+        assert_eq!(
+            debug_of(&["oj", "dev", "--debug=boot,mem", "web"]).as_deref(),
+            Some("boot,mem")
+        );
+        let Command::Dev { root, .. } = Cli::try_parse_from(["oj", "dev", "--debug", "web"])
+            .unwrap()
+            .command
+        else {
+            panic!("not dev");
+        };
+        assert_eq!(
+            root,
+            Some(PathBuf::from("web")),
+            "a bare --debug leaves the root"
+        );
+    }
+
+    #[test]
+    fn debug_scopes_add_to_the_debug_variable_once() {
+        assert_eq!(debug_with_scopes(None, "*"), "oj:*");
+        assert_eq!(debug_with_scopes(None, "boot,mem"), "oj:boot,oj:mem");
+        assert_eq!(debug_with_scopes(Some("vite:*"), "boot"), "vite:*,oj:boot");
+        assert_eq!(debug_with_scopes(Some("oj:boot"), "boot"), "oj:boot");
     }
 }

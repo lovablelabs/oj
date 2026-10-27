@@ -907,6 +907,8 @@ fn plugin_host_payload(
         // configHash matches and a cold boot never re-optimizes in-host (server.restart()).
         "preseedIncludePath": oj_cache::cache_root(root).join("preseed-include.json").to_string_lossy(),
         "ojStartMode": is_start,
+        // `--debug boot`: the host's own `[oj-phase]` lines.
+        "bootPhases": oj_env::get().knobs.boot_phases,
         // What the command line set (`--port`, `--host`): Vite's CLI puts these in
         // the inline config its config hooks run under.
         "cliInline": cli,
@@ -1353,7 +1355,7 @@ fn build_router(
             }),
         )
         .route("/@oj/routes.js", get(serve_oj_routes))
-        // OJ_DEBUG_MEM=1: force a full V8 collection in every live engine so memory
+        // `--debug mem`: force a full V8 collection in every live engine so memory
         // probes measure retained heap (issue #202). 404 unless enabled.
         .route("/@oj/debug/gc", get(debug_gc))
         .route("/@oj/debug/mem", get(debug_mem_stats))
