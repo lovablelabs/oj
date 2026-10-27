@@ -5,6 +5,23 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.47] - 2026-10-27
+
+### Changed
+
+- TanStack Start dev runs one plugin host for every environment, as Vite runs one set of plugin instances: the SSR environment and the Start client bundle run in containers of the dev host instead of hosts of their own, and runner environments (Cloudflare's) build from the host's resolved config instead of resolving it again. The ssr environment opens at boot, and hooks follow Vite's per-environment dev rules (`perEnvironmentStartEndDuringDev`, `perEnvironmentWatchChangeDuringDev`), with an ssr module graph and hot channel of its own. On a 2,000-route Start app the first page comes 18% sooner and the footprint after it drops 19%; on a 1,000-route Cloudflare Start app the idle footprint drops from 1.7 GB to 0.9 GB. Runner environments resolve in the real `--mode`, and deps a plugin registers in `configureServer` optimize in the preseed child.
+- A plugin host evaluates `vite.config` once and resolves over the config it loaded, as Vite's createServer does, and concurrent config extractions share one run. Start dev went from 8 evaluations on a cold boot to 4 (and 1 with the single host). A hosted plugin's `config` hook receives Vite's user config, as in Vite, sees oj's command-line values (`--port`, `--host`) in it, and `isSsrBuild` comes from the inline config only.
+- Rolldown runs on a runtime of its own, sized like its npm binding: 4 blocking threads and 1.5 workers per core. On oj's main runtime its file reads grew the blocking pool to hundreds of threads contending on its lock; a dev build of a 900-file Start app peaks at 123 threads instead of 615, and CPU during a run of edits drops by about a quarter.
+- The Start bundle cache reuses the digests of inputs whose size and mtime have settled when it saves a rebundle, instead of reading and hashing every file of the bundle's closure (4,500 on a mid-size app) after each edit. The memo keeps each file's stat from before its read, so an edit landing during the save is hashed next time.
+- The dependency scan calls into the plugin host 16 at a time, so a dev request's hook waits behind at most that many scan resolves instead of a whole crawl (up to 7s). A plugin's `this.resolve` during the scan, `optimizeDeps.rolldownOptions.plugins` included, passes `scan: true` on, as Vite's does.
+
+### Fixed
+
+- The React refresh runtime imports oj's HMR client, as Vite's `/@react-refresh` imports `/@vite/client`. On the Cloudflare Start path a dep discovered late could fail the app import with an outdated-dep 504 before any client connected, and the page stayed on its pending fallback. With a non-root `base`, the client, refresh runtime and preamble URLs all carry the base, so a page loads one HMR client instead of two.
+- TanStack Start's server function resolver imports each function's module when it is first called, as Start's own resolver does. Its static imports formed a cycle through `@tanstack/react-start/server`, and a warm restart of an app whose middleware imports it answered every SSR request with a 500 (`Cannot access ... before initialization`).
+- A plugin whose `buildStart` throws is named in the log on every dev path, the plugin host's included.
+- Deleting or creating `src/start.ts` restarts the dev server without evaluating the config again, so the old server's route generator never writes the old route tree back over the new one. After a failed config check the restart is still checked.
+
 ## [0.2.46] - 2026-10-25
 
 ### Added
