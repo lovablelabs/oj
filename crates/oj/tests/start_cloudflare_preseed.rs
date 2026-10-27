@@ -54,6 +54,14 @@ fn prepare(root: &Path) {
             "    cloudflare({ viteEnvironment: { name: \"ssr\" } }),\n    tanstackStart(",
             1,
         )
+        // The ssr optimizer build runs in the child alone (the dev server
+        // finds its cache warm): slowed, the host reaches its environments
+        // while the seed still runs.
+        .replacen(
+            "    ssr: { define:",
+            "    ssr: { optimizeDeps: { rolldownOptions: { plugins: [{ name: \"slow-seed\", buildStart: () => new Promise((r) => setTimeout(r, 2000)) }] } }, define:",
+            1,
+        )
         .replacen(
             "export default defineConfig({",
             &format!(
@@ -63,7 +71,9 @@ fn prepare(root: &Path) {
             1,
         );
     assert!(
-        config.contains("cloudflare(") && config.contains("cacheDir:"),
+        config.contains("cloudflare(")
+            && config.contains("cacheDir:")
+            && config.contains("slow-seed"),
         "the fixture's vite.config.ts changed shape; update this test"
     );
     std::fs::write(root.join("vite.config.ts"), config).unwrap();
@@ -223,11 +233,16 @@ fn the_dev_server_never_optimizes_what_the_preseed_child_seeded() {
             "the dev server rejected the child's deps cache:\n{}",
             rehashed.join("\n")
         );
-        // The host starts alongside the seed; only its environments wait.
+        // The host starts alongside the seed and reaches its environments
+        // while the seed still runs; only building them waits.
         let seeded = phase(&log, "deps preseed done");
         assert!(
             phase(&log, "plugin host spawning") < seeded,
             "the plugin host waited for the whole seed to start:\n{log}"
+        );
+        assert!(
+            phase(&log, "waiting for the deps pre-seed") < seeded,
+            "the host never waited on the seed:\n{log}"
         );
         assert!(
             phase(&log, "deps pre-seed over") >= seeded,

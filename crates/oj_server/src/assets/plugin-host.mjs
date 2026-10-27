@@ -2931,11 +2931,16 @@ function discoveredBrowserHash(metadata) {
     .substring(0, 8);
 }
 // Until the dev server's boot-time deps pre-seed is over (preseed.rs), polled
-// over the synchronous bridge: the host is still in its top-level init.
+// over the synchronous bridge: the host is still in its top-level init, so a
+// milestone each second keeps the stall monitor from reading the wait as a
+// wedge (the pre-seed's own kill bounds it).
 async function bootPreseedDone() {
   hostPhase("waiting for the deps pre-seed");
   try {
-    while (bundleRpc("preseedBootDone", []) === false) await new Promise((resolve) => setTimeout(resolve, 50));
+    for (let polls = 0; bundleRpc("preseedBootDone", []) === false; polls++) {
+      if (polls % 20 === 0) initStage("deps-pre-seed");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
   } catch (e) {
     process.stderr.write(`${OJ} plugin host: deps pre-seed wait failed: ${(e && e.message) || e}\n`);
   }
