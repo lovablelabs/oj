@@ -90,58 +90,64 @@ jobs:
         # the build gate.
         run: cargo publish --workspace --locked --no-verify
 
-  # Standalone fru binaries for consumers that cannot run nix, such as Bazel
-  # remote executors, which fetch them by sha256 (the API's asset digest).
-  # Linux builds are static musl, so they run without the build host's glibc.
-  fru-binaries:
-    name: fru binary (${{ matrix.target }})
+  # oj binaries for consumers that cannot run nix, such as Bazel remote
+  # executors, which fetch them by sha256 (the API's asset digest). rusty_v8
+  # ships no musl archive, so Linux builds link glibc dynamically and build on
+  # Ubuntu 22.04: they run on glibc 2.35 and newer.
+  oj-binaries:
+    name: oj binary (${{ matrix.target }})
     needs: release
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
           - runner: macos-14
             target: aarch64-apple-darwin
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 180
     permissions:
       contents: write
       id-token: write
       attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: install the musl toolchain
+      # The fat-LTO link outgrows a 16GB runner and the kernel kills rustc
+      # (see nix.yml); swap lets it finish.
+      - name: add swap
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - name: add the rust target
-        run: rustup target add ${{ matrix.target }}
+        run: |
+          sudo swapoff -a
+          sudo rm -f /swapfile /mnt/swapfile
+          sudo fallocate -l 24G /swap-oj
+          sudo chmod 600 /swap-oj
+          sudo mkswap /swap-oj
+          sudo swapon /swap-oj
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ matrix.target }}
+      # --workspace: features resolve as in ci.yml's run, which v8 needs (see
+      # the publish job's --no-verify).
       - name: build
-        run: cargo build --release --locked -p fru --target ${{ matrix.target }}
-      - name: stage the binary
-        id: stage
+        run: cargo build --release --locked --workspace --bin oj
+      - name: package
+        id: package
         run: |
-          out="fru-${{ matrix.target }}"
-          cp "target/${{ matrix.target }}/release/fru" "$out"
-          "./$out" --version
-          if [ "$RUNNER_OS" = Linux ]; then
-            file "$out" | grep -q 'statically linked' || { file "$out"; exit 1; }
-          fi
+          out="oj-${{ matrix.target }}.tar.gz"
+          ./target/release/oj --version
+          tar -czf "$out" -C target/release oj
           echo "file=$out" >> "$GITHUB_OUTPUT"
       - name: attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: ${{ steps.stage.outputs.file }}
+          subject-path: ${{ steps.package.outputs.file }}
       - name: upload to this release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$GITHUB_REF_NAME" "${{ steps.stage.outputs.file }}"
+        run: gh release upload "$GITHUB_REF_NAME" "${{ steps.package.outputs.file }}"
 
   # The pinned V8 snapshot bundle (issue #211): snapshot creation is
   # run-nondeterministic, so reproducible nix builds consume a prebuilt bundle
