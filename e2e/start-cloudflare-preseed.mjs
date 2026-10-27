@@ -101,7 +101,8 @@ async function boot(check) {
     cwd: app,
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "1", NO_COLOR: "1" },
+    // The default cache root: the test reads the stamp and snapshot there.
+    env: { ...process.env, OJ_CACHE_DIR: undefined, WRANGLER_SEND_METRICS: "false", CI: "1", NO_COLOR: "1" },
   });
   srv.stdout.on("data", (c) => (log += c));
   srv.stderr.on("data", (c) => (log += c));
@@ -133,10 +134,15 @@ async function boot(check) {
   }
 }
 
-// What the dev server logged after the child's seed: the dev server must
+// What the dev server logged after the boot-time seed: the dev server must
 // hash the config the child hashed, or its optimizer throws the child's
-// metadata away and optimizes again in process.
-const afterSeed = (log) => log.slice(log.lastIndexOf("deps pre-optimized for environment"));
+// metadata away and optimizes again in process. The first seed line, since
+// a mismatch can start a setup-registration child that logs another.
+const afterSeed = (log) => {
+  const at = log.indexOf("deps pre-optimized for environment");
+  if (at < 0) throw new Error(`the child seeded nothing:\n${log.slice(-3000)}`);
+  return log.slice(at);
+};
 const lines = (log, re) => log.split("\n").filter((l) => re.test(l));
 
 let failed = false;
@@ -152,7 +158,7 @@ try {
     await sleep(3000);
     // The session finds the workspace package's dep at runtime, as Vite's
     // own session would; nothing else may run the optimizer in process.
-    const inProcess = lines(log(), /dependenc(y|ies) optimized/).filter((l) => !/oj-e2e-inner-dep$/.test(l));
+    const inProcess = lines(log(), /dependenc(y|ies) optimized/).filter((l) => !/optimized: oj-e2e-inner-dep$/.test(l));
     if (inProcess.length) throw new Error(`the dev server's optimizer ran in process:\n${inProcess.join("\n")}`);
     const rehashed = lines(log(), /Re-optimizing dependencies/);
     if (rehashed.length) throw new Error(`the dev server rejected the child's deps cache:\n${rehashed.join("\n")}`);

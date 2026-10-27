@@ -304,3 +304,32 @@ test(
     }
   },
 );
+
+// Vite resolves an include id from the root with no importer and warns
+// "Failed to resolve dependency" when it cannot, so the replay carries only
+// ids that resolve there: not a dep that is gone, not a subpath its exports
+// map refuses (the resolver throws), including entries the previous snapshot
+// kept for an environment with no metadata on disk.
+test(
+  "the replay keeps only ids Vite's include resolver reaches from the root",
+  { skip: !installed && "fixture deps not installed" },
+  async () => {
+    const { tmp, app } = makeApp();
+    const snapshot = path.join(app, "preseed-include.json");
+    fs.writeFileSync(
+      snapshot,
+      JSON.stringify({
+        lockfile: viteLockfileHash(app),
+        environments: { ssr: ["react", "react/presets", "oj-not-installed-dep"] },
+      }),
+    );
+    try {
+      const run = spawnSync(process.execPath, [script], { cwd: app, encoding: "utf8", env: seedEnv(app) });
+      assert.equal(run.status, 0, run.stderr);
+      assert.deepEqual(JSON.parse(fs.readFileSync(snapshot, "utf8")).environments.ssr, ["react"]);
+      assert.doesNotMatch(`${run.stdout}${run.stderr}`, /Failed to resolve dependency|Cannot optimize dependency/);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  },
+);

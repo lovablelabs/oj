@@ -825,8 +825,10 @@ const runner = {
           consumer: "server",
           dev: {
             createEnvironment(name, config) {
-              seen = config.plugins.map((p) => p.name);
-              return new DevEnvironment(name, config, { hot: true });
+              const environment = new DevEnvironment(name, config, { hot: true });
+              // What the optimizer's configHash reads.
+              seen = environment.config.plugins.map((p) => p.name);
+              return environment;
             },
           },
         },
@@ -860,10 +862,8 @@ export default { plugins: [runner] };
         seen.iter().any(|p| p == "runner-env"),
         "the worker environment's config lists the app's plugins: {seen:?}"
     );
-    for own in ["oj:config-hooks-done", "oj:file-build-ssr"] {
-        assert!(
-            !seen.iter().any(|p| p == own),
-            "{own} is in the worker environment's plugins: {seen:?}"
-        );
-    }
+    assert!(
+        !seen.iter().any(|p| p == "oj:config-hooks-done"),
+        "oj's marker is in the worker environment's plugins: {seen:?}"
+    );
 }

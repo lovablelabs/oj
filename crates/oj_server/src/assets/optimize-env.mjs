@@ -33,6 +33,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   dropSnapshotEnvironments,
   foldIncludeSnapshot,
+  includeSnapshotIds,
   priorDepIds,
   writeIncludeSnapshot,
 } from "./discovered-deps.mjs";
@@ -94,7 +95,8 @@ async function main() {
   // folded: the same configHash.
   const snapshotPath = process.env.OJ_PRESEED_INCLUDE;
   if (snapshotPath && !registered) {
-    writeIncludeSnapshot(snapshotPath, await replayableIds(vite, rc, priorDepIds(rc)), rc.root);
+    const byEnv = includeSnapshotIds(snapshotPath, priorDepIds(rc), rc.root);
+    writeIncludeSnapshot(snapshotPath, await replayableIds(vite, rc, byEnv), rc.root);
   }
   const folded = foldIncludeSnapshot(rc, snapshotPath);
 
@@ -217,39 +219,68 @@ async function main() {
 }
 
 // The ids of `byEnv` (`{ env: [id, ..] }`) an optimizeDeps.include entry can
-// name. Vite resolves an include id from the root, with no importer
-// (optimizer createOptimizeDepsIncludeResolver over createBackCompatIdResolver),
-// and warns "Failed to resolve dependency" when it cannot. A dep the session
-// found through a workspace package's import resolves only from that importer
-// (a strict install puts it under the package's node_modules), so its bare id
-// stays out of the replay: the scan or the session reaches it through the
-// import, as Vite does. Nested `a > b` ids pass through unchecked.
+// name without a warning. Vite resolves an include id from the root, with no
+// importer (optimizer createOptimizeDepsIncludeResolver over
+// createBackCompatIdResolver), then warns "Failed to resolve dependency" when
+// that fails and "Cannot optimize dependency" when the entry is not
+// optimizable. A dep the session found through a workspace package's import
+// resolves only from that importer (a strict install puts it under the
+// package's node_modules), so its bare id stays out of the replay: the scan or
+// the session reaches it through the import, as Vite does. Nested `a > b` ids
+// pass through unchecked.
 async function replayableIds(vite, rc, byEnv) {
   const out = {};
-  for (const [name, ids] of Object.entries(byEnv)) {
-    let environment;
-    try {
-      const options = { asSrc: false, scan: true, packageCache: new Map() };
-      let resolve;
-      if (name === "client" || name === "ssr") {
-        const compat = rc.createResolver(options);
-        resolve = (id) => compat(id, undefined, false, name === "ssr");
-      } else {
-        environment = new vite.DevEnvironment(name, rc, { hot: false });
-        const idResolver = vite.createIdResolver(rc, options);
-        resolve = (id) => idResolver(environment, id, undefined);
+  await Promise.all(
+    Object.entries(byEnv).map(async ([name, ids]) => {
+      const optimizeDeps = rc.environments?.[name]?.optimizeDeps;
+      if (!optimizeDeps) {
+        out[name] = ids;
+        return;
       }
-      const kept = await Promise.all(ids.map(async (id) => id.includes(">") || !!(await resolve(id))));
-      out[name] = ids.filter((_, i) => kept[i]);
-    } catch {
-      out[name] = ids;
-    } finally {
+      let environment;
       try {
-        await environment?.close();
-      } catch {}
-    }
-  }
+        const options = { asSrc: false, scan: true, packageCache: new Map() };
+        let resolve;
+        if (name === "client" || name === "ssr") {
+          const compat = rc.createResolver(options);
+          resolve = (id) => compat(id, undefined, false, name === "ssr");
+        } else {
+          environment = new vite.DevEnvironment(name, rc, { hot: false });
+          const idResolver = vite.createIdResolver(rc, options);
+          resolve = (id) => idResolver(environment, id, undefined);
+        }
+        const replayable = async (id) => {
+          if (id.includes(">")) return true;
+          try {
+            const entry = await resolve(id);
+            return !!entry && isOptimizable(entry, optimizeDeps);
+          } catch {
+            // Vite's resolver throws where an exports map refuses the id.
+            return false;
+          }
+        };
+        // One id first: the resolver builds its plugin container on first
+        // use, and concurrent first calls would each build their own.
+        const kept = ids.length ? [await replayable(ids[0])] : [];
+        kept.push(...(await Promise.all(ids.slice(1).map(replayable))));
+        out[name] = ids.filter((_, i) => kept[i]);
+      } catch {
+        out[name] = ids;
+      } finally {
+        // Never initialized: only its optimizer holds anything to close
+        // (DevEnvironment.close() reads the plugin container init creates).
+        try {
+          await environment?.depsOptimizer?.close();
+        } catch {}
+      }
+    }),
+  );
   return out;
+}
+
+// Vite's isOptimizable (optimizer/index.ts).
+function isOptimizable(id, optimizeDeps) {
+  return /\.[cm]?[jt]s$/.test(id) || (optimizeDeps.extensions?.some((ext) => id.endsWith(ext)) ?? false);
 }
 
 // What was seeded, for the parent's warm/cold stamp — at the path the parent

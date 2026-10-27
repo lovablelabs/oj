@@ -161,11 +161,19 @@ function writeSnapshot(snapshotPath, snapshot) {
 // merged, so its ids cannot leak into the current one.
 export function writeIncludeSnapshot(snapshotPath, byEnv, root) {
   try {
-    const lockfile = viteLockfileHash(root);
-    const previous = readSnapshot(snapshotPath);
-    const kept = previous && previous.lockfile === lockfile ? previous.environments : {};
-    writeSnapshot(snapshotPath, { lockfile, environments: { ...kept, ...byEnv } });
+    writeSnapshot(snapshotPath, {
+      lockfile: viteLockfileHash(root),
+      environments: includeSnapshotIds(snapshotPath, byEnv, root),
+    });
   } catch {}
+}
+
+// The environments the snapshot would hold after writing `byEnv`: the
+// previous snapshot's entries under the same install state, `byEnv` over them.
+export function includeSnapshotIds(snapshotPath, byEnv, root) {
+  const previous = readSnapshot(snapshotPath);
+  const kept = previous && previous.lockfile === viteLockfileHash(root) ? previous.environments : {};
+  return { ...kept, ...byEnv };
 }
 
 // Folds the snapshot's ids into each environment's optimizeDeps.include and
