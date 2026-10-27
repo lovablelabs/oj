@@ -15,7 +15,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { settles, sleep, waitUp } from "./util.mjs";
+import { restartedBoot, settles, sleep, waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const OJ = process.env.OJ_BIN ?? path.join(here, "..", "target", "debug", "oj");
@@ -105,6 +105,9 @@ try {
   if (!(await settles(() => /restarting dev server/.test(log.slice(fixed)), { timeoutMs: 30000 }))) {
     throw new Error(`the fixed config did not restart:\n${log.slice(fixed)}`);
   }
+  // The old process answers until it re-execs; the edit below must reach the
+  // restarted one, or that one boots on the hanging config.
+  await restartedBoot(() => log, fixed, { banner: "ready in" });
   await waitUp(BASE, { proc: child });
   console.log("fixed config edit: restarted");
 
