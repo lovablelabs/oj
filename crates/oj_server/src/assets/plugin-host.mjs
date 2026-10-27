@@ -839,16 +839,20 @@ async function loadUserResolvedViteConfig() {
   // through the first config hook instead, so the hooks see it in the config
   // but not in configEnv.
   const fileSsr = env.command === "build" ? fileConfig.build?.ssr : undefined;
+  // The plugins this resolve adds for itself.
+  const own = new Set();
   if (fileSsr) {
     fileConfig.build = { ...fileConfig.build };
     delete fileConfig.build.ssr;
-    plugins.unshift({
+    const fileBuildSsr = {
       name: "oj:file-build-ssr",
       enforce: "pre",
       config: { order: "pre", handler: () => ({ build: { ssr: fileSsr } }) },
-    });
+    };
+    own.add(fileBuildSsr);
+    plugins.unshift(fileBuildSsr);
   }
-  plugins.push({
+  const hooksDone = {
     name: "oj:config-hooks-done",
     enforce: "post",
     config: {
@@ -857,13 +861,15 @@ async function loadUserResolvedViteConfig() {
         phase.hidden = true;
       },
     },
-  });
+  };
+  own.add(hooksDone);
+  plugins.push(hooksDone);
   try {
     const rc = await viteResolve(vite, inlineMerge(vite)(fileConfig, cliInlineConfig()), plugins);
     // oj's own plugins leave the resolved config, absent as from the app's
     // own resolve: Vite hashes the plugin names into each deps optimizer's
     // configHash, and the preseed child's metadata was hashed without them.
-    if (rc) withoutPlugins(rc, (p) => RESOLVE_ONLY_PLUGINS.has(p?.name));
+    if (rc) withoutPlugins(rc, (p) => own.has(p));
     return rc;
   } finally {
     for (const restore of restores) {
@@ -873,8 +879,6 @@ async function loadUserResolvedViteConfig() {
     }
   }
 }
-// The plugins the recording resolve adds for itself.
-const RESOLVE_ONLY_PLUGINS = new Set(["oj:file-build-ssr", "oj:config-hooks-done"]);
 // `rc` (a resolved config) without the plugins `drop` matches, in place.
 function withoutPlugins(rc, drop) {
   const kept = (list) => {
