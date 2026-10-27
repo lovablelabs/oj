@@ -50,6 +50,50 @@ pub fn app(name: &str) -> Option<App> {
     Some(App(root))
 }
 
+/// The app inside a directory whose node_modules holds the Cloudflare plugin
+/// (e2e/fixtures/cloudflare-deps), as a workspace install puts it beside the
+/// app's own: or None (after saying why) when either fixture is missing.
+/// Both are removed on drop.
+pub struct CloudflareApp {
+    pub app: App,
+    parent: PathBuf,
+}
+
+impl Drop for CloudflareApp {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.parent);
+    }
+}
+
+pub fn cloudflare_app(name: &str) -> Option<CloudflareApp> {
+    let deps = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../e2e/fixtures/cloudflare-deps")
+        .canonicalize()
+        .unwrap();
+    if !deps.join("node_modules/@cloudflare/vite-plugin").is_dir() {
+        assert!(
+            std::env::var_os("OJ_REQUIRE_FIXTURES").is_none(),
+            "OJ_REQUIRE_FIXTURES is set but the cloudflare-deps fixture is not installed"
+        );
+        eprintln!("skipping: npm ci --prefix e2e/fixtures/cloudflare-deps");
+        return None;
+    }
+    let source = app(name)?;
+    let parent = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("oj-start-cf-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&parent);
+    std::fs::create_dir_all(&parent).unwrap();
+    std::os::unix::fs::symlink(deps.join("node_modules"), parent.join("node_modules")).unwrap();
+    let root = parent.join("app");
+    std::fs::rename(&source.0, &root).unwrap();
+    Some(CloudflareApp {
+        app: App(root),
+        parent,
+    })
+}
+
 /// Everything but installs and outputs: no node_modules, dist, caches, or a
 /// route tree an earlier run generated.
 fn copy_sources(from: &Path, to: &Path) {
