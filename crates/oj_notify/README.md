@@ -25,5 +25,5 @@ keep working unchanged (the crate is versioned with the oj workspace; the
 upstream base stays notify 9.0.0-rc.6):
 
 ```toml
-notify = { package = "oj_notify", version = "0.2.47" }
+notify = { package = "oj_notify", version = "0.2" }
 ```
