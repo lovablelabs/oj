@@ -859,7 +859,12 @@ async function loadUserResolvedViteConfig() {
     },
   });
   try {
-    return await viteResolve(vite, inlineMerge(vite)(fileConfig, cliInlineConfig()), plugins);
+    const rc = await viteResolve(vite, inlineMerge(vite)(fileConfig, cliInlineConfig()), plugins);
+    // oj's own plugins leave the resolved config, absent as from the app's
+    // own resolve: Vite hashes the plugin names into each deps optimizer's
+    // configHash, and the preseed child's metadata was hashed without them.
+    if (rc) withoutPlugins(rc, (p) => RESOLVE_ONLY_PLUGINS.has(p?.name));
+    return rc;
   } finally {
     for (const restore of restores) {
       try {
@@ -867,6 +872,17 @@ async function loadUserResolvedViteConfig() {
       } catch {}
     }
   }
+}
+// The plugins the recording resolve adds for itself.
+const RESOLVE_ONLY_PLUGINS = new Set(["oj:file-build-ssr", "oj:config-hooks-done"]);
+// `rc` (a resolved config) without the plugins `drop` matches, in place.
+function withoutPlugins(rc, drop) {
+  const kept = (list) => {
+    if (!Array.isArray(list)) return;
+    for (let i = list.length - 1; i >= 0; i--) if (drop(list[i])) list.splice(i, 1);
+  };
+  kept(rc.plugins);
+  for (const options of Object.values(rc.environments ?? {})) kept(options?.plugins);
 }
 // A replay resolve: the app's Vite over `plugins`, each answering what its
 // hooks did the first time, under the same inline config.

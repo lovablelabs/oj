@@ -110,6 +110,10 @@ try {
   await sleep(3000);
   const inProcess = log.split("\n").filter((l) => /dependenc(y|ies) optimized/.test(l));
   if (inProcess.length) throw new Error(`the dev server's optimizer ran in process:\n${inProcess.join("\n")}`);
+  // The dev server hashes the config the child hashed: a mismatch makes its
+  // optimizer throw the child's metadata away and optimize again in process.
+  const rehashed = log.split("\n").filter((l) => /Re-optimizing dependencies/.test(l));
+  if (rehashed.length) throw new Error(`the dev server rejected the child's deps cache:\n${rehashed.join("\n")}`);
   console.log(
     `start-cloudflare-preseed: ${optimized().filter(polyfill).length} setup polyfill(s) optimized out of process`,
   );
