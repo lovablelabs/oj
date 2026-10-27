@@ -25,9 +25,10 @@
 // self-sustaining. So the snapshot records the same lockfile hash Vite keys
 // its metadata by, and every reader applies Vite's own rule: ids from another
 // install state are dropped, costing one discovery session — exactly what
-// Vite pays after a dependency change. A merely removed dep under the SAME
-// install state still costs only Vite's "present in optimizeDeps.include"
-// warning and ages out at the next metadata-bearing boot.
+// Vite pays after a dependency change. The child also keeps out every id
+// Vite's include resolver cannot reach from the root (a removed dep, or one
+// only a workspace package's own node_modules holds), which Vite would
+// otherwise warn about as "present in optimizeDeps.include".
 // Expected shape: the boot after a discovery session re-optimizes ONCE
 // (in the child — the grown include changes configHash), then the set reaches
 // its fixed point and every later boot validates.

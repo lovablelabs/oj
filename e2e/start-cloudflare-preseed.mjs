@@ -68,6 +68,22 @@ if (!config.includes("cloudflare(") || !config.includes("cacheDir:")) {
 }
 fs.writeFileSync(path.join(app, "vite.config.ts"), config);
 
+// A workspace package whose dependency only the package's own node_modules
+// holds (a strict install's shape): the session optimizes it through the
+// package's import, but its bare id does not resolve from the app's root.
+const inner = path.join(app, "packages", "inner");
+const innerDep = path.join(inner, "node_modules", "oj-e2e-inner-dep");
+fs.mkdirSync(innerDep, { recursive: true });
+fs.writeFileSync(path.join(inner, "package.json"), JSON.stringify({ name: "oj-e2e-inner", type: "module" }));
+fs.writeFileSync(path.join(inner, "index.js"), 'export { innerValue } from "oj-e2e-inner-dep";\n');
+fs.writeFileSync(
+  path.join(innerDep, "package.json"),
+  JSON.stringify({ name: "oj-e2e-inner-dep", type: "module", exports: "./index.js" }),
+);
+fs.writeFileSync(path.join(innerDep, "index.js"), 'export const innerValue = "inner-dep-ok";\n');
+const route = path.join(app, "src", "routes", "index.tsx");
+fs.writeFileSync(route, `import "../../packages/inner/index.js";\n${fs.readFileSync(route, "utf8")}`);
+
 const metadata = path.join(cacheDir, "deps_ssr", "_metadata.json");
 const optimized = () => {
   try {
@@ -78,42 +94,87 @@ const optimized = () => {
 };
 const polyfill = (id) => id.startsWith("@cloudflare/unenv-preset/") || id.startsWith("unenv/");
 
-let log = "";
-const srv = spawn(oj, ["dev", app, "--port", String(PORT)], {
-  cwd: app,
-  detached: true,
-  stdio: ["ignore", "pipe", "pipe"],
-  env: { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "1", NO_COLOR: "1" },
-});
-srv.stdout.on("data", (c) => (log += c));
-srv.stderr.on("data", (c) => (log += c));
+// One `oj dev` session, up and serving `/`; returns its log once stopped.
+async function boot(check) {
+  let log = "";
+  const srv = spawn(oj, ["dev", app, "--port", String(PORT)], {
+    cwd: app,
+    detached: true,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "1", NO_COLOR: "1" },
+  });
+  srv.stdout.on("data", (c) => (log += c));
+  srv.stderr.on("data", (c) => (log += c));
+  try {
+    const up = await settles(
+      async () => {
+        if (srv.exitCode != null) return true;
+        try {
+          return (await fetch(`http://127.0.0.1:${PORT}/`)).status > 0;
+        } catch {
+          return false;
+        }
+      },
+      { timeoutMs: 180000, pollMs: 500 },
+    );
+    if (!up || srv.exitCode != null) throw new Error(`oj dev did not serve; log:\n${log.slice(-4000)}`);
+    if (!/a custom dev environment is declared/.test(log))
+      throw new Error(`no runner environment:\n${log.slice(-4000)}`);
+    await check(() => log);
+    return log;
+  } finally {
+    try {
+      process.kill(-srv.pid, "SIGTERM");
+    } catch {}
+    await sleep(3000);
+    try {
+      process.kill(-srv.pid, "SIGKILL");
+    } catch {}
+  }
+}
+
+// What the dev server logged after the child's seed: the dev server must
+// hash the config the child hashed, or its optimizer throws the child's
+// metadata away and optimizes again in process.
+const afterSeed = (log) => log.slice(log.lastIndexOf("deps pre-optimized for environment"));
+const lines = (log, re) => log.split("\n").filter((l) => re.test(l));
 
 let failed = false;
 try {
-  const up = await settles(
-    async () => {
-      if (srv.exitCode != null) return true;
-      try {
-        return (await fetch(`http://127.0.0.1:${PORT}/`)).status > 0;
-      } catch {
-        return false;
-      }
-    },
-    { timeoutMs: 180000, pollMs: 500 },
-  );
-  if (!up || srv.exitCode != null) throw new Error(`oj dev did not serve; log:\n${log.slice(-4000)}`);
-  if (!/a custom dev environment is declared/.test(log)) throw new Error(`no runner environment:\n${log.slice(-4000)}`);
-  if (!(await settles(() => optimized().some(polyfill), { timeoutMs: 30000 }))) {
-    throw new Error(`the setup's polyfills were never optimized: ${optimized().join(", ")}\n${log.slice(-3000)}`);
-  }
-  // Long enough for a rerun of the dev server's own optimizer to log.
-  await sleep(3000);
-  const inProcess = log.split("\n").filter((l) => /dependenc(y|ies) optimized/.test(l));
-  if (inProcess.length) throw new Error(`the dev server's optimizer ran in process:\n${inProcess.join("\n")}`);
-  // The dev server hashes the config the child hashed: a mismatch makes its
-  // optimizer throw the child's metadata away and optimize again in process.
-  const rehashed = log.split("\n").filter((l) => /Re-optimizing dependencies/.test(l));
-  if (rehashed.length) throw new Error(`the dev server rejected the child's deps cache:\n${rehashed.join("\n")}`);
+  await boot(async (log) => {
+    if (!(await settles(() => optimized().some(polyfill), { timeoutMs: 30000 }))) {
+      throw new Error(`the setup's polyfills were never optimized: ${optimized().join(", ")}\n${log().slice(-3000)}`);
+    }
+    if (!(await settles(() => optimized().includes("oj-e2e-inner-dep"), { timeoutMs: 30000 }))) {
+      throw new Error(`the workspace package's dep was never optimized: ${optimized().join(", ")}`);
+    }
+    // Long enough for a rerun of the dev server's own optimizer to log.
+    await sleep(3000);
+    // The session finds the workspace package's dep at runtime, as Vite's
+    // own session would; nothing else may run the optimizer in process.
+    const inProcess = lines(log(), /dependenc(y|ies) optimized/).filter((l) => !/oj-e2e-inner-dep$/.test(l));
+    if (inProcess.length) throw new Error(`the dev server's optimizer ran in process:\n${inProcess.join("\n")}`);
+    const rehashed = lines(log(), /Re-optimizing dependencies/);
+    if (rehashed.length) throw new Error(`the dev server rejected the child's deps cache:\n${rehashed.join("\n")}`);
+  });
+  // A second cold boot replays the first session's deps through the
+  // include snapshot: only ids Vite's include resolver reaches from the root.
+  fs.rmSync(path.join(app, ".oj-cache", "v1", "optimize-env-stamp.json"));
+  await boot(async (log) => {
+    await sleep(3000);
+    const unresolved = lines(log(), /Failed to resolve dependency/);
+    if (unresolved.length) throw new Error(`the replay named unresolvable deps:\n${unresolved.join("\n")}`);
+    const rehashed = lines(afterSeed(log()), /Re-optimizing dependencies/);
+    if (rehashed.length) throw new Error(`the dev server rejected the child's deps cache:\n${rehashed.join("\n")}`);
+    if (!/deps: pre-optimizing/.test(log()))
+      throw new Error(`the second boot never ran the child:\n${log().slice(-3000)}`);
+    // The replay itself still carries every dep the root resolves.
+    const snapshot = JSON.parse(fs.readFileSync(path.join(app, ".oj-cache", "v1", "preseed-include.json"), "utf8"));
+    const replayed = snapshot.environments?.ssr ?? [];
+    if (!replayed.includes("react") || !replayed.some(polyfill) || replayed.includes("oj-e2e-inner-dep")) {
+      throw new Error(`unexpected replay set: ${replayed.join(", ")}`);
+    }
+  });
   console.log(
     `start-cloudflare-preseed: ${optimized().filter(polyfill).length} setup polyfill(s) optimized out of process`,
   );
@@ -122,13 +183,6 @@ try {
   failed = true;
   console.error("START-CLOUDFLARE-PRESEED E2E FAILED:", err.message);
 } finally {
-  try {
-    process.kill(-srv.pid, "SIGTERM");
-  } catch {}
-  await sleep(3000);
-  try {
-    process.kill(-srv.pid, "SIGKILL");
-  } catch {}
   fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 }
 process.exit(failed ? 1 : 0);

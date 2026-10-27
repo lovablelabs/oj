@@ -93,7 +93,9 @@ async function main() {
   // setup pass folds the boot pass's snapshot unchanged, the one the host
   // folded: the same configHash.
   const snapshotPath = process.env.OJ_PRESEED_INCLUDE;
-  if (snapshotPath && !registered) writeIncludeSnapshot(snapshotPath, priorDepIds(rc), rc.root);
+  if (snapshotPath && !registered) {
+    writeIncludeSnapshot(snapshotPath, await replayableIds(vite, rc, priorDepIds(rc)), rc.root);
+  }
   const folded = foldIncludeSnapshot(rc, snapshotPath);
 
   // One environment's pass: construct, init, wait for the committed metadata.
@@ -212,6 +214,42 @@ async function main() {
   }
   report(seeded, failed);
   if (failed) throw new Error("deps pre-optimization incomplete");
+}
+
+// The ids of `byEnv` (`{ env: [id, ..] }`) an optimizeDeps.include entry can
+// name. Vite resolves an include id from the root, with no importer
+// (optimizer createOptimizeDepsIncludeResolver over createBackCompatIdResolver),
+// and warns "Failed to resolve dependency" when it cannot. A dep the session
+// found through a workspace package's import resolves only from that importer
+// (a strict install puts it under the package's node_modules), so its bare id
+// stays out of the replay: the scan or the session reaches it through the
+// import, as Vite does. Nested `a > b` ids pass through unchecked.
+async function replayableIds(vite, rc, byEnv) {
+  const out = {};
+  for (const [name, ids] of Object.entries(byEnv)) {
+    let environment;
+    try {
+      const options = { asSrc: false, scan: true, packageCache: new Map() };
+      let resolve;
+      if (name === "client" || name === "ssr") {
+        const compat = rc.createResolver(options);
+        resolve = (id) => compat(id, undefined, false, name === "ssr");
+      } else {
+        environment = new vite.DevEnvironment(name, rc, { hot: false });
+        const idResolver = vite.createIdResolver(rc, options);
+        resolve = (id) => idResolver(environment, id, undefined);
+      }
+      const kept = await Promise.all(ids.map(async (id) => id.includes(">") || !!(await resolve(id))));
+      out[name] = ids.filter((_, i) => kept[i]);
+    } catch {
+      out[name] = ids;
+    } finally {
+      try {
+        await environment?.close();
+      } catch {}
+    }
+  }
+  return out;
 }
 
 // What was seeded, for the parent's warm/cold stamp — at the path the parent
