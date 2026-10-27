@@ -922,6 +922,7 @@ fn plugin_host_payload(
 /// Spawn the client plugin host. Nothing left after native filtering = an idle
 /// process on the hot path: drop it (dropping the Arc kills it). EXCEPT with
 /// `server.proxy`: a function rewrite/configure/bypass needs a JS home.
+#[allow(clippy::too_many_arguments)]
 async fn spawn_plugin_host(
     root: &Path,
     file: &PluginFile,
@@ -930,6 +931,7 @@ async fn spawn_plugin_host(
     prewarm: Option<plugins::HostPrewarm>,
     keep_for_proxy: bool,
     is_start: bool,
+    boot_preseed: Option<tokio::sync::watch::Receiver<bool>>,
 ) -> anyhow::Result<Option<Arc<PluginHost>>> {
     let label = &file.label;
     // Vite's createServer creates and inits every environment before its
@@ -943,6 +945,7 @@ async fn spawn_plugin_host(
         Some(registry.clone()),
         prewarm,
         &[("ssr", is_start)],
+        boot_preseed,
     )
     .await;
     let host = match spawned {
@@ -1613,14 +1616,13 @@ impl DevServer {
         );
         // Optimizer quarantine: a cold deps cache would run Vite's dep optimizer (rolldown,
         // process-scoped native retention) inside oj; pre-seed in a one-shot child so the
-        // host finds the caches warm and never builds in-process (see preseed.rs).
-        if plugin_file
+        // host finds the caches warm and never builds in-process (see preseed.rs). The
+        // host starts alongside it: only building its environments waits for the seed.
+        let boot_preseed = (plugin_file
             .as_ref()
             .is_some_and(|f| f.format == PluginsFormat::Vite)
-            && oj_config::ssr_runner_backed(&config)
-        {
-            preseed::preseed_server_deps(&root, &dev_mode).await;
-        }
+            && oj_config::ssr_runner_backed(&config))
+        .then(|| preseed::spawn_boot_preseed(&root, &dev_mode));
         boot_phase("plugin host spawning");
         let plugin_host = match &plugin_file {
             Some(file) => {
@@ -1632,6 +1634,7 @@ impl DevServer {
                     prewarm,
                     has_proxy,
                     is_start,
+                    boot_preseed,
                 )
                 .await?
             }

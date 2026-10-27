@@ -128,8 +128,15 @@ pub struct HostPrewarm {
     import_meta_env: Arc<std::sync::OnceLock<Arc<oj_compiler::ImportMetaEnv>>>,
     bundles: BundleGraphs,
     registry: Option<oj_js::EngineRegistry>,
+    boot_preseed: BootPreseed,
 }
 
+/// The boot-time deps pre-seed the dev server runs alongside the host's start
+/// (preseed.rs): set once, before the host builds its environments, and read
+/// by every generation's engine. Unset means there is none to wait for.
+pub(crate) type BootPreseed = Arc<std::sync::OnceLock<tokio::sync::watch::Receiver<bool>>>;
+
+#[allow(clippy::too_many_arguments)]
 fn new_host_engine(
     root: &Path,
     memory_limit_bytes: usize,
@@ -138,11 +145,13 @@ fn new_host_engine(
     bundles: BundleGraphs,
     post_tx: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
     runtime: Option<tokio::runtime::Handle>,
+    boot_preseed: BootPreseed,
 ) -> Result<oj_js::JsEngine, String> {
     let root = root.to_path_buf();
     let resolver = std::sync::Arc::new(OjResolver::new(&root));
     let preseeds = Preseeds {
         runtime,
+        boot: boot_preseed,
         ..Preseeds::default()
     };
     let rpc_handler: oj_js::RpcHandler = {
@@ -197,6 +206,7 @@ pub(crate) struct BootContext {
     /// stay there even when a hook rolldown called (on its own runtime)
     /// triggers it.
     runtime: Option<tokio::runtime::Handle>,
+    boot_preseed: BootPreseed,
 }
 
 /// See [`HostCore::revive`].
@@ -430,12 +440,15 @@ struct Preseeds {
     next: std::sync::atomic::AtomicU64,
     /// The runtime the engine was made on: the bridge runs on the isolate's thread.
     runtime: Option<tokio::runtime::Handle>,
+    boot: BootPreseed,
 }
 
 impl Preseeds {
     /// `preseedRegistered(mode, registrations)` starts one and returns its
     /// id; `preseedRegisteredDone(id)` is null while it runs, then whether
-    /// the child committed. None for any other method.
+    /// the child committed. `preseedBootDone()` is false while the boot-time
+    /// pre-seed runs, then true (also when there is none). None for any
+    /// other method.
     fn rpc(
         &self,
         method: &str,
@@ -462,6 +475,12 @@ impl Preseeds {
                     runs.lock().unwrap().insert(id, Some(seeded));
                 });
                 Some(Ok(serde_json::json!(id)))
+            }
+            // A dropped sender (the pre-seed task died) is over too.
+            "preseedBootDone" => {
+                Some(Ok(serde_json::Value::Bool(self.boot.get().is_none_or(
+                    |done| *done.borrow() || done.has_changed().is_err(),
+                ))))
             }
             "preseedRegisteredDone" => {
                 let id = args.first().and_then(|v| v.as_u64()).unwrap_or(u64::MAX);
@@ -650,7 +669,16 @@ impl PluginHost {
         config_json: &str,
         prewarm: HostPrewarm,
     ) -> anyhow::Result<std::sync::Arc<PluginHost>> {
-        Self::spawn_dev(root, plugins_file, config_json, None, Some(prewarm), &[]).await
+        Self::spawn_dev(
+            root,
+            plugins_file,
+            config_json,
+            None,
+            Some(prewarm),
+            &[],
+            None,
+        )
+        .await
     }
 
     /// The dev server's host: on a prewarmed engine when there is one, with
@@ -665,6 +693,7 @@ impl PluginHost {
         registry: Option<oj_js::EngineRegistry>,
         prewarm: Option<HostPrewarm>,
         environments: &[(&str, bool)],
+        boot_preseed: Option<tokio::sync::watch::Receiver<bool>>,
     ) -> anyhow::Result<std::sync::Arc<PluginHost>> {
         let registry = prewarm
             .as_ref()
@@ -678,6 +707,7 @@ impl PluginHost {
             registry,
             prewarm,
             environments,
+            boot_preseed,
         )
         .await
     }
@@ -702,6 +732,7 @@ impl PluginHost {
         let import_meta_env: Arc<std::sync::OnceLock<Arc<oj_compiler::ImportMetaEnv>>> =
             Arc::default();
         let bundles = BundleGraphs::default();
+        let boot_preseed = BootPreseed::default();
         let engine = new_host_engine(
             root,
             plugin_host_memory_mb() * 1024 * 1024,
@@ -710,6 +741,7 @@ impl PluginHost {
             Arc::clone(&bundles),
             post_tx,
             tokio::runtime::Handle::try_current().ok(),
+            Arc::clone(&boot_preseed),
         )
         .ok()?;
         let engine = std::sync::Arc::new(engine);
@@ -726,6 +758,7 @@ impl PluginHost {
             import_meta_env,
             bundles,
             registry,
+            boot_preseed,
         })
     }
 
@@ -744,10 +777,12 @@ impl PluginHost {
             registry,
             None,
             &[],
+            None,
         )
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn spawn_inner(
         root: &Path,
         plugins_file: &Path,
@@ -756,7 +791,15 @@ impl PluginHost {
         registry: Option<oj_js::EngineRegistry>,
         mut prewarm: Option<HostPrewarm>,
         environments: &[(&str, bool)],
+        boot_preseed: Option<tokio::sync::watch::Receiver<bool>>,
     ) -> anyhow::Result<std::sync::Arc<PluginHost>> {
+        let boot_preseed_lock = prewarm
+            .as_ref()
+            .map(|p| Arc::clone(&p.boot_preseed))
+            .unwrap_or_default();
+        if let Some(done) = boot_preseed {
+            let _ = boot_preseed_lock.set(done);
+        }
         let script = oj_cache::cache_root(root).join("plugin-host.mjs");
 
         let probe_wait = timeouts.probe.unwrap_or(PROBE_WINDOW);
@@ -798,6 +841,7 @@ impl PluginHost {
                     .map(|p| Arc::clone(&p.bundles))
                     .unwrap_or_default(),
                 runtime: tokio::runtime::Handle::try_current().ok(),
+                boot_preseed: boot_preseed_lock,
             },
             revive: Mutex::new(ReviveState {
                 generation: 0,
@@ -1859,6 +1903,7 @@ impl HostCore {
             Arc::clone(&self.boot.bundles),
             post_tx,
             self.boot.runtime.clone(),
+            Arc::clone(&self.boot.boot_preseed),
         )
     }
 

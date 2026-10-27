@@ -291,6 +291,19 @@ pub(crate) async fn preseed_server_deps(root: &Path, mode: &str) {
     }
 }
 
+/// [`preseed_server_deps`] on a task of its own: the receiver turns true once
+/// it is over, whether or not it seeded (the host's own optimizer is the
+/// fallback either way).
+pub(crate) fn spawn_boot_preseed(root: &Path, mode: &str) -> tokio::sync::watch::Receiver<bool> {
+    let (done, rx) = tokio::sync::watch::channel(false);
+    let (root, mode) = (root.to_path_buf(), mode.to_string());
+    tokio::spawn(async move {
+        preseed_server_deps(&root, &mode).await;
+        let _ = done.send(true);
+    });
+    rx
+}
+
 /// The deps a server environment's optimizer was handed while the dev server
 /// set up (plugin-host.mjs `deferBootRegistrations`, `registered` as
 /// `{ env: [[id, resolved], ..] }`), optimized by the same one-shot child as
