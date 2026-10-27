@@ -707,26 +707,51 @@ const MAX_OWN_STREAMS: usize = 128;
 /// directory's parent, the next one watches the parent.
 const CONSOLIDATE_AT: usize = 10;
 
+/// What [`Watchers`] needs of a notify watcher, so a test can stand in one
+/// that records its watches and fires events itself (Zed's `WatchBackend`).
+trait WatchBackend: Send {
+    fn watch(&mut self, path: &Path, mode: notify::RecursiveMode) -> notify::Result<()>;
+}
+
+impl<T: notify::Watcher + Send> WatchBackend for T {
+    fn watch(&mut self, path: &Path, mode: notify::RecursiveMode) -> notify::Result<()> {
+        notify::Watcher::watch(self, path, mode)
+    }
+}
+
+/// Starts a watcher reporting to the sink: on macOS, one FSEvents stream.
+type OpenBackend = Box<dyn Fn(EventSink) -> notify::Result<Box<dyn WatchBackend>> + Send>;
+
+fn open_backend(sink: EventSink) -> notify::Result<Box<dyn WatchBackend>> {
+    Ok(Box::new(new_watcher(move |ev| sink(ev))?))
+}
+
 /// The root watcher, plus FSEvents streams for directories watched after
 /// boot on macOS, placed as chokidar's fsevents handler places them
 /// ([`stream_for`]). Vite's chokidar opens a stream per watched path, so a
 /// new watch never touches the running streams; notify's FSEvents watcher
 /// restarts its one stream on every `watch`, over every path it holds,
-/// dropping the events that land meanwhile (root edits included). An inotify
-/// or Windows watch restarts nothing, so there the root watcher takes them
-/// all.
+/// dropping the events that land meanwhile, so a served dir never goes to
+/// the root watcher. An inotify or Windows watch restarts nothing, so there
+/// the root watcher takes them all.
 struct Watchers {
-    root: notify::RecommendedWatcher,
+    root: Box<dyn WatchBackend>,
     sink: EventSink,
+    open: OpenBackend,
+    /// Whether watches after boot get streams of their own (macOS).
+    streams: bool,
     own: std::collections::HashMap<PathBuf, Stream>,
+    /// Past [`MAX_OWN_STREAMS`], one watcher for the rest, where chokidar
+    /// falls back to fs.watch: its restarts cost only these dirs' events.
+    overflow: Option<Box<dyn WatchBackend>>,
 }
 
 /// One FSEvents stream: recursive, as FSEvents streams are, with the
 /// directories it stands for and how each was watched. Only their events
 /// pass, as chokidar's listener filters a shared stream to its path.
 struct Stream {
-    _watcher: notify::RecommendedWatcher,
-    dirs: Arc<std::sync::Mutex<std::collections::HashMap<PathBuf, notify::RecursiveMode>>>,
+    _backend: Box<dyn WatchBackend>,
+    dirs: Arc<std::sync::Mutex<StreamDirs>>,
 }
 
 /// Where a watch of `dir` goes, chokidar's `setFSEventsListener`.
@@ -737,8 +762,8 @@ enum StreamPlan {
     /// A new stream on this path: the dir's parent once
     /// [`CONSOLIDATE_AT`] streams sit under it, else the dir itself.
     Open(PathBuf),
-    /// Past [`MAX_OWN_STREAMS`]: the root watcher.
-    Root,
+    /// Past [`MAX_OWN_STREAMS`]: the overflow watcher.
+    Overflow,
 }
 
 fn stream_for(streams: &[&Path], dir: &Path) -> StreamPlan {
@@ -752,64 +777,114 @@ fn stream_for(streams: &[&Path], dir: &Path) -> StreamPlan {
         return StreamPlan::Join(s.to_path_buf());
     }
     if streams.len() >= MAX_OWN_STREAMS {
-        return StreamPlan::Root;
+        return StreamPlan::Overflow;
     }
     StreamPlan::Open(path)
 }
 
-/// Whether an event at `path` belongs to a directory watched as in `dirs`:
-/// the directory itself, a direct child, or anything under a recursive one.
-fn watched_by(
-    dirs: &std::collections::HashMap<PathBuf, notify::RecursiveMode>,
-    path: &Path,
-) -> bool {
-    dirs.iter().any(|(dir, mode)| match mode {
-        notify::RecursiveMode::Recursive => path.starts_with(dir),
-        notify::RecursiveMode::NonRecursive => path == dir || path.parent() == Some(dir.as_path()),
+/// A shared stream's watched dirs, each by its real path, with the path it
+/// was watched as and how.
+type StreamDirs = std::collections::HashMap<PathBuf, (PathBuf, notify::RecursiveMode)>;
+
+/// `path`, as a stream on real paths reports it, spelled as its watched dir
+/// was, if it belongs to one: the dir itself, a direct child, or anything
+/// under a recursive one (chokidar's listener filter and symlink rewrite).
+fn watched_as(dirs: &StreamDirs, path: &Path) -> Option<PathBuf> {
+    dirs.iter().find_map(|(real, (spelled, mode))| {
+        let rest = path.strip_prefix(real).ok()?;
+        let inside = match mode {
+            notify::RecursiveMode::Recursive => true,
+            notify::RecursiveMode::NonRecursive => rest.components().count() <= 1,
+        };
+        inside.then(|| match rest.as_os_str().is_empty() {
+            true => spelled.clone(),
+            false => spelled.join(rest),
+        })
     })
 }
 
+/// `ev` as a shared stream passes it: only its watched dirs' paths. A rescan
+/// passes whole: FSEvents reports it at the stream's path, which a
+/// consolidated stream does not watch, and with no paths left it would
+/// rescan the whole root.
+fn stream_event(dirs: &StreamDirs, mut ev: notify::Event) -> Option<notify::Event> {
+    if ev.need_rescan() {
+        return Some(ev);
+    }
+    ev.paths = ev
+        .paths
+        .iter()
+        .filter_map(|p| watched_as(dirs, p))
+        .collect();
+    (!ev.paths.is_empty()).then_some(ev)
+}
+
 impl Watchers {
+    fn new(sink: EventSink) -> notify::Result<Watchers> {
+        Watchers::with_backends(sink, Box::new(open_backend), cfg!(target_os = "macos"))
+    }
+
+    fn with_backends(
+        sink: EventSink,
+        open: OpenBackend,
+        streams: bool,
+    ) -> notify::Result<Watchers> {
+        Ok(Watchers {
+            root: open(Arc::clone(&sink))?,
+            sink,
+            open,
+            streams,
+            own: Default::default(),
+            overflow: None,
+        })
+    }
+
     fn watch(&mut self, path: &Path, mode: notify::RecursiveMode) -> notify::Result<()> {
-        use notify::Watcher;
-        if !cfg!(target_os = "macos") {
+        if !self.streams {
             return self.root.watch(path, mode);
         }
+        // Placed by real path, as chokidar places them: a stream does not
+        // follow a symlink under it, so a dir behind one never joins it.
+        let real = std::fs::canonicalize(path)
+            .map_err(|e| notify::Error::io(e).add_path(path.to_path_buf()))?;
         let streams: Vec<&Path> = self.own.keys().map(PathBuf::as_path).collect();
-        let at = match stream_for(&streams, path) {
-            StreamPlan::Root => return self.root.watch(path, mode),
+        let at = match stream_for(&streams, &real) {
+            StreamPlan::Overflow => {
+                if self.overflow.is_none() {
+                    self.overflow = Some((self.open)(Arc::clone(&self.sink))?);
+                }
+                return self.overflow.as_mut().unwrap().watch(path, mode);
+            }
             StreamPlan::Join(at) => {
-                let stream = &self.own[&at];
-                let mut dirs = stream.dirs.lock().unwrap();
+                let mut dirs = self.own[&at].dirs.lock().unwrap();
                 // A recursive watch of a dir already watched flat widens it.
-                if dirs.get(path) != Some(&notify::RecursiveMode::Recursive) {
-                    dirs.insert(path.to_path_buf(), mode);
+                if dirs.get(&real).map(|d| d.1) != Some(notify::RecursiveMode::Recursive) {
+                    dirs.insert(real, (path.to_path_buf(), mode));
                 }
                 return Ok(());
             }
             StreamPlan::Open(at) => at,
         };
-        let dirs = Arc::new(std::sync::Mutex::new(std::collections::HashMap::from([(
-            path.to_path_buf(),
-            mode,
+        let dirs = Arc::new(std::sync::Mutex::new(StreamDirs::from([(
+            real,
+            (path.to_path_buf(), mode),
         )])));
         let (sink, filter) = (Arc::clone(&self.sink), Arc::clone(&dirs));
-        let mut watcher = new_watcher(move |ev: notify::Result<notify::Event>| match ev {
-            Ok(mut ev) => {
-                let dirs = filter.lock().unwrap();
-                ev.paths.retain(|p| watched_by(&dirs, p));
-                drop(dirs);
-                if !ev.paths.is_empty() || ev.need_rescan() {
-                    sink(Ok(ev));
+        let mut backend = (self.open)(Arc::new(
+            move |ev: notify::Result<notify::Event>| match ev {
+                Ok(ev) => {
+                    if let Some(ev) = stream_event(&filter.lock().unwrap(), ev) {
+                        sink(Ok(ev));
+                    }
                 }
-            }
-            Err(err) => sink(Err(err)),
-        })?;
-        watcher.watch(&at, notify::RecursiveMode::Recursive)?;
+                Err(err) => sink(Err(err)),
+            },
+        ))?;
+        backend.watch(&at, notify::RecursiveMode::Recursive)?;
         self.own.insert(
             at,
             Stream {
-                _watcher: watcher,
+                _backend: backend,
                 dirs,
             },
         );
@@ -832,11 +907,11 @@ fn is_unwatched_dir(name: &std::ffi::OsStr) -> bool {
 /// root, so Vite sees new children). Falls back to a recursive root watch
 /// only if nothing else could be watched.
 fn watch_root(
-    watcher: &mut notify::RecommendedWatcher,
+    watcher: &mut dyn WatchBackend,
     root: &Path,
     cache_base: &Path,
 ) -> notify::Result<()> {
-    use notify::{RecursiveMode, Watcher};
+    use notify::RecursiveMode;
     let root_watched = watcher.watch(root, RecursiveMode::NonRecursive).is_ok();
     let mut watched_any = root_watched;
     if let Ok(entries) = std::fs::read_dir(root) {
@@ -1311,20 +1386,15 @@ pub(crate) fn spawn_watcher(
             }
             let _ = tx.send(WatchMsg::Fs(ev));
         });
-        let root_sink = Arc::clone(&sink);
-        let mut watchers = match new_watcher(move |ev| root_sink(ev)) {
-            Ok(root) => Watchers {
-                root,
-                sink,
-                own: Default::default(),
-            },
+        let mut watchers = match Watchers::new(sink) {
+            Ok(watchers) => watchers,
             Err(err) => {
                 eprintln!("oj: file watcher failed to start: {err}");
                 return;
             }
         };
         let mut served_dirs: std::collections::HashSet<PathBuf> = Default::default();
-        if let Err(err) = watch_root(&mut watchers.root, &state.root, &cache_base) {
+        if let Err(err) = watch_root(watchers.root.as_mut(), &state.root, &cache_base) {
             eprintln!("oj: cannot watch {}: {err}", state.root.display());
             return;
         }
