@@ -126,18 +126,32 @@ jobs:
           sudo chmod 600 /swap-oj
           sudo mkswap /swap-oj
           sudo swapon /swap-oj
+      # libsqlite3-sys runs bindgen, which needs libclang (flake.nix's
+      # bindgenHook); the arm runner image doesn't carry it.
+      - name: install build tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev cmake pkg-config
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ matrix.target }}
-      # --workspace: features resolve as in ci.yml's run, which v8 needs (see
-      # the publish job's --no-verify).
       - name: build
-        run: cargo build --release --locked --workspace --bin oj
+        run: cargo build --release --locked -p oj
       - name: package
         id: package
         run: |
           out="oj-${{ matrix.target }}.tar.gz"
           ./target/release/oj --version
+          # Fail on a runner or Homebrew library (lcms2-sys and libz-sys link
+          # one when pkg-config finds it) that consumers would not have.
+          if [ "$RUNNER_OS" = Linux ]; then
+            ldd target/release/oj | tee /dev/stderr \
+              | grep -vE '^\s*(linux-vdso|/lib(64)?/ld-linux|lib(c|m|dl|pthread|rt|gcc_s|z)\.so)' \
+              && { echo "unexpected shared library" >&2; exit 1; } || true
+          else
+            otool -L target/release/oj | tail -n +2 | tee /dev/stderr \
+              | grep -vE '^\s*(/usr/lib/|/System/Library/)' \
+              && { echo "unexpected shared library" >&2; exit 1; } || true
+          fi
           tar -czf "$out" -C target/release oj
           echo "file=$out" >> "$GITHUB_OUTPUT"
       - name: attest build provenance
@@ -147,7 +161,7 @@ jobs:
       - name: upload to this release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$GITHUB_REF_NAME" "${{ steps.package.outputs.file }}"
+        run: gh release upload --clobber "$GITHUB_REF_NAME" "${{ steps.package.outputs.file }}"
 
   # The pinned V8 snapshot bundle (issue #211): snapshot creation is
   # run-nondeterministic, so reproducible nix builds consume a prebuilt bundle
