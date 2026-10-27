@@ -1031,22 +1031,56 @@ impl LinkedSheets {
     }
 }
 
-/// Each module's place in a bundle's execution order: the entry chunk's
-/// modules first, then the other chunks' as the output lists them (a chunk
-/// lists its modules in execution order). Keyed by id and by its path.
+/// Each module's place in a bundle's execution order, as Vite's
+/// getCssFilesForChunk walks a chunk's sheets: the chunks a chunk imports
+/// run before it, depth first from the entries, then the dynamic chunks in
+/// the order they are imported; a chunk nothing reaches goes last. A chunk
+/// lists its own modules in execution order. Keyed by id and by its path.
 fn module_order(outputs: &[rolldown_common::Output]) -> HashMap<&str, usize> {
-    let chunks = outputs.iter().filter_map(|o| match o {
-        rolldown_common::Output::Chunk(c) => Some(c),
-        rolldown_common::Output::Asset(_) => None,
-    });
-    let (entries, rest): (Vec<_>, Vec<_>) = chunks.partition(|c| c.is_entry);
+    use rolldown_common::OutputChunk;
+    fn visit<'a>(
+        chunk: &'a OutputChunk,
+        by_name: &HashMap<&str, &'a OutputChunk>,
+        seen: &mut std::collections::HashSet<&'a str>,
+        ordered: &mut Vec<&'a OutputChunk>,
+    ) {
+        if !seen.insert(chunk.filename.as_str()) {
+            return;
+        }
+        for name in &chunk.imports {
+            if let Some(imported) = by_name.get(name.as_str()) {
+                visit(imported, by_name, seen, ordered);
+            }
+        }
+        ordered.push(chunk);
+    }
+    let chunks: Vec<&OutputChunk> = outputs
+        .iter()
+        .filter_map(|o| match o {
+            rolldown_common::Output::Chunk(c) => Some(&**c),
+            rolldown_common::Output::Asset(_) => None,
+        })
+        .collect();
+    let by_name: HashMap<&str, &OutputChunk> =
+        chunks.iter().map(|c| (c.filename.as_str(), *c)).collect();
+    let (mut seen, mut ordered) = (Default::default(), Vec::new());
+    for entry in chunks.iter().filter(|c| c.is_entry) {
+        visit(entry, &by_name, &mut seen, &mut ordered);
+    }
+    let mut next = 0;
+    while let Some(chunk) = ordered.get(next).copied() {
+        next += 1;
+        for name in &chunk.dynamic_imports {
+            if let Some(imported) = by_name.get(name.as_str()) {
+                visit(imported, &by_name, &mut seen, &mut ordered);
+            }
+        }
+    }
+    for chunk in &chunks {
+        visit(chunk, &by_name, &mut seen, &mut ordered);
+    }
     let mut order = HashMap::new();
-    for (i, id) in entries
-        .into_iter()
-        .chain(rest)
-        .flat_map(|c| c.module_ids.iter())
-        .enumerate()
-    {
+    for (i, id) in ordered.iter().flat_map(|c| c.module_ids.iter()).enumerate() {
         let id = id.as_str();
         order.entry(id).or_insert(i);
         order

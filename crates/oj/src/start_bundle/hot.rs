@@ -487,8 +487,11 @@ pub(crate) fn link_new_styles(cache: &Path, css_urls: &[String]) -> std::io::Res
         .cloned()
         .collect();
     if !added.is_empty() {
+        // After the links the full bundle wrote in its execution order, as
+        // the dev client appends a sheet a new import injects.
+        let all: Vec<&String> = linked.iter().chain(&added).collect();
         let tmp = cache.join("css-urls.json.tmp");
-        std::fs::write(&tmp, serde_json::to_string(css_urls)?)?;
+        std::fs::write(&tmp, serde_json::to_string(&all)?)?;
         std::fs::rename(&tmp, &file)?;
     }
     Ok(added)
@@ -552,6 +555,23 @@ mod tests {
         assert!(link_new_styles(&dir, &["/a.css".into(), "/b.css".into()])
             .unwrap()
             .is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // The full bundle wrote its links in execution order; a hot update's
+    // list is in load order, and only adds to them.
+    #[test]
+    fn a_new_style_keeps_the_bundles_link_order() {
+        let dir = std::env::temp_dir().join(format!("oj-link-order-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("css-urls.json"), "[\"/b.css\",\"/a.css\"]").unwrap();
+        let added =
+            link_new_styles(&dir, &["/a.css".into(), "/b.css".into(), "/c.css".into()]).unwrap();
+        assert_eq!(added, ["/c.css"]);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("css-urls.json")).unwrap(),
+            "[\"/b.css\",\"/a.css\",\"/c.css\"]"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

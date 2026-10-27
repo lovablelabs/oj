@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- TanStack Start links an app's stylesheets in the client bundle's execution order, as Vite does, in dev and in the build. They were linked in the order their loads finished, which rolldown runs concurrently, so a CSS module or a sheet imported through another module could land after sheets imported later and change which rules win. Plain sheets stay in their chunk as vite:css-post keeps them (`no-treeshake`), so a sheet imported by a module that does nothing else is placed too.
+- TanStack Start links an app's stylesheets in the client bundle's execution order, as Vite does, in dev and in the build. They were linked in the order their loads finished, which rolldown runs concurrently, so a CSS module or a sheet imported through another module could land after sheets imported later and change which rules win. Across chunks the order follows Vite's too: a chunk's sheets come after those of the chunks it imports (a `codeSplitting` vendor group) and before those it loads lazily, and a hot update that adds a sheet appends it instead of reordering the rest. Plain sheets stay in their chunk as vite:css-post keeps them (`no-treeshake`), so a sheet imported by a module that does nothing else is placed too.
 
 ## [0.2.47] - 2026-10-27
 

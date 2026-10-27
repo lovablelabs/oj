@@ -82,6 +82,16 @@ async fn bundle_output(
     entry: &str,
     plugins: Vec<SharedPluginable>,
 ) -> Result<Vec<rolldown_common::Output>, BundleError> {
+    bundle_split(app, entry, plugins, None).await
+}
+
+/// `bundle_output`, split into chunks as `code_splitting` says.
+async fn bundle_split(
+    app: &App,
+    entry: &str,
+    plugins: Vec<SharedPluginable>,
+    code_splitting: Option<rolldown_common::CodeSplittingMode>,
+) -> Result<Vec<rolldown_common::Output>, BundleError> {
     let mut bundler = BundlerBuilder::default()
         .with_plugins(plugins)
         .with_options(BundlerOptions {
@@ -92,6 +102,7 @@ async fn bundle_output(
             cwd: Some(app.dir.clone()),
             platform: Some(Platform::Browser),
             format: Some(OutputFormat::Esm),
+            code_splitting,
             ..Default::default()
         })
         .build()
@@ -235,6 +246,66 @@ async fn dev_sheets_link_in_execution_order() {
     assert_eq!(
         sheet_names(&linked),
         ["e", "a", "b", "c", "d"],
+        "{linked:?}"
+    );
+}
+
+// A chunk runs after the chunks it imports and before the ones it loads
+// lazily, so its sheets do too: index.css is imported first, but theme.css
+// sits in the vendor chunk the entry imports, as Vite links them.
+#[tokio::test(flavor = "multi_thread")]
+async fn split_sheets_link_in_chunk_execution_order() {
+    use rolldown_common::{
+        CodeSplittingMode, ManualCodeSplittingOptions, MatchGroup, MatchGroupName, MatchGroupTest,
+    };
+    let app = App::new(&[
+        (
+            "src/entry.js",
+            r#"import "./index.css";
+import { lib } from "./vendor/lib.js";
+lib();
+import("./lazy.js");
+"#,
+        ),
+        ("src/index.css", ".index { color: red }"),
+        (
+            "src/vendor/lib.js",
+            r#"import "./theme.css";
+export const lib = () => {};
+"#,
+        ),
+        ("src/vendor/theme.css", ".theme { color: red }"),
+        ("src/lazy.js", r#"import "./lazy.css";"#),
+        ("src/lazy.css", ".lazy { color: red }"),
+    ]);
+    let vendor = CodeSplittingMode::Advanced(ManualCodeSplittingOptions {
+        groups: Some(vec![MatchGroup {
+            name: MatchGroupName::Static("vendor".into()),
+            test: Some(MatchGroupTest::Regex(
+                rolldown_utils::js_regex::HybridRegex::new("vendor").unwrap(),
+            )),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    });
+    let css_urls: Arc<Mutex<LinkedSheets>> = Arc::default();
+    let out = bundle_split(
+        &app,
+        "src/entry.js",
+        vec![dev_assets(&app, &css_urls)],
+        Some(vendor),
+    )
+    .await
+    .unwrap();
+    let chunks = out
+        .iter()
+        .filter(|o| matches!(o, rolldown_common::Output::Chunk(_)))
+        .count();
+    assert_eq!(chunks, 3, "entry, vendor and lazy chunks");
+    let linked = css_urls.lock().unwrap().in_bundle_order(&out);
+    assert_eq!(
+        sheet_names(&linked),
+        ["theme", "index", "lazy"],
         "{linked:?}"
     );
 }
