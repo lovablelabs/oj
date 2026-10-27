@@ -1282,6 +1282,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "console"
+version = "0.16.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e96a4956774c13c126a8b5af4daa79384f4d826534c95a02d76afb39e2ab64e3"
+dependencies = [
+ "encode_unicode",
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "const-hex"
 version = "1.19.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2942,7 +2953,7 @@ dependencies = [
  "log",
  "nix 0.30.1",
  "node_resolver",
- "notify 8.2.0",
+ "notify",
  "once_cell",
  "qbsdiff",
  "raw-window-handle",
@@ -3729,6 +3740,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
 
 [[package]]
+name = "encode_unicode"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
+
+[[package]]
 name = "encoding_rs"
 version = "0.8.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3845,6 +3862,9 @@ name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
+dependencies = [
+ "getrandom 0.4.3",
+]
 
 [[package]]
 name = "fastwebsockets"
@@ -3976,6 +3996,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b09cf3155332e944990140d967ff5eceb70df778b34f77d8075db46e4704e6d8"
 dependencies = [
  "num-traits",
+]
+
+[[package]]
+name = "flume"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e139bc46ca777eb5efaf62df0ab8cc5fd400866427e56c68b22e414e53bd3be"
+dependencies = [
+ "fastrand",
+ "futures-core",
+ "futures-sink",
+ "spin",
 ]
 
 [[package]]
@@ -5122,6 +5154,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "insta"
+version = "1.49.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b67d3d2e287e4b86c10b3f3b641033d1f89b74bdb39d05f34952e2b9a6fe21cd"
+dependencies = [
+ "console",
+ "once_cell",
+ "similar",
+ "tempfile",
+]
+
+[[package]]
 name = "inventory"
 version = "0.3.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6021,32 +6065,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "notify"
-version = "9.0.0-rc.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb94cf3583e1483c23ceb47a5f7d56b3e8d7309b3e3727698a8c52a96993355e"
-dependencies = [
- "bitflags 2.13.2",
- "inotify",
- "kqueue",
- "libc",
- "log",
- "mio",
- "notify-types",
- "objc2-core-foundation",
- "objc2-core-services",
- "walkdir",
- "windows-sys 0.61.2",
- "xxhash-rust",
-]
-
-[[package]]
 name = "notify-types"
 version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42b8cfee0e339a0337359f3c88165702ac6e600dc01c0cc9579a92d62b08477a"
 dependencies = [
  "bitflags 2.13.2",
+ "serde",
 ]
 
 [[package]]
@@ -6267,7 +6292,6 @@ dependencies = [
  "flate2",
  "futures-util",
  "libc",
- "notify 9.0.0-rc.6",
  "oj_cache",
  "oj_compiler",
  "oj_config",
@@ -6276,6 +6300,7 @@ dependencies = [
  "oj_diag",
  "oj_env",
  "oj_js",
+ "oj_notify",
  "oj_resolver",
  "oj_server",
  "oj_stylex",
@@ -6510,9 +6535,9 @@ dependencies = [
  "log",
  "nix 0.30.1",
  "node_resolver",
- "notify 9.0.0-rc.6",
  "oj_deno_napi",
  "oj_deno_process",
+ "oj_notify",
  "once_cell",
  "qbsdiff",
  "raw-window-handle",
@@ -6587,6 +6612,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "oj_notify"
+version = "0.2.47"
+dependencies = [
+ "bitflags 2.13.2",
+ "crossbeam-channel",
+ "flume",
+ "futures",
+ "inotify",
+ "insta",
+ "kqueue",
+ "libc",
+ "log",
+ "mio",
+ "nix 0.31.3",
+ "notify-types",
+ "objc2-core-foundation",
+ "objc2-core-services",
+ "pretty_assertions",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "walkdir",
+ "windows-sys 0.61.2",
+ "xxhash-rust",
+]
+
+[[package]]
 name = "oj_resolver"
 version = "0.2.47"
 dependencies = [
@@ -6612,7 +6664,6 @@ dependencies = [
  "hyper-util",
  "json-strip-comments",
  "libc",
- "notify 9.0.0-rc.6",
  "num_cpus",
  "oj_cache",
  "oj_compiler",
@@ -6623,6 +6674,7 @@ dependencies = [
  "oj_env",
  "oj_graph",
  "oj_js",
+ "oj_notify",
  "oj_resolver",
  "oj_stylex",
  "opentelemetry",
@@ -9787,6 +9839,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
+name = "similar"
+version = "2.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
+
+[[package]]
 name = "siphasher"
 version = "0.3.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9891,6 +9949,9 @@ name = "spin"
 version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
+dependencies = [
+ "lock_api",
+]
 
 [[package]]
 name = "spirv"

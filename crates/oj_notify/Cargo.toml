@@ -1,0 +1,205 @@
+# Fork of notify 9.0.0-rc.6 (https://github.com/notify-rs/notify) maintained
+# for oj, carrying one unreleased upstream fix: src/fsevent.rs is taken from
+# notify-rs/notify 636af549 ("fix(fsevent): preserve pending events across
+# watch changes", #1033), so a watch that restarts the FSEvents stream drops
+# no events queued on the old one. Everything else is verbatim rc.6. Drop the
+# fork for upstream notify once a release carries the fix. See README.md.
+
+[package]
+edition = "2024"
+rust-version = "1.88"
+name = "oj_notify"
+version.workspace = true
+authors = [
+    "Félix Saparelli <me@passcod.name>",
+    "Daniel Faust <hessijames@gmail.com>",
+    "Aron Heinecke <Ox0p54r36@t-online.de>",
+]
+build = "build.rs"
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+description = "Fork of notify 9.0.0-rc.6 maintained for oj, carrying the unreleased upstream FSEvents fix that preserves pending events across watch changes (notify-rs/notify#1033). Use upstream notify unless you need this fix."
+readme = "README.md"
+categories = ["filesystem"]
+license = "CC0-1.0"
+repository = "https://github.com/lovablelabs/oj"
+
+[features]
+default = ["macos_fsevent"]
+freebsd_inotify = []
+futures = ["dep:futures"]
+macos_fsevent = [
+    "objc2-core-foundation",
+    "objc2-core-services",
+]
+macos_kqueue = [
+    "kqueue",
+    "mio",
+]
+serde = ["notify-types/serde"]
+serialization-compat-6 = ["notify-types/serialization-compat-6"]
+tokio = ["dep:tokio"]
+
+[lib]
+name = "notify"
+path = "src/lib.rs"
+
+[dependencies.crossbeam-channel]
+version = "0.5.0"
+optional = true
+
+[dependencies.flume]
+version = "0.12.0"
+optional = true
+
+[dependencies.futures]
+version = "0.3.30"
+optional = true
+
+[dependencies.libc]
+version = "0.2.4"
+
+[dependencies.log]
+version = "0.4.17"
+
+[dependencies.notify-types]
+version = "2.1.0"
+
+[dependencies.tokio]
+version = "1.49.0"
+features = ["sync"]
+optional = true
+default-features = false
+
+[dependencies.walkdir]
+version = "2.4.0"
+
+[dependencies.xxhash-rust]
+version = "0.8.15"
+features = ["xxh3"]
+
+[dev-dependencies.insta]
+version = "1.34.0"
+
+[dev-dependencies.nix]
+version = "0.31.0"
+features = [
+    "fs",
+    "time",
+]
+
+[dev-dependencies.pretty_assertions]
+version = "1.3.0"
+
+[dev-dependencies.serde_json]
+version = "1.0.39"
+
+[dev-dependencies.tempfile]
+version = "3.10.0"
+
+[dev-dependencies.tokio]
+version = "1.49.0"
+features = [
+    "sync",
+    "time",
+    "rt",
+    "macros",
+]
+default-features = true
+
+[target.'cfg(any(target_os="linux", target_os="android"))'.dependencies.inotify]
+version = "0.11.4"
+default-features = false
+
+[target.'cfg(any(target_os="linux", target_os="android"))'.dependencies.mio]
+version = "1.0"
+features = ["os-ext"]
+
+[target.'cfg(any(target_os="openbsd", target_os = "netbsd", target_os = "dragonfly", target_os = "ios"))'.dependencies.kqueue]
+version = "1.2.0"
+
+[target.'cfg(any(target_os="openbsd", target_os = "netbsd", target_os = "dragonfly", target_os = "ios"))'.dependencies.mio]
+version = "1.0"
+features = ["os-ext"]
+
+[target.'cfg(target_os="freebsd")'.dependencies.inotify]
+version = "0.11.4"
+default-features = false
+
+[target.'cfg(target_os="freebsd")'.dependencies.kqueue]
+version = "1.2.0"
+
+[target.'cfg(target_os="freebsd")'.dependencies.mio]
+version = "1.0"
+features = ["os-ext"]
+
+[target.'cfg(target_os="macos")'.dependencies.bitflags]
+version = "2.7.0"
+
+[target.'cfg(target_os="macos")'.dependencies.kqueue]
+version = "1.2.0"
+optional = true
+
+[target.'cfg(target_os="macos")'.dependencies.mio]
+version = "1.0"
+features = ["os-ext"]
+optional = true
+
+[target.'cfg(target_os="macos")'.dependencies.objc2-core-foundation]
+version = "0.3.2"
+features = [
+    "std",
+    "CFDate",
+    "CFString",
+    "CFArray",
+    "CFRunLoop",
+    "CFError",
+    "CFURL",
+]
+optional = true
+default-features = false
+
+[target.'cfg(target_os="macos")'.dependencies.objc2-core-services]
+version = "0.3.2"
+features = [
+    "std",
+    "libc",
+    "FSEvents",
+]
+optional = true
+default-features = false
+
+[target."cfg(windows)".dependencies.windows-sys]
+version = "0.61.0"
+features = [
+    "Win32_System_Threading",
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_Security",
+    "Win32_System_WindowsProgramming",
+    "Win32_System_IO",
+]
+
+# The sources stay verbatim upstream, so the lints a registry build would cap
+# are allowed here: paths.rs helpers only inotify and kqueue use are dead code
+# on macOS, and fsevent.rs predates this toolchain's `fetch_update`
+# deprecation and its unsafe-op-in-unsafe-fn warnings. Upstream code is not
+# held to oj's clippy lints either.
+[lints.rust.dead_code]
+level = "allow"
+priority = 0
+
+[lints.rust.deprecated]
+level = "allow"
+priority = 0
+
+[lints.rust.unsafe_op_in_unsafe_fn]
+level = "allow"
+priority = 0
+
+[lints.clippy.all]
+level = "allow"
+priority = -1
