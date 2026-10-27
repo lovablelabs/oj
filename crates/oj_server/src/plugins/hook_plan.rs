@@ -140,7 +140,7 @@ impl HookFilterPlan {
     }
 }
 
-/// OJ_DEBUG_HOOK_GATE=1: gates log/count skipped RPCs so a test can assert a
+/// `--debug hook-gate`: gates log/count skipped RPCs so a test can assert a
 /// skip happened (output alone cannot, the host's filters produce identical bytes).
 pub fn hook_gate_debug() -> bool {
     oj_env::get().knobs.debug_hook_gate

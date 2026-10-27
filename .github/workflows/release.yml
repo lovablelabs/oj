@@ -51,6 +51,32 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: every crate to publish is on crates.io already
+        # Trusted publishing cannot do a crate's first publish (see the top),
+        # and cargo publishes the workspace one crate at a time: a new crate
+        # failing mid-run leaves the crates before it published and the ones
+        # depending on it not. Stop before uploading anything instead.
+        run: |
+          set -euo pipefail
+          crates=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.publish != []) | .name')
+          [ -n "$crates" ] || { echo "no crates to publish found" >&2; exit 1; }
+          missing=""
+          for name in $crates; do
+            # crates.io asks crawlers for at most one request a second.
+            sleep 1
+            code=$(curl -s -o /dev/null -w '%{http_code}' -A 'lovablelabs/oj release' \
+              --retry 3 --retry-all-errors "https://crates.io/api/v1/crates/$name" || true)
+            case "$code" in
+              200) ;;
+              404) missing="$missing $name" ;;
+              *) echo "crates.io answered $code for $name" >&2; exit 1 ;;
+            esac
+          done
+          [ -z "$missing" ] || {
+            echo "never published, publish by hand with a scoped token first:$missing" >&2
+            exit 1
+          }
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: authenticate with crates.io (trusted publishing)
         uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6

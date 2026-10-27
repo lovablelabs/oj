@@ -17,6 +17,7 @@ members = [
     "crates/fru",
     "crates/oj_wasm",
     "crates/oj_deno_napi",
+    "crates/oj_notify",
     "crates/oj_deno_runtime",
     "crates/oj_deno_snapshots",
 ]
@@ -79,7 +80,10 @@ serde_json = "1.0.151"
 tokio = { version = "1.53.1", features = ["full"] }
 axum = { version = "0.8.9", features = ["ws"] }
 tower = { version = "0.5.3", features = ["util"] }
-notify = "=9.0.0-rc.6"
+# oj-maintained fork of notify 9.0.0-rc.6 (published to crates.io under this
+# name), carrying the unreleased upstream FSEvents fix that keeps pending
+# events across watch changes. See crates/oj_notify/README.md.
+notify = { package = "oj_notify", version = "0.2.47", path = "crates/oj_notify" }
 clap = { version = "4.6.6", features = ["derive"] }
 
 # test-only
@@ -188,7 +192,7 @@ ryu = { opt-level = 3 }
 memchr = { opt-level = 3 }
 simdutf8 = { opt-level = 3 }
 blake3 = { opt-level = 3 }
-notify = { opt-level = 3 }
+oj_notify = { opt-level = 3 }
 notify-types = { opt-level = 3 }
 axum = { opt-level = 3 }
 axum-core = { opt-level = 3 }

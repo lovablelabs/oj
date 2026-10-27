@@ -173,7 +173,7 @@ fn boot(root: &Path, cache: &Path) -> Server {
             ("WRANGLER_SEND_METRICS", "false"),
             ("CI", "1"),
             ("NO_COLOR", "1"),
-            ("OJ_BOOT_PHASES", "1"),
+            ("DEBUG", "oj:boot"),
         ],
     );
     // Any answer: the render discovers the workspace package's import.

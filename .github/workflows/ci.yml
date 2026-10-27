@@ -128,7 +128,7 @@ jobs:
         run: node e2e/plugin-worker-threads.mjs
       - name: runner environments prewarm unprompted (transform + render warm)
         run: node e2e/runner-env-prewarm.mjs
-      - name: OJ_DEBUG_MEM gc endpoint (issue 202 memory probing)
+      - name: --debug=mem gc endpoint (issue 202 memory probing)
         run: node e2e/debug-gc.mjs
       - name: diagnostics ring + NDJSON stderr (/@oj/diagnostics)
         run: node e2e/diagnostics.mjs

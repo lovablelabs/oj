@@ -216,8 +216,13 @@ features = ["kv"]
 version = "0.97.0"
 features = ["sync"]
 
+# notify resolves to oj_notify (upstream 9.0.0-rc.6 + the FSEvents fix that
+# keeps pending events across watch changes), so the runtime's watchFs and
+# oj's watcher share one copy. The path is stripped on publish.
 [dependencies.notify]
-version = "=9.0.0-rc.6"
+package = "oj_notify"
+version = "0.2.47"
+path = "../oj_notify"
 
 [dependencies.once_cell]
 version = "1.17.1"

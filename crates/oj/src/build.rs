@@ -73,7 +73,7 @@ pub(crate) fn take_build_warnings() -> Vec<String> {
 }
 
 /// Every closeBundle's gated-out RPC counts `[resolveId, load, transform]`
-/// by app root: what OJ_DEBUG_HOOK_GATE prints, for the gate's tests.
+/// by app root: what `--debug hook-gate` prints, for the gate's tests.
 #[cfg(test)]
 static GATE_SKIPS: std::sync::Mutex<Vec<(PathBuf, [u64; 3])>> = std::sync::Mutex::new(Vec::new());
 
@@ -2468,7 +2468,7 @@ struct OjUserPlugin {
     // acted on. This construction-time snapshot only decides HookUsage bits;
     // per-call gates read the live plan, which a respawned host resets.
     gate: oj_server::plugins::BuildHookPlan,
-    // OJ_DEBUG_HOOK_GATE=1: count gated-out RPCs and report at closeBundle,
+    // `--debug hook-gate`: count gated-out RPCs and report at closeBundle,
     // so a test can assert the gate actually skipped something. Unit tests
     // always count, and read the totals back by app root (`gate_skips`).
     gate_debug: bool,

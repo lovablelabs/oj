@@ -3232,7 +3232,7 @@ function pluginHookUtils(plugins) {
 }
 
 function hostPhase(label) {
-  if (process.env.OJ_BOOT_PHASES) process.stderr.write(`[oj-phase] ${Date.now()} ${label}\n`);
+  if (initial.bootPhases) process.stderr.write(`[oj-phase] ${Date.now()} ${label}\n`);
 }
 
 function userSetPreTransformRequests(name) {
