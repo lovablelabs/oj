@@ -778,7 +778,13 @@ fn stream_for(streams: &[&Path], dir: &Path, app_root: &Path) -> StreamPlan {
             path = parent.to_path_buf();
         }
     }
-    if let Some(s) = streams.iter().find(|s| dir.starts_with(s)) {
+    // The deepest is the one that took the dir first: a stream opened later
+    // over it is a consolidated parent.
+    if let Some(s) = streams
+        .iter()
+        .filter(|s| dir.starts_with(s))
+        .max_by_key(|s| s.components().count())
+    {
         return StreamPlan::Join(s.to_path_buf());
     }
     if streams.len() >= MAX_OWN_STREAMS {
@@ -902,7 +908,8 @@ impl Watchers {
         let mut backend = (self.open)(Arc::new(
             move |ev: notify::Result<notify::Event>| match ev {
                 Ok(ev) => {
-                    if let Some(ev) = stream_event(&filter.lock().unwrap(), ev) {
+                    let ev = stream_event(&filter.lock().unwrap(), ev);
+                    if let Some(ev) = ev {
                         sink(Ok(ev));
                     }
                 }

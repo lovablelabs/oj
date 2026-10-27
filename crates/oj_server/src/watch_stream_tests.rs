@@ -476,6 +476,30 @@ fn joined_dirs_ride_their_stream_and_a_recursive_watch_widens_a_flat_one() {
     assert_eq!(fs.count(), streams);
 }
 
+// A dir under both its own stream and a consolidated parent's stays on its
+// own: a recursive watch widens the flat entry there instead of adding one
+// on the parent, which would hear the same edits again.
+#[test]
+fn a_dir_on_two_streams_widens_on_the_deepest() {
+    let (_tmp, ws) = tree((0..11).map(|i| format!("pkg{i}/sub")));
+    let fs = FakeFsEvents::default();
+    let (mut watchers, rx) = fs.watchers(Path::new(APP));
+    for i in 0..11 {
+        watchers
+            .watch(&ws.join(format!("pkg{i}")), NonRecursive)
+            .unwrap();
+    }
+    assert!(watchers.own.contains_key(&ws));
+    for i in 0..CONSOLIDATE_AT {
+        let pkg = ws.join(format!("pkg{i}"));
+        watchers.watch(&pkg, Recursive).unwrap();
+        for edited in [pkg.join("x.ts"), pkg.join("sub/x.ts")] {
+            fs.write(&edited);
+            assert_eq!(received(&rx), [edited]);
+        }
+    }
+}
+
 // Off macOS a watch restarts nothing, so the root watcher takes them all.
 #[test]
 fn without_streams_every_watch_goes_to_the_root_watcher() {
