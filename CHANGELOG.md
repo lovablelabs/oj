@@ -5,6 +5,16 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- On macOS, directories served from outside the app root share FSEvents streams the way Vite's chokidar places them: a directory under a watched one joins its stream, and once 10 streams sit under one parent the next directory watches the parent, never the app root or above it. Each shared stream passes only its own directories' events, under every path a directory was watched as, and a directory behind a symlink gets a stream on its real path. Past 128 streams the rest go to one overflow watcher instead of the root watcher, whose stream restarted over every path on each new directory, dropping root edits meanwhile. On a large monorepo app, CPU time in FSEvents during a page load went from 2.8s to 43ms.
+
+### Fixed
+
+- A watch that restarts an FSEvents stream no longer drops the events queued on the old one. oj builds on `oj_notify`, notify 9.0.0-rc.6 with upstream's unreleased fix for this, until a notify release carries it.
+
 ## [0.2.47] - 2026-10-27
 
 ### Changed
