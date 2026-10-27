@@ -11,7 +11,7 @@ use rolldown::{BundlerBuilder, BundlerOptions, InputItem, OutputFormat, Platform
 use rolldown_plugin::__inner::{Pluginable, SharedPluginable};
 
 use super::alias::AppAliasPlugin;
-use super::assets::{AssetMode, DevStyleState, Emitter, StartAssetsPlugin, Styles};
+use super::assets::{AssetMode, DevStyleState, Emitter, LinkedSheets, StartAssetsPlugin, Styles};
 use super::code::{CodeTarget, StartCodePlugin};
 use super::errors::{unresolved_import_in, BundleError};
 use super::facts::normalize_alias;
@@ -65,6 +65,23 @@ async fn bundle(
     entry: &str,
     plugins: Vec<SharedPluginable>,
 ) -> Result<String, BundleError> {
+    Ok(bundle_output(app, entry, plugins)
+        .await?
+        .iter()
+        .filter_map(|o| match o {
+            rolldown_common::Output::Chunk(c) => Some(c.code.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
+/// The bundle of `entry` with `plugins`; its outputs, or its error.
+async fn bundle_output(
+    app: &App,
+    entry: &str,
+    plugins: Vec<SharedPluginable>,
+) -> Result<Vec<rolldown_common::Output>, BundleError> {
     let mut bundler = BundlerBuilder::default()
         .with_plugins(plugins)
         .with_options(BundlerOptions {
@@ -87,18 +104,10 @@ async fn bundle(
     if let Some(err) = unresolved_import_in(&out.warnings) {
         return Err(err);
     }
-    Ok(out
-        .assets
-        .iter()
-        .filter_map(|o| match o {
-            rolldown_common::Output::Chunk(c) => Some(c.code.clone()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n"))
+    Ok(out.assets)
 }
 
-fn dev_assets(app: &App, css_urls: &Arc<Mutex<Vec<String>>>) -> SharedPluginable {
+fn dev_assets(app: &App, css_urls: &Arc<Mutex<LinkedSheets>>) -> SharedPluginable {
     Pluginable::new_shared(StartAssetsPlugin::new(
         &app.dir,
         Arc::new(Styles::new(&app.start())),
@@ -133,7 +142,7 @@ console.log(raw, url, inline, icon, worker, styles.card);
         ("src/plain.css", ".plain { color: red }"),
         ("src/card.module.css", ".card { color: blue }"),
     ]);
-    let css_urls = Arc::new(Mutex::new(Vec::new()));
+    let css_urls = Arc::default();
     let code = bundle(&app, "src/entry.js", vec![dev_assets(&app, &css_urls)])
         .await
         .unwrap();
@@ -174,12 +183,90 @@ console.log(raw, url, inline, icon, worker, styles.card);
         !code.contains("color: red"),
         "a plain sheet is linked, never inlined:\n{code}"
     );
-    let linked = css_urls.lock().unwrap().clone();
+    let linked = css_urls.lock().unwrap().urls();
     assert_eq!(linked.len(), 2, "both sheets are linked: {linked:?}");
-    assert!(linked[0].ends_with("/src/plain.css"), "{linked:?}");
     assert!(
         code.contains("card"),
         "a CSS module exports its class map:\n{code}"
+    );
+}
+
+/// Sheets in import order, a CSS module (compiled, so slower to load) before
+/// plain ones, and one imported through a module imported first.
+const ORDERED_SHEETS: &[(&str, &str)] = &[
+    (
+        "src/entry.js",
+        r#"import "./first.js";
+import a from "./a.module.css";
+import b from "./b.module.css";
+import "./c.css";
+import "./d.css";
+console.log(a.a, b.b);
+"#,
+    ),
+    ("src/first.js", r#"import "./e.css";"#),
+    ("src/a.module.css", ".a { color: red }"),
+    ("src/b.module.css", ".b { color: red }"),
+    ("src/c.css", ".c { color: red }"),
+    ("src/d.css", ".d { color: red }"),
+    ("src/e.css", ".e { color: red }"),
+];
+
+/// Each sheet's file name stem, in `urls` order.
+fn sheet_names(urls: &[String]) -> Vec<String> {
+    urls.iter()
+        .map(|u| {
+            let file = u.rsplit('/').next().unwrap();
+            file.split(['.', '-']).next().unwrap().to_string()
+        })
+        .collect()
+}
+
+// Loads finish in any order (rolldown runs them concurrently); the links
+// follow the bundle's execution order, where Vite's client injects them.
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_sheets_link_in_execution_order() {
+    let app = App::new(ORDERED_SHEETS);
+    let css_urls: Arc<Mutex<LinkedSheets>> = Arc::default();
+    let out = bundle_output(&app, "src/entry.js", vec![dev_assets(&app, &css_urls)])
+        .await
+        .unwrap();
+    let linked = css_urls.lock().unwrap().in_bundle_order(&out);
+    assert_eq!(
+        sheet_names(&linked),
+        ["e", "a", "b", "c", "d"],
+        "{linked:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn built_sheets_link_in_execution_order() {
+    let app = App::new(ORDERED_SHEETS);
+    let start = app.start();
+    let styles = Arc::new(Styles::new(&start));
+    let emitter = Arc::new(Emitter::new(
+        &app.dir.join("dist/client"),
+        "/",
+        Arc::clone(&styles),
+    ));
+    let plugin = Pluginable::new_shared(StartAssetsPlugin::new(
+        &app.dir,
+        styles,
+        AssetMode::Build {
+            emitter: Arc::clone(&emitter),
+            server: false,
+            worker_chain: Vec::new(),
+        },
+    ));
+    let out = bundle_output(&app, "src/entry.js", vec![plugin])
+        .await
+        .unwrap();
+    emitter.order_links(&out);
+    let linked = emitter.css_urls();
+    assert_eq!(
+        sheet_names(&linked),
+        ["e", "a", "b", "c", "d"],
+        "{linked:?}"
     );
 }
 

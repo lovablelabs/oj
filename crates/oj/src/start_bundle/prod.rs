@@ -452,6 +452,7 @@ pub(crate) async fn build(
             .await
             .map_err(|errs| anyhow::Error::new(BundleError::from_diagnostics(&errs.into_vec())))?;
         let output = checked(output)?;
+        emitter.order_links(&output.assets);
         // Vite's buildEnvironment closes an environment's bundle as soon as
         // its output is written, before the next environment builds.
         if let Some(h) = &client_host {

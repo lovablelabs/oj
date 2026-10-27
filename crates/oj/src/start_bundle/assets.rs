@@ -464,6 +464,25 @@ impl Emitter {
         self.css_urls.lock().unwrap().clone()
     }
 
+    /// Puts the linked sheets in the client bundle's execution order, the
+    /// order Vite's css-post collects them in: they were linked as their
+    /// loads finished, which rolldown runs concurrently.
+    pub fn order_links(&self, outputs: &[rolldown_common::Output]) {
+        let order = module_order(outputs);
+        let sheets = self.sheets.lock().unwrap();
+        let mut at: HashMap<&str, usize> = HashMap::new();
+        for (path, url) in sheets.iter() {
+            if let Some(&i) = path.to_str().and_then(|p| order.get(p)) {
+                let slot = at.entry(url.as_str()).or_insert(i);
+                *slot = (*slot).min(i);
+            }
+        }
+        self.css_urls
+            .lock()
+            .unwrap()
+            .sort_by_key(|url| at.get(url.as_str()).copied().unwrap_or(usize::MAX));
+    }
+
     /// Writes `bytes` as the file at `path` names it, content-hashed; its URL.
     fn write(&self, path: &Path, bytes: &[u8]) -> Result<String, String> {
         let ext = path
@@ -985,12 +1004,64 @@ pub(crate) struct DevStyleState {
     pub compiled_sheets: std::sync::atomic::AtomicBool,
 }
 
+/// A dev client bundle's linked stylesheets, each with the module that
+/// linked it, in the order their loads finished.
+#[derive(Default)]
+pub(crate) struct LinkedSheets(Vec<(String, String)>);
+
+impl LinkedSheets {
+    fn link(&mut self, id: &str, href: String) {
+        if !self.0.iter().any(|(_, h)| *h == href) {
+            self.0.push((id.to_string(), href));
+        }
+    }
+
+    /// The links in the order they were made.
+    pub fn urls(&self) -> Vec<String> {
+        self.0.iter().map(|(_, h)| h.clone()).collect()
+    }
+
+    /// The links in the bundle's execution order, as Vite's dev client
+    /// injects sheets when their modules run; one no chunk holds goes last.
+    pub fn in_bundle_order(&self, outputs: &[rolldown_common::Output]) -> Vec<String> {
+        let order = module_order(outputs);
+        let mut links: Vec<&(String, String)> = self.0.iter().collect();
+        links.sort_by_key(|(id, _)| order.get(id.as_str()).copied().unwrap_or(usize::MAX));
+        links.into_iter().map(|(_, h)| h.clone()).collect()
+    }
+}
+
+/// Each module's place in a bundle's execution order: the entry chunk's
+/// modules first, then the other chunks' as the output lists them (a chunk
+/// lists its modules in execution order). Keyed by id and by its path.
+fn module_order(outputs: &[rolldown_common::Output]) -> HashMap<&str, usize> {
+    let chunks = outputs.iter().filter_map(|o| match o {
+        rolldown_common::Output::Chunk(c) => Some(c),
+        rolldown_common::Output::Asset(_) => None,
+    });
+    let (entries, rest): (Vec<_>, Vec<_>) = chunks.partition(|c| c.is_entry);
+    let mut order = HashMap::new();
+    for (i, id) in entries
+        .into_iter()
+        .chain(rest)
+        .flat_map(|c| c.module_ids.iter())
+        .enumerate()
+    {
+        let id = id.as_str();
+        order.entry(id).or_insert(i);
+        order
+            .entry(id.split(['?', '#']).next().unwrap_or(id))
+            .or_insert(i);
+    }
+    order
+}
+
 /// Where the asset modules point.
 pub(crate) enum AssetMode {
     /// The dev server's files: `/@oj-start/fs/<abs>`, workers on the dev
     /// pipeline. `css_urls` collects the linked stylesheets.
     Dev {
-        css_urls: Arc<Mutex<Vec<String>>>,
+        css_urls: Arc<Mutex<LinkedSheets>>,
         state: Arc<DevStyleState>,
         /// The dev urls' prefix under `base`.
         url_base: String,
@@ -1246,10 +1317,7 @@ impl StartAssetsPlugin {
                         } else {
                             dev_id_url(url_base, id)
                         };
-                        let mut urls = css_urls.lock().unwrap();
-                        if !urls.contains(&href) {
-                            urls.push(href);
-                        }
+                        css_urls.lock().unwrap().link(id, href);
                     }
                     AssetMode::Build {
                         emitter,
@@ -1301,13 +1369,16 @@ impl Plugin for StartAssetsPlugin {
             .module(id, path)
             .await
             .map_err(|e| oj_server::load_error::load_failed(self.name(), id, anyhow::anyhow!(e)))?;
+        // A plain sheet stays in its chunk as well, as vite:css-post keeps
+        // one: the chunk's modules then place its link.
+        let plain = !id.contains('?') && is_style_path(id) && !is_css_module(id);
         Ok(code.map(|code| HookLoadOutput {
             code: arcstr::ArcStr::from(code),
             module_type: Some(ModuleType::Js),
             // A plugin-served sheet stays in its chunk, as Vite keeps CSS
             // modules (`no-treeshake`): UnoCSS finds its layers by the
             // chunk's modules.
-            side_effects: served
+            side_effects: (served || plain)
                 .then_some(rolldown_common::side_effects::HookSideEffects::NoTreeshake),
             ..Default::default()
         }))

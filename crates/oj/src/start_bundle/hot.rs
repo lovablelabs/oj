@@ -54,7 +54,7 @@ pub(crate) struct HotSession {
     pub engine: Arc<DevEngine>,
     /// The style epoch the session compiled its sheets under.
     pub epoch: u64,
-    pub css_urls: Arc<Mutex<Vec<String>>>,
+    pub css_urls: Arc<Mutex<super::assets::LinkedSheets>>,
     pub glob_scopes: Arc<Mutex<Vec<GlobCall>>>,
     pub styles: Arc<DevStyleState>,
     events: Arc<Events>,
@@ -83,7 +83,7 @@ impl EngineSlot {
 pub(crate) struct SessionParts {
     pub options: rolldown::BundlerOptions,
     pub plugins: Vec<SharedPluginable>,
-    pub css_urls: Arc<Mutex<Vec<String>>>,
+    pub css_urls: Arc<Mutex<super::assets::LinkedSheets>>,
     pub glob_scopes: Arc<Mutex<Vec<GlobCall>>>,
     pub styles: Arc<DevStyleState>,
 }

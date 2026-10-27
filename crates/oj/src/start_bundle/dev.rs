@@ -327,7 +327,7 @@ impl DevBundler {
             if !refresh {
                 let pages = !self.pages().is_empty();
                 if live.settle(changed, pages).await? {
-                    let css = live.css_urls.lock().unwrap().clone();
+                    let css = live.css_urls.lock().unwrap().urls();
                     let css = super::hot::link_new_styles(&start.cache, &css)
                         .map_err(|e| BundleError::from_message(format!("css-urls.json: {e}")))?;
                     return Ok(Run::Hot { css });
@@ -369,7 +369,7 @@ impl DevBundler {
             Some(h) => h.host.watch_files().await.unwrap_or_default(),
             None => Vec::new(),
         };
-        let css_urls = live.css_urls.lock().unwrap().clone();
+        let css_urls = live.css_urls.lock().unwrap().in_bundle_order(&output);
         let scopes = live.glob_scopes.lock().unwrap().clone();
         write_outputs(
             start,
@@ -394,7 +394,7 @@ impl DevBundler {
     fn parts(&self, host: Option<&BundleHost>, hot: bool) -> Result<SessionParts, BundleError> {
         let start = &self.start;
         let emit = Arc::new(EmitState::new(start.root.clone()));
-        let css_urls = Arc::new(Mutex::new(Vec::new()));
+        let css_urls = Arc::new(Mutex::new(super::assets::LinkedSheets::default()));
         let glob_scopes = Arc::new(Mutex::new(Vec::new()));
         let styles = Arc::new(DevStyleState::default());
         let refresh = hot && host.is_some_and(|h| h.facts.react_refresh);
@@ -554,7 +554,11 @@ impl DevBundler {
             None => Vec::new(),
         };
         *self.bundle_modules.lock().unwrap() = module_ids.clone();
-        let css_urls = parts.css_urls.lock().unwrap().clone();
+        let css_urls = parts
+            .css_urls
+            .lock()
+            .unwrap()
+            .in_bundle_order(&output.assets);
         let scopes = parts.glob_scopes.lock().unwrap().clone();
         write_outputs(
             start,
