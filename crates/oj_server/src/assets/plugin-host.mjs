@@ -353,7 +353,9 @@ function ctl(obj) {
 // flips the wedge evidence (releasing e.g. the Start prewarm hold) — the
 // last stage's name doubles as the diagnosis of WHERE the boot hangs. Not
 // timer-driven on purpose: a heartbeat would keep ticking through a hang
-// that leaves the event loop alive and defeat the evidence.
+// that leaves the event loop alive and defeat the evidence. One exception,
+// bootPreseedDone: each tick follows Rust's answer that the boot-time deps
+// pre-seed still runs, and that child has a kill deadline of its own.
 let ojInitDone = false;
 const initStage = (stage) => {
   if (!ojInitDone) ctl({ ojInitProgress: stage });

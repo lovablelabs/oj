@@ -54,12 +54,12 @@ fn prepare(root: &Path) {
             "    cloudflare({ viteEnvironment: { name: \"ssr\" } }),\n    tanstackStart(",
             1,
         )
-        // The ssr optimizer build runs in the child alone (the dev server
-        // finds its cache warm): slowed, the host reaches its environments
-        // while the seed still runs.
+        // The child's ssr optimizer build, slowed (OJ_PRESEED_REPORT is the
+        // child's alone, so the dev server's own optimizer runs at speed):
+        // the host reaches its environments while the seed still runs.
         .replacen(
             "    ssr: { define:",
-            "    ssr: { optimizeDeps: { rolldownOptions: { plugins: [{ name: \"slow-seed\", buildStart: () => new Promise((r) => setTimeout(r, 2000)) }] } }, define:",
+            "    ssr: { optimizeDeps: { rolldownOptions: { plugins: [{ name: \"slow-seed\", buildStart: () => process.env.OJ_PRESEED_REPORT && new Promise((r) => setTimeout(r, 2000)) }] } }, define:",
             1,
         )
         .replacen(
@@ -242,7 +242,7 @@ fn the_dev_server_never_optimizes_what_the_preseed_child_seeded() {
         );
         assert!(
             phase(&log, "waiting for the deps pre-seed") < seeded,
-            "the host never waited on the seed:\n{log}"
+            "the host reached its environments only after the seed was over:\n{log}"
         );
         assert!(
             phase(&log, "deps pre-seed over") >= seeded,
