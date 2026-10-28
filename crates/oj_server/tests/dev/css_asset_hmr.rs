@@ -89,6 +89,8 @@ async fn a_sheet_naming_assets_is_not_served_stale_from_the_persistent_cache() {
     let server = serve().await;
     let first = linked_sheet(&server).await;
     assert!(first.contains("%3cg/%3e"), "{first}");
+    // Cache writes are queued: give one time to land before the restart.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     drop(server);
 
     app.write(&[("src/dot.svg", "<svg><rect/></svg>")]);
@@ -98,4 +100,36 @@ async fn a_sheet_naming_assets_is_not_served_stale_from_the_persistent_cache() {
         second.contains("%3crect/%3e") && !second.contains("%3cg/%3e"),
         "{second}"
     );
+}
+
+// A page's `<style>` resolves its relative urls against the page's directory,
+// as Vite's html-proxy sheet does: under the base, a small svg inlined, and
+// an edit of what it names reaches the page.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pages_style_urls_resolve_beside_the_page() {
+    let app = App::new(&[
+        ("package.json", r#"{"name":"page-style-urls","version":"1.0.0"}"#),
+        ("dot.svg", "<svg><g/></svg>"),
+        ("img.png", "png-v1"),
+        (
+            "index.html",
+            "<!doctype html><html><head><style>.h1{background:url(./dot.svg)} .h2{background:url(./img.png)}</style></head><body></body></html>",
+        ),
+        ("vite.config.js", "export default { base: \"/app/\" };\n"),
+    ]);
+    let server = app.serve().await;
+    let listening = server.listen().await;
+    let (mut socket, _) = server.ws(listening.addr, "/app/__ws", None).await;
+    let html = server.text("/app/").await;
+    assert!(
+        html.contains("data:image/svg+xml,%3csvg%3e%3cg/%3e%3c/svg%3e"),
+        "{html}"
+    );
+    assert!(html.contains("/app/img.png"), "{html}");
+    app.write(&[("img.png", "png-v2")]);
+    frame_matching(&mut socket, "an update for the page's sheet", |f| {
+        f["type"] == "update" || f["type"] == "full-reload"
+    })
+    .await;
+    close(socket).await;
 }

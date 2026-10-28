@@ -486,3 +486,162 @@ async fn public_imports_and_inlined_svgs_in_sheets_stay_current() {
     };
     assert!(after.contains("%3csvg%3e%3cg/%3e%3c/svg%3e"), "{after}");
 }
+
+// `/@ssr-module` is an HTTP route, so Vite's isFileLoadingAllowed holds
+// there: `server.fs.deny` refuses `.env`, keys and `.git` however they are
+// asked for, a public file included.
+#[tokio::test(flavor = "multi_thread")]
+async fn ssr_module_reads_honor_server_fs_deny() {
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"ssrdeny","private":true,"type":"module"}"#,
+        ),
+        (".env", "SECRET=hunter2\n"),
+        ("key.pem", "SECRET-KEY\n"),
+        (".git/config", "SECRET-GIT\n"),
+        ("public/.env.local", "SECRET=public\n"),
+        ("src/main.js", "export {};\n"),
+        ("index.html", INDEX_HTML),
+    ]);
+    let server = app.serve().await;
+    let root = app.root.display();
+    for id in [
+        format!("{root}/.env%3Fraw"),
+        format!("{root}/key.pem%3Fraw"),
+        format!("{root}/.git/config%3Fraw"),
+        format!("{root}/.env%3Furl%26inline"),
+        format!("{root}/.env"),
+        "/.env.local%3Fraw".to_string(),
+    ] {
+        let r = server.get(&format!("/@ssr-module?id={id}")).await;
+        assert!(
+            r.status != 200 && !r.body.contains("SECRET") && !r.body.contains("U0VDUkVU"),
+            "{id}: {} {}",
+            r.status,
+            r.body
+        );
+    }
+}
+
+// Vite's isFileLoadingAllowed: `server.fs.strict: false` lets a load read
+// outside the allowed roots, and a file a package import resolved to is a
+// safe module path wherever it is linked.
+#[tokio::test(flavor = "multi_thread")]
+async fn ssr_loads_follow_fs_strict_and_resolved_package_files() {
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"ssrstrict","private":true,"type":"module"}"#,
+        ),
+        ("src/main.js", "export {};\n"),
+        ("index.html", INDEX_HTML),
+    ]);
+    let outside = app.root.parent().unwrap().join("ssr-linked-outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(
+        outside.join("package.json"),
+        r#"{"name":"outlinked","version":"1.0.0","type":"module","main":"index.ts"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        outside.join("index.ts"),
+        "export const v: string = \"outlinked\";\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(app.root.join("node_modules")).unwrap();
+    std::os::unix::fs::symlink(&outside, app.root.join("node_modules/outlinked")).unwrap();
+    let server = app.serve().await;
+    let file = std::fs::canonicalize(outside.join("index.ts")).unwrap();
+    let load = || {
+        let url = format!("/@ssr-module?id={}", file.display());
+        let server = &server;
+        async move { server.get(&url).await }
+    };
+    assert_ne!(load().await.status, 200, "not resolved yet");
+    let resolved = server
+        .text(&format!(
+            "/@ssr-resolve?importer={}&spec=outlinked",
+            app.root.join("src/main.js").display()
+        ))
+        .await;
+    assert!(resolved.contains("index.ts"), "{resolved}");
+    let r = load().await;
+    assert!(
+        r.status == 200 && r.body.contains("outlinked"),
+        "{} {}",
+        r.status,
+        r.body
+    );
+    // A relative specifier makes nothing loadable.
+    let secret = app.root.parent().unwrap().join("ssr-strict-secret.txt");
+    std::fs::write(&secret, "TOP-SECRET").unwrap();
+    server
+        .text(&format!(
+            "/@ssr-resolve?importer={}&spec=../../ssr-strict-secret.txt",
+            app.root.join("src/main.js").display()
+        ))
+        .await;
+    let r = server
+        .get(&format!("/@ssr-module?id={}%3Fraw", secret.display()))
+        .await;
+    assert!(
+        r.status != 200 && !r.body.contains("TOP-SECRET"),
+        "{} {}",
+        r.status,
+        r.body
+    );
+    drop(server);
+
+    app.write(&[(
+        "oj.config.json",
+        r#"{ "server": { "fs": { "strict": false } } }"#,
+    )]);
+    let server = app.serve().await;
+    let r = server
+        .get(&format!("/@ssr-module?id={}%3Fraw", secret.display()))
+        .await;
+    assert!(
+        r.status == 200 && r.body.contains("TOP-SECRET"),
+        "{} {}",
+        r.status,
+        r.body
+    );
+    let _ = std::fs::remove_file(&secret);
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+// vite:asset loads any asset id in every environment, and vite:css-post
+// exports a sheet's `?inline` as its compiled text.
+#[tokio::test(flavor = "multi_thread")]
+async fn plain_asset_and_inline_sheet_imports_load_in_ssr() {
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"ssrassets","private":true,"type":"module"}"#,
+        ),
+        ("src/dot.svg", "<svg></svg>"),
+        ("src/img.png", "png"),
+        ("src/c.css", ".c { color: red; }\n"),
+        ("src/main.js", "export {};\n"),
+        ("index.html", INDEX_HTML),
+    ]);
+    let server = app.serve().await;
+    let module = |rel: &str| {
+        let url = format!("/@ssr-module?id={}", app.root.join(rel).display());
+        let server = &server;
+        async move { server.text(&url).await }
+    };
+    let svg = module("src/dot.svg").await;
+    assert!(
+        svg.contains("export default \"data:image/svg+xml,%3csvg%3e%3c/svg%3e\""),
+        "{svg}"
+    );
+    let png = module("src/img.png").await;
+    assert!(png.contains("export default \"/src/img.png\""), "{png}");
+    let inline = module("src/c.css%3Finline").await;
+    assert!(
+        inline.contains("export default \"") && inline.contains("color") && inline.contains(".c"),
+        "{inline}"
+    );
+}

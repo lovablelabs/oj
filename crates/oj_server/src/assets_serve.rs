@@ -208,19 +208,32 @@ impl DevAssetUrls {
     /// (see [`asset_export_url`]). An error is a function `assetsInlineLimit`
     /// that threw, which fails the request as in Vite.
     pub(crate) fn file_url(&self, env: &str, file: &Path, url: &str) -> Result<String, String> {
+        Ok(match self.inline_url(env, file, url)? {
+            Some(data) => data,
+            None => self.join(&asset_export_url(url)),
+        })
+    }
+
+    /// fileToDevUrl's data URL for `file` requested as `url`, when it inlines.
+    pub(crate) fn inline_url(
+        &self,
+        env: &str,
+        file: &Path,
+        url: &str,
+    ) -> Result<Option<String>, String> {
         if has_word_param(url, "inline") {
             if let Ok(content) = std::fs::read(file) {
-                return Ok(asset_data_url(file, &content));
+                return Ok(Some(asset_data_url(file, &content)));
             }
         }
         if file.extension().is_some_and(|e| e == "svg") {
             if let Ok(content) = std::fs::read(file) {
                 if self.should_inline(env, file, url, &content)? {
-                    return Ok(svg_to_data_url(&content));
+                    return Ok(Some(svg_to_data_url(&content)));
                 }
             }
         }
-        Ok(self.join(&asset_export_url(url)))
+        Ok(None)
     }
 
     /// Vite's dev shouldInline: `?no-inline` never, `?inline` always, an svg
@@ -531,4 +544,14 @@ pub(crate) fn server_fn_stub(exports: &[String], url: &str) -> String {
         }
     }
     out
+}
+
+/// fileToDevUrl's data URL for `file` requested as `url` under a numeric
+/// `assetsInlineLimit`, when it inlines (`?inline`, or a small svg without
+/// `?no-inline` or a fragment).
+pub fn inline_url_under(file: &Path, url: &str, limit: u64) -> Option<String> {
+    DevAssetUrls::new(None, None, Some(limit))
+        .inline_url("client", file, url)
+        .ok()
+        .flatten()
 }

@@ -325,14 +325,23 @@ fn memory_hit(state: &ServerState, url: &str, key: &str) -> Option<Arc<CachedMod
 }
 
 fn store_module(state: &ServerState, url: &str, key: &str, module: &Arc<CachedModule>) {
-    // A sheet naming assets embeds what they are now (an inlined svg, a `t=`
-    // stamp): kept in memory, recompiled when one changes, never persisted.
-    let names_assets = module.kind == "css"
-        && module
+    // A sheet that may have inlined an asset embeds its content as it is now
+    // (an svg; any file under `?inline`, which leaves a data URL): kept in
+    // memory, recompiled when one changes, never persisted. A `t=` stamp is
+    // 0 after a restart, so other asset urls persist.
+    let inlines_assets = module.kind == "css" && {
+        let assets: Vec<&Path> = module
             .imports
             .iter()
-            .any(|i| is_asset_path(Path::new(i.split('?').next().unwrap_or(i))));
-    if state.persistent_cache && !names_assets {
+            .map(|i| Path::new(i.split('?').next().unwrap_or(i)))
+            .filter(|p| is_asset_path(p))
+            .collect();
+        assets
+            .iter()
+            .any(|p| p.extension().is_some_and(|e| e == "svg"))
+            || (!assets.is_empty() && module.code.contains("data:"))
+    };
+    if state.persistent_cache && !inlines_assets {
         let _ = state
             .cache_writes
             .try_send((key.to_string(), Arc::clone(module)));
@@ -732,24 +741,31 @@ pub(crate) fn rewrite_sheet_urls(
         state.graph.lock().unwrap().hmr_timestamp(Path::new(&url))
     };
     let resolve = state.css_resolve.as_ref();
-    let alias = |spec: &str| {
-        resolve
-            .alias_spec(spec)
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
-    };
+    let alias = |spec: &str| resolve.alias_spec(spec);
     crate::css_urls::CssUrls {
         root: &state.root,
         public_dir: state.public_dir.as_deref(),
         urls: &state.asset_urls,
         env,
         stamp: &stamp,
-        // A page with no file (a middleware's html) has no directory for a
-        // relative url to resolve against.
-        dir: sheet.is_file().then(|| sheet.parent()).flatten(),
+        dir: sheet_dir(sheet),
         alias: &alias,
     }
     .rewrite(css)
+}
+
+/// The directory a sheet's relative urls resolve against: its own, or for a
+/// page's `<style>` (compiled as `<page>.css`) the page's. A page with no
+/// file (a middleware's html) has none.
+fn sheet_dir(sheet: &Path) -> Option<&Path> {
+    let page = sheet
+        .to_str()
+        .and_then(|s| s.strip_suffix(".css"))
+        .map(Path::new);
+    (sheet.is_file()
+        || page.is_some_and(|p| p.extension().is_some_and(|e| e == "html") && p.is_file()))
+    .then(|| sheet.parent())
+    .flatten()
 }
 
 /// A sheet's pulled-in files as its graph imports, so a dep edit hot-updates

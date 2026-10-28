@@ -188,7 +188,8 @@ fn text_hash(text: &str) -> u64 {
 pub(crate) struct Styles {
     root: PathBuf,
     css: Option<oj_config::CssConfig>,
-    /// `build.assetsInlineLimit`, for the svgs a dev sheet names.
+    /// The client's numeric `build.assetsInlineLimit` (its environment's own
+    /// first), for the urls a dev sheet names.
     inline_limit: u64,
     modules: oj_css::CssModulesOptions,
     engines: StyleEngines,
@@ -216,7 +217,12 @@ impl Styles {
                 .config
                 .build
                 .as_ref()
-                .and_then(|b| b.assets_inline_limit)
+                .and_then(|b| {
+                    b.assets_inline_limit_envs
+                        .as_ref()
+                        .and_then(|envs| envs.get("client")?.as_u64())
+                        .or(b.assets_inline_limit)
+                })
                 .unwrap_or(4096),
             modules: oj_server::css_modules_options(&start.config),
             engines: StyleEngines::default(),
@@ -297,7 +303,9 @@ impl Styles {
                 modules: &self.modules,
                 ..oj_css::CssResolve::default()
             },
-            inline_limit: self.inline_limit,
+            inline: Box::new(|file, url| {
+                Ok(oj_server::inline_url_under(file, url, self.inline_limit))
+            }),
         }
     }
 

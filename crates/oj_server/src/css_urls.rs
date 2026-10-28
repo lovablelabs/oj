@@ -22,8 +22,8 @@ pub(crate) struct CssUrls<'a> {
     pub(crate) stamp: &'a dyn Fn(&Path) -> u64,
     /// The sheet's directory, which a relative url resolves against.
     pub(crate) dir: Option<&'a Path>,
-    /// `resolve.alias` for a url (the file a path alias names).
-    pub(crate) alias: &'a dyn Fn(&str) -> Option<PathBuf>,
+    /// `resolve.alias` for a url: the specifier it becomes.
+    pub(crate) alias: &'a dyn Fn(&str) -> Option<String>,
 }
 
 /// What a resolved url names.
@@ -49,9 +49,11 @@ impl CssUrls<'_> {
         Ok((css, files))
     }
 
-    /// The file `path` (decoded, no query) names: Vite's checkPublicFile for
-    /// a root-absolute one first, then the root (or `/@fs`), an alias, or the
-    /// sheet's directory (the css resolver prefers relative).
+    /// The file `path` (decoded, no query) names, in the css resolver's
+    /// order: Vite's checkPublicFile for a root-absolute url first, then
+    /// `resolve.alias`; a root-absolute result under the root (or `/@fs`, or
+    /// an absolute file), a relative one against the sheet's directory
+    /// (`preferRelative`), else a package's file in a `node_modules` above it.
     fn target(&self, path: &str) -> Option<Target> {
         if let Some(rel) = path.strip_prefix('/').filter(|r| !r.starts_with('/')) {
             if let Some(public) = self.public_dir {
@@ -60,17 +62,31 @@ impl CssUrls<'_> {
                     return Some(Target::Public);
                 }
             }
-            let file = match path.strip_prefix("/@fs") {
-                Some(abs) if abs.starts_with('/') => PathBuf::from(abs),
-                _ => self.root.join(rel),
-            };
-            return file.is_file().then_some(Target::File(file));
         }
-        if let Some(file) = (self.alias)(path) {
-            return file.is_file().then_some(Target::File(file));
+        let aliased = (self.alias)(path);
+        let spec = aliased.as_deref().unwrap_or(path);
+        let found = |file: PathBuf| file.is_file().then_some(Target::File(file));
+        if let Some(rel) = spec.strip_prefix('/').filter(|r| !r.starts_with('/')) {
+            if let Some(abs) = spec.strip_prefix("/@fs").filter(|a| a.starts_with('/')) {
+                return found(PathBuf::from(abs));
+            }
+            return found(self.root.join(rel)).or_else(|| found(PathBuf::from(spec)));
         }
-        let file = crate::rewrite::normalize(&self.dir?.join(path));
-        file.is_file().then_some(Target::File(file))
+        if Path::new(spec).is_absolute() {
+            return found(PathBuf::from(spec));
+        }
+        // A sheet with no directory (a middleware page's) resolves nothing
+        // relative.
+        let dir = self.dir?;
+        if let Some(file) = found(crate::rewrite::normalize(&dir.join(spec))) {
+            return Some(file);
+        }
+        if spec.starts_with('.') {
+            return None;
+        }
+        oj_css::node_modules_load_paths(dir)
+            .into_iter()
+            .find_map(|nm| found(nm.join(spec)))
     }
 
     /// Vite's urlResolver: the url `decodeURI`d (a malformed escape fails the
@@ -140,6 +156,33 @@ fn inject_query(url: &str, query: &str) -> String {
     }
 }
 
+/// The byte ranges of `css`'s comments, as the CSS tokenizer finds them: a
+/// `/*` inside a string opens none, and an unclosed one runs to the end.
+fn comment_ranges(css: &str) -> Vec<(usize, usize)> {
+    let bytes = css.as_bytes();
+    let mut ranges = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            quote @ (b'"' | b'\'') => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != quote && bytes[i] != b'\n' {
+                    i += if bytes[i] == b'\\' { 2 } else { 1 };
+                }
+                i += 1;
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                let end = css[i + 2..].find("*/").map_or(css.len(), |e| i + 2 + e + 2);
+                ranges.push((i, end));
+                i = end;
+            }
+            b'\\' => i += 2,
+            _ => i += 1,
+        }
+    }
+    ranges
+}
+
 /// A replacer: Some new url, None to keep the url as written.
 type Replace<'r> = dyn FnMut(&str) -> Result<Option<String>, String> + 'r;
 
@@ -149,12 +192,8 @@ type Replace<'r> = dyn FnMut(&str) -> Result<Option<String>, String> + 'r;
 fn rewrite_css_urls(css: &str, replace: &mut Replace<'_>) -> Result<String, String> {
     static BODY: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r#"^(\s*('[^']+'|"[^"]+")\s*|(?:\\.|[^'")\\])+)\)"#).unwrap());
-    static COMMENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)/\*.*?\*/").unwrap());
     // Vite walks declarations; a url inside a comment is in none.
-    let comments: Vec<(usize, usize)> = COMMENT
-        .find_iter(css)
-        .map(|m| (m.start(), m.end()))
-        .collect();
+    let comments = comment_ranges(css);
     let mut out = String::with_capacity(css.len());
     let mut last = 0;
     let mut from = 0;
@@ -285,7 +324,10 @@ fn do_url_replace(
     let mut unquoted = raw_url;
     if let Some(first @ ('"' | '\'')) = raw_url.chars().next() {
         wrap = if first == '"' { "\"" } else { "'" };
-        unquoted = &raw_url[1..raw_url.len().max(2) - 1];
+        // `rawUrl.slice(1, -1)`: by character, so an unclosed `"café` holds.
+        let mut inner = raw_url[1..].chars();
+        inner.next_back();
+        unquoted = inner.as_str();
     }
     if EXTERNAL.is_match(unquoted)
         || DATA.is_match(unquoted)

@@ -2340,6 +2340,17 @@ fn ssr_externalizes_reads_specifiers_as_vite_does() {
     let js = "/m/node_modules/x/index.js";
     assert!(crate::ssr::ssr_externalizes(&externals, "@s", js));
     assert!(crate::ssr::ssr_externalizes(&externals, "pkg/sub/x", js));
+    // createIsExternal: an exact `ssr.external` id is external before the
+    // bareImportRE check, unless it is relative or absolute.
+    let exact = oj_config::SsrExternals {
+        external: vec!["#db".into(), "./local".into(), "/abs".into()],
+        ..Default::default()
+    };
+    let app = "/m/src/db.js";
+    assert!(crate::ssr::ssr_externalizes(&exact, "#db", app));
+    assert!(!crate::ssr::ssr_externalizes(&exact, "#other", app));
+    assert!(!crate::ssr::ssr_externalizes(&exact, "./local", app));
+    assert!(!crate::ssr::ssr_externalizes(&exact, "/abs", app));
 }
 
 // Expected strings are Vite's own svgToDataURL (plugins/asset.ts) run on the
@@ -2572,6 +2583,8 @@ fn served_sheet_urls_follow_vites_url_rewrite() {
     std::fs::write(root.join("src/p.png"), "png").unwrap();
     std::fs::write(root.join("src/my file.png"), "png").unwrap();
     std::fs::write(root.join("public/l.svg"), "<svg></svg>").unwrap();
+    std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+    std::fs::write(root.join("node_modules/pkg/img.png"), "png").unwrap();
     let urls = DevAssetUrls::new(Some("https://cdn"), Some("/my%20app/"), None);
     let stamp = |file: &std::path::Path| u64::from(file.ends_with("p.png")) * 7;
     let rewrite = |css: &str| {
@@ -2582,9 +2595,14 @@ fn served_sheet_urls_follow_vites_url_rewrite() {
             env: "client",
             stamp: &stamp,
             dir: Some(&root.join("src")),
+            // A root-relative alias target, and an absolute one.
             alias: &|spec| {
                 spec.strip_prefix("@/")
-                    .map(|rest| root.join("src").join(rest))
+                    .map(|rest| format!("/src/{rest}"))
+                    .or_else(|| {
+                        spec.strip_prefix("~abs/")
+                            .map(|rest| format!("{}/src/{rest}", root.display()))
+                    })
             },
         }
         .rewrite(css)
@@ -2608,6 +2626,13 @@ fn served_sheet_urls_follow_vites_url_rewrite() {
         // Relative to the sheet, and through an alias.
         ("a{b:url(./p.png)}", r#"a{b:url("https://cdn/my app/src/p.png?t=7")}"#),
         ("a{b:url(@/p.png)}", r#"a{b:url("https://cdn/my app/src/p.png?t=7")}"#),
+        ("a{b:url(~abs/p.png)}", r#"a{b:url("https://cdn/my app/src/p.png?t=7")}"#),
+        // A package's file, from a node_modules above the sheet.
+        ("a{b:url(pkg/img.png)}", r#"a{b:url("https://cdn/my app/node_modules/pkg/img.png")}"#),
+        // A `/*` inside a string opens no comment.
+        (r#"a{c:"/*"} b{b:url(/src/p.png)} d{c:"*/"}"#, r#"a{c:"/*"} b{b:url("https://cdn/my app/src/p.png?t=7")} d{c:"*/"}"#),
+        // An unclosed quote with a multibyte character keeps it whole.
+        (r#"a{b:image-set("café)}"#, r#"a{b:image-set("café)}"#),
         // A comment is not a declaration.
         ("/* url(/src/p.png) */a{b:url(/src/p.png)}", r#"/* url(/src/p.png) */a{b:url("https://cdn/my app/src/p.png?t=7")}"#),
         // Only an ASCII punctuation escape unescapes (JS `\W`).

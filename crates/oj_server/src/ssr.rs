@@ -85,7 +85,7 @@ impl SsrBridge {
             root: &state.root,
             css: state.css_config.as_ref(),
             resolve: state.css_resolve.as_ref(),
-            inline_limit: state.asset_urls.inline_limit,
+            inline: Box::new(|file, url| state.asset_urls.inline_url("ssr", file, url)),
         };
         let tailwind = async || lazy_engine(state, EngineKind::Tailwind).await.cloned();
         let url_base = crate::start_dev_url_base(state.base.as_deref().unwrap_or("/"));
@@ -218,11 +218,16 @@ pub(crate) fn ssr_externalizes(
     spec: &str,
     path: &str,
 ) -> bool {
-    if !is_bare_import(spec) || spec.contains('\0') {
+    // createIsExternal: an exact `ssr.external` id is external unless it is
+    // relative or absolute (`#db` included), before the bareImportRE check.
+    if spec.contains('\0') || spec.starts_with('.') || Path::new(spec).is_absolute() {
         return false;
     }
     if externals.external.iter().any(|e| e == spec) {
         return true;
+    }
+    if !is_bare_import(spec) {
+        return false;
     }
     let externalizable = |configured: bool| {
         (configured || path.contains("/node_modules/")) && can_externalize_file(path)
@@ -355,7 +360,11 @@ pub(crate) fn public_file(state: &ServerState, rel: &str) -> Option<PathBuf> {
     let public = state.public_dir.as_deref()?;
     let clean = rel.split(['?', '#']).next().unwrap_or(rel);
     let file = crate::rewrite::normalize(&public.join(clean.trim_start_matches('/')));
-    (file.starts_with(public) && file.is_file()).then_some(file)
+    // `/@ssr-module` is an HTTP route, so `server.fs.deny` holds here too.
+    (file.starts_with(public)
+        && file.is_file()
+        && !crate::module_pipeline::path_is_denied(&file, &state.root, &state.fs_deny))
+    .then_some(file)
 }
 
 /// Vite's alias pattern matcher (preAlias.ts `matches`) over the top-level
@@ -427,6 +436,22 @@ pub(crate) async fn ssr_resolve_inner(
             if !aliased && ssr_externalizes(&state.ssr_externals, spec, &s) {
                 SsrResolution::External(spec.to_string())
             } else {
+                // Vite's safeModulePaths: the file a package import resolved
+                // to may load, wherever it is linked. This route is HTTP, so
+                // only a bare specifier with no `..` from a loadable importer
+                // counts (a relative one could name any file).
+                let file = Path::new(s.split('?').next().unwrap_or(&s));
+                let package_import =
+                    is_bare_import(spec) && !spec.split('/').any(|seg| seg == "..");
+                if package_import
+                    && file.is_absolute()
+                    && ssr_module_allowed(
+                        state,
+                        Path::new(importer.split('?').next().unwrap_or(importer)),
+                    )
+                {
+                    crate::util::allow_root(&state.fs_allow, file.to_path_buf());
+                }
                 SsrResolution::Module(s.into_owned())
             }
         }
@@ -477,7 +502,20 @@ pub(crate) fn module_read_allowed(
         .any(|allowed| candidate.starts_with(real(allowed)))
 }
 
+/// Vite's isFileLoadingAllowed: `server.fs.deny` first, then everything
+/// under `server.fs.strict: false`, else the allowed roots.
 pub(crate) fn ssr_module_allowed(state: &ServerState, path: &Path) -> bool {
+    let real = std::fs::canonicalize(path).ok();
+    if [Some(path), real.as_deref()]
+        .into_iter()
+        .flatten()
+        .any(|p| crate::module_pipeline::path_is_denied(p, &state.root, &state.fs_deny))
+    {
+        return false;
+    }
+    if !state.fs_strict {
+        return true;
+    }
     let allow = state.fs_allow.lock().unwrap().clone();
     module_read_allowed(&state.root, &allow, path)
 }
@@ -501,6 +539,20 @@ pub(crate) async fn ssr_module_inner(
     }
     if let Some(code) = ssr_query_asset(state, id, runner).await? {
         return Ok(code);
+    }
+    // A stylesheet's `?inline` is its compiled text (vite:css-post's inline
+    // export, ahead of the server consumer's class map).
+    if let Some((file, query)) = id.split_once('?') {
+        let sheet = Path::new(file);
+        let is_sheet = sheet
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(is_style_ext);
+        if is_sheet && has_word_param(&format!("?{query}"), "inline") && sheet.is_file() {
+            return ssr_inline_style(state, id, sheet)
+                .await
+                .map_err(SsrModuleError::Failed);
+        }
     }
     let ext = path.extension().and_then(|e| e.to_str());
     // A sheet a plugin serves with no file behind it compiles like a file.
@@ -555,6 +607,8 @@ async fn ssr_query_asset(
         {
             (id, "url")
         }
+        // A plain import of any other asset (`./logo.svg`) likewise.
+        None if is_asset_path(Path::new(id)) && Path::new(id).is_file() => (id, "url"),
         None => return Ok(None),
     };
     let kind = match query_asset_kind(Some(query)) {
@@ -625,6 +679,23 @@ async fn ssr_style_module(
     let module = style_file(state, path, source).await?;
     style_slot(slots, module.css, "normal").await?;
     style_slot(slots, module.code, "post").await
+}
+
+/// A stylesheet's `?inline` module in the SSR environment: its compiled text
+/// as the default export, through the same plugin slots.
+async fn ssr_inline_style(
+    state: &Arc<ServerState>,
+    id: &str,
+    path: &Path,
+) -> Result<String, String> {
+    let host = ssr_plugin_host(state).await;
+    let slots = host.as_deref().map(|host| StyleSlots { host, id });
+    let source = read_style_source(slots, path).await?;
+    let source = style_slot(slots, source, "pre").await?;
+    let module = style_file(state, path, source).await?;
+    let css = style_slot(slots, module.css, "normal").await?;
+    let code = format!("export default {}", serde_json::Value::String(css));
+    style_slot(slots, code, "post").await
 }
 
 /// Plugin-transform + dev-ssr-compile tail of the SSR module pipeline, on a
@@ -827,7 +898,7 @@ pub(crate) async fn style_file(
         root: &state.root,
         css: state.css_config.as_ref(),
         resolve: state.css_resolve.as_ref(),
-        inline_limit: state.asset_urls.inline_limit,
+        inline: Box::new(|file, url| state.asset_urls.inline_url("ssr", file, url)),
     };
     compile_style_file(&inputs, path, source, engine).await
 }
