@@ -21,7 +21,7 @@ export default [
     enforce: "pre",
     resolveId: {
       filter: { id: /^(shared-lib|linked-lib)$/ },
-      handler(id) { return alt(id); },
+      handler(id) { return { id: alt(id), external: false }; },
     },
   },
   {
