@@ -1674,8 +1674,15 @@ impl DevServer {
             defines,
             dedup_defines_last_wins(oj_config::environment_defines(&config, "ssr")),
         ));
+        let client_resolver = Arc::new(client_resolver(&root, &config));
+        let ssr_resolver = Arc::new(ssr_resolver(&root, &config));
         if let Some(host) = &plugin_host {
             host.set_import_meta_env(Arc::clone(&import_meta_env));
+            // Before buildStart, whose `this.resolve` already answers per environment.
+            host.set_resolvers(plugins::EnvResolvers {
+                client: Arc::clone(&client_resolver),
+                server: Arc::clone(&ssr_resolver),
+            });
             // Vite awaits the client buildStart while initing the server, after
             // config resolution, so the defines are final for any `this.load`.
             // A rejection fails startup rather than serving. A host kept only
@@ -1746,7 +1753,6 @@ impl DevServer {
         let (watch_tx, watch_rx) = std::sync::mpsc::channel::<WatchMsg>();
         let (watch_ready_tx, watch_ready) = tokio::sync::watch::channel(false);
         let public_dir = oj_config::public_dir(&config, &root);
-        let client_resolver = Arc::new(client_resolver(&root, &config));
         let css_resolve = oj_css::CssResolveConfig {
             root: root.clone(),
             public_dir: public_dir.clone().unwrap_or_default(),
@@ -1772,7 +1778,7 @@ impl DevServer {
             graph: Mutex::new(ModuleGraph::new()),
             require_resolver: Arc::new(client_resolver.require_variant()),
             resolver: client_resolver,
-            ssr_resolver: Arc::new(ssr_resolver(&root, &config)),
+            ssr_resolver,
             cache: PersistentCache::new(oj_cache::cache_root(&root), env!("CARGO_PKG_VERSION"))
                 .with_salt_extra(&installed.digest)
                 // A cached compile embeds the JSX runtime import; a changed

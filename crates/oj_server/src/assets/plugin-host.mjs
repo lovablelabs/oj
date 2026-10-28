@@ -1950,7 +1950,10 @@ function pluginContext(c) {
         // Outside a running bundle (no bundler to ask) oj's resolver answers.
         if (!r || !r.fallback) return r ?? null;
       }
-      const id = await ctxRpc("resolve", [source, importer ?? ""]);
+      // Resolved with the environment's own options (Vite's resolve plugin
+      // reads this.environment.config.resolve).
+      const consumer = c.environment?.config?.consumer ?? "client";
+      const id = await ctxRpc("resolve", [source, importer ?? "", consumer]);
       return id == null ? null : { id };
     },
     emitFile(file) {

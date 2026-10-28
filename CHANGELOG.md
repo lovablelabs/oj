@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A plugin's `this.resolve` in the ssr environment resolves with the ssr environment's options, as Vite's resolve plugin reads `this.environment.config.resolve`: a package's `browser` field no longer wins in a server-side render. Both the transforming module's own imports and any other specifier resolved the client way before. The fallback for an id no plugin claims also takes the app's `resolve` options (aliases, conditions, main fields) in every environment, where it used a bare resolver at the root.
+
 ## [0.2.49] - 2026-10-28
 
 ### Fixed

@@ -357,7 +357,7 @@ pub(crate) async fn ssr_transform_source(
         // isolate RPC and the import pre-resolution that only feeds it.
         Some(host) if host.hook_wants_transform(id, &source) => {
             let resolved =
-                resolved_imports_json(&state.resolver, &state.fs_allow, &source, Path::new(id));
+                resolved_imports_json(&state.ssr_resolver, &state.fs_allow, &source, Path::new(id));
             match host.transform(&source, id, &resolved).await {
                 Ok(t) => t.code,
                 Err(e) => {

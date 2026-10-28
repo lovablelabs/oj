@@ -126,10 +126,22 @@ pub struct HostPrewarm {
     engine: std::sync::Arc<oj_js::JsEngine>,
     post_rx: tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
     import_meta_env: Arc<std::sync::OnceLock<Arc<oj_compiler::ImportMetaEnv>>>,
+    resolvers: ResolverSlot,
     bundles: BundleGraphs,
     registry: Option<oj_js::EngineRegistry>,
     boot_preseed: BootPreseed,
 }
+
+/// The dev server's resolvers, one per consumer: a plugin's `this.resolve`
+/// that no plugin answers resolves with its environment's own options, as
+/// Vite's resolve plugin reads `this.environment.config.resolve`.
+pub struct EnvResolvers {
+    pub client: Arc<OjResolver>,
+    pub server: Arc<OjResolver>,
+}
+
+/// Set once after spawn; unset (`oj build`), a bare resolver at the root answers.
+pub(crate) type ResolverSlot = Arc<std::sync::OnceLock<EnvResolvers>>;
 
 /// The boot-time deps pre-seed the dev server runs alongside the host's start
 /// (preseed.rs): set once, before the host builds its environments, and read
@@ -142,6 +154,7 @@ fn new_host_engine(
     memory_limit_bytes: usize,
     registry: Option<oj_js::EngineRegistry>,
     import_meta_env: Arc<std::sync::OnceLock<Arc<oj_compiler::ImportMetaEnv>>>,
+    resolvers: ResolverSlot,
     bundles: BundleGraphs,
     post_tx: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
     runtime: Option<tokio::runtime::Handle>,
@@ -159,7 +172,15 @@ fn new_host_engine(
         Box::new(move |method, args| {
             bundle_rpc(method, args, &bundles)
                 .or_else(|| preseeds.rpc(method, args, &root))
-                .unwrap_or_else(|| ctx_rpc(method, args, &resolver, &root, import_meta_env.get()))
+                .unwrap_or_else(|| {
+                    let ctx = CtxRpc {
+                        resolver: &resolver,
+                        resolvers: resolvers.get(),
+                        root: &root,
+                        env: import_meta_env.get(),
+                    };
+                    ctx_rpc(method, args, &ctx)
+                })
         })
     };
     let mut engine_config = oj_js::EngineConfig::new(&root);
@@ -200,6 +221,8 @@ pub(crate) struct BootContext {
     registry: Option<oj_js::EngineRegistry>,
     /// The dev server's defines, for `moduleInfo` compiles; set once after spawn.
     import_meta_env: Arc<std::sync::OnceLock<Arc<oj_compiler::ImportMetaEnv>>>,
+    /// The dev server's resolvers for `this.resolve`; set once after spawn.
+    resolvers: ResolverSlot,
     /// The bundle each container's hooks run inside (see [`BundleGraph`]).
     bundles: BundleGraphs,
     /// The runtime the host was spawned on: a respawn's engine and tasks
@@ -372,15 +395,23 @@ pub struct HostRpc {
     pub args: Vec<serde_json::Value>,
 }
 
+/// What the reverse ctx-RPC answers from.
+pub(crate) struct CtxRpc<'a> {
+    /// The bare root resolver, when the dev server set no [`EnvResolvers`].
+    pub(crate) resolver: &'a OjResolver,
+    pub(crate) resolvers: Option<&'a EnvResolvers>,
+    pub(crate) root: &'a Path,
+    pub(crate) env: Option<&'a Arc<oj_compiler::ImportMetaEnv>>,
+}
+
 /// The host's reverse ctx-RPC (`this.resolve` fallbacks, `this.load` module
 /// info), answered SYNCHRONOUSLY on the isolate thread via the `__oj_rpc` bridge.
 pub(crate) fn ctx_rpc(
     method: &str,
     args: &[serde_json::Value],
-    resolver: &OjResolver,
-    root: &Path,
-    env: Option<&Arc<oj_compiler::ImportMetaEnv>>,
+    ctx: &CtxRpc<'_>,
 ) -> Result<serde_json::Value, String> {
+    let CtxRpc { root, env, .. } = *ctx;
     let arg = |i: usize| args.get(i).and_then(|v| v.as_str()).unwrap_or("");
     let dir_of = |path: &Path| {
         path.parent()
@@ -394,6 +425,12 @@ pub(crate) fn ctx_rpc(
                 root.to_path_buf()
             } else {
                 dir_of(Path::new(importer))
+            };
+            // The calling environment's consumer ("client" or "server").
+            let resolver = match (ctx.resolvers, arg(2)) {
+                (Some(r), "server") => &*r.server,
+                (Some(r), _) => &*r.client,
+                (None, _) => ctx.resolver,
             };
             Ok(match resolver.resolve(&dir, source) {
                 Ok(p) => serde_json::Value::String(p.display().to_string()),
@@ -418,7 +455,7 @@ pub(crate) fn ctx_rpc(
             let imported_ids: Vec<String> = imports
                 .iter()
                 .map(|spec| {
-                    resolver
+                    ctx.resolver
                         .resolve(&dir, spec)
                         .map(|p| p.display().to_string())
                         .unwrap_or_else(|_| spec.clone())
@@ -733,11 +770,13 @@ impl PluginHost {
             Arc::default();
         let bundles = BundleGraphs::default();
         let boot_preseed = BootPreseed::default();
+        let resolvers = ResolverSlot::default();
         let engine = new_host_engine(
             root,
             plugin_host_memory_mb() * 1024 * 1024,
             registry.clone(),
             Arc::clone(&import_meta_env),
+            Arc::clone(&resolvers),
             Arc::clone(&bundles),
             post_tx,
             tokio::runtime::Handle::try_current().ok(),
@@ -756,6 +795,7 @@ impl PluginHost {
             engine,
             post_rx,
             import_meta_env,
+            resolvers,
             bundles,
             registry,
             boot_preseed,
@@ -835,6 +875,10 @@ impl PluginHost {
                 import_meta_env: prewarm
                     .as_ref()
                     .map(|p| Arc::clone(&p.import_meta_env))
+                    .unwrap_or_default(),
+                resolvers: prewarm
+                    .as_ref()
+                    .map(|p| Arc::clone(&p.resolvers))
                     .unwrap_or_default(),
                 bundles: prewarm
                     .as_ref()
@@ -1761,6 +1805,11 @@ impl PluginHost {
         self.core.set_import_meta_env(env)
     }
 
+    /// The dev server's resolvers for `this.resolve` (`oj build` leaves them unset).
+    pub fn set_resolvers(&self, resolvers: EnvResolvers) {
+        let _ = self.core.boot.resolvers.set(resolvers);
+    }
+
     pub fn set_ws_sender(&self, tx: tokio::sync::broadcast::Sender<String>) {
         self.core.set_ws_sender(tx)
     }
@@ -1900,6 +1949,7 @@ impl HostCore {
             self.boot.memory_limit_bytes,
             self.boot.registry.clone(),
             Arc::clone(&self.boot.import_meta_env),
+            Arc::clone(&self.boot.resolvers),
             Arc::clone(&self.boot.bundles),
             post_tx,
             self.boot.runtime.clone(),
