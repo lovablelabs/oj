@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.50] - 2026-10-28
+
 ### Fixed
 
 - A server-side render leaves to Node only the dependency files Vite's `canExternalizeFile` does: `.js`, `.mjs`, `.cjs` or no extension, with the query read as part of the extension. `import url from "pkg/styles.css?url"` was handed to Node, which loaded the stylesheet as JavaScript; a raw `.ts` dependency file was handed over too. Such a file now goes through the ssr pipeline, which answers `?url`, `?raw` and `?inline` on a file as `vite:asset` does (the same URL the browser imports, a public file's under the public dir), after any plugin that loads the id itself.
