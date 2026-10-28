@@ -64,10 +64,12 @@ try {
   assert.ok(await reachable(), "dev server came up");
 
   const entry = await (await fetch(`${base}/src/entry.js`)).text();
-  const idUrl = entry.match(/\/@id\/[a-f0-9]+\?importer=[a-f0-9]+/)?.[0];
-  assert.ok(idUrl, "the bare specifier was rewritten to a /@id/ URL:\n" + entry);
+  // A pre plugin answers before oj's resolver, so the import names the file
+  // itself (Vite's /@fs/ URL for a file outside the root).
+  const url = entry.match(/from "([^"]+)"/)?.[1];
+  assert.ok(url && url !== "my-external-dep", "the bare specifier was rewritten:\n" + entry);
 
-  const res = await fetch(`${base}${idUrl}`); // fetch follows the redirect
+  const res = await fetch(`${base}${url}`); // fetch follows a redirect
   assert.equal(res.status, 200, `the resolved-but-unloaded module must be served, got ${res.status}`);
   const mod = await res.text();
   assert.match(mod, /external-dep-served-ok/, "the resolved file's bytes were served from disk:\n" + mod);
