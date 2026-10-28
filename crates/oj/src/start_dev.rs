@@ -1022,19 +1022,12 @@ impl KnownFiles {
 /// directory (`cache`) out of closure.json, so a glob reaching them has not
 /// grown, or every restore of such an app would miss.
 fn restorable_glob_members(scopes: &Path, cache: &Path) -> Vec<PathBuf> {
+    let left_out = crate::start_bundle::dev::left_out_of_closure(cache);
     load_glob_calls(scopes)
         .iter()
         .flat_map(oj_compiler::glob::GlobCall::files)
-        .filter(|f| !f.starts_with(cache) && !is_route_tree_gen(f))
+        .filter(|f| !left_out(f))
         .collect()
-}
-
-/// The client bundle's `routeTree.gen.[jt]sx?` closure filter.
-fn is_route_tree_gen(p: &Path) -> bool {
-    p.file_name()
-        .and_then(|n| n.to_str())
-        .and_then(|n| n.strip_prefix("routeTree.gen."))
-        .is_some_and(|ext| matches!(ext, "js" | "jsx" | "ts" | "tsx"))
 }
 
 /// Whether a batch can change the client bundle: a path in the closure (the
@@ -4348,8 +4341,38 @@ mod tests {
             ("routeTree.gen.d.ts", false),
             ("routeTree.ts", false),
         ] {
-            assert_eq!(is_route_tree_gen(Path::new(name)), generated, "{name}");
+            assert_eq!(
+                crate::start_bundle::dev::is_route_tree_gen(Path::new(name)),
+                generated,
+                "{name}"
+            );
         }
+    }
+
+    // A cache dir reached through a symlink: the closure leaves its files out
+    // by realpath, so a glob reaching that realpath has not grown either.
+    #[cfg(unix)]
+    #[test]
+    fn restore_glob_members_skip_a_symlinked_cache_by_its_realpath() {
+        let app = std::fs::canonicalize(tmp("restore-glob-link")).unwrap();
+        std::fs::create_dir_all(app.join("src/lib")).unwrap();
+        std::fs::create_dir_all(app.join("src/out/start")).unwrap();
+        std::fs::create_dir_all(app.join(".oj")).unwrap();
+        let member = app.join("src/lib/a.ts");
+        std::fs::write(&member, "x").unwrap();
+        std::fs::write(app.join("src/out/start/manifest.ts"), "x").unwrap();
+        let cache = app.join(".oj/start");
+        std::os::unix::fs::symlink(app.join("src/out/start"), &cache).unwrap();
+        let scopes = app.join("glob-scopes.json");
+        let a = app.to_string_lossy().replace('\\', "/");
+        std::fs::write(
+            &scopes,
+            serde_json::json!([{"patterns": [format!("{a}/src/**/*.ts")], "exhaustive": true, "caseSensitive": true}])
+                .to_string(),
+        )
+        .unwrap();
+        assert_eq!(restorable_glob_members(&scopes, &cache), [member]);
+        let _ = std::fs::remove_dir_all(&app);
     }
 
     // The rebundle worker tracks the regen outputs' content against what the
