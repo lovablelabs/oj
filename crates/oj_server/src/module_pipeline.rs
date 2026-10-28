@@ -82,6 +82,12 @@ pub(crate) async fn ensure_module_as(
         // `<style>` the JS wrapper injects resolves them from any page.
         let dir = file.parent().unwrap_or(Path::new("/"));
         let css = crate::style_file::rewrite_relative_urls(&css, dir, |f| url_of(&state.root, f));
+        let css = dev_css_urls(
+            &state.root,
+            state.public_dir.as_deref(),
+            &state.asset_urls,
+            &css,
+        );
         let normal =
             plugin_transform_phase(state, file, &transform_id, css, is_dep, Some("normal")).await?;
         let module = CachedModule {
@@ -303,7 +309,7 @@ fn code_module(code: String) -> CachedModule {
 fn url_asset_module(state: &ServerState, file: &Path, url: &str) -> CachedModule {
     code_module(format!(
         "export default {};\n",
-        serde_json::Value::String(state.asset_urls.file_url(file, url))
+        serde_json::Value::String(encode_uri_path(&state.asset_urls.file_url(file, url)))
     ))
 }
 
@@ -793,7 +799,12 @@ impl CompileJob {
             kind: "css".into(),
             imports: dep_imports,
             css_exports: self.css.exports.unwrap_or_default(),
-            ..code_module(output.css)
+            ..code_module(dev_css_urls(
+                &state.root,
+                state.public_dir.as_deref(),
+                &state.asset_urls,
+                &output.css,
+            ))
         })
     }
 

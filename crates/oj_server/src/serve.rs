@@ -34,7 +34,7 @@ pub(crate) async fn serve_path(
     if path_is_denied(&file, &state.root, &state.fs_deny) {
         return (StatusCode::FORBIDDEN, "oj: path denied by server.fs.deny").into_response();
     }
-    serve_file(&state, &headers, &uri, &file).await
+    serve_file(&state, &headers, &uri, &file, rel).await
 }
 
 /// oj's own `/@...` routes (optimized deps, stubs, package bundles, virtual
@@ -303,6 +303,7 @@ async fn serve_file(
     headers: &HeaderMap,
     uri: &Uri,
     file: &Path,
+    rel: &str,
 ) -> Response {
     let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
     let query = uri.query();
@@ -321,8 +322,18 @@ async fn serve_file(
         .public_dir
         .as_deref()
         .is_some_and(|p| file.starts_with(p));
-    if let Some(kind) = query_asset_kind(query) {
-        return serve_asset_query(state, file, ext, kind, query, in_public).await;
+    // `?inline` on a file Vite's asset plugin does not load (not an asset or
+    // a stylesheet) is the plain module, as vite:asset's load filter has it.
+    let asset_query = query_asset_kind(query)
+        .filter(|kind| *kind != "inline" || is_style_ext(ext) || is_asset_path(file));
+    if let Some(kind) = asset_query {
+        // Vite's checkPublicFile: public when the request path names a file
+        // under the public dir, so `/public/logo.png` is not `/logo.png`.
+        let public_url = state
+            .public_dir
+            .as_deref()
+            .is_some_and(|p| in_public && p.join(rel) == file);
+        return serve_asset_query(state, file, ext, kind, query, public_url).await;
     }
     if is_style_ext(ext) && !in_public {
         return vary_on_fetch_dest(serve_style(state, headers, file, query).await);

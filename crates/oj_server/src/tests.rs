@@ -2391,7 +2391,7 @@ fn dev_asset_urls_inline_small_svgs_and_prefix_origin_and_base() {
     );
     assert_eq!(
         urls.file_url(&small, "/src/icon.svg?no-inline"),
-        "https://cdn.example/app/src/icon.svg"
+        "https://cdn.example/app/src/icon.svg?no-inline"
     );
     assert_eq!(
         urls.file_url(&small, "/src/icon.svg#a"),
@@ -2461,10 +2461,10 @@ fn a_server_environment_resolves_with_its_own_conditions_not_the_ssr_ones() {
     let root = dir.path().canonicalize().unwrap();
     let cfg =
         config(r#"{ "environments": { "worker": { "resolve": { "conditions": ["custom"] } } } }"#);
-    let worker = environment_resolver(&root, &cfg, "worker", true, None);
+    let worker = environment_resolver(&root, &cfg, "worker", true, true, None);
     assert_eq!(resolved(&worker, &root, "cond"), "cond/custom.js");
     assert_eq!(resolved(&worker, &root, "dual"), "dual/server.js");
-    let ssr = environment_resolver(&root, &cfg, "ssr", true, None);
+    let ssr = environment_resolver(&root, &cfg, "ssr", true, true, None);
     assert_eq!(resolved(&ssr, &root, "cond"), "cond/default.js");
 }
 
@@ -2473,9 +2473,9 @@ fn a_webworker_ssr_target_keeps_the_client_resolve_defaults() {
     let dir = resolve_fixture();
     let root = dir.path().canonicalize().unwrap();
     let cfg = config(r#"{ "ssr": { "target": "webworker" } }"#);
-    let ssr = environment_resolver(&root, &cfg, "ssr", true, None);
+    let ssr = environment_resolver(&root, &cfg, "ssr", true, true, None);
     assert_eq!(resolved(&ssr, &root, "dual"), "dual/browser.js");
-    let other = environment_resolver(&root, &cfg, "worker", true, None);
+    let other = environment_resolver(&root, &cfg, "worker", true, true, None);
     assert_eq!(resolved(&other, &root, "dual"), "dual/server.js");
 }
 
@@ -2483,12 +2483,89 @@ fn a_webworker_ssr_target_keeps_the_client_resolve_defaults() {
 fn reported_environment_options_win_over_the_config_and_defaults() {
     let dir = resolve_fixture();
     let root = dir.path().canonicalize().unwrap();
-    let cfg = config("{}");
+    // The config names the defaults explicitly; the reported lists still win.
+    let cfg = config(
+        r#"{ "environments": { "ssr": { "resolve": { "conditions": ["default"], "mainFields": ["main"] } } } }"#,
+    );
     let reported = plugins::ReportedResolve {
         conditions: Some(vec!["custom".into()]),
         main_fields: Some(vec!["browser".into(), "module".into()]),
+        ..Default::default()
     };
-    let ssr = environment_resolver(&root, &cfg, "ssr", true, Some(&reported));
+    let ssr = environment_resolver(&root, &cfg, "ssr", true, true, Some(&reported));
     assert_eq!(resolved(&ssr, &root, "cond"), "cond/custom.js");
     assert_eq!(resolved(&ssr, &root, "dual"), "dual/browser.js");
+}
+
+// Vite's createIsBuiltin over nodeLikeBuiltins: an exact builtinModules name
+// or the `node:` / `bun:` namespace; a subpath of a builtin name is not one.
+#[test]
+fn ssr_builtins_match_vites_node_like_builtins() {
+    for spec in [
+        "events",
+        "fs",
+        "fs/promises",
+        "node:events",
+        "bun:sqlite",
+        "_http_agent",
+    ] {
+        assert!(crate::ssr::is_ssr_builtin(spec), "{spec}");
+    }
+    for spec in ["events/x", "fs/extra", "eventsx", "@scope/fs"] {
+        assert!(!crate::ssr::is_ssr_builtin(spec), "{spec}");
+    }
+}
+
+// Vite's preAlias `matches`: the find itself or anything under `find/`.
+#[test]
+fn alias_finds_match_as_vites_pattern_matcher() {
+    let finds = vec!["react".to_string(), "@/".to_string()];
+    assert!(crate::ssr::matches_alias(&finds, "react"));
+    assert!(crate::ssr::matches_alias(&finds, "react/jsx-runtime"));
+    assert!(crate::ssr::matches_alias(&finds, "@/lib/x"));
+    assert!(!crate::ssr::matches_alias(&finds, "react-dom"));
+    assert!(!crate::ssr::matches_alias(&finds, "@scope/x"));
+}
+
+// Vite's encodeURIPath and decodedBase: the path encoded as encodeURI does,
+// the query kept; the base decoded before it is joined.
+#[test]
+fn dev_asset_urls_encode_the_path_and_decode_the_base() {
+    assert_eq!(
+        encode_uri_path("/src/my pic.png?v=1 2"),
+        "/src/my%20pic.png?v=1 2"
+    );
+    assert_eq!(encode_uri_path("/src/é.png"), "/src/%C3%A9.png");
+    assert_eq!(
+        encode_uri_path("data:image/png;base64,a b"),
+        "data:image/png;base64,a b"
+    );
+    let urls = DevAssetUrls::new(None, Some("/my%20app/"), None);
+    assert_eq!(urls.join("/a.png"), "/my app/a.png");
+    assert_eq!(encode_uri_path(&urls.join("/a.png")), "/my%20app/a.png");
+    assert_eq!(
+        asset_export_url("/a.png?import&url&t=5&v=2"),
+        "/a.png?t=5&v=2"
+    );
+}
+
+// Vite's dev css urlReplacer: a public file is the prefix plus its path, a
+// root file as fileToUrl names it (a small svg inlined), `@import` and
+// unresolvable urls as written.
+#[test]
+fn dev_css_urls_follow_vites_url_replacer() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("public")).unwrap();
+    std::fs::write(root.join("src/i.svg"), "<svg></svg>").unwrap();
+    std::fs::write(root.join("src/p.png"), "png").unwrap();
+    std::fs::write(root.join("public/l.svg"), "<svg></svg>").unwrap();
+    let urls = DevAssetUrls::new(Some("https://cdn"), Some("/app/"), None);
+    let css = r#"@import url("/src/x.css"); a{b:url(/src/i.svg)} c{d:url("/src/p.png")} e{f:url(/l.svg)} g{h:url(/missing.png)} i{j:url(https://x/y.png)}"#;
+    let out = dev_css_urls(&root, Some(&root.join("public")), &urls, css);
+    assert_eq!(
+        out,
+        r#"@import url("/src/x.css"); a{b:url("data:image/svg+xml,%3csvg%3e%3c/svg%3e")} c{d:url("https://cdn/app/src/p.png")} e{f:url("https://cdn/app/l.svg")} g{h:url(/missing.png)} i{j:url(https://x/y.png)}"#
+    );
 }

@@ -305,6 +305,8 @@ struct ServerState {
     /// `ssr.external` / `ssr.noExternal` for the dev ssr environment. The
     /// webworker target is dropped: it bundles everything only in a build.
     ssr_externals: oj_config::SsrExternals,
+    /// The top-level `resolve.alias` finds (Vite's `config.resolve.alias`).
+    alias_finds: Vec<String>,
     /// Dev asset URLs: `server.origin` and base prefix, svg inline limit.
     asset_urls: assets_serve::DevAssetUrls,
     /// `html.cspNonce`: stamped on every served page's script/style/link tags.
@@ -1158,26 +1160,33 @@ pub(crate) fn environment_resolver(
     config: &oj_config::OjConfig,
     name: &str,
     consumer_server: bool,
+    dev: bool,
     reported: Option<&plugins::ReportedResolve>,
 ) -> OjResolver {
     // Vite's isSsrTargetWebworkerEnvironment keeps the client defaults.
     let server =
         consumer_server && !(name == "ssr" && oj_config::ssr_externals(config).webworker());
-    let conditions = match reported.and_then(|r| r.conditions.clone()) {
-        Some(list) => oj_config::reported_conditions(list, true),
-        None => oj_config::environment_resolve_conditions(config, name, server),
+    let reported_list = |pick: fn(&plugins::ReportedResolve) -> &Option<Vec<String>>| {
+        reported.and_then(|r| pick(r).clone())
     };
-    let main_fields = match reported.and_then(|r| r.main_fields.clone()) {
-        Some(list) => Some(list),
-        None => oj_config::environment_main_fields(config, name),
+    let conditions = match reported_list(|r| &r.conditions) {
+        Some(list) => oj_config::reported_conditions(list, dev),
+        None => oj_config::environment_resolve_conditions(config, name, server, dev),
     };
+    let main_fields = reported_list(|r| &r.main_fields)
+        .or_else(|| oj_config::environment_main_fields(config, name));
+    let extensions = reported_list(|r| &r.extensions)
+        .or_else(|| oj_config::environment_extensions(config, name));
+    let dedupe =
+        reported_list(|r| &r.dedupe).unwrap_or_else(|| oj_config::environment_dedupe(config, name));
     OjResolver::with_settings(
         root,
         oj_resolver::ResolveSettings {
             conditions,
-            alias: oj_config::resolve_alias(config, name),
-            dedupe: oj_config::resolve_dedupe(config),
-            extensions: oj_config::resolve_extensions(config),
+            // Vite gives every environment the top-level alias.
+            alias: oj_config::top_level_alias(config),
+            dedupe,
+            extensions,
             main_fields,
             preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
             server,
@@ -1727,6 +1736,7 @@ impl DevServer {
                 root: root.clone(),
                 config: Arc::new(config.clone()),
                 client: Arc::clone(&client_resolver),
+                production: client_defines.app.node_env() == "production",
             });
             // Vite awaits the client buildStart while initing the server, after
             // config resolution, so the defines are final for any `this.load`.
@@ -1814,6 +1824,11 @@ impl DevServer {
         if let Some(plugin) = &stylex {
             stylex::notify_clients(plugin, reload_tx.clone());
         }
+        let asset_urls = assets_serve::DevAssetUrls::new(
+            config.server.as_ref().and_then(|s| s.origin.as_deref()),
+            config.base.as_deref(),
+            config.build.as_ref().and_then(|b| b.assets_inline_limit),
+        );
         let state = Arc::new(ServerState {
             persistent_cache,
             engine_registry: engine_registry.clone(),
@@ -1828,7 +1843,9 @@ impl DevServer {
                 .with_salt_extra(&installed.digest)
                 // A cached compile embeds the JSX runtime import; a changed
                 // importSource/runtime must not serve the old module.
-                .with_salt_extra(&format!("jsx={jsx:?}")),
+                .with_salt_extra(&format!("jsx={jsx:?}"))
+                // A cached module embeds its asset URLs (origin, base, inlined svgs).
+                .with_salt_extra(&format!("asset-urls={asset_urls:?}")),
             memory: Mutex::new(MemoryCache::new(memory_cache_budget())),
             mtime_keys: Mutex::new(HashMap::new()),
             compile_locks: Mutex::new(HashMap::new()),
@@ -1843,11 +1860,11 @@ impl DevServer {
             scss_additional_data: oj_config::css_additional_data(&config, "scss"),
             sass_additional_data: oj_config::css_additional_data(&config, "sass"),
             css_config: config.css.clone(),
-            asset_urls: assets_serve::DevAssetUrls::new(
-                config.server.as_ref().and_then(|s| s.origin.as_deref()),
-                config.base.as_deref(),
-                config.build.as_ref().and_then(|b| b.assets_inline_limit),
-            ),
+            asset_urls: asset_urls.clone(),
+            alias_finds: oj_config::top_level_alias(&config)
+                .into_iter()
+                .map(|(find, _)| find)
+                .collect(),
             ssr_externals: oj_config::SsrExternals {
                 target: None,
                 ..oj_config::ssr_externals(&config)

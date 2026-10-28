@@ -133,26 +133,35 @@ pub struct HostPrewarm {
 }
 
 /// What the dev server resolves plugin requests with: a `this.resolve` no
-/// plugin answers, and a `this.load` module's `importedIds`, take the calling
-/// environment's own resolve options, as Vite builds its resolve plugin per
-/// environment (`applyToEnvironment`, plugins/resolve.ts).
+/// plugin answers takes the calling environment's own resolve options, as
+/// Vite builds its resolve plugin per environment (`applyToEnvironment`,
+/// plugins/resolve.ts). A `this.load` module's `importedIds` (oj's own
+/// field; Vite's dev ModuleInfo has only `id` and `meta`) resolve the same way.
 pub struct EnvResolvers {
     pub root: PathBuf,
     pub config: Arc<oj_config::OjConfig>,
     /// The dev server's own client resolver, shared with module serving.
     pub client: Arc<OjResolver>,
+    /// Vite's `isProduction` (`NODE_ENV=production`), which maps the
+    /// `development|production` condition.
+    pub production: bool,
 }
 
-/// An environment's resolved `resolve.conditions` and `resolve.mainFields`, as
-/// the plugin host read them off Vite's resolved config.
+/// An environment's resolved resolve options and consumer, as the plugin host
+/// read them off Vite's resolved config.
 #[derive(Clone, Debug, Default)]
 pub struct ReportedResolve {
     pub conditions: Option<Vec<String>>,
     pub main_fields: Option<Vec<String>>,
+    pub extensions: Option<Vec<String>>,
+    pub dedupe: Option<Vec<String>>,
+    /// `consumer === "server"`, when the host reported a consumer.
+    pub server: Option<bool>,
 }
 
 impl ReportedResolve {
-    /// `{ conditions, mainFields }`, each a string array or null.
+    /// `{ conditions, mainFields, extensions, dedupe, consumer }`, each list a
+    /// string array or null.
     fn from_json(v: Option<&serde_json::Value>) -> Self {
         let list = |key: &str| {
             v?.get(key)?
@@ -164,6 +173,12 @@ impl ReportedResolve {
         Self {
             conditions: list("conditions"),
             main_fields: list("mainFields"),
+            extensions: list("extensions"),
+            dedupe: list("dedupe"),
+            server: v
+                .and_then(|v| v.get("consumer"))
+                .and_then(|c| c.as_str())
+                .map(|c| c == "server"),
         }
     }
 }
@@ -210,10 +225,34 @@ impl EnvResolverSlot {
             &base.config,
             name,
             server,
+            !base.production,
             reported.as_ref(),
         ));
         built.insert(key, Arc::clone(&r));
         Some(r)
+    }
+
+    /// Whether environment `name`'s consumer is `server`, as the host reported
+    /// it; else Vite's default (every environment but the client).
+    pub(crate) fn is_server(&self, name: &str) -> bool {
+        self.reported
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+            .and_then(|r| r.server)
+            .unwrap_or(name != "client")
+    }
+
+    /// Drops every built resolver's cached lookups, misses included.
+    pub(crate) fn clear_caches(&self) {
+        for r in self
+            .built
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+        {
+            r.clear_cache();
+        }
     }
 
     /// Records environment `name`'s resolved options, replacing any resolver
@@ -1907,6 +1946,18 @@ impl PluginHost {
     /// None when the dev server set none.
     pub fn environment_resolver(&self, name: &str, server: bool) -> Option<Arc<OjResolver>> {
         self.core.boot.resolvers.for_environment(name, server)
+    }
+
+    /// Environment `name`'s plugin-facing resolver under its own consumer.
+    pub fn own_environment_resolver(&self, name: &str) -> Option<Arc<OjResolver>> {
+        let resolvers = &self.core.boot.resolvers;
+        resolvers.for_environment(name, resolvers.is_server(name))
+    }
+
+    /// Drops the cached lookups of every environment's resolver (see
+    /// [`crate::hmr::drop_resolver_misses`]).
+    pub fn clear_environment_resolvers(&self) {
+        self.core.boot.resolvers.clear_caches()
     }
 
     pub fn set_ws_sender(&self, tx: tokio::sync::broadcast::Sender<String>) {

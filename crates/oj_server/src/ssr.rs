@@ -250,17 +250,73 @@ pub(crate) fn is_bare_import(spec: &str) -> bool {
         && !spec.contains("://")
 }
 
+/// A builtin of the ssr environment, which Vite externalizes before any
+/// `ssr.noExternal` or resolution (createIsExternal, fetchModule): its default
+/// `resolve.builtins`, nodeLikeBuiltins, matched as createIsBuiltin does — an
+/// exact `module.builtinModules` name, or the `node:` / `bun:` namespace. An
+/// installed polyfill of the same name (`events`, `buffer`) never wins.
+pub(crate) fn is_ssr_builtin(spec: &str) -> bool {
+    const SUBPATHS: [&str; 12] = [
+        "assert/strict",
+        "dns/promises",
+        "fs/promises",
+        "inspector/promises",
+        "path/posix",
+        "path/win32",
+        "readline/promises",
+        "stream/consumers",
+        "stream/promises",
+        "stream/web",
+        "timers/promises",
+        "util/types",
+    ];
+    if spec.starts_with("node:") || spec.starts_with("bun:") {
+        return true;
+    }
+    crate::is_node_builtin(spec) && (!spec.contains('/') || SUBPATHS.contains(&spec))
+}
+
+/// Vite's alias pattern matcher (preAlias.ts `matches`) over the top-level
+/// `resolve.alias` finds: the find itself or anything under it.
+pub(crate) fn matches_alias(finds: &[String], spec: &str) -> bool {
+    finds.iter().any(|find| {
+        if find.ends_with('/') {
+            spec.starts_with(find.as_str())
+        } else {
+            spec == find
+                || spec
+                    .strip_prefix(find.as_str())
+                    .is_some_and(|r| r.starts_with('/'))
+        }
+    })
+}
+
 pub(crate) async fn ssr_resolve_inner(
     state: &Arc<ServerState>,
     importer: &str,
     spec: &str,
 ) -> Result<SsrResolution, String> {
+    if is_ssr_builtin(spec) {
+        return Ok(SsrResolution::External(spec.to_string()));
+    }
+    // `/logo.png` with no such file under the root is a public file, whose id
+    // stays root-relative as in Vite (its asset load reads checkPublicFile).
+    if let Some(rel) = spec.strip_prefix('/').filter(|r| !r.starts_with('/')) {
+        let clean = rel.split(['?', '#']).next().unwrap_or(rel);
+        let public = state.public_dir.as_deref().map(|p| p.join(clean));
+        if !state.root.join(clean).is_file() && public.is_some_and(|p| p.is_file()) {
+            return Ok(SsrResolution::Module(spec.to_string()));
+        }
+    }
     Ok(match ssr_resolve_raw(state, importer, spec).await? {
         RawResolution::Path(p) => {
             let s = p.to_string_lossy();
             // A stylesheet, JSON, raw TypeScript or `x.css?url` is served
-            // like the app's own, as is a `noExternal` package's file.
-            if ssr_externalizes(&state.ssr_externals, spec, &s) {
+            // like the app's own, as is a `noExternal` package's file. An
+            // aliased specifier never is Node's (importAnalysis skips
+            // shouldExternalize on a matchAlias hit).
+            let aliased = matches_alias(&state.alias_finds, spec);
+            if !aliased && ssr_externalizes(&state.ssr_externals, spec, &s) {
                 SsrResolution::External(spec.to_string())
             } else {
                 SsrResolution::Module(s.into_owned())
@@ -387,13 +443,31 @@ async fn ssr_query_asset(
         Some(kind @ ("url" | "raw" | "inline")) => kind,
         _ => return Ok(None),
     };
-    let path = Path::new(file);
+    // A root-relative id under the public dir (Vite's checkPublicFile) is a
+    // public file; a file on disk, wherever it is, is named by its own path.
+    let public = state
+        .public_dir
+        .as_deref()
+        .map(|p| p.join(file.trim_start_matches('/')))
+        .filter(|p| file.starts_with('/') && !Path::new(file).is_file() && p.is_file());
+    let path = public.as_deref().unwrap_or(Path::new(file));
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     // A stylesheet's `?inline` is its compiled text, not the file's bytes.
     if !path.is_file() || (kind == "inline" && is_style_ext(ext)) {
         return Ok(None);
     }
-    if !ssr_module_allowed(state, path) {
+    // `?inline` on a file vite:asset does not load is the plain module.
+    if kind == "inline" && !is_asset_path(path) {
+        let rest: Vec<&str> = query.split('&').filter(|kv| *kv != "inline").collect();
+        let plain = match rest.is_empty() {
+            true => file.to_string(),
+            false => format!("{file}?{}", rest.join("&")),
+        };
+        return Box::pin(ssr_module_inner(state, &plain, runner))
+            .await
+            .map(Some);
+    }
+    if public.is_none() && !ssr_module_allowed(state, path) {
         return Err(SsrModuleError::Forbidden(
             "oj: module not allow-listed".into(),
         ));
@@ -407,20 +481,18 @@ async fn ssr_query_asset(
             }
         }
     }
-    // A public file's URL is its path under the public dir (Vite's
-    // checkPublicFile), as the client's asset query names it.
-    let public = state
-        .public_dir
-        .as_deref()
-        .and_then(|p| path.strip_prefix(p).ok());
     let url = match public {
-        Some(rel) => format!("/{}?{query}", rel.display()),
+        Some(_) => format!("{}?{query}", file),
         None => format!("{}?{query}", url_of(&state.root, path)),
     };
-    asset_module(path, &url, kind, &state.asset_urls)
+    let code = asset_module(path, &url, kind, &state.asset_urls)
         .await
-        .map(Some)
-        .map_err(SsrModuleError::Failed)
+        .map_err(SsrModuleError::Failed)?;
+    // The module runner takes every module in its transformed form.
+    if runner {
+        return ssr_compile_source(state, id, code, true, true).map(Some);
+    }
+    Ok(Some(code))
 }
 
 /// A stylesheet as the SSR environment's module: its class map, through that
@@ -467,7 +539,7 @@ pub(crate) async fn ssr_transform_source(
         Some(host) if host.hook_wants_transform(id, &source) => {
             // The ssr environment's plugin-facing resolver, as `this.resolve` there.
             let resolver = host
-                .environment_resolver("ssr", true)
+                .own_environment_resolver("ssr")
                 .unwrap_or_else(|| Arc::clone(&state.ssr_resolver));
             let resolved =
                 resolved_imports_json(&resolver, &state.fs_allow, &source, Path::new(id));

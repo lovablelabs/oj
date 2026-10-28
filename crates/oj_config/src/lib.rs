@@ -31,11 +31,11 @@ pub use optimize::{
     optimize_deps_needs_interop,
 };
 pub use resolve::{
-    environment_main_fields, environment_resolve_conditions, node_server_conditions,
-    node_server_external_conditions, reported_conditions, resolve_alias, resolve_conditions,
-    resolve_conditions_for, resolve_dedupe, resolve_extensions, resolve_main_fields,
-    resolve_preserve_symlinks, ssr_resolve_main_fields, user_external_conditions,
-    user_resolve_conditions,
+    environment_dedupe, environment_extensions, environment_main_fields,
+    environment_resolve_conditions, node_server_conditions, node_server_external_conditions,
+    reported_conditions, resolve_alias, resolve_conditions, resolve_conditions_for, resolve_dedupe,
+    resolve_extensions, resolve_main_fields, resolve_preserve_symlinks, ssr_resolve_main_fields,
+    top_level_alias, user_external_conditions, user_resolve_conditions,
 };
 pub use schema::*;
 pub use server::{

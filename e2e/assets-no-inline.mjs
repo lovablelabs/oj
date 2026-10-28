@@ -53,7 +53,8 @@ function check(label, ok, detail) {
       const main = await (await fetch(`http://localhost:${port}/src/main.js`)).text();
       check("dev: the ?no-inline import is kept as an asset import", /small\.png\?no-inline/.test(main), main);
       const mod = await (await fetch(`http://localhost:${port}/src/small.png?no-inline`)).text();
-      check("dev: ?no-inline module exports the url", /export default "\/src\/small\.png"/.test(mod), mod);
+      // Vite's asset load strips only `url` (removeUrlQuery); fileToDevUrl keeps the rest.
+      check("dev: ?no-inline module exports the url", /export default "\/src\/small\.png\?no-inline"/.test(mod), mod);
     }
   } finally {
     srv.kill();

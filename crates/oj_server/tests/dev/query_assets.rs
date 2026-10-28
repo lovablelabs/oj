@@ -2,7 +2,8 @@
 // Copyright (c) 2026 Raphael Amorim
 
 //! Vite's asset query suffixes in dev, as the page sees them: `?url` gives
-//! the served path, `?raw` the file's text, `?inline` a data: URL, and
+//! the served path, `?raw` the file's text, `?inline` on a JSON file its
+//! plain module (vite:asset only inlines assets), and
 //! `?init` an instantiate function for a wasm module.
 
 use std::time::Duration;
@@ -42,7 +43,7 @@ async fn url_raw_inline_and_init_queries_in_dev() {
              import init from \"./add.wasm?init\";\n\
              window.__PICURL = picUrl;\n\
              window.__RAW = raw;\n\
-             window.__INLINE = inlineData.startsWith(\"data:\");\n\
+             window.__INLINE = inlineData.k === 42;\n\
              init().then((i) => { window.__SUM = i.exports.add(4, 5); });\n",
         ),
         ("index.html", crate::INDEX_HTML),
@@ -64,7 +65,7 @@ async fn url_raw_inline_and_init_queries_in_dev() {
         "?url: {r}"
     );
     assert_eq!(r["raw"], "hello-raw-content", "?raw: {r}");
-    assert_eq!(r["inline"], true, "?inline: {r}");
+    assert_eq!(r["inline"], true, "?inline on JSON is its module: {r}");
     assert_eq!(r["sum"], 9, "?init add: {r}");
     assert_eq!(page.errors(), Vec::<String>::new(), "page errors");
     page.close().await;

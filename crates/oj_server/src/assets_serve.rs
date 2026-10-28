@@ -28,14 +28,71 @@ pub(crate) fn query_asset_kind(query: Option<&str>) -> Option<&'static str> {
     None
 }
 
-/// The url a `?url` module exports: the file's, keeping the request's HMR
-/// `t=` stamp so an updated asset gets a url its `<img>` refetches (Vite).
+/// The url an asset module names: the request's, less `url` (Vite's
+/// removeUrlQuery) and `import` (stripped before any plugin sees the id).
+/// Every other parameter stays, an HMR `t=` stamp included, so an updated
+/// asset gets a url its `<img>` refetches.
 pub(crate) fn asset_export_url(url: &str) -> String {
     let (clean, query) = url.split_once('?').unwrap_or((url, ""));
-    match query.split('&').find(|kv| kv.starts_with("t=")) {
-        Some(t) => format!("{clean}?{t}"),
-        None => clean.to_string(),
+    let kept: Vec<&str> = query
+        .split('&')
+        .filter(|kv| !kv.is_empty() && *kv != "url" && *kv != "import")
+        .collect();
+    if kept.is_empty() {
+        clean.to_string()
+    } else {
+        format!("{clean}?{}", kept.join("&"))
     }
+}
+
+/// Whether `url`'s query has the bare parameter `name` (Vite's `[?&]name\b`).
+fn has_param(url: &str, name: &str) -> bool {
+    url.split_once('?').is_some_and(|(_, q)| {
+        q.split('&')
+            .any(|kv| kv == name || kv.strip_prefix(name).is_some_and(|r| r.starts_with('=')))
+    })
+}
+
+/// Vite's encodeURIPath: `encodeURI` on the path, the query and fragment kept;
+/// a data URL as is.
+pub(crate) fn encode_uri_path(url: &str) -> String {
+    if url.starts_with("data:") {
+        return url.to_string();
+    }
+    let split = url.find(['?', '#']).unwrap_or(url.len());
+    let (path, postfix) = url.split_at(split);
+    let mut out = String::with_capacity(url.len());
+    for b in path.bytes() {
+        if b.is_ascii_alphanumeric() || b";,/?:@&=+$-_.!~*'()#".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out + postfix
+}
+
+/// `decodeURI`: `%XX` escapes of reserved characters stay, as in JS.
+fn decode_uri(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16);
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h), Some(l)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                let byte = (h * 16 + l) as u8;
+                if !(byte.is_ascii() && b";/?:@&=+$,#".contains(&byte)) {
+                    out.push(byte);
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
 }
 
 /// What Vite's dev `fileToDevUrl` (plugins/asset.ts) needs besides the file:
@@ -61,7 +118,8 @@ impl Default for DevAssetUrls {
 impl DevAssetUrls {
     pub(crate) fn new(origin: Option<&str>, base: Option<&str>, inline_limit: Option<u64>) -> Self {
         let origin = origin.unwrap_or("").trim_end_matches('/');
-        let base = crate::start_dev_url_base(base.unwrap_or("/"));
+        // Vite joins the decoded base (`decodedBase`).
+        let base = decode_uri(&crate::start_dev_url_base(base.unwrap_or("/")));
         Self {
             prefix: format!("{origin}{base}"),
             inline_limit: inline_limit.unwrap_or(4096),
@@ -73,10 +131,15 @@ impl DevAssetUrls {
         format!("{}{url}", self.prefix)
     }
 
-    /// Vite's dev fileToDevUrl for `file` requested as `url`: a small enough
-    /// svg inlines as a data URL (shouldInline), anything else is its URL
-    /// under the prefix, keeping an HMR `t=` stamp.
+    /// Vite's dev fileToDevUrl for `file` requested as `url`: `inline` in the
+    /// query inlines any file, a small enough svg inlines (shouldInline), and
+    /// anything else is its URL under the prefix (see [`asset_export_url`]).
     pub(crate) fn file_url(&self, file: &Path, url: &str) -> String {
+        if has_param(url, "inline") {
+            if let Ok(content) = std::fs::read(file) {
+                return asset_data_url(file, &content);
+            }
+        }
         if file.extension().is_some_and(|e| e == "svg") {
             if let Ok(content) = std::fs::read(file) {
                 if self.should_inline(url, &content) {
@@ -90,16 +153,10 @@ impl DevAssetUrls {
     /// Vite's dev shouldInline: `?no-inline` never, `?inline` always, an svg
     /// with a fragment never, else under the limit unless a Git LFS pointer.
     fn should_inline(&self, url: &str, content: &[u8]) -> bool {
-        let query = url.split_once('?').map_or("", |(_, q)| q);
-        let has = |kind: &str| {
-            query
-                .split('&')
-                .any(|kv| kv == kind || kv.starts_with(&format!("{kind}=")))
-        };
-        if has("no-inline") {
+        if has_param(url, "no-inline") {
             return false;
         }
-        if has("inline") {
+        if has_param(url, "inline") {
             return true;
         }
         if url.contains('#') {
@@ -150,6 +207,46 @@ pub(crate) fn svg_to_data_url(content: &[u8]) -> String {
     )
 }
 
+/// Vite's dev css urlReplacer (css.ts) over a sheet oj compiled with its urls
+/// rebased to served paths: a public file's `url()` is the prefix plus its
+/// path, never inlined; a file under the root is named as [`DevAssetUrls::file_url`]
+/// names it (a small svg inlined). `@import` urls and anything else stay.
+pub(crate) fn dev_css_urls(
+    root: &Path,
+    public_dir: Option<&Path>,
+    urls: &DevAssetUrls,
+    css: &str,
+) -> String {
+    static URL_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"(@import\s+)?url\(\s*(['"]?)([^'")]+)['"]?\s*\)"#).unwrap()
+    });
+    URL_RE
+        .replace_all(css, |caps: &regex::Captures<'_>| {
+            let target = caps[3].trim();
+            let keep = || caps[0].to_string();
+            if caps.get(1).is_some() || !target.starts_with('/') || target.starts_with("//") {
+                return keep();
+            }
+            let path = target.split(['?', '#']).next().unwrap_or(target);
+            let rel = path.trim_start_matches('/');
+            if public_dir.is_some_and(|p| p.join(rel).is_file()) {
+                return format!("url({})", serde_json::Value::String(urls.join(target)));
+            }
+            let file = match path.strip_prefix("/@fs") {
+                Some(abs) if abs.starts_with('/') => PathBuf::from(abs),
+                _ => root.join(rel),
+            };
+            if !file.is_file() {
+                return keep();
+            }
+            format!(
+                "url({})",
+                serde_json::Value::String(urls.file_url(&file, target))
+            )
+        })
+        .into_owned()
+}
+
 fn js_default(value: String) -> String {
     format!("export default {};\n", serde_json::Value::String(value))
 }
@@ -169,7 +266,8 @@ pub(crate) async fn asset_module(
             if is_style_ext(ext) {
                 return Ok(js_default(urls.join(&format!("{clean_url}?direct"))));
             }
-            Ok(js_default(urls.file_url(file, url)))
+            // vite:asset's load exports `encodeURIPath(url)`.
+            Ok(js_default(encode_uri_path(&urls.file_url(file, url))))
         }
         "raw" => {
             let text = tokio::fs::read_to_string(file)
@@ -179,18 +277,29 @@ pub(crate) async fn asset_module(
         }
         "inline" => {
             // A stylesheet's `?inline` goes through `inline_css_module` instead.
-            let bytes = tokio::fs::read(file).await.map_err(|e| format!("read: {e}"))?;
+            let bytes = tokio::fs::read(file)
+                .await
+                .map_err(|e| format!("read: {e}"))?;
             Ok(js_default(asset_data_url(file, &bytes)))
         }
+        // Vite's worker and wasm plugins name the file with fileToUrl too.
         "worker" | "sharedworker" => {
-            let ctor = if kind == "sharedworker" { "SharedWorker" } else { "Worker" };
+            let ctor = if kind == "sharedworker" {
+                "SharedWorker"
+            } else {
+                "Worker"
+            };
+            let url = serde_json::Value::String(urls.join(clean_url));
             Ok(format!(
-                "export default function () {{ return new {ctor}({clean_url:?}, {{ type: \"module\" }}); }}\n"
+                "export default function () {{ return new {ctor}({url}, {{ type: \"module\" }}); }}\n"
             ))
         }
-        "init" => Ok(format!(
-            "export default (imports = {{}}) => {{\n  const url = {clean_url:?};\n  const inst = (r) => r.instance;\n  const fallback = () => fetch(url).then((r) => r.arrayBuffer()).then((b) => WebAssembly.instantiate(b, imports)).then(inst);\n  if (WebAssembly.instantiateStreaming) {{\n    return WebAssembly.instantiateStreaming(fetch(url), imports).then(inst).catch(fallback);\n  }}\n  return fallback();\n}};\n"
-        )),
+        "init" => {
+            let url = serde_json::Value::String(urls.join(clean_url));
+            Ok(format!(
+                "export default (imports = {{}}) => {{\n  const url = {url};\n  const inst = (r) => r.instance;\n  const fallback = () => fetch(url).then((r) => r.arrayBuffer()).then((b) => WebAssembly.instantiate(b, imports)).then(inst);\n  if (WebAssembly.instantiateStreaming) {{\n    return WebAssembly.instantiateStreaming(fetch(url), imports).then(inst).catch(fallback);\n  }}\n  return fallback();\n}};\n"
+            ))
+        }
         _ => Err(format!("unknown asset query: {kind}")),
     }
 }

@@ -2325,7 +2325,7 @@ async function resolveEnvironment(c, name) {
   environment.config.consumer = own.consumer ?? (name === "client" ? "client" : "server");
   environment.logger = resolvedConfig.logger;
   environment.getTopLevelConfig = () => resolvedConfig;
-  if (name !== "client") await reportEnvironmentResolve(name, own.resolve);
+  if (name !== "client") await reportEnvironmentResolve(name, own.resolve, environment.config.consumer);
   c.plugins = await environmentPlugins(environment, c.topLevelPlugins, c);
   environment.plugins = c.plugins;
 }
@@ -2333,14 +2333,20 @@ async function resolveEnvironment(c, name) {
 // resolves with: its own entry of the resolved config, which Vite fills per
 // consumer (resolveEnvironmentResolveOptions: server defaults, or the client's
 // for an ssr webworker target). The merged environment.config would mix in the
-// top-level lists, which Vite's environments never inherit.
-async function reportEnvironmentResolve(name, resolve) {
+// top-level conditions and mainFields, which Vite's environments never inherit.
+async function reportEnvironmentResolve(name, resolve, consumer) {
   // Only the in-process engine answers it; elsewhere oj's defaults stand.
   if (!ojEngineRpc) return;
   const strings = (v) => (Array.isArray(v) && v.every((x) => typeof x === "string") ? v : null);
   await ctxRpc("environmentResolve", [
     name,
-    { conditions: strings(resolve?.conditions), mainFields: strings(resolve?.mainFields) },
+    {
+      conditions: strings(resolve?.conditions),
+      mainFields: strings(resolve?.mainFields),
+      extensions: strings(resolve?.extensions),
+      dedupe: strings(resolve?.dedupe),
+      consumer,
+    },
   ]);
 }
 // The [name, consumer] a container's ctx RPCs resolve for.
