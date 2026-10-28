@@ -19,8 +19,7 @@ const { chromium } = require("playwright");
       throw new Error("?raw wrong: " + res.raw.slice(0, 40));
     // JSON is no asset: Vite's json plugin loads `?inline` as the JSON module
     // (inline is no special query to it), never a data: URL.
-    if (res.inline?.appName !== "oj playground")
-      throw new Error("?inline wrong: " + JSON.stringify(res.inline));
+    if (res.inline?.appName !== "oj playground") throw new Error("?inline wrong: " + JSON.stringify(res.inline));
     console.log("RAW/INLINE VERIFIED");
   } finally {
     await browser.close();
