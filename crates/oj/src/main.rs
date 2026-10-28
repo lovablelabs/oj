@@ -458,6 +458,16 @@ fn main() -> anyhow::Result<()> {
     if std::env::var_os("VITE_CONFIG_NATIVE_IGNORE_WARNING").is_none() {
         std::env::set_var("VITE_CONFIG_NATIVE_IGNORE_WARNING", "true");
     }
+    // The npm rolldown binding the plugin host loads (Vite 8 runs on it)
+    // ships mimalloc, which keeps the arena memory rolldown's idle worker
+    // threads freed (rolldown#10985, #11143): a Cloudflare Start app's dev
+    // server holds hundreds of MB of it after the worker environment's first
+    // compile. Purging freed arenas right away returns it, the workaround
+    // those issues measure. mimalloc reads it when the addon loads, before
+    // any engine exists; a user-set value wins.
+    if std::env::var_os("MIMALLOC_ARENA_PURGE_MULT").is_none() {
+        std::env::set_var("MIMALLOC_ARENA_PURGE_MULT", "0");
+    }
     // Vite sorts its lockfile-format preference by `npm_config_user_agent`
     // (optimizer/index.ts), which every package-manager launch sets and a
     // bare binary launch does not. Agentless, the list REVERSES: a pnpm app
