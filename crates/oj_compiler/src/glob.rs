@@ -892,6 +892,21 @@ pub fn expand_new_url_asset<'a>(
     true
 }
 
+/// An expression without its TS wrappers and parentheses (`x as const`,
+/// `x satisfies T`, `x!`, `<T>x`, `(x)`).
+fn strip_ts<'b, 'a>(mut e: &'b Expression<'a>) -> &'b Expression<'a> {
+    loop {
+        e = match e {
+            Expression::TSAsExpression(x) => &x.expression,
+            Expression::TSSatisfiesExpression(x) => &x.expression,
+            Expression::TSNonNullExpression(x) => &x.expression,
+            Expression::TSTypeAssertion(x) => &x.expression,
+            Expression::ParenthesizedExpression(x) => &x.expression,
+            _ => return e,
+        };
+    }
+}
+
 struct NewUrlAsset<'a, 'd, 's> {
     allocator: &'a Allocator,
     dir: &'d Path,
@@ -960,6 +975,66 @@ impl<'a> NewUrlAsset<'a, '_, '_> {
         }
     }
 
+    /// Vite's getWorkerType for a worker constructor, on the options as the
+    /// TS transform leaves them (`{ type: "module" } as const` is static):
+    /// `classic` with no options, `ignore` when the text after the URL's comma
+    /// holds `/* @vite-ignore */`, else the last static `type` of `module` or
+    /// `classic`, and `classic` otherwise. Vite rejects options that are not
+    /// static; oj takes them as `classic`.
+    fn worker_type(&self, n: &NewExpression<'a>) -> &'static str {
+        let first_end = oxc_span::GetSpan::span(&n.arguments[0]).end as usize;
+        // The text up to the constructor's closing paren.
+        let call_end = (n.span.end as usize).saturating_sub(1);
+        let tail = self.source.get(first_end..call_end).unwrap_or("");
+        // Vite's `clean.indexOf(',')`: a comma inside a comment is not one.
+        let Some(comma) = crate::meta_glob::strip_literals(tail).find(',') else {
+            return "classic";
+        };
+        static IGNORE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let ignore = IGNORE.get_or_init(|| regex::Regex::new(r"/\*\s*@vite-ignore\s*\*/").unwrap());
+        if ignore.is_match(&tail[comma + 1..]) {
+            return "ignore";
+        }
+        let Some(Expression::ObjectExpression(obj)) = n
+            .arguments
+            .get(1)
+            .and_then(|o| o.as_expression())
+            .map(strip_ts)
+        else {
+            return "classic";
+        };
+        let mut found = "classic";
+        for prop in &obj.properties {
+            let oxc_ast::ast::ObjectPropertyKind::ObjectProperty(p) = prop else {
+                continue;
+            };
+            if !p
+                .key
+                .static_name()
+                .is_some_and(|name| name.as_str() == Some("type"))
+            {
+                continue;
+            }
+            let value = match strip_ts(&p.value) {
+                Expression::StringLiteral(s) => Some(crate::lit_str(s.value)),
+                // A substitution-free template is as static as a string.
+                Expression::TemplateLiteral(t) if t.expressions.is_empty() => {
+                    let span = t.span;
+                    self.source
+                        .get(span.start as usize + 1..(span.end as usize).saturating_sub(1))
+                }
+                _ => None,
+            };
+            // The last key wins, as in the evaluated object.
+            found = if value == Some("module") {
+                "module"
+            } else {
+                "classic"
+            };
+        }
+        found
+    }
+
     /// Hoists `import <ident> from "<spec>"` and returns the fresh binding.
     fn hoist_import(&mut self, prefix: &str, spec: String) -> String {
         let ident = format!("{prefix}_{}", self.uid);
@@ -974,7 +1049,13 @@ impl<'a> NewUrlAsset<'a, '_, '_> {
         let Some((spec, kind)) = self.worker_url_spec(n) else {
             return false;
         };
-        let ident = self.hoist_import("__oj_worker", format!("{spec}?{kind}&url"));
+        // `worker_type` (oj's own) carries the options' worker type to the URL
+        // module, which names the file `?worker_file&type=<type>`.
+        let worker_type = self.worker_type(n);
+        let ident = self.hoist_import(
+            "__oj_worker",
+            format!("{spec}?{kind}&url&worker_type={worker_type}"),
+        );
         if let Some(url_expr) = parse_expr(self.allocator, &ident) {
             if let Some(first) = n.arguments.first_mut() {
                 *first = Argument::from(url_expr);
@@ -1554,11 +1635,13 @@ mod tests {
         let src = "const w = new Worker(new URL(\"./w.ts\", import.meta.url), { type: \"module\" });\nconst s = new SharedWorker(new URL(\"./w.ts\", import.meta.url));\n";
         let out = expand_new_url_asset_source(src, &d.join("main.js"));
         assert!(
-            out.contains("import __oj_worker_0 from \"./w.ts?worker&url\""),
+            out.contains("import __oj_worker_0 from \"./w.ts?worker&url&worker_type=module\""),
             "{out}"
         );
         assert!(
-            out.contains("import __oj_worker_1 from \"./w.ts?sharedworker&url\""),
+            out.contains(
+                "import __oj_worker_1 from \"./w.ts?sharedworker&url&worker_type=classic\""
+            ),
             "{out}"
         );
         assert!(
@@ -1597,6 +1680,39 @@ mod tests {
         std::fs::write(sub.join("fr.json"), "{}").unwrap();
         std::fs::write(sub.join("_ignore.json"), "{}").unwrap();
         dir
+    }
+
+    // Vite's getWorkerType on the options as its TS transform leaves them:
+    // no or empty options are classic, `/* @vite-ignore */` anywhere after the
+    // URL's comma is ignore, the last static `type` decides (TS wrappers
+    // aside). Options that are not static are an error in Vite; oj takes
+    // them as classic.
+    #[test]
+    fn a_worker_url_import_carries_the_options_worker_type() {
+        let d = tmp("wtype");
+        let cases = [
+            ("new Worker(new URL(\"./w.ts\", import.meta.url))", "classic"),
+            ("new Worker(new URL(\"./w.ts\", import.meta.url), {})", "classic"),
+            ("new Worker(new URL(\"./w.ts\", import.meta.url), { type: `module` })", "module"),
+            ("new Worker(new URL(\"./w.ts\", import.meta.url), { 'type': 'classic' })", "classic"),
+            ("new Worker(new URL(\"./w.ts\", import.meta.url), { type: \"module\" as const })", "module"),
+            ("new Worker(new URL(\"./w.ts\", import.meta.url), ({ type: \"module\" }) satisfies WorkerOptions)", "module"),
+            ("new Worker(new URL(\"./w.ts\", import.meta.url), { type: \"module\", type: \"classic\" })", "classic"),
+            ("new Worker(new URL(\"./w.ts\", import.meta.url), { name: \"type: 'module'\" })", "classic"),
+            ("new Worker(new URL(\"./w.ts\", import.meta.url), /* @vite-ignore */ opts)", "ignore"),
+            ("new Worker(new URL(\"./w.ts\", import.meta.url), opts /* @vite-ignore */)", "ignore"),
+            ("new Worker(new URL(\"./w.ts\", import.meta.url), /* @vite-ignore */)", "ignore"),
+            ("new Worker(new URL(\"./w.ts\", import.meta.url), opts)", "classic"),
+            // A comma inside a comment before the options is not theirs.
+            ("new Worker(new URL(\"./w.ts\", import.meta.url) /* , @vite-ignore */, opts)", "classic"),
+        ];
+        for (src, want) in cases {
+            let out = expand_new_url_asset_source(src, &d.join("main.js"));
+            assert!(
+                out.contains(&format!("\"./w.ts?worker&url&worker_type={want}\"")),
+                "{src}: {out}"
+            );
+        }
     }
 
     #[test]

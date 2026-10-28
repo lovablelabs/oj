@@ -1158,7 +1158,7 @@ async fn a_nested_resolve_in_the_scan_is_a_scan_resolve() {
     .await
     .expect("the plugin host spawns");
     let importer = app.root().join("main.js").to_string_lossy().into_owned();
-    let scanned = host.scan_resolve_id("probe", &importer).await;
+    let scanned = host.scan_resolve_id("probe", &importer, None).await;
     let served = host.resolve_id("probe", &importer).await;
     host.shutdown();
     assert_eq!(

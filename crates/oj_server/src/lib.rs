@@ -38,6 +38,7 @@ pub use ui::*;
 mod client_js;
 use client_js::*;
 mod assets_serve;
+mod css_urls;
 use assets_serve::*;
 mod rewrite;
 use rewrite::*;
@@ -82,6 +83,7 @@ pub use html::*;
 mod ssr;
 mod style_file;
 pub mod stylex;
+pub use assets_serve::inline_url_under;
 pub use ssr::*;
 pub use style_file::{
     compile_style_file, needs_css_compile, needs_preprocess_engine, read_style_source,
@@ -283,6 +285,9 @@ struct ServerState {
     compile_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     crawl_done: tokio::sync::watch::Receiver<bool>,
     fs_allow: Arc<Mutex<std::collections::HashSet<PathBuf>>>,
+    /// What each module the ssr pipeline served imports, as its own code
+    /// says: only those resolutions are safe module paths.
+    ssr_imports: Mutex<HashMap<PathBuf, std::collections::HashSet<String>>>,
     /// `server.fs.strict` (default true). When false the allow list is not
     /// consulted for `/@fs/` paths; the deny list always is, as in Vite.
     fs_strict: bool,
@@ -302,6 +307,20 @@ struct ServerState {
     scss_additional_data: Option<String>,
     sass_additional_data: Option<String>,
     css_config: Option<oj_config::CssConfig>,
+    /// `ssr.external` / `ssr.noExternal` for the dev ssr environment. The
+    /// webworker target is dropped: it bundles everything only in a build.
+    ssr_externals: oj_config::SsrExternals,
+    /// The top-level `resolve.alias` finds (Vite's `config.resolve.alias`).
+    alias_finds: Vec<String>,
+    /// The same with their replacements, for a specifier Node is handed.
+    aliases: Vec<(String, String)>,
+    /// The ssr environment's resolved `resolve.builtins`; None for Vite's
+    /// default (nodeLikeBuiltins, see [`ssr::is_ssr_builtin`]).
+    ssr_builtins: Option<Vec<ssr::Builtin>>,
+    /// Dev asset URLs: `server.origin` and base prefix, svg inline limit.
+    asset_urls: assets_serve::DevAssetUrls,
+    /// Vite's `/@vite/env` module (see [`assets_serve::vite_env_module`]).
+    vite_env_js: String,
     /// `html.cspNonce`: stamped on every served page's script/style/link tags.
     csp_nonce: Option<String>,
     /// `resolve.alias`, root and public dir as seen by `@import`/`@use`/`url()`
@@ -373,6 +392,13 @@ struct ServerState {
     /// Some active plugin has `resolveId`: an import oj cannot resolve may
     /// still be one a plugin serves (`/@id/`), else it fails like Vite's.
     plugins_have_resolve_id: bool,
+    /// A bare import goes to the `pre` plugins' resolveId before oj's resolver
+    /// when one of these matches it; `None` offers every one.
+    pre_resolve_id_res: Option<Vec<plugins::HookFilter>>,
+    /// [`Self::pre_resolve_id_res`] for the ssr environment.
+    ssr_pre_resolve_id_res: Option<Vec<plugins::HookFilter>>,
+    /// (bare specifier, file) pairs oj's resolver gave a plugin's `this.resolve`.
+    resolver_answers: Mutex<std::collections::HashSet<(String, String)>>,
     // A dep is transformed only when its source matches one of these (the plugins'
     // own transform `filter.code` patterns); app source always goes through.
     dep_transform_res: Vec<plugins::HookFilter>,
@@ -969,7 +995,7 @@ async fn spawn_plugin_host(
     // natively and the host goes, unless it hosts `server.proxy`.
     if count == 0 && host.top_level_plugin_count().await == 0 {
         if keep_for_proxy {
-            println!("  plugins: {label} (none active; host kept for server.proxy)");
+            println!("  plugins: {label} (none active; host kept for server.proxy or build.assetsInlineLimit)");
             return Ok(Some(host));
         }
         host.shutdown();
@@ -1010,10 +1036,23 @@ struct PluginCaps {
     have_transform: bool,
     have_load: bool,
     have_resolve_id: bool,
+    pre_resolve_id_res: Option<Vec<plugins::HookFilter>>,
     dep_transform_res: Vec<plugins::HookFilter>,
     dep_load_res: Vec<plugins::HookFilter>,
     resolve_id_res: Vec<plugins::HookFilter>,
     have_transform_index_html: bool,
+}
+
+/// The bare imports a host's `pre` resolveId hooks may claim: `None` offers
+/// every one. A pattern oj cannot carry offers every one, never none.
+async fn pre_resolve_filters(
+    host: &PluginHost,
+    have_resolve_id: bool,
+) -> Option<Vec<plugins::HookFilter>> {
+    if !have_resolve_id {
+        return Some(Vec::new());
+    }
+    host.pre_resolve_id_filters().await
 }
 
 impl PluginCaps {
@@ -1022,6 +1061,7 @@ impl PluginCaps {
         let have_transform = host.has_transform().await;
         let have_load = host.has_load().await;
         let have_resolve_id = host.has_resolve_id().await;
+        let pre_resolve_id_res = pre_resolve_filters(host, have_resolve_id).await;
         let dep_transform_res = host.dep_transform_filters().await;
         let dep_load_res = host.dep_load_filters().await;
         let resolve_id_res = host.resolve_id_filters().await;
@@ -1034,6 +1074,7 @@ impl PluginCaps {
             have_transform,
             have_load,
             have_resolve_id,
+            pre_resolve_id_res,
             dep_transform_res,
             dep_load_res,
             resolve_id_res,
@@ -1126,6 +1167,32 @@ fn hmr_setup(
     }
 }
 
+/// Waits on a plugin host answer from synchronous code (an asset URL is named
+/// both in async handlers and on a compile's blocking thread). A multi-thread
+/// runtime blocks in place; elsewhere (a current-thread runtime, no runtime)
+/// a scoped thread drives the future on a runtime of its own.
+fn block_on_host<T: Send>(
+    f: impl std::future::Future<Output = Result<T, String>> + Send,
+) -> Result<T, String> {
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread {
+            return tokio::task::block_in_place(|| handle.block_on(f));
+        }
+    }
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| format!("assetsInlineLimit: {e}"))?
+                    .block_on(f)
+            })
+            .join()
+            .unwrap_or_else(|_| Err("assetsInlineLimit: the waiting thread panicked".into()))
+    })
+}
+
 fn client_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
     OjResolver::with_settings(
         root,
@@ -1137,6 +1204,52 @@ fn client_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
             main_fields: oj_config::resolve_main_fields(config),
             preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
             server: false,
+        },
+    )
+}
+
+/// A dev environment's resolver for plugins (`this.resolve`, `this.load`), with
+/// the options Vite gives that environment (`resolveEnvironmentResolveOptions`).
+/// Unlike [`ssr_resolver`] nothing is adjusted for the Node runtime: a
+/// runner-backed environment's conditions are what its plugins see in Vite.
+/// `reported` is the environment's resolved conditions and mainFields when the
+/// plugin host has Vite's resolved config; else the config's own lists and the
+/// consumer's defaults answer.
+pub(crate) fn environment_resolver(
+    root: &Path,
+    config: &oj_config::OjConfig,
+    name: &str,
+    consumer_server: bool,
+    dev: bool,
+    reported: Option<&plugins::ReportedResolve>,
+) -> OjResolver {
+    // Vite's isSsrTargetWebworkerEnvironment keeps the client defaults.
+    let server =
+        consumer_server && !(name == "ssr" && oj_config::ssr_externals(config).webworker());
+    let reported_list = |pick: fn(&plugins::ReportedResolve) -> &Option<Vec<String>>| {
+        reported.and_then(|r| pick(r).clone())
+    };
+    let conditions = match reported_list(|r| &r.conditions) {
+        Some(list) => oj_config::reported_conditions(list, dev),
+        None => oj_config::environment_resolve_conditions(config, name, server, dev),
+    };
+    let main_fields = reported_list(|r| &r.main_fields)
+        .or_else(|| oj_config::environment_main_fields(config, name));
+    let extensions = reported_list(|r| &r.extensions)
+        .or_else(|| oj_config::environment_extensions(config, name));
+    let dedupe =
+        reported_list(|r| &r.dedupe).unwrap_or_else(|| oj_config::environment_dedupe(config, name));
+    OjResolver::with_settings(
+        root,
+        oj_resolver::ResolveSettings {
+            conditions,
+            // Vite gives every environment the top-level alias.
+            alias: oj_config::top_level_alias(config),
+            dedupe,
+            extensions,
+            main_fields,
+            preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
+            server,
         },
     )
 }
@@ -1307,6 +1420,12 @@ async fn answer_host_rpc(
         "htmlStyle" => css_serve::compile_html_style(state, arg(0), arg(1).to_string())
             .await
             .map(serde_json::Value::String),
+        // Settles once the dependency scan knows the deps (Vite's
+        // `depsOptimizer.scanProcessing`).
+        "depScan" => {
+            state.optimized.ready().await;
+            Ok(serde_json::Value::Bool(true))
+        }
         other => Err(format!("unknown host rpc: {other}")),
     }
 }
@@ -1340,37 +1459,44 @@ fn build_router(
     server_cfg: &oj_config::ServerConfig,
     hmr_ws_path: &str,
 ) -> Router {
-    let mut app = Router::new()
-        .route("/@oj/client.js", get(serve_client_js))
-        .route(
-            "/@oj/refresh-runtime.js",
-            get(|State(state): State<Arc<ServerState>>| async move {
-                js(state.oj_paths.refresh_runtime_js.clone())
-            }),
-        )
-        .route(
-            "/@oj/refresh-preamble.js",
-            get(|State(state): State<Arc<ServerState>>| async move {
-                js(state.oj_paths.refresh_preamble_js.clone())
-            }),
-        )
-        .route("/@oj/routes.js", get(serve_oj_routes))
-        // `--debug mem`: force a full V8 collection in every live engine so memory
-        // probes measure retained heap (issue #202). 404 unless enabled.
-        .route("/@oj/debug/gc", get(debug_gc))
-        .route("/@oj/debug/mem", get(debug_mem_stats))
-        .route("/@oj/diagnostics", get(serve_diagnostics))
-        .route("/@oj/server-fn.js", get(|| async { js(SERVER_FN_JS) }))
-        .route(
-            "/@oj/lingui-macro-shim.js",
-            get(|| async { js(LINGUI_MACRO_SHIM_JS) }),
-        )
-        .route("/@ssr-resolve", get(ssr_resolve))
-        .route("/@ssr-module", get(ssr_module))
-        .route(HMR_WS_PATH, get(ws_upgrade))
-        .route(HMR_FLUSH_PATH, post(hmr_flush))
-        .route(HMR_GATE_PATH, get(hmr_gate_status))
-        .fallback(serve_fallback);
+    let mut app =
+        Router::new()
+            .route("/@oj/client.js", get(serve_client_js))
+            .route(
+                "/@vite/env",
+                get(|State(state): State<Arc<ServerState>>| async move {
+                    js(state.vite_env_js.clone())
+                }),
+            )
+            .route(
+                "/@oj/refresh-runtime.js",
+                get(|State(state): State<Arc<ServerState>>| async move {
+                    js(state.oj_paths.refresh_runtime_js.clone())
+                }),
+            )
+            .route(
+                "/@oj/refresh-preamble.js",
+                get(|State(state): State<Arc<ServerState>>| async move {
+                    js(state.oj_paths.refresh_preamble_js.clone())
+                }),
+            )
+            .route("/@oj/routes.js", get(serve_oj_routes))
+            // `--debug mem`: force a full V8 collection in every live engine so memory
+            // probes measure retained heap (issue #202). 404 unless enabled.
+            .route("/@oj/debug/gc", get(debug_gc))
+            .route("/@oj/debug/mem", get(debug_mem_stats))
+            .route("/@oj/diagnostics", get(serve_diagnostics))
+            .route("/@oj/server-fn.js", get(|| async { js(SERVER_FN_JS) }))
+            .route(
+                "/@oj/lingui-macro-shim.js",
+                get(|| async { js(LINGUI_MACRO_SHIM_JS) }),
+            )
+            .route("/@ssr-resolve", get(ssr_resolve))
+            .route("/@ssr-module", get(ssr_module))
+            .route(HMR_WS_PATH, get(ws_upgrade))
+            .route(HMR_FLUSH_PATH, post(hmr_flush))
+            .route(HMR_GATE_PATH, get(hmr_gate_status))
+            .fallback(serve_fallback);
     // `server.hmr.path`: the client dials this path instead of /__ws (Vite
     // serves its socket at base + hmr.path).
     if hmr_ws_path != HMR_WS_PATH && hmr_ws_path != "/" && !hmr_ws_path.starts_with("/@oj/") {
@@ -1554,13 +1680,25 @@ impl DevServer {
             .as_ref()
             .and_then(|s| s.proxy.as_ref())
             .is_some_and(|p| !p.is_empty());
+        // A function `build.assetsInlineLimit` (top-level or an environment's)
+        // lives in the plugin host, which dev asks per file, so the host
+        // stays even with no plugin to run.
+        let build_cfg = config.build.as_ref();
+        let inline_limit_fn = build_cfg
+            .and_then(|b| b.assets_inline_limit_fn)
+            .unwrap_or(false)
+            || build_cfg
+                .and_then(|b| b.assets_inline_limit_envs.as_ref())
+                .and_then(|e| e.as_object())
+                .is_some_and(|e| e.values().any(|v| v == "fn"));
         // Every plugin the config declares is one oj does natively (its
         // React plugin, say): no host, and the prewarmed engine goes.
         let (plugin_file, prewarm) = match plugin_file {
             Some(f)
                 if f.format == PluginsFormat::Vite
                     && config.vite_active_plugins == Some(0)
-                    && !has_proxy =>
+                    && !has_proxy
+                    && !inline_limit_fn =>
             {
                 println!("  plugins: {} (none active; served natively)", f.label);
                 (None, None)
@@ -1634,7 +1772,7 @@ impl DevServer {
                     &payload,
                     &engine_registry,
                     prewarm,
-                    has_proxy,
+                    has_proxy || inline_limit_fn,
                     is_start,
                     boot_preseed,
                 )
@@ -1674,8 +1812,18 @@ impl DevServer {
             defines,
             dedup_defines_last_wins(oj_config::environment_defines(&config, "ssr")),
         ));
+        let client_resolver = Arc::new(client_resolver(&root, &config));
+        let ssr_resolver = Arc::new(ssr_resolver(&root, &config));
         if let Some(host) = &plugin_host {
             host.set_import_meta_env(Arc::clone(&import_meta_env));
+            // Before buildStart, whose `this.resolve` already answers per environment.
+            host.set_resolvers(plugins::EnvResolvers {
+                root: root.clone(),
+                config: Arc::new(config.clone()),
+                client: Arc::clone(&client_resolver),
+                production: client_defines.app.node_env() == "production",
+                optimized_dep: Default::default(),
+            });
             // Vite awaits the client buildStart while initing the server, after
             // config resolution, so the defines are final for any `this.load`.
             // A rejection fails startup rather than serving. A host kept only
@@ -1709,6 +1857,10 @@ impl DevServer {
             }
             boot_phase("ssr environment open");
         }
+        let ssr_pre_resolve_id_res = match &plugins_ssr {
+            Some(ssr) => pre_resolve_filters(ssr, ssr.has_resolve_id().await).await,
+            None => Some(Vec::new()),
+        };
 
         let jsx = jsx_config_of(&config);
         let jsx_overrides = match &plugin_host {
@@ -1746,7 +1898,6 @@ impl DevServer {
         let (watch_tx, watch_rx) = std::sync::mpsc::channel::<WatchMsg>();
         let (watch_ready_tx, watch_ready) = tokio::sync::watch::channel(false);
         let public_dir = oj_config::public_dir(&config, &root);
-        let client_resolver = Arc::new(client_resolver(&root, &config));
         let css_resolve = oj_css::CssResolveConfig {
             root: root.clone(),
             public_dir: public_dir.clone().unwrap_or_default(),
@@ -1763,6 +1914,35 @@ impl DevServer {
         if let Some(plugin) = &stylex {
             stylex::notify_clients(plugin, reload_tx.clone());
         }
+        let mut asset_urls = assets_serve::DevAssetUrls::new(
+            config.server.as_ref().and_then(|s| s.origin.as_deref()),
+            config.base.as_deref(),
+            config.build.as_ref().and_then(|b| b.assets_inline_limit),
+        )
+        .with_environments(
+            config
+                .build
+                .as_ref()
+                .and_then(|b| b.assets_inline_limit_envs.as_ref()),
+            config
+                .build
+                .as_ref()
+                .and_then(|b| b.assets_inline_limit_fn)
+                .unwrap_or(false),
+        );
+        if let Some(host) = plugin_host.clone().filter(|_| inline_limit_fn) {
+            asset_urls.decider = Some(assets_serve::InlineDecider(Arc::new(move |env, file| {
+                let host = Arc::clone(&host);
+                let (env, file) = (env.to_string(), file.to_path_buf());
+                // Waits as long as the host takes, as Vite's call never fails.
+                let answer =
+                    block_on_host(async move { host.assets_inline_limit(&env, &file).await })?;
+                Ok(match answer {
+                    Ok(inline) => assets_serve::InlineRule::Decide(inline),
+                    Err(limit) => assets_serve::InlineRule::Limit(limit),
+                })
+            })));
+        }
         let state = Arc::new(ServerState {
             persistent_cache,
             engine_registry: engine_registry.clone(),
@@ -1772,12 +1952,14 @@ impl DevServer {
             graph: Mutex::new(ModuleGraph::new()),
             require_resolver: Arc::new(client_resolver.require_variant()),
             resolver: client_resolver,
-            ssr_resolver: Arc::new(ssr_resolver(&root, &config)),
+            ssr_resolver,
             cache: PersistentCache::new(oj_cache::cache_root(&root), env!("CARGO_PKG_VERSION"))
                 .with_salt_extra(&installed.digest)
                 // A cached compile embeds the JSX runtime import; a changed
                 // importSource/runtime must not serve the old module.
-                .with_salt_extra(&format!("jsx={jsx:?}")),
+                .with_salt_extra(&format!("jsx={jsx:?}"))
+                // A cached module embeds its asset URLs (origin, base, inlined svgs).
+                .with_salt_extra(&format!("asset-urls={asset_urls:?}")),
             memory: Mutex::new(MemoryCache::new(memory_cache_budget())),
             mtime_keys: Mutex::new(HashMap::new()),
             compile_locks: Mutex::new(HashMap::new()),
@@ -1792,10 +1974,23 @@ impl DevServer {
             scss_additional_data: oj_config::css_additional_data(&config, "scss"),
             sass_additional_data: oj_config::css_additional_data(&config, "sass"),
             css_config: config.css.clone(),
+            asset_urls: asset_urls.clone(),
+            vite_env_js: assets_serve::vite_env_module(&config),
+            ssr_builtins: ssr::Builtin::ssr_list(&config),
+            alias_finds: oj_config::top_level_alias(&config)
+                .into_iter()
+                .map(|(find, _)| find)
+                .collect(),
+            aliases: oj_config::top_level_alias(&config),
+            ssr_externals: oj_config::SsrExternals {
+                target: None,
+                ..oj_config::ssr_externals(&config)
+            },
             glob_alias: Arc::from(css_resolve.alias.clone()),
             css_resolve,
             csp_nonce: oj_config::html_csp_nonce(&config),
             fs_allow: Arc::new(Mutex::new(fs_allow_list(&root, &server_cfg))),
+            ssr_imports: Mutex::default(),
             fs_strict,
             fs_deny: compile_fs_deny(&oj_config::server_fs_deny(&config)),
             dir_cache: Arc::new(Mutex::new(DirCache::new())),
@@ -1842,6 +2037,9 @@ impl DevServer {
             plugins_have_transform: caps.have_transform,
             plugins_have_load: caps.have_load,
             plugins_have_resolve_id: caps.have_resolve_id,
+            pre_resolve_id_res: caps.pre_resolve_id_res,
+            ssr_pre_resolve_id_res,
+            resolver_answers: Mutex::default(),
             dep_transform_res: caps.dep_transform_res,
             dep_load_res: caps.dep_load_res,
             resolve_id_res: caps.resolve_id_res,
@@ -1889,6 +2087,40 @@ impl DevServer {
         // "optimized dependencies changed. reloading". A commit that left
         // served chunks byte-identical never reaches here.
         state.optimized.set_crawl_end(state.crawl_done.clone());
+        if let Some(host) = &state.plugins {
+            let weak = Arc::downgrade(&state);
+            // vite:resolve's tryOptimizedResolve, then finalizeBareSpecifier.
+            host.set_optimized_dep(Box::new(move |source, dir, resolved| {
+                use plugins::OptimizedAnswer;
+                let Some(state) = weak.upgrade() else {
+                    return OptimizedAnswer::File;
+                };
+                if !is_bare_specifier(source) {
+                    return OptimizedAnswer::File;
+                }
+                if state.optimized.scan_pending() {
+                    return OptimizedAnswer::ScanPending;
+                }
+                if let Some(id) = optimized_dep_id(&state, source) {
+                    return OptimizedAnswer::Id(id);
+                }
+                // A missed dep is registered and answers with its future
+                // bundle; one that skips optimization is versioned.
+                if may_register_import(&state, dir, source) {
+                    if let Some(meta) = register_missing_import(&state, source, resolved) {
+                        return OptimizedAnswer::Id(dep_id_of(&state, &meta));
+                    }
+                } else if is_optimizable_dep_file(resolved) && !source.contains('?') {
+                    let version = state.optimized.browser_version();
+                    if !version.is_empty() {
+                        return OptimizedAnswer::Id(format!("{}?v={version}", resolved.display()));
+                    }
+                }
+                let answer = (source.to_string(), resolved.display().to_string());
+                state.resolver_answers.lock().unwrap().insert(answer);
+                OptimizedAnswer::File
+            }));
+        }
         {
             let weak = Arc::downgrade(&state);
             state.optimized.set_on_commit(Box::new(move |newly| {

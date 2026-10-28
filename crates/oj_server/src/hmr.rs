@@ -906,6 +906,9 @@ pub(crate) fn drop_resolver_misses(
     {
         state.resolver.clear_cache();
         state.ssr_resolver.clear_cache();
+        if let Some(host) = &state.plugins {
+            host.clear_environment_resolvers();
+        }
     }
 }
 
@@ -1197,14 +1200,7 @@ fn decide_file(
         // A stylesheet nothing imports is loaded by a `<link>`: swap the link
         // rather than dispatching a JS update it has no handler for.
         // Nor imports its `?inline` module (a node of its own).
-        let inline = format!("{url}?inline");
-        let link_loaded = {
-            let g = state.graph.lock().unwrap();
-            [url.as_str(), inline.as_str()]
-                .iter()
-                .all(|u| g.node(Path::new(u)).is_none_or(|n| n.importers.is_empty()))
-        };
-        if link_loaded {
+        if link_loaded(state, &url) {
             println!("oj: change {url} -> css-update");
             updates.push(update_entry("css-update", &url, now_millis() as u64));
             return Flow::Done;
@@ -1280,7 +1276,16 @@ fn decide_file(
             if targets.is_empty() {
                 println!("oj: change {url} -> no update (nothing loaded imports it)");
             }
-            updates.extend(targets.iter().map(|t| update_entry_for(t, timestamp, None)));
+            // A dep of a `<link>`-loaded sheet (its `url()` asset, an
+            // `@import`) swaps the link, as Vite's css-analysis updates it.
+            updates.extend(targets.iter().map(|t| {
+                let sheet = t.boundary.display().to_string();
+                if is_style_url(&sheet) && sheet != url && link_loaded(state, &sheet) {
+                    update_entry("css-update", &sheet, timestamp)
+                } else {
+                    update_entry_for(t, timestamp, None)
+                }
+            }));
             Flow::Done
         }
         Err(reason) => {
@@ -1288,6 +1293,17 @@ fn decide_file(
             Flow::Reload(full_reload_frame(&reason, None, Some(path)))
         }
     }
+}
+
+/// Whether a stylesheet is loaded by a `<link>`: nothing imports it, nor its
+/// `?inline` module (a node of its own). Vite's `?direct` node for it updates
+/// with `css-update`, which swaps the link.
+fn link_loaded(state: &ServerState, url: &str) -> bool {
+    let inline = format!("{url}?inline");
+    let g = state.graph.lock().unwrap();
+    [url, inline.as_str()]
+        .iter()
+        .all(|u| g.node(Path::new(u)).is_none_or(|n| n.importers.is_empty()))
 }
 
 /// A changed stylesheet may also be inlined into OTHER sheets (@import, sass @use):

@@ -54,8 +54,12 @@ async fn new_url_import_meta_url_becomes_a_served_url_import() {
         format!("/src/{spec}")
     };
     let url_mod = server.text(&path).await;
+    // vite:asset-import-meta-url names it with fileToUrl, which in dev
+    // inlines an svg under assetsInlineLimit.
     assert!(
-        url_mod.contains(r#"export default "/src/logo.svg""#),
+        url_mod.contains(
+            r#"export default "data:image/svg+xml,%3csvg%20xmlns='http://www.w3.org/2000/svg'%3e%3c/svg%3e""#
+        ),
         "?url module did not resolve the asset:\n{url_mod}"
     );
 }

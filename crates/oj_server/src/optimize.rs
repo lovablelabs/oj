@@ -350,6 +350,12 @@ impl OptimizedDeps {
         }
     }
 
+    /// Whether the first dependency scan is still running: no planned or
+    /// committed map yet (Vite's pending `scanProcessing`).
+    pub fn scan_pending(&self) -> bool {
+        self.rerun.is_some() && self.rx.borrow().is_none()
+    }
+
     pub fn disabled() -> Self {
         let (_tx, rx) = watch::channel(Some(Arc::new(DepMap::new())));
         OptimizedDeps {
@@ -411,6 +417,30 @@ impl OptimizedDeps {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// The live map's entry whose bundle is `file`.
+    pub fn entry_by_file(&self, file: &str) -> Option<DepMeta> {
+        let map = self.rx.borrow();
+        map.as_ref()?
+            .values()
+            .find(|meta| meta.file == file)
+            .cloned()
+    }
+
+    /// The URL importers name the pre-bundle `file` by: a committed or planned
+    /// entry, else one registered since and not bundled yet (Vite's
+    /// isOptimizedDepFile covers a bundle before it is written).
+    pub fn url_by_file(&self, file: &str) -> Option<String> {
+        if let Some(meta) = self.entry_by_file(file) {
+            return Some(meta.url);
+        }
+        let r = self.rerun.as_ref()?;
+        let discovered = r.discovered.lock().unwrap();
+        discovered
+            .values()
+            .find(|m| m.file == file)
+            .map(|m| m.url.clone())
     }
 
     /// The live map's entry for `dep`, including a provisional one registered
@@ -2278,6 +2308,7 @@ mod tests {
     // plan, a bundle that confirms both commits with no reload, every entry
     // keeps the URL it was served under (the missed dep its registration
     // version), and nothing is left pending for a rerun.
+
     #[test]
     fn a_dep_the_scanner_missed_joins_the_initial_commit_quietly() {
         let deps = test_deps(true, vec![]);
@@ -2317,6 +2348,20 @@ mod tests {
             dep_url("react.mjs", "00000000")
         );
         assert_eq!(deps.meta_now("late").unwrap().file_hash, "h");
+    }
+
+    // Vite's `scanProcessing`: pending until the scan's planned map is out,
+    // settled from then on, and never pending with no optimizer.
+    #[test]
+    fn the_scan_is_pending_until_its_plan_is_published() {
+        let deps = test_deps(true, vec![]);
+        let r = deps.rerun.as_ref().unwrap();
+        r.tx.send(None).unwrap();
+        assert!(deps.scan_pending());
+        let plan: DepMap = [("react".to_string(), meta("react.mjs", true))].into();
+        r.tx.send(Some(Arc::new(plan))).unwrap();
+        assert!(!deps.scan_pending());
+        assert!(!OptimizedDeps::disabled().scan_pending());
     }
 
     // Vite's optimizedDepsPlugin.load: a request held on a dep's processing

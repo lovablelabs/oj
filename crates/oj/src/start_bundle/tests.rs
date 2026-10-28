@@ -187,8 +187,8 @@ console.log(raw, url, inline, icon, worker, styles.card);
         .display()
         .to_string();
     assert!(
-        code.contains(&format!("\"/{rel}\"")),
-        "a dev worker URL is its dev-pipeline URL:\n{code}"
+        code.contains(&format!("\"/{rel}?worker_file&type=module\"")),
+        "a dev worker URL is its dev-pipeline URL with Vite's worker_file query:\n{code}"
     );
     assert!(
         !code.contains("color: red"),

@@ -183,6 +183,8 @@ pub struct PreviewConfig {
 pub struct ServerConfig {
     pub port: Option<u16>,
     pub host: Option<String>,
+    /// Vite's `server.origin`: what dev asset URLs start with, before the base.
+    pub origin: Option<String>,
     pub strict_port: Option<bool>,
     pub open: Option<bool>,
     pub cors: Option<CorsConfig>,
@@ -470,6 +472,11 @@ pub struct BuildConfig {
     pub rollup_options: Option<serde_json::Value>,
     pub rolldown_options: Option<serde_json::Value>,
     pub assets_inline_limit: Option<u64>,
+    /// `build.assetsInlineLimit` is a function, which the plugin host keeps:
+    /// dev asks it per file (Vite's shouldInline).
+    pub assets_inline_limit_fn: Option<bool>,
+    /// Each environment's own `build.assetsInlineLimit` (`{ name: n | "fn" }`).
+    pub assets_inline_limit_envs: Option<serde_json::Value>,
     pub css_code_split: Option<bool>,
     pub copy_public_dir: Option<bool>,
     /// Vite's `build.assetsDir` (default `assets`): where hashed chunks and

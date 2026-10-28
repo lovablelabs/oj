@@ -34,14 +34,16 @@ fn content_type(res: &Response) -> &str {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn stylesheet_imports_serve_compiled_css_and_svg_is_a_url_module() {
+    // Past assetsInlineLimit: a smaller svg is a data URL in Vite's dev.
+    let logo = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4">{}</svg>"#,
+        r#"<rect width="4" height="4"/>"#.repeat(160)
+    );
     let app = App::new(&[
         ("package.json", r#"{"name":"cssurl-app","version":"1.0.0"}"#),
         ("src/a.scss", "$c: red;\n.a { color: $c; }\n"),
         ("src/b.css", ".b {\n  color: blue;\n}\n"),
-        (
-            "src/assets/logo.svg",
-            r#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><rect width="4" height="4"/></svg>"#,
-        ),
+        ("src/assets/logo.svg", &logo),
         (
             "src/main.js",
             "import aUrl from \"./a.scss?url\";\nimport bInline from \"./b.css?inline\";\nimport logo from \"@/assets/logo.svg\";\nwindow.__A = aUrl; window.__B = bInline; window.__LOGO = logo;\n",

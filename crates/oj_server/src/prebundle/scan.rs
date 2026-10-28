@@ -149,13 +149,14 @@ impl ScanHost {
         &self,
         source: &str,
         importer: &str,
+        aliased: Option<&str>,
     ) -> Result<Option<crate::plugins::ResolvedId>, String> {
         let _turn = self
             .turns
             .acquire()
             .await
             .expect("the scan never closes its turns");
-        self.host.scan_resolve_id(source, importer).await
+        self.host.scan_resolve_id(source, importer, aliased).await
     }
 
     async fn plugin_hook(
@@ -331,7 +332,8 @@ impl ScanState {
         );
         cell.get_or_init(|| async {
             if let Some(host) = &self.host {
-                if let Ok(Some(r)) = host.resolve_id(id, from).await {
+                let aliased = self.pre.alias.apply(id);
+                if let Ok(Some(r)) = host.resolve_id(id, from, aliased.as_deref()).await {
                     let abs = Path::new(clean_url(&r.id)).is_absolute();
                     return (!r.is_external() && abs).then_some(r.id);
                 }

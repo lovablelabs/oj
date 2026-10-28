@@ -52,7 +52,11 @@ pub(crate) async fn ensure_module_as(
         && query_asset_kind(url.split_once('?').map(|(_, q)| q)).is_none();
 
     if !react_svg && !svgr_candidate && is_asset_path(file) {
-        return Ok(register_uncached(state, url, url_asset_module(url)));
+        return Ok(register_uncached(
+            state,
+            url,
+            url_asset_module(state, file, url)?,
+        ));
     }
 
     let stamp = match preloaded {
@@ -78,12 +82,13 @@ pub(crate) async fn ensure_module_as(
         // `<style>` the JS wrapper injects resolves them from any page.
         let dir = file.parent().unwrap_or(Path::new("/"));
         let css = crate::style_file::rewrite_relative_urls(&css, dir, |f| url_of(&state.root, f));
+        let (css, assets) = rewrite_sheet_urls(state, file, "client", &css)?;
         let normal =
             plugin_transform_phase(state, file, &transform_id, css, is_dep, Some("normal")).await?;
         let module = CachedModule {
             is_boundary: true,
             kind: "css".into(),
-            imports: css_dep_imports(state, file, &imported),
+            imports: css_dep_imports(state, file, &[imported, assets].concat()),
             watch_files: [pre.watch_files, normal.watch_files].concat(),
             ..code_module(normal.code)
         };
@@ -168,6 +173,9 @@ pub(crate) async fn ensure_module_as(
     };
     let source = if is_stylesheet {
         let compiled = css_prepass(state, file, url, source, &mut css).await?;
+        // Vite's url replacer runs in vite:css, before the "normal" slot.
+        let (compiled, assets) = rewrite_sheet_urls(state, file, "client", &compiled)?;
+        css.deps.extend(assets);
         let normal = plugin_transform_phase(
             state,
             file,
@@ -192,7 +200,11 @@ pub(crate) async fn ensure_module_as(
     // serve it as a URL asset like Vite; otherwise compile it as `.svg.tsx` below.
     let svgr_componentized = svgr_candidate && !source.trim_start().starts_with('<');
     if svgr_candidate && !svgr_componentized {
-        return Ok(register_uncached(state, url, url_asset_module(url)));
+        return Ok(register_uncached(
+            state,
+            url,
+            url_asset_module(state, file, url)?,
+        ));
     }
     let source = if is_svelte {
         run_svelte_engine(state, url, &source)
@@ -214,9 +226,13 @@ pub(crate) async fn ensure_module_as(
         Some(e) if is_style_ext(e) => CompileKind::Css,
         _ => CompileKind::Script,
     };
-    let dep_map = match kind {
-        CompileKind::Script => state.optimized.ready().await,
-        _ => Arc::new(optimize::DepMap::new()),
+    let (dep_map, pre_resolved) = match kind {
+        CompileKind::Script => {
+            let dep_map = state.optimized.ready().await;
+            let pre_resolved = pre_resolve_bare(state, file, &source, &dep_map).await;
+            (dep_map, pre_resolved)
+        }
+        _ => (Arc::new(optimize::DepMap::new()), HashMap::new()),
     };
     let job = CompileJob {
         state: Arc::clone(state),
@@ -233,6 +249,7 @@ pub(crate) async fn ensure_module_as(
         css,
         plugin_maps: transformed.maps,
         dep_map,
+        pre_resolved,
     };
     let compiled = tokio::task::spawn_blocking(move || job.run()).await;
 
@@ -290,12 +307,14 @@ fn code_module(code: String) -> CachedModule {
     }
 }
 
-/// `export default "<url>"`: how a non-compiled asset import is served.
-fn url_asset_module(url: &str) -> CachedModule {
-    code_module(format!(
+/// `export default "<url>"`: how a non-compiled asset import is served, its
+/// URL as Vite's dev fileToDevUrl names it.
+fn url_asset_module(state: &ServerState, file: &Path, url: &str) -> Result<CachedModule, String> {
+    let named = state.asset_urls.file_url("client", file, url)?;
+    Ok(code_module(format!(
         "export default {};\n",
-        serde_json::Value::String(asset_export_url(url))
-    ))
+        serde_json::Value::String(encode_uri_path(&named))
+    )))
 }
 
 fn register_uncached(state: &ServerState, url: &str, module: CachedModule) -> Compiled {
@@ -311,7 +330,13 @@ fn memory_hit(state: &ServerState, url: &str, key: &str) -> Option<Arc<CachedMod
 }
 
 fn store_module(state: &ServerState, url: &str, key: &str, module: &Arc<CachedModule>) {
-    if state.persistent_cache {
+    // A sheet that may have inlined a file it names (a small svg; any file
+    // under `?inline`, a JSON one included) embeds its content as it is now:
+    // kept in memory, recompiled when one changes, never persisted. A `t=`
+    // stamp is 0 after a restart, so a sheet with only asset URLs persists.
+    let inlines_assets =
+        module.kind == "css" && !module.imports.is_empty() && module.code.contains("data:");
+    if state.persistent_cache && !inlines_assets {
         let _ = state
             .cache_writes
             .try_send((key.to_string(), Arc::clone(module)));
@@ -554,7 +579,8 @@ pub(crate) async fn plugin_transform_phase(
     let transformed = match phase {
         Some(phase) => host.transform_phase(&source, transform_id, phase).await,
         None => {
-            let resolved = resolved_imports_json(&state.resolver, &state.fs_allow, &source, file);
+            let resolved =
+                resolved_imports_json(&state.resolver, &state.fs_allow, &source, file, Some(state));
             host.transform(&source, transform_id, &resolved).await
         }
     };
@@ -697,6 +723,54 @@ async fn css_prepass(
     Ok(scoped.css)
 }
 
+/// A sheet's `url()`s named as Vite's dev url replacer names them (see
+/// [`crate::css_urls`]), with each asset's current HMR `t=` stamp, and the
+/// files they name: graph imports, so an asset edit recompiles the sheet.
+pub(crate) fn rewrite_sheet_urls(
+    state: &ServerState,
+    sheet: &Path,
+    env: &str,
+    css: &str,
+) -> Result<(String, Vec<PathBuf>), String> {
+    let stamp = |file: &Path| {
+        let url = url_of(&state.root, file);
+        state.graph.lock().unwrap().hmr_timestamp(Path::new(&url))
+    };
+    let resolve = state.css_resolve.as_ref();
+    let alias = |spec: &str| resolve.alias_spec(spec);
+    // The css url resolver probes no extensions (`extensions: []`): a file
+    // with another extension than the url's is not what it names.
+    let package = |dir: &Path, spec: &str| {
+        let file = state.resolver.resolve(dir, spec).ok()?;
+        (file.extension() == Path::new(spec).extension()).then_some(file)
+    };
+    crate::css_urls::CssUrls {
+        root: &state.root,
+        public_dir: state.public_dir.as_deref(),
+        urls: &state.asset_urls,
+        env,
+        stamp: &stamp,
+        dir: sheet_dir(sheet),
+        alias: &alias,
+        package: &package,
+    }
+    .rewrite(css)
+}
+
+/// The directory a sheet's relative urls resolve against: its own, or for a
+/// page's `<style>` (compiled as `<page>.css`) the page's. A page with no
+/// file (a middleware's html) has none.
+fn sheet_dir(sheet: &Path) -> Option<&Path> {
+    let page = sheet
+        .to_str()
+        .and_then(|s| s.strip_suffix(".css"))
+        .map(Path::new);
+    (sheet.is_file()
+        || page.is_some_and(|p| p.extension().is_some_and(|e| e == "html") && p.is_file()))
+    .then(|| sheet.parent())
+    .flatten()
+}
+
 /// A sheet's pulled-in files as its graph imports, so a dep edit hot-updates
 /// it, `/@fs/` ones outside the root watched as Vite's ensureWatchedFile
 /// does; the sheet itself is filtered (a self-edge is a bogus cycle).
@@ -724,6 +798,124 @@ enum CompileKind {
     Script,
 }
 
+/// A `pre` plugin's resolveId answer for a bare import.
+#[derive(Clone)]
+pub struct PreAnswer {
+    pub id: String,
+    /// Imported by the id itself: in the browser only a remote URL, in a
+    /// server render any id a plugin marks external.
+    pub external: bool,
+    /// oj's resolver gave it to a plugin's `this.resolve`, so the import takes
+    /// oj's dep handling like one no plugin claimed.
+    pub resolver: bool,
+}
+
+/// Vite runs `pre` plugins' resolveId before its own resolver, so each bare
+/// import their filters admit is offered to them first. An answer naming oj's
+/// own resolution, or the specifier's own pre-bundle (a `this.resolve`
+/// passthrough), is dropped so the import takes
+/// oj's dep handling unchanged.
+pub(crate) async fn pre_resolve_bare(
+    state: &ServerState,
+    file: &Path,
+    source: &str,
+    dep_map: &optimize::DepMap,
+) -> HashMap<String, PreAnswer> {
+    let Some(host) = state.plugins.as_ref() else {
+        return HashMap::new();
+    };
+    let filters = state.pre_resolve_id_res.as_ref();
+    if filters.is_some_and(Vec::is_empty) {
+        return HashMap::new();
+    }
+    let importer = file.to_string_lossy().into_owned();
+    let dir = file.parent().unwrap_or(Path::new(""));
+    let specs = oj_compiler::interop::bare_import_specifiers(source)
+        .into_iter()
+        .filter(|spec| is_bare_specifier(spec) && !state.virtual_ids.contains(spec))
+        .map(|spec| {
+            let aliased = crate::ssr::apply_alias(&state.aliases, &spec);
+            (spec, aliased)
+        })
+        .filter(|(spec, aliased)| {
+            filters.is_none_or(|res| {
+                res.iter()
+                    .any(|re| re.is_match(spec) || re.is_match(aliased))
+            })
+        });
+    // Asked on every compile, as Vite asks on every transform; the compiled
+    // module is what oj caches.
+    let answers = futures_util::future::join_all(specs.map(|(spec, aliased)| {
+        let importer = &importer;
+        async move {
+            let answer = match host.resolve_id_pre(&spec, importer, Some(&aliased)).await {
+                Ok(answer) => answer,
+                Err(e) => {
+                    eprintln!("oj: pre resolveId of {spec} from {importer} failed: {e}");
+                    None
+                }
+            };
+            // Vite's import analysis keeps a remote URL as is, whatever its
+            // `external` flag, and rewrites any other answer like a module id.
+            let answer = answer.map(|a| PreAnswer {
+                external: is_external_url(&a.id),
+                ..a
+            });
+            // The specifier itself is a plugin's module id (Vite's `/@id/`),
+            // not a passthrough to oj's resolution.
+            let answer = answer
+                .filter(|a| {
+                    a.external || a.id == spec || !is_native_resolution(state, dir, &spec, &a.id)
+                })
+                .map(|a| PreAnswer {
+                    resolver: !a.external && is_resolver_answer(state, &spec, &a.id),
+                    ..a
+                });
+            (spec, answer)
+        }
+    }))
+    .await;
+    answers
+        .into_iter()
+        .filter_map(|(spec, answer)| Some((spec, answer?)))
+        .filter(|(spec, a)| a.external || !is_own_bundle(state, dep_map, spec, &a.id))
+        .collect()
+}
+
+/// Vite's isExternalUrl: `scheme://` or protocol-relative `//`.
+pub(crate) fn is_external_url(id: &str) -> bool {
+    let rest = id.trim_start_matches(|c: char| c.is_ascii_lowercase());
+    let rest = if rest.len() < id.len() {
+        rest.strip_prefix(':').unwrap_or("x")
+    } else {
+        rest
+    };
+    rest.starts_with("//")
+}
+
+fn is_own_bundle(state: &ServerState, dep_map: &optimize::DepMap, spec: &str, id: &str) -> bool {
+    optimized_file(state, id).is_some_and(|file| {
+        let meta = dep_map
+            .get(spec)
+            .cloned()
+            .or_else(|| state.optimized.meta_now(spec));
+        meta.is_some_and(|meta| meta.file == file)
+    })
+}
+
+fn is_resolver_answer(state: &ServerState, spec: &str, id: &str) -> bool {
+    let answers = state.resolver_answers.lock().unwrap();
+    answers.contains(&(spec.to_string(), id.to_string()))
+}
+
+fn is_native_resolution(state: &ServerState, dir: &Path, spec: &str, id: &str) -> bool {
+    let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    state
+        .resolver
+        .resolve(dir, spec)
+        .is_ok_and(|native| canonical(&native) == canonical(Path::new(id)))
+}
+
 /// The owned inputs of the blocking compile stage.
 struct CompileJob {
     state: Arc<ServerState>,
@@ -742,6 +934,8 @@ struct CompileJob {
     css: CssState,
     plugin_maps: Vec<String>,
     dep_map: Arc<optimize::DepMap>,
+    /// Bare specifiers a `pre` plugin's resolveId claimed, to its answers.
+    pre_resolved: HashMap<String, PreAnswer>,
 }
 
 impl CompileJob {
@@ -792,6 +986,7 @@ impl CompileJob {
         let rw = ImportRewrite {
             job: &self,
             unresolved: RefCell::new(None),
+            interop_urls: RefCell::default(),
         };
         let output = if self.is_dep {
             self.compile_dep(&rw)
@@ -912,6 +1107,9 @@ struct ImportRewrite<'a> {
     /// First unresolvable relative import: Vite's import analysis fails the
     /// transform for it; shipping it unchanged would only 404 with no overlay.
     unresolved: RefCell<Option<String>>,
+    /// The URLs the CJS interop pass wrote into the source: final already, so
+    /// a catch-all resolveId filter must not send them back through `/@id/`.
+    interop_urls: RefCell<std::collections::HashSet<String>>,
 }
 
 impl ImportRewrite<'_> {
@@ -942,11 +1140,36 @@ impl ImportRewrite<'_> {
             }
             _ => {}
         }
+        if self.interop_urls.borrow().contains(spec) {
+            let path = Path::new(spec.split('?').next().unwrap_or(spec));
+            let stamp = state.graph.lock().unwrap().hmr_timestamp(path);
+            return Some(stamp_import_url(spec, stamp));
+        }
         if state.virtual_ids.contains(spec) {
             return Some(format!("/@virtual/{spec}"));
         }
         if crate::stylex::virtual_module(state, spec).is_some() {
             return Some(format!("/@id/{spec}"));
+        }
+        if let Some(url) = optimized_url_of(state, spec) {
+            return Some(url);
+        }
+        if let Some(answer) = job.pre_resolved.get(spec) {
+            if answer.external {
+                return Some(answer.id.clone());
+            }
+            // Another specifier's pre-bundle, at the URL importers name it by now.
+            if let Some(meta) = optimized_file(state, &answer.id)
+                .and_then(|file| state.optimized.entry_by_file(file))
+            {
+                return Some(meta.url);
+            }
+            if let Some(meta) = self.resolver_answer_dep(spec, answer) {
+                if !meta.needs_interop {
+                    return Some(meta.url);
+                }
+            }
+            return Some(self.pre_resolved_url(&answer.id));
         }
         // Vite runs plugins' resolveId before its own resolver: a non-bare import
         // a filter claims goes to /@id/, which falls back to disk on decline.
@@ -1022,10 +1245,49 @@ impl ImportRewrite<'_> {
         None
     }
 
+    /// The pre-bundle an import a plugin handed back as oj resolved it takes:
+    /// the specifier's own, or a registration as for an unclaimed import.
+    fn resolver_answer_dep(&self, spec: &str, answer: &PreAnswer) -> Option<optimize::DepMeta> {
+        if !answer.resolver {
+            return None;
+        }
+        let state = &*self.job.state;
+        (self.job.dep_map.get(spec).cloned())
+            .or_else(|| state.optimized.meta_now(spec))
+            .or_else(|| self.register_missing_dep(spec, &state.resolver))
+    }
+
+    fn pre_resolved_url(&self, id: &str) -> String {
+        pre_resolved_url(&self.job.state, id)
+    }
+
     /// Specifiers whose named imports must read off the CJS value (module.exports)
     /// instead of linking as ESM bindings; shared by app source and served ESM deps.
     fn cjs_interop_url(&self, spec: &str) -> Option<String> {
+        let url = self.cjs_interop_target(spec)?;
+        self.interop_urls.borrow_mut().insert(url.clone());
+        Some(url)
+    }
+
+    fn cjs_interop_target(&self, spec: &str) -> Option<String> {
         let job = self.job;
+        // A claimed CommonJS file under node_modules is served as is, so its
+        // named imports read off module.exports, as for a directly served dep.
+        if let Some(answer) = job.pre_resolved.get(spec) {
+            if let Some(meta) = optimized_file(&job.state, &answer.id)
+                .and_then(|file| job.state.optimized.entry_by_file(file))
+                .or_else(|| self.resolver_answer_dep(spec, answer))
+            {
+                return meta.needs_interop.then_some(meta.url);
+            }
+            let path = Path::new(&answer.id);
+            let cjs = !answer.external
+                && path.is_absolute()
+                && path.components().any(|c| c.as_os_str() == "node_modules")
+                && (is_cjs_dep_file(&job.state.cjs_dep_memo, path)
+                    || job.state.optimize_view.needs_forced_interop(path));
+            return cjs.then(|| self.pre_resolved_url(&answer.id));
+        }
         // Builtins are browser-externalized to a stub with no named exports;
         // interop so named imports read undefined instead of failing to link.
         if is_node_builtin(spec) {
@@ -1079,40 +1341,114 @@ impl ImportRewrite<'_> {
     /// exportsData before bundling.
     fn register_missing_dep(&self, spec: &str, resolver: &OjResolver) -> Option<optimize::DepMeta> {
         let job = self.job;
-        let state = &*job.state;
-        if job.is_server
-            || !is_bare_specifier(spec)
-            || spec.contains('?')
-            || is_node_builtin(spec)
-            || is_lingui_macro_specifier(spec)
-            // Vite's skipOptimization (resolve.ts): an importer inside
-            // node_modules never registers a missing dep. Pre-bundling is
-            // driven by user code; an excluded package's own imports (a
-            // tanstack-start tree, say) keep serving per-file. A linked
-            // package's files live outside node_modules and still register.
-            || job.dir.components().any(|c| c.as_os_str() == "node_modules")
-            // The cheap gates (discovery off, optimizer dead, excluded,
-            // failed) before the resolve and CJS sniff below.
-            || !state.optimized.may_register(spec)
-        {
+        if job.is_server || !may_register_import(&job.state, &job.dir, spec) {
             return None;
         }
         let resolved = resolver.resolve(&job.dir, spec).ok()?;
-        let optimizable = resolved
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| matches!(e, "js" | "mjs" | "cjs" | "ts" | "mts" | "cts"));
-        if !optimizable {
-            return None;
-        }
-        let real = std::fs::canonicalize(&resolved).unwrap_or_else(|_| resolved.clone());
-        if !real.components().any(|c| c.as_os_str() == "node_modules") {
-            return None;
-        }
-        let needs_interop = is_cjs_dep_file(&state.cjs_dep_memo, &resolved)
-            || state.optimize_view.needs_forced_interop(&resolved);
-        state.optimized.register_missing(spec, needs_interop)
+        register_missing_import(&job.state, spec, &resolved)
     }
+}
+
+/// The cheap gates of Vite's finalizeBareSpecifier before a resolve: a bare
+/// JS-able import from outside node_modules, the optimizer able to take it.
+pub(crate) fn may_register_import(state: &ServerState, importer_dir: &Path, spec: &str) -> bool {
+    is_bare_specifier(spec)
+        && !spec.contains('?')
+        && !is_node_builtin(spec)
+        && !is_lingui_macro_specifier(spec)
+        // Vite's skipOptimization (resolve.ts): an importer inside
+        // node_modules never registers a missing dep. Pre-bundling is
+        // driven by user code; an excluded package's own imports (a
+        // tanstack-start tree, say) keep serving per-file. A linked
+        // package's files live outside node_modules and still register.
+        && !importer_dir.components().any(|c| c.as_os_str() == "node_modules")
+        // The cheap gates (discovery off, optimizer dead, excluded, failed)
+        // before the CJS sniff.
+        && state.optimized.may_register(spec)
+}
+
+/// Whether `resolved` is a dependency file the optimizer bundles: a JS type
+/// under node_modules (Vite's isOptimizable and isInNodeModules).
+pub(crate) fn is_optimizable_dep_file(resolved: &Path) -> bool {
+    let optimizable = resolved
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| matches!(e, "js" | "mjs" | "cjs" | "ts" | "mts" | "cts"));
+    let real = std::fs::canonicalize(resolved).unwrap_or_else(|_| resolved.to_path_buf());
+    optimizable && real.components().any(|c| c.as_os_str() == "node_modules")
+}
+
+/// Vite's registerMissingImport for `spec`, which resolved to `resolved`,
+/// once [`may_register_import`] holds: the future bundle's entry.
+pub(crate) fn register_missing_import(
+    state: &ServerState,
+    spec: &str,
+    resolved: &Path,
+) -> Option<optimize::DepMeta> {
+    if !is_optimizable_dep_file(resolved) {
+        return None;
+    }
+    let needs_interop = is_cjs_dep_file(&state.cjs_dep_memo, resolved)
+        || state.optimize_view.needs_forced_interop(resolved);
+    state.optimized.register_missing(spec, needs_interop)
+}
+
+/// A real file goes through the module pipeline under its own url, so every
+/// importer shares one module instance; any other id is plugin-loaded.
+pub(crate) fn pre_resolved_url(state: &ServerState, id: &str) -> String {
+    let (file, query) = id.split_once('?').map_or((id, None), |(f, q)| (f, Some(q)));
+    // A root-relative id (`/src/x.js`) names a file under the root, as Vite's
+    // normalizeResolvedIdToUrl takes it for a URL.
+    let under_root = file
+        .strip_prefix('/')
+        .map(|rel| crate::rewrite::normalize(&state.root.join(rel)))
+        .filter(|p| p.starts_with(&state.root) && p.is_file());
+    let path = match &under_root {
+        Some(p) if !Path::new(file).is_file() => p.as_path(),
+        _ => Path::new(file),
+    };
+    if !path.is_absolute() || !path.is_file() {
+        return format!("/@presolve/{}", hex_encode(id));
+    }
+    // Vite's safe module paths: a file an import resolved to is servable.
+    allow_root(&state.fs_allow, path.to_path_buf());
+    let url = url_of(&state.root, path);
+    let stamp = state.graph.lock().unwrap().hmr_timestamp(Path::new(&url));
+    let url = stamp_import_url(&url, stamp);
+    match query {
+        Some(q) if url.contains('?') => format!("{url}&{q}"),
+        Some(q) => format!("{url}?{q}"),
+        None => url,
+    }
+}
+
+/// A client bare import's pre-bundle id, as vite:resolve's tryOptimizedResolve
+/// answers it: the bundle's path with its version, as Vite's is.
+pub(crate) fn optimized_dep_id(state: &ServerState, spec: &str) -> Option<String> {
+    Some(dep_id_of(state, &state.optimized.meta_now(spec)?))
+}
+
+/// A pre-bundle's id: its file in the deps dir, versioned as its URL is
+/// (Vite's getOptimizedDepId).
+pub(crate) fn dep_id_of(state: &ServerState, meta: &optimize::DepMeta) -> String {
+    let file = state.optimized.dir().join(&meta.file);
+    match meta.url.split_once('?') {
+        Some((_, query)) => format!("{}?{query}", file.display()),
+        None => file.display().to_string(),
+    }
+}
+
+/// The URL a pre-bundle's own path (`this.resolve`'s answer for a dep) is
+/// served at, as Vite's normalizeResolvedIdToUrl maps its deps dir: one module
+/// instance however an importer names it.
+pub(crate) fn optimized_url_of(state: &ServerState, id: &str) -> Option<String> {
+    state.optimized.url_by_file(optimized_file(state, id)?)
+}
+
+/// The pre-bundle entry an optimized id names: its file name.
+pub(crate) fn optimized_file<'a>(state: &ServerState, id: &'a str) -> Option<&'a str> {
+    let path = Path::new(id.split('?').next().unwrap_or(id));
+    (path.parent()? == state.optimized.dir()).then(|| path.file_name()?.to_str())?
 }
 
 pub(crate) async fn replay_module_parsed(
@@ -1466,6 +1802,7 @@ pub(crate) fn resolved_imports_json(
     fs_allow: &Mutex<std::collections::HashSet<PathBuf>>,
     source: &str,
     file: &Path,
+    client: Option<&ServerState>,
 ) -> String {
     let dir = file.parent().unwrap_or(file);
     let mut map = serde_json::Map::new();
@@ -1482,7 +1819,16 @@ pub(crate) fn resolved_imports_json(
                 if p.components().any(|c| c.as_os_str() == "node_modules") || !p.starts_with(dir) {
                     allow_root(fs_allow, package_root(&p));
                 }
-                serde_json::Value::String(p.display().to_string())
+                let bare_client = client.filter(|_| is_bare_specifier(&spec));
+                // While the dependency scan runs, a bare import is left to
+                // `this.resolve`, which waits for it as tryOptimizedResolve
+                // awaits `scanProcessing`.
+                if bare_client.is_some_and(|state| state.optimized.scan_pending()) {
+                    continue;
+                }
+                // As a client `this.resolve` outside a transform answers it.
+                let optimized = bare_client.and_then(|state| optimized_dep_id(state, &spec));
+                serde_json::Value::String(optimized.unwrap_or_else(|| p.display().to_string()))
             }
             Err(_) => serde_json::Value::Null,
         };

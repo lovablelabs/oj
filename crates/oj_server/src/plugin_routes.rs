@@ -3,6 +3,10 @@ use super::*;
 // Rollup contract: a resolveId path IS the module, an empty `load` means read
 // from disk. Redirect to the normal dep URL so fs.allow/bundling/rewriting apply.
 pub(crate) fn serve_resolved_from_disk(state: &Arc<ServerState>, id: &str) -> Option<Response> {
+    // A pre-bundle id from `this.resolve`, at the URL importers name it by now.
+    if let Some(url) = optimized_url_of(state, id) {
+        return Some(Redirect::temporary(&url).into_response());
+    }
     let resolved = Path::new(id);
     if !resolved.is_absolute() || !resolved.is_file() {
         return None;
@@ -62,12 +66,34 @@ async fn compile_plugin_source(
     compile_opts.stylex = None;
     let stylex_id = importer.trim_start_matches('\0').to_string();
     let st = Arc::clone(state);
+    // Its bare imports reach the `pre` resolveId hooks as app source's do.
+    let dep_map = state.optimized.ready().await;
+    let claimed = pre_resolve_bare(state, Path::new(&importer), &source, &dep_map).await;
+    let claim_state = Arc::clone(state);
     let compiled = tokio::task::spawn_blocking(move || {
         let (source, stylex_rules) = match crate::stylex::pre_transform(&st, &stylex_id, &source)? {
             Some(pre) => (pre.code, Some((stylex_id, pre.rules))),
             None => (source, None),
         };
         let mut rewrite = |spec: &str| {
+            // A claim wins over the pre-bundle, as in app modules; a bundle or an
+            // answer oj's resolver gave maps onto its pre-bundle URL.
+            if let Some(answer) = claimed.get(spec) {
+                if answer.external {
+                    return Some(answer.id.clone());
+                }
+                let optimized = &claim_state.optimized;
+                let meta = optimized_file(&claim_state, &answer.id)
+                    .and_then(|file| optimized.entry_by_file(file))
+                    .or_else(|| answer.resolver.then(|| optimized.meta_now(spec)).flatten());
+                return Some(match meta {
+                    Some(meta) if !meta.needs_interop => meta.url,
+                    _ => pre_resolved_url(&claim_state, &answer.id),
+                });
+            }
+            if let Some(url) = optimized_url_of(&claim_state, spec) {
+                return Some(url);
+            }
             if let Some(url) = pre(spec) {
                 return Some(url);
             }
