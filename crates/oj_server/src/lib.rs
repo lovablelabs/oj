@@ -1141,6 +1141,45 @@ fn client_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
     )
 }
 
+/// A dev environment's resolver for plugins (`this.resolve`, `this.load`), with
+/// the options Vite gives that environment (`resolveEnvironmentResolveOptions`).
+/// Unlike [`ssr_resolver`] nothing is adjusted for the Node runtime: a
+/// runner-backed environment's conditions are what its plugins see in Vite.
+/// `reported` is the environment's resolved conditions and mainFields when the
+/// plugin host has Vite's resolved config; else the config's own lists and the
+/// consumer's defaults answer.
+pub(crate) fn environment_resolver(
+    root: &Path,
+    config: &oj_config::OjConfig,
+    name: &str,
+    consumer_server: bool,
+    reported: Option<&plugins::ReportedResolve>,
+) -> OjResolver {
+    // Vite's isSsrTargetWebworkerEnvironment keeps the client defaults.
+    let server =
+        consumer_server && !(name == "ssr" && oj_config::ssr_externals(config).webworker());
+    let conditions = match reported.and_then(|r| r.conditions.clone()) {
+        Some(list) => oj_config::reported_conditions(list, true),
+        None => oj_config::environment_resolve_conditions(config, name, server),
+    };
+    let main_fields = match reported.and_then(|r| r.main_fields.clone()) {
+        Some(list) => Some(list),
+        None => oj_config::environment_main_fields(config, name),
+    };
+    OjResolver::with_settings(
+        root,
+        oj_resolver::ResolveSettings {
+            conditions,
+            alias: oj_config::resolve_alias(config, name),
+            dedupe: oj_config::resolve_dedupe(config),
+            extensions: oj_config::resolve_extensions(config),
+            main_fields,
+            preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
+            server,
+        },
+    )
+}
+
 /// Feeds the unbundled Node SSR path, and the SSR build's externalization
 /// probe (Vite resolves a dependency before externalizing it). Conditions
 /// never cross runtimes: a runner-backed ssr environment's list describes
@@ -1680,8 +1719,9 @@ impl DevServer {
             host.set_import_meta_env(Arc::clone(&import_meta_env));
             // Before buildStart, whose `this.resolve` already answers per environment.
             host.set_resolvers(plugins::EnvResolvers {
+                root: root.clone(),
+                config: Arc::new(config.clone()),
                 client: Arc::clone(&client_resolver),
-                server: Arc::clone(&ssr_resolver),
             });
             // Vite awaits the client buildStart while initing the server, after
             // config resolution, so the defines are final for any `this.load`.

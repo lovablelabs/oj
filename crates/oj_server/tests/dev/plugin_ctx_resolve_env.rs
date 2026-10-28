@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
-//! A plugin's `this.resolve` resolves with its own environment's resolve
-//! options, as Vite's resolve plugin reads `this.environment.config.resolve`:
-//! the ssr environment never takes a package's `browser` field. Both of oj's
-//! paths are covered: an import of the transforming module (pre-resolved
-//! before the hook runs) and a specifier it does not import (resolved on
-//! demand). Before, both answered with the client resolver in SSR.
+//! A plugin's `this.resolve` and `this.load` resolve with their own
+//! environment's resolve options, as Vite builds its resolve plugin per
+//! environment (`applyToEnvironment`, plugins/resolve.ts): the ssr environment
+//! never takes a package's `browser` field. oj's three paths are covered: an
+//! import of the transforming module (pre-resolved before the hook runs), a
+//! specifier it does not import (resolved on demand), and the `importedIds`
+//! of a module `this.load` reads from disk. Before, all three answered with
+//! the client's options in SSR.
 
 use crate::{App, INDEX_HTML};
 
@@ -15,11 +17,15 @@ const PLUGINS: &str = r#"export default [
     name: "reports-resolve",
     async transform(code, id) {
       if (!id.split("?")[0].endsWith("/src/main.js")) return null;
-      const name = async (spec) => {
-        const r = await this.resolve(spec, id);
-        return r ? r.id.split("/").slice(-2).join("/") : null;
+      const short = (p) => (p ? p.split("/").slice(-2).join("/") : null);
+      const name = async (spec) => short((await this.resolve(spec, id))?.id);
+      const dep = id.split("?")[0].replace(/main\.js$/, "dep.js");
+      const loaded = await this.load({ id: dep });
+      const seen = {
+        imported: await name("dual"),
+        other: await name("dual-other"),
+        loaded: short(loaded?.importedIds?.[0]),
       };
-      const seen = { imported: await name("dual"), other: await name("dual-other") };
       return code + "\nexport const seen = " + JSON.stringify(seen) + ";\n";
     },
   },
@@ -31,7 +37,7 @@ fn dual(name: &str) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn ctx_resolve_uses_the_environments_own_resolver() {
+async fn ctx_resolve_and_load_use_the_environments_own_resolver() {
     let (dual_pkg, other_pkg) = (dual("dual"), dual("dual-other"));
     let app = App::new(&[
         (
@@ -57,6 +63,10 @@ async fn ctx_resolve_uses_the_environments_own_resolver() {
             "src/main.js",
             "import dual from \"dual\";\nexport const value = dual;\n",
         ),
+        (
+            "src/dep.js",
+            "import dual from \"dual\";\nexport default dual;\n",
+        ),
         ("index.html", INDEX_HTML),
         ("oj.plugins.mjs", PLUGINS),
     ]);
@@ -65,7 +75,9 @@ async fn ctx_resolve_uses_the_environments_own_resolver() {
 
     let client = compact(server.text("/src/main.js").await);
     assert!(
-        client.contains(r#"{"imported":"dual/browser.js","other":"dual-other/browser.js"}"#),
+        client.contains(
+            r#"{"imported":"dual/browser.js","other":"dual-other/browser.js","loaded":"dual/browser.js"}"#
+        ),
         "the client resolves with the browser field:\n{client}"
     );
 
@@ -76,7 +88,9 @@ async fn ctx_resolve_uses_the_environments_own_resolver() {
             .await,
     );
     assert!(
-        ssr.contains(r#"{"imported":"dual/server.js","other":"dual-other/server.js"}"#),
+        ssr.contains(
+            r#"{"imported":"dual/server.js","other":"dual-other/server.js","loaded":"dual/server.js"}"#
+        ),
         "the ssr environment resolves without the browser field:\n{ssr}"
     );
 }

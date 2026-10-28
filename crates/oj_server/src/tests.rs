@@ -2291,3 +2291,80 @@ fn cli_inline_carries_only_the_flags_passed() {
         serde_json::json!({ "server": { "port": 4000, "host": "0.0.0.0" } })
     );
 }
+
+/// A root with `dual` (`main` server.js, `browser` browser.js) and `cond`
+/// (`exports` with a `custom` condition) installed.
+fn resolve_fixture() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let write = |rel: &str, body: &str| {
+        let path = dir.path().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    };
+    write(
+        "node_modules/dual/package.json",
+        r#"{"name":"dual","main":"server.js","browser":"browser.js"}"#,
+    );
+    write("node_modules/dual/server.js", "");
+    write("node_modules/dual/browser.js", "");
+    write(
+        "node_modules/cond/package.json",
+        r#"{"name":"cond","exports":{"custom":"./custom.js","default":"./default.js"}}"#,
+    );
+    write("node_modules/cond/custom.js", "");
+    write("node_modules/cond/default.js", "");
+    dir
+}
+
+/// The file `spec` resolves to from the root, as `<package>/<file>`.
+fn resolved(resolver: &OjResolver, root: &Path, spec: &str) -> String {
+    let path = resolver.resolve(root, spec).unwrap();
+    let parts: Vec<_> = path.iter().rev().take(2).collect();
+    format!(
+        "{}/{}",
+        parts[1].to_string_lossy(),
+        parts[0].to_string_lossy()
+    )
+}
+
+fn config(json: &str) -> oj_config::OjConfig {
+    serde_json::from_str(json).unwrap()
+}
+
+#[test]
+fn a_server_environment_resolves_with_its_own_conditions_not_the_ssr_ones() {
+    let dir = resolve_fixture();
+    let root = dir.path().canonicalize().unwrap();
+    let cfg =
+        config(r#"{ "environments": { "worker": { "resolve": { "conditions": ["custom"] } } } }"#);
+    let worker = environment_resolver(&root, &cfg, "worker", true, None);
+    assert_eq!(resolved(&worker, &root, "cond"), "cond/custom.js");
+    assert_eq!(resolved(&worker, &root, "dual"), "dual/server.js");
+    let ssr = environment_resolver(&root, &cfg, "ssr", true, None);
+    assert_eq!(resolved(&ssr, &root, "cond"), "cond/default.js");
+}
+
+#[test]
+fn a_webworker_ssr_target_keeps_the_client_resolve_defaults() {
+    let dir = resolve_fixture();
+    let root = dir.path().canonicalize().unwrap();
+    let cfg = config(r#"{ "ssr": { "target": "webworker" } }"#);
+    let ssr = environment_resolver(&root, &cfg, "ssr", true, None);
+    assert_eq!(resolved(&ssr, &root, "dual"), "dual/browser.js");
+    let other = environment_resolver(&root, &cfg, "worker", true, None);
+    assert_eq!(resolved(&other, &root, "dual"), "dual/server.js");
+}
+
+#[test]
+fn reported_environment_options_win_over_the_config_and_defaults() {
+    let dir = resolve_fixture();
+    let root = dir.path().canonicalize().unwrap();
+    let cfg = config("{}");
+    let reported = plugins::ReportedResolve {
+        conditions: Some(vec!["custom".into()]),
+        main_fields: Some(vec!["browser".into(), "module".into()]),
+    };
+    let ssr = environment_resolver(&root, &cfg, "ssr", true, Some(&reported));
+    assert_eq!(resolved(&ssr, &root, "cond"), "cond/custom.js");
+    assert_eq!(resolved(&ssr, &root, "dual"), "dual/browser.js");
+}
