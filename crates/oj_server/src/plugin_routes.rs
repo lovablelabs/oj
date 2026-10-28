@@ -4,8 +4,8 @@ use super::*;
 // from disk. Redirect to the normal dep URL so fs.allow/bundling/rewriting apply.
 pub(crate) fn serve_resolved_from_disk(state: &Arc<ServerState>, id: &str) -> Option<Response> {
     // A pre-bundle id from `this.resolve`, at the URL importers name it by now.
-    if let Some(meta) = optimized_file(state, id).and_then(|f| state.optimized.entry_by_file(f)) {
-        return Some(Redirect::temporary(&meta.url).into_response());
+    if let Some(url) = optimized_url_of(state, id) {
+        return Some(Redirect::temporary(&url).into_response());
     }
     let resolved = Path::new(id);
     if !resolved.is_absolute() || !resolved.is_file() {
@@ -90,6 +90,9 @@ async fn compile_plugin_source(
                     Some(meta) if !meta.needs_interop => meta.url,
                     _ => pre_resolved_url(&claim_state, &answer.id),
                 });
+            }
+            if let Some(url) = optimized_url_of(&claim_state, spec) {
+                return Some(url);
             }
             if let Some(url) = pre(spec) {
                 return Some(url);

@@ -150,14 +150,15 @@ pub struct EnvResolvers {
     pub optimized_dep: std::sync::OnceLock<OptimizedDep>,
 }
 
-/// (bare source, the file the client resolver found) to what answers it:
-/// see [`OptimizedAnswer`].
-pub type OptimizedDep = Box<dyn Fn(&str, &Path) -> OptimizedAnswer + Send + Sync>;
+/// (bare source, its importer's directory, the file the client resolver found)
+/// to what answers it: see [`OptimizedAnswer`].
+pub type OptimizedDep = Box<dyn Fn(&str, &Path, &Path) -> OptimizedAnswer + Send + Sync>;
 
 /// vite:resolve's tryOptimizedResolve for a bare import.
 pub enum OptimizedAnswer {
-    /// The pre-bundle's id answers instead of the file.
-    Dep(String),
+    /// This id answers instead of the file: the pre-bundle's, or the file
+    /// versioned with the browser hash when it skips optimization.
+    Id(String),
     /// The file stands.
     File,
     /// The dependency scan has not settled: tryOptimizedResolve awaits
@@ -263,9 +264,9 @@ impl EnvResolverSlot {
 
     /// What answers bare `source` that resolved to `file` (see
     /// [`OptimizedAnswer`]); the file when the dev server set no lookup.
-    pub(crate) fn optimized_dep(&self, source: &str, file: &Path) -> OptimizedAnswer {
+    pub(crate) fn optimized_dep(&self, source: &str, dir: &Path, file: &Path) -> OptimizedAnswer {
         match self.base.get().and_then(|base| base.optimized_dep.get()) {
-            Some(lookup) => lookup(source, file),
+            Some(lookup) => lookup(source, dir, file),
             None => OptimizedAnswer::File,
         }
     }
@@ -566,10 +567,18 @@ pub(crate) fn ctx_rpc(
 ) -> Result<serde_json::Value, String> {
     let CtxRpc { root, env, .. } = *ctx;
     let arg = |i: usize| args.get(i).and_then(|v| v.as_str()).unwrap_or("");
+    // Vite's tryNodeResolve basedir: the importer's directory when the
+    // importer is an existing absolute file, else the root (a virtual id).
     let dir_of = |path: &Path| {
-        path.parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| root.to_path_buf())
+        let file = Path::new(
+            path.to_str()
+                .and_then(|p| p.split('?').next())
+                .unwrap_or_default(),
+        );
+        match file.parent() {
+            Some(dir) if file.is_absolute() && file.exists() => dir.to_path_buf(),
+            _ => root.to_path_buf(),
+        }
     };
     // The calling environment's name and consumer ("client" or "server").
     let env_resolver =
@@ -593,12 +602,15 @@ pub(crate) fn ctx_rpc(
             let Ok(p) = resolver.resolve(&dir, source) else {
                 return Ok(serde_json::Value::Null);
             };
-            let answer = match !server && arg(4) == "optimize" {
-                true => ctx.resolvers.optimized_dep(source, &p),
+            // The client's deps optimizer answers for the client alone: Vite
+            // gives any other environment its own (or none).
+            let client = !server && matches!(arg(2), "client" | "");
+            let answer = match client && arg(4) == "optimize" {
+                true => ctx.resolvers.optimized_dep(source, &dir, &p),
                 false => OptimizedAnswer::File,
             };
             Ok(match answer {
-                OptimizedAnswer::Dep(id) => serde_json::Value::String(id),
+                OptimizedAnswer::Id(id) => serde_json::Value::String(id),
                 OptimizedAnswer::File => serde_json::Value::String(p.display().to_string()),
                 OptimizedAnswer::ScanPending => serde_json::json!({ "scanPending": true }),
             })
@@ -1175,10 +1187,26 @@ impl PluginHost {
         &self,
         source: &str,
         importer: &str,
+        aliased: Option<&str>,
     ) -> Result<Option<crate::PreAnswer>, String> {
-        let answer = self
-            .resolve_id_phase(source, importer, "pre", false)
+        // The `order: "pre"` hooks see the specifier as written; the alias
+        // plugin then resolves an aliased one again (all the pre hooks on
+        // it), else the `enforce: "pre"` plugins see the original.
+        let mut answer = self
+            .resolve_id_phase(source, importer, "pre-ordered", false)
             .await?;
+        if answer.is_none() {
+            answer = match aliased.filter(|a| *a != source) {
+                Some(aliased) => {
+                    self.resolve_id_phase(aliased, importer, "pre", false)
+                        .await?
+                }
+                None => {
+                    self.resolve_id_phase(source, importer, "pre-enforced", false)
+                        .await?
+                }
+            };
+        }
         Ok(answer.map(|r| crate::PreAnswer {
             external: r.external.is_some(),
             id: r.id,
@@ -1268,8 +1296,12 @@ impl PluginHost {
         &self,
         source: &str,
         importer: &str,
+        aliased: Option<&str>,
     ) -> Result<Option<ResolvedId>, String> {
-        let raw = self.call("scanResolveId", &[source, importer]).await?;
+        let aliased = aliased.unwrap_or("");
+        let raw = self
+            .call("scanResolveId", &[source, importer, aliased])
+            .await?;
         Ok(raw
             .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
             .and_then(|v| ResolvedId::from_json(&v)))

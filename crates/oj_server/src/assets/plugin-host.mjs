@@ -377,6 +377,12 @@ function aliasEntries(alias) {
   return Object.entries(alias);
 }
 
+// The environment's resolved `resolve.alias`, else the user config's.
+function environmentAliases(c) {
+  const own = aliasEntries(c.environment?.config?.resolve?.alias);
+  return own.length ? own : aliasEntries(userResolveAlias);
+}
+
 function applyAlias(id, entries) {
   for (const [find, replacement] of entries) {
     if (typeof replacement !== "string") continue;
@@ -1958,8 +1964,18 @@ function pluginContext(c) {
         const id = await ctxRpc("resolve", [source, importer ?? "", envName, consumer]);
         return id == null ? null : { id };
       }
-      // vite:resolve sits after the pre plugins and before the normal ones.
-      const viaPre = await chain("pre");
+      // Vite's chain: the `order: "pre"` hooks, then the alias plugin, whose
+      // match resolves the aliased id again skipping itself, then the
+      // `enforce: "pre"` plugins, then vite:resolve and the normal ones.
+      const viaOrdered = await chain("pre-ordered");
+      if (viaOrdered != null) return viaOrdered;
+      if (!(options && options._ojAliased)) {
+        const aliased = applyAlias(source, environmentAliases(c));
+        if (aliased !== source) {
+          return this.resolve(aliased, importer, { ...options, skipSelf: false, _ojAliased: true });
+        }
+      }
+      const viaPre = await chain("pre-enforced");
       if (viaPre != null) return viaPre;
       // The transforming module's own imports, pre-resolved; a miss still
       // reaches the plugins after oj's resolver.
@@ -5275,7 +5291,7 @@ async function resolveIdFull(c, source, importer, opts) {
   const phase = opts && opts.phase;
   for (const { p, fn: handler, rank } of withHtmlProxy(pluginsWithHook(c, "resolveId"), "resolveId", source)) {
     if (skip && p === skip) continue;
-    if (phase && (phase === "pre") !== runsBeforeCoreResolver(p, rank)) continue;
+    if (phase && !inResolvePhase(p, rank, phase)) continue;
     // Vite merges skipCalls into the skip set: a plugin is skipped when its
     // recorded call re-issues the same id + importer, or when it already
     // re-entered once (`called`) -- the recursion hard-stop.
@@ -5313,6 +5329,27 @@ async function resolveId(c, source, importer, opts) {
 // phase at a time, with its own resolution in between.
 function runsBeforeCoreResolver(p, rank) {
   return rank < 0 || (rank === 0 && enforceRank(p) < 0);
+}
+
+// Whether a resolveId hook runs in `phase`: "pre" (before Vite's core
+// resolver), split into "pre-ordered" (`order: "pre"` hooks, which run before
+// the alias plugin) and "pre-enforced" (`enforce: "pre"` plugins, after it);
+// "post" for the rest.
+function inResolvePhase(p, rank, phase) {
+  switch (phase) {
+    case "pre":
+      return runsBeforeCoreResolver(p, rank);
+    case "pre-ordered":
+      return rank < 0;
+    case "pre-enforced":
+      return rank === 0 && enforceRank(p) < 0;
+    case "post":
+      return !runsBeforeCoreResolver(p, rank);
+    case "unordered":
+      return rank >= 0;
+    default:
+      return true;
+  }
 }
 
 // One phase ("pre", "post", or "all" for the whole chain) for a Start bundle:
@@ -5483,8 +5520,18 @@ async function callStartFnBatch(c, index, idsJson, generation, infosJson, tolera
 // plugin container) and runs the config's live
 // optimizeDeps.rolldownOptions.plugins, which Vite puts in the scan's plugin
 // list, through scanPluginHook.
-async function scanResolveId(source, importer) {
-  const r = await resolveIdFull(main, source, importer || undefined, { scan: true });
+// The scan resolves through the container as Vite's does: the `order: "pre"`
+// hooks, then the alias plugin resolving the aliased id (`aliased`, from oj's
+// alias table) again, else the rest of the chain.
+async function scanResolveId(source, importer, aliased) {
+  const at = importer || undefined;
+  let r = await resolveIdFull(main, source, at, { scan: true, phase: "pre-ordered" });
+  if (r == null) {
+    r =
+      aliased && aliased !== source
+        ? await resolveIdFull(main, aliased, at, { scan: true })
+        : await resolveIdFull(main, source, at, { scan: true, phase: "unordered" });
+  }
   return r == null ? null : JSON.stringify({ id: r.id, external: r.external ?? false });
 }
 let scanPlugins = null;
@@ -5982,7 +6029,7 @@ async function run(hook, args, c) {
   if (hook === "startFacts") return startFacts(c);
   if (hook === "callStartFn") return callStartFn(c, args[0], args[1]);
   if (hook === "callStartFnBatch") return callStartFnBatch(c, args[0], args[1], args[2], args[3], args[4]);
-  if (hook === "scanResolveId") return gateOnBuildStart(main).then(() => scanResolveId(args[0], args[1]));
+  if (hook === "scanResolveId") return gateOnBuildStart(main).then(() => scanResolveId(args[0], args[1], args[2]));
   if (hook === "scanPluginHooks") return gateOnBuildStart(main).then(() => scanPluginHooks());
   if (hook === "scanPluginHook") return gateOnBuildStart(main).then(() => scanPluginHook(args[0], args[1]));
   if (hook === "load") return gateOnBuildStart(c).then(() => load(c, args[0]));

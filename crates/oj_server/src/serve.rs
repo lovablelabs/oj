@@ -27,6 +27,15 @@ pub(crate) async fn serve_path(
     {
         return resp;
     }
+    // A pre-bundle requested by its own path (`/@fs/…` or under the root) is
+    // the bundle's URL, which waits for the bundle like any dep request.
+    let named = match rel.strip_prefix("@fs") {
+        Some(abs) if abs.starts_with('/') => PathBuf::from(abs),
+        _ => state.root.join(rel),
+    };
+    if let Some(url) = optimized_url_of(&state, &named.to_string_lossy()) {
+        return Redirect::temporary(&url).into_response();
+    }
     let file = match request_file(&state, &headers, &uri, rel).await {
         Ok(file) => file,
         Err(resp) => return *resp,

@@ -833,28 +833,39 @@ pub(crate) async fn pre_resolve_bare(
     let specs = oj_compiler::interop::bare_import_specifiers(source)
         .into_iter()
         .filter(|spec| is_bare_specifier(spec) && !state.virtual_ids.contains(spec))
-        .filter(|spec| filters.is_none_or(|res| res.iter().any(|re| re.is_match(spec))));
+        .map(|spec| {
+            let aliased = crate::ssr::apply_alias(&state.aliases, &spec);
+            (spec, aliased)
+        })
+        .filter(|(spec, aliased)| {
+            filters.is_none_or(|res| {
+                res.iter()
+                    .any(|re| re.is_match(spec) || re.is_match(aliased))
+            })
+        });
     // Asked on every compile, as Vite asks on every transform; the compiled
     // module is what oj caches.
-    let answers = futures_util::future::join_all(specs.map(|spec| {
+    let answers = futures_util::future::join_all(specs.map(|(spec, aliased)| {
         let importer = &importer;
         async move {
-            let answer = match host.resolve_id_pre(&spec, importer).await {
+            let answer = match host.resolve_id_pre(&spec, importer, Some(&aliased)).await {
                 Ok(answer) => answer,
                 Err(e) => {
                     eprintln!("oj: pre resolveId of {spec} from {importer} failed: {e}");
                     None
                 }
             };
-            // Vite's import analysis keeps only a remote URL external; any
-            // other `external` answer is rewritten like a module id.
+            // Vite's import analysis keeps a remote URL as is, whatever its
+            // `external` flag, and rewrites any other answer like a module id.
             let answer = answer.map(|a| PreAnswer {
-                external: a.external && is_external_url(&a.id),
+                external: is_external_url(&a.id),
                 ..a
             });
+            // The specifier itself is a plugin's module id (Vite's `/@id/`),
+            // not a passthrough to oj's resolution.
             let answer = answer
                 .filter(|a| {
-                    a.external || (a.id != spec && !is_native_resolution(state, dir, &spec, &a.id))
+                    a.external || a.id == spec || !is_native_resolution(state, dir, &spec, &a.id)
                 })
                 .map(|a| PreAnswer {
                     resolver: !a.external && is_resolver_answer(state, &spec, &a.id),
@@ -872,7 +883,7 @@ pub(crate) async fn pre_resolve_bare(
 }
 
 /// Vite's isExternalUrl: `scheme://` or protocol-relative `//`.
-fn is_external_url(id: &str) -> bool {
+pub(crate) fn is_external_url(id: &str) -> bool {
     let rest = id.trim_start_matches(|c: char| c.is_ascii_lowercase());
     let rest = if rest.len() < id.len() {
         rest.strip_prefix(':').unwrap_or("x")
@@ -1140,6 +1151,9 @@ impl ImportRewrite<'_> {
         if crate::stylex::virtual_module(state, spec).is_some() {
             return Some(format!("/@id/{spec}"));
         }
+        if let Some(url) = optimized_url_of(state, spec) {
+            return Some(url);
+        }
         if let Some(answer) = job.pre_resolved.get(spec) {
             if answer.external {
                 return Some(answer.id.clone());
@@ -1327,47 +1341,72 @@ impl ImportRewrite<'_> {
     /// exportsData before bundling.
     fn register_missing_dep(&self, spec: &str, resolver: &OjResolver) -> Option<optimize::DepMeta> {
         let job = self.job;
-        let state = &*job.state;
-        if job.is_server
-            || !is_bare_specifier(spec)
-            || spec.contains('?')
-            || is_node_builtin(spec)
-            || is_lingui_macro_specifier(spec)
-            // Vite's skipOptimization (resolve.ts): an importer inside
-            // node_modules never registers a missing dep. Pre-bundling is
-            // driven by user code; an excluded package's own imports (a
-            // tanstack-start tree, say) keep serving per-file. A linked
-            // package's files live outside node_modules and still register.
-            || job.dir.components().any(|c| c.as_os_str() == "node_modules")
-            // The cheap gates (discovery off, optimizer dead, excluded,
-            // failed) before the resolve and CJS sniff below.
-            || !state.optimized.may_register(spec)
-        {
+        if job.is_server || !may_register_import(&job.state, &job.dir, spec) {
             return None;
         }
         let resolved = resolver.resolve(&job.dir, spec).ok()?;
-        let optimizable = resolved
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| matches!(e, "js" | "mjs" | "cjs" | "ts" | "mts" | "cts"));
-        if !optimizable {
-            return None;
-        }
-        let real = std::fs::canonicalize(&resolved).unwrap_or_else(|_| resolved.clone());
-        if !real.components().any(|c| c.as_os_str() == "node_modules") {
-            return None;
-        }
-        let needs_interop = is_cjs_dep_file(&state.cjs_dep_memo, &resolved)
-            || state.optimize_view.needs_forced_interop(&resolved);
-        state.optimized.register_missing(spec, needs_interop)
+        register_missing_import(&job.state, spec, &resolved)
     }
+}
+
+/// The cheap gates of Vite's finalizeBareSpecifier before a resolve: a bare
+/// JS-able import from outside node_modules, the optimizer able to take it.
+pub(crate) fn may_register_import(state: &ServerState, importer_dir: &Path, spec: &str) -> bool {
+    is_bare_specifier(spec)
+        && !spec.contains('?')
+        && !is_node_builtin(spec)
+        && !is_lingui_macro_specifier(spec)
+        // Vite's skipOptimization (resolve.ts): an importer inside
+        // node_modules never registers a missing dep. Pre-bundling is
+        // driven by user code; an excluded package's own imports (a
+        // tanstack-start tree, say) keep serving per-file. A linked
+        // package's files live outside node_modules and still register.
+        && !importer_dir.components().any(|c| c.as_os_str() == "node_modules")
+        // The cheap gates (discovery off, optimizer dead, excluded, failed)
+        // before the CJS sniff.
+        && state.optimized.may_register(spec)
+}
+
+/// Whether `resolved` is a dependency file the optimizer bundles: a JS type
+/// under node_modules (Vite's isOptimizable and isInNodeModules).
+pub(crate) fn is_optimizable_dep_file(resolved: &Path) -> bool {
+    let optimizable = resolved
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| matches!(e, "js" | "mjs" | "cjs" | "ts" | "mts" | "cts"));
+    let real = std::fs::canonicalize(resolved).unwrap_or_else(|_| resolved.to_path_buf());
+    optimizable && real.components().any(|c| c.as_os_str() == "node_modules")
+}
+
+/// Vite's registerMissingImport for `spec`, which resolved to `resolved`,
+/// once [`may_register_import`] holds: the future bundle's entry.
+pub(crate) fn register_missing_import(
+    state: &ServerState,
+    spec: &str,
+    resolved: &Path,
+) -> Option<optimize::DepMeta> {
+    if !is_optimizable_dep_file(resolved) {
+        return None;
+    }
+    let needs_interop = is_cjs_dep_file(&state.cjs_dep_memo, resolved)
+        || state.optimize_view.needs_forced_interop(resolved);
+    state.optimized.register_missing(spec, needs_interop)
 }
 
 /// A real file goes through the module pipeline under its own url, so every
 /// importer shares one module instance; any other id is plugin-loaded.
 pub(crate) fn pre_resolved_url(state: &ServerState, id: &str) -> String {
     let (file, query) = id.split_once('?').map_or((id, None), |(f, q)| (f, Some(q)));
-    let path = Path::new(file);
+    // A root-relative id (`/src/x.js`) names a file under the root, as Vite's
+    // normalizeResolvedIdToUrl takes it for a URL.
+    let under_root = file
+        .strip_prefix('/')
+        .map(|rel| crate::rewrite::normalize(&state.root.join(rel)))
+        .filter(|p| p.starts_with(&state.root) && p.is_file());
+    let path = match &under_root {
+        Some(p) if !Path::new(file).is_file() => p.as_path(),
+        _ => Path::new(file),
+    };
     if !path.is_absolute() || !path.is_file() {
         return format!("/@presolve/{}", hex_encode(id));
     }
@@ -1386,12 +1425,24 @@ pub(crate) fn pre_resolved_url(state: &ServerState, id: &str) -> String {
 /// A client bare import's pre-bundle id, as vite:resolve's tryOptimizedResolve
 /// answers it: the bundle's path with its version, as Vite's is.
 pub(crate) fn optimized_dep_id(state: &ServerState, spec: &str) -> Option<String> {
-    let meta = state.optimized.meta_now(spec)?;
+    Some(dep_id_of(state, &state.optimized.meta_now(spec)?))
+}
+
+/// A pre-bundle's id: its file in the deps dir, versioned as its URL is
+/// (Vite's getOptimizedDepId).
+pub(crate) fn dep_id_of(state: &ServerState, meta: &optimize::DepMeta) -> String {
     let file = state.optimized.dir().join(&meta.file);
-    Some(match meta.url.split_once('?') {
+    match meta.url.split_once('?') {
         Some((_, query)) => format!("{}?{query}", file.display()),
         None => file.display().to_string(),
-    })
+    }
+}
+
+/// The URL a pre-bundle's own path (`this.resolve`'s answer for a dep) is
+/// served at, as Vite's normalizeResolvedIdToUrl maps its deps dir: one module
+/// instance however an importer names it.
+pub(crate) fn optimized_url_of(state: &ServerState, id: &str) -> Option<String> {
+    state.optimized.url_by_file(optimized_file(state, id)?)
 }
 
 /// The pre-bundle entry an optimized id names: its file name.

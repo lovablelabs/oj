@@ -2089,7 +2089,8 @@ impl DevServer {
         state.optimized.set_crawl_end(state.crawl_done.clone());
         if let Some(host) = &state.plugins {
             let weak = Arc::downgrade(&state);
-            host.set_optimized_dep(Box::new(move |source, resolved| {
+            // vite:resolve's tryOptimizedResolve, then finalizeBareSpecifier.
+            host.set_optimized_dep(Box::new(move |source, dir, resolved| {
                 use plugins::OptimizedAnswer;
                 let Some(state) = weak.upgrade() else {
                     return OptimizedAnswer::File;
@@ -2101,7 +2102,19 @@ impl DevServer {
                     return OptimizedAnswer::ScanPending;
                 }
                 if let Some(id) = optimized_dep_id(&state, source) {
-                    return OptimizedAnswer::Dep(id);
+                    return OptimizedAnswer::Id(id);
+                }
+                // A missed dep is registered and answers with its future
+                // bundle; one that skips optimization is versioned.
+                if may_register_import(&state, dir, source) {
+                    if let Some(meta) = register_missing_import(&state, source, resolved) {
+                        return OptimizedAnswer::Id(dep_id_of(&state, &meta));
+                    }
+                } else if is_optimizable_dep_file(resolved) && !source.contains('?') {
+                    let version = state.optimized.browser_version();
+                    if !version.is_empty() {
+                        return OptimizedAnswer::Id(format!("{}?v={version}", resolved.display()));
+                    }
                 }
                 let answer = (source.to_string(), resolved.display().to_string());
                 state.resolver_answers.lock().unwrap().insert(answer);

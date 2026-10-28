@@ -245,26 +245,29 @@ async fn ssr_pre_resolve(
         return None;
     }
     let host = ssr_plugin_host(state).await?;
+    let aliased = apply_alias(&state.aliases, spec);
     let filters = state.ssr_pre_resolve_id_res.as_ref();
-    if filters.is_some_and(|res| !res.iter().any(|re| re.is_match(spec))) {
+    if filters.is_some_and(|res| {
+        !res.iter()
+            .any(|re| re.is_match(spec) || re.is_match(&aliased))
+    }) {
         return None;
     }
-    let answer = match host.resolve_id_pre(spec, importer).await {
+    let answer = match host.resolve_id_pre(spec, importer, Some(&aliased)).await {
         Ok(answer) => answer?,
         Err(e) => {
             eprintln!("oj ssr: pre resolveId of {spec} from {importer} failed: {e}");
             return None;
         }
     };
-    if answer.external {
+    // Vite's import analysis keeps only a remote URL as is; any other answer,
+    // `external` or not, the specifier itself or a queried id, is a module
+    // the runner fetches (fetchModule externalizes no `/@id/` URL).
+    if is_external_url(&answer.id) {
         return Some(RawResolution::ExternalId(answer.id));
     }
-    if answer.id == spec {
-        return None;
-    }
-    // A query names a variant the ssr pipeline loads by its own resolution.
-    if answer.id.contains('?') {
-        return None;
+    if answer.id == spec || answer.id.contains('?') {
+        return Some(RawResolution::PluginId(answer.id));
     }
     let path = Path::new(&answer.id);
     if !(path.is_absolute() && path.is_file()) {
@@ -472,6 +475,24 @@ pub(crate) fn apply_alias(aliases: &[(String, String)], spec: &str) -> String {
     spec.to_string()
 }
 
+/// Vite's safeModulePaths: the file an import of code the pipeline served
+/// resolved to may load, wherever it is. This route is HTTP, so the import
+/// must be one the importer's own code makes, never just what a request names.
+fn record_safe_module_path(state: &ServerState, importer: &str, spec: &str, resolved: &Path) {
+    let s = resolved.to_string_lossy();
+    let file = Path::new(s.split('?').next().unwrap_or(&s));
+    let importer_file = Path::new(importer.split('?').next().unwrap_or(importer));
+    let imported = state
+        .ssr_imports
+        .lock()
+        .unwrap()
+        .get(importer_file)
+        .is_some_and(|specs| specs.contains(spec));
+    if imported && file.is_absolute() {
+        crate::util::allow_root(&state.fs_allow, file.to_path_buf());
+    }
+}
+
 pub(crate) async fn ssr_resolve_inner(
     state: &Arc<ServerState>,
     importer: &str,
@@ -498,37 +519,19 @@ pub(crate) async fn ssr_resolve_inner(
         }
     }
     Ok(match ssr_resolve_raw(state, importer, spec).await? {
-        RawResolution::Claimed(p)
+        // A stylesheet, JSON, raw TypeScript or `x.css?url` is served like
+        // the app's own, as is a `noExternal` package's file, and an aliased
+        // specifier.
+        RawResolution::Path(p)
             if !aliased && ssr_externalizes(&state.ssr_externals, spec, &p.to_string_lossy()) =>
         {
-            // A plugin's chosen file is imported as itself, not re-resolved by name.
-            SsrResolution::External(p.to_string_lossy().into_owned())
+            SsrResolution::External(spec.to_string())
         }
+        // A plugin's file is a module wherever it lives: Vite decides
+        // externalization on the specifier, before any plugin resolves.
         RawResolution::Path(p) | RawResolution::Claimed(p) => {
-            let s = p.to_string_lossy();
-            // A stylesheet, JSON, raw TypeScript or `x.css?url` is served
-            // like the app's own, as is a `noExternal` package's file, and an
-            // aliased specifier.
-            if !aliased && ssr_externalizes(&state.ssr_externals, spec, &s) {
-                SsrResolution::External(spec.to_string())
-            } else {
-                // Vite's safeModulePaths: the file an import of code the
-                // pipeline served resolved to may load, wherever it is. This
-                // route is HTTP, so the import must be one the importer's own
-                // code makes, never just what a request names.
-                let file = Path::new(s.split('?').next().unwrap_or(&s));
-                let importer_file = Path::new(importer.split('?').next().unwrap_or(importer));
-                let imported = state
-                    .ssr_imports
-                    .lock()
-                    .unwrap()
-                    .get(importer_file)
-                    .is_some_and(|specs| specs.contains(spec));
-                if imported && file.is_absolute() {
-                    crate::util::allow_root(&state.fs_allow, file.to_path_buf());
-                }
-                SsrResolution::Module(s.into_owned())
-            }
+            record_safe_module_path(state, importer, spec, &p);
+            SsrResolution::Module(p.to_string_lossy().into_owned())
         }
         RawResolution::PluginId(id) => SsrResolution::Module(id),
         RawResolution::ExternalId(id) => SsrResolution::External(id),

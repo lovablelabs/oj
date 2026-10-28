@@ -69,16 +69,30 @@ async fn ctx_resolve_and_load_use_the_environments_own_resolver() {
         ),
         ("index.html", INDEX_HTML),
         ("oj.plugins.mjs", PLUGINS),
+        // Kept out of the pre-bundle, so the client answers with the file
+        // its resolver picked (versioned, as Vite's skipOptimization does).
+        (
+            "oj.config.json",
+            r#"{ "optimizeDeps": { "exclude": ["dual-other"] } }"#,
+        ),
     ]);
     let server = app.serve().await;
     let compact = |s: String| s.split_whitespace().collect::<String>();
 
     let client = compact(server.text("/src/main.js").await);
+    // `dual` is a dependency the scan finds, so the client answers with its
+    // pre-bundle (tryOptimizedResolve, which waits for the scan); the bundle
+    // is built from the browser field.
     assert!(
-        client.contains(
-            r#"{"imported":"dual/browser.js","other":"dual-other/browser.js","loaded":"dual/browser.js"}"#
-        ),
+        client.contains(r#"{"imported":"deps/dual.mjs?v="#)
+            && client.contains(r#","other":"dual-other/browser.js?v="#)
+            && client.contains(r#","loaded":"dual/browser.js"}"#),
         "the client resolves with the browser field:\n{client}"
+    );
+    let bundle = server.text("/@oj-deps/dual.mjs").await;
+    assert!(
+        bundle.contains("browser") && !bundle.contains("server"),
+        "{bundle}"
     );
 
     let main = app.root.join("src/main.js");
@@ -118,7 +132,7 @@ const REPORT_COND: &str = r#"{
 async fn the_hosts_reported_environment_options_and_top_level_conditions() {
     crate::require_fixture!("vite");
     let config = format!(
-        "export default {{ plugins: [{REPORT_COND}], resolve: {{ conditions: [\"top\"] }} }};\n"
+        "export default {{ plugins: [{REPORT_COND}], resolve: {{ conditions: [\"top\"] }}, optimizeDeps: {{ exclude: [\"cond\"] }} }};\n"
     );
     let app = App::new(&[
         (
@@ -139,7 +153,8 @@ async fn the_hosts_reported_environment_options_and_top_level_conditions() {
     app.link_fixture("vite");
     let server = app.serve().await;
     let client = server.text("/src/main.js").await;
-    assert!(client.contains(r#"cond = "top.js""#), "client: {client}");
+    // Excluded from the pre-bundle: the file, versioned (skipOptimization).
+    assert!(client.contains(r#"cond = "top.js?v="#), "client: {client}");
     let main = app.root.join("src/main.js");
     let ssr = server
         .text(&format!("/@ssr-module?id={}", main.display()))
