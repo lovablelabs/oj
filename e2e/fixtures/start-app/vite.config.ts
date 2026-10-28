@@ -92,6 +92,35 @@ function sheetUrlPlugin(): Plugin {
 // file answer keeps its own query, a claim wins over an installed package or
 // an existing file, a /-prefixed id comes to the pre hooks first, and a claim
 // of the bare id alone never takes the queried import.
+// In the dev server render only (the client and the build take a virtual
+// module): a remote URL answer, which the Start host stubs rather than fetch,
+// and a hook that throws, which fails its import.
+function devSsrAnswersPlugin(): Plugin {
+  let serve = false;
+  return {
+    name: "fixture-dev-ssr-answers",
+    enforce: "pre",
+    configResolved(config) {
+      serve = config.command === "serve";
+    },
+    resolveId(id, _importer, options) {
+      const devSsr = serve && (options?.ssr || this.environment?.config?.consumer === "server");
+      if (id === "fixture-remote/x.css?url") {
+        return devSsr ? "https://cdn.example/x.css" : "\0fixture-remote";
+      }
+      if (id === "fixture-throws/x.css?url") {
+        if (devSsr) throw new Error("fixture resolveId hook threw");
+        return "\0fixture-throws";
+      }
+      return null;
+    },
+    load(id) {
+      if (id === "\0fixture-remote") return `export default "remote-client";`;
+      if (id === "\0fixture-throws") return `export default "resolved-without-throwing";`;
+    },
+  };
+}
+
 function queryClaimsPlugin(): Plugin {
   const answer = new URL("./src/content/answer.txt", import.meta.url).pathname;
   // Extension-free virtual ids, so no bundler types them by the import's.
@@ -147,6 +176,7 @@ export default defineConfig({
     imageVariantPlugin(),
     sheetUrlPlugin(),
     queryClaimsPlugin(),
+    devSsrAnswersPlugin(),
     wsEchoPlugin(),
     // .mdx before react/tanstack so its output is plain JSX for them to handle.
     mdx(),

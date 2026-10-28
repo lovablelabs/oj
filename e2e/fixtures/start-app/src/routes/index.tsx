@@ -62,6 +62,9 @@ import relativeClaim from "../content/claimed.txt?raw";
 import slashClaim from "/virtual-probe.txt?raw";
 // A claim of the bare `react/package.json` alone never takes its `?raw`.
 import reactPackageRaw from "react/package.json?raw";
+// A plugin's remote URL answer: stubbed by the dev render (an empty module),
+// a virtual module in the client and the build; the page reads the same.
+import remoteUrl from "fixture-remote/x.css?url";
 
 // import.meta.glob (eager): a static map of the JSON content files.
 const modules = import.meta.glob("../content/*.json", { eager: true }) as Record<
@@ -122,6 +125,9 @@ function Index() {
       <p data-testid="sheet-url">{sheetUrl}</p>
       <p data-testid="query-claims">
         {[answerRaw.trim(), installedClaim, relativeClaim, slashClaim].join(" ")}
+      </p>
+      <p data-testid="remote-url">
+        {typeof remoteUrl === "object" || remoteUrl === "remote-client" ? "remote-answer-ok" : String(remoteUrl)}
       </p>
       <p data-testid="bare-claim">
         {reactPackageRaw.includes('"name": "react"') ? "bare-claim-kept-raw-ok" : reactPackageRaw}

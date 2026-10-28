@@ -50,6 +50,7 @@ const FEATURES: &[(&str, &str)] = &[
         "a claim of the bare id leaves the ?raw import",
         "bare-claim-kept-raw-ok",
     ),
+    ("a plugin's remote URL answer", "remote-answer-ok"),
     ("server function ran", "server-fn-marker"),
     ("cloudflare wrangler var", "fixture-edition"),
     ("tsconfig paths alias", "ALIAS!"),
@@ -173,6 +174,27 @@ fn dev_renders_every_fixture_feature() {
     };
     let dev = Server::oj_dev(&app.0);
     assert_app("dev", &dev);
+    // The remote URL a plugin answered reached the host as is: an `https:`
+    // module it stubs, never fetched nor resolved as a package.
+    assert!(
+        dev.output()
+            .contains("no SSR module for the 'https:' scheme"),
+        "the remote answer was not handed to the host:\n{}",
+        dev.output()
+    );
+    // A resolveId hook that throws fails its import, as Vite's import analysis
+    // rethrows; the server keeps serving.
+    let (status, page) = get(&dev, "/resolve-error");
+    assert!(
+        status >= 500 && page.contains("fixture resolveId hook threw"),
+        "a throwing hook did not fail the import with its error (status {status}):\n{page}"
+    );
+    // Past a skipped hook, the import would go on as a package name.
+    assert!(
+        !page.contains("resolved-without-throwing") && !page.contains("Could not find package"),
+        "the import went on past the throwing hook:\n{page}"
+    );
+    assert_eq!(get(&dev, "/about").0, 200, "{}", dev.output());
 }
 
 #[test]
