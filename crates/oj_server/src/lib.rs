@@ -302,6 +302,9 @@ struct ServerState {
     scss_additional_data: Option<String>,
     sass_additional_data: Option<String>,
     css_config: Option<oj_config::CssConfig>,
+    /// `ssr.external` / `ssr.noExternal` for the dev ssr environment. The
+    /// webworker target is dropped: it bundles everything only in a build.
+    ssr_externals: oj_config::SsrExternals,
     /// `html.cspNonce`: stamped on every served page's script/style/link tags.
     csp_nonce: Option<String>,
     /// `resolve.alias`, root and public dir as seen by `@import`/`@use`/`url()`
@@ -1792,6 +1795,10 @@ impl DevServer {
             scss_additional_data: oj_config::css_additional_data(&config, "scss"),
             sass_additional_data: oj_config::css_additional_data(&config, "sass"),
             css_config: config.css.clone(),
+            ssr_externals: oj_config::SsrExternals {
+                target: None,
+                ..oj_config::ssr_externals(&config)
+            },
             glob_alias: Arc::from(css_resolve.alias.clone()),
             css_resolve,
             csp_nonce: oj_config::html_csp_nonce(&config),

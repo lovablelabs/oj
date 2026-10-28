@@ -268,6 +268,14 @@ fn claims_dependency(id: &str) -> bool {
     id.contains("/node_modules/") && crate::start_host::ts_source_ext(id)
 }
 
+/// Whether an importer's imports start from Node semantics: a dependency the
+/// runtime loaded itself. One the pipeline served (versioned: `ssr.noExternal`,
+/// or a file Node cannot take) resolves through the pipeline instead, as
+/// Vite's runner fetches every import of a module it did not externalize.
+fn node_resolves_imports_of(importer: &str) -> bool {
+    importer_id(importer).contains("/node_modules/") && versioned_id(importer).is_none()
+}
+
 /// The module id an importer specifier stands for (version stripped), for
 /// resolver context and importer-graph edges.
 pub(crate) fn importer_id(specifier: &str) -> String {
@@ -302,7 +310,7 @@ impl SsrHost {
         // first: Vite never externalizes a relative or absolute specifier
         // (createIsExternal), so its `import "./select.css"` reaches the css
         // pipeline instead of the runtime loading the stylesheet as JS.
-        if importer_id.contains("/node_modules/") {
+        if node_resolves_imports_of(importer) {
             if claims_dependency(&importer_id) {
                 if let Ok(SsrResolution::Module(id)) =
                     self.bridge.resolve(&importer_id, specifier).await
@@ -621,6 +629,18 @@ mod tests {
         // Specifiers the host did not mint are not claimed.
         assert_eq!(versioned_id("file:///plain/file.mjs"), None);
         assert_eq!(versioned_id("node:path"), None);
+    }
+
+    // A `noExternal` dependency the pipeline served must not hand its own
+    // imports back to Node: Vite's runner fetches them all through the pipeline.
+    #[test]
+    fn only_a_dependency_the_runtime_loaded_resolves_with_node() {
+        let dep = "/app/node_modules/nox/index.js";
+        assert!(node_resolves_imports_of(
+            "file:///app/node_modules/nox/index.js"
+        ));
+        assert!(!node_resolves_imports_of(&specifier(dep, 2)));
+        assert!(!node_resolves_imports_of(&specifier("/app/src/main.js", 1)));
     }
 
     // The shared version graph drives both hosts' warm reload: a changed file

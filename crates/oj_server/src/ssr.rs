@@ -198,11 +198,40 @@ async fn ssr_resolve_raw(
 /// the extension (`x.css?url` is `.css?url`, never JavaScript).
 pub fn can_externalize_file(path: &str) -> bool {
     let name = path.rsplit('/').next().unwrap_or(path);
+    // `path.extname` keeps the dot: `file.` has extension `.`.
     let ext = match name.rfind('.') {
-        Some(i) if i > 0 => &name[i + 1..],
+        Some(i) if i > 0 => &name[i..],
         _ => "",
     };
-    matches!(ext, "" | "js" | "mjs" | "cjs")
+    matches!(ext, "" | ".js" | ".mjs" | ".cjs")
+}
+
+/// Whether the ssr environment leaves `spec`, resolved to `path`, to Node:
+/// Vite's createIsExternal for a dev environment (external.ts). Only a bare
+/// specifier ever is. An exact `ssr.external` id always is; otherwise
+/// `ssr.noExternal` keeps the package in the pipeline unless `ssr.external`
+/// names it, and the file must pass [`can_externalize_file`], from
+/// node_modules unless the package is configured external.
+fn ssr_externalizes(externals: &oj_config::SsrExternals, spec: &str, path: &str) -> bool {
+    // Vite's bareImportRE: a word character or `@` first, no `://`.
+    let bare = spec
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '@')
+        && !spec.contains("://");
+    if !bare || spec.contains('\0') {
+        return false;
+    }
+    if externals.external.iter().any(|e| e == spec) {
+        return true;
+    }
+    let pkg = oj_config::SsrExternals::package_of(spec);
+    let listed = externals.external.iter().any(|e| e == pkg);
+    if !listed && externals.is_no_external(spec) {
+        return false;
+    }
+    let configured = listed || externals.external_all;
+    (configured || path.contains("/node_modules/")) && can_externalize_file(path)
 }
 
 pub(crate) async fn ssr_resolve_inner(
@@ -213,9 +242,9 @@ pub(crate) async fn ssr_resolve_inner(
     Ok(match ssr_resolve_raw(state, importer, spec).await? {
         RawResolution::Path(p) => {
             let s = p.to_string_lossy();
-            // Only a JavaScript dependency file is Node's: a stylesheet, JSON,
-            // raw TypeScript or `x.css?url` is served like the app's own.
-            if s.contains("/node_modules/") && can_externalize_file(&s) {
+            // A stylesheet, JSON, raw TypeScript or `x.css?url` is served
+            // like the app's own, as is a `noExternal` package's file.
+            if ssr_externalizes(&state.ssr_externals, spec, &s) {
                 SsrResolution::External(spec.to_string())
             } else {
                 SsrResolution::Module(s.into_owned())
@@ -362,7 +391,16 @@ async fn ssr_query_asset(
             }
         }
     }
-    let url = format!("{}?{query}", url_of(&state.root, path));
+    // A public file's URL is its path under the public dir (Vite's
+    // checkPublicFile), as the client's asset query names it.
+    let public = state
+        .public_dir
+        .as_deref()
+        .and_then(|p| path.strip_prefix(p).ok());
+    let url = match public {
+        Some(rel) => format!("/{}?{query}", rel.display()),
+        None => format!("{}?{query}", url_of(&state.root, path)),
+    };
     asset_module(path, &url, kind)
         .await
         .map(Some)

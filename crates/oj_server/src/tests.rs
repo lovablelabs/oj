@@ -2291,3 +2291,27 @@ fn cli_inline_carries_only_the_flags_passed() {
         serde_json::json!({ "server": { "port": 4000, "host": "0.0.0.0" } })
     );
 }
+
+// Vite's canExternalizeFile reads `path.extname`: the query is part of the
+// extension, a leading dot is no extension, and a trailing dot is one.
+#[test]
+fn can_externalize_file_reads_the_extension_as_path_extname_does() {
+    for path in [
+        "/m/pkg/index.js",
+        "/m/pkg/a.mjs",
+        "/m/pkg/a.cjs",
+        "/m/pkg/bin",
+        "/m/pkg/.bin",
+    ] {
+        assert!(can_externalize_file(path), "{path}");
+    }
+    for path in [
+        "/m/pkg/a.css?url",
+        "/m/pkg/a.js?raw",
+        "/m/pkg/a.ts",
+        "/m/pkg/a.json",
+        "/m/pkg/a.",
+    ] {
+        assert!(!can_externalize_file(path), "{path}");
+    }
+}

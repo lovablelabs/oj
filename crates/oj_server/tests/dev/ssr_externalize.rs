@@ -77,3 +77,106 @@ async fn ssr_externalizes_only_what_vite_can_externalize() {
         .await;
     assert!(raw.contains(r#"export default "export {};\n""#), "{raw}");
 }
+
+/// `/@ssr-resolve` for `spec` imported from `importer`.
+async fn ssr_resolve(server: &crate::Server, importer: &std::path::Path, spec: &str) -> String {
+    let url = format!(
+        "/@ssr-resolve?importer={}&spec={}",
+        importer.display(),
+        spec.replace('?', "%3F")
+    );
+    server.text(&url).await
+}
+
+// Vite's createIsConfiguredAsExternal: `ssr.noExternal` keeps a package (and
+// so its own relative imports) in the pipeline, an exact `ssr.external` id is
+// always Node's, and a package `ssr.external` names is Node's even when linked
+// outside node_modules. A relative or absolute specifier never is.
+#[tokio::test(flavor = "multi_thread")]
+async fn ssr_external_and_no_external_decide_as_in_vite() {
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"ssrcfg","private":true,"type":"module"}"#,
+        ),
+        (
+            "oj.config.json",
+            r#"{ "ssr": { "noExternal": ["nox"], "external": ["linked", "nox/raw.css"] } }"#,
+        ),
+        (
+            "node_modules/nox/package.json",
+            r#"{"name":"nox","version":"1.0.0","type":"module","main":"index.js"}"#,
+        ),
+        ("node_modules/nox/index.js", "export { x } from './x.js';\n"),
+        ("node_modules/nox/x.js", "export const x = 1;\n"),
+        ("node_modules/nox/raw.css", ".nox {}\n"),
+        (
+            "packages/linked/package.json",
+            r#"{"name":"linked","version":"1.0.0","type":"module","main":"index.js"}"#,
+        ),
+        ("packages/linked/index.js", "export default 'linked';\n"),
+        (
+            "packages/plain/package.json",
+            r#"{"name":"plain","version":"1.0.0","type":"module","main":"index.js"}"#,
+        ),
+        ("packages/plain/index.js", "export default 'plain';\n"),
+        ("src/main.js", "export {};\n"),
+        ("index.html", INDEX_HTML),
+    ]);
+    for name in ["linked", "plain"] {
+        std::os::unix::fs::symlink(
+            app.root.join("packages").join(name),
+            app.root.join("node_modules").join(name),
+        )
+        .unwrap();
+    }
+    let server = app.serve().await;
+    let main = app.root.join("src/main.js");
+
+    let nox = ssr_resolve(&server, &main, "nox").await;
+    assert!(
+        !nox.contains(r#""external""#) && nox.contains("/node_modules/nox/index.js\""),
+        "a noExternal package goes through the pipeline: {nox}"
+    );
+    let dep = app.root.join("node_modules/nox/index.js");
+    let inner = ssr_resolve(&server, &dep, "./x.js").await;
+    assert!(
+        !inner.contains(r#""external""#) && inner.contains("/node_modules/nox/x.js\""),
+        "its relative import stays in the pipeline: {inner}"
+    );
+    let exact = ssr_resolve(&server, &main, "nox/raw.css").await;
+    assert!(
+        exact.contains(r#""external":true"#),
+        "an exact ssr.external id is Node's: {exact}"
+    );
+    let linked = ssr_resolve(&server, &main, "linked").await;
+    assert!(
+        linked.contains(r#""external":true"#),
+        "a linked package ssr.external names is Node's: {linked}"
+    );
+    let plain = ssr_resolve(&server, &main, "plain").await;
+    assert!(
+        !plain.contains(r#""external""#),
+        "an unlisted linked package goes through the pipeline: {plain}"
+    );
+}
+
+// A public file's `?url` is its path under the public dir, as the client's.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_public_files_url_query_names_its_public_path() {
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"ssrpub","private":true,"type":"module"}"#,
+        ),
+        ("public/logo.svg", "<svg/>\n"),
+        ("src/main.js", "export {};\n"),
+        ("index.html", INDEX_HTML),
+    ]);
+    let server = app.serve().await;
+    let logo = app.root.join("public/logo.svg");
+    let module = server
+        .text(&format!("/@ssr-module?id={}%3Furl", logo.display()))
+        .await;
+    assert!(module.contains(r#"export default "/logo.svg""#), "{module}");
+}
