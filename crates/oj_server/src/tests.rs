@@ -2315,3 +2315,23 @@ fn can_externalize_file_reads_the_extension_as_path_extname_does() {
         assert!(!can_externalize_file(path), "{path}");
     }
 }
+
+// Vite's bareImportRE and getNpmPackageName: a drive letter, a URL or a `#`
+// import is never bare; an `@scope` with no name skips the external lists,
+// and `noExternal` matches the package name, not a subpath.
+#[test]
+fn ssr_externalizes_reads_specifiers_as_vite_does() {
+    for spec in ["pkg", "@s/pkg/x", "_p", "node:fs"] {
+        assert!(crate::ssr::is_bare_import(spec), "{spec}");
+    }
+    for spec in ["./x", "/x", "#internal", "C:/x", "https://x/y", "é"] {
+        assert!(!crate::ssr::is_bare_import(spec), "{spec}");
+    }
+    let externals = oj_config::SsrExternals {
+        no_external: vec!["@s".into(), "pkg/sub".into()],
+        ..Default::default()
+    };
+    let js = "/m/node_modules/x/index.js";
+    assert!(crate::ssr::ssr_externalizes(&externals, "@s", js));
+    assert!(crate::ssr::ssr_externalizes(&externals, "pkg/sub/x", js));
+}

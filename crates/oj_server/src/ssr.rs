@@ -212,26 +212,42 @@ pub fn can_externalize_file(path: &str) -> bool {
 /// `ssr.noExternal` keeps the package in the pipeline unless `ssr.external`
 /// names it, and the file must pass [`can_externalize_file`], from
 /// node_modules unless the package is configured external.
-fn ssr_externalizes(externals: &oj_config::SsrExternals, spec: &str, path: &str) -> bool {
-    // Vite's bareImportRE: a word character or `@` first, no `://`.
-    let bare = spec
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '@')
-        && !spec.contains("://");
-    if !bare || spec.contains('\0') {
+pub(crate) fn ssr_externalizes(
+    externals: &oj_config::SsrExternals,
+    spec: &str,
+    path: &str,
+) -> bool {
+    if !is_bare_import(spec) || spec.contains('\0') {
         return false;
     }
     if externals.external.iter().any(|e| e == spec) {
         return true;
     }
+    let externalizable = |configured: bool| {
+        (configured || path.contains("/node_modules/")) && can_externalize_file(path)
+    };
+    // getNpmPackageName: an `@scope` with no name has none, and no list applies.
     let pkg = oj_config::SsrExternals::package_of(spec);
+    if pkg.starts_with('@') && !pkg.contains('/') {
+        return externalizable(false);
+    }
     let listed = externals.external.iter().any(|e| e == pkg);
-    if !listed && externals.is_no_external(spec) {
+    // noExternal matches the package name only, as Vite's noExternalFilter.
+    if !listed && externals.is_no_external(pkg) {
         return false;
     }
-    let configured = listed || externals.external_all;
-    (configured || path.contains("/node_modules/")) && can_externalize_file(path)
+    externalizable(listed || externals.external_all)
+}
+
+/// Vite's bareImportRE, `^(?![a-zA-Z]:)[\w@](?!.*:\/\/)`: an ASCII word
+/// character or `@` first, no drive letter, no `://`.
+pub(crate) fn is_bare_import(spec: &str) -> bool {
+    let mut chars = spec.chars();
+    let (first, second) = (chars.next(), chars.next());
+    let drive = first.is_some_and(|c| c.is_ascii_alphabetic()) && second == Some(':');
+    first.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == '@')
+        && !drive
+        && !spec.contains("://")
 }
 
 pub(crate) async fn ssr_resolve_inner(
