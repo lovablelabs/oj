@@ -178,7 +178,10 @@ async fn the_ssr_environments_own_builtins_decide() {
     crate::require_fixture!("vite");
     let config = r#"export default {
   ssr: { noExternal: ["events"] },
-  environments: { ssr: { resolve: { builtins: ["custom-builtin", /^my:/] } } },
+  resolve: { alias: { "aliased-builtin": "events", "my-fs": "node:fs" } },
+  environments: {
+    ssr: { resolve: { builtins: ["custom-builtin", "aliased-builtin", /^my:/] } },
+  },
 };
 "#;
     let app = App::new(&[
@@ -208,9 +211,85 @@ async fn the_ssr_environments_own_builtins_decide() {
         assert!(r.contains(r#""external":true"#), "{spec}: {r}");
     }
     // Not a builtin there any more: `ssr.noExternal` keeps it in the pipeline.
-    let events = resolve("events").await;
+    // An alias goes first (importAnalysis' matchAlias), so a builtin's name
+    // that is also an alias is the alias's target.
+    for spec in ["events", "aliased-builtin"] {
+        let r = resolve(spec).await;
+        assert!(
+            !r.contains(r#""external""#) && r.contains("/node_modules/events/events.js\""),
+            "{spec}: {r}"
+        );
+    }
+    // An alias Node loads gets the target, not the alias name.
+    let fs = resolve("my-fs").await;
     assert!(
-        !events.contains(r#""external""#) && events.contains("/node_modules/events/events.js\""),
-        "{events}"
+        fs.contains(r#""external":true"#) && fs.contains(r#""node:fs""#),
+        "{fs}"
     );
+}
+
+// Each environment's own `build.assetsInlineLimit` decides there (Vite's
+// environment.config.build): a number under a function top level, a function
+// under a number, and a larger env limit over a top-level 0.
+#[tokio::test(flavor = "multi_thread")]
+async fn each_environments_assets_inline_limit_decides_there() {
+    crate::require_fixture!("vite");
+    let big = format!("<svg>{}</svg>\n", "<g/>".repeat(1100));
+    let cases = [
+        (
+            r#"export default {
+  build: { assetsInlineLimit: 0 },
+  environments: { ssr: { build: { assetsInlineLimit: () => true } } },
+};
+"#,
+            false,
+            true,
+        ),
+        (
+            r#"export default {
+  build: { assetsInlineLimit: 0 },
+  environments: { ssr: { build: { assetsInlineLimit: 8192 } } },
+};
+"#,
+            false,
+            true,
+        ),
+        (
+            r#"export default {
+  build: { assetsInlineLimit: () => true },
+  environments: { ssr: { build: { assetsInlineLimit: 0 } } },
+};
+"#,
+            true,
+            false,
+        ),
+    ];
+    for (config, client_inlines, ssr_inlines) in cases {
+        let app = App::new(&[
+            (
+                "package.json",
+                r#"{"name":"inlineenvs","private":true,"type":"module"}"#,
+            ),
+            ("src/big.svg", &big),
+            ("src/main.js", "export {};\n"),
+            ("index.html", INDEX_HTML),
+            ("vite.config.mjs", config),
+        ]);
+        app.link_fixture("vite");
+        let server = app.serve().await;
+        let client = server.text("/src/big.svg?url").await;
+        let ssr = server
+            .text(&format!(
+                "/@ssr-module?id={}%3Furl",
+                app.root.join("src/big.svg").display()
+            ))
+            .await;
+        let inlined = |m: &str| m.contains("export default \"data:image/svg+xml");
+        assert_eq!(
+            inlined(&client),
+            client_inlines,
+            "{config} client: {client}"
+        );
+        assert_eq!(inlined(&ssr), ssr_inlines, "{config} ssr: {ssr}");
+    }
 }

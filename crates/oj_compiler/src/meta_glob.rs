@@ -607,26 +607,47 @@ fn worker_type(raw: &str, clean: &str, from: usize) -> &'static str {
     }
     // Keys and values are read off the raw options, but only where they are
     // code: strip_literals keeps a string's quotes and blanks its body and
-    // every comment, so a match inside either has no twin in `clean`. The
-    // last `type` wins, as in the evaluated object.
+    // every comment, so a match inside either has no twin in `clean`, and a
+    // comment between key, colon and value reads as spaces. Only the options
+    // object's own keys count, and the last `type` wins, as in the evaluated
+    // object.
     static TYPE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let type_re = TYPE.get_or_init(|| {
-        regex::Regex::new(r#"(?:^|[{,\s])(["']?type["']?)\s*:\s*(?:(["'`])([^"'`]*)["'`])?"#)
-            .unwrap()
-    });
+    let type_re =
+        TYPE.get_or_init(|| regex::Regex::new(r#"(?:^|[^\w$])(["']?type["']?)"#).unwrap());
     let base = comma + 1;
     let is_code = |at: usize| clean.as_bytes().get(base + at) == raw.as_bytes().get(base + at);
+    let depth_at = |at: usize| {
+        clean.as_bytes()[base..base + at]
+            .iter()
+            .fold(0i32, |depth, b| match b {
+                b'{' | b'[' | b'(' => depth + 1,
+                b'}' | b']' | b')' => depth - 1,
+                _ => depth,
+            })
+    };
+    let code = &clean.as_bytes()[base..end];
+    let skip_space = |mut at: usize| {
+        while code.get(at).is_some_and(u8::is_ascii_whitespace) {
+            at += 1;
+        }
+        at
+    };
     let mut found = "classic";
     for caps in type_re.captures_iter(options) {
         let key = caps.get(1).expect("key group");
-        if !is_code(key.start()) || !is_code(key.end() - 1) {
+        if !is_code(key.start()) || !is_code(key.end() - 1) || depth_at(key.start()) != 1 {
             continue;
         }
-        let value = caps
-            .get(2)
-            .filter(|quote| is_code(quote.start()))
-            .and_then(|_| caps.get(3))
-            .map(|v| v.as_str());
+        let colon = skip_space(key.end());
+        if code.get(colon) != Some(&b':') {
+            continue;
+        }
+        let open = skip_space(colon + 1);
+        let value = code
+            .get(open)
+            .filter(|q| matches!(q, b'"' | b'\'' | b'`'))
+            .and_then(|q| code[open + 1..].iter().position(|c| c == q))
+            .map(|len| &options[open + 1..open + 1 + len]);
         found = if value == Some("module") {
             "module"
         } else {

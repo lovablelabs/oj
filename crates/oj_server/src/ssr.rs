@@ -85,6 +85,7 @@ impl SsrBridge {
             root: &state.root,
             css: state.css_config.as_ref(),
             resolve: state.css_resolve.as_ref(),
+            inline_limit: state.asset_urls.inline_limit,
         };
         let tailwind = async || lazy_engine(state, EngineKind::Tailwind).await.cloned();
         let url_base = crate::start_dev_url_base(state.base.as_deref().unwrap_or("/"));
@@ -268,8 +269,13 @@ impl Builtin {
     }
 
     /// The extracted `ssr.builtins` (strings, `{ regex, flags }`), when the
-    /// config resolved them.
+    /// config resolved them. None for a runner-backed ssr environment: its
+    /// list describes that runtime (workerd's `cloudflare:*`), and oj's Node
+    /// SSR consumer keeps Vite's Node defaults, as it does for conditions.
     pub(crate) fn ssr_list(config: &oj_config::OjConfig) -> Option<Vec<Builtin>> {
+        if oj_config::ssr_runner_backed(config) {
+            return None;
+        }
         let items = config.ssr.as_ref()?.get("builtins")?.as_array()?;
         Some(
             items
@@ -279,16 +285,42 @@ impl Builtin {
                     serde_json::Value::Object(o) => {
                         let source = o.get("regex")?.as_str()?;
                         let flags = o.get("flags").and_then(|f| f.as_str()).unwrap_or("");
-                        let inline = if flags.contains('i') { "(?i)" } else { "" };
-                        regex::Regex::new(&format!("{inline}{source}"))
-                            .ok()
-                            .map(Builtin::Pattern)
+                        match js_regex(source, flags) {
+                            Ok(re) => Some(Builtin::Pattern(re)),
+                            Err(e) => {
+                                eprintln!(
+                                    "oj: resolve.builtins /{source}/{flags} is not supported and is skipped: {e}"
+                                );
+                                None
+                            }
+                        }
                     }
                     _ => None,
                 })
                 .collect(),
         )
     }
+}
+
+/// A JS RegExp as `regexp.test` runs it: `i`, `m` and `s` as their inline
+/// flags, `y` (sticky, from `lastIndex` 0) anchored at the start; `g`, `u`, `d`
+/// and `v` change nothing a single test sees.
+pub(crate) fn js_regex(source: &str, flags: &str) -> Result<regex::Regex, regex::Error> {
+    let inline: String = flags
+        .chars()
+        .filter(|f| matches!(f, 'i' | 'm' | 's'))
+        .collect();
+    let inline = if inline.is_empty() {
+        String::new()
+    } else {
+        format!("(?{inline})")
+    };
+    let source = if flags.contains('y') {
+        format!("^(?:{source})")
+    } else {
+        source.to_string()
+    };
+    regex::Regex::new(&format!("{inline}{source}"))
 }
 
 /// A builtin of the ssr environment, which Vite externalizes before any
@@ -341,6 +373,26 @@ pub(crate) fn matches_alias(finds: &[String], spec: &str) -> bool {
     })
 }
 
+/// `spec` after the first alias that matches it (the find itself, or its
+/// prefix up to `/`), as @rollup/plugin-alias replaces it.
+pub(crate) fn apply_alias(aliases: &[(String, String)], spec: &str) -> String {
+    for (find, replacement) in aliases {
+        if find.ends_with('/') {
+            if let Some(rest) = spec.strip_prefix(find.as_str()) {
+                return format!("{replacement}{rest}");
+            }
+        } else if spec == find {
+            return replacement.clone();
+        } else if let Some(rest) = spec
+            .strip_prefix(find.as_str())
+            .filter(|r| r.starts_with('/'))
+        {
+            return format!("{replacement}{rest}");
+        }
+    }
+    spec.to_string()
+}
+
 pub(crate) async fn ssr_resolve_inner(
     state: &Arc<ServerState>,
     importer: &str,
@@ -379,6 +431,11 @@ pub(crate) async fn ssr_resolve_inner(
             }
         }
         RawResolution::PluginId(id) => SsrResolution::Module(id),
+        // Vite's alias plugin rewrites the specifier before anything else:
+        // Node gets the target (`{ "my-fs": "node:fs" }` hands it `node:fs`).
+        RawResolution::Bare if aliased => {
+            SsrResolution::External(apply_alias(&state.aliases, spec))
+        }
         RawResolution::Bare => SsrResolution::External(spec.to_string()),
     })
 }
@@ -413,12 +470,6 @@ pub(crate) fn module_read_allowed(
     };
     let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     if candidate.starts_with(real(root)) {
-        return true;
-    }
-    if candidate
-        .components()
-        .any(|c| c.as_os_str() == "node_modules")
-    {
         return true;
     }
     allow
@@ -776,6 +827,7 @@ pub(crate) async fn style_file(
         root: &state.root,
         css: state.css_config.as_ref(),
         resolve: state.css_resolve.as_ref(),
+        inline_limit: state.asset_urls.inline_limit,
     };
     compile_style_file(&inputs, path, source, engine).await
 }

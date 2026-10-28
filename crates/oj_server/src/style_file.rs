@@ -73,6 +73,8 @@ pub struct StyleInputs<'a> {
     pub root: &'a Path,
     pub css: Option<&'a oj_config::CssConfig>,
     pub resolve: oj_css::CssResolve<'a>,
+    /// `build.assetsInlineLimit`: an svg a sheet names under it is inlined.
+    pub inline_limit: u64,
 }
 
 /// Less and Stylus run on the preprocess engine; the caller passes it for
@@ -219,7 +221,8 @@ pub async fn start_dev_inline_style(
             .await?;
     }
     let dir = path.parent().unwrap_or(Path::new("/"));
-    let css = rewrite_relative_urls(&css, dir, |file| start_dev_file_url(url_base, file));
+    let limit = inputs.inline_limit;
+    let css = rewrite_relative_urls(&css, dir, |file| start_dev_style_url(url_base, file, limit));
     let css = style_slot(slots, css, "normal").await?;
     Ok(format!(
         "export default {};",
@@ -227,12 +230,30 @@ pub async fn start_dev_inline_style(
     ))
 }
 
+/// A Start dev sheet's url for `file`: Vite's fileToDevUrl inlines an svg
+/// under `inline_limit` (shouldInline, as a data URL); anything else is its
+/// Start dev URL.
+pub fn start_dev_style_url(url_base: &str, file: &Path, inline_limit: u64) -> String {
+    if file.extension().is_some_and(|e| e == "svg") {
+        if let Ok(content) = std::fs::read(file) {
+            if (content.len() as u64) < inline_limit
+                && !content.starts_with(b"version https://git-lfs.github.com")
+            {
+                return crate::assets_serve::svg_to_data_url(&content);
+            }
+        }
+    }
+    start_dev_file_url(url_base, file)
+}
+
 /// Relative `url()`s naming an existing file, rewritten to `url_for` it; the
 /// Start bundles' rewriteCss rule (data:, remote, fragment and root-absolute
 /// urls stay; a missing file stays as written).
 pub fn rewrite_relative_urls(css: &str, dir: &Path, url_for: impl Fn(&Path) -> String) -> String {
+    // Vite's cssUrlRE body: an escaped `\(` or `\)` belongs to the url.
     static URL_RE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r#"url\(\s*(['"]?)([^'")]+)['"]?\s*\)"#).unwrap());
+        LazyLock::new(|| Regex::new(r#"url\(\s*(['"]?)((?:\\.|[^'")\\])+)['"]?\s*\)"#).unwrap());
+    static UNESCAPE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\([^A-Za-z0-9_])").unwrap());
     static KEEP_RE: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"^(data:|https?:|//|#|/)").unwrap());
     URL_RE
@@ -241,12 +262,13 @@ pub fn rewrite_relative_urls(css: &str, dir: &Path, url_for: impl Fn(&Path) -> S
             if KEEP_RE.is_match(target) {
                 return caps[0].to_string();
             }
-            let clean = target.split(['?', '#']).next().unwrap_or(target);
+            let unescaped = UNESCAPE.replace_all(target, "$1");
+            let clean = unescaped.split(['?', '#']).next().unwrap_or(&unescaped);
             let file = oj_css::normalize(&dir.join(clean));
             if !file.is_file() {
                 return caps[0].to_string();
             }
-            let suffix = &target[clean.len()..];
+            let suffix = &unescaped[clean.len()..];
             format!(
                 "url({})",
                 serde_json::Value::String(format!("{}{suffix}", url_for(&file)))
@@ -284,5 +306,48 @@ mod tests {
         assert!(out.contains("url('missing.png')"));
         assert!(out.contains("url(data:x)"));
         assert!(out.contains("url(/abs.png)"));
+    }
+
+    // cssUrlRE: an escaped paren is part of the url, and the file is the
+    // unescaped name.
+    #[test]
+    fn an_escaped_paren_belongs_to_the_url() {
+        let dir = std::env::temp_dir().join(format!("oj-paren-urls-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a(1).png"), b"x").unwrap();
+        let out = rewrite_relative_urls(r".a{background:url(./a\(1\).png)}", &dir, |f| {
+            format!("/fs{}", f.display())
+        });
+        assert_eq!(
+            out,
+            format!(
+                ".a{{background:url(\"/fs{}\")}}",
+                dir.join("a(1).png").display()
+            )
+        );
+    }
+
+    // fileToDevUrl inlines an svg under the limit in dev (to match the build);
+    // any other asset, or a larger svg, keeps its URL.
+    #[test]
+    fn a_start_sheets_small_svg_is_inlined() {
+        let dir = std::env::temp_dir().join(format!("oj-start-svg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("dot.svg"), "<svg></svg>").unwrap();
+        std::fs::write(dir.join("dot.png"), "png").unwrap();
+        let svg = dir.join("dot.svg");
+        assert_eq!(
+            start_dev_style_url("/", &svg, 4096),
+            "data:image/svg+xml,%3csvg%3e%3c/svg%3e"
+        );
+        assert_eq!(
+            start_dev_style_url("/", &svg, 0),
+            start_dev_file_url("/", &svg)
+        );
+        let png = dir.join("dot.png");
+        assert_eq!(
+            start_dev_style_url("/", &png, 4096),
+            start_dev_file_url("/", &png)
+        );
     }
 }

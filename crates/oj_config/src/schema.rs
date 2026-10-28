@@ -475,6 +475,8 @@ pub struct BuildConfig {
     /// `build.assetsInlineLimit` is a function, which the plugin host keeps:
     /// dev asks it per file (Vite's shouldInline).
     pub assets_inline_limit_fn: Option<bool>,
+    /// Each environment's own `build.assetsInlineLimit` (`{ name: n | "fn" }`).
+    pub assets_inline_limit_envs: Option<serde_json::Value>,
     pub css_code_split: Option<bool>,
     pub copy_public_dir: Option<bool>,
     /// Vite's `build.assetsDir` (default `assets`): where hashed chunks and

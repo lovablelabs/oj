@@ -1671,6 +1671,14 @@ export async function extract(input) {
       assetsInlineLimit: typeof c.build?.assetsInlineLimit === "number" ? c.build.assetsInlineLimit : null,
       // The function itself stays in the plugin host, which dev asks per file.
       assetsInlineLimitFn: typeof c.build?.assetsInlineLimit === "function" ? true : null,
+      // Each environment's own resolved value: a number, or "fn" for a function.
+      assetsInlineLimitEnvs: Object.fromEntries(
+        Object.entries(c.environments ?? {}).flatMap(([name, env]) => {
+          const limit = env?.build?.assetsInlineLimit;
+          if (typeof limit === "number") return [[name, limit]];
+          return typeof limit === "function" ? [[name, "fn"]] : [];
+        }),
+      ),
       dedupe: Array.isArray(c.resolve?.dedupe) ? c.resolve.dedupe.filter((x) => typeof x === "string") : null,
       optimizeDeps: extractOptimizeDeps(c.optimizeDeps, raw?.optimizeDeps),
       build: extractBuild(c.build),

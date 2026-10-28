@@ -1,15 +1,16 @@
 //! Vite's dev stylesheet url rewrite (css.ts UrlRewritePostcssPlugin:
-//! rewriteCssUrls, rewriteCssImageSet, doUrlReplace and the urlResolver) on a
-//! sheet oj compiled with its urls already rebased to served paths. It runs
-//! when the sheet is served, never in the cached compile: an inlined svg or
-//! an HMR `t=` stamp then always reflects the asset as it is now.
+//! rewriteCssUrls, rewriteCssImageSet, doUrlReplace and the urlResolver). It
+//! runs where Vite's runs, inside the sheet's compile: after its "pre"
+//! plugins and preprocessors, before its "normal" ones. The files it names are
+//! the sheet's asset deps (Vite's watch files), so an asset edit recompiles
+//! the sheet with the asset as it is now.
 
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::assets_serve::{decode_uri, DevAssetUrls};
+use crate::assets_serve::DevAssetUrls;
 
 /// What the url resolver needs: where files live, how they are named, and
 /// each asset's last HMR timestamp (Vite's `lastHMRTimestamp`, 0 for none).
@@ -19,6 +20,10 @@ pub(crate) struct CssUrls<'a> {
     pub(crate) urls: &'a DevAssetUrls,
     pub(crate) env: &'a str,
     pub(crate) stamp: &'a dyn Fn(&Path) -> u64,
+    /// The sheet's directory, which a relative url resolves against.
+    pub(crate) dir: Option<&'a Path>,
+    /// `resolve.alias` for a url (the file a path alias names).
+    pub(crate) alias: &'a dyn Fn(&str) -> Option<PathBuf>,
 }
 
 /// What a resolved url names.
@@ -28,66 +33,98 @@ enum Target {
 }
 
 impl CssUrls<'_> {
-    /// The sheet with its `url()`s and `image-set()` candidates rewritten.
-    pub(crate) fn rewrite(&self, css: &str) -> Result<String, String> {
-        let css = rewrite_css_urls(css, &mut |url| self.replace(url))?;
-        rewrite_css_image_set(&css, &mut |url| self.replace(url))
-    }
-
-    /// The files under the root a sheet's urls name: its asset deps (Vite
-    /// adds them as watch files), for the module graph.
-    pub(crate) fn assets(&self, css: &str) -> Vec<PathBuf> {
-        let mut out = Vec::new();
-        let mut collect = |url: &str| {
-            if let Some(Target::File(file)) = self.target(url) {
-                out.push(file);
-            }
-            Ok(None)
+    /// The sheet with its `url()`s and `image-set()` candidates rewritten,
+    /// and the files they name.
+    pub(crate) fn rewrite(&self, css: &str) -> Result<(String, Vec<PathBuf>), String> {
+        let mut files = Vec::new();
+        let mut replace = |url: &str| {
+            let (new, file) = self.replace(url)?;
+            files.extend(file);
+            Ok(new)
         };
-        let _ = rewrite_css_urls(css, &mut collect);
-        let _ = rewrite_css_image_set(css, &mut collect);
-        out.sort();
-        out.dedup();
-        out
+        let css = rewrite_css_urls(css, &mut replace)?;
+        let css = rewrite_css_image_set(&css, &mut replace)?;
+        files.sort();
+        files.dedup();
+        Ok((css, files))
     }
 
-    fn target(&self, url: &str) -> Option<Target> {
-        let decoded = decode_uri(url);
-        let id = decoded.split('#').next().unwrap_or(&decoded);
-        let path = id.split('?').next().unwrap_or(id);
-        let rel = path.strip_prefix('/').filter(|r| !r.starts_with('/'))?;
-        // Vite's checkPublicFile, before any resolution.
-        if let Some(public) = self.public_dir {
-            let file = crate::rewrite::normalize(&public.join(rel));
-            if file.starts_with(public) && file.is_file() {
-                return Some(Target::Public);
+    /// The file `path` (decoded, no query) names: Vite's checkPublicFile for
+    /// a root-absolute one first, then the root (or `/@fs`), an alias, or the
+    /// sheet's directory (the css resolver prefers relative).
+    fn target(&self, path: &str) -> Option<Target> {
+        if let Some(rel) = path.strip_prefix('/').filter(|r| !r.starts_with('/')) {
+            if let Some(public) = self.public_dir {
+                let file = crate::rewrite::normalize(&public.join(rel));
+                if file.starts_with(public) && file.is_file() {
+                    return Some(Target::Public);
+                }
             }
+            let file = match path.strip_prefix("/@fs") {
+                Some(abs) if abs.starts_with('/') => PathBuf::from(abs),
+                _ => self.root.join(rel),
+            };
+            return file.is_file().then_some(Target::File(file));
         }
-        let file = match path.strip_prefix("/@fs") {
-            Some(abs) if abs.starts_with('/') => PathBuf::from(abs),
-            _ => self.root.join(rel),
-        };
+        if let Some(file) = (self.alias)(path) {
+            return file.is_file().then_some(Target::File(file));
+        }
+        let file = crate::rewrite::normalize(&self.dir?.join(path));
         file.is_file().then_some(Target::File(file))
     }
 
-    /// Vite's urlResolver: a public file is the base plus its decoded path;
-    /// a file the url names is fileToUrl's URL of it, its fragment kept and
-    /// stamped `t=` once it hot-updated; anything else is left as written.
-    fn replace(&self, url: &str) -> Result<Option<String>, String> {
-        let decoded = decode_uri(url);
-        match self.target(url) {
-            None => Ok(None),
-            Some(Target::Public) => Ok(Some(format!("{}{decoded}", self.urls.raw_prefix))),
+    /// Vite's urlResolver: the url `decodeURI`d (a malformed escape fails the
+    /// sheet, as decodeURI throws); a public file is the base plus its
+    /// decoded path; a file the url names is fileToUrl's URL of it, its query
+    /// and fragment kept and stamped `t=` once it hot-updated; anything else
+    /// is left as written.
+    fn replace(&self, url: &str) -> Result<(Option<String>, Option<PathBuf>), String> {
+        let decoded = decode_uri_strict(url)?;
+        let split = decoded.find(['?', '#']).unwrap_or(decoded.len());
+        let (path, postfix) = decoded.split_at(split);
+        match self.target(path) {
+            None => Ok((None, None)),
+            Some(Target::Public) => Ok((Some(format!("{}{decoded}", self.urls.raw_prefix)), None)),
             Some(Target::File(file)) => {
-                let mut named = self.urls.file_url(self.env, &file, &decoded)?;
+                let served = format!("{}{postfix}", crate::rewrite::url_of(self.root, &file));
+                let mut named = self.urls.file_url(self.env, &file, &served)?;
                 let ts = (self.stamp)(&file);
                 if ts > 0 && !named.starts_with("data:") {
                     named = inject_query(&named, &format!("t={ts}"));
                 }
-                Ok(Some(named))
+                Ok((Some(named), Some(file)))
             }
         }
     }
+}
+
+/// JS `decodeURI`, throwing as it does: a `%` not followed by two hex digits,
+/// or escapes that are not UTF-8, are an error. Reserved characters stay
+/// escaped.
+fn decode_uri_strict(s: &str) -> Result<String, String> {
+    let malformed = || format!("URI malformed: {s}");
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = |b: Option<&u8>| b.and_then(|b| (*b as char).to_digit(16));
+            let (Some(h), Some(l)) = (hex(bytes.get(i + 1)), hex(bytes.get(i + 2))) else {
+                return Err(malformed());
+            };
+            let byte = (h * 16 + l) as u8;
+            if byte.is_ascii() && b";/?:@&=+$,#".contains(&byte) {
+                out.extend_from_slice(&bytes[i..i + 3]);
+            } else {
+                out.push(byte);
+            }
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).map_err(|_| malformed())
 }
 
 /// Vite's injectQuery: `query` first in the url's query, before the hash.
@@ -112,12 +149,21 @@ type Replace<'r> = dyn FnMut(&str) -> Result<Option<String>, String> + 'r;
 fn rewrite_css_urls(css: &str, replace: &mut Replace<'_>) -> Result<String, String> {
     static BODY: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r#"^(\s*('[^']+'|"[^"]+")\s*|(?:\\.|[^'")\\])+)\)"#).unwrap());
+    static COMMENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)/\*.*?\*/").unwrap());
+    // Vite walks declarations; a url inside a comment is in none.
+    let comments: Vec<(usize, usize)> = COMMENT
+        .find_iter(css)
+        .map(|m| (m.start(), m.end()))
+        .collect();
     let mut out = String::with_capacity(css.len());
     let mut last = 0;
     let mut from = 0;
     while let Some(found) = css[from..].find("url(") {
         let at = from + found;
         from = at + 4;
+        if comments.iter().any(|&(start, end)| start <= at && at < end) {
+            continue;
+        }
         let before = &css[..at];
         let word_before = before
             .chars()
@@ -230,7 +276,7 @@ fn do_url_replace(
     replace: &mut Replace<'_>,
     func: &str,
 ) -> Result<String, String> {
-    static UNESCAPE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\(\W)").unwrap());
+    static UNESCAPE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\([^A-Za-z0-9_])").unwrap());
     static FUNCTION_CALL: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"(?i)^[A-Z_][.\w-]*\(").unwrap());
     static EXTERNAL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^([a-z]+:)?//").unwrap());

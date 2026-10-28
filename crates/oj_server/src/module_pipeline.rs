@@ -82,7 +82,7 @@ pub(crate) async fn ensure_module_as(
         // `<style>` the JS wrapper injects resolves them from any page.
         let dir = file.parent().unwrap_or(Path::new("/"));
         let css = crate::style_file::rewrite_relative_urls(&css, dir, |f| url_of(&state.root, f));
-        let assets = sheet_assets(state, &css);
+        let (css, assets) = rewrite_sheet_urls(state, file, "client", &css)?;
         let normal =
             plugin_transform_phase(state, file, &transform_id, css, is_dep, Some("normal")).await?;
         let module = CachedModule {
@@ -173,6 +173,9 @@ pub(crate) async fn ensure_module_as(
     };
     let source = if is_stylesheet {
         let compiled = css_prepass(state, file, url, source, &mut css).await?;
+        // Vite's url replacer runs in vite:css, before the "normal" slot.
+        let (compiled, assets) = rewrite_sheet_urls(state, file, "client", &compiled)?;
+        css.deps.extend(assets);
         let normal = plugin_transform_phase(
             state,
             file,
@@ -322,7 +325,14 @@ fn memory_hit(state: &ServerState, url: &str, key: &str) -> Option<Arc<CachedMod
 }
 
 fn store_module(state: &ServerState, url: &str, key: &str, module: &Arc<CachedModule>) {
-    if state.persistent_cache {
+    // A sheet naming assets embeds what they are now (an inlined svg, a `t=`
+    // stamp): kept in memory, recompiled when one changes, never persisted.
+    let names_assets = module.kind == "css"
+        && module
+            .imports
+            .iter()
+            .any(|i| is_asset_path(Path::new(i.split('?').next().unwrap_or(i))));
+    if state.persistent_cache && !names_assets {
         let _ = state
             .cache_writes
             .try_send((key.to_string(), Arc::clone(module)));
@@ -708,26 +718,25 @@ async fn css_prepass(
     Ok(scoped.css)
 }
 
-/// The assets a compiled sheet's `url()`s name, as graph imports so an asset
-/// edit hot-updates the sheet (Vite adds them as watch files). The urls are
-/// named when the sheet is served ([`served_sheet`]).
-fn sheet_assets(state: &ServerState, css: &str) -> Vec<PathBuf> {
-    crate::css_urls::CssUrls {
-        root: &state.root,
-        public_dir: state.public_dir.as_deref(),
-        urls: &state.asset_urls,
-        env: "client",
-        stamp: &|_| 0,
-    }
-    .assets(css)
-}
-
-/// A compiled sheet as it is served: its `url()`s named as Vite's dev url
-/// replacer names them, with each asset's current HMR `t=` stamp.
-pub(crate) fn served_sheet(state: &ServerState, env: &str, css: &str) -> Result<String, String> {
+/// A sheet's `url()`s named as Vite's dev url replacer names them (see
+/// [`crate::css_urls`]), with each asset's current HMR `t=` stamp, and the
+/// files they name: graph imports, so an asset edit recompiles the sheet.
+pub(crate) fn rewrite_sheet_urls(
+    state: &ServerState,
+    sheet: &Path,
+    env: &str,
+    css: &str,
+) -> Result<(String, Vec<PathBuf>), String> {
     let stamp = |file: &Path| {
         let url = url_of(&state.root, file);
         state.graph.lock().unwrap().hmr_timestamp(Path::new(&url))
+    };
+    let resolve = state.css_resolve.as_ref();
+    let alias = |spec: &str| {
+        resolve
+            .alias_spec(spec)
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
     };
     crate::css_urls::CssUrls {
         root: &state.root,
@@ -735,6 +744,10 @@ pub(crate) fn served_sheet(state: &ServerState, env: &str, css: &str) -> Result<
         urls: &state.asset_urls,
         env,
         stamp: &stamp,
+        // A page with no file (a middleware's html) has no directory for a
+        // relative url to resolve against.
+        dir: sheet.is_file().then(|| sheet.parent()).flatten(),
+        alias: &alias,
     }
     .rewrite(css)
 }
@@ -813,8 +826,7 @@ impl CompileJob {
             }
             None => oj_css::compile_css_dev(&self.url, &self.source, dev_sourcemap, &resolve)?,
         };
-        let assets = sheet_assets(state, &output.css);
-        let dep_imports = css_dep_imports(state, &self.file, &[self.css.deps, assets].concat());
+        let dep_imports = css_dep_imports(state, &self.file, &self.css.deps);
         // A CSS module's class map changes on edit, so it cannot self-accept
         // (Vite's css-analysis): the update climbs to the importing component.
         let is_css_module = self.css.exports.is_some();

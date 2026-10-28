@@ -826,6 +826,12 @@ fn a_worker_url_carries_the_options_worker_type() {
         // The last key wins, as in the evaluated object.
         ("new Worker(new URL('./draw-worker.ts', import.meta.url), { type: 'module', type: 'classic' })", "classic"),
         ("new Worker(new URL('./draw-worker.ts', import.meta.url), { type: 'classic', type: 'module' })", "module"),
+        // A nested object's `type` is not the worker's.
+        ("new Worker(new URL('./draw-worker.ts', import.meta.url), { meta: { type: 'module' } })", "classic"),
+        ("new Worker(new URL('./draw-worker.ts', import.meta.url), { type: 'module', meta: { type: 'classic' } })", "module"),
+        // A comment around the colon is whitespace.
+        ("new Worker(new URL('./draw-worker.ts', import.meta.url), { type /* c */ : /* d */ 'module' })", "module"),
+        ("new Worker(new URL('./draw-worker.ts', import.meta.url), {/* c */type: 'module'})", "module"),
     ];
     for (code, want) in cases {
         let out = rewrite(code, &r.join("game.ts"), &r, None);

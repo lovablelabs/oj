@@ -394,11 +394,16 @@ async fn ssr_asset_ids_never_read_outside_the_allowed_roots() {
     ]);
     let outside = app.root.parent().unwrap().join("secret-ssr-outside.txt");
     std::fs::write(&outside, "TOP-SECRET").unwrap();
+    let outside_js = app.root.parent().unwrap().join("secret-ssr-outside.js");
+    std::fs::write(&outside_js, "export default \"TOP-SECRET\";\n").unwrap();
     let server = app.serve().await;
     for id in [
         "/../../secret-ssr-outside.txt%3Fraw".to_string(),
         "/../secret-ssr-outside.txt%3Finline".to_string(),
         format!("{}%3Fraw", outside.display()),
+        // A query names no file on disk, so it must not pass as a virtual id.
+        format!("{}%3Fv%3D1", outside_js.display()),
+        format!("{}%3Fimport", outside_js.display()),
     ] {
         let r = server.get(&format!("/@ssr-module?id={id}")).await;
         assert!(
@@ -409,6 +414,7 @@ async fn ssr_asset_ids_never_read_outside_the_allowed_roots() {
         );
     }
     let _ = std::fs::remove_file(&outside);
+    let _ = std::fs::remove_file(&outside_js);
 }
 
 // importAnalysis gates the builtin check on `!matchAlias` too: an alias of a
@@ -448,7 +454,7 @@ async fn an_aliased_builtin_name_goes_through_the_pipeline() {
 
 // A plain import of a public asset in the server render is its URL module,
 // as vite:asset's load names it; a stylesheet's inlined svg follows the svg
-// as it is now (the url rewrite runs when the sheet is served).
+// as it is now (the svg is a dep of the sheet's compile).
 #[tokio::test(flavor = "multi_thread")]
 async fn public_imports_and_inlined_svgs_in_sheets_stay_current() {
     let app = App::new(&[
@@ -469,6 +475,14 @@ async fn public_imports_and_inlined_svgs_in_sheets_stay_current() {
     let before = server.text("/src/style.css?direct").await;
     assert!(before.contains("%3csvg%3e%3c/svg%3e"), "{before}");
     app.write(&[("src/i.svg", "<svg><g/></svg>\n")]);
-    let after = server.text("/src/style.css?direct").await;
+    // The sheet recompiles once the watcher reports the svg's edit.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let after = loop {
+        let after = server.text("/src/style.css?direct").await;
+        if after.contains("%3csvg%3e%3cg/%3e%3c/svg%3e") || std::time::Instant::now() > deadline {
+            break after;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
     assert!(after.contains("%3csvg%3e%3cg/%3e%3c/svg%3e"), "{after}");
 }

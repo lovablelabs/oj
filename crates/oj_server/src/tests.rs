@@ -2581,9 +2581,15 @@ fn served_sheet_urls_follow_vites_url_rewrite() {
             urls: &urls,
             env: "client",
             stamp: &stamp,
+            dir: Some(&root.join("src")),
+            alias: &|spec| {
+                spec.strip_prefix("@/")
+                    .map(|rest| root.join("src").join(rest))
+            },
         }
         .rewrite(css)
         .unwrap()
+        .0
     };
     let cases = [
         ("a{b:url(/src/i.svg)}", r#"a{b:url("data:image/svg+xml,%3csvg%3e%3c/svg%3e")}"#),
@@ -2599,6 +2605,13 @@ fn served_sheet_urls_follow_vites_url_rewrite() {
             "a{b:image-set(\"/src/p.png\" 1x, url(/l.svg) 2x)}",
             "a{b:image-set(url(\"https://cdn/my app/src/p.png?t=7\") 1x, url(\"https://cdn/my%20app/l.svg\") 2x)}",
         ),
+        // Relative to the sheet, and through an alias.
+        ("a{b:url(./p.png)}", r#"a{b:url("https://cdn/my app/src/p.png?t=7")}"#),
+        ("a{b:url(@/p.png)}", r#"a{b:url("https://cdn/my app/src/p.png?t=7")}"#),
+        // A comment is not a declaration.
+        ("/* url(/src/p.png) */a{b:url(/src/p.png)}", r#"/* url(/src/p.png) */a{b:url("https://cdn/my app/src/p.png?t=7")}"#),
+        // Only an ASCII punctuation escape unescapes (JS `\W`).
+        (r"a{b:url(/src/my\ file.png)}", r#"a{b:url("https://cdn/my app/src/my file.png")}"#),
     ];
     for (css, want) in cases {
         assert_eq!(rewrite(css), want, "{css}");
@@ -2612,10 +2625,31 @@ fn served_sheet_urls_follow_vites_url_rewrite() {
         urls: &plain,
         env: "client",
         stamp: &|_| 0,
+        dir: None,
+        alias: &|_| None,
     }
-    .rewrite("a::before{content:\"url(/l.svg)\"}")
+    .rewrite(
+        "a::before{content:\"url(/l.svg)\"} a{b:url(/src/p.png) url(/src/i.svg) url(/src/p.png)}",
+    )
     .unwrap();
-    assert_eq!(out, "a::before{content:\"url(/app/l.svg)\"}");
+    assert_eq!(
+        out.0,
+        "a::before{content:\"url(/app/l.svg)\"} a{b:url(/app/src/p.png) url(\"data:image/svg+xml,%3csvg%3e%3c/svg%3e\") url(/app/src/p.png)}"
+    );
+    // The sheet's asset deps: each named root file once, no public file.
+    assert_eq!(out.1, vec![root.join("src/i.svg"), root.join("src/p.png")]);
+    // A malformed escape fails the sheet, as decodeURI throws.
+    let malformed = crate::css_urls::CssUrls {
+        root: &root,
+        public_dir: None,
+        urls: &plain,
+        env: "client",
+        stamp: &|_| 0,
+        dir: None,
+        alias: &|_| None,
+    }
+    .rewrite("a{b:url(/src/%E0%A4%A.png)}");
+    assert!(malformed.is_err_and(|e| e.contains("URI malformed")));
 }
 
 // vite:worker's dev transform: a `worker_file` module of type module imports
@@ -2672,7 +2706,7 @@ fn a_function_inline_limit_decides_before_the_default() {
     std::fs::write(&big, format!("<svg>{}</svg>", "<g/>".repeat(1100))).unwrap();
     let boom = dir.path().join("boom.svg");
     std::fs::write(&boom, "<svg></svg>").unwrap();
-    let mut urls = DevAssetUrls::new(None, None, Some(1));
+    let mut urls = DevAssetUrls::new(None, None, Some(1)).with_environments(None, true);
     urls.decider = Some(InlineDecider(std::sync::Arc::new(
         |env: &str, file: &std::path::Path| match (env, file.file_name().and_then(|n| n.to_str())) {
             (_, Some("boom.svg")) => Err("assetsInlineLimit threw".into()),
@@ -2764,4 +2798,54 @@ async fn a_user_type_parameter_does_not_change_a_workers_type() {
         ours.contains(r#""/w.js?worker_file&type=classic""#),
         "{ours}"
     );
+}
+
+// createIsBuiltin's RegExp entries: `i`, `m` and `s` keep their meaning, a
+// sticky pattern matches only at the start, and `g`/`u` change nothing a
+// single test sees.
+#[test]
+fn ssr_builtin_patterns_keep_their_regexp_flags() {
+    let re = |source: &str, flags: &str| crate::ssr::js_regex(source, flags).unwrap();
+    assert!(re("^NODE:", "i").is_match("node:fs"));
+    assert!(!re("^NODE:", "").is_match("node:fs"));
+    assert!(re("^fs$", "m").is_match("x\nfs"));
+    assert!(re("a.b", "s").is_match("a\nb"));
+    assert!(re("fs", "y").is_match("fs/promises"));
+    assert!(!re("fs", "y").is_match("node:fs"));
+    assert!(re("fs", "gu").is_match("node:fs"));
+}
+
+// A runner-backed ssr environment's builtins describe its runtime (workerd),
+// so oj's Node consumer keeps Node's defaults rather than externalize only
+// `cloudflare:*`.
+#[test]
+fn a_runner_backed_ssr_environment_keeps_nodes_builtins() {
+    let cfg = |runner_backed: bool| oj_config::OjConfig {
+        ssr: Some(serde_json::json!({
+            "runnerBacked": runner_backed,
+            "builtins": ["cloudflare:workers", { "regex": "^cloudflare:", "flags": "" }],
+        })),
+        ..Default::default()
+    };
+    assert!(crate::ssr::Builtin::ssr_list(&cfg(true)).is_none());
+    let list = crate::ssr::Builtin::ssr_list(&cfg(false)).unwrap();
+    assert!(list.iter().any(|b| b.matches("cloudflare:sockets")));
+    assert!(!list.iter().any(|b| b.matches("node:fs")));
+}
+
+// @rollup/plugin-alias on a specifier Node will load: an exact find, a find
+// followed by a subpath, a `/`-ended prefix; a longer name sharing the find's
+// prefix is another package.
+#[test]
+fn an_aliased_external_hands_node_the_alias_target() {
+    let aliases = [
+        ("my-fs".to_string(), "node:fs".to_string()),
+        ("lib/".to_string(), "real-lib/dist/".to_string()),
+    ];
+    let apply = |spec| crate::ssr::apply_alias(&aliases, spec);
+    assert_eq!(apply("my-fs"), "node:fs");
+    assert_eq!(apply("my-fs/promises"), "node:fs/promises");
+    assert_eq!(apply("my-fsx"), "my-fsx");
+    assert_eq!(apply("lib/a.js"), "real-lib/dist/a.js");
+    assert_eq!(apply("react"), "react");
 }

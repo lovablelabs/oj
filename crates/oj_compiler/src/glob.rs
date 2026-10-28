@@ -986,7 +986,8 @@ impl<'a> NewUrlAsset<'a, '_, '_> {
         // The text up to the constructor's closing paren.
         let call_end = (n.span.end as usize).saturating_sub(1);
         let tail = self.source.get(first_end..call_end).unwrap_or("");
-        let Some(comma) = tail.find(',') else {
+        // Vite's `clean.indexOf(',')`: a comma inside a comment is not one.
+        let Some(comma) = crate::meta_glob::strip_literals(tail).find(',') else {
             return "classic";
         };
         static IGNORE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
@@ -1702,6 +1703,8 @@ mod tests {
             ("new Worker(new URL(\"./w.ts\", import.meta.url), opts /* @vite-ignore */)", "ignore"),
             ("new Worker(new URL(\"./w.ts\", import.meta.url), /* @vite-ignore */)", "ignore"),
             ("new Worker(new URL(\"./w.ts\", import.meta.url), opts)", "classic"),
+            // A comma inside a comment before the options is not theirs.
+            ("new Worker(new URL(\"./w.ts\", import.meta.url) /* , @vite-ignore */, opts)", "classic"),
         ];
         for (src, want) in cases {
             let out = expand_new_url_asset_source(src, &d.join("main.js"));

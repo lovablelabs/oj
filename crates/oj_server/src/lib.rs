@@ -308,6 +308,8 @@ struct ServerState {
     ssr_externals: oj_config::SsrExternals,
     /// The top-level `resolve.alias` finds (Vite's `config.resolve.alias`).
     alias_finds: Vec<String>,
+    /// The same with their replacements, for a specifier Node is handed.
+    aliases: Vec<(String, String)>,
     /// The ssr environment's resolved `resolve.builtins`; None for Vite's
     /// default (nodeLikeBuiltins, see [`ssr::is_ssr_builtin`]).
     ssr_builtins: Option<Vec<ssr::Builtin>>,
@@ -1646,13 +1648,17 @@ impl DevServer {
             .as_ref()
             .and_then(|s| s.proxy.as_ref())
             .is_some_and(|p| !p.is_empty());
-        // A function `build.assetsInlineLimit` lives in the plugin host, which
-        // dev asks per file, so the host stays even with no plugin to run.
-        let inline_limit_fn = config
-            .build
-            .as_ref()
+        // A function `build.assetsInlineLimit` (top-level or an environment's)
+        // lives in the plugin host, which dev asks per file, so the host
+        // stays even with no plugin to run.
+        let build_cfg = config.build.as_ref();
+        let inline_limit_fn = build_cfg
             .and_then(|b| b.assets_inline_limit_fn)
-            .unwrap_or(false);
+            .unwrap_or(false)
+            || build_cfg
+                .and_then(|b| b.assets_inline_limit_envs.as_ref())
+                .and_then(|e| e.as_object())
+                .is_some_and(|e| e.values().any(|v| v == "fn"));
         // Every plugin the config declares is one oj does natively (its
         // React plugin, say): no host, and the prewarmed engine goes.
         let (plugin_file, prewarm) = match plugin_file {
@@ -1875,21 +1881,25 @@ impl DevServer {
             config.server.as_ref().and_then(|s| s.origin.as_deref()),
             config.base.as_deref(),
             config.build.as_ref().and_then(|b| b.assets_inline_limit),
+        )
+        .with_environments(
+            config
+                .build
+                .as_ref()
+                .and_then(|b| b.assets_inline_limit_envs.as_ref()),
+            config
+                .build
+                .as_ref()
+                .and_then(|b| b.assets_inline_limit_fn)
+                .unwrap_or(false),
         );
         if let Some(host) = plugin_host.clone().filter(|_| inline_limit_fn) {
             asset_urls.decider = Some(assets_serve::InlineDecider(Arc::new(move |env, file| {
                 let host = Arc::clone(&host);
                 let (env, file) = (env.to_string(), file.to_path_buf());
-                let answer = block_on_host(async move {
-                    tokio::time::timeout(
-                        std::time::Duration::from_secs(10),
-                        host.assets_inline_limit(&env, &file),
-                    )
-                    .await
-                    .map_err(|_| {
-                        "assetsInlineLimit: the plugin host did not answer in 10s".to_string()
-                    })?
-                })?;
+                // Waits as long as the host takes, as Vite's call never fails.
+                let answer =
+                    block_on_host(async move { host.assets_inline_limit(&env, &file).await })?;
                 Ok(match answer {
                     Ok(inline) => assets_serve::InlineRule::Decide(inline),
                     Err(limit) => assets_serve::InlineRule::Limit(limit),
@@ -1934,6 +1944,7 @@ impl DevServer {
                 .into_iter()
                 .map(|(find, _)| find)
                 .collect(),
+            aliases: oj_config::top_level_alias(&config),
             ssr_externals: oj_config::SsrExternals {
                 target: None,
                 ..oj_config::ssr_externals(&config)

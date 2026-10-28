@@ -112,7 +112,14 @@ pub(crate) struct DevAssetUrls {
     /// public file's URL onto `config.base`, not the decoded one.
     pub(crate) raw_prefix: String,
     pub(crate) inline_limit: u64,
-    /// A function-valued `build.assetsInlineLimit`, asked first.
+    /// Environments whose own `build.assetsInlineLimit` is a number.
+    pub(crate) env_limits: std::collections::BTreeMap<String, u64>,
+    /// Environments whose `build.assetsInlineLimit` is a function, which the
+    /// decider asks; with no entry for an environment, the top level's kind.
+    pub(crate) env_functions: std::collections::BTreeSet<String>,
+    /// Whether the top-level `build.assetsInlineLimit` is a function.
+    pub(crate) top_function: bool,
+    /// The plugin host's answer for a function-valued limit.
     pub(crate) decider: Option<InlineDecider>,
 }
 
@@ -147,6 +154,9 @@ impl Default for DevAssetUrls {
             raw_prefix: String::new(),
             // Vite's DEFAULT_ASSETS_INLINE_LIMIT.
             inline_limit: 4096,
+            env_limits: Default::default(),
+            env_functions: Default::default(),
+            top_function: false,
             decider: None,
         }
     }
@@ -160,8 +170,31 @@ impl DevAssetUrls {
             prefix: format!("{origin}{}", decode_uri(&base)),
             raw_prefix: format!("{origin}{base}"),
             inline_limit: inline_limit.unwrap_or(4096),
-            decider: None,
+            ..Default::default()
         }
+    }
+
+    /// Records each environment's own `build.assetsInlineLimit` (`{ name: n
+    /// | "fn" }`, as the extractor reports it) and whether the top level's is
+    /// a function.
+    pub(crate) fn with_environments(
+        mut self,
+        envs: Option<&serde_json::Value>,
+        top_function: bool,
+    ) -> Self {
+        self.top_function = top_function;
+        for (name, limit) in envs.and_then(|e| e.as_object()).into_iter().flatten() {
+            match (limit.as_u64(), limit.as_str()) {
+                (Some(n), _) => {
+                    self.env_limits.insert(name.clone(), n);
+                }
+                (_, Some("fn")) => {
+                    self.env_functions.insert(name.clone());
+                }
+                _ => {}
+            }
+        }
+        self
     }
 
     /// `url` (root-relative) under the prefix.
@@ -210,12 +243,18 @@ impl DevAssetUrls {
         if url.contains('#') {
             return Ok(false);
         }
-        let limit = match &self.decider {
-            Some(decider) => match (decider.0)(env, file)? {
+        // Vite reads `environment.config.build.assetsInlineLimit`: the
+        // environment's own number, else a function the host answers, else
+        // the top level's.
+        let is_function = self.env_functions.contains(env)
+            || (self.top_function && !self.env_limits.contains_key(env));
+        let limit = match (&self.decider, self.env_limits.get(env)) {
+            (Some(decider), _) if is_function => match (decider.0)(env, file)? {
                 InlineRule::Decide(inline) => return Ok(inline),
                 InlineRule::Limit(limit) => limit,
             },
-            None => self.inline_limit,
+            (_, Some(&own)) => own,
+            _ => self.inline_limit,
         };
         Ok((content.len() as u64) < limit
             && !content.starts_with(b"version https://git-lfs.github.com"))
@@ -433,10 +472,9 @@ pub(crate) async fn inline_css_module(
     let clean = url.split('?').next().unwrap_or(url);
     let url = format!("{clean}?inline");
     let (_, module) = Box::pin(ensure_module(state, file, &url)).await?;
-    let sheet = served_sheet(state, "client", &module.code)?;
     let code = format!(
         "export default {};\n",
-        serde_json::to_string(&sheet).unwrap()
+        serde_json::to_string(&module.code).unwrap()
     );
     let id = format!("{}?inline", file.display());
     css_post(state, file, &url, &id, code).await

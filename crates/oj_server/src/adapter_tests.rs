@@ -101,14 +101,15 @@ fn the_ssr_module_endpoint_only_reads_the_project_and_its_dependencies() {
     for ok in [
         root.join("src/App.tsx"),
         root.join("node_modules/react/index.js"),
-        base.join("linked/node_modules/dep/index.js"),
         base.join("allowed/shared.ts"),
     ] {
         assert!(module_read_allowed(&root, &allow, &ok), "{ok:?} denied");
     }
 
     // Everything else, however it is spelled.
+    // A `node_modules` path outside them is not a dependency of the project.
     for denied in [
+        base.join("linked/node_modules/dep/index.js"),
         outside.join("secrets/id_rsa"),
         root.join("../elsewhere/secrets/id_rsa"),
         root.join("src/../../elsewhere/secrets/id_rsa"),
