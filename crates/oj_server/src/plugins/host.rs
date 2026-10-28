@@ -126,9 +126,108 @@ pub struct HostPrewarm {
     engine: std::sync::Arc<oj_js::JsEngine>,
     post_rx: tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
     import_meta_env: Arc<std::sync::OnceLock<Arc<oj_compiler::ImportMetaEnv>>>,
+    resolvers: ResolverSlot,
     bundles: BundleGraphs,
     registry: Option<oj_js::EngineRegistry>,
     boot_preseed: BootPreseed,
+}
+
+/// What the dev server resolves plugin requests with: a `this.resolve` no
+/// plugin answers, and a `this.load` module's `importedIds`, take the calling
+/// environment's own resolve options, as Vite builds its resolve plugin per
+/// environment (`applyToEnvironment`, plugins/resolve.ts).
+pub struct EnvResolvers {
+    pub root: PathBuf,
+    pub config: Arc<oj_config::OjConfig>,
+    /// The dev server's own client resolver, shared with module serving.
+    pub client: Arc<OjResolver>,
+}
+
+/// An environment's resolved `resolve.conditions` and `resolve.mainFields`, as
+/// the plugin host read them off Vite's resolved config.
+#[derive(Clone, Debug, Default)]
+pub struct ReportedResolve {
+    pub conditions: Option<Vec<String>>,
+    pub main_fields: Option<Vec<String>>,
+}
+
+impl ReportedResolve {
+    /// `{ conditions, mainFields }`, each a string array or null.
+    fn from_json(v: Option<&serde_json::Value>) -> Self {
+        let list = |key: &str| {
+            v?.get(key)?
+                .as_array()?
+                .iter()
+                .map(|s| s.as_str().map(String::from))
+                .collect::<Option<Vec<_>>>()
+        };
+        Self {
+            conditions: list("conditions"),
+            main_fields: list("mainFields"),
+        }
+    }
+}
+
+/// The per-environment resolvers behind [`EnvResolvers`]. The host reports an
+/// environment's options while it resolves the environment, which can be
+/// before the dev server sets the base; resolvers are built on first use.
+#[derive(Default)]
+pub(crate) struct EnvResolverSlot {
+    /// Set once after spawn; unset (`oj build`), a bare resolver at the root answers.
+    base: std::sync::OnceLock<EnvResolvers>,
+    reported: std::sync::Mutex<std::collections::HashMap<String, ReportedResolve>>,
+    built: std::sync::Mutex<std::collections::HashMap<(String, bool), Arc<OjResolver>>>,
+}
+
+pub(crate) type ResolverSlot = Arc<EnvResolverSlot>;
+
+impl EnvResolverSlot {
+    /// The resolver for environment `name` (consumer `server` or not), or None
+    /// before the dev server sets the base.
+    pub(crate) fn for_environment(&self, name: &str, server: bool) -> Option<Arc<OjResolver>> {
+        let base = self.base.get()?;
+        let name = match name {
+            "" if server => "ssr",
+            "" => "client",
+            name => name,
+        };
+        if name == "client" {
+            return Some(Arc::clone(&base.client));
+        }
+        let mut built = self.built.lock().unwrap_or_else(|e| e.into_inner());
+        let key = (name.to_string(), server);
+        if let Some(r) = built.get(&key) {
+            return Some(Arc::clone(r));
+        }
+        let reported = self
+            .reported
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+            .cloned();
+        let r = Arc::new(crate::environment_resolver(
+            &base.root,
+            &base.config,
+            name,
+            server,
+            reported.as_ref(),
+        ));
+        built.insert(key, Arc::clone(&r));
+        Some(r)
+    }
+
+    /// Records environment `name`'s resolved options, replacing any resolver
+    /// already built from older ones (a host respawn reports again).
+    fn report(&self, name: &str, options: ReportedResolve) {
+        self.reported
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(name.to_string(), options);
+        self.built
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|(n, _), _| n != name);
+    }
 }
 
 /// The boot-time deps pre-seed the dev server runs alongside the host's start
@@ -142,6 +241,7 @@ fn new_host_engine(
     memory_limit_bytes: usize,
     registry: Option<oj_js::EngineRegistry>,
     import_meta_env: Arc<std::sync::OnceLock<Arc<oj_compiler::ImportMetaEnv>>>,
+    resolvers: ResolverSlot,
     bundles: BundleGraphs,
     post_tx: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
     runtime: Option<tokio::runtime::Handle>,
@@ -159,7 +259,15 @@ fn new_host_engine(
         Box::new(move |method, args| {
             bundle_rpc(method, args, &bundles)
                 .or_else(|| preseeds.rpc(method, args, &root))
-                .unwrap_or_else(|| ctx_rpc(method, args, &resolver, &root, import_meta_env.get()))
+                .unwrap_or_else(|| {
+                    let ctx = CtxRpc {
+                        resolver: &resolver,
+                        resolvers: &resolvers,
+                        root: &root,
+                        env: import_meta_env.get(),
+                    };
+                    ctx_rpc(method, args, &ctx)
+                })
         })
     };
     let mut engine_config = oj_js::EngineConfig::new(&root);
@@ -200,6 +308,8 @@ pub(crate) struct BootContext {
     registry: Option<oj_js::EngineRegistry>,
     /// The dev server's defines, for `moduleInfo` compiles; set once after spawn.
     import_meta_env: Arc<std::sync::OnceLock<Arc<oj_compiler::ImportMetaEnv>>>,
+    /// The dev server's resolvers for `this.resolve`; set once after spawn.
+    resolvers: ResolverSlot,
     /// The bundle each container's hooks run inside (see [`BundleGraph`]).
     bundles: BundleGraphs,
     /// The runtime the host was spawned on: a respawn's engine and tasks
@@ -372,22 +482,38 @@ pub struct HostRpc {
     pub args: Vec<serde_json::Value>,
 }
 
+/// What the reverse ctx-RPC answers from.
+pub(crate) struct CtxRpc<'a> {
+    /// The bare root resolver, when the dev server set no [`EnvResolvers`].
+    pub(crate) resolver: &'a OjResolver,
+    pub(crate) resolvers: &'a EnvResolverSlot,
+    pub(crate) root: &'a Path,
+    pub(crate) env: Option<&'a Arc<oj_compiler::ImportMetaEnv>>,
+}
+
 /// The host's reverse ctx-RPC (`this.resolve` fallbacks, `this.load` module
 /// info), answered SYNCHRONOUSLY on the isolate thread via the `__oj_rpc` bridge.
 pub(crate) fn ctx_rpc(
     method: &str,
     args: &[serde_json::Value],
-    resolver: &OjResolver,
-    root: &Path,
-    env: Option<&Arc<oj_compiler::ImportMetaEnv>>,
+    ctx: &CtxRpc<'_>,
 ) -> Result<serde_json::Value, String> {
+    let CtxRpc { root, env, .. } = *ctx;
     let arg = |i: usize| args.get(i).and_then(|v| v.as_str()).unwrap_or("");
     let dir_of = |path: &Path| {
         path.parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| root.to_path_buf())
     };
+    // The calling environment's name and consumer ("client" or "server").
+    let env_resolver =
+        |name: &str, consumer: &str| ctx.resolvers.for_environment(name, consumer == "server");
     match method {
+        "environmentResolve" => {
+            ctx.resolvers
+                .report(arg(0), ReportedResolve::from_json(args.get(1)));
+            Ok(serde_json::Value::Null)
+        }
         "resolve" => {
             let (source, importer) = (arg(0), arg(1));
             let dir = if importer.is_empty() {
@@ -395,6 +521,8 @@ pub(crate) fn ctx_rpc(
             } else {
                 dir_of(Path::new(importer))
             };
+            let own = env_resolver(arg(2), arg(3));
+            let resolver = own.as_deref().unwrap_or(ctx.resolver);
             Ok(match resolver.resolve(&dir, source) {
                 Ok(p) => serde_json::Value::String(p.display().to_string()),
                 Err(_) => serde_json::Value::Null,
@@ -415,6 +543,8 @@ pub(crate) fn ctx_rpc(
                 Ok(out) => (out.code, out.imports),
                 Err(_) => (src, Vec::new()),
             };
+            let own = env_resolver(arg(1), arg(2));
+            let resolver = own.as_deref().unwrap_or(ctx.resolver);
             let imported_ids: Vec<String> = imports
                 .iter()
                 .map(|spec| {
@@ -733,11 +863,13 @@ impl PluginHost {
             Arc::default();
         let bundles = BundleGraphs::default();
         let boot_preseed = BootPreseed::default();
+        let resolvers = ResolverSlot::default();
         let engine = new_host_engine(
             root,
             plugin_host_memory_mb() * 1024 * 1024,
             registry.clone(),
             Arc::clone(&import_meta_env),
+            Arc::clone(&resolvers),
             Arc::clone(&bundles),
             post_tx,
             tokio::runtime::Handle::try_current().ok(),
@@ -756,6 +888,7 @@ impl PluginHost {
             engine,
             post_rx,
             import_meta_env,
+            resolvers,
             bundles,
             registry,
             boot_preseed,
@@ -835,6 +968,10 @@ impl PluginHost {
                 import_meta_env: prewarm
                     .as_ref()
                     .map(|p| Arc::clone(&p.import_meta_env))
+                    .unwrap_or_default(),
+                resolvers: prewarm
+                    .as_ref()
+                    .map(|p| Arc::clone(&p.resolvers))
                     .unwrap_or_default(),
                 bundles: prewarm
                     .as_ref()
@@ -1761,6 +1898,17 @@ impl PluginHost {
         self.core.set_import_meta_env(env)
     }
 
+    /// The dev server's resolvers for `this.resolve` (`oj build` leaves them unset).
+    pub fn set_resolvers(&self, resolvers: EnvResolvers) {
+        let _ = self.core.boot.resolvers.base.set(resolvers);
+    }
+
+    /// Environment `name`'s plugin-facing resolver (see [`EnvResolvers`]), or
+    /// None when the dev server set none.
+    pub fn environment_resolver(&self, name: &str, server: bool) -> Option<Arc<OjResolver>> {
+        self.core.boot.resolvers.for_environment(name, server)
+    }
+
     pub fn set_ws_sender(&self, tx: tokio::sync::broadcast::Sender<String>) {
         self.core.set_ws_sender(tx)
     }
@@ -1900,6 +2048,7 @@ impl HostCore {
             self.boot.memory_limit_bytes,
             self.boot.registry.clone(),
             Arc::clone(&self.boot.import_meta_env),
+            Arc::clone(&self.boot.resolvers),
             Arc::clone(&self.boot.bundles),
             post_tx,
             self.boot.runtime.clone(),

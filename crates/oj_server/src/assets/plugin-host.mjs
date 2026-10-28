@@ -1950,7 +1950,9 @@ function pluginContext(c) {
         // Outside a running bundle (no bundler to ask) oj's resolver answers.
         if (!r || !r.fallback) return r ?? null;
       }
-      const id = await ctxRpc("resolve", [source, importer ?? ""]);
+      // Resolved with the environment's own options (Vite builds its resolve
+      // plugin per environment from that environment's config.resolve).
+      const id = await ctxRpc("resolve", [source, importer ?? "", ...environmentOf(c)]);
       return id == null ? null : { id };
     },
     emitFile(file) {
@@ -2001,7 +2003,7 @@ function pluginContext(c) {
         info = c.moduleInfoCache.get(id) ?? makeModuleInfo(id, out.code);
         info.code = out.code;
       } else {
-        const raw = await ctxRpc("moduleInfo", [id]);
+        const raw = await ctxRpc("moduleInfo", [id, ...environmentOf(c)]);
         info = raw ? makeModuleInfo(raw.id ?? id, raw.code ?? "", raw) : null;
       }
       if (info) {
@@ -2323,8 +2325,28 @@ async function resolveEnvironment(c, name) {
   environment.config.consumer = own.consumer ?? (name === "client" ? "client" : "server");
   environment.logger = resolvedConfig.logger;
   environment.getTopLevelConfig = () => resolvedConfig;
+  if (name !== "client") await reportEnvironmentResolve(name, own.resolve);
   c.plugins = await environmentPlugins(environment, c.topLevelPlugins, c);
   environment.plugins = c.plugins;
+}
+// Hands oj the options a non-client environment's `this.resolve` fallback
+// resolves with: its own entry of the resolved config, which Vite fills per
+// consumer (resolveEnvironmentResolveOptions: server defaults, or the client's
+// for an ssr webworker target). The merged environment.config would mix in the
+// top-level lists, which Vite's environments never inherit.
+async function reportEnvironmentResolve(name, resolve) {
+  // Only the in-process engine answers it; elsewhere oj's defaults stand.
+  if (!ojEngineRpc) return;
+  const strings = (v) => (Array.isArray(v) && v.every((x) => typeof x === "string") ? v : null);
+  await ctxRpc("environmentResolve", [
+    name,
+    { conditions: strings(resolve?.conditions), mainFields: strings(resolve?.mainFields) },
+  ]);
+}
+// The [name, consumer] a container's ctx RPCs resolve for.
+function environmentOf(c) {
+  const name = c.environment?.name ?? "client";
+  return [name, c.environment?.config?.consumer ?? (name === "client" ? "client" : "server")];
 }
 
 // Vite (plugin.ts resolveEnvironmentPlugins): `applyToEnvironment` is awaited;

@@ -465,8 +465,12 @@ pub(crate) async fn ssr_transform_source(
         // Same filter gate as the client path: an unclaimed module skips the
         // isolate RPC and the import pre-resolution that only feeds it.
         Some(host) if host.hook_wants_transform(id, &source) => {
+            // The ssr environment's plugin-facing resolver, as `this.resolve` there.
+            let resolver = host
+                .environment_resolver("ssr", true)
+                .unwrap_or_else(|| Arc::clone(&state.ssr_resolver));
             let resolved =
-                resolved_imports_json(&state.resolver, &state.fs_allow, &source, Path::new(id));
+                resolved_imports_json(&resolver, &state.fs_allow, &source, Path::new(id));
             match host.transform(&source, id, &resolved).await {
                 Ok(t) => t.code,
                 Err(e) => {

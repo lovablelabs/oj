@@ -1146,6 +1146,45 @@ fn client_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
     )
 }
 
+/// A dev environment's resolver for plugins (`this.resolve`, `this.load`), with
+/// the options Vite gives that environment (`resolveEnvironmentResolveOptions`).
+/// Unlike [`ssr_resolver`] nothing is adjusted for the Node runtime: a
+/// runner-backed environment's conditions are what its plugins see in Vite.
+/// `reported` is the environment's resolved conditions and mainFields when the
+/// plugin host has Vite's resolved config; else the config's own lists and the
+/// consumer's defaults answer.
+pub(crate) fn environment_resolver(
+    root: &Path,
+    config: &oj_config::OjConfig,
+    name: &str,
+    consumer_server: bool,
+    reported: Option<&plugins::ReportedResolve>,
+) -> OjResolver {
+    // Vite's isSsrTargetWebworkerEnvironment keeps the client defaults.
+    let server =
+        consumer_server && !(name == "ssr" && oj_config::ssr_externals(config).webworker());
+    let conditions = match reported.and_then(|r| r.conditions.clone()) {
+        Some(list) => oj_config::reported_conditions(list, true),
+        None => oj_config::environment_resolve_conditions(config, name, server),
+    };
+    let main_fields = match reported.and_then(|r| r.main_fields.clone()) {
+        Some(list) => Some(list),
+        None => oj_config::environment_main_fields(config, name),
+    };
+    OjResolver::with_settings(
+        root,
+        oj_resolver::ResolveSettings {
+            conditions,
+            alias: oj_config::resolve_alias(config, name),
+            dedupe: oj_config::resolve_dedupe(config),
+            extensions: oj_config::resolve_extensions(config),
+            main_fields,
+            preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
+            server,
+        },
+    )
+}
+
 /// Feeds the unbundled Node SSR path, and the SSR build's externalization
 /// probe (Vite resolves a dependency before externalizing it). Conditions
 /// never cross runtimes: a runner-backed ssr environment's list describes
@@ -1679,8 +1718,16 @@ impl DevServer {
             defines,
             dedup_defines_last_wins(oj_config::environment_defines(&config, "ssr")),
         ));
+        let client_resolver = Arc::new(client_resolver(&root, &config));
+        let ssr_resolver = Arc::new(ssr_resolver(&root, &config));
         if let Some(host) = &plugin_host {
             host.set_import_meta_env(Arc::clone(&import_meta_env));
+            // Before buildStart, whose `this.resolve` already answers per environment.
+            host.set_resolvers(plugins::EnvResolvers {
+                root: root.clone(),
+                config: Arc::new(config.clone()),
+                client: Arc::clone(&client_resolver),
+            });
             // Vite awaits the client buildStart while initing the server, after
             // config resolution, so the defines are final for any `this.load`.
             // A rejection fails startup rather than serving. A host kept only
@@ -1751,7 +1798,6 @@ impl DevServer {
         let (watch_tx, watch_rx) = std::sync::mpsc::channel::<WatchMsg>();
         let (watch_ready_tx, watch_ready) = tokio::sync::watch::channel(false);
         let public_dir = oj_config::public_dir(&config, &root);
-        let client_resolver = Arc::new(client_resolver(&root, &config));
         let css_resolve = oj_css::CssResolveConfig {
             root: root.clone(),
             public_dir: public_dir.clone().unwrap_or_default(),
@@ -1777,7 +1823,7 @@ impl DevServer {
             graph: Mutex::new(ModuleGraph::new()),
             require_resolver: Arc::new(client_resolver.require_variant()),
             resolver: client_resolver,
-            ssr_resolver: Arc::new(ssr_resolver(&root, &config)),
+            ssr_resolver,
             cache: PersistentCache::new(oj_cache::cache_root(&root), env!("CARGO_PKG_VERSION"))
                 .with_salt_extra(&installed.digest)
                 // A cached compile embeds the JSX runtime import; a changed

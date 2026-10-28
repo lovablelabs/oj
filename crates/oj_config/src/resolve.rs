@@ -119,6 +119,46 @@ pub fn resolve_conditions_for(config: &OjConfig, env_name: &str, dev: bool) -> V
         .to_vec()
 }
 
+/// Export conditions for a dev environment as Vite resolves its own options
+/// (`resolveEnvironmentResolveOptions`): the environment's list, else the
+/// consumer's defaults. Only the client reads the top-level list; other
+/// environments drop it, as Vite's `getDefaultEnvironmentOptions` does.
+/// `server` is false for a client consumer and the ssr webworker target.
+pub fn environment_resolve_conditions(
+    config: &OjConfig,
+    env_name: &str,
+    server: bool,
+) -> Vec<String> {
+    if env_name == "client" {
+        return resolve_conditions(config, "client");
+    }
+    if let Some(user) = env_resolve_list(config, env_name, "conditions") {
+        return reported_conditions(user, true);
+    }
+    let base = if server { "node" } else { "browser" };
+    [base, "import", "module", dev_prod(true), "default"]
+        .map(String::from)
+        .to_vec()
+}
+
+/// An environment's `resolve.mainFields`, or None for the consumer's defaults
+/// (same inheritance as [`environment_resolve_conditions`]).
+pub fn environment_main_fields(config: &OjConfig, env_name: &str) -> Option<Vec<String>> {
+    if env_name == "client" {
+        resolve_main_fields(config)
+    } else {
+        env_resolve_list(config, env_name, "mainFields")
+    }
+}
+
+/// A resolved `resolve.conditions` list as a Vite resolved config carries it:
+/// the placeholder mapped, `import`/`default` appended.
+pub fn reported_conditions(list: Vec<String>, dev: bool) -> Vec<String> {
+    let mut out = Vec::new();
+    extend_conditions(&mut out, list, dev_prod(dev));
+    out
+}
+
 /// Conditions for a Node-executing SSR consumer (Start loader, unbundled SSR
 /// resolver) when the ssr environment is runner-backed: Vite's Node server
 /// semantics, not the foreign runtime's list. DEFAULT_SERVER_CONDITIONS
