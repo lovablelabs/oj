@@ -540,7 +540,7 @@ fn a_worker_url_imports_the_workers_worker_url() {
     let code = "const w = new Worker(new URL(\"./draw-worker.ts\", import.meta.url), { type: \"module\" });";
     let out = rewrite(code, &r.join("game.ts"), &r, None);
     let spec = json(&format!(
-        "{}?worker&url",
+        "{}?worker&url&worker_type=module",
         r.join("draw-worker.ts").display()
     ));
     assert!(
@@ -565,7 +565,7 @@ fn a_shared_worker_url_keeps_its_query() {
         None,
     );
     let spec = json(&format!(
-        "{}?sharedworker&url&x=1",
+        "{}?sharedworker&url&worker_type=classic&x=1",
         r.join("draw-worker.ts").display()
     ));
     assert!(out.contains(&spec), "{out}");
@@ -803,4 +803,42 @@ fn aliased_glob_resolves_through_the_alias() {
     assert!(scopes[0]
         .matcher()
         .is_match(&r.join("content/c.md").display().to_string()));
+}
+
+// Vite's getWorkerType: no options or empty ones are classic, options marked
+// `/* @vite-ignore */` are ignore, the last static `type` of module or classic
+// decides, and anything else is classic (non-static options are an error in
+// Vite; oj takes them as classic).
+#[test]
+fn a_worker_url_carries_the_options_worker_type() {
+    let dir = url_fixture();
+    let r = root(&dir);
+    let cases = [
+        ("new Worker(new URL('./draw-worker.ts', import.meta.url))", "classic"),
+        ("new Worker(new URL('./draw-worker.ts', import.meta.url), {})", "classic"),
+        ("new Worker(new URL('./draw-worker.ts', import.meta.url), { type: 'module' })", "module"),
+        ("new Worker(new URL('./draw-worker.ts', import.meta.url), { \"type\": \"classic\", name: 'x' })", "classic"),
+        ("new Worker(new URL('./draw-worker.ts', import.meta.url), /* @vite-ignore */ opts)", "ignore"),
+        ("new Worker(new URL('./draw-worker.ts', import.meta.url), { name: 'x' })", "classic"),
+        // A `type:` inside a string or a comment is not a key.
+        ("new Worker(new URL('./draw-worker.ts', import.meta.url), { name: \"type: 'module'\" })", "classic"),
+        ("new Worker(new URL('./draw-worker.ts', import.meta.url), { /* type: \"module\" */ })", "classic"),
+        // The last key wins, as in the evaluated object.
+        ("new Worker(new URL('./draw-worker.ts', import.meta.url), { type: 'module', type: 'classic' })", "classic"),
+        ("new Worker(new URL('./draw-worker.ts', import.meta.url), { type: 'classic', type: 'module' })", "module"),
+        // A nested object's `type` is not the worker's.
+        ("new Worker(new URL('./draw-worker.ts', import.meta.url), { meta: { type: 'module' } })", "classic"),
+        ("new Worker(new URL('./draw-worker.ts', import.meta.url), { type: 'module', meta: { type: 'classic' } })", "module"),
+        // A comment around the colon is whitespace.
+        ("new Worker(new URL('./draw-worker.ts', import.meta.url), { type /* c */ : /* d */ 'module' })", "module"),
+        ("new Worker(new URL('./draw-worker.ts', import.meta.url), {/* c */type: 'module'})", "module"),
+    ];
+    for (code, want) in cases {
+        let out = rewrite(code, &r.join("game.ts"), &r, None);
+        let spec = json(&format!(
+            "{}?worker&url&worker_type={want}",
+            r.join("draw-worker.ts").display()
+        ));
+        assert!(out.contains(&spec), "{code}: {out}");
+    }
 }

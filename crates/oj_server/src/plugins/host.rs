@@ -132,12 +132,19 @@ pub struct HostPrewarm {
     boot_preseed: BootPreseed,
 }
 
-/// The dev server's resolvers, one per consumer: a plugin's `this.resolve`
-/// that no plugin answers resolves with its environment's own options, as
-/// Vite's resolve plugin reads `this.environment.config.resolve`.
+/// What the dev server resolves plugin requests with: a `this.resolve` no
+/// plugin answers takes the calling environment's own resolve options, as
+/// Vite builds its resolve plugin per environment (`applyToEnvironment`,
+/// plugins/resolve.ts). A `this.load` module's `importedIds` (oj's own
+/// field; Vite's dev ModuleInfo has only `id` and `meta`) resolve the same way.
 pub struct EnvResolvers {
+    pub root: PathBuf,
+    pub config: Arc<oj_config::OjConfig>,
+    /// The dev server's own client resolver, shared with module serving.
     pub client: Arc<OjResolver>,
-    pub server: Arc<OjResolver>,
+    /// Vite's `isProduction` (`NODE_ENV=production`), which maps the
+    /// `development|production` condition.
+    pub production: bool,
     /// The client's pre-bundle for a bare import, as vite:resolve's
     /// tryOptimizedResolve answers it (see [`PluginHost::set_optimized_dep`]).
     pub optimized_dep: std::sync::OnceLock<OptimizedDep>,
@@ -147,8 +154,132 @@ pub struct EnvResolvers {
 /// that answers instead; `None` keeps the file.
 pub type OptimizedDep = Box<dyn Fn(&str, &Path) -> Option<String> + Send + Sync>;
 
-/// Set once after spawn; unset (`oj build`), a bare resolver at the root answers.
-pub(crate) type ResolverSlot = Arc<std::sync::OnceLock<EnvResolvers>>;
+/// An environment's resolved resolve options and consumer, as the plugin host
+/// read them off Vite's resolved config.
+#[derive(Clone, Debug, Default)]
+pub struct ReportedResolve {
+    pub conditions: Option<Vec<String>>,
+    pub main_fields: Option<Vec<String>>,
+    pub extensions: Option<Vec<String>>,
+    pub dedupe: Option<Vec<String>>,
+    /// `consumer === "server"`, when the host reported a consumer.
+    pub server: Option<bool>,
+}
+
+impl ReportedResolve {
+    /// `{ conditions, mainFields, extensions, dedupe, consumer }`, each list a
+    /// string array or null.
+    fn from_json(v: Option<&serde_json::Value>) -> Self {
+        let list = |key: &str| {
+            v?.get(key)?
+                .as_array()?
+                .iter()
+                .map(|s| s.as_str().map(String::from))
+                .collect::<Option<Vec<_>>>()
+        };
+        Self {
+            conditions: list("conditions"),
+            main_fields: list("mainFields"),
+            extensions: list("extensions"),
+            dedupe: list("dedupe"),
+            server: v
+                .and_then(|v| v.get("consumer"))
+                .and_then(|c| c.as_str())
+                .map(|c| c == "server"),
+        }
+    }
+}
+
+/// The per-environment resolvers behind [`EnvResolvers`]. The host reports an
+/// environment's options while it resolves the environment, which can be
+/// before the dev server sets the base; resolvers are built on first use.
+#[derive(Default)]
+pub(crate) struct EnvResolverSlot {
+    /// Set once after spawn; unset (`oj build`), a bare resolver at the root answers.
+    base: std::sync::OnceLock<EnvResolvers>,
+    reported: std::sync::Mutex<std::collections::HashMap<String, ReportedResolve>>,
+    built: std::sync::Mutex<std::collections::HashMap<(String, bool), Arc<OjResolver>>>,
+}
+
+pub(crate) type ResolverSlot = Arc<EnvResolverSlot>;
+
+impl EnvResolverSlot {
+    /// The resolver for environment `name` (consumer `server` or not), or None
+    /// before the dev server sets the base.
+    pub(crate) fn for_environment(&self, name: &str, server: bool) -> Option<Arc<OjResolver>> {
+        let base = self.base.get()?;
+        let name = match name {
+            "" if server => "ssr",
+            "" => "client",
+            name => name,
+        };
+        if name == "client" {
+            return Some(Arc::clone(&base.client));
+        }
+        let mut built = self.built.lock().unwrap_or_else(|e| e.into_inner());
+        let key = (name.to_string(), server);
+        if let Some(r) = built.get(&key) {
+            return Some(Arc::clone(r));
+        }
+        let reported = self
+            .reported
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+            .cloned();
+        let r = Arc::new(crate::environment_resolver(
+            &base.root,
+            &base.config,
+            name,
+            server,
+            !base.production,
+            reported.as_ref(),
+        ));
+        built.insert(key, Arc::clone(&r));
+        Some(r)
+    }
+
+    /// Whether environment `name`'s consumer is `server`, as the host reported
+    /// it; else Vite's default (every environment but the client).
+    pub(crate) fn is_server(&self, name: &str) -> bool {
+        self.reported
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+            .and_then(|r| r.server)
+            .unwrap_or(name != "client")
+    }
+
+    /// The client pre-bundle answering bare `source` that resolved to `file`.
+    pub(crate) fn optimized_dep(&self, source: &str, file: &Path) -> Option<String> {
+        self.base.get()?.optimized_dep.get()?(source, file)
+    }
+
+    /// Drops every built resolver's cached lookups, misses included.
+    pub(crate) fn clear_caches(&self) {
+        for r in self
+            .built
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+        {
+            r.clear_cache();
+        }
+    }
+
+    /// Records environment `name`'s resolved options, replacing any resolver
+    /// already built from older ones (a host respawn reports again).
+    fn report(&self, name: &str, options: ReportedResolve) {
+        self.reported
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(name.to_string(), options);
+        self.built
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|(n, _), _| n != name);
+    }
+}
 
 /// The boot-time deps pre-seed the dev server runs alongside the host's start
 /// (preseed.rs): set once, before the host builds its environments, and read
@@ -182,7 +313,7 @@ fn new_host_engine(
                 .unwrap_or_else(|| {
                     let ctx = CtxRpc {
                         resolver: &resolver,
-                        resolvers: resolvers.get(),
+                        resolvers: &resolvers,
                         root: &root,
                         env: import_meta_env.get(),
                     };
@@ -406,7 +537,7 @@ pub struct HostRpc {
 pub(crate) struct CtxRpc<'a> {
     /// The bare root resolver, when the dev server set no [`EnvResolvers`].
     pub(crate) resolver: &'a OjResolver,
-    pub(crate) resolvers: Option<&'a EnvResolvers>,
+    pub(crate) resolvers: &'a EnvResolverSlot,
     pub(crate) root: &'a Path,
     pub(crate) env: Option<&'a Arc<oj_compiler::ImportMetaEnv>>,
 }
@@ -425,7 +556,15 @@ pub(crate) fn ctx_rpc(
             .map(Path::to_path_buf)
             .unwrap_or_else(|| root.to_path_buf())
     };
+    // The calling environment's name and consumer ("client" or "server").
+    let env_resolver =
+        |name: &str, consumer: &str| ctx.resolvers.for_environment(name, consumer == "server");
     match method {
+        "environmentResolve" => {
+            ctx.resolvers
+                .report(arg(0), ReportedResolve::from_json(args.get(1)));
+            Ok(serde_json::Value::Null)
+        }
         "resolve" => {
             let (source, importer) = (arg(0), arg(1));
             let dir = if importer.is_empty() {
@@ -433,21 +572,15 @@ pub(crate) fn ctx_rpc(
             } else {
                 dir_of(Path::new(importer))
             };
-            // The calling environment's consumer ("client" or "server").
-            let server = arg(2) == "server";
-            let resolver = match ctx.resolvers {
-                Some(r) if server => &*r.server,
-                Some(r) => &*r.client,
-                None => ctx.resolver,
-            };
+            let server = arg(3) == "server";
+            let own = env_resolver(arg(2), arg(3));
+            let resolver = own.as_deref().unwrap_or(ctx.resolver);
             let Ok(p) = resolver.resolve(&dir, source) else {
                 return Ok(serde_json::Value::Null);
             };
-            let optimized = ctx
-                .resolvers
-                .filter(|_| !server && arg(3) == "optimize")
-                .and_then(|r| r.optimized_dep.get())
-                .and_then(|f| f(source, &p));
+            let optimized = (!server && arg(4) == "optimize")
+                .then(|| ctx.resolvers.optimized_dep(source, &p))
+                .flatten();
             Ok(serde_json::Value::String(
                 optimized.unwrap_or_else(|| p.display().to_string()),
             ))
@@ -467,10 +600,12 @@ pub(crate) fn ctx_rpc(
                 Ok(out) => (out.code, out.imports),
                 Err(_) => (src, Vec::new()),
             };
+            let own = env_resolver(arg(1), arg(2));
+            let resolver = own.as_deref().unwrap_or(ctx.resolver);
             let imported_ids: Vec<String> = imports
                 .iter()
                 .map(|spec| {
-                    ctx.resolver
+                    resolver
                         .resolve(&dir, spec)
                         .map(|p| p.display().to_string())
                         .unwrap_or_else(|_| spec.clone())
@@ -1160,6 +1295,30 @@ impl PluginHost {
         self.call("load", &[id]).await
     }
 
+    /// Environment `env`'s `build.assetsInlineLimit` for `file`: Ok(Ok(true
+    /// or false)) when a function decided, Ok(Err(limit)) with the byte limit
+    /// to apply instead, or the error the function threw.
+    pub async fn assets_inline_limit(
+        &self,
+        env: &str,
+        file: &Path,
+    ) -> Result<Result<bool, u64>, String> {
+        let answer = self
+            .call("assetsInlineLimit", &[env, &file.to_string_lossy()])
+            .await?
+            .ok_or_else(|| "assetsInlineLimit: no answer from the plugin host".to_string())?;
+        let v: serde_json::Value =
+            serde_json::from_str(&answer).map_err(|e| format!("assetsInlineLimit: {e}"))?;
+        match (
+            v.get("inline").and_then(|i| i.as_bool()),
+            v.get("limit").and_then(|l| l.as_u64()),
+        ) {
+            (Some(inline), _) => Ok(Ok(inline)),
+            (None, Some(limit)) => Ok(Err(limit)),
+            _ => Err(format!("assetsInlineLimit: unexpected answer {answer}")),
+        }
+    }
+
     /// The load hooks Vite runs before its core plugins (`enforce: "pre"`,
     /// `order: "pre"`) for an id a Start bundle's own loader would claim.
     #[inline]
@@ -1847,13 +2006,31 @@ impl PluginHost {
 
     /// The dev server's resolvers for `this.resolve` (`oj build` leaves them unset).
     pub fn set_resolvers(&self, resolvers: EnvResolvers) {
-        let _ = self.core.boot.resolvers.set(resolvers);
+        let _ = self.core.boot.resolvers.base.set(resolvers);
+    }
+
+    /// Environment `name`'s plugin-facing resolver (see [`EnvResolvers`]), or
+    /// None when the dev server set none.
+    pub fn environment_resolver(&self, name: &str, server: bool) -> Option<Arc<OjResolver>> {
+        self.core.boot.resolvers.for_environment(name, server)
+    }
+
+    /// Environment `name`'s plugin-facing resolver under its own consumer.
+    pub fn own_environment_resolver(&self, name: &str) -> Option<Arc<OjResolver>> {
+        let resolvers = &self.core.boot.resolvers;
+        resolvers.for_environment(name, resolvers.is_server(name))
+    }
+
+    /// Drops the cached lookups of every environment's resolver (see
+    /// [`crate::hmr::drop_resolver_misses`]).
+    pub fn clear_environment_resolvers(&self) {
+        self.core.boot.resolvers.clear_caches()
     }
 
     /// The client pre-bundle lookup, set once the dev server's deps exist;
     /// a no-op before [`Self::set_resolvers`].
     pub fn set_optimized_dep(&self, lookup: OptimizedDep) {
-        if let Some(r) = self.core.boot.resolvers.get() {
+        if let Some(r) = self.core.boot.resolvers.base.get() {
             let _ = r.optimized_dep.set(lookup);
         }
     }

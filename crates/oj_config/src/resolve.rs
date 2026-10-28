@@ -119,6 +119,96 @@ pub fn resolve_conditions_for(config: &OjConfig, env_name: &str, dev: bool) -> V
         .to_vec()
 }
 
+/// Export conditions for a dev environment as Vite resolves its own options
+/// (`resolveEnvironmentResolveOptions`): the environment's list, else the
+/// consumer's defaults. Only the client reads the top-level list; other
+/// environments drop it, as Vite's `getDefaultEnvironmentOptions` does.
+/// `server` is false for a client consumer and the ssr webworker target;
+/// `dev` picks `development` for the `development|production` placeholder.
+pub fn environment_resolve_conditions(
+    config: &OjConfig,
+    env_name: &str,
+    server: bool,
+    dev: bool,
+) -> Vec<String> {
+    if env_name == "client" {
+        return resolve_conditions_for(config, "client", dev);
+    }
+    if let Some(user) = env_resolve_list(config, env_name, "conditions") {
+        return reported_conditions(user, dev);
+    }
+    let base = if server { "node" } else { "browser" };
+    [base, "import", "module", dev_prod(dev), "default"]
+        .map(String::from)
+        .to_vec()
+}
+
+/// A resolve list an environment inherits from the top level: Vite's
+/// getDefaultEnvironmentOptions keeps it and mergeConfig concatenates the
+/// environment's own after it (duplicates dropped).
+fn inherited_list(config: &OjConfig, env_name: &str, key: &str, top: Vec<String>) -> Vec<String> {
+    let mut out = top;
+    if env_name != "client" {
+        for item in env_resolve_list(config, env_name, key).unwrap_or_default() {
+            if !out.contains(&item) {
+                out.push(item);
+            }
+        }
+    }
+    out
+}
+
+/// An environment's `resolve.dedupe` (see [`inherited_list`]).
+pub fn environment_dedupe(config: &OjConfig, env_name: &str) -> Vec<String> {
+    inherited_list(config, env_name, "dedupe", resolve_dedupe(config))
+}
+
+/// An environment's `resolve.extensions`, or None for the defaults (see
+/// [`inherited_list`]). Vite's DEFAULT_EXTENSIONS stand in for an unset
+/// top-level list an environment extends.
+pub fn environment_extensions(config: &OjConfig, env_name: &str) -> Option<Vec<String>> {
+    let top = resolve_extensions(config);
+    let own = env_name != "client" && env_resolve_list(config, env_name, "extensions").is_some();
+    if top.is_none() && !own {
+        return None;
+    }
+    let top = top.unwrap_or_else(|| {
+        [".mjs", ".js", ".mts", ".ts", ".jsx", ".tsx", ".json"]
+            .map(String::from)
+            .to_vec()
+    });
+    Some(inherited_list(config, env_name, "extensions", top))
+}
+
+/// The top-level `resolve.alias`, which Vite gives every environment
+/// (resolveEnvironmentResolveOptions sets each environment's alias to it).
+pub fn top_level_alias(config: &OjConfig) -> Vec<(String, String)> {
+    config
+        .resolve
+        .as_ref()
+        .and_then(|r| r.alias.as_ref())
+        .map(|a| a.clone().into_iter().collect())
+        .unwrap_or_default()
+}
+
+/// An environment's `resolve.mainFields`, or None for the consumer's defaults
+/// (same inheritance as [`environment_resolve_conditions`]).
+pub fn environment_main_fields(config: &OjConfig, env_name: &str) -> Option<Vec<String>> {
+    if env_name == "client" {
+        resolve_main_fields(config)
+    } else {
+        env_resolve_list(config, env_name, "mainFields")
+    }
+}
+
+/// A resolved `resolve.conditions` list as a Vite resolved config carries it:
+/// the placeholder mapped, `import`/`default` appended.
+pub fn reported_conditions(list: Vec<String>, dev: bool) -> Vec<String> {
+    let mut out = Vec::new();
+    extend_conditions(&mut out, list, dev_prod(dev));
+    out
+}
+
 /// Conditions for a Node-executing SSR consumer (Start loader, unbundled SSR
 /// resolver) when the ssr environment is runner-backed: Vite's Node server
 /// semantics, not the foreign runtime's list. DEFAULT_SERVER_CONDITIONS

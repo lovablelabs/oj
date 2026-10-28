@@ -52,7 +52,11 @@ pub(crate) async fn ensure_module_as(
         && query_asset_kind(url.split_once('?').map(|(_, q)| q)).is_none();
 
     if !react_svg && !svgr_candidate && is_asset_path(file) {
-        return Ok(register_uncached(state, url, url_asset_module(url)));
+        return Ok(register_uncached(
+            state,
+            url,
+            url_asset_module(state, file, url)?,
+        ));
     }
 
     let stamp = match preloaded {
@@ -78,12 +82,13 @@ pub(crate) async fn ensure_module_as(
         // `<style>` the JS wrapper injects resolves them from any page.
         let dir = file.parent().unwrap_or(Path::new("/"));
         let css = crate::style_file::rewrite_relative_urls(&css, dir, |f| url_of(&state.root, f));
+        let (css, assets) = rewrite_sheet_urls(state, file, "client", &css)?;
         let normal =
             plugin_transform_phase(state, file, &transform_id, css, is_dep, Some("normal")).await?;
         let module = CachedModule {
             is_boundary: true,
             kind: "css".into(),
-            imports: css_dep_imports(state, file, &imported),
+            imports: css_dep_imports(state, file, &[imported, assets].concat()),
             watch_files: [pre.watch_files, normal.watch_files].concat(),
             ..code_module(normal.code)
         };
@@ -168,6 +173,9 @@ pub(crate) async fn ensure_module_as(
     };
     let source = if is_stylesheet {
         let compiled = css_prepass(state, file, url, source, &mut css).await?;
+        // Vite's url replacer runs in vite:css, before the "normal" slot.
+        let (compiled, assets) = rewrite_sheet_urls(state, file, "client", &compiled)?;
+        css.deps.extend(assets);
         let normal = plugin_transform_phase(
             state,
             file,
@@ -192,7 +200,11 @@ pub(crate) async fn ensure_module_as(
     // serve it as a URL asset like Vite; otherwise compile it as `.svg.tsx` below.
     let svgr_componentized = svgr_candidate && !source.trim_start().starts_with('<');
     if svgr_candidate && !svgr_componentized {
-        return Ok(register_uncached(state, url, url_asset_module(url)));
+        return Ok(register_uncached(
+            state,
+            url,
+            url_asset_module(state, file, url)?,
+        ));
     }
     let source = if is_svelte {
         run_svelte_engine(state, url, &source)
@@ -295,12 +307,14 @@ fn code_module(code: String) -> CachedModule {
     }
 }
 
-/// `export default "<url>"`: how a non-compiled asset import is served.
-fn url_asset_module(url: &str) -> CachedModule {
-    code_module(format!(
+/// `export default "<url>"`: how a non-compiled asset import is served, its
+/// URL as Vite's dev fileToDevUrl names it.
+fn url_asset_module(state: &ServerState, file: &Path, url: &str) -> Result<CachedModule, String> {
+    let named = state.asset_urls.file_url("client", file, url)?;
+    Ok(code_module(format!(
         "export default {};\n",
-        serde_json::Value::String(asset_export_url(url))
-    ))
+        serde_json::Value::String(encode_uri_path(&named))
+    )))
 }
 
 fn register_uncached(state: &ServerState, url: &str, module: CachedModule) -> Compiled {
@@ -316,7 +330,13 @@ fn memory_hit(state: &ServerState, url: &str, key: &str) -> Option<Arc<CachedMod
 }
 
 fn store_module(state: &ServerState, url: &str, key: &str, module: &Arc<CachedModule>) {
-    if state.persistent_cache {
+    // A sheet that may have inlined a file it names (a small svg; any file
+    // under `?inline`, a JSON one included) embeds its content as it is now:
+    // kept in memory, recompiled when one changes, never persisted. A `t=`
+    // stamp is 0 after a restart, so a sheet with only asset URLs persists.
+    let inlines_assets =
+        module.kind == "css" && !module.imports.is_empty() && module.code.contains("data:");
+    if state.persistent_cache && !inlines_assets {
         let _ = state
             .cache_writes
             .try_send((key.to_string(), Arc::clone(module)));
@@ -701,6 +721,54 @@ async fn css_prepass(
     .map_err(|e| format!("css module task failed for {url}: {e}"))??;
     css.exports = scoped.exports;
     Ok(scoped.css)
+}
+
+/// A sheet's `url()`s named as Vite's dev url replacer names them (see
+/// [`crate::css_urls`]), with each asset's current HMR `t=` stamp, and the
+/// files they name: graph imports, so an asset edit recompiles the sheet.
+pub(crate) fn rewrite_sheet_urls(
+    state: &ServerState,
+    sheet: &Path,
+    env: &str,
+    css: &str,
+) -> Result<(String, Vec<PathBuf>), String> {
+    let stamp = |file: &Path| {
+        let url = url_of(&state.root, file);
+        state.graph.lock().unwrap().hmr_timestamp(Path::new(&url))
+    };
+    let resolve = state.css_resolve.as_ref();
+    let alias = |spec: &str| resolve.alias_spec(spec);
+    // The css url resolver probes no extensions (`extensions: []`): a file
+    // with another extension than the url's is not what it names.
+    let package = |dir: &Path, spec: &str| {
+        let file = state.resolver.resolve(dir, spec).ok()?;
+        (file.extension() == Path::new(spec).extension()).then_some(file)
+    };
+    crate::css_urls::CssUrls {
+        root: &state.root,
+        public_dir: state.public_dir.as_deref(),
+        urls: &state.asset_urls,
+        env,
+        stamp: &stamp,
+        dir: sheet_dir(sheet),
+        alias: &alias,
+        package: &package,
+    }
+    .rewrite(css)
+}
+
+/// The directory a sheet's relative urls resolve against: its own, or for a
+/// page's `<style>` (compiled as `<page>.css`) the page's. A page with no
+/// file (a middleware's html) has none.
+fn sheet_dir(sheet: &Path) -> Option<&Path> {
+    let page = sheet
+        .to_str()
+        .and_then(|s| s.strip_suffix(".css"))
+        .map(Path::new);
+    (sheet.is_file()
+        || page.is_some_and(|p| p.extension().is_some_and(|e| e == "html") && p.is_file()))
+    .then(|| sheet.parent())
+    .flatten()
 }
 
 /// A sheet's pulled-in files as its graph imports, so a dep edit hot-updates

@@ -83,9 +83,10 @@ try {
   assert.equal(res.status, 200, `stylesheet with a legacy hack still serves:\n${css}`);
   assert.match(css, /--v:\s*1/, `aliased @import inlined:\n${css}`);
   assert.match(css, /\.root-abs/, `root-absolute @import inlined:\n${css}`);
-  assert.match(css, /\.a\s*\{[^}]*url\(["']?\/src\/img\.png/, `aliased url() -> served url of the file:\n${css}`);
+  // Rewritten before the minifier, the two rules are equal and may merge.
+  assert.match(css, /\.a\b[^{]*\{[^}]*url\(["']?\/src\/img\.png/, `aliased url() -> served url of the file:\n${css}`);
   assert.doesNotMatch(css, /\/src\/@\//, `alias treated as a relative segment:\n${css}`);
-  assert.match(css, /\.b\s*\{[^}]*url\(["']?\/src\/img\.png/, "root-absolute url() kept");
+  assert.match(css, /\.b\b[^{]*\{[^}]*url\(["']?\/src\/img\.png/, "root-absolute url() kept");
   assert.match(css, /url\(["']?\/pub\.png/, "public url kept");
   assert.match(css, /\.hack\s*\{[^}]*color:\s*red/, `rule with a dropped hack keeps its other declarations:\n${css}`);
   assert.match(css, /\.imported\s*\{[^}]*(#010203|rgb\(1,\s*2,\s*3\))/, `@imported rules go through PostCSS:\n${css}`);

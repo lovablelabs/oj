@@ -1941,9 +1941,9 @@ function pluginContext(c) {
           scan,
           phase,
         });
-      // Resolved with the environment's own options (Vite's resolve plugin
-      // reads this.environment.config.resolve).
-      const consumer = c.environment?.config?.consumer ?? "client";
+      // Resolved with the environment's own options (Vite builds its resolve
+      // plugin per environment from that environment's config.resolve).
+      const [envName, consumer] = environmentOf(c);
       if (c.bundle) {
         const viaPlugin = await chain(null);
         if (viaPlugin != null) return viaPlugin;
@@ -1955,7 +1955,7 @@ function pluginContext(c) {
         const r = await asyncRpc("bundlerResolve", [source, importer ?? "", !!(options && options.isEntry)], c.id);
         // Outside a running bundle (no bundler to ask) oj's resolver answers.
         if (!r || !r.fallback) return r ?? null;
-        const id = await ctxRpc("resolve", [source, importer ?? "", consumer]);
+        const id = await ctxRpc("resolve", [source, importer ?? "", envName, consumer]);
         return id == null ? null : { id };
       }
       // vite:resolve sits after the pre plugins and before the normal ones.
@@ -1969,7 +1969,7 @@ function pluginContext(c) {
       // Outside the scan, a client bare import already pre-bundled resolves to
       // its bundle (tryOptimizedResolve).
       const optimize = !scan && consumer !== "server";
-      const id = await ctxRpc("resolve", [source, importer ?? "", consumer, optimize ? "optimize" : ""]);
+      const id = await ctxRpc("resolve", [source, importer ?? "", envName, consumer, optimize ? "optimize" : ""]);
       if (id != null) return { id };
       return chain("post");
     },
@@ -2021,7 +2021,7 @@ function pluginContext(c) {
         info = c.moduleInfoCache.get(id) ?? makeModuleInfo(id, out.code);
         info.code = out.code;
       } else {
-        const raw = await ctxRpc("moduleInfo", [id]);
+        const raw = await ctxRpc("moduleInfo", [id, ...environmentOf(c)]);
         info = raw ? makeModuleInfo(raw.id ?? id, raw.code ?? "", raw) : null;
       }
       if (info) {
@@ -2343,8 +2343,34 @@ async function resolveEnvironment(c, name) {
   environment.config.consumer = own.consumer ?? (name === "client" ? "client" : "server");
   environment.logger = resolvedConfig.logger;
   environment.getTopLevelConfig = () => resolvedConfig;
+  if (name !== "client") await reportEnvironmentResolve(name, own.resolve, environment.config.consumer);
   c.plugins = await environmentPlugins(environment, c.topLevelPlugins, c);
   environment.plugins = c.plugins;
+}
+// Hands oj the options a non-client environment's `this.resolve` fallback
+// resolves with: its own entry of the resolved config, which Vite fills per
+// consumer (resolveEnvironmentResolveOptions: server defaults, or the client's
+// for an ssr webworker target). The merged environment.config would mix in the
+// top-level conditions and mainFields, which Vite's environments never inherit.
+async function reportEnvironmentResolve(name, resolve, consumer) {
+  // Only the in-process engine answers it; elsewhere oj's defaults stand.
+  if (!ojEngineRpc) return;
+  const strings = (v) => (Array.isArray(v) && v.every((x) => typeof x === "string") ? v : null);
+  await ctxRpc("environmentResolve", [
+    name,
+    {
+      conditions: strings(resolve?.conditions),
+      mainFields: strings(resolve?.mainFields),
+      extensions: strings(resolve?.extensions),
+      dedupe: strings(resolve?.dedupe),
+      consumer,
+    },
+  ]);
+}
+// The [name, consumer] a container's ctx RPCs resolve for.
+function environmentOf(c) {
+  const name = c.environment?.name ?? "client";
+  return [name, c.environment?.config?.consumer ?? (name === "client" ? "client" : "server")];
 }
 
 // Vite (plugin.ts resolveEnvironmentPlugins): `applyToEnvironment` is awaited;
@@ -5903,6 +5929,19 @@ async function writeBundle(c, bundleJson, isWrite) {
   return null;
 }
 
+// Vite's shouldInline for `envName`'s own `build.assetsInlineLimit` (its entry
+// of the resolved config, else the top level): a function is called with the
+// file and its content, a boolean decides and null/undefined falls back to
+// the 4096 byte default; a number is the limit. A throw fails the request.
+function assetsInlineLimit(envName, file) {
+  const rc = main.resolvedConfig;
+  const limit = rc?.environments?.[envName]?.build?.assetsInlineLimit ?? rc?.build?.assetsInlineLimit;
+  if (typeof limit === "number") return JSON.stringify({ limit });
+  if (typeof limit !== "function") return JSON.stringify({ limit: 4096 });
+  const decided = limit(file, readFileSync(file));
+  return JSON.stringify(decided == null ? { limit: 4096 } : { inline: !!decided });
+}
+
 async function run(hook, args, c) {
   if (hook === "serverListening") {
     // oj's dev listener is bound (args = [port, interface address]): fire the
@@ -5955,6 +5994,7 @@ async function run(hook, args, c) {
     return JSON.stringify(c.emitted.map(({ fileName, source }) => ({ fileName, source })));
   }
   if (hook === "getPluginCss") return JSON.stringify(c.pluginCss);
+  if (hook === "assetsInlineLimit") return assetsInlineLimit(args[0], args[1]);
   // Plugins wrap server.close() to dispose runtimes they started (@cloudflare/vite-plugin's workerd).
   if (hook === "closeDevServer") {
     await devServer?.close?.();

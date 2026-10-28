@@ -7,6 +7,7 @@ pub struct ViteValues {
     pub public_dir: Option<oj_config::BoolOrString>,
     pub port: Option<u16>,
     pub host: Option<String>,
+    pub origin: Option<String>,
     pub hmr_disabled: bool,
     pub fs_allow: Option<Vec<String>>,
     pub fs_strict: Option<bool>,
@@ -21,6 +22,10 @@ pub struct ViteValues {
     pub headers: Option<serde_json::Map<String, serde_json::Value>>,
     pub rollup_options: Option<serde_json::Value>,
     pub assets_inline_limit: Option<u64>,
+    /// `build.assetsInlineLimit` is a function (kept in the plugin host).
+    pub assets_inline_limit_fn: bool,
+    /// Each environment's own `build.assetsInlineLimit`: a number, or "fn".
+    pub assets_inline_limit_envs: Option<serde_json::Map<String, serde_json::Value>>,
     pub proxy: Option<serde_json::Value>,
     pub dedupe: Option<Vec<String>>,
     pub optimize_deps: Option<serde_json::Value>,
@@ -767,6 +772,7 @@ pub(crate) fn parse_vite_values(json: &serde_json::Value) -> ViteValues {
         },
         port: json.get("port").and_then(|v| v.as_u64()).map(|p| p as u16),
         host: str_field(json, "host"),
+        origin: str_field(json, "origin"),
         hmr_disabled: json.get("hmr").and_then(|v| v.as_bool()) == Some(false),
         fs_allow: json.get("fsAllow").and_then(string_list),
         fs_strict: json.get("fsStrict").and_then(|v| v.as_bool()),
@@ -776,6 +782,12 @@ pub(crate) fn parse_vite_values(json: &serde_json::Value) -> ViteValues {
         headers: json.get("headers").and_then(|v| v.as_object()).cloned(),
         rollup_options: non_null(json, "rollupOptions"),
         assets_inline_limit: json.get("assetsInlineLimit").and_then(|v| v.as_u64()),
+        assets_inline_limit_fn: json.get("assetsInlineLimitFn").and_then(|v| v.as_bool())
+            == Some(true),
+        assets_inline_limit_envs: json
+            .get("assetsInlineLimitEnvs")
+            .and_then(|v| v.as_object())
+            .cloned(),
         proxy: non_null(json, "proxy"),
         dedupe: json.get("dedupe").and_then(string_list),
         optimize_deps: non_null(json, "optimizeDeps"),
@@ -912,6 +924,7 @@ pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues)
         ServerBasics {
             port: v.port,
             host: v.host,
+            origin: v.origin,
             headers: v.headers,
             fs_allow: v.fs_allow,
             fs_strict: v.fs_strict,
@@ -952,6 +965,16 @@ pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues)
     if let Some(limit) = v.assets_inline_limit {
         let build = config.build.get_or_insert_with(Default::default);
         build.assets_inline_limit.get_or_insert(limit);
+    }
+    if v.assets_inline_limit_fn {
+        let build = config.build.get_or_insert_with(Default::default);
+        build.assets_inline_limit_fn.get_or_insert(true);
+    }
+    if let Some(envs) = v.assets_inline_limit_envs.filter(|e| !e.is_empty()) {
+        let build = config.build.get_or_insert_with(Default::default);
+        build
+            .assets_inline_limit_envs
+            .get_or_insert(serde_json::Value::Object(envs));
     }
     if let Some(proxy) = v.proxy {
         let sc = config.server.get_or_insert_with(Default::default);
@@ -1031,10 +1054,11 @@ pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues)
     }
 }
 
-/// The vite.config's `server.{port,host,headers,fs.allow,fs.strict}`.
+/// The vite.config's `server.{port,host,origin,headers,fs.allow,fs.strict}`.
 struct ServerBasics {
     port: Option<u16>,
     host: Option<String>,
+    origin: Option<String>,
     headers: Option<serde_json::Map<String, serde_json::Value>>,
     fs_allow: Option<Vec<String>>,
     fs_strict: Option<bool>,
@@ -1043,6 +1067,7 @@ struct ServerBasics {
 fn merge_server_basics(config: &mut oj_config::OjConfig, v: ServerBasics) {
     if v.port.is_none()
         && v.host.is_none()
+        && v.origin.is_none()
         && v.headers.is_none()
         && v.fs_allow.is_none()
         && v.fs_strict.is_none()
@@ -1055,6 +1080,9 @@ fn merge_server_basics(config: &mut oj_config::OjConfig, v: ServerBasics) {
     }
     if sc.host.is_none() {
         sc.host = v.host;
+    }
+    if sc.origin.is_none() {
+        sc.origin = v.origin;
     }
     if v.fs_allow.is_some() || v.fs_strict.is_some() {
         let fs = sc.fs.get_or_insert_with(Default::default);

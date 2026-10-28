@@ -34,7 +34,7 @@ pub(crate) async fn serve_path(
     if path_is_denied(&file, &state.root, &state.fs_deny) {
         return (StatusCode::FORBIDDEN, "oj: path denied by server.fs.deny").into_response();
     }
-    serve_file(&state, &headers, &uri, &file).await
+    serve_file(&state, &headers, &uri, &file, rel).await
 }
 
 /// oj's own `/@...` routes (optimized deps, stubs, package bundles, virtual
@@ -303,6 +303,7 @@ async fn serve_file(
     headers: &HeaderMap,
     uri: &Uri,
     file: &Path,
+    rel: &str,
 ) -> Response {
     let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
     let query = uri.query();
@@ -321,8 +322,18 @@ async fn serve_file(
         .public_dir
         .as_deref()
         .is_some_and(|p| file.starts_with(p));
-    if let Some(kind) = query_asset_kind(query) {
-        return serve_asset_query(state, file, ext, kind, query, in_public).await;
+    // `?inline` on a file Vite's asset plugin does not load (not an asset or
+    // a stylesheet) is the plain module, as vite:asset's load filter has it.
+    let asset_query = query_asset_kind(query)
+        .filter(|kind| *kind != "inline" || is_style_ext(ext) || is_asset_path(file));
+    if let Some(kind) = asset_query {
+        // Vite's checkPublicFile: public when the request path names a file
+        // under the public dir, so `/public/logo.png` is not `/logo.png`.
+        let public_url = state
+            .public_dir
+            .as_deref()
+            .is_some_and(|p| in_public && p.join(rel) == file);
+        return serve_asset_query(state, file, ext, kind, query, public_url).await;
     }
     if is_style_ext(ext) && !in_public {
         return vary_on_fetch_dest(serve_style(state, headers, file, query).await);
@@ -362,11 +373,15 @@ async fn serve_bare_asset(
         }
         // No plugin can componentize it: a module import of an svg (relative,
         // aliased or root-absolute) is its URL, like any other asset in Vite.
-        return js_module_response(asset_module(file, &url, "url").await);
+        return js_module_response(
+            asset_module(file, &url, "url", &state.asset_urls, "client").await,
+        );
     }
     if is_importable_asset_ext(ext) && wants_module_import(headers, query) {
         let url = url_of(&state.root, file);
-        return js_module_response(asset_module(file, &url, "url").await);
+        return js_module_response(
+            asset_module(file, &url, "url", &state.asset_urls, "client").await,
+        );
     }
     serve_raw_file(state, file, ext).await
 }
@@ -393,7 +408,7 @@ async fn serve_asset_query(
     let js = if kind == "inline" && is_style_ext(ext) {
         inline_css_module(state, file, &url).await
     } else {
-        asset_module(file, &url, kind).await
+        asset_module(file, &url, kind, &state.asset_urls, "client").await
     };
     js_module_response(js)
 }
@@ -586,7 +601,21 @@ async fn serve_compiled_from(
         ));
         body
     };
-    if let Some(map) = &module.map_json {
+    // A `?worker_file&type=<type>` module gets vite:worker's env prelude; its
+    // map moves down by the prelude's lines.
+    let prelude = worker_file_prelude(
+        url,
+        &crate::start_dev_url_base(state.base.as_deref().unwrap_or("/")),
+        &state.vite_env_js,
+    );
+    let map_json = match (&prelude, &module.map_json) {
+        (Some(p), Some(map)) => Some(shift_map_lines(map, p.matches('\n').count())),
+        _ => module.map_json.clone(),
+    };
+    if let Some(prelude) = prelude {
+        body.insert_str(0, &prelude);
+    }
+    if let Some(map) = &map_json {
         // Vite builds the data URL per send (genSourceMapUrl); caches retain
         // the raw JSON, 25% smaller than base64.
         body.push_str("\n//# sourceMappingURL=");
@@ -603,4 +632,15 @@ async fn serve_compiled_from(
         body,
     )
         .into_response()
+}
+
+/// A source map whose generated code moved down `lines` lines.
+pub(crate) fn shift_map_lines(map_json: &str, lines: usize) -> String {
+    let Ok(mut map) = serde_json::from_str::<serde_json::Value>(map_json) else {
+        return map_json.to_string();
+    };
+    if let Some(serde_json::Value::String(mappings)) = map.get_mut("mappings") {
+        mappings.insert_str(0, &";".repeat(lines));
+    }
+    map.to_string()
 }

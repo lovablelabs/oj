@@ -1471,6 +1471,7 @@ fn merge_adopts_only_unset_fields() {
         public_dir: Some("shared/public".into()),
         port: Some(3010),
         host: Some("localhost".into()),
+        origin: Some("https://cdn.example".into()),
         hmr_disabled: false,
         fs_allow: None,
         fs_strict: None,
@@ -1480,6 +1481,8 @@ fn merge_adopts_only_unset_fields() {
         headers: None,
         rollup_options: None,
         assets_inline_limit: None,
+        assets_inline_limit_fn: false,
+        assets_inline_limit_envs: None,
         proxy: None,
         dedupe: None,
         optimize_deps: None,
@@ -1506,7 +1509,9 @@ fn merge_adopts_only_unset_fields() {
     merge_vite_values(&mut config, v);
     assert_eq!(config.base.as_deref(), Some("/vite-base/"));
     assert_eq!(config.public_dir, Some("shared/public".into()));
-    assert_eq!(config.server.unwrap().port, Some(3010));
+    let server = config.server.unwrap();
+    assert_eq!(server.port, Some(3010));
+    assert_eq!(server.origin.as_deref(), Some("https://cdn.example"));
 }
 
 #[test]
@@ -1521,6 +1526,7 @@ fn merge_never_overrides_config() {
         public_dir: Some("shared/public".into()),
         port: None,
         host: None,
+        origin: None,
         hmr_disabled: false,
         fs_allow: None,
         fs_strict: None,
@@ -1530,6 +1536,8 @@ fn merge_never_overrides_config() {
         headers: None,
         rollup_options: None,
         assets_inline_limit: None,
+        assets_inline_limit_fn: false,
+        assets_inline_limit_envs: None,
         proxy: None,
         dedupe: None,
         optimize_deps: None,

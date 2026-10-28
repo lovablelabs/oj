@@ -74,7 +74,8 @@ try {
   for (const cls of ["sugarss-at-import", "sugarss-at-import-alias"]) {
     assert.match(
       sss,
-      new RegExp(`\\.${cls}\\s*\\{[^}]*url\\("?/src/nested/icon\\.png`),
+      // Equal once their urls resolve, the two rules may merge into one.
+      new RegExp(`\\.${cls}(?![\\w-])[^{]*\\{[^}]*url\\("?/src/nested/icon\\.png`),
       `[dev] .${cls}: imported .sss parsed, its url() resolved against its own file:\n${sss}`,
     );
   }

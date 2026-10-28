@@ -1107,6 +1107,13 @@ function extractSsr(ssr, ssrEnvironment) {
   if (ne === true || (Array.isArray(ne) && ne.length)) out.noExternal = ne;
   if (ex === true || (Array.isArray(ex) && ex.length)) out.external = ex;
   if (typeof ssr.target === "string") out.target = ssr.target;
+  // The ssr environment's resolve.builtins (createIsBuiltin's input): strings,
+  // and RegExps as their source and flags.
+  if (Array.isArray(envResolve?.builtins)) {
+    out.builtins = envResolve.builtins
+      .map((b) => (typeof b === "string" ? b : b instanceof RegExp ? { regex: b.source, flags: b.flags } : null))
+      .filter((b) => b !== null);
+  }
   const res = extractResolve(ssr.resolve);
   if (res) out.resolve = res;
   return Object.keys(out).length ? out : null;
@@ -1472,7 +1479,7 @@ function warnUnsupported(c, spaBuild = false) {
     warn("optimizeDeps.rollupOptions is not applied (use rolldownOptions or esbuildOptions)");
   }
   if (typeof c.build?.assetsInlineLimit === "function") {
-    warn("build.assetsInlineLimit is a function and cannot be applied; the 4096 byte default is used");
+    warn("build.assetsInlineLimit is a function: dev asks it, a build uses the 4096 byte default");
   }
   if (c.ssr?.resolve && typeof c.ssr.resolve === "object") {
     // ssr.resolve.conditions/externalConditions ARE applied (the preferred
@@ -1646,6 +1653,7 @@ export async function extract(input) {
       base: typeof c.base === "string" ? c.base : null,
       publicDir: typeof c.publicDir === "string" ? c.publicDir : c.publicDir === false ? false : null,
       port: typeof c.server?.port === "number" ? c.server.port : null,
+      origin: typeof c.server?.origin === "string" ? c.server.origin : null,
       host: typeof c.server?.host === "string" ? c.server.host : null,
       hmr: c.server?.hmr === false ? false : null,
       fsAllow: Array.isArray(c.server?.fs?.allow) ? c.server.fs.allow.filter((x) => typeof x === "string") : null,
@@ -1661,6 +1669,16 @@ export async function extract(input) {
       proxy: extractProxy(c.server?.proxy),
       rollupOptions: markFunctions(c.build?.rolldownOptions ?? c.build?.rollupOptions ?? null),
       assetsInlineLimit: typeof c.build?.assetsInlineLimit === "number" ? c.build.assetsInlineLimit : null,
+      // The function itself stays in the plugin host, which dev asks per file.
+      assetsInlineLimitFn: typeof c.build?.assetsInlineLimit === "function" ? true : null,
+      // Each environment's own resolved value: a number, or "fn" for a function.
+      assetsInlineLimitEnvs: Object.fromEntries(
+        Object.entries(c.environments ?? {}).flatMap(([name, env]) => {
+          const limit = env?.build?.assetsInlineLimit;
+          if (typeof limit === "number") return [[name, limit]];
+          return typeof limit === "function" ? [[name, "fn"]] : [];
+        }),
+      ),
       dedupe: Array.isArray(c.resolve?.dedupe) ? c.resolve.dedupe.filter((x) => typeof x === "string") : null,
       optimizeDeps: extractOptimizeDeps(c.optimizeDeps, raw?.optimizeDeps),
       build: extractBuild(c.build),

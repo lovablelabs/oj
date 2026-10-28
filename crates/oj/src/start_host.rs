@@ -154,12 +154,9 @@ fn ext_of(path: &str) -> &str {
     }
 }
 
-/// Whether a resolved dependency file may stay external to an SSR bundle:
-/// Vite's canExternalizeFile, which hands Node only JavaScript (a stylesheet,
-/// JSON or raw TypeScript bundles through the plugins instead).
-pub(crate) fn can_externalize_file(path: &str) -> bool {
-    matches!(ext_of(path), "" | "js" | "mjs" | "cjs")
-}
+/// Whether a resolved dependency file may stay external to an SSR bundle
+/// (a stylesheet, JSON or raw TypeScript bundles through the plugins instead).
+pub(crate) use oj_server::can_externalize_file;
 
 /// A source file the runtime cannot load natively from node_modules: Node and
 /// byonm refuse to strip types there, and nothing executes raw JSX.
@@ -355,12 +352,35 @@ fn split_intent(spec: &str) -> (String, Option<&'static str>, bool) {
         // inlines when the environment is bundled), so `&url` wins whenever it
         // appears -- the build's precedence is the reverse (inline first).
         "worker" | "worker&inline" => "worker",
-        "worker&url" | "worker&inline&url" => "worker-url",
+        "worker&url" | "worker&inline&url" => match worker_type_of(spec) {
+            "classic" => "worker-url:classic",
+            "ignore" => "worker-url:ignore",
+            _ => "worker-url",
+        },
         "sharedworker" | "sharedworker&inline" => "sharedworker",
-        "sharedworker&url" | "sharedworker&inline&url" => "sharedworker-url",
+        "sharedworker&url" | "sharedworker&inline&url" => match worker_type_of(spec) {
+            "classic" => "sharedworker-url:classic",
+            "ignore" => "sharedworker-url:ignore",
+            _ => "sharedworker-url",
+        },
         _ => return (spec.to_string(), None, false),
     };
     (clean, Some(tag), false)
+}
+
+/// The worker type oj's rewrite of `new Worker(new URL(...), opts)` carries
+/// (`worker_type=`, see oj_compiler's glob/meta_glob), else `module`: what an
+/// import of `./w.ts?worker` always is in Vite's dev.
+fn worker_type_of(spec: &str) -> &'static str {
+    let query = spec.split_once('?').map_or("", |(_, q)| q);
+    match query
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("worker_type="))
+    {
+        Some("classic") => "classic",
+        Some("ignore") => "ignore",
+        _ => "module",
+    }
 }
 
 /// The Start framework-seam aliases (the retired node loader's ALIASES map):
@@ -954,10 +974,7 @@ impl StartHost {
         Ok(js(code))
     }
 
-    /// A file's URL on the dev pipeline, as Vite's `fileToUrl` in dev. Vite
-    /// additionally tags worker URLs `?worker_file&type=module` for its own
-    /// serving pipeline; oj's pipeline serves the compiled module without the
-    /// marker (verified in-browser by e2e/start-ssr-worker-url.mjs).
+    /// A file's URL on the dev pipeline, as Vite's `fileToUrl` in dev.
     fn dev_url(&self, path: &str) -> String {
         let base = self.bridge.start_url_base();
         match Path::new(path).strip_prefix(&self.root) {
@@ -1026,12 +1043,16 @@ impl StartHost {
                     .await
                     .map_err(|e| e.to_string())
             }
-            // Vite's unbundled worker load: the worker file's dev URL, bare
-            // for `&url`, else wrapped in a constructor. It is the URL the
-            // client pipeline serves the compiled worker at (root-relative,
-            // `/@fs` outside the root), so a rendered value hydrates as is.
-            "worker-url" | "sharedworker-url" => {
-                Ok(format!("export default {};", json_str(&self.dev_url(path))))
+            // Vite's unbundled worker load: the worker file's dev URL with
+            // `worker_file&type=<type>` (its type `module`, or the one the
+            // `new Worker` options gave), bare for `&url`, else wrapped in a
+            // constructor. It is the URL the client pipeline serves the
+            // compiled worker at, its env prelude included, so a rendered
+            // value hydrates as is.
+            k if k.starts_with("worker-url") || k.starts_with("sharedworker-url") => {
+                let worker_type = k.split_once(':').map_or("module", |(_, t)| t);
+                let url = format!("{}?worker_file&type={worker_type}", self.dev_url(path));
+                Ok(format!("export default {};", json_str(&url)))
             }
             "worker" | "sharedworker" => {
                 let ctor = if kind == "sharedworker" {
@@ -1039,9 +1060,10 @@ impl StartHost {
                 } else {
                     "Worker"
                 };
+                let url = format!("{}?worker_file&type=module", self.dev_url(path));
                 Ok(format!(
                     "export default function WorkerWrapper(options) {{ return new {ctor}({}, {{ type: \"module\", name: options?.name }}); }}",
-                    json_str(&self.dev_url(path))
+                    json_str(&url)
                 ))
             }
             // "url" and anything unrecognized: the served-URL module.
@@ -1421,6 +1443,18 @@ mod tests {
             ("./w.ts?worker&inline", "worker"),
             ("./w.ts?sharedworker", "sharedworker"),
             ("./w.ts?sharedworker&url", "sharedworker-url"),
+            // oj's rewrite of `new Worker(new URL(...), opts)` carries the type.
+            ("./w.ts?worker&url&worker_type=module", "worker-url"),
+            (
+                "./w.ts?worker&url&worker_type=classic",
+                "worker-url:classic",
+            ),
+            (
+                "./w.ts?sharedworker&url&worker_type=ignore",
+                "sharedworker-url:ignore",
+            ),
+            // A user `type=` is not the worker's type.
+            ("./w.ts?worker&url&type=classic", "worker-url"),
         ] {
             assert_eq!(
                 split_intent(spec),

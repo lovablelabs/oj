@@ -129,7 +129,10 @@ pub(crate) async fn serve_css_wrapper(
     file: &Path,
     url: &str,
 ) -> Response {
-    let (_, module) = match ensure_module(state, file, url).await {
+    let (module, sheet) = match ensure_module(state, file, url).await.map(|(_, module)| {
+        let sheet = module.code.clone();
+        (module, sheet)
+    }) {
         Ok(pair) => pair,
         Err(err) => {
             send_error(state, &err);
@@ -157,7 +160,7 @@ pub(crate) async fn serve_css_wrapper(
          {exports}\
          {accept}\
          import.meta.hot.prune(() => __oj_removeStyle({url:?}));\n",
-        css = serde_json::to_string(&module.code).unwrap(),
+        css = serde_json::to_string(&sheet).unwrap(),
         client = state.oj_paths.client,
     );
     let body = match css_post(state, file, url, &file.to_string_lossy(), body).await {

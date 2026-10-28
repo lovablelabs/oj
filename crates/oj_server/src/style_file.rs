@@ -68,11 +68,18 @@ pub struct StyleModule {
     pub css: String,
 }
 
+/// The data URL a file named by a url (query and fragment kept) inlines to,
+/// if it does; an error fails the sheet.
+pub type InlineUrl<'a> = dyn Fn(&Path, &str) -> Result<Option<String>, String> + Send + Sync + 'a;
+
 /// What a compile reads from the app.
 pub struct StyleInputs<'a> {
     pub root: &'a Path,
     pub css: Option<&'a oj_config::CssConfig>,
     pub resolve: oj_css::CssResolve<'a>,
+    /// fileToDevUrl's inlining for a url a sheet names: the data URL `file`
+    /// requested as the given url (query and fragment kept) inlines to.
+    pub inline: Box<InlineUrl<'a>>,
 }
 
 /// Less and Stylus run on the preprocess engine; the caller passes it for
@@ -219,7 +226,9 @@ pub async fn start_dev_inline_style(
             .await?;
     }
     let dir = path.parent().unwrap_or(Path::new("/"));
-    let css = rewrite_relative_urls(&css, dir, |file| start_dev_file_url(url_base, file));
+    let css = try_rewrite_relative_urls(&css, dir, |file, suffix| {
+        start_dev_style_url(url_base, file, suffix, &*inputs.inline)
+    })?;
     let css = style_slot(slots, css, "normal").await?;
     Ok(format!(
         "export default {};",
@@ -227,32 +236,63 @@ pub async fn start_dev_inline_style(
     ))
 }
 
+/// A Start dev sheet's url for `file` named with `suffix` (its query and
+/// fragment): Vite's fileToDevUrl data URL when `inline` says it inlines,
+/// else its Start dev URL.
+pub fn start_dev_style_url(
+    url_base: &str,
+    file: &Path,
+    suffix: &str,
+    inline: &InlineUrl<'_>,
+) -> Result<String, String> {
+    let url = format!("{}{suffix}", start_dev_file_url(url_base, file));
+    Ok(inline(file, &url)?.unwrap_or(url))
+}
+
 /// Relative `url()`s naming an existing file, rewritten to `url_for` it; the
 /// Start bundles' rewriteCss rule (data:, remote, fragment and root-absolute
 /// urls stay; a missing file stays as written).
 pub fn rewrite_relative_urls(css: &str, dir: &Path, url_for: impl Fn(&Path) -> String) -> String {
+    try_rewrite_relative_urls(css, dir, |file, suffix| {
+        Ok::<_, std::convert::Infallible>(format!("{}{suffix}", url_for(file)))
+    })
+    .unwrap_or_else(|never| match never {})
+}
+
+/// [`rewrite_relative_urls`] with `url_for` given the url's query and
+/// fragment, returning the whole url or an error that fails the sheet.
+pub fn try_rewrite_relative_urls<E>(
+    css: &str,
+    dir: &Path,
+    url_for: impl Fn(&Path, &str) -> Result<String, E>,
+) -> Result<String, E> {
+    // Vite's cssUrlRE body: an escaped `\(` or `\)` belongs to the url.
     static URL_RE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r#"url\(\s*(['"]?)([^'")]+)['"]?\s*\)"#).unwrap());
+        LazyLock::new(|| Regex::new(r#"url\(\s*(['"]?)((?:\\.|[^'")\\])+)['"]?\s*\)"#).unwrap());
+    static UNESCAPE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\([^A-Za-z0-9_])").unwrap());
     static KEEP_RE: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"^(data:|https?:|//|#|/)").unwrap());
-    URL_RE
-        .replace_all(css, |caps: &regex::Captures<'_>| {
-            let target = caps[2].trim();
-            if KEEP_RE.is_match(target) {
-                return caps[0].to_string();
-            }
-            let clean = target.split(['?', '#']).next().unwrap_or(target);
-            let file = oj_css::normalize(&dir.join(clean));
-            if !file.is_file() {
-                return caps[0].to_string();
-            }
-            let suffix = &target[clean.len()..];
-            format!(
-                "url({})",
-                serde_json::Value::String(format!("{}{suffix}", url_for(&file)))
-            )
-        })
-        .into_owned()
+    let mut out = String::with_capacity(css.len());
+    let mut last = 0;
+    for caps in URL_RE.captures_iter(css) {
+        let whole = caps.get(0).expect("match");
+        let target = caps[2].trim();
+        if KEEP_RE.is_match(target) {
+            continue;
+        }
+        let unescaped = UNESCAPE.replace_all(target, "$1");
+        let clean = unescaped.split(['?', '#']).next().unwrap_or(&unescaped);
+        let file = oj_css::normalize(&dir.join(clean));
+        if !file.is_file() {
+            continue;
+        }
+        let url = url_for(&file, &unescaped[clean.len()..])?;
+        out.push_str(&css[last..whole.start()]);
+        out.push_str(&format!("url({})", serde_json::Value::String(url)));
+        last = whole.end();
+    }
+    out.push_str(&css[last..]);
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -284,5 +324,55 @@ mod tests {
         assert!(out.contains("url('missing.png')"));
         assert!(out.contains("url(data:x)"));
         assert!(out.contains("url(/abs.png)"));
+    }
+
+    // cssUrlRE: an escaped paren is part of the url, and the file is the
+    // unescaped name.
+    #[test]
+    fn an_escaped_paren_belongs_to_the_url() {
+        let dir = std::env::temp_dir().join(format!("oj-paren-urls-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a(1).png"), b"x").unwrap();
+        let out = rewrite_relative_urls(r".a{background:url(./a\(1\).png)}", &dir, |f| {
+            format!("/fs{}", f.display())
+        });
+        assert_eq!(
+            out,
+            format!(
+                ".a{{background:url(\"/fs{}\")}}",
+                dir.join("a(1).png").display()
+            )
+        );
+    }
+
+    // fileToDevUrl's rules on a Start sheet's url, its query and fragment
+    // included: a small svg inlines, `?no-inline` and a fragment keep the URL,
+    // `?inline` inlines any file, and a larger svg or a png keeps its URL.
+    #[test]
+    fn a_start_sheets_urls_inline_as_vite_decides() {
+        let dir = std::env::temp_dir().join(format!("oj-start-svg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("dot.svg"), "<svg></svg>").unwrap();
+        std::fs::write(dir.join("dot.png"), "png").unwrap();
+        let under = |limit: u64| {
+            move |file: &Path, url: &str| {
+                Ok(crate::assets_serve::inline_url_under(file, url, limit))
+            }
+        };
+        let url = |file: &Path, suffix: &str, limit: u64| {
+            start_dev_style_url("/", file, suffix, &under(limit)).unwrap()
+        };
+        let (svg, png) = (dir.join("dot.svg"), dir.join("dot.png"));
+        let plain =
+            |file: &Path, suffix: &str| format!("{}{suffix}", start_dev_file_url("/", file));
+        assert_eq!(
+            url(&svg, "", 4096),
+            "data:image/svg+xml,%3csvg%3e%3c/svg%3e"
+        );
+        assert_eq!(url(&svg, "", 0), plain(&svg, ""));
+        assert_eq!(url(&svg, "#icon", 4096), plain(&svg, "#icon"));
+        assert_eq!(url(&svg, "?no-inline", 4096), plain(&svg, "?no-inline"));
+        assert_eq!(url(&png, "", 4096), plain(&png, ""));
+        assert_eq!(url(&png, "?inline", 0), "data:image/png;base64,cG5n");
     }
 }

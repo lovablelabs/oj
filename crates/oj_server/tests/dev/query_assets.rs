@@ -2,7 +2,8 @@
 // Copyright (c) 2026 Raphael Amorim
 
 //! Vite's asset query suffixes in dev, as the page sees them: `?url` gives
-//! the served path, `?raw` the file's text, `?inline` a data: URL, and
+//! the served path, `?raw` the file's text, `?inline` on a JSON file its
+//! plain module (vite:asset only inlines assets), and
 //! `?init` an instantiate function for a wasm module.
 
 use std::time::Duration;
@@ -42,7 +43,7 @@ async fn url_raw_inline_and_init_queries_in_dev() {
              import init from \"./add.wasm?init\";\n\
              window.__PICURL = picUrl;\n\
              window.__RAW = raw;\n\
-             window.__INLINE = inlineData.startsWith(\"data:\");\n\
+             window.__INLINE = inlineData.k === 42;\n\
              init().then((i) => { window.__SUM = i.exports.add(4, 5); });\n",
         ),
         ("index.html", crate::INDEX_HTML),
@@ -57,9 +58,14 @@ async fn url_raw_inline_and_init_queries_in_dev() {
             "({ url: window.__PICURL, raw: window.__RAW, inline: window.__INLINE, sum: window.__SUM })",
         )
         .await;
-    assert_eq!(r["url"], "/src/pic.svg", "?url: {r}");
+    // An svg under assetsInlineLimit inlines even for `?url` (Vite's dev
+    // fileToDevUrl), as svgToDataURL encodes it.
+    assert_eq!(
+        r["url"], "data:image/svg+xml,%3csvg%20xmlns='http://www.w3.org/2000/svg'%3e%3c/svg%3e",
+        "?url: {r}"
+    );
     assert_eq!(r["raw"], "hello-raw-content", "?raw: {r}");
-    assert_eq!(r["inline"], true, "?inline: {r}");
+    assert_eq!(r["inline"], true, "?inline on JSON is its module: {r}");
     assert_eq!(r["sum"], 9, "?init add: {r}");
     assert_eq!(page.errors(), Vec::<String>::new(), "page errors");
     page.close().await;

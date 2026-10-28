@@ -37,12 +37,14 @@ async fn svg_import_and_new_url_resolve_to_the_served_file() {
     if crate::browser::skip() {
         return;
     }
+    // Past assetsInlineLimit: a smaller svg is a data URL in Vite's dev.
+    let pic = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">{}</svg>"#,
+        r#"<rect width="10" height="10"/>"#.repeat(160)
+    );
     let app = App::new(&[
         ("package.json", r#"{"name":"asset-app","version":"1.0.0"}"#),
-        (
-            "src/pic.svg",
-            r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>"#,
-        ),
+        ("src/pic.svg", &pic),
         (
             "src/main.js",
             "import picUrl from \"./pic.svg\";\nconst asUrl = new URL(\"./pic.svg\", import.meta.url);\nwindow.__PIC = picUrl;\nwindow.__ASURL = asUrl.href;\n",

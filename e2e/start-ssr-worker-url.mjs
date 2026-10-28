@@ -285,9 +285,11 @@ async function workersRunInBrowser(label) {
 const rendered = async () => {
   const res = await fetch(`http://localhost:${PORT}/about`);
   const html = await res.text();
+  // Text content as the page shows it (React escapes `&` in it).
+  const text = (m) => m?.[1]?.replaceAll("&amp;", "&");
   return {
     status: res.status,
-    shown: html.match(/<p id="wk">([^<]*)<\/p>/)?.[1],
+    shown: text(html.match(/<p id="wk">([^<]*)<\/p>/)),
     rid: html.match(/<p id="rid">([^<]*)<\/p>/)?.[1],
     hero: html.match(/<p id="hero">([^<]*)<\/p>/)?.[1],
   };
@@ -306,13 +308,15 @@ try {
   await served(oj, ["dev", app, "--port", String(PORT)], {}, async (stderr) => {
     const { status, shown } = await rendered();
     must(status === 200, `dev /about returned ${status}\n${stderr().slice(-2000)}`);
-    must(
-      shown === "/src/lib/wk/worker.ts|functionfunction",
-      `dev SSR worker imports rendered ${JSON.stringify(shown)}`,
-    );
-    const worker = await fetch(`http://localhost:${PORT}/src/lib/wk/worker.ts`);
+    // Vite's dev worker URL: the file's, with `worker_file&type=module`.
+    const workerUrl = "/src/lib/wk/worker.ts?worker_file&type=module";
+    must(shown === `${workerUrl}|functionfunction`, `dev SSR worker imports rendered ${JSON.stringify(shown)}`);
+    const worker = await fetch(`http://localhost:${PORT}${workerUrl}`);
     must(worker.status === 200, `the worker URL the SSR render emitted returned ${worker.status}`);
-    must(!(await worker.text()).includes(": number"), "the worker URL serves uncompiled TypeScript");
+    const workerJs = await worker.text();
+    must(!workerJs.includes(": number"), "the worker URL serves uncompiled TypeScript");
+    // vite:worker's transform: a module worker imports the env module first.
+    must(workerJs.startsWith('import "/@vite/env"'), "the worker module lacks the env prelude");
     // The client bundle (which failed to load the query) carries the same URL,
     // so the rendered value hydrates unchanged.
     const cache = path.join(app, ".oj-cache");
@@ -321,7 +325,7 @@ try {
     let js = "";
     for (const f of index.files)
       if (f.name.endsWith(".js")) js += await (await fetch(`http://localhost:${PORT}/@oj-start/${f.name}`)).text();
-    must(js.includes('"/src/lib/wk/worker.ts"'), "the dev client bundle does not carry the worker URL");
+    must(js.includes(`"${workerUrl}"`), "the dev client bundle does not carry the worker URL");
     must(/new Worker\(/.test(js), "the dev client bundle has no ?worker constructor");
     clientResolvedLikeVite(js, "start-dev");
     const devPage = await rendered();
