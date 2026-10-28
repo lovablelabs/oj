@@ -214,9 +214,13 @@ pub(crate) async fn ensure_module_as(
         Some(e) if is_style_ext(e) => CompileKind::Css,
         _ => CompileKind::Script,
     };
-    let dep_map = match kind {
-        CompileKind::Script => state.optimized.ready().await,
-        _ => Arc::new(optimize::DepMap::new()),
+    let (dep_map, pre_resolved) = match kind {
+        CompileKind::Script => {
+            let dep_map = state.optimized.ready().await;
+            let pre_resolved = pre_resolve_bare(state, file, &source, &dep_map).await;
+            (dep_map, pre_resolved)
+        }
+        _ => (Arc::new(optimize::DepMap::new()), HashMap::new()),
     };
     let job = CompileJob {
         state: Arc::clone(state),
@@ -233,6 +237,7 @@ pub(crate) async fn ensure_module_as(
         css,
         plugin_maps: transformed.maps,
         dep_map,
+        pre_resolved,
     };
     let compiled = tokio::task::spawn_blocking(move || job.run()).await;
 
@@ -554,7 +559,8 @@ pub(crate) async fn plugin_transform_phase(
     let transformed = match phase {
         Some(phase) => host.transform_phase(&source, transform_id, phase).await,
         None => {
-            let resolved = resolved_imports_json(&state.resolver, &state.fs_allow, &source, file);
+            let resolved =
+                resolved_imports_json(&state.resolver, &state.fs_allow, &source, file, Some(state));
             host.transform(&source, transform_id, &resolved).await
         }
     };
@@ -724,6 +730,113 @@ enum CompileKind {
     Script,
 }
 
+/// A `pre` plugin's resolveId answer for a bare import.
+#[derive(Clone)]
+pub struct PreAnswer {
+    pub id: String,
+    /// Imported by the id itself: in the browser only a remote URL, in a
+    /// server render any id a plugin marks external.
+    pub external: bool,
+    /// oj's resolver gave it to a plugin's `this.resolve`, so the import takes
+    /// oj's dep handling like one no plugin claimed.
+    pub resolver: bool,
+}
+
+/// Vite runs `pre` plugins' resolveId before its own resolver, so each bare
+/// import their filters admit is offered to them first. An answer naming oj's
+/// own resolution, or the specifier's own pre-bundle (a `this.resolve`
+/// passthrough), is dropped so the import takes
+/// oj's dep handling unchanged.
+pub(crate) async fn pre_resolve_bare(
+    state: &ServerState,
+    file: &Path,
+    source: &str,
+    dep_map: &optimize::DepMap,
+) -> HashMap<String, PreAnswer> {
+    let Some(host) = state.plugins.as_ref() else {
+        return HashMap::new();
+    };
+    let filters = state.pre_resolve_id_res.as_ref();
+    if filters.is_some_and(Vec::is_empty) {
+        return HashMap::new();
+    }
+    let importer = file.to_string_lossy().into_owned();
+    let dir = file.parent().unwrap_or(Path::new(""));
+    let specs = oj_compiler::interop::bare_import_specifiers(source)
+        .into_iter()
+        .filter(|spec| is_bare_specifier(spec) && !state.virtual_ids.contains(spec))
+        .filter(|spec| filters.is_none_or(|res| res.iter().any(|re| re.is_match(spec))));
+    // Asked on every compile, as Vite asks on every transform; the compiled
+    // module is what oj caches.
+    let answers = futures_util::future::join_all(specs.map(|spec| {
+        let importer = &importer;
+        async move {
+            let answer = match host.resolve_id_pre(&spec, importer).await {
+                Ok(answer) => answer,
+                Err(e) => {
+                    eprintln!("oj: pre resolveId of {spec} from {importer} failed: {e}");
+                    None
+                }
+            };
+            // Vite's import analysis keeps only a remote URL external; any
+            // other `external` answer is rewritten like a module id.
+            let answer = answer.map(|a| PreAnswer {
+                external: a.external && is_external_url(&a.id),
+                ..a
+            });
+            let answer = answer
+                .filter(|a| {
+                    a.external || (a.id != spec && !is_native_resolution(state, dir, &spec, &a.id))
+                })
+                .map(|a| PreAnswer {
+                    resolver: !a.external && is_resolver_answer(state, &spec, &a.id),
+                    ..a
+                });
+            (spec, answer)
+        }
+    }))
+    .await;
+    answers
+        .into_iter()
+        .filter_map(|(spec, answer)| Some((spec, answer?)))
+        .filter(|(spec, a)| a.external || !is_own_bundle(state, dep_map, spec, &a.id))
+        .collect()
+}
+
+/// Vite's isExternalUrl: `scheme://` or protocol-relative `//`.
+fn is_external_url(id: &str) -> bool {
+    let rest = id.trim_start_matches(|c: char| c.is_ascii_lowercase());
+    let rest = if rest.len() < id.len() {
+        rest.strip_prefix(':').unwrap_or("x")
+    } else {
+        rest
+    };
+    rest.starts_with("//")
+}
+
+fn is_own_bundle(state: &ServerState, dep_map: &optimize::DepMap, spec: &str, id: &str) -> bool {
+    optimized_file(state, id).is_some_and(|file| {
+        let meta = dep_map
+            .get(spec)
+            .cloned()
+            .or_else(|| state.optimized.meta_now(spec));
+        meta.is_some_and(|meta| meta.file == file)
+    })
+}
+
+fn is_resolver_answer(state: &ServerState, spec: &str, id: &str) -> bool {
+    let answers = state.resolver_answers.lock().unwrap();
+    answers.contains(&(spec.to_string(), id.to_string()))
+}
+
+fn is_native_resolution(state: &ServerState, dir: &Path, spec: &str, id: &str) -> bool {
+    let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    state
+        .resolver
+        .resolve(dir, spec)
+        .is_ok_and(|native| canonical(&native) == canonical(Path::new(id)))
+}
+
 /// The owned inputs of the blocking compile stage.
 struct CompileJob {
     state: Arc<ServerState>,
@@ -742,6 +855,8 @@ struct CompileJob {
     css: CssState,
     plugin_maps: Vec<String>,
     dep_map: Arc<optimize::DepMap>,
+    /// Bare specifiers a `pre` plugin's resolveId claimed, to its answers.
+    pre_resolved: HashMap<String, PreAnswer>,
 }
 
 impl CompileJob {
@@ -792,6 +907,7 @@ impl CompileJob {
         let rw = ImportRewrite {
             job: &self,
             unresolved: RefCell::new(None),
+            interop_urls: RefCell::default(),
         };
         let output = if self.is_dep {
             self.compile_dep(&rw)
@@ -912,6 +1028,9 @@ struct ImportRewrite<'a> {
     /// First unresolvable relative import: Vite's import analysis fails the
     /// transform for it; shipping it unchanged would only 404 with no overlay.
     unresolved: RefCell<Option<String>>,
+    /// The URLs the CJS interop pass wrote into the source: final already, so
+    /// a catch-all resolveId filter must not send them back through `/@id/`.
+    interop_urls: RefCell<std::collections::HashSet<String>>,
 }
 
 impl ImportRewrite<'_> {
@@ -942,11 +1061,33 @@ impl ImportRewrite<'_> {
             }
             _ => {}
         }
+        if self.interop_urls.borrow().contains(spec) {
+            let path = Path::new(spec.split('?').next().unwrap_or(spec));
+            let stamp = state.graph.lock().unwrap().hmr_timestamp(path);
+            return Some(stamp_import_url(spec, stamp));
+        }
         if state.virtual_ids.contains(spec) {
             return Some(format!("/@virtual/{spec}"));
         }
         if crate::stylex::virtual_module(state, spec).is_some() {
             return Some(format!("/@id/{spec}"));
+        }
+        if let Some(answer) = job.pre_resolved.get(spec) {
+            if answer.external {
+                return Some(answer.id.clone());
+            }
+            // Another specifier's pre-bundle, at the URL importers name it by now.
+            if let Some(meta) = optimized_file(state, &answer.id)
+                .and_then(|file| state.optimized.entry_by_file(file))
+            {
+                return Some(meta.url);
+            }
+            if let Some(meta) = self.resolver_answer_dep(spec, answer) {
+                if !meta.needs_interop {
+                    return Some(meta.url);
+                }
+            }
+            return Some(self.pre_resolved_url(&answer.id));
         }
         // Vite runs plugins' resolveId before its own resolver: a non-bare import
         // a filter claims goes to /@id/, which falls back to disk on decline.
@@ -1022,10 +1163,49 @@ impl ImportRewrite<'_> {
         None
     }
 
+    /// The pre-bundle an import a plugin handed back as oj resolved it takes:
+    /// the specifier's own, or a registration as for an unclaimed import.
+    fn resolver_answer_dep(&self, spec: &str, answer: &PreAnswer) -> Option<optimize::DepMeta> {
+        if !answer.resolver {
+            return None;
+        }
+        let state = &*self.job.state;
+        (self.job.dep_map.get(spec).cloned())
+            .or_else(|| state.optimized.meta_now(spec))
+            .or_else(|| self.register_missing_dep(spec, &state.resolver))
+    }
+
+    fn pre_resolved_url(&self, id: &str) -> String {
+        pre_resolved_url(&self.job.state, id)
+    }
+
     /// Specifiers whose named imports must read off the CJS value (module.exports)
     /// instead of linking as ESM bindings; shared by app source and served ESM deps.
     fn cjs_interop_url(&self, spec: &str) -> Option<String> {
+        let url = self.cjs_interop_target(spec)?;
+        self.interop_urls.borrow_mut().insert(url.clone());
+        Some(url)
+    }
+
+    fn cjs_interop_target(&self, spec: &str) -> Option<String> {
         let job = self.job;
+        // A claimed CommonJS file under node_modules is served as is, so its
+        // named imports read off module.exports, as for a directly served dep.
+        if let Some(answer) = job.pre_resolved.get(spec) {
+            if let Some(meta) = optimized_file(&job.state, &answer.id)
+                .and_then(|file| job.state.optimized.entry_by_file(file))
+                .or_else(|| self.resolver_answer_dep(spec, answer))
+            {
+                return meta.needs_interop.then_some(meta.url);
+            }
+            let path = Path::new(&answer.id);
+            let cjs = !answer.external
+                && path.is_absolute()
+                && path.components().any(|c| c.as_os_str() == "node_modules")
+                && (is_cjs_dep_file(&job.state.cjs_dep_memo, path)
+                    || job.state.optimize_view.needs_forced_interop(path));
+            return cjs.then(|| self.pre_resolved_url(&answer.id));
+        }
         // Builtins are browser-externalized to a stub with no named exports;
         // interop so named imports read undefined instead of failing to link.
         if is_node_builtin(spec) {
@@ -1113,6 +1293,43 @@ impl ImportRewrite<'_> {
             || state.optimize_view.needs_forced_interop(&resolved);
         state.optimized.register_missing(spec, needs_interop)
     }
+}
+
+/// A real file goes through the module pipeline under its own url, so every
+/// importer shares one module instance; any other id is plugin-loaded.
+pub(crate) fn pre_resolved_url(state: &ServerState, id: &str) -> String {
+    let (file, query) = id.split_once('?').map_or((id, None), |(f, q)| (f, Some(q)));
+    let path = Path::new(file);
+    if !path.is_absolute() || !path.is_file() {
+        return format!("/@presolve/{}", hex_encode(id));
+    }
+    // Vite's safe module paths: a file an import resolved to is servable.
+    allow_root(&state.fs_allow, path.to_path_buf());
+    let url = url_of(&state.root, path);
+    let stamp = state.graph.lock().unwrap().hmr_timestamp(Path::new(&url));
+    let url = stamp_import_url(&url, stamp);
+    match query {
+        Some(q) if url.contains('?') => format!("{url}&{q}"),
+        Some(q) => format!("{url}?{q}"),
+        None => url,
+    }
+}
+
+/// A client bare import's pre-bundle id, as vite:resolve's tryOptimizedResolve
+/// answers it: the bundle's path with its version, as Vite's is.
+pub(crate) fn optimized_dep_id(state: &ServerState, spec: &str) -> Option<String> {
+    let meta = state.optimized.meta_now(spec)?;
+    let file = state.optimized.dir().join(&meta.file);
+    Some(match meta.url.split_once('?') {
+        Some((_, query)) => format!("{}?{query}", file.display()),
+        None => file.display().to_string(),
+    })
+}
+
+/// The pre-bundle entry an optimized id names: its file name.
+pub(crate) fn optimized_file<'a>(state: &ServerState, id: &'a str) -> Option<&'a str> {
+    let path = Path::new(id.split('?').next().unwrap_or(id));
+    (path.parent()? == state.optimized.dir()).then(|| path.file_name()?.to_str())?
 }
 
 pub(crate) async fn replay_module_parsed(
@@ -1466,6 +1683,7 @@ pub(crate) fn resolved_imports_json(
     fs_allow: &Mutex<std::collections::HashSet<PathBuf>>,
     source: &str,
     file: &Path,
+    client: Option<&ServerState>,
 ) -> String {
     let dir = file.parent().unwrap_or(file);
     let mut map = serde_json::Map::new();
@@ -1482,7 +1700,11 @@ pub(crate) fn resolved_imports_json(
                 if p.components().any(|c| c.as_os_str() == "node_modules") || !p.starts_with(dir) {
                     allow_root(fs_allow, package_root(&p));
                 }
-                serde_json::Value::String(p.display().to_string())
+                // As a client `this.resolve` outside a transform answers it.
+                let optimized = client
+                    .filter(|_| is_bare_specifier(&spec))
+                    .and_then(|state| optimized_dep_id(state, &spec));
+                serde_json::Value::String(optimized.unwrap_or_else(|| p.display().to_string()))
             }
             Err(_) => serde_json::Value::Null,
         };

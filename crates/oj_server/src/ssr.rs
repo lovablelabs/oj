@@ -112,11 +112,16 @@ impl SsrBridge {
         spec: &str,
     ) -> Result<StartResolution, String> {
         Ok(match ssr_resolve_raw(&self.state, importer, spec).await? {
-            RawResolution::Path(p) if p.to_string_lossy().contains("/node_modules/") => {
+            RawResolution::Path(p) | RawResolution::Claimed(p)
+                if p.to_string_lossy().contains("/node_modules/") =>
+            {
                 StartResolution::Dependency(p)
             }
-            RawResolution::Path(p) => StartResolution::Module(p.to_string_lossy().into_owned()),
+            RawResolution::Path(p) | RawResolution::Claimed(p) => {
+                StartResolution::Module(p.to_string_lossy().into_owned())
+            }
             RawResolution::PluginId(id) => StartResolution::Module(id),
+            RawResolution::ExternalId(id) => StartResolution::Bare(id),
             RawResolution::Bare => StartResolution::Bare(spec.to_string()),
         })
     }
@@ -161,13 +166,17 @@ pub enum StartResolution {
 /// What the SSR resolve ladder found, before each caller classifies it.
 enum RawResolution {
     Path(PathBuf),
+    /// A `pre` plugin's file other than the ssr resolver's: kept, not re-resolved.
+    Claimed(PathBuf),
     PluginId(String),
+    /// A `pre` plugin's external answer, imported by its id.
+    ExternalId(String),
     /// Unresolved bare specifier, left to the runtime's own resolution.
     Bare,
 }
 
-/// The ssr resolver, then the ssr plugin host's `resolveId`, then a bare
-/// specifier passthrough.
+/// The ssr plugin host's `pre` resolveId hooks for a bare import, then the
+/// ssr resolver, then the host's `resolveId`, then a bare specifier passthrough.
 async fn ssr_resolve_raw(
     state: &Arc<ServerState>,
     importer: &str,
@@ -176,6 +185,11 @@ async fn ssr_resolve_raw(
     // The StyleX plugin's virtual runtimes, kept as the id (its resolveId).
     if crate::stylex::virtual_module(state, spec).is_some() {
         return Ok(RawResolution::PluginId(spec.to_string()));
+    }
+    if is_bare_specifier(spec) {
+        if let Some(claimed) = ssr_pre_resolve(state, importer, spec).await {
+            return Ok(claimed);
+        }
     }
     let importer_dir = Path::new(importer).parent().unwrap_or(&state.root);
     let err = match state.ssr_resolver.resolve(importer_dir, spec) {
@@ -193,27 +207,101 @@ async fn ssr_resolve_raw(
     Err(format!("cannot resolve {spec}: {}", err.reason))
 }
 
+/// Vite runs `pre` resolveId hooks before its own resolver in SSR as in the
+/// browser. An answer naming the ssr resolver's own file is dropped, so a
+/// passthrough changes nothing.
+async fn ssr_pre_resolve(
+    state: &Arc<ServerState>,
+    importer: &str,
+    spec: &str,
+) -> Option<RawResolution> {
+    // Vite externalizes before any plugin resolves (shouldExternalize), and
+    // never analyzes an externalized dependency's own imports.
+    let importer_pkg = oj_config::SsrExternals::package_of_path(importer);
+    if importer_pkg.is_some_and(|pkg| state.ssr_externals.is_external_pkg(pkg)) {
+        return None;
+    }
+    let importer_dir = Path::new(importer).parent().unwrap_or(&state.root);
+    let native = state.ssr_resolver.resolve(importer_dir, spec).ok();
+    if native
+        .as_deref()
+        .is_some_and(|p| externalized(state, spec, p))
+    {
+        return None;
+    }
+    let host = ssr_plugin_host(state).await?;
+    let filters = state.ssr_pre_resolve_id_res.as_ref();
+    if filters.is_some_and(|res| !res.iter().any(|re| re.is_match(spec))) {
+        return None;
+    }
+    let answer = match host.resolve_id_pre(spec, importer).await {
+        Ok(answer) => answer?,
+        Err(e) => {
+            eprintln!("oj ssr: pre resolveId of {spec} from {importer} failed: {e}");
+            return None;
+        }
+    };
+    if answer.external {
+        return Some(RawResolution::ExternalId(answer.id));
+    }
+    if answer.id == spec {
+        return None;
+    }
+    // A query names a variant the ssr pipeline loads by its own resolution.
+    if answer.id.contains('?') {
+        return None;
+    }
+    let path = Path::new(&answer.id);
+    if !(path.is_absolute() && path.is_file()) {
+        return Some(RawResolution::PluginId(answer.id));
+    }
+    let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    if native.is_some_and(|native| canonical(&native) == canonical(path)) {
+        return None;
+    }
+    Some(RawResolution::Claimed(path.to_path_buf()))
+}
+
+/// A JavaScript dependency file Node loads, unless `ssr.noExternal` claims it.
+fn externalized(state: &ServerState, spec: &str, resolved: &Path) -> bool {
+    let ext = resolved.extension().and_then(|e| e.to_str()).unwrap_or("");
+    resolved.to_string_lossy().contains("/node_modules/")
+        && !is_style_ext(ext)
+        && ext != "json"
+        && state
+            .ssr_externals
+            .is_external_pkg(oj_config::SsrExternals::package_of(spec))
+}
+
 pub(crate) async fn ssr_resolve_inner(
     state: &Arc<ServerState>,
     importer: &str,
     spec: &str,
 ) -> Result<SsrResolution, String> {
-    Ok(match ssr_resolve_raw(state, importer, spec).await? {
-        RawResolution::Path(p) => {
-            let s = p.to_string_lossy();
-            // A dependency stylesheet or JSON file is served like the app's
-            // own: Vite only externalizes JavaScript (canExternalizeFile), and
-            // the runtime would parse a stylesheet as a module.
-            let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
-            if s.contains("/node_modules/") && !is_style_ext(ext) && ext != "json" {
-                SsrResolution::External(spec.to_string())
+    let (p, claimed) = match ssr_resolve_raw(state, importer, spec).await? {
+        RawResolution::Path(p) => (p, false),
+        RawResolution::Claimed(p) => (p, true),
+        RawResolution::PluginId(id) => return Ok(SsrResolution::Module(id)),
+        RawResolution::ExternalId(id) => return Ok(SsrResolution::External(id)),
+        RawResolution::Bare => return Ok(SsrResolution::External(spec.to_string())),
+    };
+    let s = p.to_string_lossy();
+    // A dependency stylesheet or JSON file is served like the app's
+    // own: Vite only externalizes JavaScript (canExternalizeFile), and
+    // the runtime would parse a stylesheet as a module.
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+    Ok(
+        if s.contains("/node_modules/") && !is_style_ext(ext) && ext != "json" {
+            // A plugin's chosen file is imported as itself, not re-resolved by name.
+            SsrResolution::External(if claimed {
+                s.into_owned()
             } else {
-                SsrResolution::Module(s.into_owned())
-            }
-        }
-        RawResolution::PluginId(id) => SsrResolution::Module(id),
-        RawResolution::Bare => SsrResolution::External(spec.to_string()),
-    })
+                spec.to_string()
+            })
+        } else {
+            SsrResolution::Module(s.into_owned())
+        },
+    )
 }
 
 pub(crate) async fn ssr_resolve(
@@ -356,8 +444,13 @@ pub(crate) async fn ssr_transform_source(
         // Same filter gate as the client path: an unclaimed module skips the
         // isolate RPC and the import pre-resolution that only feeds it.
         Some(host) if host.hook_wants_transform(id, &source) => {
-            let resolved =
-                resolved_imports_json(&state.ssr_resolver, &state.fs_allow, &source, Path::new(id));
+            let resolved = resolved_imports_json(
+                &state.ssr_resolver,
+                &state.fs_allow,
+                &source,
+                Path::new(id),
+                None,
+            );
             match host.transform(&source, id, &resolved).await {
                 Ok(t) => t.code,
                 Err(e) => {

@@ -1905,10 +1905,9 @@ function pluginContext(c) {
       if (source === "@vitejs/plugin-react/preamble" || source === "@vitejs/plugin-react-swc/preamble") {
         return { id: "/@oj/refresh-preamble.js" };
       }
-      // Vite (pluginContainer ctx.resolve): the container's resolveId chain runs
-      // first, and only then Vite's own resolver. A sibling plugin's virtual id
-      // resolves here instead of falling through to oj's disk resolver and coming
-      // back null. `attributes` / `custom` / `isEntry` travel to the chain like
+      // Vite (pluginContainer ctx.resolve): the pre plugins, then Vite's own
+      // resolver, then the rest of the chain, so a sibling plugin's virtual id
+      // still resolves here. `attributes` / `custom` / `isEntry` travel to the chain like
       // Vite's do, and the resolved object (external, meta, moduleSideEffects)
       // comes back whole.
       // `skipSelf` mirrors Vite's cumulative `skipCalls`: each nested resolve
@@ -1932,29 +1931,47 @@ function pluginContext(c) {
             : [{ id: source, importer, plugin: self }];
         }
       }
-      const viaPlugin = await resolveIdFull(c, source, importer, {
-        skipCalls,
-        attributes: options && options.attributes,
-        custom: options && options.custom,
-        isEntry: !!(options && options.isEntry),
-        scan: !!(this && this._scan),
-      });
-      if (viaPlugin != null) return viaPlugin;
-      const map = transformResolveStore.getStore();
-      if (map && map.has(source)) {
-        const id = map.get(source);
-        return id == null ? null : { id };
-      }
-      if (c.bundle) {
-        const r = await asyncRpc("bundlerResolve", [source, importer ?? "", !!(options && options.isEntry)], c.id);
-        // Outside a running bundle (no bundler to ask) oj's resolver answers.
-        if (!r || !r.fallback) return r ?? null;
-      }
+      const scan = !!(this && this._scan);
+      const chain = (phase) =>
+        resolveIdFull(c, source, importer, {
+          skipCalls,
+          attributes: options && options.attributes,
+          custom: options && options.custom,
+          isEntry: !!(options && options.isEntry),
+          scan,
+          phase,
+        });
       // Resolved with the environment's own options (Vite's resolve plugin
       // reads this.environment.config.resolve).
       const consumer = c.environment?.config?.consumer ?? "client";
-      const id = await ctxRpc("resolve", [source, importer ?? "", consumer]);
-      return id == null ? null : { id };
+      if (c.bundle) {
+        const viaPlugin = await chain(null);
+        if (viaPlugin != null) return viaPlugin;
+        const pre = transformResolveStore.getStore();
+        if (pre && pre.map && pre.map.has(source)) {
+          const id = pre.map.get(source);
+          return id == null ? null : { id };
+        }
+        const r = await asyncRpc("bundlerResolve", [source, importer ?? "", !!(options && options.isEntry)], c.id);
+        // Outside a running bundle (no bundler to ask) oj's resolver answers.
+        if (!r || !r.fallback) return r ?? null;
+        const id = await ctxRpc("resolve", [source, importer ?? "", consumer]);
+        return id == null ? null : { id };
+      }
+      // vite:resolve sits after the pre plugins and before the normal ones.
+      const viaPre = await chain("pre");
+      if (viaPre != null) return viaPre;
+      // The transforming module's own imports, pre-resolved; a miss still
+      // reaches the plugins after oj's resolver.
+      const pre = transformResolveStore.getStore();
+      const local = pre && pre.importer === importer ? pre.map?.get(source) : undefined;
+      if (local != null) return { id: local };
+      // Outside the scan, a client bare import already pre-bundled resolves to
+      // its bundle (tryOptimizedResolve).
+      const optimize = !scan && consumer !== "server";
+      const id = await ctxRpc("resolve", [source, importer ?? "", consumer, optimize ? "optimize" : ""]);
+      if (id != null) return { id };
+      return chain("post");
     },
     emitFile(file) {
       if (file == null) {
@@ -4861,7 +4878,7 @@ async function transform(c, code, id, resolvedJson, phase) {
     return result();
   };
   return transformWatchStore.run(bucket, () =>
-    transformEmitStore.run(chunkBucket, () => transformResolveStore.run(resolveMap, runLoop)),
+    transformEmitStore.run(chunkBucket, () => transformResolveStore.run({ importer: id, map: resolveMap }, runLoop)),
   );
 }
 
@@ -6113,6 +6130,19 @@ async function run(hook, args, c) {
   if (hook === "getHasResolveId") {
     const has = c.plugins.some((p) => typeof hookHandler(p.resolveId) === "function");
     return String(has);
+  }
+  if (hook === "getPreResolveIdFilters") {
+    // The `pre` resolveId hooks' `filter.id` include patterns, so oj offers them
+    // only the bare imports one can claim; null when one takes every id.
+    const pats = [];
+    for (const { p, rank } of pluginsWithHook(c, "resolveId")) {
+      if (!runsBeforeCoreResolver(p, rank)) continue;
+      const f = typeof p.resolveId === "object" ? p.resolveId.filter : null;
+      const gate = f && f.id != null ? gatePatterns(f.id, "id") : null;
+      if (gate == null || gate.length === 0) return "null";
+      pats.push(...gate);
+    }
+    return JSON.stringify(pats);
   }
   if (hook === "getHasLoad") {
     const has = c.plugins.some((p) => typeof hookHandler(p.load) === "function");

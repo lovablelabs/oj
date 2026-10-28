@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Plugins resolve imports in Vite's order: the `pre` plugins' resolveId (`enforce: "pre"` or `order: "pre"`), then Vite's resolver, then every other plugin. A `pre` plugin can now answer a bare import that a package also provides, in the browser and in a server-side render, so a plugin that points a workspace package at its sources works under oj. A normal plugin still only sees what the resolver could not resolve. A plugin's `this.resolve` takes the same order instead of running every plugin before the resolver, and in the browser it answers a pre-bundled dependency with its bundle, as Vite's `tryOptimizedResolve` does. In a server-side render an installed dependency Node loads is still externalized before any plugin sees it, as in Vite. A plugin's `external: true` answer stays external in the browser only for a remote URL, as in Vite's import analysis.
+
 - A plugin's `this.resolve` in the ssr environment resolves with the ssr environment's options, as Vite's resolve plugin reads `this.environment.config.resolve`: a package's `browser` field no longer wins in a server-side render. Both the transforming module's own imports and any other specifier resolved the client way before. The fallback for an id no plugin claims also takes the app's `resolve` options (aliases, conditions, main fields) in every environment, where it used a bare resolver at the root.
 
 ## [0.2.49] - 2026-10-28

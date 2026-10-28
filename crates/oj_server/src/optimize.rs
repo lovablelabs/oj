@@ -413,6 +413,15 @@ impl OptimizedDeps {
             .unwrap_or_default()
     }
 
+    /// The live map's entry whose bundle is `file`.
+    pub fn entry_by_file(&self, file: &str) -> Option<DepMeta> {
+        let map = self.rx.borrow();
+        map.as_ref()?
+            .values()
+            .find(|meta| meta.file == file)
+            .cloned()
+    }
+
     /// The live map's entry for `dep`, including a provisional one registered
     /// mid-compile, which a per-compile snapshot cannot see.
     pub fn meta_now(&self, dep: &str) -> Option<DepMeta> {

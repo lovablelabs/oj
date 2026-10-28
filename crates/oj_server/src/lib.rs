@@ -373,6 +373,15 @@ struct ServerState {
     /// Some active plugin has `resolveId`: an import oj cannot resolve may
     /// still be one a plugin serves (`/@id/`), else it fails like Vite's.
     plugins_have_resolve_id: bool,
+    /// A bare import goes to the `pre` plugins' resolveId before oj's resolver
+    /// when one of these matches it; `None` offers every one.
+    pre_resolve_id_res: Option<Vec<plugins::HookFilter>>,
+    /// `ssr.noExternal` / `ssr.external`: what a server-side render leaves to Node.
+    ssr_externals: oj_config::SsrExternals,
+    /// [`Self::pre_resolve_id_res`] for the ssr environment.
+    ssr_pre_resolve_id_res: Option<Vec<plugins::HookFilter>>,
+    /// (bare specifier, file) pairs oj's resolver gave a plugin's `this.resolve`.
+    resolver_answers: Mutex<std::collections::HashSet<(String, String)>>,
     // A dep is transformed only when its source matches one of these (the plugins'
     // own transform `filter.code` patterns); app source always goes through.
     dep_transform_res: Vec<plugins::HookFilter>,
@@ -1010,10 +1019,23 @@ struct PluginCaps {
     have_transform: bool,
     have_load: bool,
     have_resolve_id: bool,
+    pre_resolve_id_res: Option<Vec<plugins::HookFilter>>,
     dep_transform_res: Vec<plugins::HookFilter>,
     dep_load_res: Vec<plugins::HookFilter>,
     resolve_id_res: Vec<plugins::HookFilter>,
     have_transform_index_html: bool,
+}
+
+/// The bare imports a host's `pre` resolveId hooks may claim: `None` offers
+/// every one. A pattern oj cannot carry offers every one, never none.
+async fn pre_resolve_filters(
+    host: &PluginHost,
+    have_resolve_id: bool,
+) -> Option<Vec<plugins::HookFilter>> {
+    if !have_resolve_id {
+        return Some(Vec::new());
+    }
+    host.pre_resolve_id_filters().await
 }
 
 impl PluginCaps {
@@ -1022,6 +1044,7 @@ impl PluginCaps {
         let have_transform = host.has_transform().await;
         let have_load = host.has_load().await;
         let have_resolve_id = host.has_resolve_id().await;
+        let pre_resolve_id_res = pre_resolve_filters(host, have_resolve_id).await;
         let dep_transform_res = host.dep_transform_filters().await;
         let dep_load_res = host.dep_load_filters().await;
         let resolve_id_res = host.resolve_id_filters().await;
@@ -1034,6 +1057,7 @@ impl PluginCaps {
             have_transform,
             have_load,
             have_resolve_id,
+            pre_resolve_id_res,
             dep_transform_res,
             dep_load_res,
             resolve_id_res,
@@ -1682,6 +1706,7 @@ impl DevServer {
             host.set_resolvers(plugins::EnvResolvers {
                 client: Arc::clone(&client_resolver),
                 server: Arc::clone(&ssr_resolver),
+                optimized_dep: Default::default(),
             });
             // Vite awaits the client buildStart while initing the server, after
             // config resolution, so the defines are final for any `this.load`.
@@ -1716,6 +1741,10 @@ impl DevServer {
             }
             boot_phase("ssr environment open");
         }
+        let ssr_pre_resolve_id_res = match &plugins_ssr {
+            Some(ssr) => pre_resolve_filters(ssr, ssr.has_resolve_id().await).await,
+            None => Some(Vec::new()),
+        };
 
         let jsx = jsx_config_of(&config);
         let jsx_overrides = match &plugin_host {
@@ -1779,6 +1808,7 @@ impl DevServer {
             require_resolver: Arc::new(client_resolver.require_variant()),
             resolver: client_resolver,
             ssr_resolver,
+            ssr_externals: oj_config::ssr_externals(&config),
             cache: PersistentCache::new(oj_cache::cache_root(&root), env!("CARGO_PKG_VERSION"))
                 .with_salt_extra(&installed.digest)
                 // A cached compile embeds the JSX runtime import; a changed
@@ -1848,6 +1878,9 @@ impl DevServer {
             plugins_have_transform: caps.have_transform,
             plugins_have_load: caps.have_load,
             plugins_have_resolve_id: caps.have_resolve_id,
+            pre_resolve_id_res: caps.pre_resolve_id_res,
+            ssr_pre_resolve_id_res,
+            resolver_answers: Mutex::default(),
             dep_transform_res: caps.dep_transform_res,
             dep_load_res: caps.dep_load_res,
             resolve_id_res: caps.resolve_id_res,
@@ -1895,6 +1928,21 @@ impl DevServer {
         // "optimized dependencies changed. reloading". A commit that left
         // served chunks byte-identical never reaches here.
         state.optimized.set_crawl_end(state.crawl_done.clone());
+        if let Some(host) = &state.plugins {
+            let weak = Arc::downgrade(&state);
+            host.set_optimized_dep(Box::new(move |source, resolved| {
+                let state = weak.upgrade()?;
+                if !is_bare_specifier(source) {
+                    return None;
+                }
+                if let Some(id) = optimized_dep_id(&state, source) {
+                    return Some(id);
+                }
+                let answer = (source.to_string(), resolved.display().to_string());
+                state.resolver_answers.lock().unwrap().insert(answer);
+                None
+            }));
+        }
         {
             let weak = Arc::downgrade(&state);
             state.optimized.set_on_commit(Box::new(move |newly| {

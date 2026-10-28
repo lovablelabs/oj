@@ -138,7 +138,14 @@ pub struct HostPrewarm {
 pub struct EnvResolvers {
     pub client: Arc<OjResolver>,
     pub server: Arc<OjResolver>,
+    /// The client's pre-bundle for a bare import, as vite:resolve's
+    /// tryOptimizedResolve answers it (see [`PluginHost::set_optimized_dep`]).
+    pub optimized_dep: std::sync::OnceLock<OptimizedDep>,
 }
+
+/// (bare source, the file the client resolver found) to the pre-bundle id
+/// that answers instead; `None` keeps the file.
+pub type OptimizedDep = Box<dyn Fn(&str, &Path) -> Option<String> + Send + Sync>;
 
 /// Set once after spawn; unset (`oj build`), a bare resolver at the root answers.
 pub(crate) type ResolverSlot = Arc<std::sync::OnceLock<EnvResolvers>>;
@@ -427,15 +434,23 @@ pub(crate) fn ctx_rpc(
                 dir_of(Path::new(importer))
             };
             // The calling environment's consumer ("client" or "server").
-            let resolver = match (ctx.resolvers, arg(2)) {
-                (Some(r), "server") => &*r.server,
-                (Some(r), _) => &*r.client,
-                (None, _) => ctx.resolver,
+            let server = arg(2) == "server";
+            let resolver = match ctx.resolvers {
+                Some(r) if server => &*r.server,
+                Some(r) => &*r.client,
+                None => ctx.resolver,
             };
-            Ok(match resolver.resolve(&dir, source) {
-                Ok(p) => serde_json::Value::String(p.display().to_string()),
-                Err(_) => serde_json::Value::Null,
-            })
+            let Ok(p) = resolver.resolve(&dir, source) else {
+                return Ok(serde_json::Value::Null);
+            };
+            let optimized = ctx
+                .resolvers
+                .filter(|_| !server && arg(3) == "optimize")
+                .and_then(|r| r.optimized_dep.get())
+                .and_then(|f| f(source, &p));
+            Ok(serde_json::Value::String(
+                optimized.unwrap_or_else(|| p.display().to_string()),
+            ))
         }
         "moduleInfo" => {
             let id = arg(0);
@@ -1001,6 +1016,23 @@ impl PluginHost {
         self.call("resolveId", &[source, importer]).await
     }
 
+    /// The resolveId chain cut to the plugins Vite runs before its own
+    /// resolver (`enforce: "pre"` or `order: "pre"`).
+    pub async fn resolve_id_pre(
+        &self,
+        source: &str,
+        importer: &str,
+    ) -> Result<Option<crate::PreAnswer>, String> {
+        let answer = self
+            .resolve_id_phase(source, importer, "pre", false)
+            .await?;
+        Ok(answer.map(|r| crate::PreAnswer {
+            external: r.external.is_some(),
+            id: r.id,
+            resolver: false,
+        }))
+    }
+
     /// One phase of the resolveId chain for a Start bundle host: `"pre"` (the
     /// hooks Vite runs before its core resolver), `"post"` (the rest), or
     /// `"all"`. The winning result whole, `external` included.
@@ -1452,6 +1484,14 @@ impl PluginHost {
         self.call_flag("getHasResolveId", true).await
     }
 
+    /// The `pre` resolveId hooks' `filter.id` patterns, empty when there is no
+    /// such hook; `None` when one takes every id, or on RPC failure.
+    pub async fn pre_resolve_id_filters(&self) -> Option<Vec<HookFilter>> {
+        let pats: Option<Vec<serde_json::Value>> =
+            serde_json::from_str(&self.call_ok("getPreResolveIdFilters").await?).ok()?;
+        Some(pats?.iter().map(HookFilter::from_json).collect())
+    }
+
     /// Whether any active plugin has a `load` hook (Vite runs load before the fs
     /// read). Defaults to false on RPC failure (the fs read alone is always correct).
     pub async fn has_load(&self) -> bool {
@@ -1808,6 +1848,14 @@ impl PluginHost {
     /// The dev server's resolvers for `this.resolve` (`oj build` leaves them unset).
     pub fn set_resolvers(&self, resolvers: EnvResolvers) {
         let _ = self.core.boot.resolvers.set(resolvers);
+    }
+
+    /// The client pre-bundle lookup, set once the dev server's deps exist;
+    /// a no-op before [`Self::set_resolvers`].
+    pub fn set_optimized_dep(&self, lookup: OptimizedDep) {
+        if let Some(r) = self.core.boot.resolvers.get() {
+            let _ = r.optimized_dep.set(lookup);
+        }
     }
 
     pub fn set_ws_sender(&self, tx: tokio::sync::broadcast::Sender<String>) {

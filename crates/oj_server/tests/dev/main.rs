@@ -77,6 +77,8 @@ mod plugin_ws;
 mod plugin_ws_execute;
 mod postcss_config_discovery;
 mod postcss_from_vite;
+#[cfg(unix)]
+mod pre_resolve_id;
 mod preprocessors;
 mod query_assets;
 mod redirect_passthrough;
