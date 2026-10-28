@@ -38,7 +38,128 @@ pub(crate) fn asset_export_url(url: &str) -> String {
     }
 }
 
-pub(crate) async fn asset_module(file: &Path, url: &str, kind: &str) -> Result<String, String> {
+/// What Vite's dev `fileToDevUrl` (plugins/asset.ts) needs besides the file:
+/// the prefix every URL takes (`server.origin` joined with the base) and
+/// `build.assetsInlineLimit`, which decides when an svg is inlined.
+#[derive(Clone, Debug)]
+pub(crate) struct DevAssetUrls {
+    /// No trailing slash; empty for no origin and a `/` base.
+    pub(crate) prefix: String,
+    pub(crate) inline_limit: u64,
+}
+
+impl Default for DevAssetUrls {
+    fn default() -> Self {
+        Self {
+            prefix: String::new(),
+            // Vite's DEFAULT_ASSETS_INLINE_LIMIT.
+            inline_limit: 4096,
+        }
+    }
+}
+
+impl DevAssetUrls {
+    pub(crate) fn new(origin: Option<&str>, base: Option<&str>, inline_limit: Option<u64>) -> Self {
+        let origin = origin.unwrap_or("").trim_end_matches('/');
+        let base = crate::start_dev_url_base(base.unwrap_or("/"));
+        Self {
+            prefix: format!("{origin}{base}"),
+            inline_limit: inline_limit.unwrap_or(4096),
+        }
+    }
+
+    /// `url` (root-relative) under the prefix.
+    pub(crate) fn join(&self, url: &str) -> String {
+        format!("{}{url}", self.prefix)
+    }
+
+    /// Vite's dev fileToDevUrl for `file` requested as `url`: a small enough
+    /// svg inlines as a data URL (shouldInline), anything else is its URL
+    /// under the prefix, keeping an HMR `t=` stamp.
+    pub(crate) fn file_url(&self, file: &Path, url: &str) -> String {
+        if file.extension().is_some_and(|e| e == "svg") {
+            if let Ok(content) = std::fs::read(file) {
+                if self.should_inline(url, &content) {
+                    return svg_to_data_url(&content);
+                }
+            }
+        }
+        self.join(&asset_export_url(url))
+    }
+
+    /// Vite's dev shouldInline: `?no-inline` never, `?inline` always, an svg
+    /// with a fragment never, else under the limit unless a Git LFS pointer.
+    fn should_inline(&self, url: &str, content: &[u8]) -> bool {
+        let query = url.split_once('?').map_or("", |(_, q)| q);
+        let has = |kind: &str| {
+            query
+                .split('&')
+                .any(|kv| kv == kind || kv.starts_with(&format!("{kind}=")))
+        };
+        if has("no-inline") {
+            return false;
+        }
+        if has("inline") {
+            return true;
+        }
+        if url.contains('#') {
+            return false;
+        }
+        (content.len() as u64) < self.inline_limit
+            && !content.starts_with(b"version https://git-lfs.github.com")
+    }
+}
+
+/// Vite's assetToDataURL: an svg as Vite's svgToDataURL encodes it, anything
+/// else base64 under its MIME type.
+pub(crate) fn asset_data_url(file: &Path, content: &[u8]) -> String {
+    let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if ext == "svg" {
+        return svg_to_data_url(content);
+    }
+    let mime = content_type(ext)
+        .split(';')
+        .next()
+        .unwrap_or("application/octet-stream");
+    format!("data:{mime};base64,{}", base64_encode(content))
+}
+
+/// Vite's svgToDataURL: URL-encoded markup, or base64 when the svg holds text,
+/// a foreignObject or nested quotes, where the rewrite would be unsafe.
+pub(crate) fn svg_to_data_url(content: &[u8]) -> String {
+    let text = String::from_utf8_lossy(content);
+    static NESTED_QUOTES: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r#""[^"']*'[^"]*"|'[^'"]*"[^']*'"#).unwrap());
+    if text.contains("<text") || text.contains("<foreignObject") || NESTED_QUOTES.is_match(&text) {
+        return format!("data:image/svg+xml;base64,{}", base64_encode(content));
+    }
+    static BETWEEN_TAGS: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r">\s+<").unwrap());
+    static WHITESPACE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"\s+").unwrap());
+    let packed = BETWEEN_TAGS.replace_all(text.trim(), "><");
+    let encoded = packed
+        .replace('"', "'")
+        .replace('%', "%25")
+        .replace('#', "%23")
+        .replace('<', "%3c")
+        .replace('>', "%3e");
+    format!(
+        "data:image/svg+xml,{}",
+        WHITESPACE.replace_all(&encoded, "%20")
+    )
+}
+
+fn js_default(value: String) -> String {
+    format!("export default {};\n", serde_json::Value::String(value))
+}
+
+pub(crate) async fn asset_module(
+    file: &Path,
+    url: &str,
+    kind: &str,
+    urls: &DevAssetUrls,
+) -> Result<String, String> {
     let clean_url = url.split('?').next().unwrap_or(url);
     match kind {
         "url" => {
@@ -46,23 +167,20 @@ pub(crate) async fn asset_module(file: &Path, url: &str, kind: &str) -> Result<S
             // as text; `?direct` is the plain-CSS request, as in Vite.
             let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
             if is_style_ext(ext) {
-                return Ok(format!("export default {:?};\n", format!("{clean_url}?direct")));
+                return Ok(js_default(urls.join(&format!("{clean_url}?direct"))));
             }
-            Ok(format!("export default {:?};\n", asset_export_url(url)))
+            Ok(js_default(urls.file_url(file, url)))
         }
         "raw" => {
             let text = tokio::fs::read_to_string(file)
                 .await
                 .map_err(|e| format!("read {}: {e}", file.display()))?;
-            Ok(format!("export default {};\n", serde_json::Value::String(text)))
+            Ok(js_default(text))
         }
         "inline" => {
             // A stylesheet's `?inline` goes through `inline_css_module` instead.
-            let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
             let bytes = tokio::fs::read(file).await.map_err(|e| format!("read: {e}"))?;
-            let mime = content_type(ext).split(';').next().unwrap_or("application/octet-stream");
-            let data_uri = format!("data:{mime};base64,{}", base64_encode(&bytes));
-            Ok(format!("export default {data_uri:?};\n"))
+            Ok(js_default(asset_data_url(file, &bytes)))
         }
         "worker" | "sharedworker" => {
             let ctor = if kind == "sharedworker" { "SharedWorker" } else { "Worker" };

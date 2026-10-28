@@ -7,6 +7,7 @@ pub struct ViteValues {
     pub public_dir: Option<oj_config::BoolOrString>,
     pub port: Option<u16>,
     pub host: Option<String>,
+    pub origin: Option<String>,
     pub hmr_disabled: bool,
     pub fs_allow: Option<Vec<String>>,
     pub fs_strict: Option<bool>,
@@ -767,6 +768,7 @@ pub(crate) fn parse_vite_values(json: &serde_json::Value) -> ViteValues {
         },
         port: json.get("port").and_then(|v| v.as_u64()).map(|p| p as u16),
         host: str_field(json, "host"),
+        origin: str_field(json, "origin"),
         hmr_disabled: json.get("hmr").and_then(|v| v.as_bool()) == Some(false),
         fs_allow: json.get("fsAllow").and_then(string_list),
         fs_strict: json.get("fsStrict").and_then(|v| v.as_bool()),
@@ -912,6 +914,7 @@ pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues)
         ServerBasics {
             port: v.port,
             host: v.host,
+            origin: v.origin,
             headers: v.headers,
             fs_allow: v.fs_allow,
             fs_strict: v.fs_strict,
@@ -1031,10 +1034,11 @@ pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues)
     }
 }
 
-/// The vite.config's `server.{port,host,headers,fs.allow,fs.strict}`.
+/// The vite.config's `server.{port,host,origin,headers,fs.allow,fs.strict}`.
 struct ServerBasics {
     port: Option<u16>,
     host: Option<String>,
+    origin: Option<String>,
     headers: Option<serde_json::Map<String, serde_json::Value>>,
     fs_allow: Option<Vec<String>>,
     fs_strict: Option<bool>,
@@ -1043,6 +1047,7 @@ struct ServerBasics {
 fn merge_server_basics(config: &mut oj_config::OjConfig, v: ServerBasics) {
     if v.port.is_none()
         && v.host.is_none()
+        && v.origin.is_none()
         && v.headers.is_none()
         && v.fs_allow.is_none()
         && v.fs_strict.is_none()
@@ -1055,6 +1060,9 @@ fn merge_server_basics(config: &mut oj_config::OjConfig, v: ServerBasics) {
     }
     if sc.host.is_none() {
         sc.host = v.host;
+    }
+    if sc.origin.is_none() {
+        sc.origin = v.origin;
     }
     if v.fs_allow.is_some() || v.fs_strict.is_some() {
         let fs = sc.fs.get_or_insert_with(Default::default);

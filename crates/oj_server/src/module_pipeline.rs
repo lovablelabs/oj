@@ -52,7 +52,11 @@ pub(crate) async fn ensure_module_as(
         && query_asset_kind(url.split_once('?').map(|(_, q)| q)).is_none();
 
     if !react_svg && !svgr_candidate && is_asset_path(file) {
-        return Ok(register_uncached(state, url, url_asset_module(url)));
+        return Ok(register_uncached(
+            state,
+            url,
+            url_asset_module(state, file, url),
+        ));
     }
 
     let stamp = match preloaded {
@@ -192,7 +196,11 @@ pub(crate) async fn ensure_module_as(
     // serve it as a URL asset like Vite; otherwise compile it as `.svg.tsx` below.
     let svgr_componentized = svgr_candidate && !source.trim_start().starts_with('<');
     if svgr_candidate && !svgr_componentized {
-        return Ok(register_uncached(state, url, url_asset_module(url)));
+        return Ok(register_uncached(
+            state,
+            url,
+            url_asset_module(state, file, url),
+        ));
     }
     let source = if is_svelte {
         run_svelte_engine(state, url, &source)
@@ -290,11 +298,12 @@ fn code_module(code: String) -> CachedModule {
     }
 }
 
-/// `export default "<url>"`: how a non-compiled asset import is served.
-fn url_asset_module(url: &str) -> CachedModule {
+/// `export default "<url>"`: how a non-compiled asset import is served, its
+/// URL as Vite's dev fileToDevUrl names it.
+fn url_asset_module(state: &ServerState, file: &Path, url: &str) -> CachedModule {
     code_module(format!(
         "export default {};\n",
-        serde_json::Value::String(asset_export_url(url))
+        serde_json::Value::String(state.asset_urls.file_url(file, url))
     ))
 }
 

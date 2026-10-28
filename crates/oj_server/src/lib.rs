@@ -305,6 +305,8 @@ struct ServerState {
     /// `ssr.external` / `ssr.noExternal` for the dev ssr environment. The
     /// webworker target is dropped: it bundles everything only in a build.
     ssr_externals: oj_config::SsrExternals,
+    /// Dev asset URLs: `server.origin` and base prefix, svg inline limit.
+    asset_urls: assets_serve::DevAssetUrls,
     /// `html.cspNonce`: stamped on every served page's script/style/link tags.
     csp_nonce: Option<String>,
     /// `resolve.alias`, root and public dir as seen by `@import`/`@use`/`url()`
@@ -1795,6 +1797,11 @@ impl DevServer {
             scss_additional_data: oj_config::css_additional_data(&config, "scss"),
             sass_additional_data: oj_config::css_additional_data(&config, "sass"),
             css_config: config.css.clone(),
+            asset_urls: assets_serve::DevAssetUrls::new(
+                config.server.as_ref().and_then(|s| s.origin.as_deref()),
+                config.base.as_deref(),
+                config.build.as_ref().and_then(|b| b.assets_inline_limit),
+            ),
             ssr_externals: oj_config::SsrExternals {
                 target: None,
                 ..oj_config::ssr_externals(&config)

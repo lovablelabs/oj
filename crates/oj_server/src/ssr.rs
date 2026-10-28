@@ -417,7 +417,7 @@ async fn ssr_query_asset(
         Some(rel) => format!("/{}?{query}", rel.display()),
         None => format!("{}?{query}", url_of(&state.root, path)),
     };
-    asset_module(path, &url, kind)
+    asset_module(path, &url, kind, &state.asset_urls)
         .await
         .map(Some)
         .map_err(SsrModuleError::Failed)

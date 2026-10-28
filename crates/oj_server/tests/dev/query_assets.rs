@@ -57,7 +57,12 @@ async fn url_raw_inline_and_init_queries_in_dev() {
             "({ url: window.__PICURL, raw: window.__RAW, inline: window.__INLINE, sum: window.__SUM })",
         )
         .await;
-    assert_eq!(r["url"], "/src/pic.svg", "?url: {r}");
+    // An svg under assetsInlineLimit inlines even for `?url` (Vite's dev
+    // fileToDevUrl), as svgToDataURL encodes it.
+    assert_eq!(
+        r["url"], "data:image/svg+xml,%3csvg%20xmlns='http://www.w3.org/2000/svg'%3e%3c/svg%3e",
+        "?url: {r}"
+    );
     assert_eq!(r["raw"], "hello-raw-content", "?raw: {r}");
     assert_eq!(r["inline"], true, "?inline: {r}");
     assert_eq!(r["sum"], 9, "?init add: {r}");

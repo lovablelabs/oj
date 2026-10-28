@@ -1646,6 +1646,7 @@ export async function extract(input) {
       base: typeof c.base === "string" ? c.base : null,
       publicDir: typeof c.publicDir === "string" ? c.publicDir : c.publicDir === false ? false : null,
       port: typeof c.server?.port === "number" ? c.server.port : null,
+      origin: typeof c.server?.origin === "string" ? c.server.origin : null,
       host: typeof c.server?.host === "string" ? c.server.host : null,
       hmr: c.server?.hmr === false ? false : null,
       fsAllow: Array.isArray(c.server?.fs?.allow) ? c.server.fs.allow.filter((x) => typeof x === "string") : null,

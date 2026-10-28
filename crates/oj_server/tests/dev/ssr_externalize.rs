@@ -161,22 +161,67 @@ async fn ssr_external_and_no_external_decide_as_in_vite() {
     );
 }
 
-// A public file's `?url` is its path under the public dir, as the client's.
+// Vite's dev fileToDevUrl, on the server render and the client alike: a
+// public file's URL is its path under the public dir, every URL takes
+// `server.origin` and the base, and an svg under assetsInlineLimit inlines
+// (svgToDataURL) unless `?no-inline`.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_public_files_url_query_names_its_public_path() {
+async fn asset_urls_take_the_origin_and_base_and_small_svgs_inline() {
+    let big = format!("<svg>{}</svg>\n", "<g/>".repeat(1100));
     let app = App::new(&[
         (
             "package.json",
             r#"{"name":"ssrpub","private":true,"type":"module"}"#,
         ),
-        ("public/logo.svg", "<svg/>\n"),
+        (
+            "oj.config.json",
+            r#"{ "base": "/app/", "server": { "origin": "https://cdn.example" } }"#,
+        ),
+        ("public/logo.png", "png"),
+        ("src/pic.png", "png"),
+        ("src/icon.svg", "<svg></svg>\n"),
+        ("src/big.svg", &big),
         ("src/main.js", "export {};\n"),
         ("index.html", INDEX_HTML),
     ]);
     let server = app.serve().await;
-    let logo = app.root.join("public/logo.svg");
-    let module = server
-        .text(&format!("/@ssr-module?id={}%3Furl", logo.display()))
-        .await;
-    assert!(module.contains(r#"export default "/logo.svg""#), "{module}");
+    let ssr = |rel: &str, query: &str| {
+        let url = format!("/@ssr-module?id={}%3F{query}", app.root.join(rel).display());
+        let server = &server;
+        async move { server.text(&url).await }
+    };
+    let cases = [
+        ("public/logo.png", "url", "https://cdn.example/app/logo.png"),
+        ("src/pic.png", "url", "https://cdn.example/app/src/pic.png"),
+        (
+            "src/icon.svg",
+            "url",
+            "data:image/svg+xml,%3csvg%3e%3c/svg%3e",
+        ),
+        (
+            "src/icon.svg",
+            "no-inline",
+            "https://cdn.example/app/src/icon.svg",
+        ),
+        ("src/big.svg", "url", "https://cdn.example/app/src/big.svg"),
+        (
+            "src/icon.svg",
+            "inline",
+            "data:image/svg+xml,%3csvg%3e%3c/svg%3e",
+        ),
+    ];
+    for (rel, query, want) in cases {
+        let module = ssr(rel, query).await;
+        assert!(
+            module.contains(&format!("export default \"{want}\"")),
+            "ssr {rel}?{query}: {module}"
+        );
+    }
+    for (rel, query, want) in &cases[1..] {
+        let module = server.text(&format!("/app/{rel}?{query}")).await;
+        assert!(
+            module.contains(&format!("export default \"{want}\"")),
+            "client {rel}?{query}: {module}"
+        );
+    }
 }

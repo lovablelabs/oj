@@ -183,6 +183,8 @@ pub struct PreviewConfig {
 pub struct ServerConfig {
     pub port: Option<u16>,
     pub host: Option<String>,
+    /// Vite's `server.origin`: what dev asset URLs start with, before the base.
+    pub origin: Option<String>,
     pub strict_port: Option<bool>,
     pub open: Option<bool>,
     pub cors: Option<CorsConfig>,

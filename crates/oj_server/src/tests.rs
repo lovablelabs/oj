@@ -250,9 +250,14 @@ async fn non_css_inline_stays_a_data_uri() {
     let dir = tempfile::tempdir().unwrap();
     let png = dir.path().join("pixel.png");
     std::fs::write(&png, [0u8, 1, 2, 3]).unwrap();
-    let out = asset_module(&png, "/pixel.png?inline", "inline")
-        .await
-        .unwrap();
+    let out = asset_module(
+        &png,
+        "/pixel.png?inline",
+        "inline",
+        &DevAssetUrls::default(),
+    )
+    .await
+    .unwrap();
     assert!(
         out.contains("data:"),
         "binary asset stays a data URI: {out}"
@@ -2334,4 +2339,79 @@ fn ssr_externalizes_reads_specifiers_as_vite_does() {
     let js = "/m/node_modules/x/index.js";
     assert!(crate::ssr::ssr_externalizes(&externals, "@s", js));
     assert!(crate::ssr::ssr_externalizes(&externals, "pkg/sub/x", js));
+}
+
+// Expected strings are Vite's own svgToDataURL (plugins/asset.ts) run on the
+// same inputs: URL-encoded markup, base64 when the svg holds text or nested
+// quotes.
+#[test]
+fn svg_data_urls_match_vites_svg_to_data_url() {
+    let cases = [
+        (
+            r#"<svg xmlns="http://www.w3.org/2000/svg"></svg>"#,
+            "data:image/svg+xml,%3csvg%20xmlns='http://www.w3.org/2000/svg'%3e%3c/svg%3e",
+        ),
+        (
+            "  <svg viewBox=\"0 0 10 10\">\n  <path d=\"M0 0h10v10z\" fill=\"#f00\"/>\n  <g>  </g> 50%</svg>\n",
+            "data:image/svg+xml,%3csvg%20viewBox='0%200%2010%2010'%3e%3cpath%20d='M0%200h10v10z'%20fill='%23f00'/%3e%3cg%3e%3c/g%3e%2050%25%3c/svg%3e",
+        ),
+        (
+            "<svg><text>Hi</text></svg>",
+            "data:image/svg+xml;base64,PHN2Zz48dGV4dD5IaTwvdGV4dD48L3N2Zz4=",
+        ),
+        (
+            r#"<svg a="it's"></svg>"#,
+            "data:image/svg+xml;base64,PHN2ZyBhPSJpdCdzIj48L3N2Zz4=",
+        ),
+    ];
+    for (svg, want) in cases {
+        assert_eq!(svg_to_data_url(svg.as_bytes()), want, "{svg}");
+    }
+}
+
+// Vite's dev fileToDevUrl: an svg under assetsInlineLimit inlines unless
+// `?no-inline` or a fragment says otherwise; every other URL takes
+// `server.origin` and the base.
+#[test]
+fn dev_asset_urls_inline_small_svgs_and_prefix_origin_and_base() {
+    let dir = tempfile::tempdir().unwrap();
+    let small = dir.path().join("icon.svg");
+    std::fs::write(&small, "<svg></svg>").unwrap();
+    let big = dir.path().join("big.svg");
+    std::fs::write(&big, format!("<svg>{}</svg>", "<g/>".repeat(1100))).unwrap();
+    let lfs = dir.path().join("lfs.svg");
+    std::fs::write(&lfs, "version https://git-lfs.github.com/spec/v1\n").unwrap();
+    let png = dir.path().join("pic.png");
+    std::fs::write(&png, [0u8; 4]).unwrap();
+
+    let urls = DevAssetUrls::new(Some("https://cdn.example/"), Some("/app/"), None);
+    assert_eq!(
+        urls.file_url(&small, "/src/icon.svg?url"),
+        "data:image/svg+xml,%3csvg%3e%3c/svg%3e"
+    );
+    assert_eq!(
+        urls.file_url(&small, "/src/icon.svg?no-inline"),
+        "https://cdn.example/app/src/icon.svg"
+    );
+    assert_eq!(
+        urls.file_url(&small, "/src/icon.svg#a"),
+        "https://cdn.example/app/src/icon.svg#a"
+    );
+    assert_eq!(
+        urls.file_url(&big, "/src/big.svg"),
+        "https://cdn.example/app/src/big.svg"
+    );
+    assert_eq!(
+        urls.file_url(&lfs, "/src/lfs.svg"),
+        "https://cdn.example/app/src/lfs.svg"
+    );
+    assert_eq!(
+        urls.file_url(&png, "/src/pic.png?url&t=5"),
+        "https://cdn.example/app/src/pic.png?t=5"
+    );
+
+    let limit = DevAssetUrls::new(None, Some("./"), Some(0));
+    assert_eq!(limit.file_url(&small, "/src/icon.svg"), "/src/icon.svg");
+    let external = DevAssetUrls::new(None, Some("https://cdn.example/sub/"), None);
+    assert_eq!(external.join("/a.png"), "/sub/a.png");
 }
