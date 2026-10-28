@@ -295,7 +295,7 @@ async fn asset_urls_take_the_origin_and_base_and_small_svgs_inline() {
 
     let worker = server.text("/app/src/w.js?worker").await;
     assert!(
-        worker.contains(r#""https://cdn.example/app/src/w.js""#),
+        worker.contains(r#""https://cdn.example/app/src/w.js?worker_file&type=module""#),
         "{worker}"
     );
     let init = server.text("/app/src/add.wasm?init").await;

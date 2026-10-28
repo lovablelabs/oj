@@ -309,6 +309,8 @@ struct ServerState {
     alias_finds: Vec<String>,
     /// Dev asset URLs: `server.origin` and base prefix, svg inline limit.
     asset_urls: assets_serve::DevAssetUrls,
+    /// Vite's `/@vite/env` module (see [`assets_serve::vite_env_module`]).
+    vite_env_js: String,
     /// `html.cspNonce`: stamped on every served page's script/style/link tags.
     csp_nonce: Option<String>,
     /// `resolve.alias`, root and public dir as seen by `@import`/`@use`/`url()`
@@ -976,7 +978,7 @@ async fn spawn_plugin_host(
     // natively and the host goes, unless it hosts `server.proxy`.
     if count == 0 && host.top_level_plugin_count().await == 0 {
         if keep_for_proxy {
-            println!("  plugins: {label} (none active; host kept for server.proxy)");
+            println!("  plugins: {label} (none active; host kept for server.proxy or build.assetsInlineLimit)");
             return Ok(Some(host));
         }
         host.shutdown();
@@ -1131,6 +1133,17 @@ fn hmr_setup(
         ws_token_check,
         client_js,
     }
+}
+
+/// Waits on a plugin host answer from synchronous code (an asset URL is named
+/// both in async handlers and on a compile's blocking thread). None outside a
+/// multi-thread runtime, where blocking is not allowed.
+fn block_on_host<F: std::future::Future>(f: F) -> Option<F::Output> {
+    let handle = tokio::runtime::Handle::try_current().ok()?;
+    if handle.runtime_flavor() != tokio::runtime::RuntimeFlavor::MultiThread {
+        return None;
+    }
+    Some(tokio::task::block_in_place(|| handle.block_on(f)))
 }
 
 fn client_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
@@ -1393,37 +1406,44 @@ fn build_router(
     server_cfg: &oj_config::ServerConfig,
     hmr_ws_path: &str,
 ) -> Router {
-    let mut app = Router::new()
-        .route("/@oj/client.js", get(serve_client_js))
-        .route(
-            "/@oj/refresh-runtime.js",
-            get(|State(state): State<Arc<ServerState>>| async move {
-                js(state.oj_paths.refresh_runtime_js.clone())
-            }),
-        )
-        .route(
-            "/@oj/refresh-preamble.js",
-            get(|State(state): State<Arc<ServerState>>| async move {
-                js(state.oj_paths.refresh_preamble_js.clone())
-            }),
-        )
-        .route("/@oj/routes.js", get(serve_oj_routes))
-        // `--debug mem`: force a full V8 collection in every live engine so memory
-        // probes measure retained heap (issue #202). 404 unless enabled.
-        .route("/@oj/debug/gc", get(debug_gc))
-        .route("/@oj/debug/mem", get(debug_mem_stats))
-        .route("/@oj/diagnostics", get(serve_diagnostics))
-        .route("/@oj/server-fn.js", get(|| async { js(SERVER_FN_JS) }))
-        .route(
-            "/@oj/lingui-macro-shim.js",
-            get(|| async { js(LINGUI_MACRO_SHIM_JS) }),
-        )
-        .route("/@ssr-resolve", get(ssr_resolve))
-        .route("/@ssr-module", get(ssr_module))
-        .route(HMR_WS_PATH, get(ws_upgrade))
-        .route(HMR_FLUSH_PATH, post(hmr_flush))
-        .route(HMR_GATE_PATH, get(hmr_gate_status))
-        .fallback(serve_fallback);
+    let mut app =
+        Router::new()
+            .route("/@oj/client.js", get(serve_client_js))
+            .route(
+                "/@vite/env",
+                get(|State(state): State<Arc<ServerState>>| async move {
+                    js(state.vite_env_js.clone())
+                }),
+            )
+            .route(
+                "/@oj/refresh-runtime.js",
+                get(|State(state): State<Arc<ServerState>>| async move {
+                    js(state.oj_paths.refresh_runtime_js.clone())
+                }),
+            )
+            .route(
+                "/@oj/refresh-preamble.js",
+                get(|State(state): State<Arc<ServerState>>| async move {
+                    js(state.oj_paths.refresh_preamble_js.clone())
+                }),
+            )
+            .route("/@oj/routes.js", get(serve_oj_routes))
+            // `--debug mem`: force a full V8 collection in every live engine so memory
+            // probes measure retained heap (issue #202). 404 unless enabled.
+            .route("/@oj/debug/gc", get(debug_gc))
+            .route("/@oj/debug/mem", get(debug_mem_stats))
+            .route("/@oj/diagnostics", get(serve_diagnostics))
+            .route("/@oj/server-fn.js", get(|| async { js(SERVER_FN_JS) }))
+            .route(
+                "/@oj/lingui-macro-shim.js",
+                get(|| async { js(LINGUI_MACRO_SHIM_JS) }),
+            )
+            .route("/@ssr-resolve", get(ssr_resolve))
+            .route("/@ssr-module", get(ssr_module))
+            .route(HMR_WS_PATH, get(ws_upgrade))
+            .route(HMR_FLUSH_PATH, post(hmr_flush))
+            .route(HMR_GATE_PATH, get(hmr_gate_status))
+            .fallback(serve_fallback);
     // `server.hmr.path`: the client dials this path instead of /__ws (Vite
     // serves its socket at base + hmr.path).
     if hmr_ws_path != HMR_WS_PATH && hmr_ws_path != "/" && !hmr_ws_path.starts_with("/@oj/") {
@@ -1607,13 +1627,21 @@ impl DevServer {
             .as_ref()
             .and_then(|s| s.proxy.as_ref())
             .is_some_and(|p| !p.is_empty());
+        // A function `build.assetsInlineLimit` lives in the plugin host, which
+        // dev asks per file, so the host stays even with no plugin to run.
+        let inline_limit_fn = config
+            .build
+            .as_ref()
+            .and_then(|b| b.assets_inline_limit_fn)
+            .unwrap_or(false);
         // Every plugin the config declares is one oj does natively (its
         // React plugin, say): no host, and the prewarmed engine goes.
         let (plugin_file, prewarm) = match plugin_file {
             Some(f)
                 if f.format == PluginsFormat::Vite
                     && config.vite_active_plugins == Some(0)
-                    && !has_proxy =>
+                    && !has_proxy
+                    && !inline_limit_fn =>
             {
                 println!("  plugins: {} (none active; served natively)", f.label);
                 (None, None)
@@ -1687,7 +1715,7 @@ impl DevServer {
                     &payload,
                     &engine_registry,
                     prewarm,
-                    has_proxy,
+                    has_proxy || inline_limit_fn,
                     is_start,
                     boot_preseed,
                 )
@@ -1824,11 +1852,18 @@ impl DevServer {
         if let Some(plugin) = &stylex {
             stylex::notify_clients(plugin, reload_tx.clone());
         }
-        let asset_urls = assets_serve::DevAssetUrls::new(
+        let mut asset_urls = assets_serve::DevAssetUrls::new(
             config.server.as_ref().and_then(|s| s.origin.as_deref()),
             config.base.as_deref(),
             config.build.as_ref().and_then(|b| b.assets_inline_limit),
         );
+        if let Some(host) = plugin_host.clone().filter(|_| inline_limit_fn) {
+            asset_urls.decider = Some(assets_serve::InlineDecider(Arc::new(move |file| {
+                let host = Arc::clone(&host);
+                let file = file.to_path_buf();
+                block_on_host(async move { host.assets_inline_limit(&file).await }).flatten()
+            })));
+        }
         let state = Arc::new(ServerState {
             persistent_cache,
             engine_registry: engine_registry.clone(),
@@ -1861,6 +1896,7 @@ impl DevServer {
             sass_additional_data: oj_config::css_additional_data(&config, "sass"),
             css_config: config.css.clone(),
             asset_urls: asset_urls.clone(),
+            vite_env_js: assets_serve::vite_env_module(&config),
             alias_finds: oj_config::top_level_alias(&config)
                 .into_iter()
                 .map(|(find, _)| find)

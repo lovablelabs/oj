@@ -2569,3 +2569,74 @@ fn dev_css_urls_follow_vites_url_replacer() {
         r#"@import url("/src/x.css"); a{b:url("data:image/svg+xml,%3csvg%3e%3c/svg%3e")} c{d:url("https://cdn/app/src/p.png")} e{f:url("https://cdn/app/l.svg")} g{h:url(/missing.png)} i{j:url(https://x/y.png)}"#
     );
 }
+
+// vite:worker's dev transform: a `worker_file` module of type module imports
+// the env module (importAnalysis joins the base), classic loads it with
+// importScripts under the base, ignore inlines it; any other request is none.
+#[test]
+fn worker_file_preludes_follow_vites_worker_transform() {
+    let env = "/* env */";
+    assert_eq!(
+        worker_file_prelude("/src/w.js?worker_file&type=module", "/app", env).as_deref(),
+        Some("import \"/app/@vite/env\"\n;\n")
+    );
+    assert_eq!(
+        worker_file_prelude("/src/w.js?worker_file&type=classic", "", env).as_deref(),
+        Some("importScripts(\"/@vite/env\")\n;\n")
+    );
+    assert_eq!(
+        worker_file_prelude("/src/w.js?worker_file&type=ignore", "", env).as_deref(),
+        Some("/* env */;\n")
+    );
+    assert_eq!(worker_file_prelude("/src/w.js?worker", "", env), None);
+    assert_eq!(worker_file_prelude("/src/w.js", "", env), None);
+}
+
+// Vite's /@vite/env: the client's user defines, sorted, without
+// `import.meta.env.*`, string values as written and others as JSON.
+#[test]
+fn the_vite_env_module_assigns_the_clients_user_defines() {
+    let cfg: oj_config::OjConfig = serde_json::from_str(
+        r#"{ "define": { "__B__": "\"b\"", "__A__": 1, "import.meta.env.X": "1" },
+             "environments": { "client": { "define": { "app.flag": true } } } }"#,
+    )
+    .unwrap();
+    let js = vite_env_module(&cfg);
+    assert!(
+        js.contains(r#"const defines = {"__A__": 1, "__B__": "b", "app.flag": true};"#),
+        "{js}"
+    );
+    assert!(js.contains("target[segment] = defines[key];"), "{js}");
+}
+
+// A function `assetsInlineLimit` decides first; when it returns nothing the
+// default 4096 bytes apply, not a configured number (Vite's shouldInline).
+#[test]
+fn a_function_inline_limit_decides_before_the_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let small = dir.path().join("small.svg");
+    std::fs::write(&small, "<svg></svg>").unwrap();
+    let never = dir.path().join("never.svg");
+    std::fs::write(&never, "<svg></svg>").unwrap();
+    let big = dir.path().join("big.svg");
+    std::fs::write(&big, format!("<svg>{}</svg>", "<g/>".repeat(1100))).unwrap();
+    let mut urls = DevAssetUrls::new(None, None, Some(1));
+    urls.decider = Some(InlineDecider(std::sync::Arc::new(
+        |file: &std::path::Path| match file.file_name().and_then(|n| n.to_str()) {
+            Some("big.svg") => Some(true),
+            Some("never.svg") => Some(false),
+            _ => None,
+        },
+    )));
+    assert!(urls
+        .file_url(&big, "/big.svg")
+        .starts_with("data:image/svg+xml"));
+    assert_eq!(urls.file_url(&never, "/never.svg"), "/never.svg");
+    assert!(urls
+        .file_url(&small, "/small.svg")
+        .starts_with("data:image/svg+xml"));
+    assert_eq!(
+        urls.file_url(&small, "/small.svg?no-inline"),
+        "/small.svg?no-inline"
+    );
+}

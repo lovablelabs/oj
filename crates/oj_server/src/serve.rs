@@ -597,7 +597,21 @@ async fn serve_compiled_from(
         ));
         body
     };
-    if let Some(map) = &module.map_json {
+    // A `?worker_file&type=<type>` module gets vite:worker's env prelude; its
+    // map moves down by the prelude's lines.
+    let prelude = worker_file_prelude(
+        url,
+        &crate::start_dev_url_base(state.base.as_deref().unwrap_or("/")),
+        &state.vite_env_js,
+    );
+    let map_json = match (&prelude, &module.map_json) {
+        (Some(p), Some(map)) => Some(shift_map_lines(map, p.matches('\n').count())),
+        _ => module.map_json.clone(),
+    };
+    if let Some(prelude) = prelude {
+        body.insert_str(0, &prelude);
+    }
+    if let Some(map) = &map_json {
         // Vite builds the data URL per send (genSourceMapUrl); caches retain
         // the raw JSON, 25% smaller than base64.
         body.push_str("\n//# sourceMappingURL=");
@@ -614,4 +628,15 @@ async fn serve_compiled_from(
         body,
     )
         .into_response()
+}
+
+/// A source map whose generated code moved down `lines` lines.
+fn shift_map_lines(map_json: &str, lines: usize) -> String {
+    let Ok(mut map) = serde_json::from_str::<serde_json::Value>(map_json) else {
+        return map_json.to_string();
+    };
+    if let Some(serde_json::Value::String(mappings)) = map.get_mut("mappings") {
+        mappings.insert_str(0, &";".repeat(lines));
+    }
+    map.to_string()
 }

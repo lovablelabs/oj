@@ -98,6 +98,7 @@ mod wasm;
 mod watch_reads;
 mod watcher;
 mod worker_modes;
+mod worker_urls;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};

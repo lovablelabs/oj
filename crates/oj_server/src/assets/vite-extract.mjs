@@ -1472,7 +1472,7 @@ function warnUnsupported(c, spaBuild = false) {
     warn("optimizeDeps.rollupOptions is not applied (use rolldownOptions or esbuildOptions)");
   }
   if (typeof c.build?.assetsInlineLimit === "function") {
-    warn("build.assetsInlineLimit is a function and cannot be applied; the 4096 byte default is used");
+    warn("build.assetsInlineLimit is a function: dev asks it, a build uses the 4096 byte default");
   }
   if (c.ssr?.resolve && typeof c.ssr.resolve === "object") {
     // ssr.resolve.conditions/externalConditions ARE applied (the preferred
@@ -1662,6 +1662,8 @@ export async function extract(input) {
       proxy: extractProxy(c.server?.proxy),
       rollupOptions: markFunctions(c.build?.rolldownOptions ?? c.build?.rollupOptions ?? null),
       assetsInlineLimit: typeof c.build?.assetsInlineLimit === "number" ? c.build.assetsInlineLimit : null,
+      // The function itself stays in the plugin host, which dev asks per file.
+      assetsInlineLimitFn: typeof c.build?.assetsInlineLimit === "function" ? true : null,
       dedupe: Array.isArray(c.resolve?.dedupe) ? c.resolve.dedupe.filter((x) => typeof x === "string") : null,
       optimizeDeps: extractOptimizeDeps(c.optimizeDeps, raw?.optimizeDeps),
       build: extractBuild(c.build),

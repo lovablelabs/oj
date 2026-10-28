@@ -7431,11 +7431,11 @@ mod tests {
         )
         .expect("new URL asset expands");
         assert!(
-            out.contains("import __oj_worker_0 from \"./w.ts?worker&url\""),
+            out.contains("import __oj_worker_0 from \"./w.ts?worker&url&type=module\""),
             "{out}"
         );
         assert!(
-            out.contains("import __oj_worker_1 from \"./w.ts?sharedworker&url\""),
+            out.contains("import __oj_worker_1 from \"./w.ts?sharedworker&url&type=classic\""),
             "{out}"
         );
         assert!(

@@ -5911,6 +5911,16 @@ async function writeBundle(c, bundleJson, isWrite) {
   return null;
 }
 
+// Vite's shouldInline with a function `build.assetsInlineLimit`: called with
+// the file and its content; a boolean decides, null/undefined falls back to
+// the 4096 byte default (Rust applies it). "true"/"false", or null.
+function assetsInlineLimit(c, file) {
+  const fn = c.environment?.config?.build?.assetsInlineLimit ?? main.resolvedConfig?.build?.assetsInlineLimit;
+  if (typeof fn !== "function") return null;
+  const decided = fn(file, readFileSync(file));
+  return decided == null ? null : String(!!decided);
+}
+
 async function run(hook, args, c) {
   if (hook === "serverListening") {
     // oj's dev listener is bound (args = [port, interface address]): fire the
@@ -5963,6 +5973,7 @@ async function run(hook, args, c) {
     return JSON.stringify(c.emitted.map(({ fileName, source }) => ({ fileName, source })));
   }
   if (hook === "getPluginCss") return JSON.stringify(c.pluginCss);
+  if (hook === "assetsInlineLimit") return assetsInlineLimit(c, args[0]);
   // Plugins wrap server.close() to dispose runtimes they started (@cloudflare/vite-plugin's workerd).
   if (hook === "closeDevServer") {
     await devServer?.close?.();

@@ -472,6 +472,9 @@ pub struct BuildConfig {
     pub rollup_options: Option<serde_json::Value>,
     pub rolldown_options: Option<serde_json::Value>,
     pub assets_inline_limit: Option<u64>,
+    /// `build.assetsInlineLimit` is a function, which the plugin host keeps:
+    /// dev asks it per file (Vite's shouldInline).
+    pub assets_inline_limit_fn: Option<bool>,
     pub css_code_split: Option<bool>,
     pub copy_public_dir: Option<bool>,
     /// Vite's `build.assetsDir` (default `assets`): where hashed chunks and

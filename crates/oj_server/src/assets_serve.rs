@@ -103,6 +103,22 @@ pub(crate) struct DevAssetUrls {
     /// No trailing slash; empty for no origin and a `/` base.
     pub(crate) prefix: String,
     pub(crate) inline_limit: u64,
+    /// A function-valued `build.assetsInlineLimit`, asked first.
+    pub(crate) decider: Option<InlineDecider>,
+}
+
+/// A function-valued `build.assetsInlineLimit` (kept in the plugin host):
+/// Some to inline or not, None for Vite's DEFAULT_ASSETS_INLINE_LIMIT.
+#[derive(Clone)]
+pub(crate) struct InlineDecider(pub(crate) Arc<InlineFn>);
+
+/// Some to inline `file` or not, None for the size default.
+pub(crate) type InlineFn = dyn Fn(&Path) -> Option<bool> + Send + Sync;
+
+impl std::fmt::Debug for InlineDecider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("assetsInlineLimit(fn)")
+    }
 }
 
 impl Default for DevAssetUrls {
@@ -111,6 +127,7 @@ impl Default for DevAssetUrls {
             prefix: String::new(),
             // Vite's DEFAULT_ASSETS_INLINE_LIMIT.
             inline_limit: 4096,
+            decider: None,
         }
     }
 }
@@ -123,6 +140,7 @@ impl DevAssetUrls {
         Self {
             prefix: format!("{origin}{base}"),
             inline_limit: inline_limit.unwrap_or(4096),
+            decider: None,
         }
     }
 
@@ -142,7 +160,7 @@ impl DevAssetUrls {
         }
         if file.extension().is_some_and(|e| e == "svg") {
             if let Ok(content) = std::fs::read(file) {
-                if self.should_inline(url, &content) {
+                if self.should_inline(file, url, &content) {
                     return svg_to_data_url(&content);
                 }
             }
@@ -151,8 +169,10 @@ impl DevAssetUrls {
     }
 
     /// Vite's dev shouldInline: `?no-inline` never, `?inline` always, an svg
-    /// with a fragment never, else under the limit unless a Git LFS pointer.
-    fn should_inline(&self, url: &str, content: &[u8]) -> bool {
+    /// with a fragment never, then a function `assetsInlineLimit`'s answer,
+    /// else under the limit (the default one after a function) unless a Git
+    /// LFS pointer.
+    fn should_inline(&self, file: &Path, url: &str, content: &[u8]) -> bool {
         if has_param(url, "no-inline") {
             return false;
         }
@@ -162,7 +182,14 @@ impl DevAssetUrls {
         if url.contains('#') {
             return false;
         }
-        (content.len() as u64) < self.inline_limit
+        let limit = match &self.decider {
+            Some(decider) => match (decider.0)(file) {
+                Some(inline) => return inline,
+                None => 4096,
+            },
+            None => self.inline_limit,
+        };
+        (content.len() as u64) < limit
             && !content.starts_with(b"version https://git-lfs.github.com")
     }
 }
@@ -247,6 +274,88 @@ pub(crate) fn dev_css_urls(
         .into_owned()
 }
 
+/// Vite's `/@vite/env` (client/env.ts): the client environment's user
+/// `define` (`import.meta.env.*` left out, as clientInjections does), keys
+/// sorted as serializeDefine sorts them, assigned onto the global object.
+pub(crate) fn vite_env_module(config: &oj_config::OjConfig) -> String {
+    let mut defines: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    for (key, value) in oj_config::config_defines(config)
+        .into_iter()
+        .chain(oj_config::environment_defines(config, "client"))
+    {
+        if !key.starts_with("import.meta.env.") {
+            defines.insert(key, value);
+        }
+    }
+    let defines = defines
+        .iter()
+        .map(|(k, v)| format!("{}: {v}", serde_json::Value::String(k.clone())))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        r#"const context = (() => {{
+  if (typeof globalThis !== "undefined") {{
+    return globalThis;
+  }} else if (typeof self !== "undefined") {{
+    return self;
+  }} else if (typeof window !== "undefined") {{
+    return window;
+  }} else {{
+    return Function("return this")();
+  }}
+}})();
+const defines = {{{defines}}};
+Object.keys(defines).forEach((key) => {{
+  const segments = key.split(".");
+  let target = context;
+  for (let i = 0; i < segments.length; i++) {{
+    const segment = segments[i];
+    if (i === segments.length - 1) {{
+      target[segment] = defines[key];
+    }} else {{
+      target = target[segment] || (target[segment] = {{}});
+    }}
+  }}
+}});
+"#
+    )
+}
+
+/// A worker's dev URL (vite:worker's load): fileToUrl of the clean file with
+/// `worker_file&type=<type>` injected; `type` is the request's own (oj's
+/// rewrite of `new Worker(new URL(...), opts)` passes the options' type),
+/// else `module`, as an `import ... from "./w.js?worker"` always is in dev.
+fn worker_url(urls: &DevAssetUrls, url: &str) -> String {
+    let (clean, query) = url.split_once('?').unwrap_or((url, ""));
+    let worker_type = query
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("type="))
+        .filter(|t| matches!(*t, "module" | "classic" | "ignore"))
+        .unwrap_or("module");
+    urls.join(&format!("{clean}?worker_file&type={worker_type}"))
+}
+
+/// What vite:worker's transform prepends to a `?worker_file&type=<type>`
+/// module: the env module imported (module), loaded with importScripts under
+/// the base (classic), or inlined (ignore: its type is unknown); None for
+/// another request.
+pub(crate) fn worker_file_prelude(url: &str, base: &str, env: &str) -> Option<String> {
+    let query = url.split_once('?')?.1;
+    let mut kvs = query.split('&');
+    if !kvs.any(|kv| kv == "worker_file") {
+        return None;
+    }
+    let worker_type = query.split('&').find_map(|kv| kv.strip_prefix("type="))?;
+    let env_path = format!("{base}/@vite/env");
+    let inject = match worker_type {
+        "module" => format!("import {}\n", serde_json::Value::String(env_path)),
+        "classic" => format!("importScripts({})\n", serde_json::Value::String(env_path)),
+        "ignore" => env.to_string(),
+        _ => return None,
+    };
+    Some(inject + ";\n")
+}
+
 fn js_default(value: String) -> String {
     format!("export default {};\n", serde_json::Value::String(value))
 }
@@ -266,6 +375,10 @@ pub(crate) async fn asset_module(
             if is_style_ext(ext) {
                 return Ok(js_default(urls.join(&format!("{clean_url}?direct"))));
             }
+            // `?worker&url`: vite:worker's load exports the worker's URL.
+            if has_param(url, "worker") || has_param(url, "sharedworker") {
+                return Ok(js_default(worker_url(urls, url)));
+            }
             // vite:asset's load exports `encodeURIPath(url)`.
             Ok(js_default(encode_uri_path(&urls.file_url(file, url))))
         }
@@ -283,15 +396,16 @@ pub(crate) async fn asset_module(
             Ok(js_default(asset_data_url(file, &bytes)))
         }
         // Vite's worker and wasm plugins name the file with fileToUrl too.
+        // vite:worker's dev load: a WorkerWrapper passing `options.name`.
         "worker" | "sharedworker" => {
             let ctor = if kind == "sharedworker" {
                 "SharedWorker"
             } else {
                 "Worker"
             };
-            let url = serde_json::Value::String(urls.join(clean_url));
+            let url = serde_json::Value::String(worker_url(urls, url));
             Ok(format!(
-                "export default function () {{ return new {ctor}({url}, {{ type: \"module\" }}); }}\n"
+                "export default function WorkerWrapper(options) {{\n  return new {ctor}(\n    {url},\n    {{\n      type: \"module\",\n      name: options?.name\n    }}\n  );\n}}\n"
             ))
         }
         "init" => {

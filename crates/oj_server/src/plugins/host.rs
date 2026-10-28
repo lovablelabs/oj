@@ -1260,6 +1260,18 @@ impl PluginHost {
         self.call("load", &[id]).await
     }
 
+    /// A function-valued `build.assetsInlineLimit`'s answer for `file`: Some
+    /// to inline or not, None for the size default (or no function).
+    pub async fn assets_inline_limit(&self, file: &Path) -> Option<bool> {
+        match self
+            .call("assetsInlineLimit", &[&file.to_string_lossy()])
+            .await
+        {
+            Ok(Some(answer)) => Some(answer == "true"),
+            _ => None,
+        }
+    }
+
     /// The load hooks Vite runs before its core plugins (`enforce: "pre"`,
     /// `order: "pre"`) for an id a Start bundle's own loader would claim.
     #[inline]

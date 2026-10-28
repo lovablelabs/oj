@@ -569,6 +569,57 @@ pub fn strip_literals(code: &str) -> String {
     String::from_utf8(out).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
 }
 
+/// Vite's getWorkerType (workerImportMetaUrl.ts) for the `new Worker(...)` call
+/// whose `new URL(...)` argument ends at `from`: `classic` with no options,
+/// `ignore` for options marked `/* @vite-ignore */`, else the options' static
+/// `type` when it is `module` or `classic`, and `classic` otherwise.
+fn worker_type(raw: &str, clean: &str, from: usize) -> &'static str {
+    let Some(comma) = clean[from..].find(',').map(|i| from + i) else {
+        return "classic";
+    };
+    // findClosingParen: the `)` closing `new Worker(`.
+    let mut depth = 1;
+    let mut end = None;
+    for (i, c) in clean[from..].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = Some(from + i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let Some(end) = end.filter(|&end| comma < end) else {
+        return "classic";
+    };
+    static IGNORE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let ignore = IGNORE.get_or_init(|| regex::Regex::new(r"/\*\s*@vite-ignore\s*\*/").unwrap());
+    let options = &raw[comma + 1..end];
+    if ignore.is_match(options) {
+        return "ignore";
+    }
+    if clean[comma + 1..end].trim().is_empty() {
+        return "classic";
+    }
+    static TYPE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let type_re = TYPE.get_or_init(|| {
+        regex::Regex::new(r#"(?:^|[{,\s])["']?type["']?\s*:\s*(?:"(module|classic)"|'(module|classic)'|`(module|classic)`)"#)
+            .unwrap()
+    });
+    match type_re
+        .captures(options)
+        .and_then(|c| c.get(1).or(c.get(2)).or(c.get(3)))
+        .map(|m| m.as_str())
+    {
+        Some("module") => "module",
+        _ => "classic",
+    }
+}
+
 /// One `new URL(<literal>, import.meta.url)` site (or the URL of a
 /// `new Worker(new URL(...))`), found on the stripped code.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -581,11 +632,14 @@ pub struct MetaUrl {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MetaUrlKind {
-    /// `new Worker(new URL(file, ...))`: `shared` for a SharedWorker.
+    /// `new Worker(new URL(file, ...))`: `shared` for a SharedWorker;
+    /// `worker_type` as Vite's getWorkerType reads the options (`module`,
+    /// `classic` or `ignore`).
     Worker {
         file: String,
         postfix: String,
         shared: bool,
+        worker_type: &'static str,
     },
     /// `new URL(file, import.meta.url)` of an asset.
     Asset { file: String, postfix: String },
@@ -645,6 +699,7 @@ pub fn scan_import_meta_urls(code: &str, id: &str) -> Result<Vec<MetaUrl>, GlobE
                 file: file.to_string(),
                 postfix: postfix.to_string(),
                 shared: &caps[1] == "SharedWorker",
+                worker_type: worker_type(code, &clean, exp.end()),
             },
         });
     }
@@ -764,14 +819,23 @@ pub fn apply_import_meta_urls(code: &str, sites: &[MetaUrl], targets: &[MetaUrlT
             }
             (
                 MetaUrlKind::Worker {
-                    postfix, shared, ..
+                    postfix,
+                    shared,
+                    worker_type,
+                    ..
                 },
                 MetaUrlTarget::File(abs),
             ) => {
                 let kind = if *shared { "sharedworker" } else { "worker" };
+                // `type` carries the options' worker type to the URL module,
+                // which names the file `?worker_file&type=<type>` (Vite).
                 let ident = hoist(
                     "worker_url",
-                    inject_query(&abs.to_string_lossy(), postfix, &format!("{kind}&url")),
+                    inject_query(
+                        &abs.to_string_lossy(),
+                        postfix,
+                        &format!("{kind}&url&type={worker_type}"),
+                    ),
                     &mut hoisted,
                 );
                 edits.push((

@@ -960,6 +960,52 @@ impl<'a> NewUrlAsset<'a, '_, '_> {
         }
     }
 
+    /// Vite's getWorkerType for a worker constructor: `classic` with no (or
+    /// empty) options, `ignore` when they are marked `/* @vite-ignore */`,
+    /// else a static `type` of `module` or `classic`, and `classic` otherwise.
+    fn worker_type(&self, n: &NewExpression<'a>) -> &'static str {
+        let Some(options) = n.arguments.get(1) else {
+            return "classic";
+        };
+        let start = oxc_span::GetSpan::span(&n.arguments[0]).end as usize;
+        let end = oxc_span::GetSpan::span(options).end as usize;
+        let between = self.source.get(start..end).unwrap_or("");
+        static IGNORE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let ignore = IGNORE.get_or_init(|| regex::Regex::new(r"/\*\s*@vite-ignore\s*\*/").unwrap());
+        if ignore.is_match(between) {
+            return "ignore";
+        }
+        let Some(Expression::ObjectExpression(obj)) = options.as_expression() else {
+            return "classic";
+        };
+        for prop in &obj.properties {
+            let oxc_ast::ast::ObjectPropertyKind::ObjectProperty(p) = prop else {
+                continue;
+            };
+            if !p
+                .key
+                .static_name()
+                .is_some_and(|name| name.as_str() == Some("type"))
+            {
+                continue;
+            }
+            let value = match &p.value {
+                Expression::StringLiteral(s) => Some(crate::lit_str(s.value)),
+                // A substitution-free template is as static as a string.
+                Expression::TemplateLiteral(t) if t.expressions.is_empty() => {
+                    let span = t.span;
+                    self.source
+                        .get(span.start as usize + 1..(span.end as usize).saturating_sub(1))
+                }
+                _ => None,
+            };
+            if value == Some("module") {
+                return "module";
+            }
+        }
+        "classic"
+    }
+
     /// Hoists `import <ident> from "<spec>"` and returns the fresh binding.
     fn hoist_import(&mut self, prefix: &str, spec: String) -> String {
         let ident = format!("{prefix}_{}", self.uid);
@@ -974,7 +1020,13 @@ impl<'a> NewUrlAsset<'a, '_, '_> {
         let Some((spec, kind)) = self.worker_url_spec(n) else {
             return false;
         };
-        let ident = self.hoist_import("__oj_worker", format!("{spec}?{kind}&url"));
+        // `type` carries the options' worker type to the URL module, which
+        // names the file `?worker_file&type=<type>` (Vite's getWorkerType).
+        let worker_type = self.worker_type(n);
+        let ident = self.hoist_import(
+            "__oj_worker",
+            format!("{spec}?{kind}&url&type={worker_type}"),
+        );
         if let Some(url_expr) = parse_expr(self.allocator, &ident) {
             if let Some(first) = n.arguments.first_mut() {
                 *first = Argument::from(url_expr);
@@ -1554,11 +1606,11 @@ mod tests {
         let src = "const w = new Worker(new URL(\"./w.ts\", import.meta.url), { type: \"module\" });\nconst s = new SharedWorker(new URL(\"./w.ts\", import.meta.url));\n";
         let out = expand_new_url_asset_source(src, &d.join("main.js"));
         assert!(
-            out.contains("import __oj_worker_0 from \"./w.ts?worker&url\""),
+            out.contains("import __oj_worker_0 from \"./w.ts?worker&url&type=module\""),
             "{out}"
         );
         assert!(
-            out.contains("import __oj_worker_1 from \"./w.ts?sharedworker&url\""),
+            out.contains("import __oj_worker_1 from \"./w.ts?sharedworker&url&type=classic\""),
             "{out}"
         );
         assert!(
@@ -1597,6 +1649,47 @@ mod tests {
         std::fs::write(sub.join("fr.json"), "{}").unwrap();
         std::fs::write(sub.join("_ignore.json"), "{}").unwrap();
         dir
+    }
+
+    // Vite's getWorkerType: no or empty options are classic, options marked
+    // `/* @vite-ignore */` are ignore, a static `type` (a string or a plain
+    // template) of module is module, anything else classic.
+    #[test]
+    fn a_worker_url_import_carries_the_options_worker_type() {
+        let d = tmp("wtype");
+        let cases = [
+            (
+                "new Worker(new URL(\"./w.ts\", import.meta.url))",
+                "classic",
+            ),
+            (
+                "new Worker(new URL(\"./w.ts\", import.meta.url), {})",
+                "classic",
+            ),
+            (
+                "new Worker(new URL(\"./w.ts\", import.meta.url), { type: `module` })",
+                "module",
+            ),
+            (
+                "new Worker(new URL(\"./w.ts\", import.meta.url), { 'type': 'classic' })",
+                "classic",
+            ),
+            (
+                "new Worker(new URL(\"./w.ts\", import.meta.url), /* @vite-ignore */ opts)",
+                "ignore",
+            ),
+            (
+                "new Worker(new URL(\"./w.ts\", import.meta.url), opts)",
+                "classic",
+            ),
+        ];
+        for (src, want) in cases {
+            let out = expand_new_url_asset_source(src, &d.join("main.js"));
+            assert!(
+                out.contains(&format!("\"./w.ts?worker&url&type={want}\"")),
+                "{src}: {out}"
+            );
+        }
     }
 
     #[test]

@@ -22,6 +22,8 @@ pub struct ViteValues {
     pub headers: Option<serde_json::Map<String, serde_json::Value>>,
     pub rollup_options: Option<serde_json::Value>,
     pub assets_inline_limit: Option<u64>,
+    /// `build.assetsInlineLimit` is a function (kept in the plugin host).
+    pub assets_inline_limit_fn: bool,
     pub proxy: Option<serde_json::Value>,
     pub dedupe: Option<Vec<String>>,
     pub optimize_deps: Option<serde_json::Value>,
@@ -778,6 +780,8 @@ pub(crate) fn parse_vite_values(json: &serde_json::Value) -> ViteValues {
         headers: json.get("headers").and_then(|v| v.as_object()).cloned(),
         rollup_options: non_null(json, "rollupOptions"),
         assets_inline_limit: json.get("assetsInlineLimit").and_then(|v| v.as_u64()),
+        assets_inline_limit_fn: json.get("assetsInlineLimitFn").and_then(|v| v.as_bool())
+            == Some(true),
         proxy: non_null(json, "proxy"),
         dedupe: json.get("dedupe").and_then(string_list),
         optimize_deps: non_null(json, "optimizeDeps"),
@@ -955,6 +959,10 @@ pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues)
     if let Some(limit) = v.assets_inline_limit {
         let build = config.build.get_or_insert_with(Default::default);
         build.assets_inline_limit.get_or_insert(limit);
+    }
+    if v.assets_inline_limit_fn {
+        let build = config.build.get_or_insert_with(Default::default);
+        build.assets_inline_limit_fn.get_or_insert(true);
     }
     if let Some(proxy) = v.proxy {
         let sc = config.server.get_or_insert_with(Default::default);

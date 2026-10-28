@@ -540,7 +540,7 @@ fn a_worker_url_imports_the_workers_worker_url() {
     let code = "const w = new Worker(new URL(\"./draw-worker.ts\", import.meta.url), { type: \"module\" });";
     let out = rewrite(code, &r.join("game.ts"), &r, None);
     let spec = json(&format!(
-        "{}?worker&url",
+        "{}?worker&url&type=module",
         r.join("draw-worker.ts").display()
     ));
     assert!(
@@ -565,7 +565,7 @@ fn a_shared_worker_url_keeps_its_query() {
         None,
     );
     let spec = json(&format!(
-        "{}?sharedworker&url&x=1",
+        "{}?sharedworker&url&type=classic&x=1",
         r.join("draw-worker.ts").display()
     ));
     assert!(out.contains(&spec), "{out}");
@@ -803,4 +803,29 @@ fn aliased_glob_resolves_through_the_alias() {
     assert!(scopes[0]
         .matcher()
         .is_match(&r.join("content/c.md").display().to_string()));
+}
+
+// Vite's getWorkerType: no options or empty ones are classic, options marked
+// `/* @vite-ignore */` are ignore, a static `type` of module or classic is
+// that, and anything else (no type, a dynamic value) is classic.
+#[test]
+fn a_worker_url_carries_the_options_worker_type() {
+    let dir = url_fixture();
+    let r = root(&dir);
+    let cases = [
+        ("new Worker(new URL('./draw-worker.ts', import.meta.url))", "classic"),
+        ("new Worker(new URL('./draw-worker.ts', import.meta.url), {})", "classic"),
+        ("new Worker(new URL('./draw-worker.ts', import.meta.url), { type: 'module' })", "module"),
+        ("new Worker(new URL('./draw-worker.ts', import.meta.url), { \"type\": \"classic\", name: 'x' })", "classic"),
+        ("new Worker(new URL('./draw-worker.ts', import.meta.url), /* @vite-ignore */ opts)", "ignore"),
+        ("new Worker(new URL('./draw-worker.ts', import.meta.url), { name: 'x' })", "classic"),
+    ];
+    for (code, want) in cases {
+        let out = rewrite(code, &r.join("game.ts"), &r, None);
+        let spec = json(&format!(
+            "{}?worker&url&type={want}",
+            r.join("draw-worker.ts").display()
+        ));
+        assert!(out.contains(&spec), "{code}: {out}");
+    }
 }
