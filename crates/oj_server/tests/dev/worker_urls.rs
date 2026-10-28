@@ -27,6 +27,10 @@ async fn workers_take_vites_worker_file_urls_and_env_prelude() {
             "src/main.js",
             "export const w = new Worker(new URL(\"./w.js\", import.meta.url), { type: \"module\" });\n",
         ),
+        (
+            "src/typed.ts",
+            "export const w = new Worker(new URL(\"./w.js\", import.meta.url), { type: \"module\" as const });\n",
+        ),
         ("index.html", INDEX_HTML),
     ]);
     let server = app.serve().await;
@@ -47,13 +51,18 @@ async fn workers_take_vites_worker_file_urls_and_env_prelude() {
 
     // `new Worker(new URL(...), { type: "module" })` keeps its type.
     let main = server.text("/app/src/main.js").await;
-    assert!(main.contains("w.js?worker&url&type=module"), "{main}");
-    let typed = server.text("/app/src/w.js?worker&url&type=classic").await;
     assert!(
-        typed.contains(
+        main.contains("w.js?worker&url&worker_type=module"),
+        "{main}"
+    );
+    let classic_url = server
+        .text("/app/src/w.js?worker&url&worker_type=classic")
+        .await;
+    assert!(
+        classic_url.contains(
             "export default \"https://cdn.example/app/src/w.js?worker_file&type=classic\""
         ),
-        "{typed}"
+        "{classic_url}"
     );
 
     let module = server.text("/app/src/w.js?worker_file&type=module").await;
@@ -61,6 +70,17 @@ async fn workers_take_vites_worker_file_urls_and_env_prelude() {
         module.starts_with("import \"/app/@vite/env\"\n;\n"),
         "{module}"
     );
+    // `{ type: "module" as const }` is static once the TS is stripped.
+    let typed = server.text("/app/src/typed.ts").await;
+    assert!(
+        typed.contains("w.js?worker&url&worker_type=module"),
+        "{typed}"
+    );
+    // A user `type=` on `?worker` is not the worker's type.
+    let user = server.text("/app/src/w.js?worker&type=classic").await;
+    assert!(user.contains(&format!("\"{url}\"")), "{user}");
+    let ignore = server.text("/app/src/w.js?worker_file&type=ignore").await;
+    assert!(ignore.starts_with("const context = "), "{ignore}");
     let classic = server.text("/app/src/w.js?worker_file&type=classic").await;
     assert!(
         classic.starts_with("importScripts(\"/app/@vite/env\")\n;\n"),
@@ -87,8 +107,10 @@ async fn a_function_assets_inline_limit_decides_per_file_in_dev() {
       if (!Buffer.isBuffer(content)) throw new Error("content is not a Buffer");
       if (file.endsWith("big.svg")) return true;
       if (file.endsWith("kept.svg")) return false;
+      if (file.endsWith("boom.svg")) throw new Error("no inline decision for boom");
     },
   },
+  environments: { ssr: { build: { assetsInlineLimit: 0 } } },
 };
 "#;
     let app = App::new(&[
@@ -99,6 +121,7 @@ async fn a_function_assets_inline_limit_decides_per_file_in_dev() {
         ("src/big.svg", &big),
         ("src/kept.svg", "<svg></svg>\n"),
         ("src/small.svg", "<svg></svg>\n"),
+        ("src/boom.svg", "<svg></svg>\n"),
         (
             "src/style.css",
             ".a { background: url(./kept.svg) } .b { background: url(./big.svg) }\n",
@@ -124,17 +147,70 @@ async fn a_function_assets_inline_limit_decides_per_file_in_dev() {
         "{small}"
     );
 
+    // The ssr environment's own limit (0) applies there, not the function.
     let ssr = server
         .text(&format!(
             "/@ssr-module?id={}%3Furl",
-            app.root.join("src/kept.svg").display()
+            app.root.join("src/big.svg").display()
         ))
         .await;
-    assert!(ssr.contains("export default \"/src/kept.svg\""), "{ssr}");
+    assert!(ssr.contains("export default \"/src/big.svg\""), "{ssr}");
+    // A function that throws fails the request, as in Vite.
+    let boom = server.get("/src/boom.svg?url").await;
+    assert_eq!(boom.status, 500, "{}", boom.body);
+    assert!(
+        boom.body.contains("no inline decision for boom"),
+        "{}",
+        boom.body
+    );
 
     let css = server.text("/src/style.css?direct").await;
     assert!(
         css.contains(r#"url("/src/kept.svg")"#) && css.contains(r#"url("data:image/svg+xml"#),
         "{css}"
+    );
+}
+
+// The ssr environment's resolved `resolve.builtins` decide what is a builtin
+// there (Vite's createIsBuiltin over environment.config.resolve.builtins).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_ssr_environments_own_builtins_decide() {
+    crate::require_fixture!("vite");
+    let config = r#"export default {
+  ssr: { noExternal: ["events"] },
+  environments: { ssr: { resolve: { builtins: ["custom-builtin", /^my:/] } } },
+};
+"#;
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"ssrbuiltins","private":true,"type":"module"}"#,
+        ),
+        (
+            "node_modules/events/package.json",
+            r#"{"name":"events","version":"3.3.0","main":"events.js"}"#,
+        ),
+        ("node_modules/events/events.js", "module.exports = {};\n"),
+        ("src/main.js", "export {};\n"),
+        ("index.html", INDEX_HTML),
+        ("vite.config.mjs", config),
+    ]);
+    app.link_fixture("vite");
+    let server = app.serve().await;
+    let main = app.root.join("src/main.js");
+    let resolve = |spec: &'static str| {
+        let url = format!("/@ssr-resolve?importer={}&spec={spec}", main.display());
+        let server = &server;
+        async move { server.text(&url).await }
+    };
+    for spec in ["custom-builtin", "my:thing"] {
+        let r = resolve(spec).await;
+        assert!(r.contains(r#""external":true"#), "{spec}: {r}");
+    }
+    // Not a builtin there any more: `ssr.noExternal` keeps it in the pipeline.
+    let events = resolve("events").await;
+    assert!(
+        !events.contains(r#""external""#) && events.contains("/node_modules/events/events.js\""),
+        "{events}"
     );
 }

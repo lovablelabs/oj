@@ -38,6 +38,7 @@ pub use ui::*;
 mod client_js;
 use client_js::*;
 mod assets_serve;
+mod css_urls;
 use assets_serve::*;
 mod rewrite;
 use rewrite::*;
@@ -307,6 +308,9 @@ struct ServerState {
     ssr_externals: oj_config::SsrExternals,
     /// The top-level `resolve.alias` finds (Vite's `config.resolve.alias`).
     alias_finds: Vec<String>,
+    /// The ssr environment's resolved `resolve.builtins`; None for Vite's
+    /// default (nodeLikeBuiltins, see [`ssr::is_ssr_builtin`]).
+    ssr_builtins: Option<Vec<ssr::Builtin>>,
     /// Dev asset URLs: `server.origin` and base prefix, svg inline limit.
     asset_urls: assets_serve::DevAssetUrls,
     /// Vite's `/@vite/env` module (see [`assets_serve::vite_env_module`]).
@@ -1136,14 +1140,29 @@ fn hmr_setup(
 }
 
 /// Waits on a plugin host answer from synchronous code (an asset URL is named
-/// both in async handlers and on a compile's blocking thread). None outside a
-/// multi-thread runtime, where blocking is not allowed.
-fn block_on_host<F: std::future::Future>(f: F) -> Option<F::Output> {
-    let handle = tokio::runtime::Handle::try_current().ok()?;
-    if handle.runtime_flavor() != tokio::runtime::RuntimeFlavor::MultiThread {
-        return None;
+/// both in async handlers and on a compile's blocking thread). A multi-thread
+/// runtime blocks in place; elsewhere (a current-thread runtime, no runtime)
+/// a scoped thread drives the future on a runtime of its own.
+fn block_on_host<T: Send>(
+    f: impl std::future::Future<Output = Result<T, String>> + Send,
+) -> Result<T, String> {
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread {
+            return tokio::task::block_in_place(|| handle.block_on(f));
+        }
     }
-    Some(tokio::task::block_in_place(|| handle.block_on(f)))
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| format!("assetsInlineLimit: {e}"))?
+                    .block_on(f)
+            })
+            .join()
+            .unwrap_or_else(|_| Err("assetsInlineLimit: the waiting thread panicked".into()))
+    })
 }
 
 fn client_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
@@ -1858,10 +1877,23 @@ impl DevServer {
             config.build.as_ref().and_then(|b| b.assets_inline_limit),
         );
         if let Some(host) = plugin_host.clone().filter(|_| inline_limit_fn) {
-            asset_urls.decider = Some(assets_serve::InlineDecider(Arc::new(move |file| {
+            asset_urls.decider = Some(assets_serve::InlineDecider(Arc::new(move |env, file| {
                 let host = Arc::clone(&host);
-                let file = file.to_path_buf();
-                block_on_host(async move { host.assets_inline_limit(&file).await }).flatten()
+                let (env, file) = (env.to_string(), file.to_path_buf());
+                let answer = block_on_host(async move {
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(10),
+                        host.assets_inline_limit(&env, &file),
+                    )
+                    .await
+                    .map_err(|_| {
+                        "assetsInlineLimit: the plugin host did not answer in 10s".to_string()
+                    })?
+                })?;
+                Ok(match answer {
+                    Ok(inline) => assets_serve::InlineRule::Decide(inline),
+                    Err(limit) => assets_serve::InlineRule::Limit(limit),
+                })
             })));
         }
         let state = Arc::new(ServerState {
@@ -1897,6 +1929,7 @@ impl DevServer {
             css_config: config.css.clone(),
             asset_urls: asset_urls.clone(),
             vite_env_js: assets_serve::vite_env_module(&config),
+            ssr_builtins: ssr::Builtin::ssr_list(&config),
             alias_finds: oj_config::top_level_alias(&config)
                 .into_iter()
                 .map(|(find, _)| find)

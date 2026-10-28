@@ -55,7 +55,7 @@ pub(crate) async fn ensure_module_as(
         return Ok(register_uncached(
             state,
             url,
-            url_asset_module(state, file, url),
+            url_asset_module(state, file, url)?,
         ));
     }
 
@@ -82,18 +82,13 @@ pub(crate) async fn ensure_module_as(
         // `<style>` the JS wrapper injects resolves them from any page.
         let dir = file.parent().unwrap_or(Path::new("/"));
         let css = crate::style_file::rewrite_relative_urls(&css, dir, |f| url_of(&state.root, f));
-        let css = dev_css_urls(
-            &state.root,
-            state.public_dir.as_deref(),
-            &state.asset_urls,
-            &css,
-        );
+        let assets = sheet_assets(state, &css);
         let normal =
             plugin_transform_phase(state, file, &transform_id, css, is_dep, Some("normal")).await?;
         let module = CachedModule {
             is_boundary: true,
             kind: "css".into(),
-            imports: css_dep_imports(state, file, &imported),
+            imports: css_dep_imports(state, file, &[imported, assets].concat()),
             watch_files: [pre.watch_files, normal.watch_files].concat(),
             ..code_module(normal.code)
         };
@@ -205,7 +200,7 @@ pub(crate) async fn ensure_module_as(
         return Ok(register_uncached(
             state,
             url,
-            url_asset_module(state, file, url),
+            url_asset_module(state, file, url)?,
         ));
     }
     let source = if is_svelte {
@@ -306,11 +301,12 @@ fn code_module(code: String) -> CachedModule {
 
 /// `export default "<url>"`: how a non-compiled asset import is served, its
 /// URL as Vite's dev fileToDevUrl names it.
-fn url_asset_module(state: &ServerState, file: &Path, url: &str) -> CachedModule {
-    code_module(format!(
+fn url_asset_module(state: &ServerState, file: &Path, url: &str) -> Result<CachedModule, String> {
+    let named = state.asset_urls.file_url("client", file, url)?;
+    Ok(code_module(format!(
         "export default {};\n",
-        serde_json::Value::String(encode_uri_path(&state.asset_urls.file_url(file, url)))
-    ))
+        serde_json::Value::String(encode_uri_path(&named))
+    )))
 }
 
 fn register_uncached(state: &ServerState, url: &str, module: CachedModule) -> Compiled {
@@ -712,6 +708,37 @@ async fn css_prepass(
     Ok(scoped.css)
 }
 
+/// The assets a compiled sheet's `url()`s name, as graph imports so an asset
+/// edit hot-updates the sheet (Vite adds them as watch files). The urls are
+/// named when the sheet is served ([`served_sheet`]).
+fn sheet_assets(state: &ServerState, css: &str) -> Vec<PathBuf> {
+    crate::css_urls::CssUrls {
+        root: &state.root,
+        public_dir: state.public_dir.as_deref(),
+        urls: &state.asset_urls,
+        env: "client",
+        stamp: &|_| 0,
+    }
+    .assets(css)
+}
+
+/// A compiled sheet as it is served: its `url()`s named as Vite's dev url
+/// replacer names them, with each asset's current HMR `t=` stamp.
+pub(crate) fn served_sheet(state: &ServerState, env: &str, css: &str) -> Result<String, String> {
+    let stamp = |file: &Path| {
+        let url = url_of(&state.root, file);
+        state.graph.lock().unwrap().hmr_timestamp(Path::new(&url))
+    };
+    crate::css_urls::CssUrls {
+        root: &state.root,
+        public_dir: state.public_dir.as_deref(),
+        urls: &state.asset_urls,
+        env,
+        stamp: &stamp,
+    }
+    .rewrite(css)
+}
+
 /// A sheet's pulled-in files as its graph imports, so a dep edit hot-updates
 /// it, `/@fs/` ones outside the root watched as Vite's ensureWatchedFile
 /// does; the sheet itself is filtered (a self-edge is a bogus cycle).
@@ -786,7 +813,8 @@ impl CompileJob {
             }
             None => oj_css::compile_css_dev(&self.url, &self.source, dev_sourcemap, &resolve)?,
         };
-        let dep_imports = css_dep_imports(state, &self.file, &self.css.deps);
+        let assets = sheet_assets(state, &output.css);
+        let dep_imports = css_dep_imports(state, &self.file, &[self.css.deps, assets].concat());
         // A CSS module's class map changes on edit, so it cannot self-accept
         // (Vite's css-analysis): the update climbs to the importing component.
         let is_css_module = self.css.exports.is_some();
@@ -799,12 +827,7 @@ impl CompileJob {
             kind: "css".into(),
             imports: dep_imports,
             css_exports: self.css.exports.unwrap_or_default(),
-            ..code_module(dev_css_urls(
-                &state.root,
-                state.public_dir.as_deref(),
-                &state.asset_urls,
-                &output.css,
-            ))
+            ..code_module(output.css)
         })
     }
 

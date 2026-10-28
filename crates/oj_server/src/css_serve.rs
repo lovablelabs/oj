@@ -5,10 +5,13 @@ use crate::css_engine::CssDeps;
 pub(crate) async fn serve_css_direct(state: &Arc<ServerState>, file: &Path, url: &str) -> Response {
     let url = format!("{url}?direct");
     let css = match ensure_module(state, file, &url).await {
-        Ok((_, module)) => {
-            let id = format!("{}?direct", file.display());
-            css_post(state, file, &url, &id, module.code.clone()).await
-        }
+        Ok((_, module)) => match served_sheet(state, "client", &module.code) {
+            Ok(css) => {
+                let id = format!("{}?direct", file.display());
+                css_post(state, file, &url, &id, css).await
+            }
+            Err(err) => Err(err),
+        },
         Err(err) => Err(err),
     };
     match css {
@@ -78,7 +81,8 @@ pub(crate) async fn compile_html_style(
     }
     let file = PathBuf::from(format!("{}.css", page_file.display()));
     let (_, module) = ensure_module_as(state, &file, &url, Some(code), Some(&transform_id)).await?;
-    css_post(state, &page_file, &url, &transform_id, module.code.clone()).await
+    let css = served_sheet(state, "client", &module.code)?;
+    css_post(state, &page_file, &url, &transform_id, css).await
 }
 
 /// A stylesheet's "post" plugins (enforce or order "post"), on what Vite's
@@ -129,7 +133,11 @@ pub(crate) async fn serve_css_wrapper(
     file: &Path,
     url: &str,
 ) -> Response {
-    let (_, module) = match ensure_module(state, file, url).await {
+    let served = match ensure_module(state, file, url).await {
+        Ok((_, module)) => served_sheet(state, "client", &module.code).map(|css| (module, css)),
+        Err(err) => Err(err),
+    };
+    let (module, sheet) = match served {
         Ok(pair) => pair,
         Err(err) => {
             send_error(state, &err);
@@ -157,7 +165,7 @@ pub(crate) async fn serve_css_wrapper(
          {exports}\
          {accept}\
          import.meta.hot.prune(() => __oj_removeStyle({url:?}));\n",
-        css = serde_json::to_string(&module.code).unwrap(),
+        css = serde_json::to_string(&sheet).unwrap(),
         client = state.oj_paths.client,
     );
     let body = match css_post(state, file, url, &file.to_string_lossy(), body).await {

@@ -373,11 +373,15 @@ async fn serve_bare_asset(
         }
         // No plugin can componentize it: a module import of an svg (relative,
         // aliased or root-absolute) is its URL, like any other asset in Vite.
-        return js_module_response(asset_module(file, &url, "url", &state.asset_urls).await);
+        return js_module_response(
+            asset_module(file, &url, "url", &state.asset_urls, "client").await,
+        );
     }
     if is_importable_asset_ext(ext) && wants_module_import(headers, query) {
         let url = url_of(&state.root, file);
-        return js_module_response(asset_module(file, &url, "url", &state.asset_urls).await);
+        return js_module_response(
+            asset_module(file, &url, "url", &state.asset_urls, "client").await,
+        );
     }
     serve_raw_file(state, file, ext).await
 }
@@ -404,7 +408,7 @@ async fn serve_asset_query(
     let js = if kind == "inline" && is_style_ext(ext) {
         inline_css_module(state, file, &url).await
     } else {
-        asset_module(file, &url, kind, &state.asset_urls).await
+        asset_module(file, &url, kind, &state.asset_urls, "client").await
     };
     js_module_response(js)
 }
@@ -631,7 +635,7 @@ async fn serve_compiled_from(
 }
 
 /// A source map whose generated code moved down `lines` lines.
-fn shift_map_lines(map_json: &str, lines: usize) -> String {
+pub(crate) fn shift_map_lines(map_json: &str, lines: usize) -> String {
     let Ok(mut map) = serde_json::from_str::<serde_json::Value>(map_json) else {
         return map_json.to_string();
     };

@@ -250,6 +250,47 @@ pub(crate) fn is_bare_import(spec: &str) -> bool {
         && !spec.contains("://")
 }
 
+/// One `resolve.builtins` entry of the ssr environment: an exact id, or a
+/// RegExp.
+#[derive(Clone, Debug)]
+pub(crate) enum Builtin {
+    Id(String),
+    Pattern(regex::Regex),
+}
+
+impl Builtin {
+    /// createIsBuiltin: an exact id, or the RegExp tests the id.
+    pub(crate) fn matches(&self, id: &str) -> bool {
+        match self {
+            Builtin::Id(b) => b == id,
+            Builtin::Pattern(re) => re.is_match(id),
+        }
+    }
+
+    /// The extracted `ssr.builtins` (strings, `{ regex, flags }`), when the
+    /// config resolved them.
+    pub(crate) fn ssr_list(config: &oj_config::OjConfig) -> Option<Vec<Builtin>> {
+        let items = config.ssr.as_ref()?.get("builtins")?.as_array()?;
+        Some(
+            items
+                .iter()
+                .filter_map(|b| match b {
+                    serde_json::Value::String(s) => Some(Builtin::Id(s.clone())),
+                    serde_json::Value::Object(o) => {
+                        let source = o.get("regex")?.as_str()?;
+                        let flags = o.get("flags").and_then(|f| f.as_str()).unwrap_or("");
+                        let inline = if flags.contains('i') { "(?i)" } else { "" };
+                        regex::Regex::new(&format!("{inline}{source}"))
+                            .ok()
+                            .map(Builtin::Pattern)
+                    }
+                    _ => None,
+                })
+                .collect(),
+        )
+    }
+}
+
 /// A builtin of the ssr environment, which Vite externalizes before any
 /// `ssr.noExternal` or resolution (createIsExternal, fetchModule): its default
 /// `resolve.builtins`, nodeLikeBuiltins, matched as createIsBuiltin does — an
@@ -276,6 +317,15 @@ pub(crate) fn is_ssr_builtin(spec: &str) -> bool {
     crate::is_node_builtin(spec) && (!spec.contains('/') || SUBPATHS.contains(&spec))
 }
 
+/// Vite's checkPublicFile: the file a root-relative path names under the
+/// public dir, only when it exists and stays inside it (`/../x` never does).
+pub(crate) fn public_file(state: &ServerState, rel: &str) -> Option<PathBuf> {
+    let public = state.public_dir.as_deref()?;
+    let clean = rel.split(['?', '#']).next().unwrap_or(rel);
+    let file = crate::rewrite::normalize(&public.join(clean.trim_start_matches('/')));
+    (file.starts_with(public) && file.is_file()).then_some(file)
+}
+
 /// Vite's alias pattern matcher (preAlias.ts `matches`) over the top-level
 /// `resolve.alias` finds: the find itself or anything under it.
 pub(crate) fn matches_alias(finds: &[String], spec: &str) -> bool {
@@ -296,15 +346,23 @@ pub(crate) async fn ssr_resolve_inner(
     importer: &str,
     spec: &str,
 ) -> Result<SsrResolution, String> {
-    if is_ssr_builtin(spec) {
-        return Ok(SsrResolution::External(spec.to_string()));
+    // importAnalysis gates both the builtin and the external check on
+    // `!matchAlias`: an aliased specifier always goes through the pipeline.
+    let aliased = matches_alias(&state.alias_finds, spec);
+    if !aliased {
+        let builtin = match &state.ssr_builtins {
+            Some(list) => list.iter().any(|b| b.matches(spec)),
+            None => is_ssr_builtin(spec),
+        };
+        if builtin {
+            return Ok(SsrResolution::External(spec.to_string()));
+        }
     }
     // `/logo.png` with no such file under the root is a public file, whose id
     // stays root-relative as in Vite (its asset load reads checkPublicFile).
     if let Some(rel) = spec.strip_prefix('/').filter(|r| !r.starts_with('/')) {
         let clean = rel.split(['?', '#']).next().unwrap_or(rel);
-        let public = state.public_dir.as_deref().map(|p| p.join(clean));
-        if !state.root.join(clean).is_file() && public.is_some_and(|p| p.is_file()) {
+        if !state.root.join(clean).is_file() && public_file(state, rel).is_some() {
             return Ok(SsrResolution::Module(spec.to_string()));
         }
     }
@@ -312,10 +370,8 @@ pub(crate) async fn ssr_resolve_inner(
         RawResolution::Path(p) => {
             let s = p.to_string_lossy();
             // A stylesheet, JSON, raw TypeScript or `x.css?url` is served
-            // like the app's own, as is a `noExternal` package's file. An
-            // aliased specifier never is Node's (importAnalysis skips
-            // shouldExternalize on a matchAlias hit).
-            let aliased = matches_alias(&state.alias_finds, spec);
+            // like the app's own, as is a `noExternal` package's file, and an
+            // aliased specifier.
             if !aliased && ssr_externalizes(&state.ssr_externals, spec, &s) {
                 SsrResolution::External(spec.to_string())
             } else {
@@ -385,7 +441,9 @@ pub(crate) async fn ssr_module_inner(
         return ssr_compile_source(state, id, code.to_string(), true, runner);
     }
     let path = PathBuf::from(id);
-    if !ssr_module_allowed(state, &path) {
+    // Checked on the file the id names, query aside: `x?raw` reads `x`.
+    let named = Path::new(id.split('?').next().unwrap_or(id));
+    if !ssr_module_allowed(state, named) {
         return Err(SsrModuleError::Forbidden(
             "oj: module not allow-listed".into(),
         ));
@@ -436,8 +494,17 @@ async fn ssr_query_asset(
     id: &str,
     runner: bool,
 ) -> Result<Option<String>, SsrModuleError> {
-    let Some((file, query)) = id.split_once('?') else {
-        return Ok(None);
+    let (file, query) = match id.split_once('?') {
+        Some(pair) => pair,
+        // A plain import of a public asset (`/logo.png`): vite:asset's load
+        // names it as it names `?url`.
+        None if id.starts_with('/')
+            && !Path::new(id).is_file()
+            && public_file(state, id).is_some_and(|f| is_asset_path(&f)) =>
+        {
+            (id, "url")
+        }
+        None => return Ok(None),
     };
     let kind = match query_asset_kind(Some(query)) {
         Some(kind @ ("url" | "raw" | "inline")) => kind,
@@ -445,11 +512,8 @@ async fn ssr_query_asset(
     };
     // A root-relative id under the public dir (Vite's checkPublicFile) is a
     // public file; a file on disk, wherever it is, is named by its own path.
-    let public = state
-        .public_dir
-        .as_deref()
-        .map(|p| p.join(file.trim_start_matches('/')))
-        .filter(|p| file.starts_with('/') && !Path::new(file).is_file() && p.is_file());
+    let public =
+        public_file(state, file).filter(|_| file.starts_with('/') && !Path::new(file).is_file());
     let path = public.as_deref().unwrap_or(Path::new(file));
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     // A stylesheet's `?inline` is its compiled text, not the file's bytes.
@@ -485,7 +549,7 @@ async fn ssr_query_asset(
         Some(_) => format!("{}?{query}", file),
         None => format!("{}?{query}", url_of(&state.root, path)),
     };
-    let code = asset_module(path, &url, kind, &state.asset_urls)
+    let code = asset_module(path, &url, kind, &state.asset_urls, "ssr")
         .await
         .map_err(SsrModuleError::Failed)?;
     // The module runner takes every module in its transformed form.

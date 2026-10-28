@@ -255,6 +255,7 @@ async fn non_css_inline_stays_a_data_uri() {
         "/pixel.png?inline",
         "inline",
         &DevAssetUrls::default(),
+        "client",
     )
     .await
     .unwrap();
@@ -2386,32 +2387,38 @@ fn dev_asset_urls_inline_small_svgs_and_prefix_origin_and_base() {
 
     let urls = DevAssetUrls::new(Some("https://cdn.example/"), Some("/app/"), None);
     assert_eq!(
-        urls.file_url(&small, "/src/icon.svg?url"),
+        urls.file_url("client", &small, "/src/icon.svg?url")
+            .unwrap(),
         "data:image/svg+xml,%3csvg%3e%3c/svg%3e"
     );
     assert_eq!(
-        urls.file_url(&small, "/src/icon.svg?no-inline"),
+        urls.file_url("client", &small, "/src/icon.svg?no-inline")
+            .unwrap(),
         "https://cdn.example/app/src/icon.svg?no-inline"
     );
     assert_eq!(
-        urls.file_url(&small, "/src/icon.svg#a"),
+        urls.file_url("client", &small, "/src/icon.svg#a").unwrap(),
         "https://cdn.example/app/src/icon.svg#a"
     );
     assert_eq!(
-        urls.file_url(&big, "/src/big.svg"),
+        urls.file_url("client", &big, "/src/big.svg").unwrap(),
         "https://cdn.example/app/src/big.svg"
     );
     assert_eq!(
-        urls.file_url(&lfs, "/src/lfs.svg"),
+        urls.file_url("client", &lfs, "/src/lfs.svg").unwrap(),
         "https://cdn.example/app/src/lfs.svg"
     );
     assert_eq!(
-        urls.file_url(&png, "/src/pic.png?url&t=5"),
+        urls.file_url("client", &png, "/src/pic.png?url&t=5")
+            .unwrap(),
         "https://cdn.example/app/src/pic.png?t=5"
     );
 
     let limit = DevAssetUrls::new(None, Some("./"), Some(0));
-    assert_eq!(limit.file_url(&small, "/src/icon.svg"), "/src/icon.svg");
+    assert_eq!(
+        limit.file_url("client", &small, "/src/icon.svg").unwrap(),
+        "/src/icon.svg"
+    );
     let external = DevAssetUrls::new(None, Some("https://cdn.example/sub/"), None);
     assert_eq!(external.join("/a.png"), "/sub/a.png");
 }
@@ -2549,25 +2556,66 @@ fn dev_asset_urls_encode_the_path_and_decode_the_base() {
     );
 }
 
-// Vite's dev css urlReplacer: a public file is the prefix plus its path, a
-// root file as fileToUrl names it (a small svg inlined), `@import` and
-// unresolvable urls as written.
+// Vite's dev css url rewrite (rewriteCssUrls, doUrlReplace, urlResolver,
+// rewriteCssImageSet): a public file is the raw base plus its decoded path,
+// never inlined; a root file as fileToUrl names it (a small svg inlined) with
+// its HMR `t=`; quotes kept as written, added only when the new url needs
+// them; `@import`, `my-url(...)`, external, data and unresolvable urls as
+// written; inside a string the url is rewritten without breaking it.
 #[test]
-fn dev_css_urls_follow_vites_url_replacer() {
+fn served_sheet_urls_follow_vites_url_rewrite() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::create_dir_all(root.join("public")).unwrap();
     std::fs::write(root.join("src/i.svg"), "<svg></svg>").unwrap();
     std::fs::write(root.join("src/p.png"), "png").unwrap();
+    std::fs::write(root.join("src/my file.png"), "png").unwrap();
     std::fs::write(root.join("public/l.svg"), "<svg></svg>").unwrap();
-    let urls = DevAssetUrls::new(Some("https://cdn"), Some("/app/"), None);
-    let css = r#"@import url("/src/x.css"); a{b:url(/src/i.svg)} c{d:url("/src/p.png")} e{f:url(/l.svg)} g{h:url(/missing.png)} i{j:url(https://x/y.png)}"#;
-    let out = dev_css_urls(&root, Some(&root.join("public")), &urls, css);
-    assert_eq!(
-        out,
-        r#"@import url("/src/x.css"); a{b:url("data:image/svg+xml,%3csvg%3e%3c/svg%3e")} c{d:url("https://cdn/app/src/p.png")} e{f:url("https://cdn/app/l.svg")} g{h:url(/missing.png)} i{j:url(https://x/y.png)}"#
-    );
+    let urls = DevAssetUrls::new(Some("https://cdn"), Some("/my%20app/"), None);
+    let stamp = |file: &std::path::Path| u64::from(file.ends_with("p.png")) * 7;
+    let rewrite = |css: &str| {
+        crate::css_urls::CssUrls {
+            root: &root,
+            public_dir: Some(&root.join("public")),
+            urls: &urls,
+            env: "client",
+            stamp: &stamp,
+        }
+        .rewrite(css)
+        .unwrap()
+    };
+    let cases = [
+        ("a{b:url(/src/i.svg)}", r#"a{b:url("data:image/svg+xml,%3csvg%3e%3c/svg%3e")}"#),
+        ("a{b:url('/src/p.png')}", "a{b:url('https://cdn/my app/src/p.png?t=7')}"),
+        ("a{b:url(/src/p.png#x)}", r#"a{b:url("https://cdn/my app/src/p.png?t=7#x")}"#),
+        ("a{b:url(/src/my%20file.png)}", r#"a{b:url("https://cdn/my app/src/my file.png")}"#),
+        // encodeURI changes `%20`, so doUrlReplace adds quotes.
+        ("a{b:url(/l.svg)}", r#"a{b:url("https://cdn/my%20app/l.svg")}"#),
+        ("@import url(/src/x.css);", "@import url(/src/x.css);"),
+        ("a{b:my-url(/src/p.png)}", "a{b:my-url(/src/p.png)}"),
+        ("a{b:url(/missing.png) url(https://x/y.png) url(data:a,b) url(#f)}", "a{b:url(/missing.png) url(https://x/y.png) url(data:a,b) url(#f)}"),
+        (
+            "a{b:image-set(\"/src/p.png\" 1x, url(/l.svg) 2x)}",
+            "a{b:image-set(url(\"https://cdn/my app/src/p.png?t=7\") 1x, url(\"https://cdn/my%20app/l.svg\") 2x)}",
+        ),
+    ];
+    for (css, want) in cases {
+        assert_eq!(rewrite(css), want, "{css}");
+    }
+    // A url inside a string is rewritten as Vite rewrites it, unquoted when
+    // the new url needs no quotes, so the string stays whole.
+    let plain = DevAssetUrls::new(None, Some("/app/"), None);
+    let out = crate::css_urls::CssUrls {
+        root: &root,
+        public_dir: Some(&root.join("public")),
+        urls: &plain,
+        env: "client",
+        stamp: &|_| 0,
+    }
+    .rewrite("a::before{content:\"url(/l.svg)\"}")
+    .unwrap();
+    assert_eq!(out, "a::before{content:\"url(/app/l.svg)\"}");
 }
 
 // vite:worker's dev transform: a `worker_file` module of type module imports
@@ -2610,7 +2658,9 @@ fn the_vite_env_module_assigns_the_clients_user_defines() {
 }
 
 // A function `assetsInlineLimit` decides first; when it returns nothing the
-// default 4096 bytes apply, not a configured number (Vite's shouldInline).
+// default 4096 bytes apply, not a configured number, and an environment's own
+// number is its limit (Vite's shouldInline on environment.config.build). A
+// function that throws fails the URL.
 #[test]
 fn a_function_inline_limit_decides_before_the_default() {
     let dir = tempfile::tempdir().unwrap();
@@ -2620,23 +2670,98 @@ fn a_function_inline_limit_decides_before_the_default() {
     std::fs::write(&never, "<svg></svg>").unwrap();
     let big = dir.path().join("big.svg");
     std::fs::write(&big, format!("<svg>{}</svg>", "<g/>".repeat(1100))).unwrap();
+    let boom = dir.path().join("boom.svg");
+    std::fs::write(&boom, "<svg></svg>").unwrap();
     let mut urls = DevAssetUrls::new(None, None, Some(1));
     urls.decider = Some(InlineDecider(std::sync::Arc::new(
-        |file: &std::path::Path| match file.file_name().and_then(|n| n.to_str()) {
-            Some("big.svg") => Some(true),
-            Some("never.svg") => Some(false),
-            _ => None,
+        |env: &str, file: &std::path::Path| match (env, file.file_name().and_then(|n| n.to_str())) {
+            (_, Some("boom.svg")) => Err("assetsInlineLimit threw".into()),
+            ("ssr", _) => Ok(InlineRule::Limit(0)),
+            (_, Some("big.svg")) => Ok(InlineRule::Decide(true)),
+            (_, Some("never.svg")) => Ok(InlineRule::Decide(false)),
+            _ => Ok(InlineRule::Limit(4096)),
         },
     )));
-    assert!(urls
-        .file_url(&big, "/big.svg")
+    let client = |file: &std::path::Path, url: &str| urls.file_url("client", file, url);
+    assert!(client(&big, "/big.svg")
+        .unwrap()
         .starts_with("data:image/svg+xml"));
-    assert_eq!(urls.file_url(&never, "/never.svg"), "/never.svg");
-    assert!(urls
-        .file_url(&small, "/small.svg")
+    assert_eq!(client(&never, "/never.svg").unwrap(), "/never.svg");
+    assert!(client(&small, "/small.svg")
+        .unwrap()
         .starts_with("data:image/svg+xml"));
     assert_eq!(
-        urls.file_url(&small, "/small.svg?no-inline"),
+        client(&small, "/small.svg?no-inline").unwrap(),
         "/small.svg?no-inline"
+    );
+    assert_eq!(
+        urls.file_url("ssr", &small, "/small.svg").unwrap(),
+        "/small.svg"
+    );
+    assert_eq!(
+        client(&boom, "/boom.svg").unwrap_err(),
+        "assetsInlineLimit threw"
+    );
+}
+
+// Vite's `[?&]inline\b` and `[?&]no-inline\b`: a parameter that starts with
+// the word and continues with a non-word character counts.
+#[test]
+fn inline_params_match_as_vites_word_bounded_regexes() {
+    for url in [
+        "/a.png?inline",
+        "/a.png?x&inline=1",
+        "/a.png?inline-x",
+        "/a.png?inline.x",
+    ] {
+        assert!(has_word_param(url, "inline"), "{url}");
+    }
+    for url in [
+        "/a.png?inlinex",
+        "/a.png?no-inline",
+        "/a.png",
+        "/a.png?x=inline",
+    ] {
+        assert!(!has_word_param(url, "inline"), "{url}");
+    }
+    assert_eq!(query_asset_kind(Some("inline-x")), Some("inline"));
+}
+
+// A prelude of N lines moves every generated line of the map down by N.
+#[test]
+fn a_prelude_shifts_the_source_map_down() {
+    let map = r#"{"version":3,"mappings":"AAAA;AACA","sources":["w.js"]}"#;
+    let shifted: serde_json::Value =
+        serde_json::from_str(&crate::serve::shift_map_lines(map, 2)).unwrap();
+    assert_eq!(shifted["mappings"], ";;AAAA;AACA");
+}
+
+// vite:worker's dev load always names a `?worker` import's worker `module`;
+// only oj's own rewrite of `new Worker(new URL(...), opts)` passes a type.
+#[tokio::test]
+async fn a_user_type_parameter_does_not_change_a_workers_type() {
+    let dir = tempfile::tempdir().unwrap();
+    let w = dir.path().join("w.js");
+    std::fs::write(&w, "").unwrap();
+    let urls = DevAssetUrls::default();
+    let user = asset_module(&w, "/w.js?worker&type=classic", "worker", &urls, "client")
+        .await
+        .unwrap();
+    assert!(
+        user.contains(r#""/w.js?worker_file&type=module""#),
+        "{user}"
+    );
+    let ours = asset_module(
+        &w,
+        "/w.js?worker&url&worker_type=classic",
+        "url",
+        &urls,
+        "client",
+    )
+    .await
+    .unwrap();
+    assert!(
+        ours.contains(r#""/w.js?worker_file&type=classic""#),
+        "{ours}"
     );
 }

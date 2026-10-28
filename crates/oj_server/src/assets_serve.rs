@@ -17,7 +17,12 @@ pub(crate) fn query_asset_kind(query: Option<&str>) -> Option<&'static str> {
         return Some("raw");
     }
     for kind in ["url", "worker", "sharedworker", "raw", "inline", "init"] {
-        if q.split('&').any(|kv| kv == kind) {
+        // `inline` is Vite's `[?&]inline\b`; the others match whole.
+        let hit = match kind {
+            "inline" => has_word_param(&format!("?{q}"), "inline"),
+            _ => q.split('&').any(|kv| kv == kind),
+        };
+        if hit {
             return Some(kind);
         }
     }
@@ -73,7 +78,7 @@ pub(crate) fn encode_uri_path(url: &str) -> String {
 }
 
 /// `decodeURI`: `%XX` escapes of reserved characters stay, as in JS.
-fn decode_uri(s: &str) -> String {
+pub(crate) fn decode_uri(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -100,20 +105,34 @@ fn decode_uri(s: &str) -> String {
 /// `build.assetsInlineLimit`, which decides when an svg is inlined.
 #[derive(Clone, Debug)]
 pub(crate) struct DevAssetUrls {
-    /// No trailing slash; empty for no origin and a `/` base.
+    /// `server.origin` and the decoded base (Vite's `decodedBase`), no
+    /// trailing slash; empty for no origin and a `/` base.
     pub(crate) prefix: String,
+    /// The same with the base as written: Vite's css url replacer joins a
+    /// public file's URL onto `config.base`, not the decoded one.
+    pub(crate) raw_prefix: String,
     pub(crate) inline_limit: u64,
     /// A function-valued `build.assetsInlineLimit`, asked first.
     pub(crate) decider: Option<InlineDecider>,
 }
 
-/// A function-valued `build.assetsInlineLimit` (kept in the plugin host):
-/// Some to inline or not, None for Vite's DEFAULT_ASSETS_INLINE_LIMIT.
+/// A function-valued `build.assetsInlineLimit` (kept in the plugin host),
+/// asked per environment and file.
 #[derive(Clone)]
 pub(crate) struct InlineDecider(pub(crate) Arc<InlineFn>);
 
-/// Some to inline `file` or not, None for the size default.
-pub(crate) type InlineFn = dyn Fn(&Path) -> Option<bool> + Send + Sync;
+/// The environment's answer for `file`, or the error the function threw.
+pub(crate) type InlineFn = dyn Fn(&str, &Path) -> Result<InlineRule, String> + Send + Sync;
+
+/// What an environment's `build.assetsInlineLimit` says about one file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InlineRule {
+    /// The function's own answer.
+    Decide(bool),
+    /// A number (an environment's own limit, or the default after a
+    /// function that answered nothing).
+    Limit(u64),
+}
 
 impl std::fmt::Debug for InlineDecider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -125,6 +144,7 @@ impl Default for DevAssetUrls {
     fn default() -> Self {
         Self {
             prefix: String::new(),
+            raw_prefix: String::new(),
             // Vite's DEFAULT_ASSETS_INLINE_LIMIT.
             inline_limit: 4096,
             decider: None,
@@ -135,10 +155,10 @@ impl Default for DevAssetUrls {
 impl DevAssetUrls {
     pub(crate) fn new(origin: Option<&str>, base: Option<&str>, inline_limit: Option<u64>) -> Self {
         let origin = origin.unwrap_or("").trim_end_matches('/');
-        // Vite joins the decoded base (`decodedBase`).
-        let base = decode_uri(&crate::start_dev_url_base(base.unwrap_or("/")));
+        let base = crate::start_dev_url_base(base.unwrap_or("/"));
         Self {
-            prefix: format!("{origin}{base}"),
+            prefix: format!("{origin}{}", decode_uri(&base)),
+            raw_prefix: format!("{origin}{base}"),
             inline_limit: inline_limit.unwrap_or(4096),
             decider: None,
         }
@@ -149,49 +169,73 @@ impl DevAssetUrls {
         format!("{}{url}", self.prefix)
     }
 
-    /// Vite's dev fileToDevUrl for `file` requested as `url`: `inline` in the
-    /// query inlines any file, a small enough svg inlines (shouldInline), and
-    /// anything else is its URL under the prefix (see [`asset_export_url`]).
-    pub(crate) fn file_url(&self, file: &Path, url: &str) -> String {
-        if has_param(url, "inline") {
+    /// Vite's dev fileToDevUrl for `file` requested as `url` in environment
+    /// `env`: `inline` in the query inlines any file, a small enough svg
+    /// inlines (shouldInline), and anything else is its URL under the prefix
+    /// (see [`asset_export_url`]). An error is a function `assetsInlineLimit`
+    /// that threw, which fails the request as in Vite.
+    pub(crate) fn file_url(&self, env: &str, file: &Path, url: &str) -> Result<String, String> {
+        if has_word_param(url, "inline") {
             if let Ok(content) = std::fs::read(file) {
-                return asset_data_url(file, &content);
+                return Ok(asset_data_url(file, &content));
             }
         }
         if file.extension().is_some_and(|e| e == "svg") {
             if let Ok(content) = std::fs::read(file) {
-                if self.should_inline(file, url, &content) {
-                    return svg_to_data_url(&content);
+                if self.should_inline(env, file, url, &content)? {
+                    return Ok(svg_to_data_url(&content));
                 }
             }
         }
-        self.join(&asset_export_url(url))
+        Ok(self.join(&asset_export_url(url)))
     }
 
     /// Vite's dev shouldInline: `?no-inline` never, `?inline` always, an svg
     /// with a fragment never, then a function `assetsInlineLimit`'s answer,
     /// else under the limit (the default one after a function) unless a Git
     /// LFS pointer.
-    fn should_inline(&self, file: &Path, url: &str, content: &[u8]) -> bool {
-        if has_param(url, "no-inline") {
-            return false;
+    fn should_inline(
+        &self,
+        env: &str,
+        file: &Path,
+        url: &str,
+        content: &[u8],
+    ) -> Result<bool, String> {
+        if has_word_param(url, "no-inline") {
+            return Ok(false);
         }
-        if has_param(url, "inline") {
-            return true;
+        if has_word_param(url, "inline") {
+            return Ok(true);
         }
         if url.contains('#') {
-            return false;
+            return Ok(false);
         }
         let limit = match &self.decider {
-            Some(decider) => match (decider.0)(file) {
-                Some(inline) => return inline,
-                None => 4096,
+            Some(decider) => match (decider.0)(env, file)? {
+                InlineRule::Decide(inline) => return Ok(inline),
+                InlineRule::Limit(limit) => limit,
             },
             None => self.inline_limit,
         };
-        (content.len() as u64) < limit
-            && !content.starts_with(b"version https://git-lfs.github.com")
+        Ok((content.len() as u64) < limit
+            && !content.starts_with(b"version https://git-lfs.github.com"))
     }
+}
+
+/// Whether `url`'s query has `name` as Vite's `[?&]name\b` reads it: the
+/// parameter starts with it and no word character follows (`inline`,
+/// `inline=1`, `inline-x`, never `inlinex`).
+pub(crate) fn has_word_param(url: &str, name: &str) -> bool {
+    url.split_once('?').is_some_and(|(_, q)| {
+        q.split('&').any(|kv| {
+            kv.strip_prefix(name).is_some_and(|rest| {
+                !rest
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+            })
+        })
+    })
 }
 
 /// Vite's assetToDataURL: an svg as Vite's svgToDataURL encodes it, anything
@@ -232,46 +276,6 @@ pub(crate) fn svg_to_data_url(content: &[u8]) -> String {
         "data:image/svg+xml,{}",
         WHITESPACE.replace_all(&encoded, "%20")
     )
-}
-
-/// Vite's dev css urlReplacer (css.ts) over a sheet oj compiled with its urls
-/// rebased to served paths: a public file's `url()` is the prefix plus its
-/// path, never inlined; a file under the root is named as [`DevAssetUrls::file_url`]
-/// names it (a small svg inlined). `@import` urls and anything else stay.
-pub(crate) fn dev_css_urls(
-    root: &Path,
-    public_dir: Option<&Path>,
-    urls: &DevAssetUrls,
-    css: &str,
-) -> String {
-    static URL_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r#"(@import\s+)?url\(\s*(['"]?)([^'")]+)['"]?\s*\)"#).unwrap()
-    });
-    URL_RE
-        .replace_all(css, |caps: &regex::Captures<'_>| {
-            let target = caps[3].trim();
-            let keep = || caps[0].to_string();
-            if caps.get(1).is_some() || !target.starts_with('/') || target.starts_with("//") {
-                return keep();
-            }
-            let path = target.split(['?', '#']).next().unwrap_or(target);
-            let rel = path.trim_start_matches('/');
-            if public_dir.is_some_and(|p| p.join(rel).is_file()) {
-                return format!("url({})", serde_json::Value::String(urls.join(target)));
-            }
-            let file = match path.strip_prefix("/@fs") {
-                Some(abs) if abs.starts_with('/') => PathBuf::from(abs),
-                _ => root.join(rel),
-            };
-            if !file.is_file() {
-                return keep();
-            }
-            format!(
-                "url({})",
-                serde_json::Value::String(urls.file_url(&file, target))
-            )
-        })
-        .into_owned()
 }
 
 /// Vite's `/@vite/env` (client/env.ts): the client environment's user
@@ -322,14 +326,14 @@ Object.keys(defines).forEach((key) => {{
 }
 
 /// A worker's dev URL (vite:worker's load): fileToUrl of the clean file with
-/// `worker_file&type=<type>` injected; `type` is the request's own (oj's
-/// rewrite of `new Worker(new URL(...), opts)` passes the options' type),
-/// else `module`, as an `import ... from "./w.js?worker"` always is in dev.
+/// `worker_file&type=<type>` injected. The type is `module`, as an import of
+/// `./w.js?worker` always is in dev, unless oj's own rewrite of
+/// `new Worker(new URL(...), opts)` passed the options' one (`worker_type`).
 fn worker_url(urls: &DevAssetUrls, url: &str) -> String {
     let (clean, query) = url.split_once('?').unwrap_or((url, ""));
     let worker_type = query
         .split('&')
-        .find_map(|kv| kv.strip_prefix("type="))
+        .find_map(|kv| kv.strip_prefix("worker_type="))
         .filter(|t| matches!(*t, "module" | "classic" | "ignore"))
         .unwrap_or("module");
     urls.join(&format!("{clean}?worker_file&type={worker_type}"))
@@ -365,6 +369,7 @@ pub(crate) async fn asset_module(
     url: &str,
     kind: &str,
     urls: &DevAssetUrls,
+    env: &str,
 ) -> Result<String, String> {
     let clean_url = url.split('?').next().unwrap_or(url);
     match kind {
@@ -380,7 +385,7 @@ pub(crate) async fn asset_module(
                 return Ok(js_default(worker_url(urls, url)));
             }
             // vite:asset's load exports `encodeURIPath(url)`.
-            Ok(js_default(encode_uri_path(&urls.file_url(file, url))))
+            Ok(js_default(encode_uri_path(&urls.file_url(env, file, url)?)))
         }
         "raw" => {
             let text = tokio::fs::read_to_string(file)
@@ -428,9 +433,10 @@ pub(crate) async fn inline_css_module(
     let clean = url.split('?').next().unwrap_or(url);
     let url = format!("{clean}?inline");
     let (_, module) = Box::pin(ensure_module(state, file, &url)).await?;
+    let sheet = served_sheet(state, "client", &module.code)?;
     let code = format!(
         "export default {};\n",
-        serde_json::to_string(&module.code).unwrap()
+        serde_json::to_string(&sheet).unwrap()
     );
     let id = format!("{}?inline", file.display());
     css_post(state, file, &url, &id, code).await

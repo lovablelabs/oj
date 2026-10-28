@@ -605,19 +605,35 @@ fn worker_type(raw: &str, clean: &str, from: usize) -> &'static str {
     if clean[comma + 1..end].trim().is_empty() {
         return "classic";
     }
+    // Keys and values are read off the raw options, but only where they are
+    // code: strip_literals keeps a string's quotes and blanks its body and
+    // every comment, so a match inside either has no twin in `clean`. The
+    // last `type` wins, as in the evaluated object.
     static TYPE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let type_re = TYPE.get_or_init(|| {
-        regex::Regex::new(r#"(?:^|[{,\s])["']?type["']?\s*:\s*(?:"(module|classic)"|'(module|classic)'|`(module|classic)`)"#)
+        regex::Regex::new(r#"(?:^|[{,\s])(["']?type["']?)\s*:\s*(?:(["'`])([^"'`]*)["'`])?"#)
             .unwrap()
     });
-    match type_re
-        .captures(options)
-        .and_then(|c| c.get(1).or(c.get(2)).or(c.get(3)))
-        .map(|m| m.as_str())
-    {
-        Some("module") => "module",
-        _ => "classic",
+    let base = comma + 1;
+    let is_code = |at: usize| clean.as_bytes().get(base + at) == raw.as_bytes().get(base + at);
+    let mut found = "classic";
+    for caps in type_re.captures_iter(options) {
+        let key = caps.get(1).expect("key group");
+        if !is_code(key.start()) || !is_code(key.end() - 1) {
+            continue;
+        }
+        let value = caps
+            .get(2)
+            .filter(|quote| is_code(quote.start()))
+            .and_then(|_| caps.get(3))
+            .map(|v| v.as_str());
+        found = if value == Some("module") {
+            "module"
+        } else {
+            "classic"
+        };
     }
+    found
 }
 
 /// One `new URL(<literal>, import.meta.url)` site (or the URL of a
@@ -827,14 +843,14 @@ pub fn apply_import_meta_urls(code: &str, sites: &[MetaUrl], targets: &[MetaUrlT
                 MetaUrlTarget::File(abs),
             ) => {
                 let kind = if *shared { "sharedworker" } else { "worker" };
-                // `type` carries the options' worker type to the URL module,
-                // which names the file `?worker_file&type=<type>` (Vite).
+                // `worker_type` (oj's own) carries the options' worker type to
+                // the URL module, which names the file `?worker_file&type=<type>`.
                 let ident = hoist(
                     "worker_url",
                     inject_query(
                         &abs.to_string_lossy(),
                         postfix,
-                        &format!("{kind}&url&type={worker_type}"),
+                        &format!("{kind}&url&worker_type={worker_type}"),
                     ),
                     &mut hoisted,
                 );

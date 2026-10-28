@@ -1260,15 +1260,27 @@ impl PluginHost {
         self.call("load", &[id]).await
     }
 
-    /// A function-valued `build.assetsInlineLimit`'s answer for `file`: Some
-    /// to inline or not, None for the size default (or no function).
-    pub async fn assets_inline_limit(&self, file: &Path) -> Option<bool> {
-        match self
-            .call("assetsInlineLimit", &[&file.to_string_lossy()])
-            .await
-        {
-            Ok(Some(answer)) => Some(answer == "true"),
-            _ => None,
+    /// Environment `env`'s `build.assetsInlineLimit` for `file`: Ok(Ok(true
+    /// or false)) when a function decided, Ok(Err(limit)) with the byte limit
+    /// to apply instead, or the error the function threw.
+    pub async fn assets_inline_limit(
+        &self,
+        env: &str,
+        file: &Path,
+    ) -> Result<Result<bool, u64>, String> {
+        let answer = self
+            .call("assetsInlineLimit", &[env, &file.to_string_lossy()])
+            .await?
+            .ok_or_else(|| "assetsInlineLimit: no answer from the plugin host".to_string())?;
+        let v: serde_json::Value =
+            serde_json::from_str(&answer).map_err(|e| format!("assetsInlineLimit: {e}"))?;
+        match (
+            v.get("inline").and_then(|i| i.as_bool()),
+            v.get("limit").and_then(|l| l.as_u64()),
+        ) {
+            (Some(inline), _) => Ok(Ok(inline)),
+            (None, Some(limit)) => Ok(Err(limit)),
+            _ => Err(format!("assetsInlineLimit: unexpected answer {answer}")),
         }
     }
 

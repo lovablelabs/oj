@@ -377,3 +377,98 @@ async fn builtins_aliases_and_a_no_external_packages_imports_decide_as_in_vite()
         "a noExternal package's bare import is decided on its own: {inner}"
     );
 }
+
+// Vite's checkPublicFile only names files inside the public dir: a
+// root-relative id that climbs out of it, or any queried id outside the
+// allowed roots, is never read.
+#[tokio::test(flavor = "multi_thread")]
+async fn ssr_asset_ids_never_read_outside_the_allowed_roots() {
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"ssrtraverse","private":true,"type":"module"}"#,
+        ),
+        ("public/logo.png", "png"),
+        ("src/main.js", "export {};\n"),
+        ("index.html", INDEX_HTML),
+    ]);
+    let outside = app.root.parent().unwrap().join("secret-ssr-outside.txt");
+    std::fs::write(&outside, "TOP-SECRET").unwrap();
+    let server = app.serve().await;
+    for id in [
+        "/../../secret-ssr-outside.txt%3Fraw".to_string(),
+        "/../secret-ssr-outside.txt%3Finline".to_string(),
+        format!("{}%3Fraw", outside.display()),
+    ] {
+        let r = server.get(&format!("/@ssr-module?id={id}")).await;
+        assert!(
+            r.status != 200 && !r.body.contains("TOP-SECRET") && !r.body.contains("VE9QLVNFQ1JFVA"),
+            "{id}: {} {}",
+            r.status,
+            r.body
+        );
+    }
+    let _ = std::fs::remove_file(&outside);
+}
+
+// importAnalysis gates the builtin check on `!matchAlias` too: an alias of a
+// builtin name loads its target through the pipeline.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_aliased_builtin_name_goes_through_the_pipeline() {
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"ssraliasbuiltin","private":true,"type":"module"}"#,
+        ),
+        (
+            "oj.config.json",
+            r#"{ "resolve": { "alias": { "events": "events-polyfill" } } }"#,
+        ),
+        (
+            "node_modules/events-polyfill/package.json",
+            r#"{"name":"events-polyfill","version":"1.0.0","type":"module","main":"index.js"}"#,
+        ),
+        (
+            "node_modules/events-polyfill/index.js",
+            "export default 'polyfill';\n",
+        ),
+        ("src/main.js", "export {};\n"),
+        ("index.html", INDEX_HTML),
+    ]);
+    let server = app.serve().await;
+    let main = app.root.join("src/main.js");
+    let r = ssr_resolve(&server, &main, "events").await;
+    assert!(
+        !r.contains(r#""external""#) && r.contains("/node_modules/events-polyfill/index.js\""),
+        "{r}"
+    );
+    let fs = ssr_resolve(&server, &main, "fs").await;
+    assert!(fs.contains(r#""external":true"#), "{fs}");
+}
+
+// A plain import of a public asset in the server render is its URL module,
+// as vite:asset's load names it; a stylesheet's inlined svg follows the svg
+// as it is now (the url rewrite runs when the sheet is served).
+#[tokio::test(flavor = "multi_thread")]
+async fn public_imports_and_inlined_svgs_in_sheets_stay_current() {
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"ssrpublicplain","private":true,"type":"module"}"#,
+        ),
+        ("public/logo.png", "png"),
+        ("src/i.svg", "<svg></svg>\n"),
+        ("src/style.css", ".a { background: url(./i.svg) }\n"),
+        ("src/main.js", "export {};\n"),
+        ("index.html", INDEX_HTML),
+    ]);
+    let server = app.serve().await;
+    let logo = server.text("/@ssr-module?id=/logo.png").await;
+    assert!(logo.contains(r#"export default "/logo.png""#), "{logo}");
+
+    let before = server.text("/src/style.css?direct").await;
+    assert!(before.contains("%3csvg%3e%3c/svg%3e"), "{before}");
+    app.write(&[("src/i.svg", "<svg><g/></svg>\n")]);
+    let after = server.text("/src/style.css?direct").await;
+    assert!(after.contains("%3csvg%3e%3cg/%3e%3c/svg%3e"), "{after}");
+}

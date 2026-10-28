@@ -1107,6 +1107,13 @@ function extractSsr(ssr, ssrEnvironment) {
   if (ne === true || (Array.isArray(ne) && ne.length)) out.noExternal = ne;
   if (ex === true || (Array.isArray(ex) && ex.length)) out.external = ex;
   if (typeof ssr.target === "string") out.target = ssr.target;
+  // The ssr environment's resolve.builtins (createIsBuiltin's input): strings,
+  // and RegExps as their source and flags.
+  if (Array.isArray(envResolve?.builtins)) {
+    out.builtins = envResolve.builtins
+      .map((b) => (typeof b === "string" ? b : b instanceof RegExp ? { regex: b.source, flags: b.flags } : null))
+      .filter((b) => b !== null);
+  }
   const res = extractResolve(ssr.resolve);
   if (res) out.resolve = res;
   return Object.keys(out).length ? out : null;
