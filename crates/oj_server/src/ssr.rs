@@ -193,6 +193,18 @@ async fn ssr_resolve_raw(
     Err(format!("cannot resolve {spec}: {}", err.reason))
 }
 
+/// Whether a resolved dependency file may be left to Node: Vite's
+/// canExternalizeFile, `path.extname` included, which reads a query as part of
+/// the extension (`x.css?url` is `.css?url`, never JavaScript).
+pub fn can_externalize_file(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let ext = match name.rfind('.') {
+        Some(i) if i > 0 => &name[i + 1..],
+        _ => "",
+    };
+    matches!(ext, "" | "js" | "mjs" | "cjs")
+}
+
 pub(crate) async fn ssr_resolve_inner(
     state: &Arc<ServerState>,
     importer: &str,
@@ -201,11 +213,9 @@ pub(crate) async fn ssr_resolve_inner(
     Ok(match ssr_resolve_raw(state, importer, spec).await? {
         RawResolution::Path(p) => {
             let s = p.to_string_lossy();
-            // A dependency stylesheet or JSON file is served like the app's
-            // own: Vite only externalizes JavaScript (canExternalizeFile), and
-            // the runtime would parse a stylesheet as a module.
-            let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
-            if s.contains("/node_modules/") && !is_style_ext(ext) && ext != "json" {
+            // Only a JavaScript dependency file is Node's: a stylesheet, JSON,
+            // raw TypeScript or `x.css?url` is served like the app's own.
+            if s.contains("/node_modules/") && can_externalize_file(&s) {
                 SsrResolution::External(spec.to_string())
             } else {
                 SsrResolution::Module(s.into_owned())
@@ -279,6 +289,9 @@ pub(crate) async fn ssr_module_inner(
             "oj: module not allow-listed".into(),
         ));
     }
+    if let Some(code) = ssr_query_asset(state, id, runner).await? {
+        return Ok(code);
+    }
     let ext = path.extension().and_then(|e| e.to_str());
     // A sheet a plugin serves with no file behind it compiles like a file.
     let served = || async {
@@ -312,6 +325,48 @@ pub(crate) async fn ssr_module_inner(
             .map_err(|e| SsrModuleError::Failed(format!("{e}")));
     }
     ssr_transform_source(state, id, source, from_plugin, runner).await
+}
+
+/// `?url`, `?raw` and `?inline` on a file: vite:asset's load, which answers
+/// them in every environment, so the server render names the URL the browser
+/// imports. A plugin that loads the id itself goes first.
+async fn ssr_query_asset(
+    state: &Arc<ServerState>,
+    id: &str,
+    runner: bool,
+) -> Result<Option<String>, SsrModuleError> {
+    let Some((file, query)) = id.split_once('?') else {
+        return Ok(None);
+    };
+    let kind = match query_asset_kind(Some(query)) {
+        Some(kind @ ("url" | "raw" | "inline")) => kind,
+        _ => return Ok(None),
+    };
+    let path = Path::new(file);
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    // A stylesheet's `?inline` is its compiled text, not the file's bytes.
+    if !path.is_file() || (kind == "inline" && is_style_ext(ext)) {
+        return Ok(None);
+    }
+    if !ssr_module_allowed(state, path) {
+        return Err(SsrModuleError::Forbidden(
+            "oj: module not allow-listed".into(),
+        ));
+    }
+    if let Some(host) = ssr_plugin_host(state).await {
+        if host.hook_wants_load(id) {
+            if let Ok(Some(code)) = host.load(id).await {
+                return ssr_transform_source(state, id, code, true, runner)
+                    .await
+                    .map(Some);
+            }
+        }
+    }
+    let url = format!("{}?{query}", url_of(&state.root, path));
+    asset_module(path, &url, kind)
+        .await
+        .map(Some)
+        .map_err(SsrModuleError::Failed)
 }
 
 /// A stylesheet as the SSR environment's module: its class map, through that

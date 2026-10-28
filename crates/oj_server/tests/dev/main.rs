@@ -81,6 +81,7 @@ mod query_assets;
 mod redirect_passthrough;
 mod resolve_created_files;
 mod restart_check;
+mod ssr_externalize;
 mod stylex;
 mod svelte;
 mod svgr;

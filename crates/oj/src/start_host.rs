@@ -154,12 +154,9 @@ fn ext_of(path: &str) -> &str {
     }
 }
 
-/// Whether a resolved dependency file may stay external to an SSR bundle:
-/// Vite's canExternalizeFile, which hands Node only JavaScript (a stylesheet,
-/// JSON or raw TypeScript bundles through the plugins instead).
-pub(crate) fn can_externalize_file(path: &str) -> bool {
-    matches!(ext_of(path), "" | "js" | "mjs" | "cjs")
-}
+/// Whether a resolved dependency file may stay external to an SSR bundle
+/// (a stylesheet, JSON or raw TypeScript bundles through the plugins instead).
+pub(crate) use oj_server::can_externalize_file;
 
 /// A source file the runtime cannot load natively from node_modules: Node and
 /// byonm refuse to strip types there, and nothing executes raw JSX.
