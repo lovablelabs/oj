@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.49] - 2026-10-28
+
 ### Fixed
 
 - oj gives back the memory the npm rolldown binding (which Vite 8 runs on) frees, in every command that loads it: `oj dev` after its first compile, and `oj build`. The binding's mimalloc kept freed arenas mapped on rolldown's idle worker threads (rolldown#10985, #11143), and a Cloudflare Start app held about 450 MB of it after its worker environment's first compile; oj now sets `MIMALLOC_ARENA_PURGE_MULT=0` unless it is already set, the workaround those issues measure. On a large Cloudflare Start app the binding's heap now falls from 458 MB to 75 MB within seconds of the first compile instead of staying at about 450 MB; on a synthetic one with 1,500 components its idle heap drops from 73–86 MB to 25–27 MB on macOS, and the process's RSS after a run of edits from 1,321–1,471 MB to 857–911 MB on Linux, with the same render and rebuild times. macOS lists this memory as `IOAccelerator` in `vmmap`: mimalloc's default region tag is the GPU driver's.
