@@ -535,6 +535,12 @@ async fn ssr_loads_follow_fs_strict_and_resolved_package_files() {
             r#"{"name":"ssrstrict","private":true,"type":"module"}"#,
         ),
         ("src/main.js", "export {};\n"),
+        // Imported by the server render only, so the client's crawl never
+        // allows its imports.
+        (
+            "src/server.js",
+            "import { v } from \"outlinked\";\nexport { v };\n",
+        ),
         ("index.html", INDEX_HTML),
     ]);
     let outside = app.root.parent().unwrap().join("ssr-linked-outside");
@@ -559,10 +565,35 @@ async fn ssr_loads_follow_fs_strict_and_resolved_package_files() {
         async move { server.get(&url).await }
     };
     assert_ne!(load().await.status, 200, "not resolved yet");
+    let resolve = |importer: &std::path::Path, spec: &str| {
+        let url = format!("/@ssr-resolve?importer={}&spec={spec}", importer.display());
+        let server = &server;
+        async move { server.text(&url).await }
+    };
+    // Resolving it for an importer the pipeline never served, or one whose
+    // code does not import it, makes nothing loadable.
+    let nowhere = app
+        .root
+        .parent()
+        .unwrap()
+        .join("ssr-strict-nowhere/nope.js");
+    resolve(&nowhere, "outlinked").await;
+    resolve(&app.root.join("src/server.js"), "outlinked").await;
+    assert_ne!(
+        load().await.status,
+        200,
+        "resolved for code oj never served"
+    );
+    server
+        .text(&format!(
+            "/@ssr-module?id={}",
+            app.root.join("src/server.js").display()
+        ))
+        .await;
     let resolved = server
         .text(&format!(
             "/@ssr-resolve?importer={}&spec=outlinked",
-            app.root.join("src/main.js").display()
+            app.root.join("src/server.js").display()
         ))
         .await;
     assert!(resolved.contains("index.ts"), "{resolved}");
@@ -573,24 +604,31 @@ async fn ssr_loads_follow_fs_strict_and_resolved_package_files() {
         r.status,
         r.body
     );
-    // A relative specifier makes nothing loadable.
+    // A specifier the served code does not import makes nothing loadable,
+    // however it is spelled or wherever its importer claims to be.
     let secret = app.root.parent().unwrap().join("ssr-strict-secret.txt");
     std::fs::write(&secret, "TOP-SECRET").unwrap();
-    server
-        .text(&format!(
-            "/@ssr-resolve?importer={}&spec=../../ssr-strict-secret.txt",
-            app.root.join("src/main.js").display()
-        ))
-        .await;
-    let r = server
-        .get(&format!("/@ssr-module?id={}%3Fraw", secret.display()))
-        .await;
-    assert!(
-        r.status != 200 && !r.body.contains("TOP-SECRET"),
-        "{} {}",
-        r.status,
-        r.body
-    );
+    let other = app.root.parent().unwrap().join("ssr-strict-other");
+    std::fs::create_dir_all(other.join("node_modules/victim")).unwrap();
+    std::fs::write(other.join("node_modules/victim/secret.txt"), "TOP-SECRET").unwrap();
+    let main = app.root.join("src/server.js");
+    resolve(&main, "../../ssr-strict-secret.txt").await;
+    resolve(&main, "victim/secret.txt").await;
+    resolve(&other.join("nope.js"), "victim/secret.txt").await;
+    for file in [secret.clone(), other.join("node_modules/victim/secret.txt")] {
+        for url in [
+            format!("/@ssr-module?id={}%3Fraw", file.display()),
+            format!("/@fs{}", file.display()),
+        ] {
+            let r = server.get(&url).await;
+            assert!(
+                r.status != 200 && !r.body.contains("TOP-SECRET"),
+                "{url}: {} {}",
+                r.status,
+                r.body
+            );
+        }
+    }
     drop(server);
 
     app.write(&[(
@@ -609,6 +647,7 @@ async fn ssr_loads_follow_fs_strict_and_resolved_package_files() {
     );
     let _ = std::fs::remove_file(&secret);
     let _ = std::fs::remove_dir_all(&outside);
+    let _ = std::fs::remove_dir_all(&other);
 }
 
 // vite:asset loads any asset id in every environment, and vite:css-post
@@ -622,7 +661,10 @@ async fn plain_asset_and_inline_sheet_imports_load_in_ssr() {
         ),
         ("src/dot.svg", "<svg></svg>"),
         ("src/img.png", "png"),
-        ("src/c.css", ".c { color: red; }\n"),
+        (
+            "src/c.css",
+            ".c { color: red; background: url(./img.png) }\n",
+        ),
         ("src/main.js", "export {};\n"),
         ("index.html", INDEX_HTML),
     ]);
@@ -639,9 +681,51 @@ async fn plain_asset_and_inline_sheet_imports_load_in_ssr() {
     );
     let png = module("src/img.png").await;
     assert!(png.contains("export default \"/src/img.png\""), "{png}");
+    // The same text the client's `?inline` compiles, urls rewritten.
     let inline = module("src/c.css%3Finline").await;
     assert!(
-        inline.contains("export default \"") && inline.contains("color") && inline.contains(".c"),
+        inline.contains("export default \"")
+            && inline.contains(".c")
+            && inline.contains("/src/img.png"),
         "{inline}"
     );
+    // `inline=1` is `inline` too, and a non-asset's plain module, once.
+    let main = module("src/main.js%3Finline%3D1").await;
+    assert!(main.contains("export"), "{main}");
+    assert!(module("src/main.js").await.contains("export"));
+}
+
+// vite:asset's load result takes the environment's transforms: a plugin that
+// makes a plain svg a component (svgr) does so in the server render too.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_transform_plugin_componentizes_a_plain_svg_in_ssr() {
+    let plugins = r#"export default [{
+  name: "svg-component",
+  transform(code, id) {
+    // Componentizes the markup, as svgr does (the client hands it the file).
+    if (!id.split("?")[0].endsWith(".svg") || !code.startsWith("<svg")) return;
+    return `export default function Icon() { return ${JSON.stringify(code)}; }`;
+  },
+}];
+"#;
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"ssrsvgplugin","private":true,"type":"module"}"#,
+        ),
+        ("src/icon.svg", "<svg></svg>"),
+        ("src/main.js", "export {};\n"),
+        ("index.html", INDEX_HTML),
+        ("oj.plugins.mjs", plugins),
+    ]);
+    let server = app.serve().await;
+    let client = server.text("/src/icon.svg?import").await;
+    assert!(client.contains("function Icon"), "{client}");
+    let ssr = server
+        .text(&format!(
+            "/@ssr-module?id={}",
+            app.root.join("src/icon.svg").display()
+        ))
+        .await;
+    assert!(ssr.contains("function Icon"), "{ssr}");
 }

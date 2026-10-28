@@ -2604,6 +2604,8 @@ fn served_sheet_urls_follow_vites_url_rewrite() {
                             .map(|rest| format!("{}/src/{rest}", root.display()))
                     })
             },
+            // The package's file where its `exports` would point.
+            package: &|_, spec| Some(root.join("node_modules").join(spec)).filter(|p| p.is_file()),
         }
         .rewrite(css)
         .unwrap()
@@ -2652,6 +2654,7 @@ fn served_sheet_urls_follow_vites_url_rewrite() {
         stamp: &|_| 0,
         dir: None,
         alias: &|_| None,
+        package: &|_, _| None,
     }
     .rewrite(
         "a::before{content:\"url(/l.svg)\"} a{b:url(/src/p.png) url(/src/i.svg) url(/src/p.png)}",
@@ -2672,6 +2675,7 @@ fn served_sheet_urls_follow_vites_url_rewrite() {
         stamp: &|_| 0,
         dir: None,
         alias: &|_| None,
+        package: &|_, _| None,
     }
     .rewrite("a{b:url(/src/%E0%A4%A.png)}");
     assert!(malformed.is_err_and(|e| e.contains("URI malformed")));

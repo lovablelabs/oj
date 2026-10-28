@@ -325,22 +325,12 @@ fn memory_hit(state: &ServerState, url: &str, key: &str) -> Option<Arc<CachedMod
 }
 
 fn store_module(state: &ServerState, url: &str, key: &str, module: &Arc<CachedModule>) {
-    // A sheet that may have inlined an asset embeds its content as it is now
-    // (an svg; any file under `?inline`, which leaves a data URL): kept in
-    // memory, recompiled when one changes, never persisted. A `t=` stamp is
-    // 0 after a restart, so other asset urls persist.
-    let inlines_assets = module.kind == "css" && {
-        let assets: Vec<&Path> = module
-            .imports
-            .iter()
-            .map(|i| Path::new(i.split('?').next().unwrap_or(i)))
-            .filter(|p| is_asset_path(p))
-            .collect();
-        assets
-            .iter()
-            .any(|p| p.extension().is_some_and(|e| e == "svg"))
-            || (!assets.is_empty() && module.code.contains("data:"))
-    };
+    // A sheet that may have inlined a file it names (a small svg; any file
+    // under `?inline`, a JSON one included) embeds its content as it is now:
+    // kept in memory, recompiled when one changes, never persisted. A `t=`
+    // stamp is 0 after a restart, so a sheet with only asset URLs persists.
+    let inlines_assets =
+        module.kind == "css" && !module.imports.is_empty() && module.code.contains("data:");
     if state.persistent_cache && !inlines_assets {
         let _ = state
             .cache_writes
@@ -742,6 +732,12 @@ pub(crate) fn rewrite_sheet_urls(
     };
     let resolve = state.css_resolve.as_ref();
     let alias = |spec: &str| resolve.alias_spec(spec);
+    // The css url resolver probes no extensions (`extensions: []`): a file
+    // with another extension than the url's is not what it names.
+    let package = |dir: &Path, spec: &str| {
+        let file = state.resolver.resolve(dir, spec).ok()?;
+        (file.extension() == Path::new(spec).extension()).then_some(file)
+    };
     crate::css_urls::CssUrls {
         root: &state.root,
         public_dir: state.public_dir.as_deref(),
@@ -750,6 +746,7 @@ pub(crate) fn rewrite_sheet_urls(
         stamp: &stamp,
         dir: sheet_dir(sheet),
         alias: &alias,
+        package: &package,
     }
     .rewrite(css)
 }

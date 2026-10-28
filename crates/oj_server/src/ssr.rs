@@ -436,20 +436,19 @@ pub(crate) async fn ssr_resolve_inner(
             if !aliased && ssr_externalizes(&state.ssr_externals, spec, &s) {
                 SsrResolution::External(spec.to_string())
             } else {
-                // Vite's safeModulePaths: the file a package import resolved
-                // to may load, wherever it is linked. This route is HTTP, so
-                // only a bare specifier with no `..` from a loadable importer
-                // counts (a relative one could name any file).
+                // Vite's safeModulePaths: the file an import of code the
+                // pipeline served resolved to may load, wherever it is. This
+                // route is HTTP, so the import must be one the importer's own
+                // code makes, never just what a request names.
                 let file = Path::new(s.split('?').next().unwrap_or(&s));
-                let package_import =
-                    is_bare_import(spec) && !spec.split('/').any(|seg| seg == "..");
-                if package_import
-                    && file.is_absolute()
-                    && ssr_module_allowed(
-                        state,
-                        Path::new(importer.split('?').next().unwrap_or(importer)),
-                    )
-                {
+                let importer_file = Path::new(importer.split('?').next().unwrap_or(importer));
+                let imported = state
+                    .ssr_imports
+                    .lock()
+                    .unwrap()
+                    .get(importer_file)
+                    .is_some_and(|specs| specs.contains(spec));
+                if imported && file.is_absolute() {
                     crate::util::allow_root(&state.fs_allow, file.to_path_buf());
                 }
                 SsrResolution::Module(s.into_owned())
@@ -502,8 +501,9 @@ pub(crate) fn module_read_allowed(
         .any(|allowed| candidate.starts_with(real(allowed)))
 }
 
-/// Vite's isFileLoadingAllowed: `server.fs.deny` first, then everything
-/// under `server.fs.strict: false`, else the allowed roots.
+/// Vite's isFileLoadingAllowed: everything under `server.fs.strict: false`,
+/// else the allowed roots, `server.fs.deny` aside. Unlike Vite, the deny list
+/// holds under `strict: false` too, as in oj's browser gate.
 pub(crate) fn ssr_module_allowed(state: &ServerState, path: &Path) -> bool {
     let real = std::fs::canonicalize(path).ok();
     if [Some(path), real.as_deref()]
@@ -627,11 +627,19 @@ async fn ssr_query_asset(
     }
     // `?inline` on a file vite:asset does not load is the plain module.
     if kind == "inline" && !is_asset_path(path) {
-        let rest: Vec<&str> = query.split('&').filter(|kv| *kv != "inline").collect();
+        // Every parameter `[?&]inline\b` reads as `inline` goes (`inline=1`
+        // too), so the plain id never asks for `?inline` again.
+        let rest: Vec<&str> = query
+            .split('&')
+            .filter(|kv| !has_word_param(&format!("?{kv}"), "inline"))
+            .collect();
         let plain = match rest.is_empty() {
             true => file.to_string(),
             false => format!("{file}?{}", rest.join("&")),
         };
+        if plain == id {
+            return Ok(None);
+        }
         return Box::pin(ssr_module_inner(state, &plain, runner))
             .await
             .map(Some);
@@ -650,6 +658,14 @@ async fn ssr_query_asset(
             }
         }
     }
+    // A plain svg a transform plugin may componentize (svgr) goes through
+    // the transforms, as the client's does; left as markup, it is a URL.
+    let plain_svg = !id.contains('?') && ext == "svg" && state.plugins_have_transform;
+    if plain_svg {
+        if let Some(code) = ssr_svg_component(state, id, path, runner).await? {
+            return Ok(Some(code));
+        }
+    }
     let url = match public {
         Some(_) => format!("{}?{query}", file),
         None => format!("{}?{query}", url_of(&state.root, path)),
@@ -657,6 +673,15 @@ async fn ssr_query_asset(
     let code = asset_module(path, &url, kind, &state.asset_urls, "ssr")
         .await
         .map_err(SsrModuleError::Failed)?;
+    // vite:asset's load result takes the environment's transforms, as every
+    // load does.
+    if let Some(host) = ssr_plugin_host(state).await {
+        if host.hook_wants_transform(id, &code) {
+            return ssr_transform_source(state, id, code, true, runner)
+                .await
+                .map(Some);
+        }
+    }
     // The module runner takes every module in its transformed form.
     if runner {
         return ssr_compile_source(state, id, code, true, true).map(Some);
@@ -681,20 +706,55 @@ async fn ssr_style_module(
     style_slot(slots, module.code, "post").await
 }
 
-/// A stylesheet's `?inline` module in the SSR environment: its compiled text
-/// as the default export, through the same plugin slots.
+/// A plain svg's module once a transform plugin made it code (svgr), compiled
+/// for the ssr environment; None when the transforms leave markup.
+async fn ssr_svg_component(
+    state: &Arc<ServerState>,
+    id: &str,
+    path: &Path,
+    runner: bool,
+) -> Result<Option<String>, SsrModuleError> {
+    let Some(host) = ssr_plugin_host(state).await else {
+        return Ok(None);
+    };
+    let source = tokio::fs::read_to_string(path)
+        .await
+        .map_err(|e| SsrModuleError::Failed(format!("read {id}: {e}")))?;
+    if !host.hook_wants_transform(id, &source) {
+        return Ok(None);
+    }
+    let resolver = host
+        .own_environment_resolver("ssr")
+        .unwrap_or_else(|| Arc::clone(&state.ssr_resolver));
+    let resolved = resolved_imports_json(&resolver, &state.fs_allow, &source, path);
+    let code = host
+        .transform(&source, id, &resolved)
+        .await
+        .map_err(|e| SsrModuleError::Failed(format!("oj: plugin transform error for {id}:\n{e}")))?
+        .code;
+    if code.trim_start().starts_with('<') {
+        return Ok(None);
+    }
+    ssr_compile_source(state, id, code, true, runner).map(Some)
+}
+
+/// A stylesheet's `?inline` module in the SSR environment: the text the
+/// client's `?inline` compiles (vite:css's url rewrite, PostCSS and Tailwind
+/// included; the sheet is the same in every environment) as the default
+/// export, through the ssr environment's "post" slot.
 async fn ssr_inline_style(
     state: &Arc<ServerState>,
     id: &str,
     path: &Path,
 ) -> Result<String, String> {
+    let url = format!("{}?inline", url_of(&state.root, path));
+    let (_, module) = Box::pin(crate::module_pipeline::ensure_module(state, path, &url)).await?;
+    let code = format!(
+        "export default {}",
+        serde_json::Value::String(module.code.clone())
+    );
     let host = ssr_plugin_host(state).await;
     let slots = host.as_deref().map(|host| StyleSlots { host, id });
-    let source = read_style_source(slots, path).await?;
-    let source = style_slot(slots, source, "pre").await?;
-    let module = style_file(state, path, source).await?;
-    let css = style_slot(slots, module.css, "normal").await?;
-    let code = format!("export default {}", serde_json::Value::String(css));
     style_slot(slots, code, "post").await
 }
 
@@ -788,6 +848,11 @@ fn compile_ssr(
     } else {
         PathBuf::from(id)
     };
+    let served = PathBuf::from(id.split('?').next().unwrap_or(id));
+    let specs = oj_compiler::imports(&source, &compile_path)
+        .into_iter()
+        .collect();
+    state.ssr_imports.lock().unwrap().insert(served, specs);
     // Compile as dev + ssr so `import.meta.env.SSR` is true and `DEV`/`MODE`
     // match the client; Fast Refresh stays off on the server.
     let mut opts = dev_compile_opts(state);

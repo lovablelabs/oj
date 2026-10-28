@@ -285,6 +285,9 @@ struct ServerState {
     compile_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     crawl_done: tokio::sync::watch::Receiver<bool>,
     fs_allow: Arc<Mutex<std::collections::HashSet<PathBuf>>>,
+    /// What each module the ssr pipeline served imports, as its own code
+    /// says: only those resolutions are safe module paths.
+    ssr_imports: Mutex<HashMap<PathBuf, std::collections::HashSet<String>>>,
     /// `server.fs.strict` (default true). When false the allow list is not
     /// consulted for `/@fs/` paths; the deny list always is, as in Vite.
     fs_strict: bool,
@@ -1954,6 +1957,7 @@ impl DevServer {
             css_resolve,
             csp_nonce: oj_config::html_csp_nonce(&config),
             fs_allow: Arc::new(Mutex::new(fs_allow_list(&root, &server_cfg))),
+            ssr_imports: Mutex::default(),
             fs_strict,
             fs_deny: compile_fs_deny(&oj_config::server_fs_deny(&config)),
             dir_cache: Arc::new(Mutex::new(DirCache::new())),

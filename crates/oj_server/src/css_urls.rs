@@ -24,6 +24,8 @@ pub(crate) struct CssUrls<'a> {
     pub(crate) dir: Option<&'a Path>,
     /// `resolve.alias` for a url: the specifier it becomes.
     pub(crate) alias: &'a dyn Fn(&str) -> Option<String>,
+    /// A package specifier's file from a directory (its `exports` honored).
+    pub(crate) package: &'a dyn Fn(&Path, &str) -> Option<PathBuf>,
 }
 
 /// What a resolved url names.
@@ -53,7 +55,7 @@ impl CssUrls<'_> {
     /// order: Vite's checkPublicFile for a root-absolute url first, then
     /// `resolve.alias`; a root-absolute result under the root (or `/@fs`, or
     /// an absolute file), a relative one against the sheet's directory
-    /// (`preferRelative`), else a package's file in a `node_modules` above it.
+    /// (`preferRelative`), else a package's file as the resolver finds it.
     fn target(&self, path: &str) -> Option<Target> {
         if let Some(rel) = path.strip_prefix('/').filter(|r| !r.starts_with('/')) {
             if let Some(public) = self.public_dir {
@@ -84,9 +86,7 @@ impl CssUrls<'_> {
         if spec.starts_with('.') {
             return None;
         }
-        oj_css::node_modules_load_paths(dir)
-            .into_iter()
-            .find_map(|nm| found(nm.join(spec)))
+        (self.package)(dir, spec).and_then(found)
     }
 
     /// Vite's urlResolver: the url `decodeURI`d (a malformed escape fails the
