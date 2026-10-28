@@ -69,6 +69,25 @@ function imageVariantPlugin(): Plugin {
   };
 }
 
+// A `pre` resolveId that answers a bare import by its query, as a package's
+// `styles.css?url` plugin does: it must see the query, in SSR as in the browser.
+function sheetUrlPlugin(): Plugin {
+  const RESOLVED = "\0fixture-sheet-url";
+  return {
+    name: "fixture-sheet-url",
+    enforce: "pre",
+    resolveId: {
+      filter: { id: /^fixture-sheet\/styles\.css\?url$/ },
+      handler() {
+        return RESOLVED;
+      },
+    },
+    load(id) {
+      if (id === RESOLVED) return `export default "fixture-sheet-url-ok";`;
+    },
+  };
+}
+
 // Echoes a page's import.meta.hot.send back to it (server.ws.on -> send).
 function wsEchoPlugin(): Plugin {
   return {
@@ -97,6 +116,7 @@ export default defineConfig({
     buildInfoPlugin(),
     freshModulePlugin(),
     imageVariantPlugin(),
+    sheetUrlPlugin(),
     wsEchoPlugin(),
     // .mdx before react/tanstack so its output is plain JSX for them to handle.
     mdx(),

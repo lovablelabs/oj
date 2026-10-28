@@ -633,6 +633,18 @@ impl StartHost {
 
         let (clean, intent, svg_react) = split_intent(spec);
 
+        // Vite passes resolveId the id with its query, so a plugin can answer
+        // `x.css?url` with a virtual module of its own.
+        if clean != spec && !clean.starts_with('/') {
+            if let Ok(StartResolution::Module(id)) =
+                self.bridge.resolve_start(&importer_id, spec).await
+            {
+                if !Path::new(&id).is_absolute() {
+                    return Ok(Some(self.module_url(&id, importer_id)));
+                }
+            }
+        }
+
         // A /-prefixed id resolves against the project root (Vite's asSrc),
         // then against publicDir; a real absolute fs path falls through.
         if clean.starts_with('/') {

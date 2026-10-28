@@ -52,6 +52,8 @@ import notes from "../content/notes.txt?raw";
 import heroUrl from "../hero.png?url";
 // A plugin's pre load owns an image's query form (vite-imagetools).
 import heroVariant from "../hero.png?w=64";
+// A pre plugin's resolveId owns a bare import's query form.
+import sheetUrl from "fixture-sheet/styles.css?url";
 
 // import.meta.glob (eager): a static map of the JSON content files.
 const modules = import.meta.glob("../content/*.json", { eager: true }) as Record<
@@ -109,6 +111,7 @@ function Index() {
       <p data-testid="raw">{notes.trim()}</p>
       <img data-testid="url" src={heroUrl} alt="hero" />
       <p data-testid="image-variant">{heroVariant}</p>
+      <p data-testid="sheet-url">{sheetUrl}</p>
       <span data-testid="svg"><Logo /></span>
       <span data-testid="svg-react"><Star /></span>
       <section data-testid="mdx"><Welcome /></section>

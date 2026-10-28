@@ -26,6 +26,10 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 const FEATURES: &[(&str, &str)] = &[
     ("#lib alias (shout)", "HOME!"),
     ("pre plugin load of an image query", "image-variant:64"),
+    (
+        "pre plugin resolveId of a bare query import",
+        "fixture-sheet-url-ok",
+    ),
     ("server function ran", "server-fn-marker"),
     ("cloudflare wrangler var", "fixture-edition"),
     ("tsconfig paths alias", "ALIAS!"),

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- In TanStack Start dev, a server-side render passes an import's query to the plugins' resolveId, as Vite does, so a plugin can answer `pkg/styles.css?url` with a module of its own. oj stripped `?url`, `?raw`, `?inline` and `?worker` first, and the render failed when only the plugin knew the import.
+
 ## [0.2.49] - 2026-10-28
 
 ### Fixed
