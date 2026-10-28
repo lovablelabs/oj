@@ -172,7 +172,9 @@ fn dev_renders_every_fixture_feature() {
     let Some(app) = app("dev-features") else {
         return;
     };
-    let dev = Server::oj_dev(&app.0);
+    // The fixture's throwing resolveId hook (on /resolve-error) is armed for
+    // this server alone.
+    let dev = Server::oj_dev_with(&app.0, &[("OJ_FIXTURE_RESOLVE_THROWS", "1")]);
     assert_app("dev", &dev);
     // The remote URL a plugin answered reached the host as is: an `https:`
     // module it stubs, never fetched nor resolved as a package.

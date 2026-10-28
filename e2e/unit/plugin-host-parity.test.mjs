@@ -24,9 +24,15 @@ function spawnHost(fx, initial = {}) {
 }
 
 // The plugin file under test exposes what it observed through a `probe.js`
-// transform that returns the captured state as JSON.
+// transform that returns the captured state as JSON. The host's RPCs (a
+// `this.resolve` reaching Vite's own resolver) answer null, as a Rust
+// resolver that knows none of the probe's ids does.
 async function probe(host, fx) {
-  const res = await host.send({ id: 99, hook: "transform", args: ["", path.join(fx.root, "probe.js")] });
+  let res = await host.send({ id: 99, hook: "transform", args: ["", path.join(fx.root, "probe.js")] });
+  while (res.rpc != null) {
+    host.child.stdin.write(JSON.stringify({ rpcReply: res.rpc, result: null }) + "\n");
+    res = await host.nextFrame();
+  }
   if (res.error) throw new Error(res.error);
   return JSON.parse(JSON.parse(res.result).code);
 }

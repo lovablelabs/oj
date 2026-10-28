@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A TanStack Start production build with `ssr.external` no longer leaves an import with a query (`react/index.js?raw`) to Node, which cannot load it; as Vite's `canExternalizeFile` reads the query as part of the extension, the import is bundled. The built server failed on every render with `ERR_PACKAGE_PATH_NOT_EXPORTED`.
+
 ## [0.2.50] - 2026-10-28
 
 ### Fixed

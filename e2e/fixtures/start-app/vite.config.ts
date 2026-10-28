@@ -109,7 +109,11 @@ function devSsrAnswersPlugin(): Plugin {
         return devSsr ? "https://cdn.example/x.css" : "\0fixture-remote";
       }
       if (id === "fixture-throws/x.css?url") {
-        if (devSsr) throw new Error("fixture resolveId hook threw");
+        // Only when the Start test asks (OJ_FIXTURE_RESOLVE_THROWS), so the
+        // other suites on this fixture, a scan and pre-transforms included,
+        // never hit it.
+        const throws = process.env.OJ_FIXTURE_RESOLVE_THROWS === "1" && !options?.scan;
+        if (devSsr && throws) throw new Error("fixture resolveId hook threw");
         return "\0fixture-throws";
       }
       return null;

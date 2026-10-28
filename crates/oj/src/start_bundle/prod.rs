@@ -143,7 +143,9 @@ enum External {
 /// `noExternal` has nothing left to do; a listed name (or every installed
 /// package under `external: true`) stays a bare import resolved from
 /// node_modules at run time, as Vite's ssrExternal leaves it out of the
-/// server build. Only an unresolved bare specifier qualifies.
+/// server build. Only an unresolved bare specifier qualifies, and never one
+/// with a query: Vite's canExternalizeFile reads `x.js?raw` as extension
+/// `.js?raw`, which Node cannot load.
 fn ssr_external(start: &StartConfig) -> Option<IsExternal> {
     let externals = oj_config::ssr_externals(&start.config);
     if externals.external.is_empty() && !externals.external_all {
@@ -158,7 +160,8 @@ fn ssr_external(start: &StartConfig) -> Option<IsExternal> {
             let bare = !spec.starts_with('.')
                 && !spec.starts_with('/')
                 && !spec.starts_with('\0')
-                && !spec.contains(':');
+                && !spec.contains(':')
+                && !spec.contains('?');
             let ext = !is_resolved && bare && {
                 let pkg = oj_config::SsrExternals::package_of(spec);
                 !pkg.is_empty()
