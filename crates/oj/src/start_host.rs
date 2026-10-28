@@ -653,21 +653,17 @@ impl StartHost {
 
         let (clean, intent, svg_react) = split_intent(spec);
 
-        // Vite passes resolveId the id with its query, so a plugin can answer
-        // `x.css?url` with a virtual module of its own.
-        if clean != spec && !clean.starts_with('/') {
-            if let Ok(StartResolution::Module(id)) =
-                self.bridge.resolve_start(&importer_id, spec).await
-            {
-                if !Path::new(&id).is_absolute() {
-                    return Ok(Some(self.module_url(&id, importer_id)));
+        // Vite resolves an import once, as written: every resolveId hook sees
+        // its query (`x.css?url`), and the intent is the answer's own query.
+        // A /-prefixed id first goes to the `pre` hooks, then resolves against
+        // the project root (Vite's asSrc) and publicDir; a real absolute fs
+        // path falls through.
+        if clean.starts_with('/') {
+            if clean != spec {
+                if let Some(hit) = self.bridge.resolve_start_pre(&importer_id, spec).await? {
+                    return self.resolved(hit, spec, &importer_id);
                 }
             }
-        }
-
-        // A /-prefixed id resolves against the project root (Vite's asSrc),
-        // then against publicDir; a real absolute fs path falls through.
-        if clean.starts_with('/') {
             let rel = clean.trim_start_matches('/');
             let public_hit = || {
                 self.public_dir
@@ -680,25 +676,43 @@ impl StartHost {
             }
         }
 
-        match self.bridge.resolve_start(&importer_id, &clean).await {
-            Ok(StartResolution::Module(id)) => {
-                if Path::new(&id).is_absolute() {
-                    let tagged = classify_id(&id, intent, svg_react);
-                    // A CommonJS file (a linked `file:` dependency, a .cjs
-                    // module) is Node's to load: byonm gives it require
-                    // semantics and lexed named exports, like the node
-                    // loader's fall-through did.
-                    if tagged == id && self.cjs.is_cjs_file(&id) {
-                        if let Ok(u) = url::Url::from_file_path(&id) {
-                            return Ok(Some(HostResolved::External(u.to_string())));
-                        }
+        let resolution = self
+            .bridge
+            .resolve_start(&importer_id, spec)
+            .await
+            .map_err(|e| format!("{e} (imported from {importer_id})"))?;
+        self.resolved(resolution, spec, &importer_id)
+    }
+
+    /// The host's answer for `spec`, resolved to `resolution`: the intent and
+    /// svg `?react` read off the resolved id's own query, which a plugin may
+    /// have rewritten (Vite's import analysis uses the id it got).
+    fn resolved(
+        &self,
+        resolution: StartResolution,
+        spec: &str,
+        importer_id: &str,
+    ) -> Result<Option<HostResolved>, String> {
+        let importer_id = importer_id.to_string();
+        match resolution {
+            StartResolution::Module(id) if Path::new(&id).is_absolute() => {
+                let (file, intent, svg_react) = split_intent(&id);
+                let tagged = classify_id(&file, intent, svg_react);
+                // A CommonJS file (a linked `file:` dependency, a .cjs
+                // module) is Node's to load: byonm gives it require
+                // semantics and lexed named exports, like the node
+                // loader's fall-through did.
+                if tagged == file && file == id && self.cjs.is_cjs_file(&file) {
+                    if let Ok(u) = url::Url::from_file_path(&file) {
+                        return Ok(Some(HostResolved::External(u.to_string())));
                     }
-                    return Ok(Some(self.module_url(&tagged, importer_id)));
                 }
-                Ok(Some(self.module_url(&id, importer_id)))
+                Ok(Some(self.module_url(&tagged, importer_id)))
             }
-            Ok(StartResolution::Dependency(p)) => {
-                let abs = p.to_string_lossy().into_owned();
+            // A plugin's module id, used as is.
+            StartResolution::Module(id) => Ok(Some(self.module_url(&id, importer_id))),
+            StartResolution::Dependency(p) => {
+                let (abs, intent, svg_react) = split_intent(&p.to_string_lossy());
                 let ext = ext_of(&abs).to_ascii_lowercase();
                 if svg_react
                     || intent.is_some()
@@ -724,23 +738,29 @@ impl StartHost {
                 // picked (mainFields, extension probing, exports conditions,
                 // legacy directory entries); byonm loads it with Node
                 // semantics (CJS translation included).
-                match url::Url::from_file_path(&p) {
+                match url::Url::from_file_path(&abs) {
                     Ok(u) => Ok(Some(HostResolved::External(u.to_string()))),
-                    Err(_) => Ok(Some(HostResolved::External(clean))),
+                    Err(_) => Ok(Some(HostResolved::External(abs))),
                 }
             }
-            Ok(StartResolution::Bare(spec)) => {
+            StartResolution::Bare(bare) => {
+                // Unresolved, the name is Node's without the intent query;
+                // a plugin's own answer (a remote URL) stands as it is.
+                let bare = if bare == spec {
+                    split_intent(spec).0
+                } else {
+                    bare
+                };
                 // A scheme Node's loader would reject (an un-aliased
                 // `cloudflare:*`) becomes an empty module instead of taking
                 // the server down; `node:` and bare npm names stay external.
-                if let Ok(u) = url::Url::parse(&spec) {
+                if let Ok(u) = url::Url::parse(&bare) {
                     if u.scheme().len() > 1 && u.scheme() != "node" {
-                        return Ok(Some(HostResolved::Url(self.stub_specifier(&spec))));
+                        return Ok(Some(HostResolved::Url(self.stub_specifier(&bare))));
                     }
                 }
-                Ok(Some(HostResolved::External(spec)))
+                Ok(Some(HostResolved::External(bare)))
             }
-            Err(e) => Err(format!("{e} (imported from {importer_id})")),
         }
     }
 

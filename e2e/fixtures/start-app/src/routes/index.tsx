@@ -54,6 +54,14 @@ import heroUrl from "../hero.png?url";
 import heroVariant from "../hero.png?w=64";
 // A pre plugin's resolveId owns a bare import's query form.
 import sheetUrl from "fixture-sheet/styles.css?url";
+// resolveId sees each import as written: a file answer with a query, a claim
+// over an installed package, over an existing file, and of a /-prefixed id.
+import answerRaw from "fixture-missing/notes.txt?raw";
+import installedClaim from "react/index.js?raw";
+import relativeClaim from "../content/claimed.txt?raw";
+import slashClaim from "/virtual-probe.txt?raw";
+// A claim of the bare `react/package.json` alone never takes its `?raw`.
+import reactPackageRaw from "react/package.json?raw";
 
 // import.meta.glob (eager): a static map of the JSON content files.
 const modules = import.meta.glob("../content/*.json", { eager: true }) as Record<
@@ -112,6 +120,12 @@ function Index() {
       <img data-testid="url" src={heroUrl} alt="hero" />
       <p data-testid="image-variant">{heroVariant}</p>
       <p data-testid="sheet-url">{sheetUrl}</p>
+      <p data-testid="query-claims">
+        {[answerRaw.trim(), installedClaim, relativeClaim, slashClaim].join(" ")}
+      </p>
+      <p data-testid="bare-claim">
+        {reactPackageRaw.includes('"name": "react"') ? "bare-claim-kept-raw-ok" : reactPackageRaw}
+      </p>
       <span data-testid="svg"><Logo /></span>
       <span data-testid="svg-react"><Star /></span>
       <section data-testid="mdx"><Welcome /></section>

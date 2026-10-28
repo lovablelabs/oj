@@ -112,19 +112,20 @@ impl SsrBridge {
         importer: &str,
         spec: &str,
     ) -> Result<StartResolution, String> {
-        Ok(match ssr_resolve_raw(&self.state, importer, spec).await? {
-            RawResolution::Path(p) | RawResolution::Claimed(p)
-                if p.to_string_lossy().contains("/node_modules/") =>
-            {
-                StartResolution::Dependency(p)
-            }
-            RawResolution::Path(p) | RawResolution::Claimed(p) => {
-                StartResolution::Module(p.to_string_lossy().into_owned())
-            }
-            RawResolution::PluginId(id) => StartResolution::Module(id),
-            RawResolution::ExternalId(id) => StartResolution::Bare(id),
-            RawResolution::Bare => StartResolution::Bare(spec.to_string()),
-        })
+        let raw = ssr_resolve_raw(&self.state, importer, spec).await?;
+        Ok(start_resolution(raw, spec))
+    }
+
+    /// The ssr environment's `pre` resolveId hooks alone for `spec`, as
+    /// written: what they answer ahead of the resolver (and of Vite's root
+    /// and publicDir probe), or None.
+    pub async fn resolve_start_pre(
+        &self,
+        importer: &str,
+        spec: &str,
+    ) -> Result<Option<StartResolution>, String> {
+        let raw = ssr_pre_resolve(&self.state, importer, spec).await?;
+        Ok(raw.map(|raw| start_resolution(raw, spec)))
     }
 
     /// Plugin-transform + compile tail on a pre-read source; `run_plugins:
@@ -164,6 +165,24 @@ pub enum StartResolution {
     Bare(String),
 }
 
+/// A resolution as the Start host takes it: a node_modules file keeps its
+/// path, anything else is a module id, an unresolved bare name is Node's.
+fn start_resolution(raw: RawResolution, spec: &str) -> StartResolution {
+    match raw {
+        RawResolution::Path(p) | RawResolution::Claimed(p)
+            if p.to_string_lossy().contains("/node_modules/") =>
+        {
+            StartResolution::Dependency(p)
+        }
+        RawResolution::Path(p) | RawResolution::Claimed(p) => {
+            StartResolution::Module(p.to_string_lossy().into_owned())
+        }
+        RawResolution::PluginId(id) => StartResolution::Module(id),
+        RawResolution::ExternalId(id) => StartResolution::Bare(id),
+        RawResolution::Bare => StartResolution::Bare(spec.to_string()),
+    }
+}
+
 /// What the SSR resolve ladder found, before each caller classifies it.
 enum RawResolution {
     Path(PathBuf),
@@ -178,6 +197,8 @@ enum RawResolution {
 
 /// The ssr plugin host's `pre` resolveId hooks for a bare import, then the
 /// ssr resolver, then the host's `resolveId`, then a bare specifier passthrough.
+/// A relative or root specifier with a query reaches the `pre` hooks too: an
+/// intent (`?url`, `?raw`) is what a plugin may claim it for.
 async fn ssr_resolve_raw(
     state: &Arc<ServerState>,
     importer: &str,
@@ -187,8 +208,8 @@ async fn ssr_resolve_raw(
     if crate::stylex::virtual_module(state, spec).is_some() {
         return Ok(RawResolution::PluginId(spec.to_string()));
     }
-    if is_bare_specifier(spec) {
-        if let Some(claimed) = ssr_pre_resolve(state, importer, spec).await {
+    if is_bare_specifier(spec) || (spec.contains('?') && !spec.starts_with('\0')) {
+        if let Some(claimed) = ssr_pre_resolve(state, importer, spec).await? {
             return Ok(claimed);
         }
     }
@@ -197,8 +218,13 @@ async fn ssr_resolve_raw(
         Ok(p) => return Ok(RawResolution::Path(p)),
         Err(e) => e,
     };
+    // A hook that throws fails the import, as Vite's import analysis rethrows.
     if let Some(host) = ssr_plugin_host(state).await {
-        if let Ok(Some(id)) = host.resolve_id(spec, importer).await {
+        if let Some(id) = host
+            .resolve_id(spec, importer)
+            .await
+            .map_err(|e| format!("resolveId of {spec} from {importer} failed: {e}"))?
+        {
             return Ok(RawResolution::PluginId(id));
         }
     }
@@ -228,12 +254,12 @@ async fn ssr_pre_resolve(
     state: &Arc<ServerState>,
     importer: &str,
     spec: &str,
-) -> Option<RawResolution> {
+) -> Result<Option<RawResolution>, String> {
     // Vite externalizes before any plugin resolves (shouldExternalize), and
     // never analyzes an externalized dependency's own imports.
     let importer_pkg = oj_config::SsrExternals::package_of_path(importer);
     if importer_pkg.is_some_and(|pkg| state.ssr_externals.is_external_pkg(pkg)) {
-        return None;
+        return Ok(None);
     }
     let importer_dir = Path::new(importer).parent().unwrap_or(&state.root);
     let native = state.ssr_resolver.resolve(importer_dir, spec).ok();
@@ -242,42 +268,45 @@ async fn ssr_pre_resolve(
             && ssr_externalizes(&state.ssr_externals, spec, &p.to_string_lossy())
     };
     if native.as_ref().is_some_and(externalized) {
-        return None;
+        return Ok(None);
     }
-    let host = ssr_plugin_host(state).await?;
+    let Some(host) = ssr_plugin_host(state).await else {
+        return Ok(None);
+    };
     let aliased = apply_alias(&state.aliases, spec);
     let filters = state.ssr_pre_resolve_id_res.as_ref();
     if filters.is_some_and(|res| {
         !res.iter()
             .any(|re| re.is_match(spec) || re.is_match(&aliased))
     }) {
-        return None;
+        return Ok(None);
     }
-    let answer = match host.resolve_id_pre(spec, importer, Some(&aliased)).await {
-        Ok(answer) => answer?,
-        Err(e) => {
-            eprintln!("oj ssr: pre resolveId of {spec} from {importer} failed: {e}");
-            return None;
-        }
+    // A hook that throws fails the import, as Vite's import analysis rethrows.
+    let Some(answer) = host
+        .resolve_id_pre(spec, importer, Some(&aliased))
+        .await
+        .map_err(|e| format!("resolveId of {spec} from {importer} failed: {e}"))?
+    else {
+        return Ok(None);
     };
     // Vite's import analysis keeps only a remote URL as is; any other answer,
     // `external` or not, the specifier itself or a queried id, is a module
     // the runner fetches (fetchModule externalizes no `/@id/` URL).
     if is_external_url(&answer.id) {
-        return Some(RawResolution::ExternalId(answer.id));
+        return Ok(Some(RawResolution::ExternalId(answer.id)));
     }
     if answer.id == spec || answer.id.contains('?') {
-        return Some(RawResolution::PluginId(answer.id));
+        return Ok(Some(RawResolution::PluginId(answer.id)));
     }
     let path = Path::new(&answer.id);
     if !(path.is_absolute() && path.is_file()) {
-        return Some(RawResolution::PluginId(answer.id));
+        return Ok(Some(RawResolution::PluginId(answer.id)));
     }
     let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     if native.is_some_and(|native| canonical(&native) == canonical(path)) {
-        return None;
+        return Ok(None);
     }
-    Some(RawResolution::Claimed(path.to_path_buf()))
+    Ok(Some(RawResolution::Claimed(path.to_path_buf())))
 }
 
 /// Whether the ssr environment leaves `spec`, resolved to `path`, to Node:

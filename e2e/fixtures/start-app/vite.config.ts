@@ -88,6 +88,35 @@ function sheetUrlPlugin(): Plugin {
   };
 }
 
+// resolveId sees each import once, as written (Vite's import analysis): a
+// file answer keeps its own query, a claim wins over an installed package or
+// an existing file, a /-prefixed id comes to the pre hooks first, and a claim
+// of the bare id alone never takes the queried import.
+function queryClaimsPlugin(): Plugin {
+  const answer = new URL("./src/content/answer.txt", import.meta.url).pathname;
+  // Extension-free virtual ids, so no bundler types them by the import's.
+  const virtual: Record<string, [string, string]> = {
+    "react/index.js?raw": ["installed", "installed-package-claimed-ok"],
+    "../content/claimed.txt?raw": ["relative", "relative-file-claimed-ok"],
+    "/virtual-probe.txt?raw": ["slash", "slash-claimed-ok"],
+  };
+  const byId = new Map(Object.values(virtual).map(([key, text]) => [`\0query-claim-${key}`, text]));
+  return {
+    name: "fixture-query-claims",
+    enforce: "pre",
+    resolveId(id) {
+      if (id === "fixture-missing/notes.txt?raw") return `${answer}?raw`;
+      if (id in virtual) return `\0query-claim-${virtual[id][0]}`;
+      if (id === "react/package.json") return "\0bare-file-claim";
+      return null;
+    },
+    load(id) {
+      if (byId.has(id)) return `export default ${JSON.stringify(byId.get(id))};`;
+      if (id === "\0bare-file-claim") return `export default "bare-claim-took-the-raw-import";`;
+    },
+  };
+}
+
 // Echoes a page's import.meta.hot.send back to it (server.ws.on -> send).
 function wsEchoPlugin(): Plugin {
   return {
@@ -117,6 +146,7 @@ export default defineConfig({
     freshModulePlugin(),
     imageVariantPlugin(),
     sheetUrlPlugin(),
+    queryClaimsPlugin(),
     wsEchoPlugin(),
     // .mdx before react/tanstack so its output is plain JSX for them to handle.
     mdx(),

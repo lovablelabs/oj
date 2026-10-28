@@ -569,3 +569,62 @@ export default {
     assert_eq!(seen["id"], "virtual-aliased", "{seen}");
     assert_eq!(seen["offered"], "aliased-target", "{seen}");
 }
+
+// Vite's import analysis resolves an import once, as written: a `pre` hook
+// sees a relative import's query and a remote URL it answers stays as is,
+// and a hook that throws fails the import instead of being skipped.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn ssr_queried_imports_reach_pre_hooks_and_their_errors_surface() {
+    const PLUGINS: &str = r#"export default [
+  {
+    name: "query-claims",
+    enforce: "pre",
+    resolveId(id) {
+      if (id === "./data.txt?raw") return "\0claimed-raw";
+      if (id === "remote-lib/x.css?url") return "https://cdn.example/x.css";
+      if (id === "boom-lib?raw") throw new Error("boom hook");
+      return null;
+    },
+    load(id) { return id === "\0claimed-raw" ? "export default 'claimed';" : null; },
+  },
+];
+"#;
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"ssr-query-claims","private":true,"type":"module"}"#,
+        ),
+        ("index.html", INDEX_HTML),
+        ("oj.plugins.mjs", PLUGINS),
+        ("src/main.js", "export {};\n"),
+        ("src/data.txt", "on-disk\n"),
+    ]);
+    let server = app.serve().await;
+    let main = app.root.join("src/main.js");
+    let resolve = |spec: &'static str| {
+        let url = format!(
+            "/@ssr-resolve?importer={}&spec={}",
+            main.display(),
+            spec.replace('?', "%3F")
+        );
+        let server = &server;
+        async move { server.get(&url).await }
+    };
+    let relative = resolve("./data.txt?raw").await;
+    assert!(relative.body.contains("claimed-raw"), "{}", relative.body);
+    let remote = resolve("remote-lib/x.css?url").await;
+    assert!(
+        remote.body.contains(r#""external":true"#)
+            && remote.body.contains("https://cdn.example/x.css"),
+        "{}",
+        remote.body
+    );
+    let boom = resolve("boom-lib?raw").await;
+    assert!(
+        boom.status != 200 && boom.body.contains("boom hook"),
+        "{} {}",
+        boom.status,
+        boom.body
+    );
+}

@@ -30,6 +30,26 @@ const FEATURES: &[(&str, &str)] = &[
         "pre plugin resolveId of a bare query import",
         "fixture-sheet-url-ok",
     ),
+    (
+        "a plugin's file answer keeps its own query",
+        "query-file-answer-ok",
+    ),
+    (
+        "a plugin's claim wins over an installed package",
+        "installed-package-claimed-ok",
+    ),
+    (
+        "a plugin's claim wins over an existing relative file",
+        "relative-file-claimed-ok",
+    ),
+    (
+        "a /-prefixed query import reaches the pre hooks",
+        "slash-claimed-ok",
+    ),
+    (
+        "a claim of the bare id leaves the ?raw import",
+        "bare-claim-kept-raw-ok",
+    ),
     ("server function ran", "server-fn-marker"),
     ("cloudflare wrangler var", "fixture-edition"),
     ("tsconfig paths alias", "ALIAS!"),
@@ -103,6 +123,12 @@ fn assert_app(label: &str, server: &Server) {
     assert!(
         !home.contains("STALE_ON_DISK"),
         "{label}: plugin load() did not override on-disk stale.js (fs read won)"
+    );
+    // A plugin that claims only `react/package.json` never takes its `?raw`
+    // import (Vite resolves the import once, as written).
+    assert!(
+        !home.contains("bare-claim-took-the-raw-import"),
+        "{label}: a claim of the bare id took the ?raw import"
     );
     assert!(
         !home.contains("BUILDSTART_SKIPPED"),
