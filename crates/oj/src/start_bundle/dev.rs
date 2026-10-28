@@ -727,6 +727,7 @@ pub(crate) fn dev_manifest(url_base: &str, css_urls: &[String], hot: bool) -> St
 /// dropped, virtual ids, oj's own cache files and the generated route tree
 /// left out, existing files only, sorted.
 pub(crate) fn closure_files(start: &StartConfig, ids: Vec<String>) -> Vec<String> {
+    let left_out = left_out_of_closure(&start.cache);
     let mut out: Vec<String> = ids
         .into_iter()
         .map(|id| {
@@ -749,17 +750,36 @@ pub(crate) fn closure_files(start: &StartConfig, ids: Vec<String>) -> Vec<String
         })
         .filter(|p| {
             let path = Path::new(p);
-            !path.starts_with(&start.cache)
-                && !path.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
-                    n.starts_with("routeTree.gen.")
-                        && matches!(n.rsplit('.').next(), Some("ts" | "tsx" | "js" | "jsx"))
-                })
-                && path.is_file()
+            !left_out(path) && path.is_file()
         })
         .collect();
     out.sort();
     out.dedup();
     out
+}
+
+/// What [`closure_files`] leaves out, which a restore's glob check has to
+/// leave out too: oj's own cache files and the generated route tree. The
+/// bundler names files by realpath, so a cache dir reached through a symlink
+/// is matched under both spellings.
+pub(crate) fn left_out_of_closure(cache: &Path) -> impl Fn(&Path) -> bool {
+    let cache = cache.to_path_buf();
+    let real_cache = std::fs::canonicalize(&cache).ok();
+    move |path| {
+        path.starts_with(&cache)
+            || real_cache
+                .as_deref()
+                .is_some_and(|real| path.starts_with(real))
+            || is_route_tree_gen(path)
+    }
+}
+
+/// The generated route tree, `routeTree.gen.[jt]sx?`.
+pub(crate) fn is_route_tree_gen(p: &Path) -> bool {
+    p.file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|n| n.strip_prefix("routeTree.gen."))
+        .is_some_and(|ext| matches!(ext, "js" | "jsx" | "ts" | "tsx"))
 }
 
 fn write_json(path: &Path, value: &serde_json::Value) -> std::io::Result<()> {
@@ -848,6 +868,34 @@ pub(crate) mod tests {
                 dir.join("src/a.tsx").to_string_lossy().into_owned(),
                 dir.join("src/b.css").to_string_lossy().into_owned(),
             ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_closure_leaves_out_a_symlinked_cache_by_its_realpath() {
+        let tmp =
+            std::env::temp_dir().join(format!("oj-start-closure-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let dir = std::fs::canonicalize(&tmp).unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::create_dir_all(dir.join("out/start")).unwrap();
+        std::fs::create_dir_all(dir.join(".oj-cache/v1")).unwrap();
+        std::os::unix::fs::symlink(dir.join("out/start"), dir.join(".oj-cache/v1/start")).unwrap();
+        std::fs::write(dir.join("src/a.tsx"), "").unwrap();
+        std::fs::write(dir.join("out/start/manifest.ts"), "").unwrap();
+        let start = start_at(&dir);
+        let ids = vec![
+            dir.join("src/a.tsx").to_string_lossy().into_owned(),
+            dir.join("out/start/manifest.ts")
+                .to_string_lossy()
+                .into_owned(),
+        ];
+        assert_eq!(
+            closure_files(&start, ids),
+            vec![dir.join("src/a.tsx").to_string_lossy().into_owned()]
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
