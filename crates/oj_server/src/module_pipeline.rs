@@ -1768,10 +1768,15 @@ pub(crate) fn resolved_imports_json(
                 if p.components().any(|c| c.as_os_str() == "node_modules") || !p.starts_with(dir) {
                     allow_root(fs_allow, package_root(&p));
                 }
+                let bare_client = client.filter(|_| is_bare_specifier(&spec));
+                // While the dependency scan runs, a bare import is left to
+                // `this.resolve`, which waits for it as tryOptimizedResolve
+                // awaits `scanProcessing`.
+                if bare_client.is_some_and(|state| state.optimized.scan_pending()) {
+                    continue;
+                }
                 // As a client `this.resolve` outside a transform answers it.
-                let optimized = client
-                    .filter(|_| is_bare_specifier(&spec))
-                    .and_then(|state| optimized_dep_id(state, &spec));
+                let optimized = bare_client.and_then(|state| optimized_dep_id(state, &spec));
                 serde_json::Value::String(optimized.unwrap_or_else(|| p.display().to_string()))
             }
             Err(_) => serde_json::Value::Null,

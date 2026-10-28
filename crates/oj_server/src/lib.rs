@@ -1420,6 +1420,12 @@ async fn answer_host_rpc(
         "htmlStyle" => css_serve::compile_html_style(state, arg(0), arg(1).to_string())
             .await
             .map(serde_json::Value::String),
+        // Settles once the dependency scan knows the deps (Vite's
+        // `depsOptimizer.scanProcessing`).
+        "depScan" => {
+            state.optimized.ready().await;
+            Ok(serde_json::Value::Bool(true))
+        }
         other => Err(format!("unknown host rpc: {other}")),
     }
 }
@@ -2084,16 +2090,22 @@ impl DevServer {
         if let Some(host) = &state.plugins {
             let weak = Arc::downgrade(&state);
             host.set_optimized_dep(Box::new(move |source, resolved| {
-                let state = weak.upgrade()?;
+                use plugins::OptimizedAnswer;
+                let Some(state) = weak.upgrade() else {
+                    return OptimizedAnswer::File;
+                };
                 if !is_bare_specifier(source) {
-                    return None;
+                    return OptimizedAnswer::File;
+                }
+                if state.optimized.scan_pending() {
+                    return OptimizedAnswer::ScanPending;
                 }
                 if let Some(id) = optimized_dep_id(&state, source) {
-                    return Some(id);
+                    return OptimizedAnswer::Dep(id);
                 }
                 let answer = (source.to_string(), resolved.display().to_string());
                 state.resolver_answers.lock().unwrap().insert(answer);
-                None
+                OptimizedAnswer::File
             }));
         }
         {

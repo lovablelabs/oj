@@ -1969,7 +1969,14 @@ function pluginContext(c) {
       // Outside the scan, a client bare import already pre-bundled resolves to
       // its bundle (tryOptimizedResolve).
       const optimize = !scan && consumer !== "server";
-      const id = await ctxRpc("resolve", [source, importer ?? "", envName, consumer, optimize ? "optimize" : ""]);
+      const args = [source, importer ?? "", envName, consumer, optimize ? "optimize" : ""];
+      let id = await ctxRpc("resolve", args);
+      // tryOptimizedResolve awaits the dependency scan before it answers.
+      if (id && id.scanPending) {
+        await asyncRpc("depScan", []);
+        id = await ctxRpc("resolve", args);
+        if (id && id.scanPending) id = await ctxRpc("resolve", args.slice(0, 4));
+      }
       if (id != null) return { id };
       return chain("post");
     },

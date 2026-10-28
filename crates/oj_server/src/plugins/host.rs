@@ -150,9 +150,20 @@ pub struct EnvResolvers {
     pub optimized_dep: std::sync::OnceLock<OptimizedDep>,
 }
 
-/// (bare source, the file the client resolver found) to the pre-bundle id
-/// that answers instead; `None` keeps the file.
-pub type OptimizedDep = Box<dyn Fn(&str, &Path) -> Option<String> + Send + Sync>;
+/// (bare source, the file the client resolver found) to what answers it:
+/// see [`OptimizedAnswer`].
+pub type OptimizedDep = Box<dyn Fn(&str, &Path) -> OptimizedAnswer + Send + Sync>;
+
+/// vite:resolve's tryOptimizedResolve for a bare import.
+pub enum OptimizedAnswer {
+    /// The pre-bundle's id answers instead of the file.
+    Dep(String),
+    /// The file stands.
+    File,
+    /// The dependency scan has not settled: tryOptimizedResolve awaits
+    /// `scanProcessing` before it answers, so the caller waits and asks again.
+    ScanPending,
+}
 
 /// An environment's resolved resolve options and consumer, as the plugin host
 /// read them off Vite's resolved config.
@@ -250,9 +261,13 @@ impl EnvResolverSlot {
             .unwrap_or(name != "client")
     }
 
-    /// The client pre-bundle answering bare `source` that resolved to `file`.
-    pub(crate) fn optimized_dep(&self, source: &str, file: &Path) -> Option<String> {
-        self.base.get()?.optimized_dep.get()?(source, file)
+    /// What answers bare `source` that resolved to `file` (see
+    /// [`OptimizedAnswer`]); the file when the dev server set no lookup.
+    pub(crate) fn optimized_dep(&self, source: &str, file: &Path) -> OptimizedAnswer {
+        match self.base.get().and_then(|base| base.optimized_dep.get()) {
+            Some(lookup) => lookup(source, file),
+            None => OptimizedAnswer::File,
+        }
     }
 
     /// Drops every built resolver's cached lookups, misses included.
@@ -578,12 +593,15 @@ pub(crate) fn ctx_rpc(
             let Ok(p) = resolver.resolve(&dir, source) else {
                 return Ok(serde_json::Value::Null);
             };
-            let optimized = (!server && arg(4) == "optimize")
-                .then(|| ctx.resolvers.optimized_dep(source, &p))
-                .flatten();
-            Ok(serde_json::Value::String(
-                optimized.unwrap_or_else(|| p.display().to_string()),
-            ))
+            let answer = match !server && arg(4) == "optimize" {
+                true => ctx.resolvers.optimized_dep(source, &p),
+                false => OptimizedAnswer::File,
+            };
+            Ok(match answer {
+                OptimizedAnswer::Dep(id) => serde_json::Value::String(id),
+                OptimizedAnswer::File => serde_json::Value::String(p.display().to_string()),
+                OptimizedAnswer::ScanPending => serde_json::json!({ "scanPending": true }),
+            })
         }
         "moduleInfo" => {
             let id = arg(0);

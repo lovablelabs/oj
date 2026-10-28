@@ -247,6 +247,43 @@ async fn ctx_resolve_of_a_pre_bundled_dep_answers_with_the_bundle() {
     );
 }
 
+// tryOptimizedResolve awaits `scanProcessing`: a transform that runs while
+// the dependency scan is still going waits for it, and its `this.resolve`
+// of a dep the scan finds answers with the bundle on the first transform.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn ctx_resolve_during_the_dep_scan_waits_for_it() {
+    let app = app();
+    // Holds the scan (its resolves carry `scan: true`) well past the first
+    // request, which no other plugin delays.
+    let slow = r#"
+  {
+    name: "slow-scan",
+    async resolveId(id, importer, options) {
+      if (options?.scan && id === "plain-lib") await new Promise((r) => setTimeout(r, 2000));
+      return null;
+    },
+  },
+];
+"#;
+    let plugins = PLUGINS.replacen("\n];\n", slow, 1);
+    assert_ne!(plugins, PLUGINS);
+    app.write(&[("oj.plugins.mjs", &plugins)]);
+    let server = app.serve().await;
+    let started = std::time::Instant::now();
+    let plain = seen(&server.text("/src/main.js").await)["plain"].clone();
+    assert!(
+        plain
+            .as_str()
+            .is_some_and(|p| p.starts_with("deps/plain-lib") && p.contains("?v=")),
+        "the first transform waited for the scan: {plain}"
+    );
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(500),
+        "the scan was over before the transform, so nothing waited"
+    );
+}
+
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn pre_plugins_resolve_bare_imports_in_ssr() {
