@@ -1175,12 +1175,19 @@ impl StartAssetsPlugin {
     }
 
     /// A worker's URL: the dev pipeline's (root-relative, `/@fs` outside the
-    /// root), or the build's emitted bundle.
-    async fn worker_url_for(&self, path: &Path) -> Result<String, String> {
+    /// root) with Vite's `worker_file&type=<worker_type>`, which that pipeline
+    /// serves with the env prelude, or the build's emitted bundle.
+    async fn worker_url_for(&self, path: &Path, worker_type: &str) -> Result<String, String> {
         match &self.mode {
             AssetMode::Dev { url_base, .. } => Ok(match path.strip_prefix(&self.root) {
-                Ok(rel) => format!("{url_base}/{}", rel.to_string_lossy().replace('\\', "/")),
-                Err(_) => format!("{url_base}/@fs{}", path.display()),
+                Ok(rel) => format!(
+                    "{url_base}/{}?worker_file&type={worker_type}",
+                    rel.to_string_lossy().replace('\\', "/")
+                ),
+                Err(_) => format!(
+                    "{url_base}/@fs{}?worker_file&type={worker_type}",
+                    path.display()
+                ),
             }),
             AssetMode::Build {
                 emitter,
@@ -1290,10 +1297,23 @@ impl StartAssetsPlugin {
                         module,
                     ),
                     _ => {
+                        // `module`, as Vite's dev worker load names every
+                        // `?worker` import, unless oj's rewrite of
+                        // `new Worker(new URL(...), opts)` passed the options' type.
+                        let worker_type = match form {
+                            WorkerForm::Url => id
+                                .split_once('?')
+                                .map_or("", |(_, q)| q)
+                                .split('&')
+                                .find_map(|kv| kv.strip_prefix("worker_type="))
+                                .filter(|t| matches!(*t, "classic" | "ignore"))
+                                .unwrap_or("module"),
+                            _ => "module",
+                        };
                         let url = if own {
                             "self.location.href".to_string()
                         } else {
-                            json(&self.worker_url_for(path).await?)
+                            json(&self.worker_url_for(path, worker_type).await?)
                         };
                         if matches!(form, WorkerForm::Url) {
                             format!("export default {url};")
