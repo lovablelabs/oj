@@ -227,6 +227,11 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Internal: the dev server's `OJ_TYPECHECK` checker, in a process of its
+    /// own so nothing the checker does can take the server down. Speaks JSON
+    /// lines on stdin/stdout (see oj_server's typecheck module).
+    #[command(name = "typecheck-worker", hide = true)]
+    TypecheckWorker { root: PathBuf },
     /// StyleX compiler: transform files, compile a project's sheet, or serve
     /// the resident compiler protocol (the standalone `fru` command set).
     Stylex {
@@ -537,7 +542,7 @@ fn main() -> anyhow::Result<()> {
     #[cfg(unix)]
     if matches!(
         std::env::args().nth(1).as_deref(),
-        Some("engine-job") | Some("start-script")
+        Some("engine-job") | Some("start-script") | Some("typecheck-worker")
     ) {
         reap_on_parent_death();
         std::env::remove_var(PARENT_PID_ENV);
@@ -547,6 +552,11 @@ fn main() -> anyhow::Result<()> {
     oj_env::init();
     oj_diag::set_json_output(oj_env::get().knobs.log_json);
     oj_diag::install_panic_hook();
+    // The dev server's type checker child: no runtime, no export of its own.
+    if let Command::TypecheckWorker { root } = &cli.command {
+        oj_server::typecheck_worker(root);
+        return Ok(());
+    }
     // One-shot children inherit OJ_OTEL; the process that spawned them owns
     // the export.
     if !matches!(
@@ -698,17 +708,29 @@ async fn run(cli: Cli, rolldown: tokio::runtime::Handle) -> anyhow::Result<()> {
             json,
         } => {
             let root = root.unwrap_or_else(|| PathBuf::from("."));
+            // Relative to where the command runs, as any CLI path argument.
+            let changed: Vec<PathBuf> = changed
+                .iter()
+                .map(|p| std::path::absolute(p).unwrap_or_else(|_| p.clone()))
+                .collect();
             let answer = match oj_server::typecheck_via_server(&root, &changed).await {
-                Some(answer) => answer,
-                None => {
+                Ok(Some(answer)) => answer,
+                Ok(None) => {
+                    tokio::task::spawn_blocking(move || oj_server::typecheck_once(&root)).await?
+                }
+                Err(e) => {
+                    eprintln!("oj typecheck: the dev server did not answer ({e}); checking in this process");
                     tokio::task::spawn_blocking(move || oj_server::typecheck_once(&root)).await?
                 }
             };
-            if json {
-                println!("{answer}");
-            } else if let Some(text) = answer["text"].as_str() {
-                print!("{text}");
-            }
+            // A closed stdout (`oj typecheck | head`) ends the output, not the command.
+            use std::io::Write as _;
+            let mut stdout = std::io::stdout().lock();
+            let _ = if json {
+                writeln!(stdout, "{answer}")
+            } else {
+                write!(stdout, "{}", answer["text"].as_str().unwrap_or_default())
+            };
             let code = match answer["status"].as_str() {
                 Some("ok") => 0,
                 Some("errors") => 2,
@@ -722,10 +744,13 @@ async fn run(cli: Cli, rolldown: tokio::runtime::Handle) -> anyhow::Result<()> {
                     1
                 }
             };
-            std::io::Write::flush(&mut std::io::stdout())?;
+            let _ = stdout.flush();
             std::process::exit(code)
         }
         Command::Stylex { .. } => unreachable!("`oj stylex` runs before the runtime starts"),
+        Command::TypecheckWorker { .. } => {
+            unreachable!("`oj typecheck-worker` runs before the runtime starts")
+        }
         Command::Build {
             root,
             out,

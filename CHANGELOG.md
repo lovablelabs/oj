@@ -7,10 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-29
+
 ### Added
 
 - `oj typecheck` type-checks an app as `tsc -b --noEmit` does, on [tsrs](https://github.com/oxc-project/tsrs) (the Rust port of the TypeScript 7 compiler), vendored as the `oj_tsrs_*` crates under `crates/typecheck`. It prints tsc's `file(line,col): error TSn: message` lines (`--json` for a report) and exits 0 when clean, 2 on type errors and 1 when it cannot check.
-- `OJ_TYPECHECK=1` keeps a checker warm beside `oj dev`. The watcher's changes update it and it re-checks once they settle, so `GET` or `POST /@oj/typecheck` usually answers from a current report; a `{"changed": [...]}` body names files to re-read first. Like `/@oj/diagnostics`, the route answers only direct local callers. `oj typecheck` asks the app's running server when there is one and checks in its own process otherwise.
+- `OJ_TYPECHECK=1` keeps a checker warm beside `oj dev`. The watcher's changes update it and it re-checks once they settle, so `GET` or `POST /@oj/typecheck` usually answers from a current report; a `{"changed": [...]}` body names files to re-read first. Like `/@oj/diagnostics`, the route answers only direct local callers. `oj typecheck` asks the app's running server when there is one and checks in its own process otherwise. The checker runs in a child `oj` process, so a crash or hang in it never takes the dev server down; the next request starts a new one. An edit to a tsconfig, `package.json` or a lockfile reopens the projects, and a directory that moves away takes its files' errors with it.
 
 ## [0.2.52] - 2026-10-29
 

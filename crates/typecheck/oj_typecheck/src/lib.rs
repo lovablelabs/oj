@@ -2,15 +2,17 @@
 // Copyright (c) 2026 Raphael Amorim
 
 //! TypeScript type checking for an app root, on the tsrs checker (vendored
-//! under `vendor/tsrs`).
+//! as the `oj_tsrs_*` crates).
 //!
 //! A [`Checker`] keeps one tsrs API session open: the programs of every
 //! project `tsc -b` would build stay loaded, and [`Checker::changed`] moves
 //! them to the next snapshot, so a check after an edit re-parses only the
 //! files that changed. Old snapshots are released, which frees their memory
-//! (tsrs keeps each program version in a region of its own).
+//! (tsrs keeps each program version in a region of its own). A change to a
+//! config, `package.json` or a lockfile reopens the session instead: it can
+//! change the set of projects and how every import resolves.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -22,15 +24,46 @@ use tsrs_vfs::{FS, bundled, osvfs};
 /// The file a check starts from, as `tsc -b` with no arguments.
 pub const ROOT_CONFIG: &str = "tsconfig.json";
 
-/// Extensions whose changes can affect a program: sources, declarations,
-/// configs and `package.json` (module resolution).
+/// Extensions whose changes can affect a program: sources, declarations and
+/// configs.
 const WATCHED_EXTENSIONS: &[&str] = &["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "json"];
 
-/// Whether a change to `path` can affect a check.
+/// Package manager lockfiles: an install rewrites one even when
+/// `package.json` stays the same.
+const LOCKFILES: &[&str] = &[
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "bun.lock",
+    "bun.lockb",
+];
+
+/// Whether a change to `path` can affect a check. A path without an
+/// extension may be a directory that moved or was removed.
 pub fn is_relevant(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| WATCHED_EXTENSIONS.contains(&e))
+    match path.extension().and_then(|e| e.to_str()) {
+        Some(ext) => WATCHED_EXTENSIONS.contains(&ext) || is_lockfile(path),
+        None => true,
+    }
+}
+
+fn is_lockfile(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| LOCKFILES.contains(&n))
+}
+
+/// A config or manifest whose change reopens the projects.
+fn reopens(path: &Path, configs: &BTreeSet<String>) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    configs.contains(&slash(path))
+        || ((name.starts_with("tsconfig") || name.starts_with("jsconfig"))
+            && name.ends_with(".json"))
+        || name == "package.json"
+        || is_lockfile(path)
 }
 
 /// One reported problem, positions 1-based as tsc prints them.
@@ -94,11 +127,24 @@ impl Report {
     }
 }
 
+struct Project {
+    id: String,
+    /// `declaration` or `composite`: `tsc --noEmit` then also reports
+    /// declaration diagnostics.
+    emits_declarations: bool,
+}
+
 pub struct Checker {
     session: Arc<Session>,
     root: PathBuf,
     snapshot: u64,
-    projects: Vec<String>,
+    /// The opened projects, in `tsc -b` build order.
+    projects: Vec<Project>,
+    /// Every config the reference walk visited, opened or not.
+    configs: BTreeSet<String>,
+    /// Problems of the configs no program reports: a solution config's own
+    /// errors and references to configs that do not exist.
+    solution: Vec<Diagnostic>,
     generation: u64,
 }
 
@@ -110,6 +156,10 @@ impl Checker {
         let root = &root
             .canonicalize()
             .map_err(|e| format!("{}: {e}", root.display()))?;
+        Checker::load(root, 1)
+    }
+
+    fn load(root: &Path, generation: u64) -> Result<Option<Checker>, String> {
         let root_config = root.join(ROOT_CONFIG);
         if !root_config.is_file() {
             return Ok(None);
@@ -121,56 +171,92 @@ impl Checker {
             fs,
             false,
         ));
-        let configs = build_configs(&session, &slash(&root_config))?;
-        let opened = request(
-            &session,
-            "createSnapshot",
-            &json!({ "openProjects": configs }),
-        )?;
-        let snapshot = snapshot_id(&opened)?;
-        let projects = opened["projects"]
-            .as_array()
-            .map(|ps| {
-                ps.iter()
-                    .filter_map(|p| p["id"].as_str().map(str::to_owned))
-                    .collect()
-            })
-            .unwrap_or_default();
-        Ok(Some(Checker {
+        let mut checker = Checker {
             session,
             root: root.to_path_buf(),
-            snapshot,
-            projects,
-            generation: 1,
-        }))
+            snapshot: 0,
+            projects: Vec::new(),
+            configs: BTreeSet::new(),
+            solution: Vec::new(),
+            generation,
+        };
+        let mut walk = Walk::default();
+        checker.visit_config(&slash(&root_config), &mut walk)?;
+        checker.configs = walk.visited;
+        checker.solution = walk.problems;
+        let opened = request(
+            &checker.session,
+            "createSnapshot",
+            &json!({ "openProjects": walk.order }),
+        )?;
+        checker.snapshot = snapshot_id(&opened)?;
+        let mut by_config: BTreeMap<String, Project> = BTreeMap::new();
+        for p in opened["projects"].as_array().into_iter().flatten() {
+            let (Some(id), Some(config)) = (p["id"].as_str(), p["configFileName"].as_str()) else {
+                continue;
+            };
+            let options = &p["parsedCommandLine"]["options"];
+            let emits_declarations = options["declaration"].as_bool() == Some(true)
+                || options["composite"].as_bool() == Some(true);
+            by_config.insert(
+                config.to_string(),
+                Project {
+                    id: id.to_string(),
+                    emits_declarations,
+                },
+            );
+        }
+        checker.projects = walk
+            .order
+            .iter()
+            .filter_map(|config| by_config.remove(config))
+            .collect();
+        Ok(Some(checker))
     }
 
     pub fn generation(&self) -> u64 {
         self.generation
     }
 
-    /// Moves to a snapshot with `paths` re-read from disk. Each path counts
-    /// as created, changed or deleted by whether it exists now and whether
-    /// a program already holds it.
+    /// Moves to a snapshot with `paths` re-read from disk. A path that no
+    /// longer exists is deleted, with every program file under it when it
+    /// was a directory. A config, `package.json` or lockfile among them
+    /// reopens the projects.
     pub fn changed<'a>(&mut self, paths: impl IntoIterator<Item = &'a Path>) -> Result<(), String> {
+        let paths: BTreeSet<PathBuf> = paths
+            .into_iter()
+            .map(|p| {
+                if p.is_absolute() {
+                    p.to_path_buf()
+                } else {
+                    self.root.join(p)
+                }
+            })
+            .filter(|p| is_relevant(p))
+            .collect();
+        if paths.is_empty() {
+            return Ok(());
+        }
+        if paths.iter().any(|p| reopens(p, &self.configs)) {
+            return self.reopen();
+        }
         let (mut changed, mut created, mut deleted) = (Vec::new(), Vec::new(), Vec::new());
-        let mut seen = BTreeSet::new();
-        for path in paths {
-            let path = if path.is_absolute() {
-                path.to_path_buf()
-            } else {
-                self.root.join(path)
-            };
-            if !is_relevant(&path) || !seen.insert(path.clone()) {
-                continue;
-            }
-            let name = slash(&path);
-            if !path.exists() {
-                deleted.push(name);
-            } else if self.known(&name) {
+        let mut program_files = None;
+        for path in &paths {
+            let name = slash(path);
+            if path.is_file() {
+                if !self.known(&name) {
+                    created.push(name.clone());
+                }
                 changed.push(name);
-            } else {
-                created.push(name);
+            } else if !path.exists() {
+                if path.extension().is_some() {
+                    deleted.push(name);
+                } else {
+                    let files = program_files.get_or_insert_with(|| self.program_files());
+                    let prefix = format!("{name}/");
+                    deleted.extend(files.iter().filter(|f| f.starts_with(&prefix)).cloned());
+                }
             }
         }
         if changed.is_empty() && created.is_empty() && deleted.is_empty() {
@@ -198,6 +284,17 @@ impl Checker {
         Ok(())
     }
 
+    fn reopen(&mut self) -> Result<(), String> {
+        let generation = self.generation + 1;
+        match Checker::load(&self.root, generation)? {
+            Some(fresh) => {
+                *self = fresh;
+                Ok(())
+            }
+            None => Err(format!("{ROOT_CONFIG} was removed from the app root")),
+        }
+    }
+
     /// Whether the current programs contain `file` (an absolute path).
     fn known(&self, file: &str) -> bool {
         let found = request(
@@ -208,33 +305,87 @@ impl Checker {
         matches!(found, Ok(v) if !v.is_null())
     }
 
-    /// Every error and warning of the current snapshot, sorted by file and
-    /// position, each reported once.
+    /// Every source file of the current programs.
+    fn program_files(&self) -> BTreeSet<String> {
+        let mut files = BTreeSet::new();
+        for project in &self.projects {
+            let names = request(
+                &self.session,
+                "getSourceFileNames",
+                &json!({ "snapshot": self.snapshot, "project": project.id }),
+            );
+            if let Ok(names) = names {
+                files.extend(
+                    names
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|n| n.as_str().map(str::to_owned)),
+                );
+            }
+        }
+        files
+    }
+
+    /// Every error and warning of the current snapshot: each project's in
+    /// tsc's order, a diagnostic two projects share once, then the problems
+    /// of configs no program reports.
     pub fn check(&mut self) -> Result<Report, String> {
         let started = Instant::now();
-        let mut found = BTreeSet::new();
+        let mut seen = BTreeSet::new();
+        let mut diagnostics = Vec::new();
         for project in &self.projects {
-            let params = json!({ "snapshot": self.snapshot, "project": project });
-            for method in [
-                "getConfigFileParsingDiagnostics",
-                "getProgramDiagnostics",
-                "getSyntacticDiagnostics",
-                "getGlobalDiagnostics",
-                "getSemanticDiagnostics",
-            ] {
-                let diagnostics = request(&self.session, method, &params)?;
-                for d in diagnostics.as_array().into_iter().flatten() {
-                    if let Some(d) = self.diagnostic(d) {
-                        found.insert(d);
-                    }
+            let mut found = self.project_diagnostics(project)?;
+            found.sort();
+            found.dedup();
+            for d in found {
+                if seen.insert(d.clone()) {
+                    diagnostics.push(d);
                 }
             }
         }
+        for d in &self.solution {
+            if seen.insert(d.clone()) {
+                diagnostics.push(d.clone());
+            }
+        }
         Ok(Report {
-            diagnostics: found.into_iter().collect(),
+            diagnostics,
             generation: self.generation,
             duration: started.elapsed(),
         })
+    }
+
+    /// tsc's `getDiagnosticsOfAnyProgram`: config parsing, then syntactic;
+    /// only without syntax errors the program, global and semantic ones; and
+    /// only when those found nothing, the declaration ones.
+    fn project_diagnostics(&self, project: &Project) -> Result<Vec<Diagnostic>, String> {
+        let params = json!({ "snapshot": self.snapshot, "project": project.id });
+        let get = |method: &str| -> Result<Vec<Diagnostic>, String> {
+            let found = request(&self.session, method, &params)?;
+            Ok(found
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|d| self.diagnostic(d))
+                .collect())
+        };
+        let mut all = get("getConfigFileParsingDiagnostics")?;
+        let config_count = all.len();
+        all.extend(get("getSyntacticDiagnostics")?);
+        if all.len() != config_count {
+            return Ok(all);
+        }
+        all.extend(get("getProgramDiagnostics")?);
+        all.extend(get("getGlobalDiagnostics")?);
+        if all.len() == config_count {
+            all.extend(get("getSemanticDiagnostics")?);
+            all.extend(get("getGlobalDiagnostics")?);
+        }
+        if project.emits_declarations && all.len() == config_count {
+            all.extend(get("getDeclarationDiagnostics")?);
+        }
+        Ok(all)
     }
 
     fn diagnostic(&self, d: &Value) -> Option<Diagnostic> {
@@ -244,10 +395,8 @@ impl Checker {
             _ => return None,
         };
         let file = d["fileName"].as_str().map(|f| {
-            Path::new(f)
-                .strip_prefix(&self.root)
-                .map(slash)
-                .unwrap_or_else(|_| f.to_string())
+            let prefix = format!("{}/", slash(&self.root));
+            f.strip_prefix(&prefix).unwrap_or(f).to_string()
         });
         let at = |k: &str| d["startPosition"][k].as_u64().unwrap_or(0) as u32 + 1;
         let mut message = d["text"].as_str().unwrap_or_default().to_string();
@@ -261,11 +410,72 @@ impl Checker {
             message,
         })
     }
+
+    /// Walks `config` and its references depth first, references before the
+    /// configs that reference them, as `tsc -b` orders its builds. A
+    /// solution config (references and no files of its own) is not opened:
+    /// its program is empty, so its own errors are kept in `walk.problems`.
+    fn visit_config(&self, config: &str, walk: &mut Walk) -> Result<(), String> {
+        if !walk.visited.insert(config.to_string()) {
+            return Ok(());
+        }
+        if !Path::new(config).is_file() {
+            // tsc's TS6053, which `tsc -b` reports without a location.
+            walk.problems.push(Diagnostic {
+                file: None,
+                line: 0,
+                column: 0,
+                code: 6053,
+                category: Category::Error,
+                message: format!("File '{config}' not found."),
+            });
+            return Ok(());
+        }
+        let parsed = request(&self.session, "parseConfigFile", &json!({ "file": config }))?;
+        let references = parsed["projectReferences"].as_array();
+        for reference in references.into_iter().flatten() {
+            if let Some(path) = reference["path"].as_str() {
+                self.visit_config(&reference_config(path), walk)?;
+            }
+        }
+        let lists_files = parsed["fileNames"]
+            .as_array()
+            .is_some_and(|f| !f.is_empty());
+        if lists_files || references.is_none_or(|r| r.is_empty()) {
+            walk.order.push(config.to_string());
+        } else {
+            walk.problems.extend(
+                parsed["errors"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|d| self.diagnostic(d)),
+            );
+        }
+        Ok(())
+    }
 }
 
 impl Drop for Checker {
     fn drop(&mut self) {
         self.session.close();
+    }
+}
+
+#[derive(Default)]
+struct Walk {
+    visited: BTreeSet<String>,
+    order: Vec<String>,
+    problems: Vec<Diagnostic>,
+}
+
+/// tsc's `resolveConfigFileProjectName`: a reference that does not name a
+/// `.json` file names a directory holding a `tsconfig.json`.
+fn reference_config(path: &str) -> String {
+    if path.ends_with(".json") {
+        path.to_string()
+    } else {
+        format!("{}/{ROOT_CONFIG}", path.trim_end_matches('/'))
     }
 }
 
@@ -278,47 +488,6 @@ fn flatten_chain(chain: &Value, depth: usize, out: &mut String) {
         out.push_str(link["text"].as_str().unwrap_or_default());
         flatten_chain(&link["messageChain"], depth + 1, out);
     }
-}
-
-/// The configs `tsc -b root_config` builds, references before the configs
-/// that reference them. A solution config (references and no files of its
-/// own) is left out: its program is empty.
-fn build_configs(session: &Session, root_config: &str) -> Result<Vec<String>, String> {
-    let mut order = Vec::new();
-    let mut visited = BTreeSet::new();
-    visit_config(session, root_config, &mut visited, &mut order)?;
-    Ok(order)
-}
-
-fn visit_config(
-    session: &Session,
-    config: &str,
-    visited: &mut BTreeSet<String>,
-    order: &mut Vec<String>,
-) -> Result<(), String> {
-    if !visited.insert(config.to_string()) {
-        return Ok(());
-    }
-    let parsed = request(session, "parseConfigFile", &json!({ "file": config }))?;
-    let references = parsed["projectReferences"].as_array();
-    for reference in references.into_iter().flatten() {
-        let Some(path) = reference["path"].as_str() else {
-            continue;
-        };
-        let referenced = if Path::new(path).is_dir() {
-            format!("{path}/{ROOT_CONFIG}")
-        } else {
-            path.to_string()
-        };
-        visit_config(session, &referenced, visited, order)?;
-    }
-    let lists_files = parsed["fileNames"]
-        .as_array()
-        .is_some_and(|f| !f.is_empty());
-    if lists_files || references.is_none_or(|r| r.is_empty()) {
-        order.push(config.to_string());
-    }
-    Ok(())
 }
 
 fn request(session: &Session, method: &str, params: &Value) -> Result<Value, String> {
@@ -338,6 +507,10 @@ fn snapshot_id(response: &Value) -> Result<u64, String> {
         .ok_or_else(|| format!("tsrs snapshot response without an id: {response}"))
 }
 
+/// The path as tsrs spells it: forward slashes, without Windows' verbatim
+/// `\\?\` prefix that `canonicalize` adds.
 fn slash(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
+    let text = path.to_string_lossy();
+    let text = text.strip_prefix(r"\\?\").unwrap_or(&text);
+    text.replace('\\', "/")
 }

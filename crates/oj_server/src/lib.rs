@@ -56,7 +56,10 @@ mod debug;
 use debug::*;
 mod diagnostics;
 mod typecheck;
-pub use typecheck::{check_once as typecheck_once, check_via_server as typecheck_via_server};
+pub use typecheck::{
+    check_once as typecheck_once, check_via_server as typecheck_via_server,
+    serve_worker as typecheck_worker,
+};
 pub mod otel;
 use diagnostics::*;
 mod css_serve;
