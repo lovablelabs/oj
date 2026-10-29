@@ -1,0 +1,1 @@
+{ "compilerOptions": { "strict": true, "target": "esnext", "module": "nodenext", "moduleResolution": "nodenext", "exactOptionalPropertyTypes": true }, "files": ["models.ts"] }

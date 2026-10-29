@@ -5,6 +5,7 @@
     "reference/**",
     "crates/oj_server/src/assets/start/glob-libs.mjs",
     "crates/oj_deno_*/**",
+    "crates/typecheck/oj_tsrs_*/**",
     "e2e/fixtures/**",
     "crates/oj_stylex/conformance/**",
     "crates/oj_stylex/testdata/**",

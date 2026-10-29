@@ -1,0 +1,13 @@
+[package]
+name = "oj_typecheck"
+version.workspace = true
+edition = "2024"
+license.workspace = true
+repository.workspace = true
+description = "TypeScript type checking for oj, on the vendored tsrs checker"
+
+[dependencies]
+tsrs_api.workspace = true
+tsrs_vfs.workspace = true
+serde.workspace = true
+serde_json.workspace = true

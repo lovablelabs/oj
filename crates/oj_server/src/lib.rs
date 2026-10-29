@@ -55,6 +55,8 @@ use crawl::*;
 mod debug;
 use debug::*;
 mod diagnostics;
+mod typecheck;
+pub use typecheck::{check_once as typecheck_once, check_via_server as typecheck_via_server};
 pub mod otel;
 use diagnostics::*;
 mod css_serve;
@@ -386,6 +388,8 @@ struct ServerState {
     /// served from outside the root (`ensure_watched_file`).
     watch_tx: std::sync::mpsc::Sender<WatchMsg>,
     watch_feed: WatchFeed,
+    /// `OJ_TYPECHECK`: the warm checker `/@oj/typecheck` asks.
+    typecheck: Option<Arc<typecheck::Typecheck>>,
     plugins_use_module_parsed: bool,
     plugins_have_transform: bool,
     plugins_have_load: bool,
@@ -696,6 +700,7 @@ pub struct BuiltApp {
     pub watch_feed: WatchFeed,
     watch_tx: std::sync::mpsc::Sender<WatchMsg>,
     watch_ready: tokio::sync::watch::Receiver<bool>,
+    typecheck: Option<Arc<typecheck::Typecheck>>,
 }
 
 impl BuiltApp {
@@ -711,7 +716,12 @@ impl BuiltApp {
     /// one that landed in between (a `.env` edit right after a restart).
     pub async fn bind_listener(&self) -> anyhow::Result<(tokio::net::TcpListener, u16)> {
         self.watcher_ready().await;
-        bind_dev_listener(self.host, self.port, self.strict_port).await
+        let (listener, port) = bind_dev_listener(self.host, self.port, self.strict_port).await?;
+        if let Some(typecheck) = &self.typecheck {
+            typecheck.warm();
+            typecheck::advertise(&self.root, self.host, port, self.https.is_some());
+        }
+        Ok((listener, port))
     }
 
     /// Stops the file watcher and returns once it is gone, so nothing under
@@ -1486,6 +1496,10 @@ fn build_router(
             .route("/@oj/debug/gc", get(debug_gc))
             .route("/@oj/debug/mem", get(debug_mem_stats))
             .route("/@oj/diagnostics", get(serve_diagnostics))
+            .route(
+                "/@oj/typecheck",
+                get(typecheck::serve_typecheck).post(typecheck::serve_typecheck),
+            )
             .route("/@oj/server-fn.js", get(|| async { js(SERVER_FN_JS) }))
             .route(
                 "/@oj/lingui-macro-shim.js",
@@ -2035,6 +2049,7 @@ impl DevServer {
             ssr_modules: Mutex::default(),
             watch_tx: watch_tx.clone(),
             watch_feed: WatchFeed::default(),
+            typecheck: typecheck::Typecheck::start(&root),
             plugins_use_module_parsed: caps.use_module_parsed,
             plugins_have_transform: caps.have_transform,
             plugins_have_load: caps.have_load,
@@ -2143,6 +2158,9 @@ impl DevServer {
                 );
             }));
         }
+        if let Some(typecheck) = &state.typecheck {
+            typecheck.follow(&state.watch_feed);
+        }
         spawn_warmup(&state, &config);
         if self.lazy {
             // Lazy mode (Vite's default): compile on demand. Mark the crawl "done" so
@@ -2160,6 +2178,7 @@ impl DevServer {
             state: Arc::clone(&state),
         };
         let watch_feed = state.watch_feed.clone();
+        let typecheck = state.typecheck.clone();
         let base = state.base.clone();
         let router = build_router(state, &server_cfg, &hmr.ws_path);
         Ok(BuiltApp {
@@ -2182,6 +2201,7 @@ impl DevServer {
             watch_feed,
             watch_tx,
             watch_ready,
+            typecheck,
         })
     }
 }

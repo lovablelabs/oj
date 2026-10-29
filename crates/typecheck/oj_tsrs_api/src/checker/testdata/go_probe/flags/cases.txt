@@ -1,0 +1,9 @@
+t	main.ts	empty([	ArrayLiteralExpression	getTypeAtLocation
+t	main.ts	nonempty([	ArrayLiteralExpression	getTypeAtLocation
+t	main.ts	array([	ArrayLiteralExpression	getTypeAtLocation
+m	models.ts	Boxed = 	alias	getTypeFromTypeNode
+m	models.ts	TupleAlias = 	alias	getTypeFromTypeNode
+m	models.ts	ArrayAlias = 	alias	getTypeFromTypeNode
+m	models.ts	EmptyTuple = 	alias	getTypeFromTypeNode
+m	models.ts	Union = 	alias	getTypeFromTypeNode
+m	models.ts	Boxed = 	alias	getTypeFromTypeNode+prop:opt

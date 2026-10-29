@@ -213,6 +213,20 @@ enum Command {
         #[arg(long)]
         base: Option<String>,
     },
+    /// Type-check the app as `tsc -b --noEmit` would, on oj's built-in
+    /// checker. Asks the app's running dev server when it has
+    /// `OJ_TYPECHECK=1` (a warm, incremental check); otherwise checks in this
+    /// process. Exits 0 when clean, 2 on type errors, 1 when it cannot check.
+    Typecheck {
+        root: Option<PathBuf>,
+        /// A file changed since the server last saw it; re-read before the
+        /// check. Repeatable.
+        #[arg(long = "changed", value_name = "FILE")]
+        changed: Vec<PathBuf>,
+        /// Print the JSON report instead of tsc-style lines.
+        #[arg(long)]
+        json: bool,
+    },
     /// StyleX compiler: transform files, compile a project's sheet, or serve
     /// the resident compiler protocol (the standalone `fru` command set).
     Stylex {
@@ -677,6 +691,39 @@ async fn run(cli: Cli, rolldown: tokio::runtime::Handle) -> anyhow::Result<()> {
             let output = oj_compiler::compile(&file, &source, &opts)?;
             println!("{}", output.code);
             Ok(())
+        }
+        Command::Typecheck {
+            root,
+            changed,
+            json,
+        } => {
+            let root = root.unwrap_or_else(|| PathBuf::from("."));
+            let answer = match oj_server::typecheck_via_server(&root, &changed).await {
+                Some(answer) => answer,
+                None => {
+                    tokio::task::spawn_blocking(move || oj_server::typecheck_once(&root)).await?
+                }
+            };
+            if json {
+                println!("{answer}");
+            } else if let Some(text) = answer["text"].as_str() {
+                print!("{text}");
+            }
+            let code = match answer["status"].as_str() {
+                Some("ok") => 0,
+                Some("errors") => 2,
+                _ => {
+                    if !json {
+                        eprintln!(
+                            "oj typecheck: {}",
+                            answer["reason"].as_str().unwrap_or("the check failed")
+                        );
+                    }
+                    1
+                }
+            };
+            std::io::Write::flush(&mut std::io::stdout())?;
+            std::process::exit(code)
         }
         Command::Stylex { .. } => unreachable!("`oj stylex` runs before the runtime starts"),
         Command::Build {

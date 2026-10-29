@@ -20,6 +20,7 @@ members = [
     "crates/oj_notify",
     "crates/oj_deno_runtime",
     "crates/oj_deno_snapshots",
+    "crates/typecheck/oj_*",
 ]
 
 [workspace.package]
@@ -38,6 +39,40 @@ oj_diag = { version = "0.2.52", path = "crates/oj_diag" }
 oj_env = { version = "0.2.52", path = "crates/oj_env" }
 oj_config = { version = "0.2.52", path = "crates/oj_config" }
 oj_server = { version = "0.2.52", path = "crates/oj_server" }
+oj_typecheck = { version = "0.2.52", path = "crates/typecheck/oj_typecheck" }
+# tsrs:begin (tools/vendor-tsrs.py) deps
+tsrs_api = { package = "oj_tsrs_api", version = "0.2.52", path = "crates/typecheck/oj_tsrs_api" }
+tsrs_api_codec = { package = "oj_tsrs_api_codec", version = "0.2.52", path = "crates/typecheck/oj_tsrs_api_codec" }
+tsrs_api_transport = { package = "oj_tsrs_api_transport", version = "0.2.52", path = "crates/typecheck/oj_tsrs_api_transport" }
+tsrs_ast = { package = "oj_tsrs_ast", version = "0.2.52", path = "crates/typecheck/oj_tsrs_ast" }
+tsrs_astnav = { package = "oj_tsrs_astnav", version = "0.2.52", path = "crates/typecheck/oj_tsrs_astnav" }
+tsrs_binder = { package = "oj_tsrs_binder", version = "0.2.52", path = "crates/typecheck/oj_tsrs_binder" }
+tsrs_checker = { package = "oj_tsrs_checker", version = "0.2.52", path = "crates/typecheck/oj_tsrs_checker" }
+tsrs_compiler = { package = "oj_tsrs_compiler", version = "0.2.52", path = "crates/typecheck/oj_tsrs_compiler" }
+tsrs_contentmapper = { package = "oj_tsrs_contentmapper", version = "0.2.52", path = "crates/typecheck/oj_tsrs_contentmapper" }
+tsrs_core = { package = "oj_tsrs_core", version = "0.2.52", path = "crates/typecheck/oj_tsrs_core" }
+tsrs_declarations = { package = "oj_tsrs_declarations", version = "0.2.52", path = "crates/typecheck/oj_tsrs_declarations" }
+tsrs_diagnostics = { package = "oj_tsrs_diagnostics", version = "0.2.52", path = "crates/typecheck/oj_tsrs_diagnostics" }
+tsrs_execute = { package = "oj_tsrs_execute", version = "0.2.52", path = "crates/typecheck/oj_tsrs_execute" }
+tsrs_fswatch = { package = "oj_tsrs_fswatch", version = "0.2.52", path = "crates/typecheck/oj_tsrs_fswatch" }
+tsrs_incremental = { package = "oj_tsrs_incremental", version = "0.2.52", path = "crates/typecheck/oj_tsrs_incremental" }
+tsrs_ipc = { package = "oj_tsrs_ipc", version = "0.2.52", path = "crates/typecheck/oj_tsrs_ipc" }
+tsrs_ls = { package = "oj_tsrs_ls", version = "0.2.52", path = "crates/typecheck/oj_tsrs_ls" }
+tsrs_lsproto = { package = "oj_tsrs_lsproto", version = "0.2.52", path = "crates/typecheck/oj_tsrs_lsproto" }
+tsrs_module = { package = "oj_tsrs_module", version = "0.2.52", path = "crates/typecheck/oj_tsrs_module" }
+tsrs_modulespecifiers = { package = "oj_tsrs_modulespecifiers", version = "0.2.52", path = "crates/typecheck/oj_tsrs_modulespecifiers" }
+tsrs_parser = { package = "oj_tsrs_parser", version = "0.2.52", path = "crates/typecheck/oj_tsrs_parser" }
+tsrs_printer = { package = "oj_tsrs_printer", version = "0.2.52", path = "crates/typecheck/oj_tsrs_printer" }
+tsrs_project = { package = "oj_tsrs_project", version = "0.2.52", path = "crates/typecheck/oj_tsrs_project" }
+tsrs_projectutil = { package = "oj_tsrs_projectutil", version = "0.2.52", path = "crates/typecheck/oj_tsrs_projectutil" }
+tsrs_pseudochecker = { package = "oj_tsrs_pseudochecker", version = "0.2.52", path = "crates/typecheck/oj_tsrs_pseudochecker" }
+tsrs_scanner = { package = "oj_tsrs_scanner", version = "0.2.52", path = "crates/typecheck/oj_tsrs_scanner" }
+tsrs_sourcemap = { package = "oj_tsrs_sourcemap", version = "0.2.52", path = "crates/typecheck/oj_tsrs_sourcemap" }
+tsrs_spanmap = { package = "oj_tsrs_spanmap", version = "0.2.52", path = "crates/typecheck/oj_tsrs_spanmap" }
+tsrs_transformers = { package = "oj_tsrs_transformers", version = "0.2.52", path = "crates/typecheck/oj_tsrs_transformers" }
+tsrs_tsoptions = { package = "oj_tsrs_tsoptions", version = "0.2.52", path = "crates/typecheck/oj_tsrs_tsoptions" }
+tsrs_vfs = { package = "oj_tsrs_vfs", version = "0.2.52", path = "crates/typecheck/oj_tsrs_vfs" }
+# tsrs:end deps
 oj_js = { version = "0.2.52", path = "crates/oj_js" }
 oj_stylex = { version = "0.2.52", path = "crates/oj_stylex" }
 
@@ -270,3 +305,36 @@ deno_resolver = { opt-level = 3 }
 deno_package_json = { opt-level = 3 }
 deno_path_util = { opt-level = 3 }
 sys_traits = { opt-level = 3 }
+# tsrs:begin (tools/vendor-tsrs.py) profile
+oj_tsrs_api = { opt-level = 3 }
+oj_tsrs_api_codec = { opt-level = 3 }
+oj_tsrs_api_transport = { opt-level = 3 }
+oj_tsrs_ast = { opt-level = 3 }
+oj_tsrs_astnav = { opt-level = 3 }
+oj_tsrs_binder = { opt-level = 3 }
+oj_tsrs_checker = { opt-level = 3 }
+oj_tsrs_compiler = { opt-level = 3 }
+oj_tsrs_contentmapper = { opt-level = 3 }
+oj_tsrs_core = { opt-level = 3 }
+oj_tsrs_declarations = { opt-level = 3 }
+oj_tsrs_diagnostics = { opt-level = 3 }
+oj_tsrs_execute = { opt-level = 3 }
+oj_tsrs_fswatch = { opt-level = 3 }
+oj_tsrs_incremental = { opt-level = 3 }
+oj_tsrs_ipc = { opt-level = 3 }
+oj_tsrs_ls = { opt-level = 3 }
+oj_tsrs_lsproto = { opt-level = 3 }
+oj_tsrs_module = { opt-level = 3 }
+oj_tsrs_modulespecifiers = { opt-level = 3 }
+oj_tsrs_parser = { opt-level = 3 }
+oj_tsrs_printer = { opt-level = 3 }
+oj_tsrs_project = { opt-level = 3 }
+oj_tsrs_projectutil = { opt-level = 3 }
+oj_tsrs_pseudochecker = { opt-level = 3 }
+oj_tsrs_scanner = { opt-level = 3 }
+oj_tsrs_sourcemap = { opt-level = 3 }
+oj_tsrs_spanmap = { opt-level = 3 }
+oj_tsrs_transformers = { opt-level = 3 }
+oj_tsrs_tsoptions = { opt-level = 3 }
+oj_tsrs_vfs = { opt-level = 3 }
+# tsrs:end profile

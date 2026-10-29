@@ -6677,6 +6677,7 @@ dependencies = [
  "oj_notify",
  "oj_resolver",
  "oj_stylex",
+ "oj_typecheck",
  "opentelemetry",
  "opentelemetry_sdk",
  "oxc_allocator",
@@ -6730,6 +6731,449 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "oj_tsrs_api"
+version = "0.2.52"
+dependencies = [
+ "oj_tsrs_api_codec",
+ "oj_tsrs_api_transport",
+ "oj_tsrs_ast",
+ "oj_tsrs_astnav",
+ "oj_tsrs_checker",
+ "oj_tsrs_compiler",
+ "oj_tsrs_core",
+ "oj_tsrs_diagnostics",
+ "oj_tsrs_execute",
+ "oj_tsrs_ls",
+ "oj_tsrs_lsproto",
+ "oj_tsrs_module",
+ "oj_tsrs_printer",
+ "oj_tsrs_project",
+ "oj_tsrs_scanner",
+ "oj_tsrs_tsoptions",
+ "oj_tsrs_vfs",
+ "rustc-hash 2.1.3",
+]
+
+[[package]]
+name = "oj_tsrs_api_codec"
+version = "0.2.52"
+dependencies = [
+ "oj_tsrs_ast",
+ "oj_tsrs_core",
+ "rustc-hash 2.1.3",
+]
+
+[[package]]
+name = "oj_tsrs_api_transport"
+version = "0.2.52"
+dependencies = [
+ "base64 0.23.1",
+ "oj_tsrs_core",
+ "oj_tsrs_vfs",
+ "rustc-hash 2.1.3",
+ "serde",
+ "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "oj_tsrs_ast"
+version = "0.2.52"
+dependencies = [
+ "bitflags 2.13.2",
+ "hashbrown 0.17.1",
+ "memchr",
+ "oj_tsrs_core",
+ "oj_tsrs_diagnostics",
+ "oj_tsrs_spanmap",
+ "rustc-hash 2.1.3",
+]
+
+[[package]]
+name = "oj_tsrs_astnav"
+version = "0.2.52"
+dependencies = [
+ "oj_tsrs_ast",
+ "oj_tsrs_core",
+ "oj_tsrs_scanner",
+]
+
+[[package]]
+name = "oj_tsrs_binder"
+version = "0.2.52"
+dependencies = [
+ "bitflags 2.13.2",
+ "oj_tsrs_ast",
+ "oj_tsrs_core",
+ "oj_tsrs_diagnostics",
+ "oj_tsrs_scanner",
+ "rustc-hash 2.1.3",
+]
+
+[[package]]
+name = "oj_tsrs_checker"
+version = "0.2.52"
+dependencies = [
+ "bitflags 2.13.2",
+ "hashbrown 0.17.1",
+ "oj_tsrs_ast",
+ "oj_tsrs_astnav",
+ "oj_tsrs_binder",
+ "oj_tsrs_core",
+ "oj_tsrs_diagnostics",
+ "oj_tsrs_module",
+ "oj_tsrs_modulespecifiers",
+ "oj_tsrs_parser",
+ "oj_tsrs_printer",
+ "oj_tsrs_pseudochecker",
+ "oj_tsrs_scanner",
+ "oj_tsrs_tsoptions",
+ "rustc-hash 2.1.3",
+ "smallbitvec",
+ "smallvec",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "oj_tsrs_compiler"
+version = "0.2.52"
+dependencies = [
+ "oj_tsrs_ast",
+ "oj_tsrs_binder",
+ "oj_tsrs_checker",
+ "oj_tsrs_contentmapper",
+ "oj_tsrs_core",
+ "oj_tsrs_declarations",
+ "oj_tsrs_diagnostics",
+ "oj_tsrs_module",
+ "oj_tsrs_modulespecifiers",
+ "oj_tsrs_parser",
+ "oj_tsrs_printer",
+ "oj_tsrs_scanner",
+ "oj_tsrs_sourcemap",
+ "oj_tsrs_spanmap",
+ "oj_tsrs_transformers",
+ "oj_tsrs_tsoptions",
+ "oj_tsrs_vfs",
+ "rayon",
+ "rustc-hash 2.1.3",
+]
+
+[[package]]
+name = "oj_tsrs_contentmapper"
+version = "0.2.52"
+dependencies = [
+ "oj_tsrs_ast",
+ "oj_tsrs_core",
+ "oj_tsrs_diagnostics",
+ "oj_tsrs_ipc",
+ "oj_tsrs_parser",
+ "oj_tsrs_spanmap",
+ "oj_tsrs_tsoptions",
+ "rustc-hash 2.1.3",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "oj_tsrs_core"
+version = "0.2.52"
+dependencies = [
+ "dragonbox_ecma",
+ "hashbrown 0.17.1",
+ "icu_normalizer",
+ "indexmap",
+ "libc",
+ "memchr",
+ "num-bigint 0.5.1",
+ "num-traits",
+ "rustc-hash 2.1.3",
+ "simdutf8",
+ "unicode-id-start",
+]
+
+[[package]]
+name = "oj_tsrs_declarations"
+version = "0.2.52"
+dependencies = [
+ "oj_tsrs_ast",
+ "oj_tsrs_checker",
+ "oj_tsrs_core",
+ "oj_tsrs_diagnostics",
+ "oj_tsrs_modulespecifiers",
+ "oj_tsrs_printer",
+ "oj_tsrs_scanner",
+ "oj_tsrs_transformers",
+ "oj_tsrs_tsoptions",
+ "rustc-hash 2.1.3",
+]
+
+[[package]]
+name = "oj_tsrs_diagnostics"
+version = "0.2.52"
+dependencies = [
+ "rustc-hash 2.1.3",
+]
+
+[[package]]
+name = "oj_tsrs_execute"
+version = "0.2.52"
+dependencies = [
+ "libc",
+ "oj_tsrs_ast",
+ "oj_tsrs_compiler",
+ "oj_tsrs_contentmapper",
+ "oj_tsrs_core",
+ "oj_tsrs_diagnostics",
+ "oj_tsrs_fswatch",
+ "oj_tsrs_incremental",
+ "oj_tsrs_ipc",
+ "oj_tsrs_tsoptions",
+ "oj_tsrs_vfs",
+ "rustc-hash 2.1.3",
+]
+
+[[package]]
+name = "oj_tsrs_fswatch"
+version = "0.2.52"
+dependencies = [
+ "libc",
+ "oj_tsrs_core",
+ "rustc-hash 2.1.3",
+]
+
+[[package]]
+name = "oj_tsrs_incremental"
+version = "0.2.52"
+dependencies = [
+ "bitflags 2.13.2",
+ "oj_tsrs_ast",
+ "oj_tsrs_binder",
+ "oj_tsrs_checker",
+ "oj_tsrs_compiler",
+ "oj_tsrs_contentmapper",
+ "oj_tsrs_core",
+ "oj_tsrs_diagnostics",
+ "oj_tsrs_module",
+ "oj_tsrs_tsoptions",
+ "oj_tsrs_vfs",
+ "rayon",
+ "rustc-hash 2.1.3",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "oj_tsrs_ipc"
+version = "0.2.52"
+dependencies = [
+ "oj_tsrs_core",
+ "rustc-hash 2.1.3",
+]
+
+[[package]]
+name = "oj_tsrs_ls"
+version = "0.2.52"
+dependencies = [
+ "bitflags 2.13.2",
+ "indexmap",
+ "oj_tsrs_ast",
+ "oj_tsrs_astnav",
+ "oj_tsrs_binder",
+ "oj_tsrs_checker",
+ "oj_tsrs_compiler",
+ "oj_tsrs_core",
+ "oj_tsrs_diagnostics",
+ "oj_tsrs_lsproto",
+ "oj_tsrs_module",
+ "oj_tsrs_modulespecifiers",
+ "oj_tsrs_parser",
+ "oj_tsrs_printer",
+ "oj_tsrs_projectutil",
+ "oj_tsrs_scanner",
+ "oj_tsrs_sourcemap",
+ "oj_tsrs_spanmap",
+ "oj_tsrs_tsoptions",
+ "oj_tsrs_vfs",
+ "rustc-hash 2.1.3",
+]
+
+[[package]]
+name = "oj_tsrs_lsproto"
+version = "0.2.52"
+dependencies = [
+ "oj_tsrs_core",
+ "oj_tsrs_vfs",
+ "rustc-hash 2.1.3",
+]
+
+[[package]]
+name = "oj_tsrs_module"
+version = "0.2.52"
+dependencies = [
+ "bitflags 2.13.2",
+ "hashbrown 0.17.1",
+ "oj_tsrs_ast",
+ "oj_tsrs_core",
+ "oj_tsrs_diagnostics",
+ "oj_tsrs_vfs",
+ "rustc-hash 2.1.3",
+]
+
+[[package]]
+name = "oj_tsrs_modulespecifiers"
+version = "0.2.52"
+dependencies = [
+ "oj_tsrs_ast",
+ "oj_tsrs_core",
+ "oj_tsrs_module",
+ "oj_tsrs_tsoptions",
+ "regex",
+ "rustc-hash 2.1.3",
+]
+
+[[package]]
+name = "oj_tsrs_parser"
+version = "0.2.52"
+dependencies = [
+ "bitflags 2.13.2",
+ "oj_tsrs_ast",
+ "oj_tsrs_core",
+ "oj_tsrs_diagnostics",
+ "oj_tsrs_scanner",
+ "rustc-hash 2.1.3",
+]
+
+[[package]]
+name = "oj_tsrs_printer"
+version = "0.2.52"
+dependencies = [
+ "bitflags 2.13.2",
+ "oj_tsrs_ast",
+ "oj_tsrs_core",
+ "oj_tsrs_scanner",
+ "oj_tsrs_sourcemap",
+ "rustc-hash 2.1.3",
+]
+
+[[package]]
+name = "oj_tsrs_project"
+version = "0.2.52"
+dependencies = [
+ "oj_tsrs_ast",
+ "oj_tsrs_binder",
+ "oj_tsrs_checker",
+ "oj_tsrs_compiler",
+ "oj_tsrs_contentmapper",
+ "oj_tsrs_core",
+ "oj_tsrs_diagnostics",
+ "oj_tsrs_ls",
+ "oj_tsrs_lsproto",
+ "oj_tsrs_module",
+ "oj_tsrs_parser",
+ "oj_tsrs_projectutil",
+ "oj_tsrs_tsoptions",
+ "oj_tsrs_vfs",
+ "rustc-hash 2.1.3",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "oj_tsrs_projectutil"
+version = "0.2.52"
+dependencies = [
+ "oj_tsrs_core",
+ "rustc-hash 2.1.3",
+]
+
+[[package]]
+name = "oj_tsrs_pseudochecker"
+version = "0.2.52"
+dependencies = [
+ "oj_tsrs_ast",
+ "oj_tsrs_core",
+]
+
+[[package]]
+name = "oj_tsrs_scanner"
+version = "0.2.52"
+dependencies = [
+ "bitflags 2.13.2",
+ "memchr",
+ "oj_tsrs_ast",
+ "oj_tsrs_core",
+ "oj_tsrs_diagnostics",
+ "rustc-hash 2.1.3",
+]
+
+[[package]]
+name = "oj_tsrs_sourcemap"
+version = "0.2.52"
+dependencies = [
+ "oj_tsrs_ast",
+ "oj_tsrs_core",
+ "oj_tsrs_scanner",
+ "rustc-hash 2.1.3",
+]
+
+[[package]]
+name = "oj_tsrs_spanmap"
+version = "0.2.52"
+dependencies = [
+ "bitflags 2.13.2",
+ "oj_tsrs_core",
+]
+
+[[package]]
+name = "oj_tsrs_transformers"
+version = "0.2.52"
+dependencies = [
+ "bitflags 2.13.2",
+ "oj_tsrs_ast",
+ "oj_tsrs_binder",
+ "oj_tsrs_checker",
+ "oj_tsrs_core",
+ "oj_tsrs_printer",
+ "oj_tsrs_scanner",
+ "oj_tsrs_tsoptions",
+ "rustc-hash 2.1.3",
+]
+
+[[package]]
+name = "oj_tsrs_tsoptions"
+version = "0.2.52"
+dependencies = [
+ "oj_tsrs_ast",
+ "oj_tsrs_core",
+ "oj_tsrs_diagnostics",
+ "oj_tsrs_module",
+ "oj_tsrs_parser",
+ "oj_tsrs_scanner",
+ "oj_tsrs_vfs",
+ "rustc-hash 2.1.3",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "oj_tsrs_vfs"
+version = "0.2.52"
+dependencies = [
+ "bitflags 2.13.2",
+ "oj_tsrs_core",
+ "rayon",
+ "rustc-hash 2.1.3",
+ "rustix 1.1.5",
+]
+
+[[package]]
+name = "oj_typecheck"
+version = "0.2.52"
+dependencies = [
+ "oj_tsrs_api",
+ "oj_tsrs_vfs",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -9879,6 +10323,12 @@ checksum = "ebb9a3b702d0a7e33bc4d85a14456633d2b165c2ad839c5fd9a8417c1ab15860"
 dependencies = [
  "digest 0.10.7",
 ]
+
+[[package]]
+name = "smallbitvec"
+version = "2.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b0e903ee191d8f7a8fbf0d712c3a1699d19e04ceba5ad1eb673053c7d938a09"
 
 [[package]]
 name = "smallvec"

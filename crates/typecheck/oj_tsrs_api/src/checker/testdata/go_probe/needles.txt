@@ -1,0 +1,40 @@
+box:
+p:
+ünïcödé
+over(x: string)
+U = 
+Pair<A, B>
+isStr(
+Animal {
+Dog extends
+legs
+Red =
+r = over
+M = 
+C<T> =
+lit =
+fn =
+o = {
+box };
+uni
+IA<T
+aw()
+maybe:
+doubled
+x * 2
+cb:
+n) => {}
+withThis(
+rest(
+arr:
+S<T>
+WithDefault
+useAll
+box.value
+value +
+Up =
+TL =
+big =
+make }
+make(1)
+toString
