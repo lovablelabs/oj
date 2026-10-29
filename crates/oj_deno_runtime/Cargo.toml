@@ -145,7 +145,7 @@ version = "0.118.0"
 
 [dependencies.deno_process]
 package = "oj_deno_process"
-version = "0.2.51"
+version = "0.2.52"
 path = "../oj_deno_process"
 
 [dependencies.deno_resolver]
@@ -221,7 +221,7 @@ features = ["sync"]
 # oj's watcher share one copy. The path is stripped on publish.
 [dependencies.notify]
 package = "oj_notify"
-version = "0.2.51"
+version = "0.2.52"
 path = "../oj_notify"
 
 [dependencies.once_cell]
