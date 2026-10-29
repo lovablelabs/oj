@@ -227,16 +227,28 @@ fn point_exec_path_at_node(runtime: &mut deno_core::JsRuntime) {
 }
 
 fn node_on_path() -> Option<String> {
-    let path = oj_env::get().var_os("PATH")?;
+    node_in(oj_env::get().var_os("PATH")?)
+}
+
+/// The first executable `node` in `path`'s absolute entries: Node's
+/// execPath is absolute, and a relative entry would name whatever directory
+/// the engine runs in.
+#[cfg(unix)]
+fn node_in(path: &std::ffi::OsStr) -> Option<String> {
+    use std::os::unix::fs::PermissionsExt;
     std::env::split_paths(path)
+        .filter(|dir| dir.is_absolute())
         .map(|dir| dir.join("node"))
-        .find(|candidate| is_executable(candidate))
+        .find(|node| {
+            std::fs::metadata(node)
+                .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        })
         .and_then(|node| node.into_os_string().into_string().ok())
 }
 
-fn is_executable(path: &std::path::Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+#[cfg(not(unix))]
+fn node_in(_path: &std::ffi::OsStr) -> Option<String> {
+    None
 }
 
 /// Web workers for the engine, which Node code reaches through the
@@ -379,4 +391,46 @@ fn create_web_worker_cb(
 
         (worker, handle)
     })
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::node_in;
+
+    fn node(dir: &std::path::Path, mode: u32) {
+        let node = dir.join("node");
+        std::fs::write(&node, "").unwrap();
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    #[test]
+    fn node_is_the_first_executable_one_on_an_absolute_entry() {
+        let (plain, exec, later) = (
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+        );
+        node(plain.path(), 0o644);
+        node(exec.path(), 0o755);
+        node(later.path(), 0o755);
+        let path = std::env::join_paths([
+            "relative/bin",
+            plain.path().to_str().unwrap(),
+            exec.path().to_str().unwrap(),
+            later.path().to_str().unwrap(),
+        ])
+        .unwrap();
+        assert_eq!(
+            node_in(&path),
+            Some(exec.path().join("node").display().to_string())
+        );
+        // A relative entry holding a node is passed over.
+        let cwd = std::env::current_dir().unwrap();
+        let relative = tempfile::tempdir_in(&cwd).unwrap();
+        node(relative.path(), 0o755);
+        let name = relative.path().file_name().unwrap();
+        assert_eq!(node_in(name), None);
+    }
 }
