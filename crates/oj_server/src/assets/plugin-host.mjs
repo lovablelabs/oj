@@ -3183,7 +3183,8 @@ async function environmentsConfig() {
 function runnerStylex(p) {
   if (p?.name !== "@stylexjs/unplugin" || !p.__ojStylexOptions || p.transform) return p;
   // The plugin's shouldHandle, loosely: oj checks the imports exactly.
-  const sources = (p.__ojStylexOptions.importSources ?? ["stylex", "@stylexjs/stylex"])
+  const listed = p.__ojStylexOptions.importSources;
+  const sources = (Array.isArray(listed) ? listed : ["stylex", "@stylexjs/stylex"])
     .map((s) => (typeof s === "string" ? s : s?.from))
     .filter((s) => typeof s === "string");
   return {

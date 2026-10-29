@@ -360,6 +360,81 @@ fn regex_class(html: &str, id: &str) -> bool {
     })
 }
 
+/// The Start fixture rendered by @cloudflare/vite-plugin's worker: the app
+/// copy beside the plugin's install (e2e/fixtures/cloudflare-deps, its
+/// parent's node_modules), the fixture's own install in the app. Returns the
+/// directory holding both.
+fn cloudflare_app(name: &str) -> Option<(PathBuf, PathBuf)> {
+    let deps = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../e2e/fixtures/cloudflare-deps")
+        .canonicalize()
+        .unwrap();
+    if !deps.join("node_modules/@cloudflare/vite-plugin").is_dir() {
+        assert!(
+            std::env::var_os("OJ_REQUIRE_FIXTURES").is_none(),
+            "OJ_REQUIRE_FIXTURES is set but the cloudflare-deps fixture is not installed"
+        );
+        eprintln!("skipping: npm ci --prefix e2e/fixtures/cloudflare-deps");
+        return None;
+    }
+    let source = app(START, name)?;
+    let parent = source.with_extension("cf");
+    let _ = std::fs::remove_dir_all(&parent);
+    std::fs::create_dir_all(&parent).unwrap();
+    std::os::unix::fs::symlink(deps.join("node_modules"), parent.join("node_modules")).unwrap();
+    let root = parent.join("app");
+    std::fs::rename(&source, &root).unwrap();
+    std::fs::write(
+        root.join("wrangler.jsonc"),
+        r#"{"name":"oj-start-stylex","main":"@tanstack/react-start/server-entry","compatibility_date":"2025-09-01","compatibility_flags":["nodejs_compat"]}"#,
+    )
+    .unwrap();
+    let config = std::fs::read_to_string(root.join("vite.config.ts")).unwrap();
+    let config = config
+        .replacen(
+            "import { defineConfig } from \"vite\";",
+            "import { defineConfig } from \"vite\";\nimport { cloudflare } from \"@cloudflare/vite-plugin\";",
+            1,
+        )
+        .replacen(
+            "tanstackStart(),",
+            "cloudflare({ viteEnvironment: { name: \"ssr\" } }), tanstackStart(),",
+            1,
+        );
+    assert!(
+        config.contains("cloudflare({"),
+        "the fixture's vite.config.ts changed shape; update this test"
+    );
+    std::fs::write(root.join("vite.config.ts"), config).unwrap();
+    Some((parent, root))
+}
+
+/// Start under `oj dev` with the server render in a Cloudflare worker, a
+/// runner environment the plugin host runs through the app's Vite: the
+/// worker's modules are compiled as the browser's are, so the page renders
+/// with StyleX's classes and the dev sheet styles it.
+#[tokio::test(flavor = "multi_thread")]
+async fn start_dev_in_a_cloudflare_worker_styles_the_page() {
+    let Some((parent, root)) = cloudflare_app("start-cf-dev") else {
+        return;
+    };
+    let server = Server::start(&root, &["dev"]);
+    let page = Page::open(&server.url()).await;
+    let (status, ssr): (u16, String) = page
+        .eval("fetch('/').then(async (r) => [r.status, await r.text()])")
+        .await;
+    assert_eq!(status, 200, "the worker's render failed:\n{ssr}");
+    assert!(
+        regex_class(&ssr, "title"),
+        "the worker's render names StyleX classes:\n{ssr}"
+    );
+    assert_styled(&page).await;
+    assert_eq!(page.errors(), Vec::<String>::new(), "page errors");
+    page.close().await;
+    drop(server);
+    let _ = std::fs::remove_dir_all(&parent);
+}
+
 /// A Start build: the client's stylesheet is Vite's byte for byte, StyleX's
 /// rules appended to the app's own sheet as the plugin's generateBundle does,
 /// and the production server's page is styled by it.

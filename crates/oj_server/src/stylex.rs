@@ -95,6 +95,8 @@ pub(crate) fn runner_transform(
     }
     let file = Path::new(id.split('?').next().unwrap_or(id));
     let Some(out) = plugin.transform_source(file, code)? else {
+        // Nothing compiled: the module's earlier rules leave the sheet.
+        plugin.set_module_rules(id, Vec::new());
         return Ok(None);
     };
     plugin.set_module_rules(id, out.rules);

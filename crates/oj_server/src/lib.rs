@@ -1763,6 +1763,9 @@ impl DevServer {
             .is_some_and(|f| f.format == PluginsFormat::Vite)
             && oj_config::ssr_runner_backed(&config))
         .then(|| preseed::spawn_boot_preseed(&root, &dev_mode));
+        // Before the host: a runner environment's boot-time imports (the
+        // Cloudflare plugin's, from configureServer) compile StyleX through it.
+        let stylex = stylex::plugin_for(&root, &config, "serve").map_err(|e| anyhow::anyhow!(e))?;
         boot_phase("plugin host spawning");
         let plugin_host = match &plugin_file {
             Some(file) => {
@@ -1910,7 +1913,6 @@ impl DevServer {
             modules: css_modules_options(&config),
             lightning: css_lightning_options(&config),
         };
-        let stylex = stylex::plugin_for(&root, &config, "serve").map_err(|e| anyhow::anyhow!(e))?;
         if let Some(plugin) = &stylex {
             stylex::notify_clients(plugin, reload_tx.clone());
         }

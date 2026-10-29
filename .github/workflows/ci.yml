@@ -36,7 +36,7 @@ jobs:
       # archive in the restored cache.
       - name: install start-app fixture (vite for the config and Start tests)
         run: npm ci --prefix e2e/fixtures/start-app
-      # The Cloudflare plugin the Start preseed test installs beside its app.
+      # The Cloudflare plugin the Start preseed and StyleX tests install beside their apps.
       - name: install cloudflare-deps fixture
         run: npm ci --prefix e2e/fixtures/cloudflare-deps
       # The StyleX e2e (crates/oj/tests/stylex_e2e.rs) runs the real
