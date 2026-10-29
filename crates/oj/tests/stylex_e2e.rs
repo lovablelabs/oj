@@ -412,7 +412,8 @@ fn cloudflare_app(name: &str) -> Option<(PathBuf, PathBuf)> {
 /// Start under `oj dev` with the server render in a Cloudflare worker, a
 /// runner environment the plugin host runs through the app's Vite: the
 /// worker's modules are compiled as the browser's are, so the page renders
-/// with StyleX's classes and the dev sheet styles it.
+/// with StyleX's classes and the dev sheet styles it, and an edit reaches
+/// both the worker's render and the page.
 #[tokio::test(flavor = "multi_thread")]
 async fn start_dev_in_a_cloudflare_worker_styles_the_page() {
     let Some((parent, root)) = cloudflare_app("start-cf-dev") else {
@@ -429,10 +430,45 @@ async fn start_dev_in_a_cloudflare_worker_styles_the_page() {
         "the worker's render names StyleX classes:\n{ssr}"
     );
     assert_styled(&page).await;
+    let before = class_of(&ssr, "card").expect("the card's class");
+
+    let card = root.join("src/Card.tsx");
+    let source = std::fs::read_to_string(&card).unwrap();
+    let edited = source.replace("padding: 12,", "padding: 20,");
+    assert_ne!(source, edited);
+    std::fs::write(&card, edited).unwrap();
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let ssr: String = page.eval("fetch('/').then((r) => r.text())").await;
+        if class_of(&ssr, "card").is_some_and(|c| c != before) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the worker's render never picked up the edit:\n{ssr}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    page.wait_for(
+        &format!("{} === '20px'", computed("card", "paddingTop")),
+        WAIT,
+    )
+    .await;
     assert_eq!(page.errors(), Vec::<String>::new(), "page errors");
     page.close().await;
     drop(server);
     let _ = std::fs::remove_dir_all(&parent);
+}
+
+/// The class attribute of the element with `id` in `html`.
+fn class_of(html: &str, id: &str) -> Option<String> {
+    let tag = format!("id=\"{id}\"");
+    html.split('<').find(|el| el.contains(&tag)).and_then(|el| {
+        el.split("class=\"")
+            .nth(1)
+            .and_then(|c| c.split('"').next())
+            .map(str::to_string)
+    })
 }
 
 /// A Start build: the client's stylesheet is Vite's byte for byte, StyleX's
