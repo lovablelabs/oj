@@ -643,6 +643,12 @@ pub(crate) fn ctx_rpc(
                 .collect();
             Ok(serde_json::json!({ "id": id, "code": code, "importedIds": imported_ids }))
         }
+        "stylexTransform" => Ok(
+            match crate::stylex::runner_transform(root, arg(0), arg(1))? {
+                Some((code, map)) => serde_json::json!({ "code": code, "map": map }),
+                None => serde_json::Value::Null,
+            },
+        ),
         other => Err(format!("unknown ctx method: {other}")),
     }
 }

@@ -66,6 +66,41 @@ pub fn plugin_for(
     Ok(Some(plugin))
 }
 
+/// The live dev plugin for `root`, as [`plugin_for`] made it for `serve`.
+pub(crate) fn serving_plugin(root: &Path) -> Option<Arc<StylexPlugin>> {
+    let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let prefix = format!("\0{}\0", canonical.display());
+    let shared = SHARED.lock().unwrap();
+    shared
+        .iter()
+        .filter(|(key, _)| key.starts_with("serve\0") && key.contains(&prefix))
+        .find_map(|(_, plugin)| plugin.upgrade())
+}
+
+/// The plugin's transform for a module a runner environment (one the plugin
+/// host runs through the app's Vite, a Cloudflare worker's) loads: `None`
+/// when the plugin passes over it. Its rules join the sheet under the same id
+/// the browser's copy records, as the plugin's store is shared across Vite's
+/// environments.
+pub(crate) fn runner_transform(
+    root: &Path,
+    id: &str,
+    code: &str,
+) -> Result<Option<(String, Option<String>)>, String> {
+    let Some(plugin) = serving_plugin(root) else {
+        return Ok(None);
+    };
+    if !plugin.handles(id, code) {
+        return Ok(None);
+    }
+    let file = Path::new(id.split('?').next().unwrap_or(id));
+    let Some(out) = plugin.transform_source(file, code)? else {
+        return Ok(None);
+    };
+    plugin.set_module_rules(id, out.rules);
+    Ok(Some((out.code, out.map)))
+}
+
 /// Sends the plugin's update event to the dev clients after a sheet change,
 /// one per coalescing window.
 pub(crate) fn notify_clients(plugin: &StylexPlugin, tx: broadcast::Sender<String>) {

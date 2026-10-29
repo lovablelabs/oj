@@ -3158,7 +3158,7 @@ async function environmentsConfig() {
   if (!base) return null;
   applyEdits(base, configResolvedEdits);
   configResolvedEdits = [];
-  const plugins = (base.plugins ?? []).map((p) => standInFor.get(p) ?? p);
+  const plugins = (base.plugins ?? []).map((p) => runnerStylex(standInFor.get(p) ?? p));
   const rc = { ...base, plugins, ...pluginHookUtils(plugins), environments: {} };
   // The host resolved silently; the environments log as the app's Vite would.
   const vite = await loadAppVite();
@@ -3176,6 +3176,23 @@ async function environmentsConfig() {
     rc.environments[name].plugins = await viteEnvironmentPlugins(name, rc);
   }
   return rc;
+}
+// @stylexjs/unplugin, which oj compiles natively, for the environments the
+// app's Vite runs here: the real plugin transforms every environment's
+// modules, so a runner environment compiles them through oj's compiler.
+function runnerStylex(p) {
+  if (p?.name !== "@stylexjs/unplugin" || !p.__ojStylexOptions || p.transform) return p;
+  // The plugin's shouldHandle, loosely: oj checks the imports exactly.
+  const sources = (p.__ojStylexOptions.importSources ?? ["stylex", "@stylexjs/stylex"])
+    .map((s) => (typeof s === "string" ? s : s?.from))
+    .filter((s) => typeof s === "string");
+  return {
+    ...p,
+    async transform(code, id) {
+      if (!sources.some((s) => code.includes(s))) return null;
+      return await ctxRpc("stylexTransform", [id, code]);
+    },
+  };
 }
 // The app's Vite resolving the host's own plugins (an oj plugins file has no
 // vite.config to resolve), each hook answering what it returned in the host.

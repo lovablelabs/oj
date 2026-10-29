@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `@stylexjs/unplugin` compiles the modules of a runner-backed environment (a plugin's own `dev.createEnvironment`, such as the Cloudflare plugin's worker), as the plugin's transform does in every environment under Vite. oj runs the plugin natively and the environments the plugin host runs through the app's Vite got no StyleX transform, so a Cloudflare Start app's server render threw `Unexpected 'stylex.create' call at runtime` on every request. Their rules join `/virtual:stylex.css` with the browser's.
+
 ## [0.2.51] - 2026-10-29
 
 ### Fixed
