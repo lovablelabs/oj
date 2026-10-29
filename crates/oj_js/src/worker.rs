@@ -207,11 +207,36 @@ pub(crate) fn build_worker(
         ..Default::default()
     };
 
-    Ok(MainWorker::bootstrap_from_options(
-        main_module,
-        services,
-        options,
-    ))
+    let mut worker = MainWorker::bootstrap_from_options(main_module, services, options);
+    point_exec_path_at_node(&mut worker.js_runtime);
+    Ok(worker)
+}
+
+/// Vite plugins spawn `process.execPath` as node (`execFileSync(process.execPath,
+/// ["-e", script])`), and in the engine it is the oj binary, which takes no
+/// node flags. The `node` on PATH stands in, as it would under Vite; with none
+/// there it stays oj's. `Deno.execPath()` keeps oj's: Deno's child_process
+/// compares against it to rewrite node arguments for its own binary.
+fn point_exec_path_at_node(runtime: &mut deno_core::JsRuntime) {
+    let Some(node) = node_on_path() else { return };
+    let node = serde_json::to_string(&node).expect("a path string serializes");
+    let script = format!("process.execPath = {node}; process.argv[0] = {node};");
+    if let Err(e) = runtime.execute_script("ext:oj/exec_path.js", script) {
+        eprintln!("oj: process.execPath stays oj's: {e}");
+    }
+}
+
+fn node_on_path() -> Option<String> {
+    let path = oj_env::get().var_os("PATH")?;
+    std::env::split_paths(path)
+        .map(|dir| dir.join("node"))
+        .find(|candidate| is_executable(candidate))
+        .and_then(|node| node.into_os_string().into_string().ok())
+}
+
+fn is_executable(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
 /// Web workers for the engine, which Node code reaches through the
@@ -335,6 +360,7 @@ fn create_web_worker_cb(
             worker.js_runtime.op_state().borrow_mut().put(resolved);
         }
         worker.bootstrap(&bootstrap_options);
+        point_exec_path_at_node(&mut worker.js_runtime);
 
         // Graceful OOM for a capped worker: flag oom_triggered (surfaced as
         // ERR_WORKER_OUT_OF_MEMORY) and terminate only this isolate, instead

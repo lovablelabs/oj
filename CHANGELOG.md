@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A plugin that spawns `process.execPath` as node (`execFileSync(process.execPath, ["-e", script])`) runs node, as it would under Vite: `process.execPath` and `process.argv[0]` name the `node` on `PATH`, in the plugin host and in its worker threads. They named the oj binary, which exits on node's flags. Without a `node` on `PATH` they stay oj's; `Deno.execPath()` always does.
+
 ## [0.2.52] - 2026-10-29
 
 ### Fixed

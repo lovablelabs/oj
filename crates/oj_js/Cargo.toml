@@ -30,6 +30,7 @@ deno_package_json = { version = "0.61", features = ["sync"] }
 deno_path_util = "0.6"
 sys_traits = "0.1"
 serde_json.workspace = true
+oj_env.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 

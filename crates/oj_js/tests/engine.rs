@@ -97,6 +97,44 @@ async fn node_builtins_work() {
     assert_eq!(value, serde_json::json!(true));
 }
 
+// Vite plugins spawn `process.execPath` as node; in the engine it would be
+// the oj binary, which takes no node flags.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn process_exec_path_runs_node_scripts() {
+    let root = app_root();
+    std::fs::write(
+        root.path().join("probe.mjs"),
+        "import { parentPort } from \"node:worker_threads\";\n\
+         parentPort.postMessage([process.execPath, process.argv[0]]);\n",
+    )
+    .unwrap();
+    let probe = serde_json::to_string(&root.path().join("probe.mjs")).unwrap();
+    let engine = engine(root.path());
+    let value = engine
+        .eval(
+            EvalInput::Source(
+                r#"
+            import { execFileSync } from "node:child_process";
+            import { pathToFileURL } from "node:url";
+            import { Worker } from "node:worker_threads";
+            const run = (node) =>
+              execFileSync(node, ["--input-type=module", "-e", "process.stdout.write(process.argv.slice(1).join('|'))", "a", "b"], { encoding: "utf8" });
+            const inWorker = await new Promise((resolve, reject) => {
+              const worker = new Worker(pathToFileURL(PROBE));
+              worker.once("message", (paths) => worker.terminate().then(() => resolve(paths)));
+              worker.once("error", reject);
+            });
+            export default [run(process.execPath), run(process.argv[0]), inWorker.every((p) => p === process.execPath)];
+            "#
+                .replace("PROBE", &probe),
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(value, serde_json::json!(["a|b", "a|b", true]));
+}
+
 #[tokio::test]
 async fn bare_import_resolves_from_node_modules() {
     let root = app_root();
