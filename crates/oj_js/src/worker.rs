@@ -207,11 +207,48 @@ pub(crate) fn build_worker(
         ..Default::default()
     };
 
-    Ok(MainWorker::bootstrap_from_options(
-        main_module,
-        services,
-        options,
-    ))
+    let mut worker = MainWorker::bootstrap_from_options(main_module, services, options);
+    point_exec_path_at_node(&mut worker.js_runtime);
+    Ok(worker)
+}
+
+/// Vite plugins spawn `process.execPath` as node (`execFileSync(process.execPath,
+/// ["-e", script])`), and in the engine it is the oj binary, which takes no
+/// node flags. The `node` on PATH stands in, as it would under Vite; with none
+/// there it stays oj's. `Deno.execPath()` keeps oj's: Deno's child_process
+/// compares against it to rewrite node arguments for its own binary.
+fn point_exec_path_at_node(runtime: &mut deno_core::JsRuntime) {
+    let Some(node) = node_on_path() else { return };
+    let node = serde_json::to_string(&node).expect("a path string serializes");
+    let script = format!("process.execPath = {node}; process.argv[0] = {node};");
+    if let Err(e) = runtime.execute_script("ext:oj/exec_path.js", script) {
+        eprintln!("oj: process.execPath stays oj's: {e}");
+    }
+}
+
+fn node_on_path() -> Option<String> {
+    node_in(oj_env::get().var_os("PATH")?)
+}
+
+/// The first executable `node` in `path`'s absolute entries: Node's
+/// execPath is absolute, and a relative entry would name whatever directory
+/// the engine runs in.
+#[cfg(unix)]
+fn node_in(path: &std::ffi::OsStr) -> Option<String> {
+    use std::os::unix::fs::PermissionsExt;
+    std::env::split_paths(path)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join("node"))
+        .find(|node| {
+            std::fs::metadata(node)
+                .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        })
+        .and_then(|node| node.into_os_string().into_string().ok())
+}
+
+#[cfg(not(unix))]
+fn node_in(_path: &std::ffi::OsStr) -> Option<String> {
+    None
 }
 
 /// Web workers for the engine, which Node code reaches through the
@@ -335,6 +372,7 @@ fn create_web_worker_cb(
             worker.js_runtime.op_state().borrow_mut().put(resolved);
         }
         worker.bootstrap(&bootstrap_options);
+        point_exec_path_at_node(&mut worker.js_runtime);
 
         // Graceful OOM for a capped worker: flag oom_triggered (surfaced as
         // ERR_WORKER_OUT_OF_MEMORY) and terminate only this isolate, instead
@@ -353,4 +391,46 @@ fn create_web_worker_cb(
 
         (worker, handle)
     })
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::node_in;
+
+    fn node(dir: &std::path::Path, mode: u32) {
+        let node = dir.join("node");
+        std::fs::write(&node, "").unwrap();
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    #[test]
+    fn node_is_the_first_executable_one_on_an_absolute_entry() {
+        let (plain, exec, later) = (
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+        );
+        node(plain.path(), 0o644);
+        node(exec.path(), 0o755);
+        node(later.path(), 0o755);
+        let path = std::env::join_paths([
+            "relative/bin",
+            plain.path().to_str().unwrap(),
+            exec.path().to_str().unwrap(),
+            later.path().to_str().unwrap(),
+        ])
+        .unwrap();
+        assert_eq!(
+            node_in(&path),
+            Some(exec.path().join("node").display().to_string())
+        );
+        // A relative entry holding a node is passed over.
+        let cwd = std::env::current_dir().unwrap();
+        let relative = tempfile::tempdir_in(&cwd).unwrap();
+        node(relative.path(), 0o755);
+        let name = relative.path().file_name().unwrap();
+        assert_eq!(node_in(name), None);
+    }
 }

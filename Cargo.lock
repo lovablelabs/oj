@@ -6604,6 +6604,7 @@ dependencies = [
  "oj_deno_napi",
  "oj_deno_runtime",
  "oj_deno_snapshots",
+ "oj_env",
  "serde_json",
  "sys_traits",
  "tempfile",
