@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- rolldown 1.2.16 (from 1.2.15) and oxc 0.156 (from 0.155). `oj build` output still matches `vite build` byte for byte on the parity apps.
+
 ## [0.3.1] - 2026-10-30
 
 ### Changed
