@@ -35,6 +35,25 @@ oj build web                                     # production build
 
 Dev serves file-based routes with streaming SSR and client hydration, keeps Fast Refresh working, runs server functions in the module runner, and applies the app's `vite.config` plugins (React and the app's own). `oj build` emits a Node `server.mjs`, a Cloudflare `worker.mjs` (`nodejs_compat`), content-hashed client assets, and prerendered routes. oj's own docs site (`www/`) is a TanStack Start app built by oj and served from a Cloudflare Worker.
 
+## Type checking
+
+`oj typecheck` checks an app the way `tsc -b --noEmit` does, on [tsrs](https://github.com/oxc-project/tsrs) (the Rust port of the TypeScript 7 compiler, built into oj). It prints tsc's `file(line,col): error TSn: message` lines and exits 0 when clean, 2 on type errors and 1 when it cannot check.
+
+```sh
+oj dev web --typecheck                           # dev server that keeps a checker warm for ./web
+oj typecheck web                                 # asks that server; checks in its own process when none runs
+oj typecheck web --changed src/App.tsx           # names a file just written, so the answer covers it
+oj typecheck web --json                          # the report as JSON
+```
+
+How it works:
+
+- `oj dev --typecheck` starts a checker in a child `oj` process beside the dev server, so a crash or hang in it never takes the server down; the next check starts a new one. It opens the projects `tsc -b` would build from the root `tsconfig.json`, and the dev server's watcher forwards every change to it. Once changes settle it checks again, so a request usually finds a current report.
+- The server writes its address (app root, pid and port) to `.oj-cache/v1/dev-server.json`. `oj typecheck <dir>` reads it and posts to the server's `/@oj/typecheck`, which answers only local callers (not browsers or the preview proxy). Files named with `--changed` are re-read before the answer, so it never waits on the watcher. When no live server is advertised for that root, `oj typecheck` checks in its own process.
+- After an edit, only the files it affects are checked again, as `tsc --watch` does: each project keeps an incremental program whose per-file results carry over to the next one. An edit that leaves a file's exported types unchanged re-checks only that file. An edit that changes them also re-checks every file that imports it, directly or not, which can be most of an app for a widely shared module.
+- That needs each file's declaration signature, which the checker records in the background once it has heard nothing (no change, no check) for a second after a check; a burst of edits records once, after it. A check that arrives while it records stops it before the next file. It leaves out the files whose declaration emit is slow: the TanStack Router route tree (`tsr.config.json`'s `generatedRouteTree`, `src/routeTree.gen.ts` by default), whose one declaration types every route, and any file it once took a second or more to emit. A change to one of those re-checks the files that import it.
+- An edit to a tsconfig, `package.json` or a lockfile opens the projects again from scratch.
+
 ## Quickstart
 
 Install the CLI from crates.io, then run `oj` in any app:

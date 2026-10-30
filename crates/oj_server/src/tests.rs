@@ -2878,3 +2878,21 @@ fn an_aliased_external_hands_node_the_alias_target() {
     assert_eq!(apply("lib/a.js"), "real-lib/dist/a.js");
     assert_eq!(apply("react"), "react");
 }
+
+#[test]
+fn the_route_tree_is_the_configured_one_or_the_generator_default() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        start_route_tree(dir.path()),
+        dir.path().join("src/routeTree.gen.ts")
+    );
+    std::fs::write(
+        dir.path().join("tsr.config.json"),
+        r#"{ "generatedRouteTree": "./app/routes.gen.ts" }"#,
+    )
+    .unwrap();
+    assert_eq!(
+        start_route_tree(dir.path()),
+        dir.path().join("app/routes.gen.ts")
+    );
+}

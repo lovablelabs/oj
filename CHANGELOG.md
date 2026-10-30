@@ -7,8 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-30
+
 ### Changed
 
+- The checker `oj dev --typecheck` keeps warm checks only the files an edit affects, as `tsc --watch` does, instead of the whole app. On a large Start app an edit that keeps a file's exported types is re-checked in about 1 s instead of 10 s. Between checks it records each file's declaration signature in the background, after a second with no changes or requests; a check stops it before its next file. It leaves out the files that are slow to emit, such as the TanStack Router route tree. oj's changes to the vendored tsrs crates are kept in `tools/tsrs-patches`, which `tools/vendor-tsrs.py` applies.
 - `oj dev --typecheck` turns on the warm TypeScript checker (`/@oj/typecheck`, and the server `oj typecheck` asks). It replaces `OJ_TYPECHECK=1`, which no longer does anything.
 
 ## [0.3.0] - 2026-10-29

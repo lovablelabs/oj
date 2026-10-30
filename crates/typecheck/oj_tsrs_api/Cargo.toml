@@ -128,6 +128,7 @@ tsrs_module = { workspace = true }
 tsrs_tsoptions = { workspace = true }
 tsrs_compiler = { workspace = true }
 tsrs_execute = { workspace = true }
+tsrs_incremental = { workspace = true }
 tsrs_checker = { workspace = true }
 tsrs_astnav = { workspace = true }
 tsrs_ls = { workspace = true }

@@ -330,6 +330,13 @@ pub fn params_fields(method: &str) -> &'static [FieldSpec] {
                 elem: None,
             },
         ],
+        "ojStartSignatureJob" => &[FieldSpec {
+            name: "skip",
+            go_type: "[]string",
+            kind: FieldKind::Array,
+            nullable: true,
+            elem: Some(Elem::Str),
+        }],
         "parseCommandLine" => &[FieldSpec {
             name: "commandLine",
             go_type: "[]string",
@@ -497,6 +504,8 @@ pub fn params_fields(method: &str) -> &'static [FieldSpec] {
         | "getWellKnownSymbols"
         | "getWellKnownSignatures"
         | "getProgramDiagnostics"
+        | "ojGetIncrementalSemanticDiagnostics"
+        | "ojGetGlobalDiagnostics"
         | "getGlobalDiagnostics"
         | "getConfigFileParsingDiagnostics" => &[
             FieldSpec {

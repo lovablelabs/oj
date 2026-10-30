@@ -356,6 +356,20 @@ impl Checker {
         })
     }
 
+    /// Records, in the background, the declaration signatures of the files the last check did not emit, so the
+    /// next edit of a file whose exported types stay the same checks only that file. For a checker that waits
+    /// for the next change: the next request stops it, but not in the middle of one file, so `skip` names the
+    /// files known to be slow to emit (a generated route tree). Those, and the ones an earlier job found slow,
+    /// keep no signature: a change to one re-checks the files that import it.
+    pub fn record_signatures(&self, skip: &[PathBuf]) {
+        let skip: Vec<String> = skip.iter().map(|p| slash(p)).collect();
+        let _ = request(
+            &self.session,
+            "ojStartSignatureJob",
+            &json!({ "skip": skip }),
+        );
+    }
+
     /// tsc's `getDiagnosticsOfAnyProgram`: config parsing, then syntactic;
     /// only without syntax errors the program, global and semantic ones; and
     /// only when those found nothing, the declaration ones.
@@ -377,10 +391,10 @@ impl Checker {
             return Ok(all);
         }
         all.extend(get("getProgramDiagnostics")?);
-        all.extend(get("getGlobalDiagnostics")?);
+        all.extend(get("ojGetGlobalDiagnostics")?);
         if all.len() == config_count {
-            all.extend(get("getSemanticDiagnostics")?);
-            all.extend(get("getGlobalDiagnostics")?);
+            all.extend(get("ojGetIncrementalSemanticDiagnostics")?);
+            all.extend(get("ojGetGlobalDiagnostics")?);
         }
         if project.emits_declarations && all.len() == config_count {
             all.extend(get("getDeclarationDiagnostics")?);

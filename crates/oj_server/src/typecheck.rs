@@ -467,7 +467,7 @@ mod imp {
     use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::path::{Path, PathBuf};
     use std::sync::mpsc::{Receiver, RecvTimeoutError};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use oj_typecheck::{Checker, Report};
 
@@ -476,6 +476,14 @@ mod imp {
     /// How long changes settle before a background re-check.
     const SETTLE: Duration = Duration::from_millis(150);
 
+    /// How long the checker must hear nothing (no change, no request) after
+    /// a check before it records the files' declaration signatures
+    /// (`Checker::record_signatures`). Every message slides it, as the dep
+    /// optimizer's debounce does, so a burst of edits and checks records
+    /// once, after the burst; a request that arrives while it records stops
+    /// it.
+    const SIGNATURES_QUIET: Duration = Duration::from_secs(1);
+
     pub(super) fn run(root: PathBuf, rx: Receiver<Msg>) {
         lower_priority();
         let mut state = State {
@@ -483,13 +491,23 @@ mod imp {
             checker: None,
             pending: Vec::new(),
             report: None,
+            signatures_due: None,
         };
         loop {
-            let msg = if state.pending.is_empty() {
-                rx.recv().map_err(|_| RecvTimeoutError::Disconnected)
+            let wait = if state.pending.is_empty() {
+                state
+                    .signatures_due
+                    .map(|due| due.saturating_duration_since(Instant::now()))
             } else {
-                rx.recv_timeout(SETTLE)
+                Some(SETTLE)
             };
+            let msg = match wait {
+                Some(wait) => rx.recv_timeout(wait),
+                None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
+            };
+            if msg.is_ok() && state.signatures_due.is_some() {
+                state.signatures_due = Some(Instant::now() + SIGNATURES_QUIET);
+            }
             match msg {
                 Ok(Msg::Warm) => {
                     let _ = state.answer();
@@ -507,9 +525,10 @@ mod imp {
                     state.pending.extend(changed);
                     let _ = reply.send(state.answer());
                 }
-                Err(RecvTimeoutError::Timeout) => {
+                Err(RecvTimeoutError::Timeout) if !state.pending.is_empty() => {
                     let _ = state.answer();
                 }
+                Err(RecvTimeoutError::Timeout) => state.record_signatures(),
                 Err(RecvTimeoutError::Disconnected) => break,
             }
         }
@@ -520,6 +539,9 @@ mod imp {
         checker: Option<Checker>,
         pending: Vec<PathBuf>,
         report: Option<Report>,
+        /// When the last check's signatures are to be recorded
+        /// (`SIGNATURES_QUIET`).
+        signatures_due: Option<Instant>,
     }
 
     impl State {
@@ -562,13 +584,25 @@ mod imp {
                 .is_none_or(|r| r.generation != checker.generation())
             {
                 self.report = Some(checker.check()?);
+                self.signatures_due = Some(Instant::now() + SIGNATURES_QUIET);
             }
             Ok(self.report.as_ref().map(answer_of))
+        }
+
+        fn record_signatures(&mut self) {
+            self.signatures_due = None;
+            if let Some(checker) = &self.checker {
+                // Its one declaration types every route: about 20 s to emit on
+                // a large app.
+                let route_tree = crate::start_route_tree(&self.root);
+                checker.record_signatures(&[route_tree]);
+            }
         }
 
         /// Drops a checker that failed; the next request opens a fresh one.
         fn reset(&mut self) {
             self.report = None;
+            self.signatures_due = None;
             self.pending.clear();
             if let Some(checker) = self.checker.take() {
                 if catch_unwind(AssertUnwindSafe(|| drop(checker))).is_err() {

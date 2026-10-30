@@ -119,7 +119,7 @@ version = "0.167.0"
 # stripped on publish; a published copy resolves by version from crates.io.
 [dependencies.deno_napi]
 package = "oj_deno_napi"
-version = "0.3.0"
+version = "0.3.1"
 path = "../oj_deno_napi"
 
 [dependencies.deno_net]
@@ -145,7 +145,7 @@ version = "0.118.0"
 
 [dependencies.deno_process]
 package = "oj_deno_process"
-version = "0.3.0"
+version = "0.3.1"
 path = "../oj_deno_process"
 
 [dependencies.deno_resolver]
@@ -221,7 +221,7 @@ features = ["sync"]
 # oj's watcher share one copy. The path is stripped on publish.
 [dependencies.notify]
 package = "oj_notify"
-version = "0.3.0"
+version = "0.3.1"
 path = "../oj_notify"
 
 [dependencies.once_cell]

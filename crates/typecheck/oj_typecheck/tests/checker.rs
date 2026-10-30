@@ -382,3 +382,250 @@ fn a_root_reached_through_a_symlink_reports_paths_relative_to_it() {
         "src/a b.ts(1,14): error TS2322: Type 'string' is not assignable to type 'number'.\n"
     );
 }
+
+/// A one-project app: `src/a.ts` exports `shape`, `src/b.ts` uses it.
+fn importer_app(name: &str, a: &str) -> (App, PathBuf) {
+    let app = App::empty(name);
+    app.write(
+        "tsconfig.json",
+        r#"{ "compilerOptions": { "strict": true, "noEmit": true, "lib": ["ES2022"], "module": "ESNext", "moduleResolution": "bundler" }, "include": ["src"] }"#,
+    );
+    let a = app.write("src/a.ts", a);
+    app.write(
+        "src/b.ts",
+        "import { shape } from './a';\nexport const n: number = shape.size;\n",
+    );
+    (app, a)
+}
+
+/// What a checker that opens the app now reports.
+fn fresh(app: &App) -> String {
+    text(&mut app.open())
+}
+
+#[test]
+fn an_exported_type_change_rechecks_the_files_that_import_it() {
+    for record in [false, true] {
+        let (app, a) = importer_app(
+            &format!("export-change-{record}"),
+            "export const shape = { size: 1 };\n",
+        );
+        let mut checker = app.open();
+        assert_eq!(text(&mut checker), "");
+        if record {
+            checker.record_signatures(&[]);
+        }
+        app.write("src/a.ts", "export const shape = { size: 'one' };\n");
+        checker.changed([a.as_path()]).unwrap();
+        let report = text(&mut checker);
+        assert_eq!(
+            report,
+            "src/b.ts(2,14): error TS2322: Type 'string' is not assignable to type 'number'.\n",
+            "signatures recorded: {record}"
+        );
+        assert_eq!(report, fresh(&app));
+    }
+}
+
+#[test]
+fn an_edit_that_keeps_the_exported_types_keeps_the_importers_errors() {
+    let (app, a) = importer_app("body-edit", "export const shape = { size: 'one' };\n");
+    let mut checker = app.open();
+    let before = text(&mut checker);
+    assert!(before.contains("src/b.ts"), "{before}");
+    checker.record_signatures(&[]);
+    for k in 0..3 {
+        app.write(
+            "src/a.ts",
+            &format!("export const shape = {{ size: 'one' }};\n// edit {k}\n"),
+        );
+        checker.changed([a.as_path()]).unwrap();
+        assert_eq!(text(&mut checker), before, "edit {k}");
+    }
+}
+
+#[test]
+fn global_errors_stay_reported_after_edits() {
+    let app = App::empty("globals");
+    app.write(
+        "tsconfig.json",
+        r#"{ "compilerOptions": { "noLib": true, "noEmit": true }, "include": ["src"] }"#,
+    );
+    let a = app.write("src/a.ts", "export const a = 1;\n");
+    app.write("src/b.ts", "export const b = 2;\n");
+    let mut checker = app.open();
+    let before = text(&mut checker);
+    assert!(
+        before.contains("error TS2318: Cannot find global type 'Array'."),
+        "{before}"
+    );
+    checker.record_signatures(&[]);
+    // A body edit re-checks one file; rewriting the same text re-checks none.
+    app.write("src/a.ts", "export const a = 1;\n// edit\n");
+    checker.changed([a.as_path()]).unwrap();
+    assert_eq!(text(&mut checker), before);
+    checker.changed([a.as_path()]).unwrap();
+    assert_eq!(text(&mut checker), before);
+    assert_eq!(before, fresh(&app));
+}
+
+#[test]
+fn an_error_pointing_into_an_edited_file_is_still_reported() {
+    // b.ts's error carries related information in a.ts ("'size' is declared here"); a.ts is then edited
+    // without changing its exported types, so b.ts is not checked again and keeps that diagnostic.
+    let (app, a) = importer_app(
+        "related",
+        "export interface Shape { size: number }\nexport const shape: Shape = { size: 1 };\n",
+    );
+    app.write(
+        "src/b.ts",
+        "import type { Shape } from './a';\nexport const s: Shape = {};\n",
+    );
+    let mut checker = app.open();
+    let before = text(&mut checker);
+    assert!(before.contains("TS2741"), "{before}");
+    checker.record_signatures(&[]);
+    for k in 0..4 {
+        app.write(
+            "src/a.ts",
+            &format!(
+                "export interface Shape {{ size: number }}\n// edit {k}\nexport const shape: Shape = {{ size: {k} }};\n"
+            ),
+        );
+        checker.changed([a.as_path()]).unwrap();
+        assert_eq!(text(&mut checker), before, "edit {k}");
+    }
+}
+
+#[test]
+fn every_edit_reports_what_a_fresh_check_does() {
+    let app = App::empty("differential");
+    app.write(
+        "tsconfig.json",
+        r#"{ "compilerOptions": { "strict": true, "noEmit": true, "lib": ["ES2022"], "module": "ESNext", "moduleResolution": "bundler" }, "include": ["src"] }"#,
+    );
+    app.write(
+        "src/base.ts",
+        "export type Id = number;\nexport const zero: Id = 0;\n",
+    );
+    app.write(
+        "src/mid.ts",
+        "import { type Id, zero } from './base';\nexport const next = (id: Id): Id => id + 1;\nexport const one = next(zero);\n",
+    );
+    app.write(
+        "src/top.ts",
+        "import { one, next } from './mid';\nexport const two: number = next(one);\n",
+    );
+    let edits: &[(&str, &str)] = &[
+        (
+            "src/base.ts",
+            "export type Id = string;\nexport const zero: Id = '0';\n",
+        ),
+        (
+            "src/mid.ts",
+            "import { type Id, zero } from './base';\nexport const next = (id: Id): Id => id + '1';\nexport const one = next(zero);\n",
+        ),
+        (
+            "src/top.ts",
+            "import { one, next } from './mid';\nexport const two: string = next(one);\n",
+        ),
+        (
+            "src/base.ts",
+            "export type Id = number;\nexport const zero: Id = 0;\n",
+        ),
+        (
+            "src/mid.ts",
+            "import { type Id, zero } from './base';\nexport const next = (id: Id): Id => id + 1;\nexport const one = next(zero);\n// tail\n",
+        ),
+        (
+            "src/top.ts",
+            "import { one, next } from './mid';\nexport const two: number = next(one);\n",
+        ),
+    ];
+    let mut checker = app.open();
+    assert_eq!(text(&mut checker), fresh(&app));
+    for (k, (file, body)) in edits.iter().enumerate() {
+        let path = app.write(file, body);
+        checker.changed([path.as_path()]).unwrap();
+        assert_eq!(text(&mut checker), fresh(&app), "edit {k}: {file}");
+        checker.record_signatures(&[]);
+    }
+}
+
+#[test]
+fn an_edit_that_interrupts_the_signature_job_still_reports_what_a_fresh_check_does() {
+    let app = App::empty("interrupt");
+    app.write(
+        "tsconfig.json",
+        r#"{ "compilerOptions": { "strict": true, "noEmit": true, "lib": ["ES2022"], "module": "ESNext", "moduleResolution": "bundler", "isolatedModules": true }, "include": ["src"] }"#,
+    );
+    // A chain of modules, each re-exporting a type built on the one before, so the job has work to stop in.
+    app.write(
+        "src/m0.ts",
+        "export type T0 = { id: number };\nexport const v0: T0 = { id: 0 };\n",
+    );
+    for i in 1..300 {
+        app.write(
+            &format!("src/m{i}.ts"),
+            &format!(
+                "import {{ type T{p}, v{p} }} from './m{p}';\nexport type T{i} = T{p} & {{ n{i}: number }};\nexport const v{i}: T{i} = {{ ...v{p}, n{i}: {i} }};\n",
+                p = i - 1
+            ),
+        );
+    }
+    let mut checker = app.open();
+    assert_eq!(text(&mut checker), "");
+    let edits = [
+        "export type T0 = { id: string };\nexport const v0: T0 = { id: 0 };\n",
+        "export type T0 = { id: string };\nexport const v0: T0 = { id: '0' };\n",
+        "export type T0 = { id: number };\nexport const v0: T0 = { id: 0 };\n",
+    ];
+    for (k, body) in edits.iter().enumerate() {
+        // Started, then stopped by the very next request.
+        checker.record_signatures(&[]);
+        let path = app.write("src/m0.ts", body);
+        checker.changed([path.as_path()]).unwrap();
+        assert_eq!(text(&mut checker), fresh(&app), "edit {k}");
+    }
+}
+
+#[test]
+fn a_file_the_signature_job_skips_still_checks_as_a_fresh_check_does() {
+    let app = App::empty("skip");
+    app.write(
+        "tsconfig.json",
+        r#"{ "compilerOptions": { "strict": true, "noEmit": true, "lib": ["ES2022"], "module": "ESNext", "moduleResolution": "bundler", "isolatedModules": true }, "include": ["src"] }"#,
+    );
+    // A generated tree that imports every module, as a TanStack route tree does.
+    let mut tree = String::new();
+    for i in 0..20 {
+        app.write(
+            &format!("src/r{i}.ts"),
+            &format!("export const route{i} = {{ id: {i} }};\n"),
+        );
+        tree.push_str(&format!("import {{ route{i} }} from './r{i}';\n"));
+    }
+    tree.push_str("export const tree = [");
+    tree.push_str(
+        &(0..20)
+            .map(|i| format!("route{i}"))
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+    tree.push_str("] as const;\nexport const firstId: number = tree[0].id;\n");
+    let route_tree = app.write("src/routeTree.gen.ts", &tree);
+    let mut checker = app.open();
+    assert_eq!(text(&mut checker), "");
+    for (k, body) in [
+        "export const route0 = { id: 'zero' };\n",
+        "export const route0 = { id: 0 };\n",
+    ]
+    .iter()
+    .enumerate()
+    {
+        checker.record_signatures(std::slice::from_ref(&route_tree));
+        let path = app.write("src/r0.ts", body);
+        checker.changed([path.as_path()]).unwrap();
+        assert_eq!(text(&mut checker), fresh(&app), "edit {k}");
+    }
+}

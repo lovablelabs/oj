@@ -227,6 +227,20 @@ pub fn write_start_assets(dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The TanStack Router route tree the generator writes for `root`:
+/// `tsr.config.json`'s `generatedRouteTree` when set, `src/routeTree.gen.ts`
+/// otherwise.
+pub fn start_route_tree(root: &Path) -> PathBuf {
+    std::fs::read_to_string(root.join("tsr.config.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| {
+            let rel = v.get("generatedRouteTree")?.as_str()?.to_owned();
+            Some(root.join(rel.trim_start_matches("./")))
+        })
+        .unwrap_or_else(|| root.join("src").join("routeTree.gen.ts"))
+}
+
 pub fn is_tanstack_start_app(root: &Path) -> bool {
     root.join("src/routes").is_dir()
         && std::fs::read_to_string(root.join("package.json"))

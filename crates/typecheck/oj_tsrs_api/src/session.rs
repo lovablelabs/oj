@@ -120,6 +120,8 @@ pub struct Session {
     pub(crate) source_files: crate::sourcefiles::SourceFileState,
     build_backend: Mutex<Option<Arc<dyn crate::build::BuildBackend>>>,
     next_batch_page: AtomicU64,
+    /// oj: incremental diagnostics (`oj_incremental.rs`).
+    pub(crate) oj_incremental: Mutex<crate::oj_incremental::State>,
 }
 
 impl Session {
@@ -196,6 +198,7 @@ impl Session {
             closed: Mutex::new(false),
             batch_pages: Mutex::new(FxHashMap::default()),
             next_batch_page: AtomicU64::new(0),
+            oj_incremental: Mutex::default(),
             module_resolvers: crate::module_resolution::ModuleResolvers::default(),
             base_fs,
             weak_self: Weak::clone(weak_self),
@@ -284,6 +287,7 @@ impl Session {
             return;
         }
         *closed = true;
+        self.free_incremental_programs();
         self.release_language_server_refs();
         self.source_files.release_all_leases();
         let all: Vec<_> = self.snapshots.write().unwrap().drain().collect();
@@ -530,6 +534,11 @@ impl Session {
             }
             "getBindDiagnostics" => self.handle_get_diagnostics(p, DiagnosticKind::Bind)?,
             "getSemanticDiagnostics" => self.handle_get_diagnostics(p, DiagnosticKind::Semantic)?,
+            "ojGetIncrementalSemanticDiagnostics" => {
+                self.handle_oj_incremental_semantic_diagnostics(p)?
+            }
+            "ojGetGlobalDiagnostics" => self.handle_oj_global_diagnostics(p)?,
+            "ojStartSignatureJob" => self.handle_oj_start_signature_job(p)?,
             "getSuggestionDiagnostics" => {
                 self.handle_get_diagnostics(p, DiagnosticKind::Suggestion)?
             }
@@ -585,6 +594,8 @@ impl Session {
 
 impl Handler for Session {
     fn handle_request(&self, method: &str, params: &[u8]) -> ApiResult<Response> {
+        // oj: nothing the signature job reads may change or be freed while it runs (oj_incremental.rs).
+        self.stop_signature_job();
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.dispatch(method, params)
         })) {

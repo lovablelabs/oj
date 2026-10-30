@@ -19,6 +19,14 @@ Patches applied while copying:
   `^1.2`, and Cargo cannot hold two 1.x versions of one crate.
 - tsrs_execute's build.rs reads the tsrs workspace manifest for the
   TypeScript version; the copy embeds the values instead.
+- Every `tools/tsrs-patches/*.patch` is applied with `git apply`, in name
+  order, after the crates are copied: oj's own changes to the vendored code.
+  `incremental-diagnostics.patch` adds the API methods the warm checker uses
+  to check only the files an edit affects (tsrs_api's oj_incremental.rs), a
+  skip filter and per-file timing for the background signature computation
+  (tsrs_incremental), and a declaration emit that stops before its next file
+  once cancelled (tsrs_compiler). A patch that no longer applies stops the
+  update; rebase it on the new sources.
 """
 
 import pathlib
@@ -30,6 +38,7 @@ import tomllib
 
 OJ = pathlib.Path(__file__).resolve().parent.parent
 DEST = OJ / "crates" / "typecheck"
+PATCHES = OJ / "tools" / "tsrs-patches"
 ROOT_CRATE = "tsrs_api"
 SKIPPED_DIRS = {"tests", "benches", "examples", "testdata", "target"}
 PATCHED_VERSIONS = {"unicode-id-start": "1.1.2"}
@@ -52,6 +61,8 @@ def main(tsrs: pathlib.Path) -> None:
         shutil.rmtree(old)
     for name in crates:
         copy_crate(tsrs, name, shared, package, typescript, lints)
+    for patch in sorted(PATCHES.glob("*.patch")):
+        subprocess.run(["git", "-C", str(OJ), "apply", str(patch)], check=True)
     oj_version = tomllib.loads((OJ / "Cargo.toml").read_text())["workspace"]["package"]["version"]
     update_root_manifest(crates, oj_version)
     (DEST / "README.md").write_text(readme(package["version"], commit, typescript, crates))

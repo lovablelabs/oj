@@ -307,6 +307,10 @@ impl Program {
                 let pending = PendingPrints::default();
                 crate::program::worker_pool().in_place_scope(|scope| {
                     pool.for_each_checker_group_do(&source_files, false, |c, index, file| {
+                        // oj: a cancelled emit stops before its next file, not after all of them.
+                        if ctx.err().is_some() {
+                            return;
+                        }
                         let e = transform(c, file);
                         pending.acquire();
                         let (print, pending) = (&print, &pending);
@@ -318,10 +322,15 @@ impl Program {
                 });
             }
             Some(pool) => pool.for_each_checker_group_do(&source_files, true, |c, index, file| {
-                print(transform(c, file), index);
+                if ctx.err().is_none() {
+                    print(transform(c, file), index);
+                }
             }),
             None => {
                 for (index, &file) in source_files.iter().enumerate() {
+                    if ctx.err().is_some() {
+                        break;
+                    }
                     let e = {
                         let mut guard = self.get_type_checker_for_file(ctx, file);
                         transform(&mut guard, file)
@@ -340,11 +349,12 @@ impl Program {
             );
         }
 
-        // collect results from emit, preserving input order
+        // collect results from emit, preserving input order; a cancelled emit has none for the files it did not
+        // reach (oj)
         source_files
             .into_iter()
             .zip(results)
-            .map(|(file, r)| (file, r.into_inner().unwrap().unwrap()))
+            .filter_map(|(file, r)| r.into_inner().unwrap().map(|r| (file, r)))
             .collect()
     }
 }

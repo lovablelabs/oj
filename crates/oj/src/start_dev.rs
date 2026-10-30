@@ -1103,16 +1103,9 @@ fn client_inputs(state: &StartState, paths: &[PathBuf]) -> Vec<PathBuf> {
 fn regen_output_files(root: &Path, cache: &Path) -> [PathBuf; 2] {
     // The generator honors tsr.config.json's `generatedRouteTree` (generate.mjs
     // passes oj's default under the file, not over it): snapshot the tree the
-    // app actually configured, defaulting to src/routeTree.gen.ts.
-    let configured = std::fs::read_to_string(root.join("tsr.config.json"))
-        .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .and_then(|v| {
-            let rel = v.get("generatedRouteTree")?.as_str()?.to_owned();
-            Some(root.join(rel.trim_start_matches("./")))
-        });
+    // app actually configured.
     [
-        configured.unwrap_or_else(|| root.join("src").join("routeTree.gen.ts")),
+        oj_server::start_route_tree(root),
         cache.join("server-fn-resolver.mjs"),
     ]
 }

@@ -17,6 +17,7 @@ pub mod diagnostics;
 pub mod handler;
 pub mod methods;
 pub mod module_resolution;
+mod oj_incremental;
 pub(crate) mod paramfields;
 pub mod predecode;
 pub mod printing;

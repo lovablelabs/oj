@@ -185,6 +185,18 @@ impl Program {
     /// concurrently with anything else that uses this program or its snapshot. Returns the number of signatures
     /// stored.
     pub fn compute_placeholder_signatures(&self, ctx: &Context, chunk: usize) -> usize {
+        self.oj_compute_placeholder_signatures(ctx, chunk, &|_| false, &|_, _| {})
+    }
+
+    /// oj (tools/tsrs-patches): `compute_placeholder_signatures` without the files `skip` names (by file name), and
+    /// with each emitted file's time (from the previous file's write to its own) passed to `timed`.
+    pub fn oj_compute_placeholder_signatures(
+        &self,
+        ctx: &Context,
+        chunk: usize,
+        skip: &dyn Fn(&str) -> bool,
+        timed: &(dyn Fn(P<SourceFile>, Duration) + Sync),
+    ) -> usize {
         let snapshot = self.snapshot;
         if !snapshot.can_use_incremental_state()
             || snapshot.changed_files_set.size() != 0
@@ -200,6 +212,7 @@ impl Program {
             .filter(|&file| {
                 !file.is_declaration_file()
                     && !tsrs_ast::is_json_source_file(file)
+                    && !skip(file.file_name())
                     && snapshot
                         .file_infos
                         .load(file.path())
@@ -207,6 +220,7 @@ impl Program {
             })
             .collect();
         let stored = std::sync::atomic::AtomicUsize::new(0);
+        let last_write = Mutex::new(Instant::now());
         let write_file =
             |file_name: &str, text: &str, data: &mut WriteFileData| -> Result<(), String> {
                 assert!(
@@ -214,6 +228,8 @@ impl Program {
                     "File extension for signature expected to be dts, got : {file_name}"
                 );
                 let file = data.source_file.expect("declaration output of a source file");
+                let now = Instant::now();
+                timed(file, now - std::mem::replace(&mut *last_write.lock().unwrap(), now));
                 let signature = snapshot.compute_signature_with_diagnostics(file, text, data);
                 if let Some(mut info) = snapshot.file_infos.load(file.path())
                     && !signature.is_empty()
@@ -230,6 +246,7 @@ impl Program {
             if ctx.err().is_some() {
                 break;
             }
+            *last_write.lock().unwrap() = Instant::now();
             program.emit(
                 ctx,
                 &EmitOptions {
