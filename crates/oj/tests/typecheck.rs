@@ -434,3 +434,101 @@ fn a_start_app_dev_server_answers_typecheck() {
     );
     assert!(report["generation"].as_u64() >= Some(1), "{body}");
 }
+
+/// `oj typecheck` with tsc's command line `args`, in `dir`: exit code and
+/// stdout.
+fn oj_tsc(dir: &Path, args: &[&str]) -> (i32, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_oj"))
+        .arg("typecheck")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+    )
+}
+
+#[test]
+fn oj_typecheck_with_a_project_reports_errors_and_exits_as_tsc_does() {
+    let app = App::new("tsc-errors");
+    let (code, out) = oj_tsc(&app.0, &["--project", "tsconfig.json", "--pretty", "false"]);
+    assert_eq!(code, 2, "{out}");
+    assert_eq!(out, MAIN_ERROR);
+
+    app.write("src/main.ts", "export const n: number = 1;\n");
+    let (code, out) = oj_tsc(&app.0, &["-p", ".", "--pretty", "false"]);
+    assert_eq!((code, out.as_str()), (0, ""));
+}
+
+#[test]
+fn oj_typecheck_with_a_project_explains_files_as_tsc_does() {
+    let app = App::new("tsc-explain");
+    app.write(
+        "src/main.ts",
+        "import { m } from './dep';\nexport const n: number = m;\n",
+    );
+    app.write("src/dep.ts", "export const m = 1;\n");
+    let (code, out) = oj_tsc(
+        &app.0,
+        &[
+            "--project",
+            "tsconfig.json",
+            "--noEmit",
+            "--explainFiles",
+            "--pretty",
+            "false",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.ends_with(
+            "src/dep.ts\n   Matched by include pattern 'src' in 'tsconfig.json'\n   Imported via './dep' from file 'src/main.ts'\n\
+             src/main.ts\n   Matched by include pattern 'src' in 'tsconfig.json'\n"
+        ),
+        "{out}"
+    );
+}
+
+#[test]
+fn oj_typecheck_with_a_project_takes_every_tsc_flag() {
+    let app = App::new("tsc-flags");
+    app.write("src/main.ts", "export const n: number = 1;\n");
+    let (code, out) = oj_tsc(
+        &app.0,
+        &[
+            "-p",
+            "tsconfig.json",
+            "--noEmit",
+            "--listFiles",
+            "--checkers",
+            "2",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(out.ends_with("src/main.ts\n"), "{out}");
+}
+
+#[test]
+fn oj_typecheck_with_a_project_imports_the_jsx_runtime_into_jsx_files_only() {
+    // TypeScript 7.0 adds the implicit `react/jsx-runtime` import to .jsx and
+    // .tsx files, not to other JavaScript files.
+    let app = App::new("tsc-jsx-runtime");
+    app.write(
+        "tsconfig.json",
+        r#"{ "compilerOptions": { "allowJs": true, "jsx": "react-jsx", "module": "esnext", "moduleResolution": "bundler", "noEmit": true, "types": [] }, "include": ["src"] }"#,
+    );
+    std::fs::remove_file(app.0.join("src/main.ts")).unwrap();
+    app.write("src/a.mjs", "export const a = 1;\n");
+    app.write("src/b.jsx", "export const b = 1;\n");
+    app.write("node_modules/react/package.json", r#"{ "name": "react" }"#);
+    app.write(
+        "node_modules/react/jsx-runtime.d.ts",
+        "export declare const jsx: unknown;\n",
+    );
+    let (code, out) = oj_tsc(&app.0, &["-p", ".", "--explainFiles"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("from file 'src/b.jsx'"), "{out}");
+    assert!(!out.contains("from file 'src/a.mjs'"), "{out}");
+}

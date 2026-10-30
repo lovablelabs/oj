@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `oj typecheck --project <tsconfig>` (or `-p`, `--build`, `-b`) runs tsc on oj's built-in checker: it takes tsc's command line (`--noEmit`, `--explainFiles`, `--pretty false` and the rest) and prints and exits as tsc does, so tools that call tsc or tsgo can call it instead.
+
+### Fixed
+
+- The type checker matches TypeScript 7.0 where tsrs follows 7.1: a type parameter with two unrelated candidates takes the one inferred through more type arguments (`table({ data, columns })` with `columns: Column<Row>[]` infers `Row`), and only .jsx and .tsx files get the implicit `react/jsx-runtime` import, not .js or .mjs.
+- Declarations name a package that a dependency reaches through a pnpm symlink by its `exports` (`import("pkg").Type`) instead of reporting TS2883 with a relative path into the store, as tsc does.
+
 ## [0.3.1] - 2026-10-30
 
 ### Changed

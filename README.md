@@ -44,7 +44,10 @@ oj dev web --typecheck                           # dev server that keeps a check
 oj typecheck web                                 # asks that server; checks in its own process when none runs
 oj typecheck web --changed src/App.tsx           # names a file just written, so the answer covers it
 oj typecheck web --json                          # the report as JSON
+oj typecheck -p web/tsconfig.json --noEmit      # tsc's own command line, output and exit codes
 ```
+
+With `--project` (`-p`) or `--build` (`-b`), `oj typecheck` takes the arguments `tsc` (or `tsgo`) takes and prints and exits as it does, so a build that calls tsgo can call `oj typecheck` in its place.
 
 How it works:
 

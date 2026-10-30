@@ -19,10 +19,33 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use tsrs_api::{Handler, Response, Session, SessionOptions};
+use tsrs_execute::{execute, sys, tsc};
 use tsrs_vfs::{FS, bundled, osvfs};
 
 /// The file a check starts from, as `tsc -b` with no arguments.
 pub const ROOT_CONFIG: &str = "tsconfig.json";
+
+/// Checking recurses deeply; tsc runs on a thread with a stack this large
+/// (Go's goroutine stacks grow on demand).
+const TSC_STACK: usize = 512 << 20;
+
+/// Runs tsrs's `tsc` over the real file system with `args` as tsc's
+/// command line, printing what tsc prints, and returns tsc's exit status.
+pub fn tsc(args: Vec<String>) -> u8 {
+    let status = std::thread::Builder::new()
+        .name("tsc".to_string())
+        .stack_size(TSC_STACK)
+        .spawn(move || {
+            let sys: &'static sys::OsSys = Box::leak(Box::new(sys::new_system()));
+            let result = execute::command_line(sys, args);
+            tsc::System::flush(sys);
+            result.status
+        })
+        .expect("spawn the tsc thread")
+        .join()
+        .unwrap_or(tsc::ExitStatus::NotImplemented);
+    status as u8
+}
 
 /// Extensions whose changes can affect a program: sources, declarations and
 /// configs.

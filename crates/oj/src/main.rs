@@ -221,6 +221,10 @@ enum Command {
     /// checker. Asks the app's running dev server when it runs with
     /// `--typecheck` (a warm, incremental check); otherwise checks in this
     /// process. Exits 0 when clean, 2 on type errors, 1 when it cannot check.
+    ///
+    /// With `--project` (`-p`) or `--build` (`-b`), the arguments are tsc's
+    /// command line instead (`oj typecheck -p tsconfig.json --noEmit`), and
+    /// the output and exit status are tsc's: for tools that call tsc or tsgo.
     Typecheck {
         root: Option<PathBuf>,
         /// A file changed since the server last saw it; re-read before the
@@ -469,6 +473,14 @@ fn sniffed_manager_version(path: &std::path::Path, manager: &str, default_versio
     }
 }
 
+/// The tsc flags that name what to check, which plain `oj typecheck` never
+/// takes: `oj typecheck` with one runs tsc's command line.
+fn is_tsc_project_flag(arg: &str) -> bool {
+    ["-p", "--project", "-b", "--build"]
+        .iter()
+        .any(|flag| arg.eq_ignore_ascii_case(flag))
+}
+
 fn main() -> anyhow::Result<()> {
     raise_fd_limit();
     // Every engine and one-shot child that loads the app's vite.config through
@@ -490,6 +502,14 @@ fn main() -> anyhow::Result<()> {
     // any engine exists; a user-set value wins.
     if std::env::var_os("MIMALLOC_ARENA_PURGE_MULT").is_none() {
         std::env::set_var("MIMALLOC_ARENA_PURGE_MULT", "0");
+    }
+    // `oj typecheck --project ...` is tsc's command line, which clap cannot
+    // parse: every tsc flag goes to the tsc driver as it is.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("typecheck")
+        && args[1..].iter().any(|a| is_tsc_project_flag(a))
+    {
+        std::process::exit(oj_typecheck::tsc(args[1..].to_vec()).into());
     }
     // Vite sorts its lockfile-format preference by `npm_config_user_agent`
     // (optimizer/index.ts), which every package-manager launch sets and a

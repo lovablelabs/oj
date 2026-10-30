@@ -6304,6 +6304,7 @@ dependencies = [
  "oj_resolver",
  "oj_server",
  "oj_stylex",
+ "oj_typecheck",
  "oxc_allocator",
  "oxc_ast",
  "oxc_ast_visit",
@@ -7172,6 +7173,7 @@ name = "oj_typecheck"
 version = "0.3.1"
 dependencies = [
  "oj_tsrs_api",
+ "oj_tsrs_execute",
  "oj_tsrs_vfs",
  "serde",
  "serde_json",
