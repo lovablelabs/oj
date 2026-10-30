@@ -45,6 +45,12 @@ oj dev                                           # dev server for the current ap
 oj build                                         # production build into ./dist
 ```
 
+Or with [Homebrew](https://formulae.brew.sh/formula/lovable-oj):
+
+```sh
+brew install lovable-oj
+```
+
 Or with Nix:
 
 ```sh
