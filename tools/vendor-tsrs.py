@@ -225,7 +225,7 @@ def readme(version: str, commit: str, typescript: dict, crates: list[str]) -> st
     return f"""# Type checker crates
 
 `oj_typecheck` is oj's TypeScript type checker (`oj typecheck`, and
-`/@oj/typecheck` under `OJ_TYPECHECK=1`). It runs on
+`/@oj/typecheck` under `oj dev --typecheck`). It runs on
 [tsrs](https://github.com/oxc-project/tsrs), the Rust port of the
 TypeScript 7 compiler, whose crates are vendored here as `oj_tsrs_*`.
 

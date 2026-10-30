@@ -35,9 +35,6 @@ pub struct Knobs {
     pub code_cache_max_bytes: Option<u64>,
     /// `OJ_LOG_JSON` truthy: diagnostics print as NDJSON lines on stderr.
     pub log_json: bool,
-    /// `OJ_TYPECHECK` truthy: the dev server keeps a TypeScript checker warm
-    /// and answers `/@oj/typecheck`.
-    pub typecheck: bool,
     /// `OJ_OTEL` truthy: diagnostics and request spans export over OTLP,
     /// configured by the standard `OTEL_EXPORTER_OTLP_*` variables.
     pub otel: bool,
@@ -96,7 +93,6 @@ impl Knobs {
             code_cache_max_bytes: var("OJ_CODE_CACHE_MAX_BYTES")
                 .and_then(|v| v.trim().parse().ok()),
             log_json: truthy("OJ_LOG_JSON"),
-            typecheck: truthy("OJ_TYPECHECK"),
             otel: truthy("OJ_OTEL"),
             forward_console: match var("OJ_FORWARD_CONSOLE").as_deref() {
                 Some("1") | Some("true") => Some(true),

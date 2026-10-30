@@ -7,9 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+### Changed
 
-- `oj dev --typecheck` keeps the TypeScript checker warm beside the dev server, the same as `OJ_TYPECHECK=1`.
+- `oj dev --typecheck` turns on the warm TypeScript checker (`/@oj/typecheck`, and the server `oj typecheck` asks). It replaces `OJ_TYPECHECK=1`, which no longer does anything.
 
 ## [0.3.0] - 2026-10-29
 

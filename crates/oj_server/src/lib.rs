@@ -264,6 +264,8 @@ pub struct DevServer {
     pub no_cache: bool,
     /// Skip the eager graph crawl; compile modules on demand (Vite's default).
     pub lazy: bool,
+    /// `--typecheck`: keep a TypeScript checker warm for `/@oj/typecheck`.
+    pub typecheck: bool,
     /// Vite's `--mode` for `serve` (default `development`): selects `.env.<mode>`,
     /// `import.meta.env.MODE`, and the mode plugin `config` hooks see.
     pub mode: Option<String>,
@@ -391,7 +393,7 @@ struct ServerState {
     /// served from outside the root (`ensure_watched_file`).
     watch_tx: std::sync::mpsc::Sender<WatchMsg>,
     watch_feed: WatchFeed,
-    /// `OJ_TYPECHECK`: the warm checker `/@oj/typecheck` asks.
+    /// `--typecheck`: the warm checker `/@oj/typecheck` asks.
     typecheck: Option<Arc<typecheck::Typecheck>>,
     plugins_use_module_parsed: bool,
     plugins_have_transform: bool,
@@ -2052,7 +2054,11 @@ impl DevServer {
             ssr_modules: Mutex::default(),
             watch_tx: watch_tx.clone(),
             watch_feed: WatchFeed::default(),
-            typecheck: typecheck::Typecheck::start(&root),
+            typecheck: if self.typecheck {
+                typecheck::Typecheck::start(&root)
+            } else {
+                None
+            },
             plugins_use_module_parsed: caps.use_module_parsed,
             plugins_have_transform: caps.have_transform,
             plugins_have_load: caps.have_load,

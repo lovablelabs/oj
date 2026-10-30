@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
-//! `OJ_TYPECHECK`: the dev server's `/@oj/typecheck` and `oj typecheck`.
+//! `oj dev --typecheck`: the dev server's `/@oj/typecheck`, and `oj typecheck`.
 
 #[allow(dead_code)]
 mod start_app;
@@ -127,7 +127,7 @@ fn json(body: &str) -> serde_json::Value {
 #[test]
 fn the_dev_server_reports_type_errors_and_an_edit_named_in_the_request() {
     let app = App::new("serve");
-    let server = Server::oj_dev_with(&app.0, &[("OJ_TYPECHECK", "1")]);
+    let server = Server::oj_dev_with_args(&app.0, &["--typecheck"], &[]);
     let (status, body) = server.request("GET", "/@oj/typecheck", &[]);
     assert_eq!(status, 200, "{body}");
     let report = json(&body);
@@ -146,7 +146,7 @@ fn the_dev_server_reports_type_errors_and_an_edit_named_in_the_request() {
 #[test]
 fn the_dev_server_picks_up_an_edit_from_the_watcher_alone() {
     let app = App::new("watch");
-    let server = Server::oj_dev_with(&app.0, &[("OJ_TYPECHECK", "1")]);
+    let server = Server::oj_dev_with_args(&app.0, &["--typecheck"], &[]);
     let (_, body) = server.request("GET", "/@oj/typecheck", &[]);
     assert_eq!(json(&body)["status"], "errors", "{body}");
     app.write("src/main.ts", "export const n: number = 1;\n");
@@ -167,7 +167,7 @@ fn the_dev_server_picks_up_an_edit_from_the_watcher_alone() {
 #[test]
 fn the_typecheck_route_refuses_browser_and_proxied_requests() {
     let app = App::new("guard");
-    let server = Server::oj_dev_with(&app.0, &[("OJ_TYPECHECK", "1")]);
+    let server = Server::oj_dev_with_args(&app.0, &["--typecheck"], &[]);
     let origin = [("Origin", server.url(""))];
     assert_eq!(server.request("GET", "/@oj/typecheck", &origin).0, 403);
     let proxied = [("X-Forwarded-Host", "preview.example".to_string())];
@@ -175,18 +175,9 @@ fn the_typecheck_route_refuses_browser_and_proxied_requests() {
 }
 
 #[test]
-fn the_typecheck_flag_keeps_a_checker_warm_like_oj_typecheck() {
-    let app = App::new("flag");
-    let server = Server::oj_dev_with_args(&app.0, &["--typecheck"], &[]);
-    let (status, body) = server.request("GET", "/@oj/typecheck", &[]);
-    assert_eq!(status, 200, "{body}");
-    assert_eq!(json(&body)["text"], MAIN_ERROR, "{body}");
-}
-
-#[test]
-fn the_typecheck_route_is_absent_without_oj_typecheck() {
+fn the_typecheck_route_is_absent_without_the_flag_even_with_the_old_env() {
     let app = App::new("off");
-    let server = Server::oj_dev(&app.0);
+    let server = Server::oj_dev_with(&app.0, &[("OJ_TYPECHECK", "1")]);
     assert_eq!(server.request("GET", "/@oj/typecheck", &[]).0, 404);
 }
 
@@ -216,7 +207,7 @@ fn oj_typecheck_fails_without_a_tsconfig() {
 #[test]
 fn a_post_body_names_the_changed_files_and_bad_json_is_refused() {
     let app = App::new("post");
-    let server = Server::oj_dev_with(&app.0, &[("OJ_TYPECHECK", "1")]);
+    let server = Server::oj_dev_with_args(&app.0, &["--typecheck"], &[]);
     app.write("src/main.ts", "export const n: number = 1;\n");
     let body = serde_json::json!({ "changed": [app.0.join("src/main.ts")] }).to_string();
     let (status, report) = post(&server, &body);
@@ -231,7 +222,7 @@ fn a_post_body_names_the_changed_files_and_bad_json_is_refused() {
 #[test]
 fn concurrent_requests_all_get_the_report() {
     let app = App::new("concurrent");
-    let server = std::sync::Arc::new(Server::oj_dev_with(&app.0, &[("OJ_TYPECHECK", "1")]));
+    let server = std::sync::Arc::new(Server::oj_dev_with_args(&app.0, &["--typecheck"], &[]));
     let answers: Vec<_> = (0..8)
         .map(|_| {
             let server = std::sync::Arc::clone(&server);
@@ -251,7 +242,7 @@ fn concurrent_requests_all_get_the_report() {
 #[test]
 fn a_killed_checker_worker_is_replaced_and_the_dev_server_keeps_serving() {
     let app = App::new("crash");
-    let server = Server::oj_dev_with(&app.0, &[("OJ_TYPECHECK", "1")]);
+    let server = Server::oj_dev_with_args(&app.0, &["--typecheck"], &[]);
     let (_, body) = server.request("GET", "/@oj/typecheck", &[]);
     assert_eq!(json(&body)["status"], "errors", "{body}");
     let pattern = format!("typecheck-worker {}", app.0.display());
@@ -276,8 +267,8 @@ fn oj_typecheck_ignores_a_server_another_app_advertised_in_a_shared_cache_dir() 
     clean.write("src/main.ts", "export const n: number = 1;\n");
     let cache = std::env::temp_dir().join(format!("oj-tc-cache-{}", std::process::id()));
     let cache_dir = cache.to_string_lossy().into_owned();
-    let env = [("OJ_TYPECHECK", "1"), ("OJ_CACHE_DIR", cache_dir.as_str())];
-    let _server = Server::oj_dev_with(&busy.0, &env);
+    let env = [("OJ_CACHE_DIR", cache_dir.as_str())];
+    let _server = Server::oj_dev_with_args(&busy.0, &["--typecheck"], &env);
     assert_eq!(
         oj_typecheck_with(&busy.0, &[], &env),
         (2, MAIN_ERROR.to_string())
@@ -290,7 +281,7 @@ fn oj_typecheck_ignores_a_server_another_app_advertised_in_a_shared_cache_dir() 
 fn a_server_for_an_app_without_tsconfig_answers_unavailable() {
     let app = App::new("server-noconfig");
     std::fs::remove_file(app.0.join("tsconfig.json")).unwrap();
-    let server = Server::oj_dev_with(&app.0, &[("OJ_TYPECHECK", "1")]);
+    let server = Server::oj_dev_with_args(&app.0, &["--typecheck"], &[]);
     let (status, body) = server.request("GET", "/@oj/typecheck", &[]);
     assert_eq!(
         (status, json(&body)["status"].as_str()),
@@ -303,7 +294,7 @@ fn a_server_for_an_app_without_tsconfig_answers_unavailable() {
 fn a_tsconfig_edit_reaches_the_server_through_the_watcher() {
     let app = App::new("watch-config");
     app.write("src/main.ts", "export function f(x) { return x; }\n");
-    let server = Server::oj_dev_with(&app.0, &[("OJ_TYPECHECK", "1")]);
+    let server = Server::oj_dev_with_args(&app.0, &["--typecheck"], &[]);
     wait_for_report(&server, "the implicit any", |r| r["status"] == "errors");
     app.write(
         "tsconfig.json",
@@ -319,7 +310,7 @@ fn a_directory_moved_away_takes_its_errors_with_it() {
     let app = App::new("watch-move");
     app.write("src/main.ts", "export const n = 1;\n");
     app.write("src/comp/bad.ts", "export const b: number = 'b';\n");
-    let server = Server::oj_dev_with(&app.0, &[("OJ_TYPECHECK", "1")]);
+    let server = Server::oj_dev_with_args(&app.0, &["--typecheck"], &[]);
     wait_for_report(&server, "the error in src/comp", |r| r["errorCount"] == 1);
     let outside = std::env::temp_dir().join(format!("oj-tc-moved-{}", std::process::id()));
     std::fs::rename(app.0.join("src/comp"), &outside).unwrap();
@@ -334,7 +325,7 @@ fn a_start_app_dev_server_answers_typecheck() {
     let Some(app) = start_app::app("typecheck") else {
         return;
     };
-    let server = Server::oj_dev_with(&app.0, &[("OJ_TYPECHECK", "1")]);
+    let server = Server::oj_dev_with_args(&app.0, &["--typecheck"], &[]);
     let (status, body) = server.request("GET", "/@oj/typecheck", &[]);
     let report = json(&body);
     assert_eq!(status, 200, "{body}");

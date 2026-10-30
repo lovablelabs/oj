@@ -257,6 +257,7 @@ pub async fn start_dev(
     host: Option<String>,
     config: Option<PathBuf>,
     mode: Option<String>,
+    typecheck: bool,
     rolldown: tokio::runtime::Handle,
 ) -> anyhow::Result<()> {
     let root = root
@@ -292,6 +293,7 @@ pub async fn start_dev(
             enable_cache: false,
             no_cache: false,
             lazy: false,
+            typecheck,
             mode: Some(mode.clone()),
             rolldown: rolldown.clone(),
         };

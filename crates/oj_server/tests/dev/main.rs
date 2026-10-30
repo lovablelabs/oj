@@ -174,6 +174,7 @@ impl App {
             enable_cache: false,
             no_cache: false,
             lazy: false,
+            typecheck: false,
             mode: None,
             // The test's own runtime.
             rolldown: tokio::runtime::Handle::current(),

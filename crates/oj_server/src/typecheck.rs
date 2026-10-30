@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
-//! `OJ_TYPECHECK`: a TypeScript checker kept warm beside the dev server.
+//! `oj dev --typecheck`: a TypeScript checker kept warm beside the dev server.
 //!
 //! The checker runs in a child `oj typecheck-worker` process, so nothing
 //! tsrs does (an abort, a stack overflow, exhausting its arena's address
@@ -27,7 +27,7 @@ use axum::response::{IntoResponse, Response};
 
 use crate::{ServerState, WatchFeed};
 
-/// Where a dev server with `OJ_TYPECHECK` names its address for
+/// Where a dev server with `--typecheck` names its address for
 /// `oj typecheck`, under the app's cache root.
 const ADDRESS_FILE: &str = "dev-server.json";
 
@@ -55,13 +55,10 @@ enum Msg {
 }
 
 impl Typecheck {
-    /// The checker for `root`, when `OJ_TYPECHECK` is on: in a worker
+    /// The checker for `root`: in a worker
     /// process when the `oj` binary registered itself for child jobs,
     /// otherwise (oj_server's own tests) on a thread of this process.
     pub(crate) fn start(root: &Path) -> Option<Arc<Typecheck>> {
-        if !oj_env::get().knobs.typecheck {
-            return None;
-        }
         let (tx, rx) = std::sync::mpsc::channel();
         let root = root.to_path_buf();
         let exe = crate::plugins::ENGINE_JOB_EXE.get().cloned();
@@ -389,7 +386,7 @@ pub(crate) fn advertise(root: &Path, host: std::net::IpAddr, port: u16, https: b
 }
 
 /// Asks the dev server running for `root` to check, re-reading `changed`
-/// (absolute paths) first. `Ok(None)` when no server with `OJ_TYPECHECK`
+/// (absolute paths) first. `Ok(None)` when no server with `--typecheck`
 /// runs for `root`, `Err` when one runs and did not answer.
 pub async fn check_via_server(
     root: &Path,

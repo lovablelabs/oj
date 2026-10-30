@@ -27,6 +27,7 @@ pub async fn ssr_dev(
     entry: String,
     port: Option<u16>,
     host: Option<String>,
+    typecheck: bool,
     rolldown: tokio::runtime::Handle,
 ) -> anyhow::Result<()> {
     // Before boot: a signal while plugins are still spawning must still sweep.
@@ -40,6 +41,7 @@ pub async fn ssr_dev(
         enable_cache: false,
         no_cache: false,
         lazy: false,
+        typecheck,
         mode: None,
         rolldown,
     }
