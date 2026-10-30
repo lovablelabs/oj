@@ -539,6 +539,8 @@ impl Session {
             }
             "ojGetGlobalDiagnostics" => self.handle_oj_global_diagnostics(p)?,
             "ojStartSignatureJob" => self.handle_oj_start_signature_job(p)?,
+            "ojWaitSignatureJob" => self.handle_oj_wait_signature_job(),
+            "ojIncrementalPrograms" => self.handle_oj_incremental_programs(p)?,
             "getSuggestionDiagnostics" => {
                 self.handle_get_diagnostics(p, DiagnosticKind::Suggestion)?
             }
@@ -594,8 +596,11 @@ impl Session {
 
 impl Handler for Session {
     fn handle_request(&self, method: &str, params: &[u8]) -> ApiResult<Response> {
-        // oj: nothing the signature job reads may change or be freed while it runs (oj_incremental.rs).
-        self.stop_signature_job();
+        // oj: nothing the signature job reads may change or be freed while it runs (oj_incremental.rs); the one
+        // request that waits for it to finish instead reads nothing.
+        if method != "ojWaitSignatureJob" {
+            self.stop_signature_job();
+        }
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.dispatch(method, params)
         })) {

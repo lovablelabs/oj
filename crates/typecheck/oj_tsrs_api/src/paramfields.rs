@@ -62,7 +62,7 @@ pub fn params_fields(method: &str) -> &'static [FieldSpec] {
                 elem: None,
             },
         ],
-        "release" => &[FieldSpec {
+        "release" | "ojIncrementalPrograms" => &[FieldSpec {
             name: "snapshot",
             go_type: "SnapshotID",
             kind: FieldKind::U64,
@@ -330,13 +330,22 @@ pub fn params_fields(method: &str) -> &'static [FieldSpec] {
                 elem: None,
             },
         ],
-        "ojStartSignatureJob" => &[FieldSpec {
-            name: "skip",
-            go_type: "[]string",
-            kind: FieldKind::Array,
-            nullable: true,
-            elem: Some(Elem::Str),
-        }],
+        "ojStartSignatureJob" => &[
+            FieldSpec {
+                name: "skip",
+                go_type: "[]string",
+                kind: FieldKind::Array,
+                nullable: true,
+                elem: Some(Elem::Str),
+            },
+            FieldSpec {
+                name: "slowMs",
+                go_type: "uint64",
+                kind: FieldKind::U64,
+                nullable: true,
+                elem: None,
+            },
+        ],
         "parseCommandLine" => &[FieldSpec {
             name: "commandLine",
             go_type: "[]string",

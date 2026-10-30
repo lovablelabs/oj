@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use oj_typecheck::Checker;
+use oj_typecheck::{Checker, SignatureJob};
 
 /// A temporary app root, removed on drop.
 struct App(PathBuf);
@@ -58,6 +58,24 @@ impl Drop for App {
 
 fn text(checker: &mut Checker) -> String {
     checker.check().unwrap().text()
+}
+
+/// Records the signatures and waits for the job, which a request would otherwise stop before it stores any.
+fn record_and_wait(checker: &Checker) -> SignatureJob {
+    checker.record_signatures(&[]);
+    checker.wait_for_signatures()
+}
+
+/// The file names a job emitted, relative to the app, sorted.
+fn emitted(app: &App, job: &SignatureJob) -> Vec<String> {
+    let root = format!("{}/", app.0.display());
+    let mut names: Vec<String> = job
+        .emitted
+        .iter()
+        .map(|(file, _)| file.trim_start_matches(&root).to_string())
+        .collect();
+    names.sort();
+    names
 }
 
 #[test]
@@ -413,7 +431,8 @@ fn an_exported_type_change_rechecks_the_files_that_import_it() {
         let mut checker = app.open();
         assert_eq!(text(&mut checker), "");
         if record {
-            checker.record_signatures(&[]);
+            let job = record_and_wait(&checker);
+            assert_eq!(emitted(&app, &job), ["src/a.ts", "src/b.ts"]);
         }
         app.write("src/a.ts", "export const shape = { size: 'one' };\n");
         checker.changed([a.as_path()]).unwrap();
@@ -433,7 +452,10 @@ fn an_edit_that_keeps_the_exported_types_keeps_the_importers_errors() {
     let mut checker = app.open();
     let before = text(&mut checker);
     assert!(before.contains("src/b.ts"), "{before}");
-    checker.record_signatures(&[]);
+    assert_eq!(
+        emitted(&app, &record_and_wait(&checker)),
+        ["src/a.ts", "src/b.ts"]
+    );
     for k in 0..3 {
         app.write(
             "src/a.ts",
@@ -441,6 +463,7 @@ fn an_edit_that_keeps_the_exported_types_keeps_the_importers_errors() {
         );
         checker.changed([a.as_path()]).unwrap();
         assert_eq!(text(&mut checker), before, "edit {k}");
+        record_and_wait(&checker);
     }
 }
 
@@ -459,7 +482,7 @@ fn global_errors_stay_reported_after_edits() {
         before.contains("error TS2318: Cannot find global type 'Array'."),
         "{before}"
     );
-    checker.record_signatures(&[]);
+    record_and_wait(&checker);
     // A body edit re-checks one file; rewriting the same text re-checks none.
     app.write("src/a.ts", "export const a = 1;\n// edit\n");
     checker.changed([a.as_path()]).unwrap();
@@ -484,7 +507,7 @@ fn an_error_pointing_into_an_edited_file_is_still_reported() {
     let mut checker = app.open();
     let before = text(&mut checker);
     assert!(before.contains("TS2741"), "{before}");
-    checker.record_signatures(&[]);
+    assert!(!record_and_wait(&checker).emitted.is_empty());
     for k in 0..4 {
         app.write(
             "src/a.ts",
@@ -548,7 +571,7 @@ fn every_edit_reports_what_a_fresh_check_does() {
         let path = app.write(file, body);
         checker.changed([path.as_path()]).unwrap();
         assert_eq!(text(&mut checker), fresh(&app), "edit {k}: {file}");
-        checker.record_signatures(&[]);
+        record_and_wait(&checker);
     }
 }
 
@@ -624,8 +647,105 @@ fn a_file_the_signature_job_skips_still_checks_as_a_fresh_check_does() {
     .enumerate()
     {
         checker.record_signatures(std::slice::from_ref(&route_tree));
+        let job = emitted(&app, &checker.wait_for_signatures());
+        assert!(
+            !job.contains(&"src/routeTree.gen.ts".to_string()),
+            "edit {k}: {job:?}"
+        );
+        if k == 0 {
+            assert_eq!(job.len(), 20, "every route but the tree: {job:?}");
+        }
         let path = app.write("src/r0.ts", body);
         checker.changed([path.as_path()]).unwrap();
         assert_eq!(text(&mut checker), fresh(&app), "edit {k}");
     }
+}
+
+#[test]
+fn a_project_the_edit_left_alone_holds_the_current_snapshot() {
+    // An idle project's program must not keep the snapshot it was made from, which holds every project's program
+    // of that time.
+    let app = App::with_references("idle-project");
+    let a = app.write("src/a.ts", "export const a = 1;\n");
+    let mut checker = app.open();
+    assert_eq!(text(&mut checker), "");
+    for k in 0..2 {
+        app.write("src/a.ts", &format!("export const a = 1;\n// edit {k}\n"));
+        checker.changed([a.as_path()]).unwrap();
+        assert_eq!(text(&mut checker), "");
+        let programs = checker.incremental_programs();
+        assert_eq!(programs.len(), 2, "{programs:?}");
+        assert!(
+            programs.iter().all(|(_, current)| *current),
+            "edit {k}: {programs:?}"
+        );
+    }
+}
+
+#[test]
+fn a_file_slow_to_emit_is_left_out_of_later_jobs() {
+    let app = App::empty("slow");
+    app.write(
+        "tsconfig.json",
+        r#"{ "compilerOptions": { "strict": true, "noEmit": true, "lib": ["ES2022"], "module": "ESNext", "moduleResolution": "bundler", "isolatedModules": true }, "include": ["src"] }"#,
+    );
+    // f0's importers: a change to its type leaves their signatures to the next job.
+    app.write("src/f0.ts", "export const f0 = 0;\n");
+    for i in 1..8 {
+        app.write(
+            &format!("src/f{i}.ts"),
+            &format!("import {{ f0 }} from './f0';\nexport const f{i} = f0;\n"),
+        );
+    }
+    // One file whose declaration is far larger than the others'.
+    let props: String = (0..4000)
+        .map(|i| format!("  p{i}: {{ id: {i}, name: 'n{i}', tags: ['a', 'b'] }},\n"))
+        .collect();
+    app.write(
+        "src/heavy.ts",
+        &format!("export const heavy = {{\n{props}}};\n"),
+    );
+    let mut checker = app.open();
+    assert_eq!(text(&mut checker), "");
+
+    // Each file is timed by its own emit: the heavy one is the slowest, whichever file comes first.
+    let timed = {
+        checker.record_signatures_slow_after(&[], std::time::Duration::from_secs(3600));
+        checker.wait_for_signatures()
+    };
+    assert_eq!(timed.emitted.len(), 9, "{:?}", timed.emitted);
+    assert!(timed.slow.is_empty(), "{:?}", timed.slow);
+    let slowest = timed.emitted.iter().max_by_key(|(_, took)| *took).unwrap();
+    assert!(slowest.0.ends_with("/src/heavy.ts"), "{:?}", timed.emitted);
+
+    // A file at or over the threshold is remembered, and no later job emits it again. f7 sits this job out, so it
+    // is not slow.
+    let a = app.write("src/f0.ts", "export const f0 = 'zero';\n");
+    checker.changed([a.as_path()]).unwrap();
+    assert_eq!(text(&mut checker), fresh(&app));
+    let f7 = app.0.join("src/f7.ts");
+    checker.record_signatures_slow_after(std::slice::from_ref(&f7), std::time::Duration::ZERO);
+    let job = checker.wait_for_signatures();
+    let names: Vec<&str> = job.emitted.iter().map(|(f, _)| f.as_str()).collect();
+    assert!(!names.is_empty());
+    assert!(
+        names.iter().all(|f| job.slow.iter().any(|s| s == f)),
+        "{job:?}"
+    );
+    let b = app.write("src/f0.ts", "export const f0 = false;\n");
+    checker.changed([b.as_path()]).unwrap();
+    assert_eq!(text(&mut checker), fresh(&app));
+    checker.record_signatures_slow_after(&[], std::time::Duration::from_secs(3600));
+    let again = checker.wait_for_signatures();
+    assert!(
+        again.emitted.iter().any(|(f, _)| f.ends_with("/src/f7.ts")),
+        "{again:?}"
+    );
+    assert!(
+        again
+            .emitted
+            .iter()
+            .all(|(f, _)| !names.contains(&f.as_str())),
+        "{again:?}"
+    );
 }

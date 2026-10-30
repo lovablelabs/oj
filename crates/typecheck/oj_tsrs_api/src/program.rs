@@ -152,6 +152,7 @@ impl Session {
                 emit_only,
                 force_emit: false,
                 write_file: Some(&write),
+                oj_interruptible: None,
             },
         );
         let outputs = outputs.into_inner().unwrap();
@@ -219,6 +220,7 @@ fn emit_to_output(
             emit_only,
             force_emit,
             write_file: Some(&write),
+            oj_interruptible: None,
         },
     );
     let mut outputs = outputs.into_inner().unwrap();

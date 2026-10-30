@@ -33,7 +33,7 @@ pub struct MethodInfo {
     status: Status,
 }
 
-pub const METHODS: [MethodInfo; 180] = [
+pub const METHODS: [MethodInfo; 182] = [
     MethodInfo { name: "release", owner: Owner::Core, status: Status::Supported },
     MethodInfo { name: "releaseSourceFile", owner: Owner::Core, status: Status::Supported },
     MethodInfo { name: "retainSourceFile", owner: Owner::Core, status: Status::Partial },
@@ -330,6 +330,8 @@ pub const METHODS: [MethodInfo; 180] = [
     },
     MethodInfo { name: "ojGetGlobalDiagnostics", owner: Owner::Core, status: Status::Supported },
     MethodInfo { name: "ojStartSignatureJob", owner: Owner::Core, status: Status::Supported },
+    MethodInfo { name: "ojWaitSignatureJob", owner: Owner::Core, status: Status::Supported },
+    MethodInfo { name: "ojIncrementalPrograms", owner: Owner::Core, status: Status::Supported },
     MethodInfo { name: "getGlobalDiagnostics", owner: Owner::Core, status: Status::Supported },
     MethodInfo {
         name: "getConfigFileParsingDiagnostics",
@@ -552,6 +554,8 @@ pub(crate) const PARAMS_TYPES: &[(&str, Option<&str>)] = &[
     ("ojGetIncrementalSemanticDiagnostics", Some("GetProjectDiagnosticsParams")),
     ("ojGetGlobalDiagnostics", Some("GetProjectDiagnosticsParams")),
     ("ojStartSignatureJob", Some("OjStartSignatureJobParams")),
+    ("ojWaitSignatureJob", None),
+    ("ojIncrementalPrograms", Some("OjIncrementalProgramsParams")),
     ("getGlobalDiagnostics", Some("GetProjectDiagnosticsParams")),
     ("getConfigFileParsingDiagnostics", Some("GetProjectDiagnosticsParams")),
     ("startCPUProfile", Some("ProfileParams")),

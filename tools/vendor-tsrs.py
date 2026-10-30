@@ -23,10 +23,10 @@ Patches applied while copying:
   order, after the crates are copied: oj's own changes to the vendored code.
   `incremental-diagnostics.patch` adds the API methods the warm checker uses
   to check only the files an edit affects (tsrs_api's oj_incremental.rs), a
-  skip filter and per-file timing for the background signature computation
-  (tsrs_incremental), and a declaration emit that stops before its next file
-  once cancelled (tsrs_compiler). A patch that no longer applies stops the
-  update; rebase it on the new sources.
+  skip filter for the background signature computation (tsrs_incremental),
+  and an interruptible declaration emit that times each file's transform
+  (tsrs_compiler's `EmitOptions::oj_interruptible`). A patch that no longer
+  applies stops the update; rebase it on the new sources.
 """
 
 import pathlib

@@ -148,6 +148,16 @@ pub struct Checker {
     generation: u64,
 }
 
+/// What a signature job did (`Checker::wait_for_signatures`).
+#[doc(hidden)]
+#[derive(Debug, Default)]
+pub struct SignatureJob {
+    /// The files it emitted, in order, with each one's emit time.
+    pub emitted: Vec<(String, Duration)>,
+    /// Every file a job of this checker found slow, which later jobs skip.
+    pub slow: Vec<String>,
+}
+
 impl Checker {
     /// Opens the projects `tsc -b` builds from `root/tsconfig.json`: the
     /// root config when it lists files, and every config it references,
@@ -362,12 +372,67 @@ impl Checker {
     /// files known to be slow to emit (a generated route tree). Those, and the ones an earlier job found slow,
     /// keep no signature: a change to one re-checks the files that import it.
     pub fn record_signatures(&self, skip: &[PathBuf]) {
+        self.start_signature_job(skip, None);
+    }
+
+    /// `record_signatures`, counting a file as slow once its emit takes
+    /// `slow` (1 s otherwise). For tests.
+    #[doc(hidden)]
+    pub fn record_signatures_slow_after(&self, skip: &[PathBuf], slow: Duration) {
+        self.start_signature_job(skip, Some(slow));
+    }
+
+    fn start_signature_job(&self, skip: &[PathBuf], slow: Option<Duration>) {
         let skip: Vec<String> = skip.iter().map(|p| slash(p)).collect();
-        let _ = request(
+        let mut params = json!({ "skip": skip });
+        if let Some(slow) = slow {
+            params["slowMs"] = json!(slow.as_millis() as u64);
+        }
+        let _ = request(&self.session, "ojStartSignatureJob", &params);
+    }
+
+    /// Waits for the signature job `record_signatures` started to finish
+    /// instead of stopping it as any other request does. For tests.
+    #[doc(hidden)]
+    pub fn wait_for_signatures(&self) -> SignatureJob {
+        let report = request(&self.session, "ojWaitSignatureJob", &json!({})).unwrap_or_default();
+        let names = |v: &Value| -> Vec<String> {
+            v.as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|n| n.as_str().map(str::to_string))
+                .collect()
+        };
+        SignatureJob {
+            emitted: report["emitted"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|e| {
+                    let took = Duration::from_secs_f64(e["ms"].as_f64()? / 1000.0);
+                    Some((e["file"].as_str()?.to_string(), took))
+                })
+                .collect(),
+            slow: names(&report["slow"]),
+        }
+    }
+
+    /// Each project with an incremental program, and whether that program
+    /// holds the current snapshot (not an older one). For tests.
+    #[doc(hidden)]
+    pub fn incremental_programs(&self) -> Vec<(String, bool)> {
+        let report = request(
             &self.session,
-            "ojStartSignatureJob",
-            &json!({ "skip": skip }),
-        );
+            "ojIncrementalPrograms",
+            &json!({ "snapshot": self.snapshot }),
+        )
+        .unwrap_or_default();
+        report
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|p| Some((p["project"].as_str()?.to_string(), p["current"].as_bool()?)))
+            .collect()
     }
 
     /// tsc's `getDiagnosticsOfAnyProgram`: config parsing, then syntactic;

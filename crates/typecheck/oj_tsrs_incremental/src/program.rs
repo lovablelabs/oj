@@ -189,7 +189,8 @@ impl Program {
     }
 
     /// oj (tools/tsrs-patches): `compute_placeholder_signatures` without the files `skip` names (by file name), and
-    /// with each emitted file's time (from the previous file's write to its own) passed to `timed`.
+    /// with each emitted file's own declaration transform time passed to `timed`. A cancel stops the emit before
+    /// its next file, not at the end of the chunk (`EmitOptions::oj_interruptible`).
     pub fn oj_compute_placeholder_signatures(
         &self,
         ctx: &Context,
@@ -220,7 +221,6 @@ impl Program {
             })
             .collect();
         let stored = std::sync::atomic::AtomicUsize::new(0);
-        let last_write = Mutex::new(Instant::now());
         let write_file =
             |file_name: &str, text: &str, data: &mut WriteFileData| -> Result<(), String> {
                 assert!(
@@ -228,8 +228,6 @@ impl Program {
                     "File extension for signature expected to be dts, got : {file_name}"
                 );
                 let file = data.source_file.expect("declaration output of a source file");
-                let now = Instant::now();
-                timed(file, now - std::mem::replace(&mut *last_write.lock().unwrap(), now));
                 let signature = snapshot.compute_signature_with_diagnostics(file, text, data);
                 if let Some(mut info) = snapshot.file_infos.load(file.path())
                     && !signature.is_empty()
@@ -246,13 +244,13 @@ impl Program {
             if ctx.err().is_some() {
                 break;
             }
-            *last_write.lock().unwrap() = Instant::now();
             program.emit(
                 ctx,
                 &EmitOptions {
                     target_source_files: Some(files.to_vec()),
                     emit_only: EmitOnly::EmitOnlyBuilderSignature,
                     write_file: Some(&write_file),
+                    oj_interruptible: Some(timed),
                     ..Default::default()
                 },
             );
