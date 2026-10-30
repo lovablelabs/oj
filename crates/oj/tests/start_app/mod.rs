@@ -140,11 +140,17 @@ impl Server {
 
     /// `oj dev <root>` with extra environment variables.
     pub fn oj_dev_with(root: &Path, env: &[(&str, &str)]) -> Server {
+        Server::oj_dev_with_args(root, &[], env)
+    }
+
+    /// `oj dev <root> [args]` with extra environment variables.
+    pub fn oj_dev_with_args(root: &Path, args: &[&str], env: &[(&str, &str)]) -> Server {
         let mut server = Server::spawn(
             Command::new(env!("CARGO_BIN_EXE_oj"))
                 .arg("dev")
                 .arg(root)
                 .args(["--port", &free_port().to_string()])
+                .args(args)
                 .envs(env.iter().copied())
                 .current_dir(root),
         );

@@ -92,6 +92,10 @@ enum Command {
         /// code-split so the first route needs only a fraction of the graph.
         #[arg(long)]
         lazy: bool,
+        /// Keep a TypeScript checker warm beside the dev server, for
+        /// `oj typecheck` and `/@oj/typecheck`. The same as `OJ_TYPECHECK=1`.
+        #[arg(long)]
+        typecheck: bool,
     },
     Compile {
         file: PathBuf,
@@ -214,8 +218,8 @@ enum Command {
         base: Option<String>,
     },
     /// Type-check the app as `tsc -b --noEmit` would, on oj's built-in
-    /// checker. Asks the app's running dev server when it has
-    /// `OJ_TYPECHECK=1` (a warm, incremental check); otherwise checks in this
+    /// checker. Asks the app's running dev server when it runs with
+    /// `--typecheck` (a warm, incremental check); otherwise checks in this
     /// process. Exits 0 when clean, 2 on type errors, 1 when it cannot check.
     Typecheck {
         root: Option<PathBuf>,
@@ -547,6 +551,17 @@ fn main() -> anyhow::Result<()> {
         reap_on_parent_death();
         std::env::remove_var(PARENT_PID_ENV);
     }
+    // `oj dev --typecheck` is `OJ_TYPECHECK=1`: set before the snapshot, so
+    // everything reads the one knob.
+    if matches!(
+        cli.command,
+        Command::Dev {
+            typecheck: true,
+            ..
+        }
+    ) {
+        std::env::set_var("OJ_TYPECHECK", "1");
+    }
     // The startup writes above are oj's only direct process-env access. Snapshot
     // the env now, still single-threaded: everything after reads `oj_env::get()`.
     oj_env::init();
@@ -605,6 +620,7 @@ async fn run(cli: Cli, rolldown: tokio::runtime::Handle) -> anyhow::Result<()> {
             enable_cache,
             no_cache,
             lazy,
+            typecheck: _,
         } => {
             let root = root.unwrap_or_else(|| {
                 let playground = PathBuf::from("playground");

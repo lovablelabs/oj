@@ -175,6 +175,15 @@ fn the_typecheck_route_refuses_browser_and_proxied_requests() {
 }
 
 #[test]
+fn the_typecheck_flag_keeps_a_checker_warm_like_oj_typecheck() {
+    let app = App::new("flag");
+    let server = Server::oj_dev_with_args(&app.0, &["--typecheck"], &[]);
+    let (status, body) = server.request("GET", "/@oj/typecheck", &[]);
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(json(&body)["text"], MAIN_ERROR, "{body}");
+}
+
+#[test]
 fn the_typecheck_route_is_absent_without_oj_typecheck() {
     let app = App::new("off");
     let server = Server::oj_dev(&app.0);
