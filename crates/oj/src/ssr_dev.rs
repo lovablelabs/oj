@@ -116,7 +116,7 @@ pub async fn ssr_dev(
         oj_server::tls::url_scheme(built.https.as_ref()),
         built.base.as_deref(),
     );
-    oj_server::tls::serve_router(listener, app, built.https.as_ref()).await?;
+    built.serve(listener, app).await?;
     Ok(())
 }
 

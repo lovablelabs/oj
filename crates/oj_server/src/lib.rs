@@ -737,10 +737,25 @@ impl BuiltApp {
         self.watcher_ready().await;
         let (listener, port) = bind_dev_listener(self.host, self.port, self.strict_port).await?;
         if let Some(typecheck) = &self.typecheck {
-            typecheck.warm();
+            typecheck.warm_after_first_serve();
             typecheck::advertise(&self.root, self.host, port, self.https.is_some());
         }
         Ok((listener, port))
+    }
+
+    /// Serves `app` (this app's router, possibly wrapped) on the listener
+    /// `bind_listener` returned, counting its requests for the type checker,
+    /// whose first check waits for the first page.
+    pub async fn serve(
+        &self,
+        listener: tokio::net::TcpListener,
+        app: axum::Router,
+    ) -> anyhow::Result<()> {
+        let app = match &self.typecheck {
+            Some(typecheck) => typecheck.count_requests(app),
+            None => app,
+        };
+        tls::serve_router(listener, app, self.https.as_ref()).await
     }
 
     /// Stops the file watcher and returns once it is gone, so nothing under
@@ -1631,11 +1646,11 @@ impl DevServer {
             open_browser(&url);
         }
         let router = otel::traced(
-            built.router,
+            built.router.clone(),
             tls::url_scheme(built.https.as_ref()),
             built.base.as_deref(),
         );
-        tls::serve_router(listener, router, built.https.as_ref()).await?;
+        built.serve(listener, router).await?;
         Ok(())
     }
 

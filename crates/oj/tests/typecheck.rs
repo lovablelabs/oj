@@ -333,6 +333,33 @@ fn a_killed_checker_worker_is_replaced_and_the_dev_server_keeps_serving() {
 }
 
 #[test]
+fn the_checker_starts_only_after_the_first_page_is_served() {
+    let app = App::new("first-serve");
+    let server = Server::oj_dev_with_args(&app.0, &["--typecheck"], &[]);
+    let pattern = format!("typecheck-worker {}", app.0.display());
+    let worker = || {
+        Command::new("pgrep")
+            .args(["-f", &pattern])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    };
+    // Listening, but nothing served: no checker competes with the first page.
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert!(!worker(), "the checker started before any page was served");
+    assert_eq!(server.request("GET", "/index.html", &[]).0, 200);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !worker() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the checker never started after the first page"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+#[test]
 fn oj_typecheck_ignores_a_server_another_app_advertised_in_a_shared_cache_dir() {
     let busy = App::new("shared-a");
     let clean = App::new("shared-b");
