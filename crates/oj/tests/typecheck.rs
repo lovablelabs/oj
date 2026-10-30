@@ -435,11 +435,10 @@ fn a_start_app_dev_server_answers_typecheck() {
     assert!(report["generation"].as_u64() >= Some(1), "{body}");
 }
 
-/// `oj typecheck` with tsc's command line `args`, in `dir`: exit code and
-/// stdout.
+/// `oj tsc` with tsc's command line `args`, in `dir`: exit code and stdout.
 fn oj_tsc(dir: &Path, args: &[&str]) -> (i32, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_oj"))
-        .arg("typecheck")
+        .arg("tsc")
         .args(args)
         .current_dir(dir)
         .output()
@@ -451,7 +450,7 @@ fn oj_tsc(dir: &Path, args: &[&str]) -> (i32, String) {
 }
 
 #[test]
-fn oj_typecheck_with_a_project_reports_errors_and_exits_as_tsc_does() {
+fn oj_tsc_reports_errors_and_exits_as_tsc_does() {
     let app = App::new("tsc-errors");
     let (code, out) = oj_tsc(&app.0, &["--project", "tsconfig.json", "--pretty", "false"]);
     assert_eq!(code, 2, "{out}");
@@ -463,7 +462,7 @@ fn oj_typecheck_with_a_project_reports_errors_and_exits_as_tsc_does() {
 }
 
 #[test]
-fn oj_typecheck_with_a_project_explains_files_as_tsc_does() {
+fn oj_tsc_explains_files_as_tsc_does() {
     let app = App::new("tsc-explain");
     app.write(
         "src/main.ts",
@@ -492,7 +491,7 @@ fn oj_typecheck_with_a_project_explains_files_as_tsc_does() {
 }
 
 #[test]
-fn oj_typecheck_with_a_project_takes_every_tsc_flag() {
+fn oj_tsc_takes_every_tsc_flag() {
     let app = App::new("tsc-flags");
     app.write("src/main.ts", "export const n: number = 1;\n");
     let (code, out) = oj_tsc(
@@ -511,7 +510,7 @@ fn oj_typecheck_with_a_project_takes_every_tsc_flag() {
 }
 
 #[test]
-fn oj_typecheck_with_a_project_imports_the_jsx_runtime_into_jsx_files_only() {
+fn oj_tsc_imports_the_jsx_runtime_into_jsx_files_only() {
     // TypeScript 7.0 adds the implicit `react/jsx-runtime` import to .jsx and
     // .tsx files, not to other JavaScript files.
     let app = App::new("tsc-jsx-runtime");

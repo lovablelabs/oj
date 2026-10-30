@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `oj typecheck --project <tsconfig>` (or `-p`, `--build`, `-b`) runs tsc on oj's built-in checker: it takes tsc's command line (`--noEmit`, `--explainFiles`, `--pretty false` and the rest) and prints and exits as tsc does, so tools that call tsc or tsgo can call it instead.
+- `oj tsc` runs tsc on oj's built-in checker: it takes tsc's command line (`--noEmit`, `--explainFiles`, `--pretty false` and the rest) and prints and exits as tsc does, so tools that call tsc or tsgo can call it instead.
 
 ### Fixed
 
