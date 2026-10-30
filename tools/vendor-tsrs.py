@@ -25,7 +25,14 @@ Patches applied while copying:
   to check only the files an edit affects (tsrs_api's oj_incremental.rs), a
   skip filter for the background signature computation (tsrs_incremental),
   and an interruptible declaration emit that times each file's transform
-  (tsrs_compiler's `EmitOptions::oj_interruptible`). A patch that no longer
+  (tsrs_compiler's `EmitOptions::oj_interruptible`).
+  `typescript-7.0-parity.patch` keeps three behaviors of TypeScript 7.0, which
+  tsrs (on 7.1) changed: covariant inference candidates are kept deepest first
+  (typescript-go #4591 replaced that with a sort in inferFromMatchingTypes),
+  the implicit jsx runtime import goes to .jsx and .tsx files only, and a
+  package's exports name it before the check that the importing file reaches
+  its node_modules (tsrs moves that check first, so pnpm-linked packages fall
+  back to non-portable relative paths in declarations). A patch that no longer
   applies stops the update; rebase it on the new sources.
 """
 

@@ -514,6 +514,7 @@ impl InferenceContext {
         for &info in inferences {
             info.candidates.recycle();
             info.contra_candidates.recycle();
+            info.candidate_depths.recycle();
             // SAFETY: infos belong to exactly one context (clones copy them; merged infos come from a local list).
             unsafe { tsrs_core::free!(info) };
         }
@@ -599,6 +600,26 @@ impl<T: Copy + PartialEq> LazyVec<T> {
             v.borrow_mut().clear();
         }
     }
+    /// oj: the position of `item`.
+    pub(crate) fn position(&self, item: &T) -> Option<usize> {
+        let v = self.0.get()?;
+        v.borrow().iter().position(|x| x == item)
+    }
+    /// oj: the item at `index` (in bounds).
+    pub(crate) fn get(&self, index: usize) -> T {
+        self.0.get().unwrap().borrow()[index]
+    }
+    /// oj: inserts `item` at `index` (at most the length).
+    pub(crate) fn insert(&self, index: usize, item: T) {
+        match self.0.get() {
+            Some(v) => v.borrow_mut().insert(index, item),
+            None => self.push(item),
+        }
+    }
+    /// oj: removes the item at `index` (in bounds).
+    pub(crate) fn remove(&self, index: usize) {
+        self.0.get().unwrap().borrow_mut().remove(index);
+    }
     pub(crate) fn to_vec(&self) -> Vec<T> {
         self.0.get().map_or_else(Vec::new, |v| v.borrow().clone())
     }
@@ -624,6 +645,7 @@ pub struct InferenceInfo {
     pub type_parameter: Cell<Option<P<Type>>>, // Type parameter for which inferences are being made
     pub(crate) candidates: LazyVec<P<Type>>, // Candidates in covariant positions in decreasing depth order
     pub(crate) contra_candidates: LazyVec<P<Type>>, // Candidates in contravariant positions
+    pub(crate) candidate_depths: LazyVec<u32>, // oj: type argument depths of covariant inferences
     pub(crate) inferred_type: Cell<Option<P<Type>>>, // Cache for resolved inferred type
     pub(crate) priority: Cell<InferencePriority>, // Priority of current inference set
     pub(crate) top_level: Cell<bool>,        // True if all inferences are to top level occurrences
@@ -632,9 +654,9 @@ pub struct InferenceInfo {
 }
 
 #[cfg(target_pointer_width = "64")]
-// Four pointer-sized fields plus eight bytes of priority, arity and flags.
+// Five pointer-sized fields plus eight bytes of priority, arity and flags.
 const _: () = assert!(
-    std::mem::size_of::<InferenceInfo>() == if tsrs_core::COMPRESSED_PTRS { 24 } else { 40 }
+    std::mem::size_of::<InferenceInfo>() == if tsrs_core::COMPRESSED_PTRS { 28 } else { 48 }
 );
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(std::mem::size_of::<InferenceInfo>() == 24);

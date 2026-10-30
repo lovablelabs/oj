@@ -1540,7 +1540,10 @@ impl FileLoader {
             self.tasks[t].data().import_helpers_import_specifier = Some(specifier);
         }
 
-        if is_java_script_file || file.script_kind.get() == tsrs_core::ScriptKind::TSX {
+        // oj: TypeScript 7.0 adds the implicit runtime import to .jsx and .tsx
+        // files only; 7.1 adds it to every JavaScript file.
+        if matches!(file.script_kind.get(), tsrs_core::ScriptKind::JSX | tsrs_core::ScriptKind::TSX)
+        {
             let jsx_import = ast::get_jsx_runtime_import(
                 &ast::get_jsx_implicit_import_base(&options_for_file, Some(file)),
                 &options_for_file,

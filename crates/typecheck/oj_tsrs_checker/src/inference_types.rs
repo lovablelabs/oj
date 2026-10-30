@@ -43,4 +43,6 @@ pub struct InferenceState {
     pub(crate) next: Cell<Option<P<InferenceState>>>,
     /// The walk called `clear_cached_inferences` (the inference memo, infermemo.rs).
     pub(crate) cleared_inferences: Cell<bool>,
+    /// oj: type argument nesting of the current inference (TypeScript 7.0's `depth`).
+    pub(crate) depth: Cell<u32>,
 }

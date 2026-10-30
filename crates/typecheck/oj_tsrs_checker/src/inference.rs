@@ -40,6 +40,7 @@ impl Checker {
         n.bivariant.set(false);
         n.expanding_flags.set(ExpandingFlags::None);
         n.propagation_type.set(None);
+        n.depth.set(0);
         n.source_stack.borrow_mut().clear();
         n.target_stack.borrow_mut().clear();
         n.next.set(self.freeinference_state);
@@ -121,18 +122,14 @@ impl Checker {
                 source_types,
                 target.types(),
                 super::checker::Checker::is_type_or_base_identical_to,
-                false, /*sort*/
             );
             // Next, infer between closely matching source and target constituents and remove
             // the matching types. Types closely match when they are instantiations of the same
             // object type or instantiations of the same type alias.
-            let (sources, targets) = self.infer_from_matching_types(
-                n,
-                &temp_sources,
-                &temp_targets,
-                |_, s, t| Self::is_type_closely_matched_by(s, t),
-                true, /*sort*/
-            );
+            let (sources, targets) =
+                self.infer_from_matching_types(n, &temp_sources, &temp_targets, |_, s, t| {
+                    Self::is_type_closely_matched_by(s, t)
+                });
             if targets.is_empty() {
                 return;
             }
@@ -167,7 +164,6 @@ impl Checker {
                     source_types,
                     target.types(),
                     super::checker::Checker::is_type_identical_to,
-                    false, /*sort*/
                 );
                 if sources.is_empty() || targets.is_empty() {
                     return;
@@ -218,6 +214,7 @@ impl Checker {
                     }
                     if n.priority.get() < inference.priority.get() {
                         inference.candidates.clear();
+                        inference.candidate_depths.clear();
                         inference.contra_candidates.clear();
                         inference.top_level.set(true);
                         inference.priority.set(n.priority.get());
@@ -231,10 +228,28 @@ impl Checker {
                                 clear_cached_inferences(&n.inferences.borrow());
                                 n.cleared_inferences.set(true);
                             }
-                        } else if !inference.candidates.contains(&candidate) {
-                            inference.candidates.push(candidate);
-                            clear_cached_inferences(&n.inferences.borrow());
-                            n.cleared_inferences.set(true);
+                        } else {
+                            // oj: TypeScript 7.0 keeps covariant candidates in decreasing depth order, so a
+                            // candidate inferred from deeper type arguments wins ties in the common supertype.
+                            let depth = n.depth.get();
+                            let index = inference.candidates.position(&candidate);
+                            if index.is_none_or(|i| inference.candidate_depths.get(i) < depth) {
+                                // Candidate isn't present or is present with lower depth
+                                if let Some(i) = index {
+                                    // Remove candidate with lower depth
+                                    inference.candidates.remove(i);
+                                    inference.candidate_depths.remove(i);
+                                }
+                                let index = inference.candidate_depths.with_slice(|depths| {
+                                    depths.iter().take_while(|&&d| d >= depth).count()
+                                });
+                                // Insert candidate at end or immediately before first candidate with lower depth.
+                                // This ensures candidates with the highest depth are stored first.
+                                inference.candidates.insert(index, candidate);
+                                inference.candidate_depths.insert(index, depth);
+                                clear_cached_inferences(&n.inferences.borrow());
+                                n.cleared_inferences.set(true);
+                            }
                         }
                     }
                     if !n.priority.get().intersects(InferencePriority::RETURN_TYPE)
@@ -446,6 +461,7 @@ impl Checker {
         target_types: &[P<Type>],
         variances: &[VarianceFlags],
     ) {
+        n.depth.set(n.depth.get() + 1);
         for (i, (&source, &target)) in source_types.iter().zip(target_types).enumerate() {
             if i < variances.len()
                 && (variances[i] & VarianceFlags::VarianceMask) == VarianceFlags::Contravariant
@@ -455,6 +471,7 @@ impl Checker {
                 self.infer_from_types(n, source, target);
             }
         }
+        n.depth.set(n.depth.get() - 1);
     }
 
     // inference.go:294
@@ -600,39 +617,18 @@ impl Checker {
         sources: &'a [P<Type>],
         targets: &'b [P<Type>],
         mut matches: impl FnMut(&mut Checker, P<Type>, P<Type>) -> bool,
-        sort: bool,
     ) -> (std::borrow::Cow<'a, [P<Type>]>, std::borrow::Cow<'b, [P<Type>]>) {
         let mut matched_sources: Vec<P<Type>> = Vec::new();
         let mut matched_targets: Vec<P<Type>> = Vec::new();
         for &t in targets {
             for &s in sources {
                 if matches(self, s, t) {
-                    if !sort {
-                        self.infer_from_types(n, s, t);
-                    }
+                    self.infer_from_types(n, s, t);
                     if !matched_sources.contains(&s) {
                         matched_sources.push(s);
                     }
                     if !matched_targets.contains(&t) {
                         matched_targets.push(t);
-                    }
-                }
-            }
-        }
-        if sort {
-            // Sort target types by decreasing depth of generic instantiations. Intuitively, a successful
-            // inference from a type argument with deeper nesting is of higher quality because we've stripped
-            // away more layers of type instantiations that otherwise might skew the results. For example,
-            // when inferring from string[] | string[][] to T[] | T[][], the inference of string we make from
-            // relating string[][] to T[][] is of higher quality than the inference of string[] we make relating
-            // string[][] to T[].
-            // Go sorts with `slices.SortFunc` (pdqsort, not stable). The stable sort gives the same order as long as
-            // `compare_types_and_depth` returns 0 for no two distinct types (`matched_targets` has no duplicates).
-            matched_targets.sort_by(|&t1, &t2| compare_types_and_depth(self, t1, t2));
-            for &t in &matched_targets {
-                for &s in &matched_sources {
-                    if matches(self, s, t) {
-                        self.infer_from_types(n, s, t);
                     }
                 }
             }
@@ -649,53 +645,6 @@ impl Checker {
         };
         (sources, targets)
     }
-}
-
-// Compare two types first by depth and then by the regular type ordering.
-// inference.go:410
-fn compare_types_and_depth(c: &mut Checker, t1: P<Type>, t2: P<Type>) -> std::cmp::Ordering {
-    let d1 = get_type_depth(c, t1, 3);
-    let d2 = get_type_depth(c, t2, 3);
-    if d1 != d2 {
-        return d2.cmp(&d1); // Largest depth sorts first
-    }
-    compare_types(c, Some(t1), Some(t2))
-}
-
-// Return the depth of the given type up to the given maximum depth. For generic aliased types
-// and type references, the depth is one plus the largest type argument depth. For union and
-// intersection types, the depth is the largest constituent type depth. For all other types,
-// the depth is zero. The maximum depth limits infinite recursion of circular types.
-// inference.go:423
-fn get_type_depth(c: &mut Checker, t: P<Type>, max_depth: usize) -> usize {
-    if max_depth != 0 {
-        if let Some(alias) = t.alias()
-            && !alias.type_arguments().is_empty()
-        {
-            return get_type_list_depth(c, alias.type_arguments(), max_depth - 1) + 1;
-        }
-        if t.object_flags().intersects(ObjectFlags::Reference) {
-            let type_arguments = c.get_type_arguments(t);
-            if !type_arguments.is_empty() {
-                return get_type_list_depth(c, type_arguments, max_depth - 1) + 1;
-            }
-        }
-        if t.flags().intersects(TypeFlags::UnionOrIntersection) {
-            return get_type_list_depth(c, t.types(), max_depth);
-        }
-    }
-    0
-}
-
-// inference.go:440
-fn get_type_list_depth(c: &mut Checker, types: &[P<Type>], max_depth: usize) -> usize {
-    let mut depth = 0;
-    depth = types.iter().fold(depth, |mut depth, &t| {
-        depth = depth.max(get_type_depth(c, t, max_depth));
-
-        depth
-    });
-    depth
 }
 
 impl Checker {
@@ -2739,6 +2688,7 @@ fn clone_inference_info(info: P<InferenceInfo>) -> P<InferenceInfo> {
     P::new_recycled(InferenceInfo {
         type_parameter: Cell::new(info.type_parameter.get()),
         candidates: LazyVec::from_vec(info.candidates.to_vec()),
+        candidate_depths: LazyVec::from_vec(info.candidate_depths.to_vec()),
         contra_candidates: LazyVec::from_vec(info.contra_candidates.to_vec()),
         inferred_type: Cell::new(info.inferred_type.get()),
         priority: Cell::new(info.priority.get()),

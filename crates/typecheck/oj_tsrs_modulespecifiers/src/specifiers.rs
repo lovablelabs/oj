@@ -934,10 +934,10 @@ fn try_get_module_name_as_node_module(
 
     let case_sensitive = host.use_case_sensitive_file_names();
     let global_typings_cache_location = host.get_global_typings_cache_location();
-    // Check reachability before consulting package.json exports, which can return
-    // a bare specifier directly. An exported path is only usable if the importing
-    // file can reach the package through node_modules, and packages under the
-    // global typings cache are excluded.
+    // An exported path is only usable if the importing file can reach the package
+    // through node_modules, and packages under the global typings cache are excluded.
+    // oj: TypeScript checks this after package.json exports, which name a package
+    // the importing file reaches through a symlink (pnpm's store) by its bare name.
     let search_root_end =
         parts.top_level_node_modules_index.max(tspath::get_root_length(&path_obj.file_name));
     let search_root = &path_obj.file_name[..search_root_end];
@@ -945,12 +945,9 @@ fn try_get_module_name_as_node_module(
         use_case_sensitive_file_names: case_sensitive,
         current_directory: host.get_current_directory().to_string(),
     };
-    if !tspath::contains_path(search_root, &info.source_directory, &compare_options)
+    let unreachable = !tspath::contains_path(search_root, &info.source_directory, &compare_options)
         || !global_typings_cache_location.is_empty()
-            && tspath::contains_path(search_root, &global_typings_cache_location, &compare_options)
-    {
-        return String::new();
-    }
+            && tspath::contains_path(search_root, &global_typings_cache_location, &compare_options);
 
     // Simplify the full file path to something that can be resolved by Node.
     let preferences = get_module_specifier_preferences(
@@ -1011,7 +1008,7 @@ fn try_get_module_name_as_node_module(
         }
     }
 
-    if path_obj.is_redirect && !is_package_root_path {
+    if path_obj.is_redirect && !is_package_root_path || unreachable {
         return String::new();
     }
 
