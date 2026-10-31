@@ -112,6 +112,12 @@ fn jsx(v: &Value) -> Option<Either<String, JsxOptions>> {
 }
 
 impl DepOptions {
+    /// The `process.env.NODE_ENV` the bundle is built under.
+    pub(crate) fn node_env(&self) -> Option<String> {
+        let value = self.define.get("process.env.NODE_ENV")?;
+        serde_json::from_str(value).ok()
+    }
+
     pub fn new(input: &OptimizeInput) -> DepOptions {
         let esbuild = input
             .bundler_options

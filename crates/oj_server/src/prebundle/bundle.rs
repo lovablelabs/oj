@@ -557,10 +557,44 @@ impl Prebundle {
         Ok(built)
     }
 
-    /// The names a CommonJS dep's `module.exports` carries at runtime, read
-    /// by requiring it in a short-lived engine: static analysis cannot see
-    /// through React's `module.exports = require(env ? a : b)`.
+    /// The names a CommonJS dep's `module.exports` carries at runtime: read
+    /// statically for React's entries (whose names the prebundle tests hold
+    /// equal to `require`'s) when every file on the re-export chain is plain
+    /// enough, else by requiring the dep in a short-lived engine. Other facade
+    /// deps (`resolve.dedupe`) always go to the engine.
     async fn named_exports(&self, deps: Vec<String>) -> BTreeMap<String, Vec<String>> {
+        let node_env = self
+            .options
+            .node_env()
+            .unwrap_or_else(|| "development".to_string());
+        let (react, mut unread): (Vec<_>, Vec<_>) = deps
+            .into_iter()
+            .partition(|dep| super::FACADE_DEPS.contains(&dep.as_str()));
+        let reads = react.into_iter().map(|dep| {
+            let root = self.root.clone();
+            let node_env = node_env.clone();
+            let read = dep.clone();
+            let task =
+                tokio::task::spawn_blocking(move || static_named_exports(&root, &read, &node_env));
+            async move { (dep, task.await) }
+        });
+        let mut names = BTreeMap::new();
+        for (dep, read) in futures_util::future::join_all(reads).await {
+            match read {
+                Ok(Some(found)) => {
+                    names.insert(dep, found);
+                }
+                // Not plain enough, or the read panicked.
+                Ok(None) | Err(_) => unread.push(dep),
+            }
+        }
+        if !unread.is_empty() {
+            names.extend(self.engine_named_exports(unread).await);
+        }
+        names
+    }
+
+    async fn engine_named_exports(&self, deps: Vec<String>) -> BTreeMap<String, Vec<String>> {
         let cache = oj_cache::cache_root(&self.root);
         if crate::plugins::ensure_asset(&cache, "dep-names.mjs", DEP_NAMES_JS).is_err() {
             return BTreeMap::new();
@@ -580,6 +614,44 @@ impl Prebundle {
             Err(_) => BTreeMap::new(),
         }
     }
+}
+
+/// `dep`'s export names, following `module.exports = require(...)` chains
+/// with `require` resolution from the app root. None when a file on the chain
+/// does not resolve or cannot be read statically, or no name turns up.
+pub(super) fn static_named_exports(root: &Path, dep: &str, node_env: &str) -> Option<Vec<String>> {
+    let resolver = oj_resolver::OjResolver::new(root).require_variant();
+    let mut queue = vec![resolver.resolve(root, dep).ok()?];
+    let mut seen = std::collections::HashSet::new();
+    let mut names = Vec::new();
+    while let Some(file) = queue.pop() {
+        if !seen.insert(file.clone()) {
+            continue;
+        }
+        if seen.len() > 32 {
+            return None;
+        }
+        let source = std::fs::read_to_string(&file).ok()?;
+        let read = oj_compiler::cjs::cjs_export_names(&source, node_env)?;
+        names.extend(read.names);
+        let dir = file.parent()?;
+        for spec in read.reexports {
+            queue.push(resolver.resolve(dir, &spec).ok()?);
+        }
+    }
+    let mut kept = std::collections::HashSet::new();
+    names.retain(|n| is_export_identifier(n) && kept.insert(n.clone()));
+    (!names.is_empty()).then_some(names)
+}
+
+/// What dep-names.mjs keeps of `Object.keys(module.exports)`.
+fn is_export_identifier(name: &str) -> bool {
+    if name == "default" || name == "__esModule" {
+        return false;
+    }
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_' || c == '$')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
 }
 
 const DEP_NAMES_JS: &str = include_str!("../assets/dep-names.mjs");
