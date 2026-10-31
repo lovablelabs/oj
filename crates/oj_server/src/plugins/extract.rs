@@ -407,6 +407,9 @@ pub(crate) fn cached_active_plugins(
         return None;
     }
     let vite = vite_config_file(root, config)?;
+    if let Some(json) = super::static_config::static_extraction(root, &vite, "serve", mode) {
+        return json.get("activePlugins")?.as_u64().map(|n| n as usize);
+    }
     let hit =
         extraction_store(root).lookup(&vite, "serve", &extraction_mode_key(mode, true, false))?;
     let json: serde_json::Value = serde_json::from_str(&hit.output).ok()?;
@@ -453,6 +456,12 @@ fn extraction(
     let mode_key = extraction_mode_key(mode, mode_explicit, spa_build);
     let mode_key = mode_key.as_str();
     let vite = vite_config_file(root, config)?;
+    if !fresh {
+        if let Some(json) = super::static_config::static_extraction(root, &vite, command, mode) {
+            crate::boot_phase("vite-extract static (no engine)");
+            return Some((parse_vite_values(&json), false));
+        }
+    }
     // Concurrent boot callers asking for one key wait on a single evaluation
     // and take its outcome, a failed one included, as Vite resolves the config
     // once per start. A caller arriving after it finished runs its own, and so
@@ -481,6 +490,37 @@ fn extraction(
         .finished
         .fetch_add(1, std::sync::atomic::Ordering::Release);
     ran.map(|(json, changed)| (parse_vite_values(&json), changed))
+}
+
+/// A dev boot's reading of `vite` both ways: Rust's (None when it declines
+/// the config) and a fresh engine evaluation, for the parity test.
+/// Rust's reading of `vite` alone (None when it declines), for tests of
+/// what it declines before evaluation could run.
+#[doc(hidden)]
+pub fn static_extraction(root: &Path, vite: &Path) -> Option<serde_json::Value> {
+    super::static_config::static_extraction(root, vite, "serve", "development")
+}
+
+#[doc(hidden)]
+pub fn static_and_engine_extraction(
+    root: &Path,
+    vite: &Path,
+) -> (Option<serde_json::Value>, Option<serde_json::Value>) {
+    let read = super::static_config::static_extraction(root, vite, "serve", "development");
+    let mode_key = extraction_mode_key("development", true, false);
+    let evaluated = run_extraction(
+        root,
+        vite,
+        "serve",
+        "development",
+        true,
+        &mode_key,
+        false,
+        None,
+        true,
+    )
+    .map(|(json, _)| json);
+    (read, evaluated)
 }
 
 /// One evaluation of the config's values: the store's copy when it has one

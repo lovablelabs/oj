@@ -1,0 +1,266 @@
+{
+  "__ok": true,
+  "activePlugins": 0,
+  "alias": null,
+  "allowedHosts": [],
+  "appType": "spa",
+  "assetsInlineLimit": 4096,
+  "assetsInlineLimitEnvs": {
+    "client": 4096,
+    "ssr": 4096
+  },
+  "assetsInlineLimitFn": null,
+  "base": "/",
+  "build": {
+    "assetsDir": "assets",
+    "chunkSizeWarningLimit": 500,
+    "copyPublicDir": true,
+    "cssCodeSplit": true,
+    "cssMinify": true,
+    "cssTarget": [
+      "chrome111",
+      "edge111",
+      "firefox114",
+      "safari16.4",
+      "ios16.4"
+    ],
+    "manifest": false,
+    "minify": "oxc",
+    "modulePreload": {
+      "polyfill": true
+    },
+    "outDir": "dist",
+    "reportCompressedSize": true,
+    "sourcemap": false,
+    "ssr": false,
+    "ssrManifest": false,
+    "target": [
+      "chrome111",
+      "edge111",
+      "firefox114",
+      "safari16.4",
+      "ios16.4"
+    ]
+  },
+  "cors": {},
+  "css": {
+    "devSourcemap": false,
+    "preprocessorMaxWorkers": true,
+    "transformer": "postcss"
+  },
+  "dedupe": [],
+  "define": null,
+  "envDir": null,
+  "envPrefix": null,
+  "esbuild": null,
+  "fsAllow": null,
+  "fsStrict": true,
+  "headers": null,
+  "hmr": null,
+  "host": null,
+  "html": null,
+  "mode": "development",
+  "optimizeDeps": {
+    "esbuildOptions": {
+      "preserveSymlinks": false
+    },
+    "exclude": [],
+    "force": false,
+    "holdUntilCrawlEnd": true,
+    "include": [
+      "react",
+      "react-dom",
+      "react/jsx-dev-runtime",
+      "react/jsx-runtime"
+    ],
+    "needsInterop": [],
+    "rolldownOptions": {
+      "output": {
+        "topLevelVar": true
+      },
+      "resolve": {
+        "symlinks": true
+      },
+      "transform": {
+        "jsx": {
+          "runtime": "automatic"
+        }
+      }
+    }
+  },
+  "origin": null,
+  "oxc": {
+    "jsx": {
+      "runtime": "automatic"
+    }
+  },
+  "port": null,
+  "preview": {
+    "allowedHosts": [],
+    "cors": {},
+    "port": 4173,
+    "strictPort": false
+  },
+  "proxy": null,
+  "publicDir": null,
+  "rawResolve": null,
+  "resolve": {
+    "conditions": [
+      "module",
+      "browser",
+      "development|production"
+    ],
+    "extensions": [
+      ".mjs",
+      ".js",
+      ".mts",
+      ".ts",
+      ".jsx",
+      ".tsx",
+      ".json"
+    ],
+    "externalConditions": [
+      "node",
+      "module-sync"
+    ],
+    "mainFields": [
+      "browser",
+      "module",
+      "jsnext:main",
+      "jsnext"
+    ],
+    "preserveSymlinks": false
+  },
+  "resolveError": null,
+  "rollupOptions": {
+    "onwarn": "__oj_fn__",
+    "platform": "node"
+  },
+  "serverFlags": {
+    "appType": "spa",
+    "forwardConsole": {
+      "logLevels": [
+        "error",
+        "warn"
+      ],
+      "unhandledErrors": true
+    },
+    "fsDeny": [
+      ".env",
+      ".env.*",
+      "*.{crt,pem,key,p12,pfx,cer,der}",
+      ".npmrc",
+      ".yarnrc.yml",
+      "**/.git/**"
+    ],
+    "fsStrict": true,
+    "open": false,
+    "strictPort": false
+  },
+  "ssr": {
+    "builtins": [
+      "buffer",
+      "console",
+      "diagnostics_channel",
+      "events",
+      "module",
+      "path/posix",
+      "path/win32",
+      "path",
+      "sys",
+      "url",
+      "util",
+      "worker_threads",
+      "assert",
+      "async_hooks",
+      "cluster",
+      "constants",
+      "dns",
+      "dns/promises",
+      "domain",
+      "fs",
+      "os",
+      "punycode",
+      "string_decoder",
+      "timers",
+      "timers/promises",
+      "util/types",
+      "vm",
+      "_http_agent",
+      "_http_common",
+      "_http_outgoing",
+      "_http_server",
+      "http",
+      "http2",
+      "https",
+      "child_process",
+      "crypto",
+      "dgram",
+      "zlib",
+      "tls",
+      "_tls_common",
+      "_tls_wrap",
+      "repl",
+      "fs/promises",
+      "assert/strict",
+      "readline",
+      "readline/promises",
+      "stream/web",
+      "net",
+      "process",
+      "stream",
+      "stream/consumers",
+      "stream/promises",
+      "tty",
+      "inspector",
+      "inspector/promises",
+      "perf_hooks",
+      "querystring",
+      "trace_events",
+      "v8",
+      "wasi",
+      "_stream_duplex",
+      "_stream_passthrough",
+      "_stream_readable",
+      "_stream_transform",
+      "_stream_writable",
+      {
+        "flags": "",
+        "regex": "^node:"
+      },
+      {
+        "flags": "",
+        "regex": "^bun:"
+      }
+    ],
+    "resolve": {
+      "conditions": [
+        "module",
+        "node",
+        "development|production"
+      ],
+      "extensions": [
+        ".mjs",
+        ".js",
+        ".mts",
+        ".ts",
+        ".jsx",
+        ".tsx",
+        ".json"
+      ],
+      "externalConditions": [
+        "node",
+        "module-sync"
+      ],
+      "mainFields": [
+        "module",
+        "jsnext:main",
+        "jsnext"
+      ],
+      "preserveSymlinks": false
+    },
+    "target": "node"
+  },
+  "stylex": null,
+  "watchIgnored": null
+}

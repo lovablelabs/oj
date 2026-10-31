@@ -1167,3 +1167,57 @@ async fn a_nested_resolve_in_the_scan_is_a_scan_resolve() {
     );
     assert_eq!(served.unwrap().as_deref(), Some("/scan-false"));
 }
+
+/// The Rust reader of React's CommonJS export names must agree with
+/// requiring the package (dep-names.mjs), for every facade dep and both
+/// NODE_ENVs, or a named import of a React API resolves to undefined.
+/// Uses e2e/fixtures/stylex-app's installed React (`npm ci` there).
+#[test]
+fn static_react_export_names_match_requiring_them() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../e2e/fixtures/stylex-app");
+    if !fixture.join("node_modules/react").is_dir() {
+        assert!(
+            std::env::var_os("OJ_REQUIRE_FIXTURES").is_none(),
+            "OJ_REQUIRE_FIXTURES is set but e2e/fixtures/stylex-app is not installed"
+        );
+        eprintln!("skipping: npm ci --prefix e2e/fixtures/stylex-app");
+        return;
+    }
+    let root = fixture.canonicalize().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    std::fs::write(
+        cache.path().join("dep-names.mjs"),
+        include_str!("../assets/dep-names.mjs"),
+    )
+    .unwrap();
+    let script = cache.path().join("under.mjs");
+    std::fs::write(
+        &script,
+        "import { namedExports } from \"./dep-names.mjs\";\n\
+         export function namedExportsUnder({ nodeEnv, ...rest }) {\n\
+           process.env.NODE_ENV = nodeEnv;\n\
+           return namedExports(rest);\n\
+         }\n",
+    )
+    .unwrap();
+    let deps: Vec<String> = super::FACADE_DEPS.iter().map(|d| d.to_string()).collect();
+    for node_env in ["development", "production"] {
+        let required = crate::plugins::run_engine_job_in_process(
+            &root,
+            &script,
+            "namedExportsUnder",
+            json!({ "root": root.to_string_lossy(), "deps": deps, "nodeEnv": node_env }),
+            None,
+        )
+        .expect("dep-names.mjs runs");
+        let required: BTreeMap<String, Vec<String>> = serde_json::from_value(required).unwrap();
+        for dep in &deps {
+            let mut read = super::bundle::static_named_exports(&root, dep, node_env)
+                .unwrap_or_else(|| panic!("{dep} ({node_env}) is not statically readable"));
+            let mut want = required[dep].clone();
+            read.sort();
+            want.sort();
+            assert_eq!(read, want, "{dep} under NODE_ENV={node_env}");
+        }
+    }
+}
