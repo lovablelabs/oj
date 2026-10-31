@@ -83,6 +83,10 @@ pub(crate) fn static_extraction(
     if let Some(host) = &config.host {
         insert_host(fields, host)?;
     }
+    fields
+        .get_mut("serverFlags")?
+        .as_object_mut()?
+        .insert("forwardConsole".into(), forward_console(|key| env.var(key)));
     fields.insert("alias".into(), Value::Object(config.alias));
     fields.insert(
         "stylex".into(),
@@ -93,6 +97,46 @@ pub(crate) fn static_extraction(
     );
     let _ = super::CONFIG_DEPS.set(vec![vite.to_path_buf()]);
     Some(out)
+}
+
+/// Vite's default `server.forwardConsole`: on when it runs under a coding agent.
+fn forward_console<'a>(var: impl Fn(&str) -> Option<&'a str>) -> Value {
+    if coding_agent(var) {
+        serde_json::json!({ "unhandledErrors": true, "logLevels": ["error", "warn"] })
+    } else {
+        serde_json::json!({ "unhandledErrors": false, "logLevels": [] })
+    }
+}
+
+/// std-env 4.3's agent detection as bundled in Vite 8. The engine child
+/// inherits oj's stdout, so its TTY check sees the same terminal.
+fn coding_agent<'a>(var: impl Fn(&str) -> Option<&'a str>) -> bool {
+    use std::io::IsTerminal;
+    let set = |key: &str| var(key).is_some_and(|v| !v.is_empty());
+    let contains = |key: &str, needle: &str| var(key).is_some_and(|v| v.contains(needle));
+    set("AI_AGENT")
+        || [
+            "CLAUDECODE",
+            "CLAUDE_CODE",
+            "REPL_ID",
+            "GEMINI_CLI",
+            "CODEX_SANDBOX",
+            "CODEX_THREAD_ID",
+            "OPENCODE",
+            "AUGMENT_AGENT",
+            "GOOSE_PROVIDER",
+            "JUNIE_DATA",
+            "JUNIE_SHIM_PATH",
+            "COPILOT_AGENT",
+            "COPILOT_CLI",
+            "CURSOR_AGENT",
+        ]
+        .into_iter()
+        .any(set)
+        || contains("PATH", ".pi/agent")
+        || contains("PATH", ".pi\\agent")
+        || contains("EDITOR", "devin")
+        || (contains("TERM_PROGRAM", "kiro") && !std::io::stdout().is_terminal())
 }
 
 #[derive(Default)]
