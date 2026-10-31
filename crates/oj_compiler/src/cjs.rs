@@ -419,6 +419,9 @@ pub struct CjsExportNames {
 /// `require` returns: a source that does not parse, a `module.exports`
 /// assigned anything but an object literal or a `require()`, assigned twice or
 /// under a branch NODE_ENV does not decide, or mixed with `exports.X`; an
+/// `exports.X` only under such a branch (an `if`, `?:`, `&&`/`||`, `switch`,
+/// loop, `try`, logical assignment or optional chain), or inside a function
+/// that is not called on the spot, or in a scope that can `return` early; an
 /// `__esModule` marker (whose `default` a consumer unwraps); a `delete`; and
 /// `exports` handed to a call other than `Object.defineProperty` with a
 /// literal key and an enumerable descriptor (`Object.assign`, a `forEach`
@@ -436,9 +439,19 @@ pub fn cjs_export_names(source_text: &str, node_env: &str) -> Option<CjsExportNa
         assignments: 0,
         undecided: 0,
         member_names: false,
+        branch_names: HashSet::new(),
+        sure_names: HashSet::new(),
+        scopes: vec![Scope {
+            inline: true,
+            ..Scope::default()
+        }],
+        inline: HashSet::new(),
     };
     reader.visit_program(&parsed.program);
+    let program = reader.scopes.pop().unwrap_or_default();
     if reader.opaque
+        || (program.returns && program.exports)
+        || !reader.branch_names.is_subset(&reader.sure_names)
         || reader.assignments > 1
         || (reader.assignments == 1 && reader.member_names)
         || reader.out.names.iter().any(|n| n == "__esModule")
@@ -461,6 +474,40 @@ struct ExportNameReader<'e> {
     undecided: u32,
     /// A name came from `exports.X =` or `Object.defineProperty(exports, ..)`.
     member_names: bool,
+    /// Names set only under an undecided branch, and those set regardless:
+    /// a branch's name is certain only when it is also set outside one.
+    branch_names: HashSet<String>,
+    sure_names: HashSet<String>,
+    /// The function bodies being read, innermost last; the program first.
+    scopes: Vec<Scope>,
+    /// Starts of function expressions called where they are defined.
+    inline: HashSet<u32>,
+}
+
+#[derive(Default)]
+struct Scope {
+    /// Called on the spot (an IIFE) or the program itself: its body runs.
+    inline: bool,
+    returns: bool,
+    exports: bool,
+}
+
+/// The function a call runs where it is defined: `(function () {})()`,
+/// `(() => {})()` and `(function () {}).call(this)`.
+fn inline_callee(callee: &Expression) -> Option<u32> {
+    let callee = match callee.without_parentheses() {
+        Expression::StaticMemberExpression(m)
+            if m.property.name == "call" || m.property.name == "apply" =>
+        {
+            m.object.without_parentheses()
+        }
+        other => other,
+    };
+    match callee {
+        Expression::FunctionExpression(f) => Some(f.span.start),
+        Expression::ArrowFunctionExpression(a) => Some(a.span.start),
+        _ => None,
+    }
 }
 
 /// A property descriptor literal with `enumerable: true`, so `Object.keys`
@@ -552,11 +599,50 @@ impl ExportNameReader<'_> {
     }
 
     fn member_name(&mut self, name: String) {
+        self.exports_here();
+        // Only running it shows whether the branch adds the name.
+        if self.undecided > 0 {
+            self.branch_names.insert(name.clone());
+        } else {
+            self.sure_names.insert(name.clone());
+        }
         self.member_names = true;
         self.out.names.push(name);
     }
 
+    /// The current scope sets exports: a function only defined, not run, may
+    /// never set them.
+    fn exports_here(&mut self) {
+        if self.scopes.iter().any(|scope| !scope.inline) {
+            self.opaque = true;
+        }
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.exports = true;
+        }
+    }
+
+    fn undecided<T>(&mut self, visit: impl FnOnce(&mut Self) -> T) -> T {
+        self.undecided += 1;
+        let out = visit(self);
+        self.undecided -= 1;
+        out
+    }
+
+    fn scope(&mut self, start: u32, visit: impl FnOnce(&mut Self)) {
+        self.scopes.push(Scope {
+            inline: self.inline.contains(&start),
+            ..Scope::default()
+        });
+        visit(self);
+        let scope = self.scopes.pop().unwrap_or_default();
+        // A return can skip the exports after it.
+        if scope.returns && scope.exports {
+            self.opaque = true;
+        }
+    }
+
     fn module_exports_value(&mut self, value: &Expression) {
+        self.exports_here();
         self.assignments += 1;
         if self.undecided > 0 {
             self.opaque = true;
@@ -596,11 +682,7 @@ impl<'a> Visit<'a> for ExportNameReader<'_> {
                     self.visit_statement(alt);
                 }
             }
-            None => {
-                self.undecided += 1;
-                walk::walk_if_statement(self, it);
-                self.undecided -= 1;
-            }
+            None => self.undecided(|r| walk::walk_if_statement(r, it)),
         }
     }
 
@@ -608,11 +690,7 @@ impl<'a> Visit<'a> for ExportNameReader<'_> {
         match self.fold(&it.test) {
             Some(true) => self.visit_expression(&it.consequent),
             Some(false) => self.visit_expression(&it.alternate),
-            None => {
-                self.undecided += 1;
-                walk::walk_conditional_expression(self, it);
-                self.undecided -= 1;
-            }
+            None => self.undecided(|r| walk::walk_conditional_expression(r, it)),
         }
     }
 
@@ -632,6 +710,59 @@ impl<'a> Visit<'a> for ExportNameReader<'_> {
         }
     }
 
+    fn visit_switch_statement(&mut self, it: &oxc_ast::ast::SwitchStatement<'a>) {
+        self.undecided(|r| walk::walk_switch_statement(r, it));
+    }
+
+    fn visit_try_statement(&mut self, it: &oxc_ast::ast::TryStatement<'a>) {
+        self.undecided(|r| walk::walk_try_statement(r, it));
+    }
+
+    fn visit_for_statement(&mut self, it: &oxc_ast::ast::ForStatement<'a>) {
+        self.undecided(|r| walk::walk_for_statement(r, it));
+    }
+
+    fn visit_for_in_statement(&mut self, it: &oxc_ast::ast::ForInStatement<'a>) {
+        self.undecided(|r| walk::walk_for_in_statement(r, it));
+    }
+
+    fn visit_for_of_statement(&mut self, it: &oxc_ast::ast::ForOfStatement<'a>) {
+        self.undecided(|r| walk::walk_for_of_statement(r, it));
+    }
+
+    fn visit_while_statement(&mut self, it: &oxc_ast::ast::WhileStatement<'a>) {
+        self.undecided(|r| walk::walk_while_statement(r, it));
+    }
+
+    fn visit_do_while_statement(&mut self, it: &oxc_ast::ast::DoWhileStatement<'a>) {
+        self.undecided(|r| walk::walk_do_while_statement(r, it));
+    }
+
+    fn visit_chain_expression(&mut self, it: &oxc_ast::ast::ChainExpression<'a>) {
+        self.undecided(|r| walk::walk_chain_expression(r, it));
+    }
+
+    fn visit_return_statement(&mut self, it: &oxc_ast::ast::ReturnStatement<'a>) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.returns = true;
+        }
+        walk::walk_return_statement(self, it);
+    }
+
+    fn visit_function(
+        &mut self,
+        it: &oxc_ast::ast::Function<'a>,
+        flags: oxc_syntax::scope::ScopeFlags,
+    ) {
+        self.scope(it.span.start, |r| walk::walk_function(r, it, flags));
+    }
+
+    fn visit_arrow_function_expression(&mut self, it: &oxc_ast::ast::ArrowFunctionExpression<'a>) {
+        self.scope(it.span.start, |r| {
+            walk::walk_arrow_function_expression(r, it)
+        });
+    }
+
     fn visit_unary_expression(&mut self, it: &oxc_ast::ast::UnaryExpression<'a>) {
         if it.operator == oxc_syntax::operator::UnaryOperator::Delete {
             if let Some(member) = it.argument.as_member_expression() {
@@ -644,6 +775,9 @@ impl<'a> Visit<'a> for ExportNameReader<'_> {
     }
 
     fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
+        if let Some(start) = inline_callee(&it.callee) {
+            self.inline.insert(start);
+        }
         let star = is_export_star_helper(&it.callee);
         if star {
             if let Some(Expression::CallExpression(inner)) =
@@ -707,7 +841,12 @@ impl<'a> Visit<'a> for ExportNameReader<'_> {
                 _ => {}
             }
         }
-        walk::walk_assignment_expression(self, it);
+        // `a ||= b` runs b only sometimes.
+        if it.operator.is_logical() {
+            self.undecided(|r| walk::walk_assignment_expression(r, it));
+        } else {
+            walk::walk_assignment_expression(self, it);
+        }
     }
 }
 
@@ -1075,9 +1214,43 @@ exports.named = 1;
             "if (typeof window !== 'undefined') module.exports = require('./browser');\nelse module.exports = require('./node');\n",
             "exports.a = 1;\nexports.b = 2;\ndelete exports.b;\n",
             "var k = 'a';\nexports[k] = 1;\n",
+            // Names a branch only sometimes adds.
+            "if (typeof window !== 'undefined') exports.browserOnly = 1;\nexports.always = 1;\n",
+            "exports.a = 1;\nhasFeature() && Object.defineProperty(exports, 'b', { enumerable: true, value: 2 });\n",
+            "exports.a = typeof Symbol === 'function' ? (exports.b = 1) : 0;\n",
+            "try { exports.t = require('optional'); } catch (e) {}\nexports.a = 1;\n",
+            "switch (typeof window) { case 'undefined': exports.s = 1; break; default: exports.c = 1; }\n",
+            "for (var i = 0; i < n; i++) { exports.loop = 1; }\n",
+            "while (more()) { exports.w = 1; }\n",
+            "g.x ||= (exports.la = 1);\n",
+            "cb?.(exports.oc = 1);\n",
+            // A return can skip what follows it.
+            "if (typeof window === 'undefined') return;\nexports.browserOnly = 1;\n",
+            "(function () {\n  if (typeof window === 'undefined') return;\n  exports.b = 1;\n})();\n",
+            // A function that is defined, not run where it stands.
+            "function init() { exports.late = 1; }\nif (typeof window !== 'undefined') init();\nexports.a = 1;\n",
         ];
         for source in declined {
             assert_eq!(cjs_export_names(source, "development"), None, "{source}");
         }
+        // Folded to production, the early return runs before `devOnly`.
+        let dev_only = "if (process.env.NODE_ENV === 'production') return;\nexports.devOnly = 1;\n";
+        assert_eq!(cjs_export_names(dev_only, "production"), None);
+    }
+
+    /// What the stricter rules still read: a branch re-setting a name set
+    /// regardless (TypeScript's `exports.a = void 0`), returns in nested
+    /// helpers, and IIFEs however they are called.
+    #[test]
+    fn export_names_read_names_set_regardless_of_branches() {
+        let read = |source: &str| cjs_export_names(source, "development").map(|r| r.names);
+        assert_eq!(
+            read("exports.a = void 0;\nif (typeof x === 'function') { exports.a = x; } else { exports.a = y; }\n"),
+            Some(vec!["a".to_string()])
+        );
+        assert_eq!(
+            read("(function () {\n  function helper() { return 1; }\n  exports.a = helper;\n}).call(this);\n!(() => { exports.b = () => { return 2; }; })();\n"),
+            Some(vec!["a".to_string(), "b".to_string()])
+        );
     }
 }
