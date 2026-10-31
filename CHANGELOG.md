@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-10-31
+
 ### Added
 
 - `oj tsc` runs tsc on oj's built-in checker: it takes tsc's command line (`--noEmit`, `--explainFiles`, `--pretty false` and the rest) and prints and exits as TypeScript 7.0's tsc does, so tools that call tsc or tsgo can call it instead. Its lib files are tsrs's (TypeScript 7.1, default target ES2026), listed as `bundled:///libs/...`, and `--version` and `--help` are tsrs's.
