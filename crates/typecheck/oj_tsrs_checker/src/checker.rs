@@ -659,7 +659,7 @@ const _: () = assert!(
     std::mem::size_of::<InferenceInfo>() == if tsrs_core::COMPRESSED_PTRS { 28 } else { 48 }
 );
 #[cfg(target_pointer_width = "32")]
-const _: () = assert!(std::mem::size_of::<InferenceInfo>() == 24);
+const _: () = assert!(std::mem::size_of::<InferenceInfo>() == 28);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum InferencePriorityRepr {

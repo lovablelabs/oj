@@ -1,5 +1,5 @@
 diff --git a/crates/typecheck/oj_tsrs_checker/src/checker.rs b/crates/typecheck/oj_tsrs_checker/src/checker.rs
-index 89c00e69..a7ce156b 100644
+index 89c00e69..2820a50a 100644
 --- a/crates/typecheck/oj_tsrs_checker/src/checker.rs
 +++ b/crates/typecheck/oj_tsrs_checker/src/checker.rs
 @@ -514,6 +514,7 @@ impl InferenceContext {
@@ -45,7 +45,7 @@ index 89c00e69..a7ce156b 100644
      pub(crate) inferred_type: Cell<Option<P<Type>>>, // Cache for resolved inferred type
      pub(crate) priority: Cell<InferencePriority>, // Priority of current inference set
      pub(crate) top_level: Cell<bool>,        // True if all inferences are to top level occurrences
-@@ -632,9 +654,9 @@ pub struct InferenceInfo {
+@@ -632,12 +654,12 @@ pub struct InferenceInfo {
  }
  
  #[cfg(target_pointer_width = "64")]
@@ -56,9 +56,13 @@ index 89c00e69..a7ce156b 100644
 +    std::mem::size_of::<InferenceInfo>() == if tsrs_core::COMPRESSED_PTRS { 28 } else { 48 }
  );
  #[cfg(target_pointer_width = "32")]
- const _: () = assert!(std::mem::size_of::<InferenceInfo>() == 24);
+-const _: () = assert!(std::mem::size_of::<InferenceInfo>() == 24);
++const _: () = assert!(std::mem::size_of::<InferenceInfo>() == 28);
+ 
+ #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+ enum InferencePriorityRepr {
 diff --git a/crates/typecheck/oj_tsrs_checker/src/inference.rs b/crates/typecheck/oj_tsrs_checker/src/inference.rs
-index 8d6778fd..fc482ace 100644
+index 8d6778fd..d86059bd 100644
 --- a/crates/typecheck/oj_tsrs_checker/src/inference.rs
 +++ b/crates/typecheck/oj_tsrs_checker/src/inference.rs
 @@ -40,6 +40,7 @@ impl Checker {
@@ -69,7 +73,17 @@ index 8d6778fd..fc482ace 100644
          n.source_stack.borrow_mut().clear();
          n.target_stack.borrow_mut().clear();
          n.next.set(self.freeinference_state);
-@@ -121,18 +122,14 @@ impl Checker {
+@@ -95,7 +96,8 @@ impl Checker {
+             if !source_alias.type_arguments().is_empty()
+                 || !target_alias.type_arguments().is_empty()
+             {
+-                self.invoke_once(n, source, target, Self::infer_from_alias_type_arguments);
++                // oj: TypeScript 7.0 infers again on a repeat (at its depth), as Go does here.
++                self.infer_from_alias_type_arguments(n, source, target);
+             }
+             // And if there weren't any type arguments, there's no reason to run inference as the types must be the same.
+             return;
+@@ -121,18 +123,14 @@ impl Checker {
                  source_types,
                  target.types(),
                  super::checker::Checker::is_type_or_base_identical_to,
@@ -92,7 +106,7 @@ index 8d6778fd..fc482ace 100644
              if targets.is_empty() {
                  return;
              }
-@@ -167,7 +164,6 @@ impl Checker {
+@@ -167,7 +165,6 @@ impl Checker {
                      source_types,
                      target.types(),
                      super::checker::Checker::is_type_identical_to,
@@ -100,7 +114,7 @@ index 8d6778fd..fc482ace 100644
                  );
                  if sources.is_empty() || targets.is_empty() {
                      return;
-@@ -218,6 +214,7 @@ impl Checker {
+@@ -218,6 +215,7 @@ impl Checker {
                      }
                      if n.priority.get() < inference.priority.get() {
                          inference.candidates.clear();
@@ -108,7 +122,7 @@ index 8d6778fd..fc482ace 100644
                          inference.contra_candidates.clear();
                          inference.top_level.set(true);
                          inference.priority.set(n.priority.get());
-@@ -231,10 +228,28 @@ impl Checker {
+@@ -231,10 +229,28 @@ impl Checker {
                                  clear_cached_inferences(&n.inferences.borrow());
                                  n.cleared_inferences.set(true);
                              }
@@ -141,7 +155,17 @@ index 8d6778fd..fc482ace 100644
                          }
                      }
                      if !n.priority.get().intersects(InferencePriority::RETURN_TYPE)
-@@ -446,6 +461,7 @@ impl Checker {
+@@ -292,7 +308,8 @@ impl Checker {
+                 && target.as_type_reference().node.get().is_some())
+         {
+             // If source and target are references to the same generic type, infer from type arguments
+-            self.invoke_once(n, source, target, Self::infer_from_reference_type_arguments);
++            // oj: TypeScript 7.0 infers again on a repeat (at its depth), as Go does here.
++            self.infer_from_reference_type_arguments(n, source, target);
+         } else if source.flags().intersects(TypeFlags::Index)
+             && target.flags().intersects(TypeFlags::Index)
+         {
+@@ -446,6 +463,7 @@ impl Checker {
          target_types: &[P<Type>],
          variances: &[VarianceFlags],
      ) {
@@ -149,7 +173,7 @@ index 8d6778fd..fc482ace 100644
          for (i, (&source, &target)) in source_types.iter().zip(target_types).enumerate() {
              if i < variances.len()
                  && (variances[i] & VarianceFlags::VarianceMask) == VarianceFlags::Contravariant
-@@ -455,6 +471,7 @@ impl Checker {
+@@ -455,6 +473,7 @@ impl Checker {
                  self.infer_from_types(n, source, target);
              }
          }
@@ -157,7 +181,7 @@ index 8d6778fd..fc482ace 100644
      }
  
      // inference.go:294
-@@ -600,16 +617,13 @@ impl Checker {
+@@ -600,16 +619,13 @@ impl Checker {
          sources: &'a [P<Type>],
          targets: &'b [P<Type>],
          mut matches: impl FnMut(&mut Checker, P<Type>, P<Type>) -> bool,
@@ -175,7 +199,7 @@ index 8d6778fd..fc482ace 100644
                      if !matched_sources.contains(&s) {
                          matched_sources.push(s);
                      }
-@@ -619,24 +633,6 @@ impl Checker {
+@@ -619,24 +635,6 @@ impl Checker {
                  }
              }
          }
@@ -200,7 +224,7 @@ index 8d6778fd..fc482ace 100644
          let sources = if matched_sources.is_empty() {
              sources.into()
          } else {
-@@ -651,53 +647,6 @@ impl Checker {
+@@ -651,53 +649,6 @@ impl Checker {
      }
  }
  
@@ -254,7 +278,7 @@ index 8d6778fd..fc482ace 100644
  impl Checker {
      // inference.go:448
      fn infer_to_multiple_types(
-@@ -2739,6 +2688,7 @@ fn clone_inference_info(info: P<InferenceInfo>) -> P<InferenceInfo> {
+@@ -2739,6 +2690,7 @@ fn clone_inference_info(info: P<InferenceInfo>) -> P<InferenceInfo> {
      P::new_recycled(InferenceInfo {
          type_parameter: Cell::new(info.type_parameter.get()),
          candidates: LazyVec::from_vec(info.candidates.to_vec()),
@@ -336,8 +360,24 @@ index d08bcf6e..24528470 100644
              let jsx_import = ast::get_jsx_runtime_import(
                  &ast::get_jsx_implicit_import_base(&options_for_file, Some(file)),
                  &options_for_file,
+diff --git a/crates/typecheck/oj_tsrs_execute/src/tsc/emit.rs b/crates/typecheck/oj_tsrs_execute/src/tsc/emit.rs
+index e03af54d..370de29f 100644
+--- a/crates/typecheck/oj_tsrs_execute/src/tsc/emit.rs
++++ b/crates/typecheck/oj_tsrs_execute/src/tsc/emit.rs
+@@ -77,7 +77,10 @@ pub fn emit_and_report_statistics(input: &EmitInput) -> (CompileAndEmitResult, O
+         statistics = Some(stats);
+     }
+ 
+-    if result.emit_skipped && !result.diagnostics.is_empty() {
++    // oj: TypeScript 7.0 reports every file's emit skipped under noEmit, so errors exit 1
++    // (DiagnosticsPresent_OutputsSkipped) there, not 2.
++    let emit_skipped = result.emit_skipped || input.program.options().no_emit.is_true();
++    if emit_skipped && !result.diagnostics.is_empty() {
+         result.status = ExitStatus::DiagnosticsPresentOutputsSkipped;
+     } else if !result.diagnostics.is_empty() {
+         result.status = ExitStatus::DiagnosticsPresentOutputsGenerated;
 diff --git a/crates/typecheck/oj_tsrs_modulespecifiers/src/specifiers.rs b/crates/typecheck/oj_tsrs_modulespecifiers/src/specifiers.rs
-index c49308c9..d21276aa 100644
+index c49308c9..d1dcc384 100644
 --- a/crates/typecheck/oj_tsrs_modulespecifiers/src/specifiers.rs
 +++ b/crates/typecheck/oj_tsrs_modulespecifiers/src/specifiers.rs
 @@ -934,10 +934,10 @@ fn try_get_module_name_as_node_module(
@@ -370,7 +410,21 @@ index c49308c9..d21276aa 100644
  
      // Simplify the full file path to something that can be resolved by Node.
      let preferences = get_module_specifier_preferences(
-@@ -1011,7 +1008,7 @@ fn try_get_module_name_as_node_module(
+@@ -969,10 +966,11 @@ fn try_get_module_name_as_node_module(
+         let mut package_root_index = parts.package_root_index;
+         let mut module_file_name = String::new();
+         loop {
+-            let current_parts = NodeModulePathParts { package_root_index, ..parts };
+             // If the module could be imported by a directory name, use that directory's name
++            // oj: TypeScript passes the same parts on every pass (it never reads a nested
++            // package.json here); tsrs passed the advancing root index.
+             let pkg_json_results = try_directory_with_package_json(
+-                current_parts,
++                parts,
+                 parts.package_root_index,
+                 path_obj,
+                 importing_source_file,
+@@ -1011,7 +1009,7 @@ fn try_get_module_name_as_node_module(
          }
      }
  

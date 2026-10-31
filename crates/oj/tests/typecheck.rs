@@ -451,10 +451,19 @@ fn oj_tsc(dir: &Path, args: &[&str]) -> (i32, String) {
 
 #[test]
 fn oj_tsc_reports_errors_and_exits_as_tsc_does() {
+    // The app's tsconfig sets noEmit: errors with nothing emitted exit 1, as
+    // in TypeScript 7.0 (7.1 exits 2).
     let app = App::new("tsc-errors");
     let (code, out) = oj_tsc(&app.0, &["--project", "tsconfig.json", "--pretty", "false"]);
-    assert_eq!(code, 2, "{out}");
+    assert_eq!(code, 1, "{out}");
     assert_eq!(out, MAIN_ERROR);
+    let (code, out) = oj_tsc(
+        &app.0,
+        &[
+            "-p", ".", "--noEmit", "false", "--outDir", "out", "--pretty", "false",
+        ],
+    );
+    assert_eq!(code, 2, "{out}");
 
     app.write("src/main.ts", "export const n: number = 1;\n");
     let (code, out) = oj_tsc(&app.0, &["-p", ".", "--pretty", "false"]);

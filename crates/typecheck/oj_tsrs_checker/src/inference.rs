@@ -96,7 +96,8 @@ impl Checker {
             if !source_alias.type_arguments().is_empty()
                 || !target_alias.type_arguments().is_empty()
             {
-                self.invoke_once(n, source, target, Self::infer_from_alias_type_arguments);
+                // oj: TypeScript 7.0 infers again on a repeat (at its depth), as Go does here.
+                self.infer_from_alias_type_arguments(n, source, target);
             }
             // And if there weren't any type arguments, there's no reason to run inference as the types must be the same.
             return;
@@ -307,7 +308,8 @@ impl Checker {
                 && target.as_type_reference().node.get().is_some())
         {
             // If source and target are references to the same generic type, infer from type arguments
-            self.invoke_once(n, source, target, Self::infer_from_reference_type_arguments);
+            // oj: TypeScript 7.0 infers again on a repeat (at its depth), as Go does here.
+            self.infer_from_reference_type_arguments(n, source, target);
         } else if source.flags().intersects(TypeFlags::Index)
             && target.flags().intersects(TypeFlags::Index)
         {

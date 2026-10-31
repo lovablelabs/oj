@@ -501,9 +501,10 @@ fn main() -> anyhow::Result<()> {
     }
     // `oj tsc` takes tsc's command line, which clap cannot parse: every
     // argument goes to the tsc driver as it is (`oj tsc --help` is tsc's).
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().map(String::as_str) == Some("tsc") {
-        std::process::exit(oj_typecheck::tsc(args[1..].to_vec()).into());
+    let mut args = std::env::args_os().skip(1);
+    if args.next().is_some_and(|arg| arg == "tsc") {
+        let args = args.map(|arg| arg.to_string_lossy().into_owned()).collect();
+        std::process::exit(oj_typecheck::tsc(args).into());
     }
     // Vite sorts its lockfile-format preference by `npm_config_user_agent`
     // (optimizer/index.ts), which every package-manager launch sets and a

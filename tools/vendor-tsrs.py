@@ -26,13 +26,17 @@ Patches applied while copying:
   skip filter for the background signature computation (tsrs_incremental),
   and an interruptible declaration emit that times each file's transform
   (tsrs_compiler's `EmitOptions::oj_interruptible`).
-  `typescript-7.0-parity.patch` keeps three behaviors of TypeScript 7.0, which
-  tsrs (on 7.1) changed: covariant inference candidates are kept deepest first
-  (typescript-go #4591 replaced that with a sort in inferFromMatchingTypes),
-  the implicit jsx runtime import goes to .jsx and .tsx files only, and a
-  package's exports name it before the check that the importing file reaches
-  its node_modules (tsrs moves that check first, so pnpm-linked packages fall
-  back to non-portable relative paths in declarations). A patch that no longer
+  `typescript-7.0-parity.patch` keeps behaviors of TypeScript 7.0 that tsrs
+  (on 7.1) changed: covariant inference candidates are kept deepest first and
+  type arguments are inferred again on a repeat (typescript-go #4591 replaced
+  that with a sort in inferFromMatchingTypes; tsrs also deduplicated the walk),
+  the implicit jsx runtime import goes to .jsx and .tsx files only, noEmit
+  reports the emit skipped (tsc exits 1, not 2, on errors), and module
+  specifiers follow typescript-go: a package's exports name it before the
+  check that the importing file reaches its node_modules, and only the package
+  root's package.json is read (tsrs moved the check first and read nested
+  ones, so pnpm-linked packages fell back to non-portable relative paths).
+  Still 7.1: the default target (ES2026) and the bundled lib files. A patch that no longer
   applies stops the update; rebase it on the new sources.
 """
 

@@ -966,10 +966,11 @@ fn try_get_module_name_as_node_module(
         let mut package_root_index = parts.package_root_index;
         let mut module_file_name = String::new();
         loop {
-            let current_parts = NodeModulePathParts { package_root_index, ..parts };
             // If the module could be imported by a directory name, use that directory's name
+            // oj: TypeScript passes the same parts on every pass (it never reads a nested
+            // package.json here); tsrs passed the advancing root index.
             let pkg_json_results = try_directory_with_package_json(
-                current_parts,
+                parts,
                 parts.package_root_index,
                 path_obj,
                 importing_source_file,
