@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Raphael Amorim
 
 //! StyleX end to end: the `oj` binary serves and builds React apps that
-//! install the real `@stylexjs/stylex` and `@stylexjs/unplugin` 0.19.0, a
+//! install the real `@stylexjs/stylex` and `@stylexjs/unplugin` 0.19.1, a
 //! Vite SPA (e2e/fixtures/stylex-app) and a TanStack Start app
 //! (e2e/fixtures/start-stylex-app), and a headless Chrome checks what the
 //! user sees: computed styles from `create`, `defineVars` tokens, a

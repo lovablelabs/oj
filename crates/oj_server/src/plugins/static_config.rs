@@ -35,74 +35,95 @@ const TEMPLATE: &str = include_str!("../assets/vite8-react-serve.json");
 /// `build.rolldownOptions.platform`), so any other version goes to the engine.
 const VITE: &str = "8.3.5";
 const PLUGIN_REACT: &str = "6.1.2";
-const STYLEX_UNPLUGIN: &str = "0.19.0";
+const STYLEX_UNPLUGIN: &str = "0.19.1";
 
 /// The extraction output for `vite` (the app's vite.config), or None when the
 /// config is not one this reader accepts or the installed toolchain is not
-/// the one its template was taken from.
+/// the one its template was taken from. `DEBUG=oj:boot` prints why it
+/// declined, once per reason.
 pub(crate) fn static_extraction(
     root: &Path,
     vite: &Path,
     command: &str,
     mode: &str,
 ) -> Option<Value> {
+    match read_static(root, vite, command, mode) {
+        Ok(out) => Some(out),
+        Err(reason) => {
+            static SAID: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+            let mut said = SAID.lock().unwrap_or_else(|e| e.into_inner());
+            if !said.contains(&reason) {
+                crate::boot_phase(&format!("vite-extract static declined: {reason}"));
+                said.push(reason);
+            }
+            None
+        }
+    }
+}
+
+fn read_static(root: &Path, vite: &Path, command: &str, mode: &str) -> Result<Value, String> {
     let env = oj_env::get();
     if command != "serve" || mode != "development" {
-        return None;
+        return Err(format!("{command} in {mode} mode, not a development serve"));
     }
     // A NODE_ENV the config would see changes Vite's resolution.
-    if env
+    if let Some(node_env) = env
         .knobs
         .node_env
         .as_deref()
-        .is_some_and(|v| v != "development")
+        .filter(|v| *v != "development")
     {
-        return None;
+        return Err(format!("NODE_ENV is {node_env}"));
     }
     // Vite appends these to `server.allowedHosts` (resolveServerOptions).
     if env
         .vars()
         .any(|(k, _)| k == "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS")
     {
-        return None;
+        return Err("__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS is set".into());
     }
     if let Some(reason) = toolchain_mismatch(
         root,
         &[("vite", VITE), ("@vitejs/plugin-react", PLUGIN_REACT)],
     ) {
-        crate::boot_phase(&format!("vite-extract static declined: {reason}"));
-        return None;
+        return Err(reason);
     }
-    let source = std::fs::read_to_string(vite).ok()?;
+    let unreadable = |e: std::io::Error| format!("{} unreadable: {e}", vite.display());
+    let source = std::fs::read_to_string(vite).map_err(unreadable)?;
     // Vite bundles the config from its real path, so `__dirname` and
     // `import.meta.dirname` are a symlinked config's target directory.
-    let Some(config) = read_config(&source, &vite.canonicalize().ok()?) else {
-        crate::boot_phase("vite-extract static declined: config is not a literal shape");
-        return None;
-    };
+    let real = vite.canonicalize().map_err(unreadable)?;
+    let config = read_config(&source, &real).ok_or(
+        "config is outside the literal shape (a statement, key or value only evaluation reads)",
+    )?;
+    if !config.react {
+        return Err("react() is not listed in plugins".into());
+    }
     if config.stylex.is_some() {
         if let Some(reason) = toolchain_mismatch(root, &[("@stylexjs/unplugin", STYLEX_UNPLUGIN)]) {
-            crate::boot_phase(&format!("vite-extract static declined: {reason}"));
-            return None;
+            return Err(reason);
         }
     }
+    let allow = fs_allow(root)?;
 
-    let mut out: Value = serde_json::from_str(TEMPLATE).ok()?;
-    let fields = out.as_object_mut()?;
+    let malformed = || "the template is malformed".to_string();
+    let mut out: Value = serde_json::from_str(TEMPLATE).map_err(|_| malformed())?;
+    let fields = out.as_object_mut().ok_or_else(malformed)?;
     let root_text = root.to_string_lossy().into_owned();
     fields.insert("envDir".into(), Value::String(root_text.clone()));
     fields.insert(
         "publicDir".into(),
         Value::String(root.join("public").to_string_lossy().into_owned()),
     );
-    fields.insert("fsAllow".into(), fs_allow(root)?);
+    fields.insert("fsAllow".into(), allow);
     fields.insert("port".into(), Value::from(config.port.unwrap_or(5173)));
     if let Some(host) = &config.host {
-        insert_host(fields, host)?;
+        insert_host(fields, host).ok_or_else(malformed)?;
     }
     fields
-        .get_mut("serverFlags")?
-        .as_object_mut()?
+        .get_mut("serverFlags")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(malformed)?
         .insert("forwardConsole".into(), forward_console(|key| env.var(key)));
     fields.insert("alias".into(), Value::Object(config.alias));
     fields.insert(
@@ -113,7 +134,7 @@ pub(crate) fn static_extraction(
             .unwrap_or(Value::Null),
     );
     let _ = super::CONFIG_DEPS.set(vec![vite.to_path_buf()]);
-    Some(out)
+    Ok(out)
 }
 
 /// Vite's default `server.forwardConsole`: on when it runs under a coding agent.
@@ -209,7 +230,7 @@ fn read_config(source: &str, file: &Path) -> Option<LiteralConfig> {
             _ => return None,
         }
     }
-    config.filter(|config| config.react)
+    config
 }
 
 fn bind_import(
@@ -496,15 +517,24 @@ fn normalize(path: &Path) -> PathBuf {
 /// Why the installed toolchain is not the one the template was taken from:
 /// the first package in `pinned` whose installed version differs, or None.
 fn toolchain_mismatch(root: &Path, pinned: &[(&str, &str)]) -> Option<String> {
-    pinned.iter().find_map(|&(name, want)| {
-        let found = installed_version(root, name);
-        (found.as_deref() != Some(want)).then(|| {
-            format!(
-                "{name} {} installed, the template is for {want}",
-                found.as_deref().unwrap_or("not")
-            )
+    pinned
+        .iter()
+        .find_map(|&(name, want)| match installed_version(root, name) {
+            Some(found) if found == want => None,
+            Some(found) => Some(format!(
+                "{name} {found} installed, the template is for {want}"
+            )),
+            None if root.ancestors().any(|dir| {
+                dir.join("node_modules")
+                    .join(name)
+                    .join("package.json")
+                    .is_file()
+            }) =>
+            {
+                Some(format!("{name}'s package.json has no readable version"))
+            }
+            None => Some(format!("{name} not installed, the template is for {want}")),
         })
-    })
 }
 
 /// The version in `node_modules/<name>/package.json`, looked up from `root`
@@ -521,29 +551,29 @@ fn installed_version(root: &Path, name: &str) -> Option<String> {
 
 /// Vite's default `server.fs.allow` (resolveServerOptions): the workspace
 /// root, plus Vite's own client directory when the root does not hold it.
-/// None for Yarn PnP and pnpm virtual-store layouts, which add more.
-fn fs_allow(root: &Path) -> Option<Value> {
+/// Declined for Yarn PnP and pnpm virtual-store layouts, which add more.
+fn fs_allow(root: &Path) -> Result<Value, String> {
     let workspace = search_for_workspace_root(root);
     let package_root = search_for_package_root(root);
-    if package_root.join(".pnp.cjs").exists()
-        || package_root.join(".pnp.js").exists()
-        || workspace.join("node_modules/.modules.yaml").exists()
-    {
-        return None;
+    if package_root.join(".pnp.cjs").exists() || package_root.join(".pnp.js").exists() {
+        return Err("a Yarn PnP install adds to server.fs.allow".into());
+    }
+    if workspace.join("node_modules/.modules.yaml").exists() {
+        return Err("a pnpm install (node_modules/.modules.yaml) adds to server.fs.allow".into());
     }
     let vite = root
         .ancestors()
         .map(|dir| dir.join("node_modules/vite"))
-        .find(|dir| dir.join("package.json").is_file())?
-        .canonicalize()
-        .ok()?;
+        .find(|dir| dir.join("package.json").is_file())
+        .and_then(|dir| dir.canonicalize().ok())
+        .ok_or("node_modules/vite does not resolve")?;
     let client = vite.join("dist/client");
     let mut allow = vec![workspace.to_string_lossy().into_owned()];
     let client = client.to_string_lossy().into_owned();
     if !allow.iter().any(|dir| is_parent_directory(dir, &client)) {
         allow.push(client);
     }
-    Some(Value::Array(allow.into_iter().map(Value::String).collect()))
+    Ok(Value::Array(allow.into_iter().map(Value::String).collect()))
 }
 
 /// Vite's `isParentDirectory`, case-folded where the file system usually is.
@@ -601,7 +631,7 @@ fn is_truthy(value: &Value) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::toolchain_mismatch;
+    use super::{read_static, toolchain_mismatch, PLUGIN_REACT, VITE};
 
     fn install(root: &std::path::Path, name: &str, version: &str) {
         let dir = root.join("node_modules").join(name);
@@ -635,5 +665,53 @@ mod tests {
             Some("absent not installed, the template is for 1.0.0")
         );
         assert_eq!(toolchain_mismatch(root, &pinned[..1]), None);
+    }
+
+    /// Every decline after the version gate names the check that failed,
+    /// pnpm's install layout included.
+    #[test]
+    fn a_decline_names_the_check_that_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        install(&root, "vite", VITE);
+        install(&root, "@vitejs/plugin-react", PLUGIN_REACT);
+        std::fs::write(root.join("package.json"), "{}").unwrap();
+        let config = root.join("vite.config.mjs");
+        let decline = |source: &str| {
+            std::fs::write(&config, source).unwrap();
+            read_static(&root, &config, "serve", "development").err()
+        };
+        let react = "import react from \"@vitejs/plugin-react\";\n";
+
+        assert_eq!(
+            decline(&format!(
+                "{react}export default {{ server: {{ port: 3000 }} }};\n"
+            ))
+            .as_deref(),
+            Some("react() is not listed in plugins")
+        );
+        assert!(decline(&format!(
+            "{react}export default {{ plugins: [react()], server: {{ host: true }} }};\n"
+        ))
+        .is_some_and(|r| r.starts_with("config is outside the literal shape")));
+        let literal = format!("{react}export default {{ plugins: [react()] }};\n");
+        assert_eq!(decline(&literal), None);
+        std::fs::write(root.join("node_modules/.modules.yaml"), "").unwrap();
+        assert_eq!(
+            decline(&literal).as_deref(),
+            Some("a pnpm install (node_modules/.modules.yaml) adds to server.fs.allow")
+        );
+        assert_eq!(
+            read_static(&root, &config, "build", "production")
+                .err()
+                .as_deref(),
+            Some("build in production mode, not a development serve")
+        );
+
+        std::fs::write(root.join("node_modules/vite/package.json"), "{").unwrap();
+        assert_eq!(
+            decline(&literal).as_deref(),
+            Some("vite's package.json has no readable version")
+        );
     }
 }
