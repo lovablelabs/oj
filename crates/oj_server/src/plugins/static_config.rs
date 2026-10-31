@@ -47,7 +47,7 @@ pub(crate) fn static_extraction(
     mode: &str,
 ) -> Option<Value> {
     let env = oj_env::get();
-    if env.knobs.static_config_off || command != "serve" || mode != "development" {
+    if command != "serve" || mode != "development" {
         return None;
     }
     // A NODE_ENV the config would see changes Vite's resolution.
@@ -66,19 +66,25 @@ pub(crate) fn static_extraction(
     {
         return None;
     }
-    if installed_version(root, "vite").as_deref() != Some(VITE)
-        || installed_version(root, "@vitejs/plugin-react").as_deref() != Some(PLUGIN_REACT)
-    {
+    if let Some(reason) = toolchain_mismatch(
+        root,
+        &[("vite", VITE), ("@vitejs/plugin-react", PLUGIN_REACT)],
+    ) {
+        crate::boot_phase(&format!("vite-extract static declined: {reason}"));
         return None;
     }
     let source = std::fs::read_to_string(vite).ok()?;
     // Vite bundles the config from its real path, so `__dirname` and
     // `import.meta.dirname` are a symlinked config's target directory.
-    let config = read_config(&source, &vite.canonicalize().ok()?)?;
-    if config.stylex.is_some()
-        && installed_version(root, "@stylexjs/unplugin").as_deref() != Some(STYLEX_UNPLUGIN)
-    {
+    let Some(config) = read_config(&source, &vite.canonicalize().ok()?) else {
+        crate::boot_phase("vite-extract static declined: config is not a literal shape");
         return None;
+    };
+    if config.stylex.is_some() {
+        if let Some(reason) = toolchain_mismatch(root, &[("@stylexjs/unplugin", STYLEX_UNPLUGIN)]) {
+            crate::boot_phase(&format!("vite-extract static declined: {reason}"));
+            return None;
+        }
     }
 
     let mut out: Value = serde_json::from_str(TEMPLATE).ok()?;
@@ -487,6 +493,20 @@ fn normalize(path: &Path) -> PathBuf {
     out
 }
 
+/// Why the installed toolchain is not the one the template was taken from:
+/// the first package in `pinned` whose installed version differs, or None.
+fn toolchain_mismatch(root: &Path, pinned: &[(&str, &str)]) -> Option<String> {
+    pinned.iter().find_map(|&(name, want)| {
+        let found = installed_version(root, name);
+        (found.as_deref() != Some(want)).then(|| {
+            format!(
+                "{name} {} installed, the template is for {want}",
+                found.as_deref().unwrap_or("not")
+            )
+        })
+    })
+}
+
 /// The version in `node_modules/<name>/package.json`, looked up from `root`
 /// the way Node resolves a bare package.
 fn installed_version(root: &Path, name: &str) -> Option<String> {
@@ -576,5 +596,44 @@ fn is_truthy(value: &Value) -> bool {
         Value::Number(n) => n.as_f64().is_some_and(|f| f != 0.0),
         Value::String(s) => !s.is_empty(),
         Value::Array(_) | Value::Object(_) => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::toolchain_mismatch;
+
+    fn install(root: &std::path::Path, name: &str, version: &str) {
+        let dir = root.join("node_modules").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("package.json"),
+            format!(r#"{{"name":"{name}","version":"{version}"}}"#),
+        )
+        .unwrap();
+    }
+
+    /// A decline must say which package moved, or a patch release silently
+    /// sends every app back to the engine.
+    #[test]
+    fn a_version_decline_names_the_package_and_both_versions() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        install(root, "vite", "8.3.5");
+        install(root, "@vitejs/plugin-react", "6.1.3");
+        let pinned = [
+            ("vite", "8.3.5"),
+            ("@vitejs/plugin-react", "6.1.2"),
+            ("absent", "1.0.0"),
+        ];
+        assert_eq!(
+            toolchain_mismatch(root, &pinned).as_deref(),
+            Some("@vitejs/plugin-react 6.1.3 installed, the template is for 6.1.2")
+        );
+        assert_eq!(
+            toolchain_mismatch(root, &pinned[2..]).as_deref(),
+            Some("absent not installed, the template is for 1.0.0")
+        );
+        assert_eq!(toolchain_mismatch(root, &pinned[..1]), None);
     }
 }

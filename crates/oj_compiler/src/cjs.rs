@@ -419,6 +419,7 @@ pub struct CjsExportNames {
 /// `require` returns: a source that does not parse, a `module.exports`
 /// assigned anything but an object literal or a `require()`, assigned twice or
 /// under a branch NODE_ENV does not decide, or mixed with `exports.X`; an
+/// `exports.X` under such a branch; an
 /// `__esModule` marker (whose `default` a consumer unwraps); a `delete`; and
 /// `exports` handed to a call other than `Object.defineProperty` with a
 /// literal key and an enumerable descriptor (`Object.assign`, a `forEach`
@@ -552,6 +553,10 @@ impl ExportNameReader<'_> {
     }
 
     fn member_name(&mut self, name: String) {
+        // Only running it shows whether the branch adds the name.
+        if self.undecided > 0 {
+            self.opaque = true;
+        }
         self.member_names = true;
         self.out.names.push(name);
     }
@@ -1075,6 +1080,10 @@ exports.named = 1;
             "if (typeof window !== 'undefined') module.exports = require('./browser');\nelse module.exports = require('./node');\n",
             "exports.a = 1;\nexports.b = 2;\ndelete exports.b;\n",
             "var k = 'a';\nexports[k] = 1;\n",
+            // Names a branch only sometimes adds.
+            "if (typeof window !== 'undefined') exports.browserOnly = 1;\nexports.always = 1;\n",
+            "exports.a = 1;\nhasFeature() && Object.defineProperty(exports, 'b', { enumerable: true, value: 2 });\n",
+            "exports.a = typeof Symbol === 'function' ? (exports.b = 1) : 0;\n",
         ];
         for source in declined {
             assert_eq!(cjs_export_names(source, "development"), None, "{source}");
