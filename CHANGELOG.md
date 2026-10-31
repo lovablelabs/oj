@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `oj tsc` runs tsc on oj's built-in checker: it takes tsc's command line (`--noEmit`, `--explainFiles`, `--pretty false` and the rest) and prints and exits as TypeScript 7.0's tsc does, so tools that call tsc or tsgo can call it instead. Its lib files are tsrs's (TypeScript 7.1, default target ES2026), listed as `bundled:///libs/...`, and `--version` and `--help` are tsrs's.
 
+### Changed
+
+- rolldown 1.2.16 (from 1.2.15) and oxc 0.156 (from 0.155). `oj build` output still matches `vite build` byte for byte on the parity apps.
+
 ### Fixed
 
 - The type checker matches TypeScript 7.0 where tsrs follows 7.1: a type parameter with two unrelated candidates takes the one inferred through more type arguments (`table({ data, columns })` with `columns: Column<Row>[]` infers `Row`), only .jsx and .tsx files get the implicit `react/jsx-runtime` import, not .js or .mjs, and `noEmit` with errors exits 1.

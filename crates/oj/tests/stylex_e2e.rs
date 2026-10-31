@@ -185,8 +185,14 @@ async fn assert_styled(page: &Page) {
     assert!(hover, "the :hover rule reached the page");
 
     // A conditional style applies on a state change, once React owns the
-    // page: TanStack drops `$_TSR` when a server render has hydrated.
-    page.wait_for("window.$_TSR === undefined", WAIT).await;
+    // button: React tags the elements it hydrates with `__reactProps$`.
+    // (TanStack drops `$_TSR` when the router's data hydrates, before React
+    // has, so a click then can land on a page nothing listens to yet.)
+    page.wait_for(
+        "Object.keys(document.getElementById('toggle')).some((k) => k.startsWith('__reactProps$'))",
+        WAIT,
+    )
+    .await;
     page.eval::<bool>("document.getElementById('toggle').click(), true")
         .await;
     page.wait_for(
