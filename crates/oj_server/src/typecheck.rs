@@ -541,13 +541,14 @@ fn pid_alive(_pid: u64) -> bool {
 }
 
 /// Checks `root` once in this process, for `oj typecheck` when no dev server
-/// answers. Runs on a thread of its own, with the stack tsrs needs.
-pub fn check_once(root: &Path) -> serde_json::Value {
+/// answers. Runs on a thread of its own, with the stack tsrs needs. With
+/// `explain_files`, the answer also carries tsc's `--explainFiles` listing.
+pub fn check_once(root: &Path, explain_files: bool) -> serde_json::Value {
     let root = root.to_path_buf();
     std::thread::Builder::new()
         .name("oj-typecheck".into())
         .stack_size(CHECKER_STACK)
-        .spawn(move || imp::check_once(&root))
+        .spawn(move || imp::check_once(&root, explain_files))
         .ok()
         .and_then(|t| t.join().ok())
         .unwrap_or_else(|| unavailable("the type checker crashed"))
@@ -714,15 +715,23 @@ mod imp {
         })
     }
 
-    pub(super) fn check_once(root: &Path) -> serde_json::Value {
+    pub(super) fn check_once(root: &Path, explain_files: bool) -> serde_json::Value {
         let outcome = catch_unwind(AssertUnwindSafe(|| -> Result<_, String> {
             let Some(mut checker) = Checker::open(root)? else {
                 return Ok(None);
             };
-            checker.check().map(Some)
+            let report = checker.check()?;
+            let listing = explain_files.then(|| checker.explain_files()).transpose()?;
+            Ok(Some((report, listing)))
         }));
         match outcome {
-            Ok(Ok(Some(report))) => answer_of(&report),
+            Ok(Ok(Some((report, listing)))) => {
+                let mut answer = answer_of(&report);
+                if let Some(listing) = listing {
+                    answer["explainFiles"] = listing.into();
+                }
+                answer
+            }
             Ok(Ok(None)) => unavailable("no tsconfig.json in the app root"),
             Ok(Err(e)) => unavailable(&e),
             Err(panic) => unavailable(&format!(

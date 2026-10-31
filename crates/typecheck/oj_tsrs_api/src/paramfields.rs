@@ -515,6 +515,7 @@ pub fn params_fields(method: &str) -> &'static [FieldSpec] {
         | "getProgramDiagnostics"
         | "ojGetIncrementalSemanticDiagnostics"
         | "ojGetGlobalDiagnostics"
+        | "ojExplainFiles"
         | "getGlobalDiagnostics"
         | "getConfigFileParsingDiagnostics" => &[
             FieldSpec {

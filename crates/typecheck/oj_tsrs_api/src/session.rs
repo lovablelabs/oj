@@ -541,6 +541,7 @@ impl Session {
             "ojStartSignatureJob" => self.handle_oj_start_signature_job(p)?,
             "ojWaitSignatureJob" => self.handle_oj_wait_signature_job(),
             "ojIncrementalPrograms" => self.handle_oj_incremental_programs(p)?,
+            "ojExplainFiles" => self.handle_oj_explain_files(p)?,
             "getSuggestionDiagnostics" => {
                 self.handle_get_diagnostics(p, DiagnosticKind::Suggestion)?
             }

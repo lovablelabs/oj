@@ -1,0 +1,80 @@
+diff --git a/crates/typecheck/oj_tsrs_api/src/methods.rs b/crates/typecheck/oj_tsrs_api/src/methods.rs
+index aa2a5024..70a60f1b 100644
+--- a/crates/typecheck/oj_tsrs_api/src/methods.rs
++++ b/crates/typecheck/oj_tsrs_api/src/methods.rs
+@@ -33,7 +33,7 @@ pub struct MethodInfo {
+     status: Status,
+ }
+ 
+-pub const METHODS: [MethodInfo; 182] = [
++pub const METHODS: [MethodInfo; 183] = [
+     MethodInfo { name: "release", owner: Owner::Core, status: Status::Supported },
+     MethodInfo { name: "releaseSourceFile", owner: Owner::Core, status: Status::Supported },
+     MethodInfo { name: "retainSourceFile", owner: Owner::Core, status: Status::Partial },
+@@ -332,6 +332,7 @@ pub const METHODS: [MethodInfo; 182] = [
+     MethodInfo { name: "ojStartSignatureJob", owner: Owner::Core, status: Status::Supported },
+     MethodInfo { name: "ojWaitSignatureJob", owner: Owner::Core, status: Status::Supported },
+     MethodInfo { name: "ojIncrementalPrograms", owner: Owner::Core, status: Status::Supported },
++    MethodInfo { name: "ojExplainFiles", owner: Owner::Core, status: Status::Supported },
+     MethodInfo { name: "getGlobalDiagnostics", owner: Owner::Core, status: Status::Supported },
+     MethodInfo {
+         name: "getConfigFileParsingDiagnostics",
+@@ -556,6 +557,7 @@ pub(crate) const PARAMS_TYPES: &[(&str, Option<&str>)] = &[
+     ("ojStartSignatureJob", Some("OjStartSignatureJobParams")),
+     ("ojWaitSignatureJob", None),
+     ("ojIncrementalPrograms", Some("OjIncrementalProgramsParams")),
++    ("ojExplainFiles", Some("GetProjectDiagnosticsParams")),
+     ("getGlobalDiagnostics", Some("GetProjectDiagnosticsParams")),
+     ("getConfigFileParsingDiagnostics", Some("GetProjectDiagnosticsParams")),
+     ("startCPUProfile", Some("ProfileParams")),
+diff --git a/crates/typecheck/oj_tsrs_api/src/oj_incremental.rs b/crates/typecheck/oj_tsrs_api/src/oj_incremental.rs
+index 627343f3..8794ffd6 100644
+--- a/crates/typecheck/oj_tsrs_api/src/oj_incremental.rs
++++ b/crates/typecheck/oj_tsrs_api/src/oj_incremental.rs
+@@ -14,6 +14,7 @@
+ //   to emit. Their signatures stay their versions: a change to one re-checks the files that import it.
+ // - `ojWaitSignatureJob` and `ojIncrementalPrograms`: what the job emitted and which snapshot each project's
+ //   program holds, for tests.
++// - `ojExplainFiles`: a project's `--explainFiles` listing, as tsc prints it (`oj typecheck --explainFiles`).
+ 
+ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+ use std::thread::{JoinHandle, ThreadId};
+@@ -276,6 +277,14 @@ impl Session {
+         ])
+     }
+ 
++    pub(crate) fn handle_oj_explain_files(&self, p: Params) -> ApiResult<Value> {
++        let sd = self.snapshot_data(p.u64("snapshot")?)?;
++        let program = sd.get_program(&ProjectID(p.str("project")?.to_string()))?;
++        let mut listing = Vec::new();
++        program.explain_files(&mut listing);
++        Ok(Value::String(tsrs_core::utf8::from_utf8_lossy(&listing).into_owned()))
++    }
++
+     /// The projects with an incremental program, and whether each holds `snapshot`.
+     pub(crate) fn handle_oj_incremental_programs(&self, p: Params) -> ApiResult<Value> {
+         let sd = self.snapshot_data(p.u64("snapshot")?)?;
+diff --git a/crates/typecheck/oj_tsrs_api/src/paramfields.rs b/crates/typecheck/oj_tsrs_api/src/paramfields.rs
+index 7726cf92..85587379 100644
+--- a/crates/typecheck/oj_tsrs_api/src/paramfields.rs
++++ b/crates/typecheck/oj_tsrs_api/src/paramfields.rs
+@@ -515,6 +515,7 @@ pub fn params_fields(method: &str) -> &'static [FieldSpec] {
+         | "getProgramDiagnostics"
+         | "ojGetIncrementalSemanticDiagnostics"
+         | "ojGetGlobalDiagnostics"
++        | "ojExplainFiles"
+         | "getGlobalDiagnostics"
+         | "getConfigFileParsingDiagnostics" => &[
+             FieldSpec {
+diff --git a/crates/typecheck/oj_tsrs_api/src/session.rs b/crates/typecheck/oj_tsrs_api/src/session.rs
+index a2465d4d..e96e2603 100644
+--- a/crates/typecheck/oj_tsrs_api/src/session.rs
++++ b/crates/typecheck/oj_tsrs_api/src/session.rs
+@@ -541,6 +541,7 @@ impl Session {
+             "ojStartSignatureJob" => self.handle_oj_start_signature_job(p)?,
+             "ojWaitSignatureJob" => self.handle_oj_wait_signature_job(),
+             "ojIncrementalPrograms" => self.handle_oj_incremental_programs(p)?,
++            "ojExplainFiles" => self.handle_oj_explain_files(p)?,
+             "getSuggestionDiagnostics" => {
+                 self.handle_get_diagnostics(p, DiagnosticKind::Suggestion)?
+             }

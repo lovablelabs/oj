@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `oj typecheck --explainFiles` prints tsc's `--explainFiles` listing after the diagnostics: each file the checked programs loaded, relative to the app root (tsgo's form when run from there), and why (`explainFiles` in `--json`). It always checks in its own process.
+
 ## [0.3.1] - 2026-10-30
 
 ### Changed

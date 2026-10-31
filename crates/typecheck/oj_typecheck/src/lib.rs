@@ -366,6 +366,25 @@ impl Checker {
         })
     }
 
+    /// tsc's `--explainFiles` listing of every opened project, in build
+    /// order: each file the program loaded, relative to the app root, and
+    /// why it is in the program.
+    pub fn explain_files(&self) -> Result<String, String> {
+        let mut listing = String::new();
+        for project in &self.projects {
+            let found = request(
+                &self.session,
+                "ojExplainFiles",
+                &json!({ "snapshot": self.snapshot, "project": project.id }),
+            )?;
+            let found = found
+                .as_str()
+                .ok_or_else(|| format!("tsrs ojExplainFiles: not a listing: {found}"))?;
+            listing.push_str(found);
+        }
+        Ok(listing)
+    }
+
     /// Records, in the background, the declaration signatures of the files the last check did not emit, so the
     /// next edit of a file whose exported types stay the same checks only that file. For a checker that waits
     /// for the next change: the next request stops it, but not in the middle of one file, so `skip` names the

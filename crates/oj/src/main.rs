@@ -225,11 +225,19 @@ enum Command {
         root: Option<PathBuf>,
         /// A file changed since the server last saw it; re-read before the
         /// check. Repeatable.
-        #[arg(long = "changed", value_name = "FILE")]
+        #[arg(
+            long = "changed",
+            value_name = "FILE",
+            conflicts_with = "explain_files"
+        )]
         changed: Vec<PathBuf>,
         /// Print the JSON report instead of tsc-style lines.
         #[arg(long)]
         json: bool,
+        /// Also print tsc's `--explainFiles` listing: every file the
+        /// programs loaded, relative to the root, and why.
+        #[arg(long = "explainFiles")]
+        explain_files: bool,
     },
     /// Internal: the dev server's `--typecheck` checker, in a process of its
     /// own so nothing the checker does can take the server down. Speaks JSON
@@ -712,6 +720,7 @@ async fn run(cli: Cli, rolldown: tokio::runtime::Handle) -> anyhow::Result<()> {
             root,
             changed,
             json,
+            explain_files,
         } => {
             let root = root.unwrap_or_else(|| PathBuf::from("."));
             // Relative to where the command runs, as any CLI path argument.
@@ -719,14 +728,19 @@ async fn run(cli: Cli, rolldown: tokio::runtime::Handle) -> anyhow::Result<()> {
                 .iter()
                 .map(|p| std::path::absolute(p).unwrap_or_else(|_| p.clone()))
                 .collect();
-            let answer = match oj_server::typecheck_via_server(&root, &changed).await {
+            // The dev server's warm checker reports diagnostics only.
+            let served = if explain_files {
+                Ok(None)
+            } else {
+                oj_server::typecheck_via_server(&root, &changed).await
+            };
+            let in_process = move || oj_server::typecheck_once(&root, explain_files);
+            let answer = match served {
                 Ok(Some(answer)) => answer,
-                Ok(None) => {
-                    tokio::task::spawn_blocking(move || oj_server::typecheck_once(&root)).await?
-                }
+                Ok(None) => tokio::task::spawn_blocking(in_process).await?,
                 Err(e) => {
                     eprintln!("oj typecheck: the dev server did not answer ({e}); checking in this process");
-                    tokio::task::spawn_blocking(move || oj_server::typecheck_once(&root)).await?
+                    tokio::task::spawn_blocking(in_process).await?
                 }
             };
             // A closed stdout (`oj typecheck | head`) ends the output, not the command.
@@ -735,7 +749,12 @@ async fn run(cli: Cli, rolldown: tokio::runtime::Handle) -> anyhow::Result<()> {
             let _ = if json {
                 writeln!(stdout, "{answer}")
             } else {
-                write!(stdout, "{}", answer["text"].as_str().unwrap_or_default())
+                write!(
+                    stdout,
+                    "{}{}",
+                    answer["text"].as_str().unwrap_or_default(),
+                    answer["explainFiles"].as_str().unwrap_or_default()
+                )
             };
             let code = match answer["status"].as_str() {
                 Some("ok") => 0,

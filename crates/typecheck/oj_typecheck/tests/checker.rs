@@ -749,3 +749,35 @@ fn a_file_slow_to_emit_is_left_out_of_later_jobs() {
         "{again:?}"
     );
 }
+
+#[test]
+fn explain_files_lists_every_referenced_project_in_build_order() {
+    let app = App::empty("explain");
+    let project = r#"{ "compilerOptions": { "noLib": true, "types": [], "module": "ESNext", "moduleResolution": "bundler" }, "include": ["DIR"] }"#;
+    app.write(
+        "tsconfig.json",
+        r#"{ "files": [], "references": [{ "path": "./tsconfig.a.json" }, { "path": "./tsconfig.b.json" }] }"#,
+    );
+    // a builds after b, which it references.
+    app.write(
+        "tsconfig.a.json",
+        &project.replace(
+            r#"["DIR"]"#,
+            r#"["a"], "references": [{ "path": "./tsconfig.b.json" }]"#,
+        ),
+    );
+    app.write("tsconfig.b.json", &project.replace("DIR", "b"));
+    app.write("a/a.ts", "export const a = 1;\n");
+    app.write(
+        "b/main.ts",
+        "import { b } from './b';\nexport const c = b;\n",
+    );
+    app.write("b/b.ts", "export const b = 1;\n");
+    assert_eq!(
+        app.open().explain_files().unwrap(),
+        "b/b.ts\n   Matched by include pattern 'b' in 'tsconfig.b.json'\n\
+         \x20  Imported via './b' from file 'b/main.ts'\n\
+         b/main.ts\n   Matched by include pattern 'b' in 'tsconfig.b.json'\n\
+         a/a.ts\n   Matched by include pattern 'a' in 'tsconfig.a.json'\n"
+    );
+}

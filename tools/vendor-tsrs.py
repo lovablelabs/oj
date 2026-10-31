@@ -25,8 +25,11 @@ Patches applied while copying:
   to check only the files an edit affects (tsrs_api's oj_incremental.rs), a
   skip filter for the background signature computation (tsrs_incremental),
   and an interruptible declaration emit that times each file's transform
-  (tsrs_compiler's `EmitOptions::oj_interruptible`). A patch that no longer
-  applies stops the update; rebase it on the new sources.
+  (tsrs_compiler's `EmitOptions::oj_interruptible`). `oj-explain-files.patch`
+  adds `ojExplainFiles`, a program's `--explainFiles` listing, for
+  `oj typecheck --explainFiles`; it edits oj_incremental.rs, so it must
+  sort after `incremental-diagnostics.patch`. A patch that no longer applies stops the
+  update; rebase it on the new sources.
 """
 
 import pathlib

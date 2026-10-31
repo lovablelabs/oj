@@ -44,6 +44,7 @@ oj dev web --typecheck                           # dev server that keeps a check
 oj typecheck web                                 # asks that server; checks in its own process when none runs
 oj typecheck web --changed src/App.tsx           # names a file just written, so the answer covers it
 oj typecheck web --json                          # the report as JSON
+oj typecheck web --explainFiles                  # also lists each file the programs loaded, and why
 ```
 
 How it works:

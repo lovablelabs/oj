@@ -14,6 +14,7 @@
 //   to emit. Their signatures stay their versions: a change to one re-checks the files that import it.
 // - `ojWaitSignatureJob` and `ojIncrementalPrograms`: what the job emitted and which snapshot each project's
 //   program holds, for tests.
+// - `ojExplainFiles`: a project's `--explainFiles` listing, as tsc prints it (`oj typecheck --explainFiles`).
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{JoinHandle, ThreadId};
@@ -274,6 +275,14 @@ impl Session {
             ("emitted", Value::Array(emitted)),
             ("slow", Value::Array(slow.into_iter().map(Value::String).collect())),
         ])
+    }
+
+    pub(crate) fn handle_oj_explain_files(&self, p: Params) -> ApiResult<Value> {
+        let sd = self.snapshot_data(p.u64("snapshot")?)?;
+        let program = sd.get_program(&ProjectID(p.str("project")?.to_string()))?;
+        let mut listing = Vec::new();
+        program.explain_files(&mut listing);
+        Ok(Value::String(tsrs_core::utf8::from_utf8_lossy(&listing).into_owned()))
     }
 
     /// The projects with an incremental program, and whether each holds `snapshot`.
