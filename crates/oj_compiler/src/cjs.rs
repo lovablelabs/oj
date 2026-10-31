@@ -403,6 +403,235 @@ impl CjsAnalyzer {
     }
 }
 
+/// What a CommonJS module puts on `module.exports`, read without running it.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct CjsExportNames {
+    /// `exports.X =`, `module.exports.X =`, `Object.defineProperty(exports, "X")`
+    /// and the keys of a `module.exports = { ... }` literal.
+    pub names: Vec<String>,
+    /// Specifiers of `module.exports = require("x")` and `__exportStar(require("x"))`.
+    pub reexports: Vec<String>,
+}
+
+/// The names a CommonJS module exports when `process.env.NODE_ENV` is
+/// `node_env`, the way Node's cjs-module-lexer reads them plus NODE_ENV
+/// branch folding. None when the source does not parse or `module.exports`
+/// is assigned something other than an object literal or a `require()`, whose
+/// keys only running it would show.
+pub fn cjs_export_names(source_text: &str, node_env: &str) -> Option<CjsExportNames> {
+    let allocator = Allocator::default();
+    let parsed = Parser::new(&allocator, source_text, SourceType::cjs()).parse();
+    if parsed.fatal_error {
+        return None;
+    }
+    let mut reader = ExportNameReader {
+        node_env,
+        out: CjsExportNames::default(),
+        opaque: false,
+    };
+    reader.visit_program(&parsed.program);
+    if reader.opaque {
+        return None;
+    }
+    let mut out = reader.out;
+    out.names = dedup_in_order(out.names);
+    out.reexports = dedup_in_order(out.reexports);
+    Some(out)
+}
+
+struct ExportNameReader<'e> {
+    node_env: &'e str,
+    out: CjsExportNames,
+    opaque: bool,
+}
+
+fn is_node_env(expr: &Expression) -> bool {
+    let Expression::StaticMemberExpression(env) = expr.without_parentheses() else {
+        return false;
+    };
+    let Expression::StaticMemberExpression(process) = &env.object else {
+        return false;
+    };
+    env.property.name == "NODE_ENV"
+        && process.property.name == "env"
+        && matches!(&process.object, Expression::Identifier(id) if id.name == "process")
+}
+
+impl ExportNameReader<'_> {
+    /// A branch test decided by NODE_ENV alone: comparisons of
+    /// `process.env.NODE_ENV` with a string, negated or combined.
+    fn fold(&self, test: &Expression) -> Option<bool> {
+        use oxc_syntax::operator::{BinaryOperator, LogicalOperator, UnaryOperator};
+        match test.without_parentheses() {
+            Expression::BinaryExpression(b) => {
+                let literal = |e: &Expression| match e.without_parentheses() {
+                    Expression::StringLiteral(s) => Some(crate::lit_str(s.value).to_string()),
+                    _ => None,
+                };
+                let other = if is_node_env(&b.left) {
+                    literal(&b.right)?
+                } else if is_node_env(&b.right) {
+                    literal(&b.left)?
+                } else {
+                    return None;
+                };
+                let equal = other == self.node_env;
+                match b.operator {
+                    BinaryOperator::StrictEquality | BinaryOperator::Equality => Some(equal),
+                    BinaryOperator::StrictInequality | BinaryOperator::Inequality => Some(!equal),
+                    _ => None,
+                }
+            }
+            Expression::UnaryExpression(u) if u.operator == UnaryOperator::LogicalNot => {
+                self.fold(&u.argument).map(|v| !v)
+            }
+            Expression::LogicalExpression(l) => {
+                let (left, right) = (self.fold(&l.left), self.fold(&l.right));
+                match l.operator {
+                    LogicalOperator::And => match (left, right) {
+                        (Some(false), _) | (_, Some(false)) => Some(false),
+                        (Some(true), Some(true)) => Some(true),
+                        _ => None,
+                    },
+                    LogicalOperator::Or => match (left, right) {
+                        (Some(true), _) | (_, Some(true)) => Some(true),
+                        (Some(false), Some(false)) => Some(false),
+                        _ => None,
+                    },
+                    LogicalOperator::Coalesce => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn reexport(&mut self, value: &Expression) -> bool {
+        match value.without_parentheses() {
+            Expression::CallExpression(call) => match require_specifier(call) {
+                Some(spec) => {
+                    self.out.reexports.push(spec.to_string());
+                    true
+                }
+                None => false,
+            },
+            _ => false,
+        }
+    }
+
+    fn module_exports_value(&mut self, value: &Expression) {
+        if self.reexport(value) {
+            return;
+        }
+        let Expression::ObjectExpression(obj) = value.without_parentheses() else {
+            self.opaque = true;
+            return;
+        };
+        for prop in &obj.properties {
+            match prop {
+                ObjectPropertyKind::ObjectProperty(p) => match &p.key {
+                    PropertyKey::StaticIdentifier(id) => self.out.names.push(id.name.to_string()),
+                    PropertyKey::StringLiteral(s) => {
+                        self.out.names.push(crate::lit_str(s.value).to_string())
+                    }
+                    _ => self.opaque = true,
+                },
+                ObjectPropertyKind::SpreadProperty(spread) => {
+                    if !self.reexport(&spread.argument) {
+                        self.opaque = true;
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl<'a> Visit<'a> for ExportNameReader<'_> {
+    fn visit_if_statement(&mut self, it: &oxc_ast::ast::IfStatement<'a>) {
+        match self.fold(&it.test) {
+            Some(true) => self.visit_statement(&it.consequent),
+            Some(false) => {
+                if let Some(alt) = &it.alternate {
+                    self.visit_statement(alt);
+                }
+            }
+            None => walk::walk_if_statement(self, it),
+        }
+    }
+
+    fn visit_conditional_expression(&mut self, it: &oxc_ast::ast::ConditionalExpression<'a>) {
+        match self.fold(&it.test) {
+            Some(true) => self.visit_expression(&it.consequent),
+            Some(false) => self.visit_expression(&it.alternate),
+            None => walk::walk_conditional_expression(self, it),
+        }
+    }
+
+    fn visit_logical_expression(&mut self, it: &oxc_ast::ast::LogicalExpression<'a>) {
+        use oxc_syntax::operator::LogicalOperator;
+        let skip_right = matches!(
+            (self.fold(&it.left), it.operator),
+            (Some(false), LogicalOperator::And) | (Some(true), LogicalOperator::Or)
+        );
+        self.visit_expression(&it.left);
+        if !skip_right {
+            self.visit_expression(&it.right);
+        }
+    }
+
+    fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
+        if is_export_star_helper(&it.callee) {
+            if let Some(Expression::CallExpression(inner)) =
+                it.arguments.first().and_then(|a| a.as_expression())
+            {
+                if let Some(spec) = require_specifier(inner) {
+                    self.out.reexports.push(spec.to_string());
+                }
+            }
+        }
+        if let Expression::StaticMemberExpression(callee) = &it.callee {
+            let define = callee.property.name == "defineProperty"
+                && matches!(&callee.object, Expression::Identifier(id) if id.name == "Object");
+            if define && it.arguments.len() >= 2 {
+                let target = it.arguments[0].as_expression();
+                let key = it.arguments[1].as_expression();
+                if let (Some(target), Some(Expression::StringLiteral(key))) = (target, key) {
+                    if is_exports_expression(target) {
+                        self.out.names.push(crate::lit_str(key.value).to_string());
+                    }
+                }
+            }
+        }
+        walk::walk_call_expression(self, it);
+    }
+
+    fn visit_assignment_expression(&mut self, it: &AssignmentExpression<'a>) {
+        if it.operator == AssignmentOperator::Assign {
+            match &it.left {
+                AssignmentTarget::StaticMemberExpression(member)
+                    if is_exports_expression(&member.object) =>
+                {
+                    self.out.names.push(member.property.name.to_string());
+                }
+                AssignmentTarget::ComputedMemberExpression(member)
+                    if is_exports_expression(&member.object) =>
+                {
+                    if let Expression::StringLiteral(s) = &member.expression {
+                        self.out.names.push(crate::lit_str(s.value).to_string());
+                    }
+                }
+                AssignmentTarget::StaticMemberExpression(member)
+                    if member.property.name == "exports"
+                        && matches!(&member.object, Expression::Identifier(id) if id.name == "module") =>
+                {
+                    self.module_exports_value(&it.right);
+                }
+                _ => {}
+            }
+        }
+        walk::walk_assignment_expression(self, it);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

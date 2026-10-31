@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A cold `oj dev` of an app whose vite.config is literal and lists only oj's native plugins (`@vitejs/plugin-react`, `@stylexjs/unplugin`) starts no JS engine. oj reads that config in Rust instead of evaluating it with Vite in an `oj engine-job` child, for Vite 8 with plugin-react 6, and reads the export names of React's CommonJS entries statically instead of requiring them. Any other config, or a React package the static read cannot follow, still goes to the engine; `OJ_STATIC_CONFIG=0` evaluates every config there. On a 1,000-component React + StyleX app, cold start goes from 478 ms to 346 ms (p50).
 - rolldown 1.2.16 (from 1.2.15) and oxc 0.156 (from 0.155). `oj build` output still matches `vite build` byte for byte on the parity apps.
 
 ### Fixed

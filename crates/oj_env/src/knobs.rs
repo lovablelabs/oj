@@ -64,6 +64,9 @@ pub struct Knobs {
     pub stylex_cache_dir: Option<PathBuf>,
     /// `STYLEX_CACHE=0`: the `oj stylex` compile cache off, over any dir.
     pub stylex_cache_off: bool,
+    /// `OJ_STATIC_CONFIG=0`: every vite.config is evaluated on a JS engine,
+    /// including the literal ones oj otherwise reads in Rust.
+    pub static_config_off: bool,
 }
 
 impl Knobs {
@@ -132,6 +135,7 @@ impl Knobs {
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from),
             stylex_cache_off: var("STYLEX_CACHE").as_deref() == Some("0"),
+            static_config_off: var("OJ_STATIC_CONFIG").as_deref() == Some("0"),
         }
     }
 }
