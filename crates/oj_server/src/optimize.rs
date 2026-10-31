@@ -699,6 +699,7 @@ impl OptimizedDeps {
                                 }
                             },
                         );
+                        tokio::task::spawn_blocking(crate::rolldown_runtime::release_freed_heap);
                     }
                 }
                 // Vite's debouncedProcessing: every registration slides the

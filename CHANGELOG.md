@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- On Linux, `oj dev` returns the memory a cold dependency pre-bundle freed once it commits. The bundle's allocations interleave with the module graph's, so glibc kept every page resident after the bundle freed them; one `malloc_trim` after the commit releases them. On a React + StyleX app with 1,000 components, a cold boot's RSS after the first page load drops from 179–200 MB to 141–167 MB (heap 104–125 MB to 65–91 MB), with the same graph time; warm boots, which skip the pre-bundle, are unchanged. macOS's allocator can't release partly used pages, so it's unchanged there.
+
 - rolldown 1.2.16 (from 1.2.15) and oxc 0.156 (from 0.155). `oj build` output still matches `vite build` byte for byte on the parity apps.
 
 ### Fixed
