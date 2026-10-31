@@ -236,6 +236,14 @@ enum Command {
     /// lines on stdin/stdout (see oj_server's typecheck module).
     #[command(name = "typecheck-worker", hide = true)]
     TypecheckWorker { root: PathBuf },
+    /// TypeScript's `tsc` on oj's built-in checker: takes tsc's command line
+    /// (`oj tsc -p tsconfig.json --noEmit`) and prints and exits as tsc does,
+    /// for tools that call tsc or tsgo.
+    #[command(disable_help_flag = true)]
+    Tsc {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// StyleX compiler: transform files, compile a project's sheet, or serve
     /// the resident compiler protocol (the standalone `fru` command set).
     Stylex {
@@ -491,6 +499,13 @@ fn main() -> anyhow::Result<()> {
     if std::env::var_os("MIMALLOC_ARENA_PURGE_MULT").is_none() {
         std::env::set_var("MIMALLOC_ARENA_PURGE_MULT", "0");
     }
+    // `oj tsc` takes tsc's command line, which clap cannot parse: every
+    // argument goes to the tsc driver as it is (`oj tsc --help` is tsc's).
+    let mut args = std::env::args_os().skip(1);
+    if args.next().is_some_and(|arg| arg == "tsc") {
+        let args = args.map(|arg| arg.to_string_lossy().into_owned()).collect();
+        std::process::exit(oj_typecheck::tsc(args).into());
+    }
     // Vite sorts its lockfile-format preference by `npm_config_user_agent`
     // (optimizer/index.ts), which every package-manager launch sets and a
     // bare binary launch does not. Agentless, the list REVERSES: a pnpm app
@@ -708,6 +723,7 @@ async fn run(cli: Cli, rolldown: tokio::runtime::Handle) -> anyhow::Result<()> {
             println!("{}", output.code);
             Ok(())
         }
+        Command::Tsc { args } => std::process::exit(oj_typecheck::tsc(args).into()),
         Command::Typecheck {
             root,
             changed,

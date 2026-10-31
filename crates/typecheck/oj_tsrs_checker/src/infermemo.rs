@@ -115,6 +115,7 @@ static NOT_STORED_TAINT: AtomicU64 = AtomicU64::new(0);
 #[derive(PartialEq, Eq, Debug)]
 struct InfoOutcome {
     candidates: Box<[P<Type>]>,
+    candidate_depths: Box<[u32]>,
     contra_candidates: Box<[P<Type>]>,
     priority: InferencePriority,
     top_level: bool,
@@ -184,6 +185,7 @@ fn info_outcomes(n: P<InferenceState>) -> Box<[InfoOutcome]> {
         .iter()
         .map(|i| InfoOutcome {
             candidates: i.candidates.to_vec().into_boxed_slice(),
+            candidate_depths: i.candidate_depths.to_vec().into_boxed_slice(),
             contra_candidates: i.contra_candidates.to_vec().into_boxed_slice(),
             priority: i.priority.get(),
             top_level: i.top_level.get(),
@@ -250,6 +252,10 @@ impl Checker {
                     info.candidates.clear();
                     for &t in &outcome.candidates {
                         info.candidates.push(t);
+                    }
+                    info.candidate_depths.clear();
+                    for &d in &outcome.candidate_depths {
+                        info.candidate_depths.push(d);
                     }
                     info.contra_candidates.clear();
                     for &t in &outcome.contra_candidates {
@@ -344,6 +350,7 @@ impl Checker {
             target.id.0,
             n.priority.get().memo_bits(),
             u32::from(n.contravariant.get()),
+            n.depth.get(),
             inferences.len() as u32,
         ]);
         for info in inferences.iter() {
@@ -359,6 +366,7 @@ impl Checker {
                     key.extend(types.iter().map(|t| t.id.0));
                 });
             }
+            info.candidate_depths.with_slice(|depths| key.extend_from_slice(depths));
         }
         true
     }

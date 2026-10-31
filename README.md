@@ -44,7 +44,10 @@ oj dev web --typecheck                           # dev server that keeps a check
 oj typecheck web                                 # asks that server; checks in its own process when none runs
 oj typecheck web --changed src/App.tsx           # names a file just written, so the answer covers it
 oj typecheck web --json                          # the report as JSON
+oj tsc -p web/tsconfig.json --noEmit            # tsc's own command line, output and exit codes
 ```
+
+`oj tsc` takes the arguments `tsc` (tsgo) takes and prints and exits as TypeScript 7.0's does, so a build that calls tsgo can call `oj tsc` in its place. The lib files are TypeScript 7.1's (default target ES2026), listed as `bundled:///libs/...`.
 
 How it works:
 

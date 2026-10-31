@@ -77,7 +77,10 @@ pub fn emit_and_report_statistics(input: &EmitInput) -> (CompileAndEmitResult, O
         statistics = Some(stats);
     }
 
-    if result.emit_skipped && !result.diagnostics.is_empty() {
+    // oj: TypeScript 7.0 reports every file's emit skipped under noEmit, so errors exit 1
+    // (DiagnosticsPresent_OutputsSkipped) there, not 2.
+    let emit_skipped = result.emit_skipped || input.program.options().no_emit.is_true();
+    if emit_skipped && !result.diagnostics.is_empty() {
         result.status = ExitStatus::DiagnosticsPresentOutputsSkipped;
     } else if !result.diagnostics.is_empty() {
         result.status = ExitStatus::DiagnosticsPresentOutputsGenerated;

@@ -749,3 +749,146 @@ fn a_file_slow_to_emit_is_left_out_of_later_jobs() {
         "{again:?}"
     );
 }
+
+#[test]
+fn a_candidate_inferred_through_type_arguments_wins_as_in_typescript_7_0() {
+    let app = App::empty("candidate-depth");
+    app.write(
+        "tsconfig.json",
+        r#"{ "compilerOptions": { "strict": true, "noEmit": true }, "include": ["src"] }"#,
+    );
+    // `T` has the candidates `{ id: string | undefined }` (from `data`) and
+    // `Row` (from `Column<Row>`), neither a subtype of the other: TypeScript
+    // 7.0 takes the one inferred through more type arguments, so `T` is `Row`.
+    app.write(
+        "src/a.ts",
+        "interface Column<T> { value?: T }\n\
+         interface Row { id?: string; label?: string }\n\
+         declare const columns: Column<Row>[];\n\
+         declare const data: { id: string | undefined }[];\n\
+         declare function table<T>(p: { data: T[]; columns: Column<T>[] }): T;\n\
+         export const label = table({ columns, data }).label;\n",
+    );
+    assert_eq!(text(&mut app.open()), "");
+}
+
+#[test]
+fn a_package_reached_through_a_symlink_is_named_by_its_exports_in_declarations() {
+    // pnpm's layout: the app's dependency links into a store, where its own
+    // dependency `state` is a symlink the app has no node_modules entry for.
+    let app = App::empty("symlinked-exports");
+    app.write(
+        "tsconfig.json",
+        r#"{ "compilerOptions": { "strict": true, "declaration": true, "module": "esnext", "moduleResolution": "bundler" }, "include": ["src"] }"#,
+    );
+    app.write(
+        "store/state/node_modules/state/package.json",
+        r#"{ "name": "state", "types": "dist/index.d.ts", "exports": { "import": "./dist/index.js" } }"#,
+    );
+    app.write(
+        "store/state/node_modules/state/dist/index.d.ts",
+        "export type Extension = { extension: Extension } | readonly Extension[];\n",
+    );
+    app.write(
+        "store/themes/node_modules/themes/package.json",
+        r#"{ "name": "themes", "types": "index.d.ts" }"#,
+    );
+    app.write(
+        "store/themes/node_modules/themes/index.d.ts",
+        "import { Extension } from 'state';\nexport declare const createTheme: () => Extension;\n",
+    );
+    std::os::unix::fs::symlink(
+        "../../state/node_modules/state",
+        app.0.join("store/themes/node_modules/state"),
+    )
+    .unwrap();
+    std::fs::create_dir_all(app.0.join("node_modules")).unwrap();
+    std::os::unix::fs::symlink(
+        "../store/themes/node_modules/themes",
+        app.0.join("node_modules/themes"),
+    )
+    .unwrap();
+    app.write(
+        "src/a.ts",
+        "import { createTheme } from 'themes';\nexport const theme = createTheme();\n",
+    );
+    assert_eq!(text(&mut app.open()), "");
+}
+
+#[test]
+fn a_candidate_inferred_again_deeper_moves_ahead_as_in_typescript_7_0() {
+    let app = App::empty("candidate-repeat");
+    app.write(
+        "tsconfig.json",
+        r#"{ "compilerOptions": { "strict": true, "noEmit": true }, "include": ["src"] }"#,
+    );
+    // `Box<X>` is inferred from `x` at depth 1, then again inside `Wrap` at
+    // depth 2, which moves `X` ahead of `Y`: `T` is `X`, so `y` is the
+    // argument tsc 7.0.2 reports (7.1 infers `Y` and reports `x` and `w`).
+    app.write(
+        "src/a.ts",
+        "interface Box<T> { v: T }\n\
+         interface Wrap<T> { w: T }\n\
+         interface X { x: string }\n\
+         interface Y { y: string }\n\
+         declare function f<T>(p: { y: Box<T>; x: Box<T>; w: Wrap<Box<T>> }): T;\n\
+         declare const y: Box<Y>, x: Box<X>, w: Wrap<Box<X>>;\n\
+         export const s: string = f({ y, x, w }).x;\n",
+    );
+    assert_eq!(
+        text(&mut app.open()),
+        "src/a.ts(7,30): error TS2322: Type 'Box<Y>' is not assignable to type 'Box<X>'.\n  \
+         Property 'x' is missing in type 'Y' but required in type 'X'.\n"
+    );
+}
+
+#[test]
+fn a_nested_package_json_does_not_name_an_unreachable_package_in_declarations() {
+    // Only the package root's package.json names a package: a type from
+    // `state/sub` (whose own package.json has exports) through a symlink the
+    // app cannot reach stays unnameable, as in tsc.
+    let app = App::empty("nested-exports");
+    app.write(
+        "tsconfig.json",
+        r#"{ "compilerOptions": { "strict": true, "declaration": true, "module": "esnext", "moduleResolution": "bundler" }, "include": ["src"] }"#,
+    );
+    app.write(
+        "store/state/node_modules/state/package.json",
+        r#"{ "name": "state" }"#,
+    );
+    app.write(
+        "store/state/node_modules/state/sub/package.json",
+        r#"{ "name": "state-sub", "exports": { ".": { "types": "./index.d.ts", "default": "./index.js" } } }"#,
+    );
+    app.write(
+        "store/state/node_modules/state/sub/index.d.ts",
+        "export type Extension = { extension: Extension } | readonly Extension[];\n",
+    );
+    app.write(
+        "store/themes/node_modules/themes/package.json",
+        r#"{ "name": "themes", "types": "index.d.ts" }"#,
+    );
+    app.write(
+        "store/themes/node_modules/themes/index.d.ts",
+        "import { Extension } from 'state/sub/index.js';\nexport declare const createTheme: () => Extension;\n",
+    );
+    std::os::unix::fs::symlink(
+        "../../state/node_modules/state",
+        app.0.join("store/themes/node_modules/state"),
+    )
+    .unwrap();
+    std::fs::create_dir_all(app.0.join("node_modules")).unwrap();
+    std::os::unix::fs::symlink(
+        "../store/themes/node_modules/themes",
+        app.0.join("node_modules/themes"),
+    )
+    .unwrap();
+    app.write(
+        "src/a.ts",
+        "import { createTheme } from 'themes';\nexport const theme = createTheme();\n",
+    );
+    assert!(
+        text(&mut app.open()).contains("error TS2883"),
+        "the type from state/sub is not portable"
+    );
+}
