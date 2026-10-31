@@ -492,12 +492,15 @@ fn extraction(
     ran.map(|(json, changed)| (parse_vite_values(&json), changed))
 }
 
-/// One evaluation of the config's values: the store's copy when it has one
-/// (unless `fresh`), else the extractor run in an engine (and stored), with
-/// whether its output differs from the store's. `None` when the config fails
-/// to evaluate.
 /// A dev boot's reading of `vite` both ways: Rust's (None when it declines
 /// the config) and a fresh engine evaluation, for the parity test.
+/// Rust's reading of `vite` alone (None when it declines), for tests of
+/// what it declines before evaluation could run.
+#[doc(hidden)]
+pub fn static_extraction(root: &Path, vite: &Path) -> Option<serde_json::Value> {
+    super::static_config::static_extraction(root, vite, "serve", "development")
+}
+
 #[doc(hidden)]
 pub fn static_and_engine_extraction(
     root: &Path,
@@ -520,6 +523,10 @@ pub fn static_and_engine_extraction(
     (read, evaluated)
 }
 
+/// One evaluation of the config's values: the store's copy when it has one
+/// (unless `fresh`), else the extractor run in an engine (and stored), with
+/// whether its output differs from the store's. `None` when the config fails
+/// to evaluate.
 #[allow(clippy::too_many_arguments)]
 fn run_extraction(
     root: &Path,

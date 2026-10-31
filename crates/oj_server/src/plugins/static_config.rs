@@ -12,8 +12,8 @@
 //! (another statement, a function config, a spread, an env read) returns None
 //! and the config is evaluated on an engine as before.
 //!
-//! The output is what `vite-extract.mjs` emits for that config under Vite 8
-//! with `@vitejs/plugin-react` 6 (`vite8-react-serve.json`), with the
+//! The output is what `vite-extract.mjs` emits for that config under the
+//! exact Vite and plugin-react versions below (`vite8-react-serve.json`), with the
 //! root-dependent and config-dependent fields filled in;
 //! `crates/oj/tests/static_config_parity.rs` holds the two equal.
 
@@ -29,6 +29,13 @@ use oxc_span::SourceType;
 use serde_json::{Map, Value};
 
 const TEMPLATE: &str = include_str!("../assets/vite8-react-serve.json");
+
+/// The installs the template was taken from (and the parity test runs
+/// against). Defaults move between minors (8.0's `fs.deny`, its
+/// `build.rolldownOptions.platform`), so any other version goes to the engine.
+const VITE: &str = "8.3.5";
+const PLUGIN_REACT: &str = "6.1.2";
+const STYLEX_UNPLUGIN: &str = "0.19.0";
 
 /// The extraction output for `vite` (the app's vite.config), or None when the
 /// config is not one this reader accepts or the installed toolchain is not
@@ -59,14 +66,18 @@ pub(crate) fn static_extraction(
     {
         return None;
     }
-    if !installed_version(root, "vite").is_some_and(|v| v.starts_with("8."))
-        || !installed_version(root, "@vitejs/plugin-react").is_some_and(|v| v.starts_with("6."))
+    if installed_version(root, "vite").as_deref() != Some(VITE)
+        || installed_version(root, "@vitejs/plugin-react").as_deref() != Some(PLUGIN_REACT)
     {
         return None;
     }
     let source = std::fs::read_to_string(vite).ok()?;
-    let config = read_config(&source, vite)?;
-    if config.stylex.is_some() && installed_version(root, "@stylexjs/unplugin").is_none() {
+    // Vite bundles the config from its real path, so `__dirname` and
+    // `import.meta.dirname` are a symlinked config's target directory.
+    let config = read_config(&source, &vite.canonicalize().ok()?)?;
+    if config.stylex.is_some()
+        && installed_version(root, "@stylexjs/unplugin").as_deref() != Some(STYLEX_UNPLUGIN)
+    {
         return None;
     }
 
@@ -141,6 +152,8 @@ fn coding_agent<'a>(var: impl Fn(&str) -> Option<&'a str>) -> bool {
 
 #[derive(Default)]
 struct LiteralConfig {
+    /// `react()` is listed: plugin-react's config hook is part of the template.
+    react: bool,
     port: Option<u16>,
     host: Option<String>,
     alias: Map<String, Value>,
@@ -190,10 +203,7 @@ fn read_config(source: &str, file: &Path) -> Option<LiteralConfig> {
             _ => return None,
         }
     }
-    let config = config?;
-    // plugin-react's config hook is part of the template.
-    bindings.react.as_ref()?;
-    Some(config)
+    config.filter(|config| config.react)
 }
 
 fn bind_import(
@@ -254,8 +264,11 @@ fn config_object<'a, 'b>(
     }
 }
 
-/// Each property of a plain object literal, by its static key.
+/// Each property of a plain object literal, by its static key. A repeated
+/// key (JavaScript keeps the last) and `__proto__` (which sets the prototype
+/// instead of a property) are declined.
 fn properties<'a, 'b>(obj: &'b ObjectExpression<'a>) -> Option<Vec<(String, &'b Expression<'a>)>> {
+    let mut seen = std::collections::HashSet::new();
     obj.properties
         .iter()
         .map(|prop| {
@@ -270,6 +283,9 @@ fn properties<'a, 'b>(obj: &'b ObjectExpression<'a>) -> Option<Vec<(String, &'b 
                 PropertyKey::StringLiteral(s) => s.value.as_str()?.to_string(),
                 _ => return None,
             };
+            if key == "__proto__" || !seen.insert(key.clone()) {
+                return None;
+            }
             Some((key, &p.value))
         })
         .collect()
@@ -277,11 +293,7 @@ fn properties<'a, 'b>(obj: &'b ObjectExpression<'a>) -> Option<Vec<(String, &'b 
 
 fn read_object(obj: &ObjectExpression, bindings: &Bindings, dir: &Path) -> Option<LiteralConfig> {
     let mut config = LiteralConfig::default();
-    let mut seen = std::collections::HashSet::new();
     for (key, value) in properties(obj)? {
-        if !seen.insert(key.clone()) {
-            return None;
-        }
         match key.as_str() {
             "plugins" => read_plugins(value, bindings, &mut config)?,
             "server" => {
@@ -317,7 +329,10 @@ fn read_object(obj: &ObjectExpression, bindings: &Bindings, dir: &Path) -> Optio
                         return None;
                     };
                     for (find, replacement) in properties(alias)? {
-                        let target = path_value(replacement, bindings, dir)?;
+                        let (find, target) =
+                            normalize_alias(find, path_value(replacement, bindings, dir)?);
+                        // Vite's resolved list keeps the first of a key, as
+                        // vite-extract.mjs does.
                         config.alias.entry(find).or_insert(Value::String(target));
                     }
                 }
@@ -334,13 +349,12 @@ fn read_plugins(value: &Expression, bindings: &Bindings, config: &mut LiteralCon
     let Expression::ArrayExpression(list) = value else {
         return None;
     };
-    let mut react = false;
     for element in &list.elements {
         let ArrayExpressionElement::CallExpression(call) = element else {
             return None;
         };
-        if is_binding(&call.callee, &bindings.react) && call.arguments.is_empty() && !react {
-            react = true;
+        if is_binding(&call.callee, &bindings.react) && call.arguments.is_empty() && !config.react {
+            config.react = true;
             continue;
         }
         let Expression::StaticMemberExpression(member) = &call.callee else {
@@ -359,7 +373,7 @@ fn read_plugins(value: &Expression, bindings: &Bindings, config: &mut LiteralCon
         };
         config.stylex = Some(options);
     }
-    react.then_some(())
+    config.react.then_some(())
 }
 
 /// A string `server.host` as Vite resolves it: `preview.host` inherits it,
@@ -383,7 +397,7 @@ fn json_literal(expr: &Expression) -> Option<Value> {
         Expression::StringLiteral(s) => Value::String(s.value.as_str()?.to_string()),
         Expression::BooleanLiteral(b) => Value::Bool(b.value),
         Expression::NullLiteral(_) => Value::Null,
-        Expression::NumericLiteral(n) => serde_json::Number::from_f64(n.value)?.into(),
+        Expression::NumericLiteral(n) => number(n.value)?,
         Expression::ArrayExpression(list) => Value::Array(
             list.elements
                 .iter()
@@ -393,6 +407,25 @@ fn json_literal(expr: &Expression) -> Option<Value> {
         Expression::ObjectExpression(obj) => json_object(obj)?,
         _ => return None,
     })
+}
+
+/// A number as `JSON.stringify` writes it: whole numbers without a fraction,
+/// so they read back as integers.
+fn number(value: f64) -> Option<Value> {
+    const SAFE: f64 = 9_007_199_254_740_991.0;
+    if value.fract() == 0.0 && value.abs() <= SAFE {
+        return Some(Value::from(value as i64));
+    }
+    serde_json::Number::from_f64(value).map(Value::Number)
+}
+
+/// Vite's `normalizeSingleAlias`: a trailing `/` is dropped from both sides
+/// when both have one.
+fn normalize_alias(find: String, replacement: String) -> (String, String) {
+    match (find.strip_suffix('/'), replacement.strip_suffix('/')) {
+        (Some(f), Some(r)) => (f.to_string(), r.to_string()),
+        _ => (find, replacement),
+    }
 }
 
 fn json_object(obj: &ObjectExpression) -> Option<Value> {

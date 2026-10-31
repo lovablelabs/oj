@@ -558,30 +558,34 @@ impl Prebundle {
     }
 
     /// The names a CommonJS dep's `module.exports` carries at runtime: read
-    /// statically when every file on its re-export chain is plain enough,
-    /// else by requiring it in a short-lived engine.
+    /// statically for React's entries (whose names the prebundle tests hold
+    /// equal to `require`'s) when every file on the re-export chain is plain
+    /// enough, else by requiring the dep in a short-lived engine. Other facade
+    /// deps (`resolve.dedupe`) always go to the engine.
     async fn named_exports(&self, deps: Vec<String>) -> BTreeMap<String, Vec<String>> {
         let node_env = self
             .options
             .node_env()
             .unwrap_or_else(|| "development".to_string());
-        let reads = deps.into_iter().map(|dep| {
+        let (react, mut unread): (Vec<_>, Vec<_>) = deps
+            .into_iter()
+            .partition(|dep| super::FACADE_DEPS.contains(&dep.as_str()));
+        let reads = react.into_iter().map(|dep| {
             let root = self.root.clone();
             let node_env = node_env.clone();
-            tokio::task::spawn_blocking(move || {
-                let names = static_named_exports(&root, &dep, &node_env);
-                (dep, names)
-            })
+            let read = dep.clone();
+            let task =
+                tokio::task::spawn_blocking(move || static_named_exports(&root, &read, &node_env));
+            async move { (dep, task.await) }
         });
         let mut names = BTreeMap::new();
-        let mut unread = Vec::new();
-        for read in futures_util::future::join_all(reads).await {
+        for (dep, read) in futures_util::future::join_all(reads).await {
             match read {
-                Ok((dep, Some(found))) => {
+                Ok(Some(found)) => {
                     names.insert(dep, found);
                 }
-                Ok((dep, None)) => unread.push(dep),
-                Err(_) => {}
+                // Not plain enough, or the read panicked.
+                Ok(None) | Err(_) => unread.push(dep),
             }
         }
         if !unread.is_empty() {
