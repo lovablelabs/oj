@@ -47,7 +47,7 @@ pub(crate) fn static_extraction(
     mode: &str,
 ) -> Option<Value> {
     let env = oj_env::get();
-    if env.knobs.static_config_off || command != "serve" || mode != "development" {
+    if command != "serve" || mode != "development" {
         return None;
     }
     // A NODE_ENV the config would see changes Vite's resolution.
