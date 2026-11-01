@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-11-01
+
+### Changed
+
+- Release binaries for macOS are built on macOS 15 runners; GitHub retires macOS 14 on November 2. Same code as 0.3.2, whose macOS binary was never built.
+
 ## [0.3.2] - 2026-10-31
 
 ### Added
