@@ -93,7 +93,7 @@ enum Command {
         #[arg(long)]
         lazy: bool,
         /// Keep a TypeScript checker warm beside the dev server, for
-        /// `oj typecheck` and `/@oj/typecheck`.
+        /// `oj dev-typecheck` and `/@oj/typecheck`.
         #[arg(long)]
         typecheck: bool,
     },
@@ -217,11 +217,11 @@ enum Command {
         #[arg(long)]
         base: Option<String>,
     },
-    /// Type-check the app as `tsc -b --noEmit` would, on oj's built-in
-    /// checker. Asks the app's running dev server when it runs with
-    /// `--typecheck` (a warm, incremental check); otherwise checks in this
-    /// process. Exits 0 when clean, 2 on type errors, 1 when it cannot check.
-    Typecheck {
+    /// Ask the app's running `oj dev --typecheck` server for its warm,
+    /// incremental check (as `tsc -b --noEmit`). Exits 0 when clean, 2 on type
+    /// errors, 1 when it cannot check or no such server runs.
+    #[command(name = "dev-typecheck")]
+    DevTypecheck {
         root: Option<PathBuf>,
         /// A file changed since the server last saw it; re-read before the
         /// check. Repeatable.
@@ -237,10 +237,10 @@ enum Command {
     #[command(name = "typecheck-worker", hide = true)]
     TypecheckWorker { root: PathBuf },
     /// TypeScript's `tsc` on oj's built-in checker: takes tsc's command line
-    /// (`oj tsc -p tsconfig.json --noEmit`) and prints and exits as tsc does,
-    /// for tools that call tsc or tsgo.
+    /// (`oj typecheck -p tsconfig.json --noEmit`) and prints and exits as tsc
+    /// does, for tools that call tsc or tsgo.
     #[command(disable_help_flag = true)]
-    Tsc {
+    Typecheck {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -477,6 +477,16 @@ fn sniffed_manager_version(path: &std::path::Path, manager: &str, default_versio
     }
 }
 
+/// `oj dev`'s root when none is named: playground/ when it serves one.
+fn default_dev_root() -> PathBuf {
+    let playground = PathBuf::from("playground");
+    if playground.join("index.html").is_file() {
+        playground
+    } else {
+        PathBuf::from(".")
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     raise_fd_limit();
     // Every engine and one-shot child that loads the app's vite.config through
@@ -499,10 +509,10 @@ fn main() -> anyhow::Result<()> {
     if std::env::var_os("MIMALLOC_ARENA_PURGE_MULT").is_none() {
         std::env::set_var("MIMALLOC_ARENA_PURGE_MULT", "0");
     }
-    // `oj tsc` takes tsc's command line, which clap cannot parse: every
-    // argument goes to the tsc driver as it is (`oj tsc --help` is tsc's).
+    // `oj typecheck` takes tsc's command line, which clap cannot parse: every
+    // argument goes to the tsc driver as it is (`oj typecheck --help` is tsc's).
     let mut args = std::env::args_os().skip(1);
-    if args.next().is_some_and(|arg| arg == "tsc") {
+    if args.next().is_some_and(|arg| arg == "typecheck") {
         let args = args.map(|arg| arg.to_string_lossy().into_owned()).collect();
         std::process::exit(oj_typecheck::tsc(args).into());
     }
@@ -626,14 +636,7 @@ async fn run(cli: Cli, rolldown: tokio::runtime::Handle) -> anyhow::Result<()> {
             lazy,
             typecheck,
         } => {
-            let root = root.unwrap_or_else(|| {
-                let playground = PathBuf::from("playground");
-                if playground.join("index.html").is_file() {
-                    playground
-                } else {
-                    PathBuf::from(".")
-                }
-            });
+            let root = root.unwrap_or_else(default_dev_root);
             if let Some(entry) = ssr {
                 ssr_dev::ssr_dev(root, entry, port, host, typecheck, rolldown).await
             } else if oj_server::is_tanstack_start_app(&root) {
@@ -723,29 +726,27 @@ async fn run(cli: Cli, rolldown: tokio::runtime::Handle) -> anyhow::Result<()> {
             println!("{}", output.code);
             Ok(())
         }
-        Command::Tsc { args } => std::process::exit(oj_typecheck::tsc(args).into()),
-        Command::Typecheck {
+        Command::Typecheck { args } => std::process::exit(oj_typecheck::tsc(args).into()),
+        Command::DevTypecheck {
             root,
             changed,
             json,
         } => {
-            let root = root.unwrap_or_else(|| PathBuf::from("."));
+            // The root `oj dev` serves when none is named.
+            let root = root.unwrap_or_else(default_dev_root);
             // Relative to where the command runs, as any CLI path argument.
             let changed: Vec<PathBuf> = changed
                 .iter()
                 .map(|p| std::path::absolute(p).unwrap_or_else(|_| p.clone()))
                 .collect();
             let answer = match oj_server::typecheck_via_server(&root, &changed).await {
-                Ok(Some(answer)) => answer,
-                Ok(None) => {
-                    tokio::task::spawn_blocking(move || oj_server::typecheck_once(&root)).await?
-                }
+                Ok(answer) => answer,
                 Err(e) => {
-                    eprintln!("oj typecheck: the dev server did not answer ({e}); checking in this process");
-                    tokio::task::spawn_blocking(move || oj_server::typecheck_once(&root)).await?
+                    eprintln!("oj dev-typecheck: {e}");
+                    std::process::exit(1)
                 }
             };
-            // A closed stdout (`oj typecheck | head`) ends the output, not the command.
+            // A closed stdout (`oj dev-typecheck | head`) ends the output, not the command.
             use std::io::Write as _;
             let mut stdout = std::io::stdout().lock();
             let _ = if json {
@@ -759,7 +760,7 @@ async fn run(cli: Cli, rolldown: tokio::runtime::Handle) -> anyhow::Result<()> {
                 _ => {
                     if !json {
                         eprintln!(
-                            "oj typecheck: {}",
+                            "oj dev-typecheck: {}",
                             answer["reason"].as_str().unwrap_or("the check failed")
                         );
                     }

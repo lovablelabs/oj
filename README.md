@@ -37,22 +37,22 @@ Dev serves file-based routes with streaming SSR and client hydration, keeps Fast
 
 ## Type checking
 
-`oj typecheck` checks an app the way `tsc -b --noEmit` does, on [tsrs](https://github.com/oxc-project/tsrs) (the Rust port of the TypeScript 7 compiler, built into oj). It prints tsc's `file(line,col): error TSn: message` lines and exits 0 when clean, 2 on type errors and 1 when it cannot check.
+`oj typecheck` is `tsc` on [tsrs](https://github.com/oxc-project/tsrs) (the Rust port of the TypeScript 7 compiler, built into oj). It takes the arguments `tsc` (tsgo) takes and prints and exits as TypeScript 7.0's does, so a build that calls tsgo can call `oj typecheck` in its place. The lib files are TypeScript 7.1's (default target ES2026), listed as `bundled:///libs/...`.
+
+`oj dev --typecheck` keeps a checker warm beside the dev server, and `oj dev-typecheck` asks it. It checks the way `tsc -b --noEmit` does, prints tsc's `file(line,col): error TSn: message` lines and exits 0 when clean, 2 on type errors and 1 when it cannot check.
 
 ```sh
+oj typecheck -p web/tsconfig.json --noEmit       # tsc's own command line, output and exit codes
 oj dev web --typecheck                           # dev server that keeps a checker warm for ./web
-oj typecheck web                                 # asks that server; checks in its own process when none runs
-oj typecheck web --changed src/App.tsx           # names a file just written, so the answer covers it
-oj typecheck web --json                          # the report as JSON
-oj tsc -p web/tsconfig.json --noEmit            # tsc's own command line, output and exit codes
+oj dev-typecheck web                             # asks that server
+oj dev-typecheck web --changed src/App.tsx       # names a file just written, so the answer covers it
+oj dev-typecheck web --json                      # the report as JSON
 ```
 
-`oj tsc` takes the arguments `tsc` (tsgo) takes and prints and exits as TypeScript 7.0's does, so a build that calls tsgo can call `oj tsc` in its place. The lib files are TypeScript 7.1's (default target ES2026), listed as `bundled:///libs/...`.
-
-How it works:
+How the warm checker works:
 
 - `oj dev --typecheck` starts a checker in a child `oj` process beside the dev server, so a crash or hang in it never takes the server down; the next check starts a new one. It opens the projects `tsc -b` would build from the root `tsconfig.json` once the server has served its first page and been quiet for a second (sooner when a check is requested), so it never competes with that page, and the dev server's watcher forwards every change to it. Once changes settle it checks again, so a request usually finds a current report.
-- The server writes its address (app root, pid and port) to `.oj-cache/v1/dev-server.json`. `oj typecheck <dir>` reads it and posts to the server's `/@oj/typecheck`, which answers only local callers (not browsers or the preview proxy). Files named with `--changed` are re-read before the answer, so it never waits on the watcher. When no live server is advertised for that root, `oj typecheck` checks in its own process.
+- Every dev server writes its address (app root, pid, host, port and whether it runs `--typecheck`) to `.oj-cache/v1/dev-server.json`; apps that share an `OJ_CACHE_DIR` share the file, and a server without `--typecheck` leaves a live `--typecheck` server's entry in place. `oj dev-typecheck <dir>` reads it and posts to the server's `/@oj/typecheck`, which answers only local callers (not browsers or the preview proxy). Files named with `--changed` are re-read before the answer, so it never waits on the watcher. It does not check on its own: with no dev server running for that root it says `no dev server found`, with one started without `--typecheck` it says `dev server was started without --typecheck`, and it cannot reach a server that runs over https; all exit 1. With no root named it asks about the root `oj dev` would serve.
 - After an edit, only the files it affects are checked again, as `tsc --watch` does: each project keeps an incremental program whose per-file results carry over to the next one. An edit that leaves a file's exported types unchanged re-checks only that file. An edit that changes them also re-checks every file that imports it, directly or not, which can be most of an app for a widely shared module.
 - That needs each file's declaration signature, which the checker records in the background once it has heard nothing (no change, no check) for a second after a check; a burst of edits records once, after it. A check that arrives while it records stops it before the next file. It leaves out the files whose declaration emit is slow: the TanStack Router route tree (`tsr.config.json`'s `generatedRouteTree`, `src/routeTree.gen.ts` by default), whose one declaration types every route, and any file it once took a second or more to emit. A change to one of those re-checks the files that import it.
 - An edit to a tsconfig, `package.json` or a lockfile opens the projects again from scratch.

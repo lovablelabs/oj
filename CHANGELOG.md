@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-01
+
+### Changed
+
+- **Breaking:** `oj tsc` is now `oj typecheck`: tsc's command line, output and exit codes on oj's built-in checker. There is no `oj tsc` any more.
+- **Breaking:** the old `oj typecheck`, which asks the warm checker of an `oj dev --typecheck` server, is now `oj dev-typecheck`, and it no longer checks in its own process when there is no such server. With no dev server running for the app it prints `no dev server found`, and with one started without `--typecheck` it prints `dev server was started without --typecheck`; both exit 1. Every dev server now writes `.oj-cache/v1/dev-server.json`, recording whether it runs `--typecheck`.
+
 ## [0.3.3] - 2026-11-01
 
 ### Changed

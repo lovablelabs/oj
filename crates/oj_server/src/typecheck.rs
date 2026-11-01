@@ -8,8 +8,8 @@
 //! range) can take the dev server down; a worker that dies or hangs is
 //! replaced on the next request. It owns an [`oj_typecheck::Checker`] for the
 //! app root, the watcher forwards every change to it, and it re-checks once
-//! changes settle, so `/@oj/typecheck` (and `oj typecheck`, which asks the
-//! running server) usually answers from a report that is already current. A
+//! changes settle, so `/@oj/typecheck` (and `oj dev-typecheck`, which asks
+//! the running server) usually answers from a report that is already current. A
 //! request names the files its caller changed; they are re-read before the
 //! answer, so it never depends on watcher timing.
 //!
@@ -33,8 +33,8 @@ use axum::response::{IntoResponse, Response};
 
 use crate::{ServerState, WatchFeed};
 
-/// Where a dev server with `--typecheck` names its address for
-/// `oj typecheck`, under the app's cache root.
+/// Where a dev server names its address for `oj dev-typecheck`, under the
+/// app's cache root.
 const ADDRESS_FILE: &str = "dev-server.json";
 
 /// The checker's own thread. tsrs runs its API requests on 256 MiB stacks
@@ -454,37 +454,47 @@ fn parse_changed(body: &[u8]) -> Result<Vec<PathBuf>, String> {
         .collect())
 }
 
-/// Names the bound address for `oj typecheck` (app root, pid, host, port) in
-/// the cache root. A stale file is harmless: the client checks the root and
-/// the pid, and checks in its own process when they do not match.
-pub(crate) fn advertise(root: &Path, host: std::net::IpAddr, port: u16, https: bool) {
+/// Names the bound address for `oj dev-typecheck` (app root, pid, host,
+/// port, and whether it runs `--typecheck`) in the cache root. A stale file
+/// is harmless: the client checks the root and the pid. Apps sharing one
+/// `OJ_CACHE_DIR` share the file, so a server without `--typecheck` leaves a
+/// live `--typecheck` server's entry in place.
+pub(crate) fn advertise(
+    root: &Path,
+    host: std::net::IpAddr,
+    port: u16,
+    https: bool,
+    typecheck: bool,
+) {
     let host = match host {
         std::net::IpAddr::V4(ip) if ip.is_unspecified() => std::net::Ipv4Addr::LOCALHOST.into(),
         std::net::IpAddr::V6(ip) if ip.is_unspecified() => std::net::Ipv6Addr::LOCALHOST.into(),
         host => host,
     };
     let dir = oj_cache::cache_root(root);
+    if !typecheck && read_live(&dir).is_some_and(|live| live["typecheck"] != false) {
+        return;
+    }
     let body = serde_json::json!({
         "root": root,
         "pid": std::process::id(),
         "host": host.to_string(),
         "port": port,
         "https": https,
+        "typecheck": typecheck,
     });
     let _ = std::fs::create_dir_all(&dir)
         .and_then(|()| std::fs::write(dir.join(ADDRESS_FILE), body.to_string()));
 }
 
 /// Asks the dev server running for `root` to check, re-reading `changed`
-/// (absolute paths) first. `Ok(None)` when no server with `--typecheck`
-/// runs for `root`, `Err` when one runs and did not answer.
+/// (absolute paths) first. `Err` says why there is no answer: no server
+/// runs for `root`, it runs without `--typecheck`, or it did not answer.
 pub async fn check_via_server(
     root: &Path,
     changed: &[PathBuf],
-) -> Result<Option<serde_json::Value>, String> {
-    let Some(url) = server_url(root) else {
-        return Ok(None);
-    };
+) -> Result<serde_json::Value, String> {
+    let url = server_url(root)?;
     let client = reqwest::Client::builder()
         .no_proxy()
         .timeout(CHECK_TIMEOUT + Duration::from_secs(30))
@@ -501,29 +511,50 @@ pub async fn check_via_server(
         return Err(format!("{url}: {}", response.status()));
     }
     let body = response.bytes().await.map_err(|e| format!("{url}: {e}"))?;
-    serde_json::from_slice(&body)
-        .map(Some)
-        .map_err(|e| format!("{url}: {e}"))
+    serde_json::from_slice(&body).map_err(|e| format!("{url}: {e}"))
 }
+
+const NO_SERVER: &str = "no dev server found";
+const NO_TYPECHECK: &str = "dev server was started without --typecheck";
 
 /// The typecheck URL of the live, plain-http dev server the address file
 /// names for `root`.
-fn server_url(root: &Path) -> Option<String> {
-    let root = root.canonicalize().ok()?;
-    let text = std::fs::read_to_string(oj_cache::cache_root(&root).join(ADDRESS_FILE)).ok()?;
-    let address: serde_json::Value = serde_json::from_str(&text).ok()?;
-    if address["root"].as_str().map(Path::new) != Some(root.as_path())
-        || address["https"].as_bool() == Some(true)
-        || !pid_alive(address["pid"].as_u64()?)
-    {
-        return None;
+fn server_url(root: &Path) -> Result<String, String> {
+    let address = root.canonicalize().ok().and_then(|root| {
+        read_live(&oj_cache::cache_root(&root))
+            .filter(|address| address["root"].as_str().map(Path::new) == Some(root.as_path()))
+    });
+    let Some(address) = address else {
+        return Err(NO_SERVER.to_string());
+    };
+    // Before every dev server wrote the file, only `--typecheck` ones did,
+    // without the field.
+    if address["typecheck"] == false {
+        return Err(NO_TYPECHECK.to_string());
     }
-    let host: std::net::IpAddr = address["host"].as_str()?.parse().ok()?;
-    let port = u16::try_from(address["port"].as_u64()?).ok()?;
-    Some(format!(
+    if address["https"].as_bool() == Some(true) {
+        return Err("the dev server runs over https, which oj dev-typecheck cannot reach".into());
+    }
+    let malformed = || "the dev server's address file is malformed".to_string();
+    let host: std::net::IpAddr = address["host"]
+        .as_str()
+        .and_then(|h| h.parse().ok())
+        .ok_or_else(malformed)?;
+    let port = address["port"]
+        .as_u64()
+        .and_then(|p| u16::try_from(p).ok())
+        .ok_or_else(malformed)?;
+    Ok(format!(
         "http://{}/@oj/typecheck",
         std::net::SocketAddr::new(host, port)
     ))
+}
+
+/// The address file in `dir`, when the process that wrote it still runs.
+fn read_live(dir: &Path) -> Option<serde_json::Value> {
+    let text = std::fs::read_to_string(dir.join(ADDRESS_FILE)).ok()?;
+    let address: serde_json::Value = serde_json::from_str(&text).ok()?;
+    pid_alive(address["pid"].as_u64()?).then_some(address)
 }
 
 #[cfg(unix)]
@@ -540,22 +571,9 @@ fn pid_alive(_pid: u64) -> bool {
     true
 }
 
-/// Checks `root` once in this process, for `oj typecheck` when no dev server
-/// answers. Runs on a thread of its own, with the stack tsrs needs.
-pub fn check_once(root: &Path) -> serde_json::Value {
-    let root = root.to_path_buf();
-    std::thread::Builder::new()
-        .name("oj-typecheck".into())
-        .stack_size(CHECKER_STACK)
-        .spawn(move || imp::check_once(&root))
-        .ok()
-        .and_then(|t| t.join().ok())
-        .unwrap_or_else(|| unavailable("the type checker crashed"))
-}
-
 mod imp {
     use std::panic::{catch_unwind, AssertUnwindSafe};
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
     use std::sync::mpsc::{Receiver, RecvTimeoutError};
     use std::time::{Duration, Instant};
 
@@ -712,24 +730,6 @@ mod imp {
             "diagnostics": report.diagnostics,
             "text": report.text(),
         })
-    }
-
-    pub(super) fn check_once(root: &Path) -> serde_json::Value {
-        let outcome = catch_unwind(AssertUnwindSafe(|| -> Result<_, String> {
-            let Some(mut checker) = Checker::open(root)? else {
-                return Ok(None);
-            };
-            checker.check().map(Some)
-        }));
-        match outcome {
-            Ok(Ok(Some(report))) => answer_of(&report),
-            Ok(Ok(None)) => unavailable("no tsconfig.json in the app root"),
-            Ok(Err(e)) => unavailable(&e),
-            Err(panic) => unavailable(&format!(
-                "the type checker panicked: {}",
-                panic_text(&panic)
-            )),
-        }
     }
 
     fn panic_text(panic: &Box<dyn std::any::Any + Send>) -> String {
