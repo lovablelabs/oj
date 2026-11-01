@@ -3198,6 +3198,16 @@ async fn user_plugin_host(
     }
 }
 
+/// Retire a build's plugin host once its hooks are done. The host owns an
+/// embedded engine whose push dispatcher lives as long as the engine, and
+/// `oj build --watch` drops and re-creates a host per rebuild; without this,
+/// each rebuild keeps that isolate and its thread resident.
+fn shutdown_plugin_host(host: &Option<Arc<PluginHost>>) {
+    if let Some(host) = host {
+        host.shutdown();
+    }
+}
+
 // Vite (build.ts) closes the bundle in a `finally`, so a failed build still
 // reaches every plugin's buildEnd (with the error) and closeBundle. rolldown
 // runs them itself only when the scan fails; a failure past that (render,
@@ -3215,6 +3225,7 @@ async fn fail_with_plugin_hooks(
         if let Err(e) = h.close_bundle().await {
             eprintln!("oj build: plugin closeBundle (after failure) failed:\n{e}");
         }
+        h.shutdown();
     }
     err
 }
@@ -4378,6 +4389,7 @@ async fn build_once(
             eprintln!("{}", chunk_size_warning(limit));
         }
     }
+    shutdown_plugin_host(&plugin_host);
     Ok(BuildOutcome { out_dir, watch })
 }
 
@@ -5234,7 +5246,9 @@ pub(crate) async fn build_ssr(
         .map_err(|errs| anyhow::anyhow!("ssr close failed:\n{errs:?}"))?;
 
     if let Some(host) = &plugin_host {
-        if let Err(e) = host.build_end(None).await {
+        let ended = host.build_end(None).await;
+        shutdown_plugin_host(&plugin_host);
+        if let Err(e) = ended {
             bail!("plugin buildEnd failed (ssr):\n{e}");
         }
     }
@@ -5829,7 +5843,9 @@ async fn build_client_entry(
         .map_err(|errs| anyhow::anyhow!("client close failed:\n{errs:?}"))?;
 
     if let Some(host) = &plugin_host {
-        if let Err(e) = host.build_end(None).await {
+        let ended = host.build_end(None).await;
+        shutdown_plugin_host(&plugin_host);
+        if let Err(e) = ended {
             bail!("plugin buildEnd failed (client):\n{e}");
         }
     }
