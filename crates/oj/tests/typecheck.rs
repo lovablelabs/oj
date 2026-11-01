@@ -374,7 +374,37 @@ fn dev_typecheck_ignores_a_server_another_app_advertised_in_a_shared_cache_dir()
         dev_typecheck_with(&clean.0, &[], &env),
         (1, String::new(), NO_SERVER.to_string())
     );
+    // A plain server for the other app in the same cache dir leaves the
+    // checker's address in place.
+    let _plain = Server::oj_dev_with(&clean.0, &env);
+    assert_eq!(
+        dev_typecheck_with(&busy.0, &[], &env),
+        (2, MAIN_ERROR.to_string(), String::new())
+    );
     let _ = std::fs::remove_dir_all(&cache);
+}
+
+#[test]
+fn dev_typecheck_takes_an_address_without_the_typecheck_field_for_a_checker() {
+    // Older oj wrote the file only for `--typecheck` servers, without the
+    // field: it is asked, not reported as started without the flag.
+    let app = App::new("old-address");
+    let cache = app.0.join(".oj-cache/v1");
+    std::fs::create_dir_all(&cache).unwrap();
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = closed.local_addr().unwrap().port();
+    drop(closed);
+    let old = serde_json::json!({
+        "root": app.0, "pid": std::process::id(), "host": "127.0.0.1", "port": port,
+        "https": false,
+    });
+    std::fs::write(cache.join("dev-server.json"), old.to_string()).unwrap();
+    let (code, out, err) = dev_typecheck_with(&app.0, &[], &[]);
+    assert_eq!((code, out.as_str()), (1, ""));
+    assert!(
+        err.contains(&format!("127.0.0.1:{port}/@oj/typecheck")),
+        "{err}"
+    );
 }
 
 #[test]

@@ -477,6 +477,16 @@ fn sniffed_manager_version(path: &std::path::Path, manager: &str, default_versio
     }
 }
 
+/// `oj dev`'s root when none is named: playground/ when it serves one.
+fn default_dev_root() -> PathBuf {
+    let playground = PathBuf::from("playground");
+    if playground.join("index.html").is_file() {
+        playground
+    } else {
+        PathBuf::from(".")
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     raise_fd_limit();
     // Every engine and one-shot child that loads the app's vite.config through
@@ -626,14 +636,7 @@ async fn run(cli: Cli, rolldown: tokio::runtime::Handle) -> anyhow::Result<()> {
             lazy,
             typecheck,
         } => {
-            let root = root.unwrap_or_else(|| {
-                let playground = PathBuf::from("playground");
-                if playground.join("index.html").is_file() {
-                    playground
-                } else {
-                    PathBuf::from(".")
-                }
-            });
+            let root = root.unwrap_or_else(default_dev_root);
             if let Some(entry) = ssr {
                 ssr_dev::ssr_dev(root, entry, port, host, typecheck, rolldown).await
             } else if oj_server::is_tanstack_start_app(&root) {
@@ -729,7 +732,8 @@ async fn run(cli: Cli, rolldown: tokio::runtime::Handle) -> anyhow::Result<()> {
             changed,
             json,
         } => {
-            let root = root.unwrap_or_else(|| PathBuf::from("."));
+            // The root `oj dev` serves when none is named.
+            let root = root.unwrap_or_else(default_dev_root);
             // Relative to where the command runs, as any CLI path argument.
             let changed: Vec<PathBuf> = changed
                 .iter()

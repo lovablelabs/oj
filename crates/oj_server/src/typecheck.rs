@@ -456,7 +456,9 @@ fn parse_changed(body: &[u8]) -> Result<Vec<PathBuf>, String> {
 
 /// Names the bound address for `oj dev-typecheck` (app root, pid, host,
 /// port, and whether it runs `--typecheck`) in the cache root. A stale file
-/// is harmless: the client checks the root and the pid.
+/// is harmless: the client checks the root and the pid. Apps sharing one
+/// `OJ_CACHE_DIR` share the file, so a server without `--typecheck` leaves a
+/// live `--typecheck` server's entry in place.
 pub(crate) fn advertise(
     root: &Path,
     host: std::net::IpAddr,
@@ -470,6 +472,9 @@ pub(crate) fn advertise(
         host => host,
     };
     let dir = oj_cache::cache_root(root);
+    if !typecheck && read_live(&dir).is_some_and(|live| live["typecheck"] != false) {
+        return;
+    }
     let body = serde_json::json!({
         "root": root,
         "pid": std::process::id(),
@@ -515,18 +520,16 @@ const NO_TYPECHECK: &str = "dev server was started without --typecheck";
 /// The typecheck URL of the live, plain-http dev server the address file
 /// names for `root`.
 fn server_url(root: &Path) -> Result<String, String> {
-    let live = || -> Option<serde_json::Value> {
-        let root = root.canonicalize().ok()?;
-        let text = std::fs::read_to_string(oj_cache::cache_root(&root).join(ADDRESS_FILE)).ok()?;
-        let address: serde_json::Value = serde_json::from_str(&text).ok()?;
-        (address["root"].as_str().map(Path::new) == Some(root.as_path())
-            && pid_alive(address["pid"].as_u64()?))
-        .then_some(address)
-    };
-    let Some(address) = live() else {
+    let address = root.canonicalize().ok().and_then(|root| {
+        read_live(&oj_cache::cache_root(&root))
+            .filter(|address| address["root"].as_str().map(Path::new) == Some(root.as_path()))
+    });
+    let Some(address) = address else {
         return Err(NO_SERVER.to_string());
     };
-    if address["typecheck"].as_bool() != Some(true) {
+    // Before every dev server wrote the file, only `--typecheck` ones did,
+    // without the field.
+    if address["typecheck"] == false {
         return Err(NO_TYPECHECK.to_string());
     }
     if address["https"].as_bool() == Some(true) {
@@ -545,6 +548,13 @@ fn server_url(root: &Path) -> Result<String, String> {
         "http://{}/@oj/typecheck",
         std::net::SocketAddr::new(host, port)
     ))
+}
+
+/// The address file in `dir`, when the process that wrote it still runs.
+fn read_live(dir: &Path) -> Option<serde_json::Value> {
+    let text = std::fs::read_to_string(dir.join(ADDRESS_FILE)).ok()?;
+    let address: serde_json::Value = serde_json::from_str(&text).ok()?;
+    pid_alive(address["pid"].as_u64()?).then_some(address)
 }
 
 #[cfg(unix)]
