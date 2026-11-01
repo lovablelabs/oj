@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.4.0] - 2026-11-01
 
+### Added
+
+- `oj typecheck --explainFiles` lists module augmentations: a file that `declare module "./x"` augments gets the reason `Augmented via './x' from file '...'`, so a build tool reading the listing sees that edge as it does an import's. Diagnostics stay tsc's.
+
 ### Changed
 
 - **Breaking:** `oj tsc` is now `oj typecheck`: tsc's command line, output and exit codes on oj's built-in checker. There is no `oj tsc` any more.

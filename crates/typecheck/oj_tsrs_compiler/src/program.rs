@@ -3110,6 +3110,39 @@ impl Program {
         self.missing_files.iter().any(|missing_path| self.to_path(missing_path) == *path)
     }
 
+    /// oj (not in tsrs): an augmentation loads no file, so tsc records no include reason for it and
+    /// `--explainFiles` omits the edge.
+    fn module_augmentations_by_target(
+        &self,
+    ) -> FxHashMap<Path, Vec<(P<SourceFile>, P<Node>, P<ResolvedModule>)>> {
+        let mut by_target: FxHashMap<Path, Vec<_>> = FxHashMap::default();
+        for &file in self.files {
+            for &augmentation in
+                file.module_augmentations.get().iter().filter(|a| a.kind() == Kind::StringLiteral)
+            {
+                let Some(resolved) = self
+                    .get_resolved_module_from_module_specifier(file, augmentation)
+                    .filter(|r| r.is_resolved())
+                else {
+                    continue;
+                };
+                // A deduplicated package copy is listed under its own path, as its imports are.
+                let path = self.to_path(resolved.resolved_file_name);
+                let key = if self.files_by_path.contains_key(&path) {
+                    path
+                } else if let Some(target) =
+                    self.get_source_file_for_resolved_module(resolved.resolved_file_name)
+                {
+                    target.path().clone()
+                } else {
+                    continue;
+                };
+                by_target.entry(key).or_default().push((file, augmentation, resolved));
+            }
+        }
+        by_target
+    }
+
     pub fn explain_files(&self, w: &mut dyn Write) {
         let to_relative_file_name = |file_name: &str| {
             tspath::get_relative_path_from_directory(
@@ -3118,6 +3151,7 @@ impl Program {
                 &self.compare_paths_options,
             )
         };
+        let augmentations = self.module_augmentations_by_target();
         let mut files_explained = 0usize;
         let mut explain_file = |file_name: &str, path: &Path, files_explained: &mut usize| {
             let _ = writeln!(w, "{}", to_relative_file_name(file_name));
@@ -3132,6 +3166,21 @@ impl Program {
                     "   {}",
                     file_include::to_diagnostic(reason, self, true).localize()
                 );
+            }
+            for &(from, specifier, resolved) in augmentations.get(path).into_iter().flatten() {
+                let specifier =
+                    tsrs_scanner::get_source_text_of_node_from_source_file(from, specifier, false);
+                let from = to_relative_file_name(from.file_name());
+                let reason = if resolved.package_id.name.is_empty() {
+                    diagnostics::AUGMENTED_VIA_0_FROM_FILE_1.localize(&[&specifier, &from])
+                } else {
+                    diagnostics::AUGMENTED_VIA_0_FROM_FILE_1_WITH_PACKAGE_ID_2.localize(&[
+                        &specifier,
+                        &from,
+                        &resolved.package_id.to_string(),
+                    ])
+                };
+                let _ = writeln!(w, "   {reason}");
             }
             for diag in self
                 .include_processor
