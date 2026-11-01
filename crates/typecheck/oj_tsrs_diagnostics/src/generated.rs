@@ -19263,6 +19263,27 @@ pub static JSDOC_COMMENT: Message = Message {
     reports_deprecated: false,
 };
 
+// oj (not in tsrs): module augmentation include reasons, with the codes rules_typescript's tsgo patch gives them.
+pub static AUGMENTED_VIA_0_FROM_FILE_1: Message = Message {
+    code: 100_020,
+    category: Category::Message,
+    key: Key("Augmented_via_0_from_file_1_100020"),
+    text: "Augmented via {0} from file '{1}'",
+    reports_unnecessary: false,
+    elided_in_compatibility_pyramid: false,
+    reports_deprecated: false,
+};
+
+pub static AUGMENTED_VIA_0_FROM_FILE_1_WITH_PACKAGE_ID_2: Message = Message {
+    code: 100_021,
+    category: Category::Message,
+    key: Key("Augmented_via_0_from_file_1_with_packageId_2_100021"),
+    text: "Augmented via {0} from file '{1}' with packageId '{2}'",
+    reports_unnecessary: false,
+    elided_in_compatibility_pyramid: false,
+    reports_deprecated: false,
+};
+
 pub static ALL_MESSAGES: [&Message; 2229] = [
     &UNTERMINATED_STRING_LITERAL,
     &IDENTIFIER_EXPECTED,
