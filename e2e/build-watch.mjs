@@ -31,19 +31,23 @@ async function waitFor(pred, what, ms = 40000) {
 }
 const once = (emitter, event) => new Promise((r) => emitter.once(event, (...args) => r(args)));
 
-function readMain(dir) {
+// The entry chunk's name follows the HTML input (`index-*` since the page
+// becomes the entry), not the script it imports; read every emitted asset of
+// the kind so the test does not pin a naming scheme.
+function readAssets(dir, ext) {
   const assets = path.join(dir, "assets");
-  const js = fs.existsSync(assets)
-    ? fs.readdirSync(assets).find((f) => f.startsWith("main-") && f.endsWith(".js"))
-    : undefined;
-  return js ? fs.readFileSync(path.join(assets, js), "utf8") : "";
+  if (!fs.existsSync(assets)) return "";
+  return fs
+    .readdirSync(assets)
+    .filter((f) => f.endsWith(ext))
+    .map((f) => fs.readFileSync(path.join(assets, f), "utf8"))
+    .join("\n");
+}
+function readMain(dir) {
+  return readAssets(dir, ".js");
 }
 function readMainCss(dir) {
-  const assets = path.join(dir, "assets");
-  const css = fs.existsSync(assets)
-    ? fs.readdirSync(assets).find((f) => f.startsWith("main-") && f.endsWith(".css"))
-    : undefined;
-  return css ? fs.readFileSync(path.join(assets, css), "utf8") : "";
+  return readAssets(dir, ".css");
 }
 function rebuilds(log) {
   return (log().match(/oj build:/g) || []).length;
