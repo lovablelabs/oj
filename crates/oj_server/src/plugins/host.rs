@@ -827,6 +827,14 @@ impl std::fmt::Debug for HostCore {
 /// `Arc<JsEngine>` drop must not JOIN a thread parked in a never-settling init.
 impl Drop for HostCore {
     fn drop(&mut self) {
+        // A build drops hosts one after another; a stale weak entry here would
+        // otherwise accumulate for the whole watch session. `dev_listener_bound`
+        // prunes lazily, but a build never binds a dev listener.
+        let this = self as *const HostCore;
+        LIVE_HOSTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|w| w.as_ptr() != this);
         if let Some(engine) = self
             .engine
             .lock()
@@ -2298,9 +2306,16 @@ impl HostCore {
         mut post_rx: tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
         generation: u64,
     ) {
-        let host = std::sync::Arc::clone(host);
+        // WEAK on purpose: this task lives as long as the engine's push channel,
+        // which lives in the host. A strong self-handle would keep the host (and
+        // its isolate) alive forever once the last real owner drops it. That is
+        // harmless for a dev server that exits with the process, but `oj build
+        // --watch` spawns and drops one host per rebuild, so the cycle leaked an
+        // engine thread and its heap per build.
+        let host = std::sync::Arc::downgrade(host);
         tokio::spawn(async move {
             while let Some(msg) = post_rx.recv().await {
+                let Some(host) = host.upgrade() else { return };
                 // Drain and drop pushes from a superseded or declared-dead generation:
                 // a stale `ojInit` would open the call gate before the NEW engine evaluated its module.
                 if *host.host_gone.borrow() || host.revive.lock().unwrap().generation != generation
@@ -2311,6 +2326,7 @@ impl HostCore {
             }
             // Push channel closed = engine thread exited: fail future calls fast.
             // Generation-guarded: an abandoned engine's late exit must not kill the fresh generation.
+            let Some(host) = host.upgrade() else { return };
             let revive = host.revive.lock().unwrap();
             if revive.generation == generation {
                 drop(revive);
