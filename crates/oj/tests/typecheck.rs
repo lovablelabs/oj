@@ -532,6 +532,108 @@ fn oj_typecheck_explains_files_as_tsc_does() {
 }
 
 #[test]
+fn oj_typecheck_explain_files_lists_module_augmentations() {
+    let app = App::new("tsc-explain-augment");
+    app.write(
+        "src/main.ts",
+        "import { p } from 'pkg';\nimport { m } from './dep';\nexport const n: number = m + p;\n\
+         declare module 'pkg' {\n  interface Extra {}\n}\n\
+         declare module './dep' {\n  interface Extra {}\n}\n\
+         declare module './other' {\n  interface Extra {}\n}\n",
+    );
+    app.write(
+        "node_modules/pkg/package.json",
+        r#"{ "name": "pkg", "version": "1.0.0", "types": "index.d.ts" }"#,
+    );
+    app.write(
+        "node_modules/pkg/index.d.ts",
+        "export declare const p: number;\n",
+    );
+    app.write("src/dep.ts", "export const m = 1;\n");
+    app.write("src/other.ts", "export const o = 1;\n");
+    let (code, out) = oj_typecheck(
+        &app.0,
+        &["-p", "tsconfig.json", "--explainFiles", "--pretty", "false"],
+    );
+    assert_eq!(code, 0, "{out}");
+    for block in [
+        "src/dep.ts\n   Matched by include pattern 'src' in 'tsconfig.json'\n   Imported via './dep' from file 'src/main.ts'\n   Augmented via './dep' from file 'src/main.ts'\n",
+        "   Imported via 'pkg' from file 'src/main.ts' with packageId 'pkg/index.d.ts@1.0.0'\n   Augmented via 'pkg' from file 'src/main.ts' with packageId 'pkg/index.d.ts@1.0.0'\n",
+        "src/other.ts\n   Matched by include pattern 'src' in 'tsconfig.json'\n   Augmented via './other' from file 'src/main.ts'\n",
+    ] {
+        assert!(out.contains(block), "{out}");
+    }
+}
+
+#[test]
+fn oj_typecheck_lists_an_augmentation_of_a_referenced_projects_module() {
+    // The augmented module is in the program as the referenced project's output.
+    let app = App::new("tsc-explain-refs");
+    app.write(
+        "lib/tsconfig.json",
+        r#"{ "compilerOptions": { "composite": true, "outDir": "dist", "rootDir": "src" }, "include": ["src"] }"#,
+    );
+    app.write("lib/src/x.ts", "export const x = 1;\n");
+    app.write("lib/dist/x.d.ts", "export declare const x = 1;\n");
+    app.write(
+        "app/tsconfig.json",
+        r#"{ "compilerOptions": { "noEmit": true }, "include": ["src"], "references": [{ "path": "../lib" }] }"#,
+    );
+    app.write(
+        "app/src/main.ts",
+        "import { x } from '../../lib/src/x';\nexport const y = x;\n\
+         declare module '../../lib/src/x' {\n  interface E {}\n}\n",
+    );
+    let (code, out) = oj_typecheck(
+        &app.0.join("app"),
+        &["-p", "tsconfig.json", "--explainFiles", "--pretty", "false"],
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains(
+            "../lib/dist/x.d.ts\n   Imported via '../../lib/src/x' from file 'src/main.ts'\n   Augmented via '../../lib/src/x' from file 'src/main.ts'\n"
+        ),
+        "{out}"
+    );
+}
+
+#[test]
+fn oj_typecheck_lists_an_augmentation_of_a_deduplicated_package_copy_under_that_copy() {
+    let app = App::new("tsc-explain-dedup");
+    app.write("src/main.ts", "import 'a';\nimport 'b';\n");
+    for dep in ["a", "b"] {
+        app.write(
+            &format!("node_modules/{dep}/package.json"),
+            &format!(r#"{{ "name": "{dep}", "version": "1.0.0", "types": "index.d.ts" }}"#),
+        );
+        app.write(
+            &format!("node_modules/{dep}/node_modules/pkg/package.json"),
+            r#"{ "name": "pkg", "version": "1.0.0", "types": "index.d.ts" }"#,
+        );
+        app.write(
+            &format!("node_modules/{dep}/node_modules/pkg/index.d.ts"),
+            "export interface P {}\n",
+        );
+    }
+    app.write("node_modules/a/index.d.ts", "export * from 'pkg';\n");
+    app.write(
+        "node_modules/b/index.d.ts",
+        "export * from 'pkg';\ndeclare module 'pkg' {\n  interface P {\n    b: 1;\n  }\n}\n",
+    );
+    let (code, out) = oj_typecheck(
+        &app.0,
+        &["-p", "tsconfig.json", "--explainFiles", "--pretty", "false"],
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains(
+            "node_modules/b/node_modules/pkg/index.d.ts\n   Imported via 'pkg' from file 'node_modules/b/index.d.ts' with packageId 'pkg/index.d.ts@1.0.0'\n   Augmented via 'pkg' from file 'node_modules/b/index.d.ts' with packageId 'pkg/index.d.ts@1.0.0'\n"
+        ),
+        "{out}"
+    );
+}
+
+#[test]
 fn oj_typecheck_takes_every_tsc_flag() {
     let app = App::new("tsc-flags");
     app.write("src/main.ts", "export const n: number = 1;\n");

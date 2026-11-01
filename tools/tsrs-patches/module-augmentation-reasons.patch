@@ -1,0 +1,106 @@
+diff --git a/crates/typecheck/oj_tsrs_compiler/src/program.rs b/crates/typecheck/oj_tsrs_compiler/src/program.rs
+index 548025c2..1f4525c9 100644
+--- a/crates/typecheck/oj_tsrs_compiler/src/program.rs
++++ b/crates/typecheck/oj_tsrs_compiler/src/program.rs
+@@ -3110,6 +3110,39 @@ impl Program {
+         self.missing_files.iter().any(|missing_path| self.to_path(missing_path) == *path)
+     }
+ 
++    /// oj (not in tsrs): an augmentation loads no file, so tsc records no include reason for it and
++    /// `--explainFiles` omits the edge.
++    fn module_augmentations_by_target(
++        &self,
++    ) -> FxHashMap<Path, Vec<(P<SourceFile>, P<Node>, P<ResolvedModule>)>> {
++        let mut by_target: FxHashMap<Path, Vec<_>> = FxHashMap::default();
++        for &file in self.files {
++            for &augmentation in
++                file.module_augmentations.get().iter().filter(|a| a.kind() == Kind::StringLiteral)
++            {
++                let Some(resolved) = self
++                    .get_resolved_module_from_module_specifier(file, augmentation)
++                    .filter(|r| r.is_resolved())
++                else {
++                    continue;
++                };
++                // A deduplicated package copy is listed under its own path, as its imports are.
++                let path = self.to_path(resolved.resolved_file_name);
++                let key = if self.files_by_path.contains_key(&path) {
++                    path
++                } else if let Some(target) =
++                    self.get_source_file_for_resolved_module(resolved.resolved_file_name)
++                {
++                    target.path().clone()
++                } else {
++                    continue;
++                };
++                by_target.entry(key).or_default().push((file, augmentation, resolved));
++            }
++        }
++        by_target
++    }
++
+     pub fn explain_files(&self, w: &mut dyn Write) {
+         let to_relative_file_name = |file_name: &str| {
+             tspath::get_relative_path_from_directory(
+@@ -3118,6 +3151,7 @@ impl Program {
+                 &self.compare_paths_options,
+             )
+         };
++        let augmentations = self.module_augmentations_by_target();
+         let mut files_explained = 0usize;
+         let mut explain_file = |file_name: &str, path: &Path, files_explained: &mut usize| {
+             let _ = writeln!(w, "{}", to_relative_file_name(file_name));
+@@ -3133,6 +3167,21 @@ impl Program {
+                     file_include::to_diagnostic(reason, self, true).localize()
+                 );
+             }
++            for &(from, specifier, resolved) in augmentations.get(path).into_iter().flatten() {
++                let specifier =
++                    tsrs_scanner::get_source_text_of_node_from_source_file(from, specifier, false);
++                let from = to_relative_file_name(from.file_name());
++                let reason = if resolved.package_id.name.is_empty() {
++                    diagnostics::AUGMENTED_VIA_0_FROM_FILE_1.localize(&[&specifier, &from])
++                } else {
++                    diagnostics::AUGMENTED_VIA_0_FROM_FILE_1_WITH_PACKAGE_ID_2.localize(&[
++                        &specifier,
++                        &from,
++                        &resolved.package_id.to_string(),
++                    ])
++                };
++                let _ = writeln!(w, "   {reason}");
++            }
+             for diag in self
+                 .include_processor
+                 .explain_redirect_and_implied_format(self, path, &to_relative_file_name)
+diff --git a/crates/typecheck/oj_tsrs_diagnostics/src/generated.rs b/crates/typecheck/oj_tsrs_diagnostics/src/generated.rs
+index f6956def..06227474 100644
+--- a/crates/typecheck/oj_tsrs_diagnostics/src/generated.rs
++++ b/crates/typecheck/oj_tsrs_diagnostics/src/generated.rs
+@@ -19263,6 +19263,27 @@ pub static JSDOC_COMMENT: Message = Message {
+     reports_deprecated: false,
+ };
+ 
++// oj (not in tsrs): module augmentation include reasons, with the codes rules_typescript's tsgo patch gives them.
++pub static AUGMENTED_VIA_0_FROM_FILE_1: Message = Message {
++    code: 100_020,
++    category: Category::Message,
++    key: Key("Augmented_via_0_from_file_1_100020"),
++    text: "Augmented via {0} from file '{1}'",
++    reports_unnecessary: false,
++    elided_in_compatibility_pyramid: false,
++    reports_deprecated: false,
++};
++
++pub static AUGMENTED_VIA_0_FROM_FILE_1_WITH_PACKAGE_ID_2: Message = Message {
++    code: 100_021,
++    category: Category::Message,
++    key: Key("Augmented_via_0_from_file_1_with_packageId_2_100021"),
++    text: "Augmented via {0} from file '{1}' with packageId '{2}'",
++    reports_unnecessary: false,
++    elided_in_compatibility_pyramid: false,
++    reports_deprecated: false,
++};
++
+ pub static ALL_MESSAGES: [&Message; 2229] = [
+     &UNTERMINATED_STRING_LITERAL,
+     &IDENTIFIER_EXPECTED,
