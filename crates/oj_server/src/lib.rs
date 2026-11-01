@@ -56,10 +56,7 @@ mod debug;
 use debug::*;
 mod diagnostics;
 mod typecheck;
-pub use typecheck::{
-    check_once as typecheck_once, check_via_server as typecheck_via_server,
-    serve_worker as typecheck_worker,
-};
+pub use typecheck::{check_via_server as typecheck_via_server, serve_worker as typecheck_worker};
 pub mod otel;
 use diagnostics::*;
 mod css_serve;
@@ -738,8 +735,14 @@ impl BuiltApp {
         let (listener, port) = bind_dev_listener(self.host, self.port, self.strict_port).await?;
         if let Some(typecheck) = &self.typecheck {
             typecheck.warm_after_first_serve();
-            typecheck::advertise(&self.root, self.host, port, self.https.is_some());
         }
+        typecheck::advertise(
+            &self.root,
+            self.host,
+            port,
+            self.https.is_some(),
+            self.typecheck.is_some(),
+        );
         Ok((listener, port))
     }
 
