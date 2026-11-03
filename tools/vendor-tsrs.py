@@ -41,6 +41,9 @@ Patches applied while copying:
   root's package.json is read (tsrs moved the check first and read nested
   ones, so pnpm-linked packages fell back to non-portable relative paths).
   Still 7.1: the default target (ES2026) and the bundled lib files.
+  `relative-testing-lib-path.patch` makes tsrs_vfs's `testing_lib_path` the
+  relative `libs`, so no rlib carries the absolute source path (see
+  tools/check-baked-source-paths.sh).
 
   The patches touch no file in common. A patch that no longer applies stops
   the update; rebase it on the new sources.
