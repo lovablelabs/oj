@@ -63,7 +63,12 @@ pub fn build_minify(config: &OjConfig) -> bool {
 /// with no surrounding slashes (Vite's default is `assets`; an empty string
 /// puts hashed files at the outDir root).
 pub fn build_assets_dir(config: &OjConfig) -> String {
-    let raw = build_opt(config, |b| b.assets_dir.as_deref()).unwrap_or("assets");
+    normalize_assets_dir(build_opt(config, |b| b.assets_dir.as_deref()).unwrap_or("assets"))
+}
+
+/// An `assetsDir` value (the config file's, or a plugin host's resolved one)
+/// normalized as [`build_assets_dir`] normalizes it.
+pub fn normalize_assets_dir(raw: &str) -> String {
     raw.replace('\\', "/")
         .trim_start_matches("./")
         .trim_matches('/')

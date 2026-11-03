@@ -10,7 +10,8 @@
 //! only resolves when the framework itself is bundled) and code-split (the
 //! framework's server module uses top-level await, which one file cannot
 //! always carry). They share one asset emitter, so the server render and the
-//! browser agree on every `/assets/<hash>` URL.
+//! browser agree on every `<base><assetsDir>/<name>-<hash>` URL (the client
+//! environment's `build.assetsDir`, `assets` by default).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -36,10 +37,14 @@ use crate::build::EmitState;
 pub(crate) struct BuildOutput {
     /// `--out` / `build.outDir`.
     pub out_dir: PathBuf,
+    /// `--emptyOutDir` / `build.emptyOutDir` (`None`: Vite's default rule).
+    pub empty_out_dir: Option<bool>,
     pub sourcemap: oj_config::Sourcemap,
     pub minify: bool,
     /// `build.prerender` routes.
     pub prerender: Vec<String>,
+    /// Whether `--out` named `out_dir` (Nitro's build ignores it).
+    pub out_flag: bool,
 }
 
 fn sourcemap(s: oj_config::Sourcemap) -> Option<SourceMapType> {
@@ -260,7 +265,7 @@ fn client_plugins(
 
 /// Turns a finished build into its outputs, failing on an import nothing
 /// resolved as Vite does.
-fn checked(output: rolldown::BundleOutput) -> anyhow::Result<rolldown::BundleOutput> {
+pub(crate) fn checked(output: rolldown::BundleOutput) -> anyhow::Result<rolldown::BundleOutput> {
     if let Some(err) = unresolved_import_in(&output.warnings) {
         return Err(anyhow::Error::new(err));
     }
@@ -281,7 +286,10 @@ fn checked(output: rolldown::BundleOutput) -> anyhow::Result<rolldown::BundleOut
 }
 
 /// The files the plugins emitted (`this.emitFile` assets), written into `dir`.
-async fn write_emitted(host: &oj_server::plugins::PluginHost, dir: &Path) -> anyhow::Result<()> {
+pub(crate) async fn write_emitted(
+    host: &oj_server::plugins::PluginHost,
+    dir: &Path,
+) -> anyhow::Result<()> {
     let files = host
         .emitted_files()
         .await
@@ -296,21 +304,66 @@ async fn write_emitted(host: &oj_server::plugins::PluginHost, dir: &Path) -> any
     Ok(())
 }
 
+/// Where a finished build is, and the command that runs it (none for a
+/// Cloudflare Worker, which only runs in workerd).
+pub(crate) struct Built {
+    pub out_dir: PathBuf,
+    pub run: Option<String>,
+}
+
 pub(crate) async fn build(
     start: StartConfig,
     config_file: Option<PathBuf>,
     out: BuildOutput,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Built> {
+    let dist = out.out_dir.clone();
+    if let Some(built) = build_app(start, config_file, out).await? {
+        return Ok(built);
+    }
+    let server = dist.join("server.mjs");
+    let run = server
+        .exists()
+        .then(|| format!("node {}", server.display()));
+    Ok(Built { out_dir: dist, run })
+}
+
+async fn build_app(
+    start: StartConfig,
+    config_file: Option<PathBuf>,
+    out: BuildOutput,
+) -> anyhow::Result<Option<Built>> {
     let start = Arc::new(start);
     let dist = out.out_dir.clone();
-    let client_dir = dist.join("client");
-    // The caller emptied the outDir under Vite's emptyOutDir rule.
-    std::fs::create_dir_all(&client_dir)?;
 
     // TanStack Start's config hook sets Vite's `builder.sharedPlugins`, so
     // every environment builds on the same plugin instances: one host, moved
     // to the server environment once the client is written.
     let client_host = hosts::spawn(&start, config_file.as_deref(), "client").await?;
+    // With nitro/vite, Nitro builds the server and owns the output (its
+    // buildApp hooks empty it): the client goes to its public directory and
+    // the server render to its ssr service, which Nitro bundles into its own.
+    let nitro = client_host.as_ref().and_then(|h| h.facts.nitro.clone());
+    if nitro.as_ref().is_some_and(|n| !n.configured) {
+        anyhow::bail!(
+            "nitro/vite is configured, but its config hook failed (see the errors above)"
+        );
+    }
+    let nitro_dir = |dir: &Option<String>| dir.as_deref().map(|d| start.root.join(d));
+    let client_dir = nitro
+        .as_ref()
+        .and_then(|n| nitro_dir(&n.client_out_dir))
+        .unwrap_or_else(|| dist.join("client"));
+    if nitro.is_some() && out.out_flag {
+        eprintln!(
+            "{}: --out ignored: nitro writes its own output directory (nitro's output.dir)",
+            oj_server::oj_brand()
+        );
+    }
+    // Emptied by Vite's emptyOutDir rule, unless Nitro owns the output (then
+    // `--out` and `build.outDir` are ignored, and left alone).
+    if nitro.is_none() {
+        crate::build::prepare_out_dir(&start.root, &dist, out.empty_out_dir)?;
+    }
     // With @cloudflare/vite-plugin the server build is the Worker environment
     // the plugin declared (named from the wrangler config, or its
     // `viteEnvironment.name`); the plugin's hooks must see that environment.
@@ -324,13 +377,30 @@ pub(crate) async fn build(
     let server_entry = start
         .server_entry()
         .unwrap_or_else(|| start.cache.join("server-entry.tsx"));
-    let server_out_dir = match &cf_env {
-        Some(env) => cloudflare::worker_out_dir(env, &start.root, &dist),
-        None => dist.clone(),
+    // Nitro's configEnvironment hook sets the ssr environment's outDir to
+    // where its ssr service is read from.
+    let nitro_service_dir = nitro.as_ref().and_then(|n| nitro_dir(&n.ssr_out_dir));
+    let server_out_dir = match (&cf_env, &nitro_service_dir) {
+        (Some(env), _) => cloudflare::worker_out_dir(env, &start.root, &dist),
+        (None, Some(dir)) => dir.clone(),
+        (None, None) => dist.clone(),
     };
 
+    // The client's `build.assetsDir`, as its plugin host resolved it (a
+    // plugin may set it: nitro/vite puts it at Nitro's `buildAssetsDir`), else
+    // the config file's: every hashed file the build writes for the browser
+    // goes under it, and the buildApp hooks see it.
+    let assets_dir = client_host
+        .as_ref()
+        .and_then(|h| h.facts.client_assets_dir.clone())
+        .unwrap_or_else(|| oj_config::build_assets_dir(&start.config));
     let styles = Arc::new(Styles::new(&start));
-    let emitter = Arc::new(Emitter::new(&client_dir, &start.base, Arc::clone(&styles)));
+    let emitter = Arc::new(Emitter::in_assets_dir(
+        &client_dir,
+        &assets_dir,
+        &start.base,
+        Arc::clone(&styles),
+    ));
     let emit = Arc::new(EmitState::new(start.root.clone()));
     let empty_facts = Facts::default();
     let client_facts = client_host.as_ref().map_or(&empty_facts, |h| &h.facts);
@@ -371,6 +441,7 @@ pub(crate) async fn build(
         let minify = minify.clone();
         let sourcemap_kind = out.sourcemap;
         let worker = worker_options.clone();
+        let assets_dir = assets_dir.clone();
         let bundler: WorkerBundler = Arc::new(move |file: PathBuf, chain: Vec<PathBuf>| {
             let start = Arc::clone(&start);
             let styles = Arc::clone(&styles);
@@ -381,6 +452,7 @@ pub(crate) async fn build(
             let resolve = resolve.clone();
             let minify = minify.clone();
             let worker = worker.clone();
+            let assets_dir = assets_dir.clone();
             Box::pin(async move {
                 let emitter = emitter.ok_or("the build is over")?;
                 let host = match &app_host {
@@ -403,6 +475,7 @@ pub(crate) async fn build(
                         resolve,
                         minify,
                         sourcemap: sourcemap_kind,
+                        assets_dir,
                     },
                 )
                 .await;
@@ -423,6 +496,8 @@ pub(crate) async fn build(
     }
 
     let build_all = async {
+        // Nitro's pre buildApp hook empties its output, the client's included.
+        std::fs::create_dir_all(&client_dir)?;
         // The client.
         let policy = match &client_host {
             Some(h) => Some(super::chunks::chunk_policy(&h.facts, &h.host, false)?),
@@ -456,9 +531,15 @@ pub(crate) async fn build(
                 format: Some(OutputFormat::Esm),
                 minify: Some(minify.clone()),
                 sourcemap: sourcemap(out.sourcemap),
-                entry_filenames: Some("assets/[name]-[hash].js".to_string().into()),
-                chunk_filenames: Some("assets/[name]-[hash].js".to_string().into()),
-                asset_filenames: Some("assets/[name]-[hash][extname]".to_string().into()),
+                entry_filenames: Some(
+                    oj_config::assets_dir_path(&assets_dir, "[name]-[hash].js").into(),
+                ),
+                chunk_filenames: Some(
+                    oj_config::assets_dir_path(&assets_dir, "[name]-[hash].js").into(),
+                ),
+                asset_filenames: Some(
+                    oj_config::assets_dir_path(&assets_dir, "[name]-[hash][extname]").into(),
+                ),
                 banner: Some(AddonOutputOption::String(Some(start.client_banner()))),
                 code_splitting: policy.as_ref().and_then(|p| p.code_splitting.clone()),
                 preserve_entry_signatures: Some(
@@ -550,73 +631,6 @@ pub(crate) async fn build(
             server_host.as_ref().map_or(&[][..], |h| &h.env_delta),
             server_host.as_ref().map_or(&[][..], |h| &h.defines),
         );
-        // `conditions`: a Cloudflare worker's, for the `paths` step's package
-        // lookups (the environment's own resolve conditions).
-        let server_plugins = |conditions: Option<Vec<String>>| -> Vec<SharedPluginable> {
-            let mut plugins: Vec<SharedPluginable> = Vec::new();
-            if let Some(plugin) = &start.stylex {
-                plugins.push(crate::stylex_plugin::transform(plugin));
-            }
-            if let Some(facts) = server_host
-                .as_ref()
-                .map(|h| &h.facts)
-                .filter(|f| !f.alias.is_empty())
-            {
-                plugins.push(Pluginable::new_shared(AppAliasPlugin {
-                    entries: facts.alias.clone(),
-                }));
-            }
-            if let Some(h) = &server_host {
-                plugins.push(Pluginable::new_shared(
-                    StartHostPlugin::new(
-                        Arc::clone(&h.host),
-                        h.ctx.clone(),
-                        &h.facts,
-                        start.command,
-                        &start.root,
-                        Arc::clone(&emit),
-                        start.jsx_config(),
-                    )
-                    .with_module_parsed()
-                    .compiling(
-                        StartCodePlugin::new(&start.root, CodeTarget::Server)
-                            .with_route_tree(start.route_tree())
-                            .with_alias(h.facts.alias.clone()),
-                    ),
-                ));
-            }
-            plugins.extend(crate::build::tsconfig_paths_plugin_with(
-                &start.root,
-                &start.config,
-                "ssr",
-                false,
-                conditions,
-            ));
-            plugins.push(Pluginable::new_shared(
-                StartCodePlugin::new(&start.root, CodeTarget::Server)
-                    .with_route_tree(start.route_tree())
-                    .with_alias(
-                        server_host
-                            .as_ref()
-                            .map(|h| h.facts.alias.clone())
-                            .unwrap_or_default(),
-                    )
-                    .compiled_in_host(server_host.is_some()),
-            ));
-            plugins.push(Pluginable::new_shared(
-                StartAssetsPlugin::new(
-                    &start.root,
-                    Arc::clone(&styles),
-                    AssetMode::Build {
-                        emitter: Arc::clone(&emitter),
-                        server: true,
-                        worker_chain: Vec::new(),
-                    },
-                )
-                .with_plugins(server_host.as_ref().map(|h| Arc::clone(&h.host))),
-            ));
-            plugins
-        };
         let mut server_aliases = start.server_aliases();
         let worker_dir = match &cf_env {
             Some(env) => {
@@ -643,7 +657,14 @@ pub(crate) async fn build(
                     }
                     .into(),
                 );
-                plugins.extend(server_plugins(Some(conditions.clone())));
+                plugins.extend(server_plugins(
+                    &start,
+                    server_host.as_ref(),
+                    &styles,
+                    &emitter,
+                    &emit,
+                    Some(conditions.clone()),
+                ));
                 plugins.extend(cloudflare::builtin_plugins(env));
                 let mut transform = start.transform_options();
                 if let Some(target) = &env.target {
@@ -702,13 +723,33 @@ pub(crate) async fn build(
                     "@cloudflare/vite-plugin/server".into(),
                     start.cache.join("cf-server.mjs"),
                 ));
+                // Nitro's ssr service: its own directory, emptied as Vite's
+                // emptyOutDir does, and `nitro/*` left external (the
+                // environment's `external`) for Nitro's bundle to provide.
+                let (out_dir, external) = match &nitro_service_dir {
+                    Some(dir) => {
+                        crate::build::prepare_out_dir(&start.root, dir, None)?;
+                        let own = server_host
+                            .as_ref()
+                            .and_then(|h| client_external(&h.facts, Some(&h.host), None));
+                        (dir.clone(), either_external(ssr_external(&start), own))
+                    }
+                    None => (dist.clone(), ssr_external(&start)),
+                };
                 let mut server = BundlerBuilder::default()
-                    .with_plugins(server_plugins(None))
+                    .with_plugins(server_plugins(
+                        &start,
+                        server_host.as_ref(),
+                        &styles,
+                        &emitter,
+                        &emit,
+                        None,
+                    ))
                     .with_options(BundlerOptions {
                         input: Some(vec![input("server-bundle", &server_entry)]),
                         cwd: Some(start.root.clone()),
                         platform: Some(Platform::Node),
-                        external: ssr_external(&start),
+                        external,
                         transform: Some(start.transform_options()),
                         define: Some(server_defines.iter().cloned().collect()),
                         tsconfig: oj_server::tsconfig_file(&start.config).map(rolldown_common::TsConfig::Manual),
@@ -717,7 +758,7 @@ pub(crate) async fn build(
                             Some(start.server_main_fields()),
                             None,
                         )),
-                        dir: Some(dist.to_string_lossy().into_owned()),
+                        dir: Some(out_dir.to_string_lossy().into_owned()),
                         format: Some(OutputFormat::Esm),
                         minify: Some(minify.clone()),
                         sourcemap: sourcemap(out.sourcemap),
@@ -739,13 +780,16 @@ pub(crate) async fn build(
                         anyhow::Error::new(BundleError::from_diagnostics(&errs.into_vec()))
                     })?;
                 checked(output)?;
-                std::fs::write(dist.join("server.mjs"), node_server(&start.base))?;
-                std::fs::write(dist.join("worker.mjs"), WORKER_MJS)?;
-                std::fs::copy(
-                    start.cache.join("cf-server.mjs"),
-                    dist.join("cf-server.mjs"),
-                )?;
-                std::fs::write(dist.join("cf-loader.mjs"), CF_LOADER_MJS)?;
+                // Nitro's server runs the service; oj's entrypoints are not needed.
+                if nitro.is_none() {
+                    std::fs::write(dist.join("server.mjs"), node_server(&start.base))?;
+                    std::fs::write(dist.join("worker.mjs"), WORKER_MJS)?;
+                    std::fs::copy(
+                        start.cache.join("cf-server.mjs"),
+                        dist.join("cf-server.mjs"),
+                    )?;
+                    std::fs::write(dist.join("cf-loader.mjs"), CF_LOADER_MJS)?;
+                }
                 None
             }
         };
@@ -757,12 +801,21 @@ pub(crate) async fn build(
                 .map_err(|e| anyhow::anyhow!("plugin closeBundle failed:\n{e}"))?;
         }
 
-        if let Some(public_dir) = oj_config::public_dir(&start.config, &start.root) {
-            copy_dir_over(&public_dir, &client_dir)?;
+        // Nitro copies the public directory itself (the client's
+        // `copyPublicDir` is off), with its own public assets.
+        if nitro.is_none() {
+            if let Some(public_dir) = oj_config::public_dir(&start.config, &start.root) {
+                copy_dir_over(&public_dir, &client_dir)?;
+            }
         }
 
         if !out.prerender.is_empty() {
-            if worker_dir.is_some() {
+            if nitro.is_some() {
+                eprintln!(
+                    "{}: prerender skipped: nitro prerenders the routes its own config names (nitro.prerender)",
+                    oj_server::oj_brand()
+                );
+            } else if worker_dir.is_some() {
                 // The Worker bundle imports the runtime's own modules; it does not run under Node.
                 eprintln!(
                     "{}: prerender skipped: the Cloudflare Worker bundle only runs in workerd",
@@ -778,10 +831,12 @@ pub(crate) async fn build(
             }
         }
 
-        eprintln!(
-            "{}: built dist (client {client_url})",
-            oj_server::oj_brand()
-        );
+        if nitro.is_none() {
+            eprintln!(
+                "{}: built dist (client {client_url})",
+                oj_server::oj_brand()
+            );
+        }
         if let (Some(dir), Some(env)) = (&worker_dir, &cf_env) {
             eprintln!(
                 "{}: cloudflare worker \"{}\" -> {}/index.js (deploy: wrangler deploy)",
@@ -794,7 +849,7 @@ pub(crate) async fn build(
     };
 
     let Some(host) = &client_host else {
-        return build_all.await;
+        return build_all.await.map(|()| None);
     };
     // Vite's `vite build` is builder.buildApp: the plugins' buildApp hooks,
     // with oj's environment builds standing in for TanStack Start's config
@@ -802,10 +857,12 @@ pub(crate) async fn build(
     let built = serde_json::json!({
         "client": {
             "outDir": client_dir.display().to_string(),
+            "assetsDir": assets_dir,
             "input": start.cache.join("client-entry.tsx").display().to_string(),
         },
         server_env_name.clone(): {
             "outDir": server_out_dir.display().to_string(),
+            "assetsDir": assets_dir,
             "input": if cf_env.is_some() {
                 cloudflare::WORKER_ENTRY.to_string()
             } else {
@@ -819,10 +876,34 @@ pub(crate) async fn build(
     tokio::pin!(app);
     tokio::pin!(build_all);
     let mut result: Option<anyhow::Result<()>> = None;
+    // A failed environment build fails `oj build` even when the hook that
+    // asked for it swallows the error.
+    let mut environment_failed: Option<String> = None;
     let app_result = loop {
         tokio::select! {
             r = &mut app => break r,
             Some(rpc) = requests.recv() => {
+                // An environment oj does not build itself (Nitro's), bundled
+                // from its config; its output is the hook's answer.
+                // After oj's own environments, as Nitro's post hook asks for
+                // it: its bundle takes in the ssr service they write.
+                if rpc.method == "buildEnvironment" {
+                    if result.is_none() {
+                        result = Some((&mut build_all).await);
+                    }
+                    let name = rpc.args.first().and_then(|v| v.as_str()).unwrap_or_default();
+                    let reply = match &result {
+                        Some(Err(e)) => Err(format!("{e:#}")),
+                        _ => super::environment::build(&start, host, name, &styles, &emitter)
+                            .await
+                            .map_err(|e| format!("{e:#}")),
+                    };
+                    if let (Err(e), Some(Ok(()))) = (&reply, &result) {
+                        environment_failed.get_or_insert_with(|| format!("the {name} environment: {e}"));
+                    }
+                    host.host.rpc_reply(rpc.id, reply);
+                    continue;
+                }
                 if result.is_none() {
                     result = Some((&mut build_all).await);
                 }
@@ -834,13 +915,132 @@ pub(crate) async fn build(
             }
         }
     };
-    match result {
-        Some(Err(e)) => Err(e),
-        Some(Ok(())) => app_result.map_err(|e| anyhow::anyhow!("plugin buildApp failed:\n{e}")),
+    if let Some(e) = environment_failed {
+        anyhow::bail!("{e}");
+    }
+    let app_result = app_result.map_err(|e| anyhow::anyhow!("plugin buildApp failed:\n{e}"));
+    let answer = match result {
+        Some(Err(e)) => return Err(e),
+        Some(Ok(())) => app_result?,
         None => {
-            app_result.map_err(|e| anyhow::anyhow!("plugin buildApp failed:\n{e}"))?;
-            build_all.await
+            let answer = app_result?;
+            build_all.await?;
+            answer
         }
+    };
+    // Nitro reports its output directory (`output.dir`, `.output` by default)
+    // and preview command (run from there) once it has compiled; without them
+    // a buildApp failure a skipped config hook let through stopped it.
+    let json = match answer {
+        Some(json) => json,
+        None if nitro.is_some() => anyhow::bail!(
+            "nitro/vite is configured, but its build did not complete (see the errors above)"
+        ),
+        None => return Ok(None),
+    };
+    let v: serde_json::Value = serde_json::from_str(&json)?;
+    let Some(dir) = v["outputDir"].as_str() else {
+        anyhow::bail!("plugin buildApp answered a nitro build without outputDir: {json}");
+    };
+    let out_dir = PathBuf::from(dir.trim_end_matches('/'));
+    let run = v["preview"]
+        .as_str()
+        .map(|p| format!("cd {} && {p}", out_dir.display()));
+    Ok(Some(Built { out_dir, run }))
+}
+
+/// The plugins a server bundle runs: StyleX, the app's aliases, its plugin
+/// host, and oj's code and asset conventions (Vite applies those to every
+/// environment).
+pub(super) fn server_plugins(
+    start: &StartConfig,
+    host: Option<&BundleHost>,
+    styles: &Arc<Styles>,
+    emitter: &Arc<Emitter>,
+    emit: &Arc<EmitState>,
+    // For the `paths` step's package lookups: the environment's own resolve
+    // conditions, when they aren't the ssr defaults.
+    conditions: Option<Vec<String>>,
+) -> Vec<SharedPluginable> {
+    let mut plugins: Vec<SharedPluginable> = Vec::new();
+    if let Some(plugin) = &start.stylex {
+        plugins.push(crate::stylex_plugin::transform(plugin));
+    }
+    let alias = host.map(|h| h.facts.alias.clone()).unwrap_or_default();
+    if !alias.is_empty() {
+        plugins.push(Pluginable::new_shared(AppAliasPlugin {
+            entries: alias.clone(),
+        }));
+    }
+    if let Some(h) = host {
+        plugins.push(Pluginable::new_shared(
+            StartHostPlugin::new(
+                Arc::clone(&h.host),
+                h.ctx.clone(),
+                &h.facts,
+                start.command,
+                &start.root,
+                Arc::clone(emit),
+                start.jsx_config(),
+            )
+            .with_module_parsed()
+            .compiling(
+                StartCodePlugin::new(&start.root, CodeTarget::Server)
+                    .with_route_tree(start.route_tree())
+                    .with_alias(h.facts.alias.clone()),
+            ),
+        ));
+    }
+    plugins.extend(crate::build::tsconfig_paths_plugin_with(
+        &start.root,
+        &start.config,
+        "ssr",
+        false,
+        conditions,
+    ));
+    plugins.push(Pluginable::new_shared(
+        StartCodePlugin::new(&start.root, CodeTarget::Server)
+            .with_route_tree(start.route_tree())
+            .with_alias(alias)
+            .compiled_in_host(host.is_some()),
+    ));
+    plugins.push(Pluginable::new_shared(
+        StartAssetsPlugin::new(
+            &start.root,
+            Arc::clone(styles),
+            AssetMode::Build {
+                emitter: Arc::clone(emitter),
+                server: true,
+                worker_chain: Vec::new(),
+            },
+        )
+        .with_plugins(host.map(|h| Arc::clone(&h.host))),
+    ));
+    plugins
+}
+
+/// Both externals: a specifier either one leaves out stays external.
+fn either_external(a: Option<IsExternal>, b: Option<IsExternal>) -> Option<IsExternal> {
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            let rules = Arc::new([a, b]);
+            Some(IsExternal::Fn(Some(Arc::new(
+                move |spec: &str, importer: Option<&str>, is_resolved: bool| {
+                    let rules = Arc::clone(&rules);
+                    let spec = spec.to_string();
+                    let importer = importer.map(str::to_string);
+                    Box::pin(async move {
+                        for rule in rules.iter() {
+                            if rule.call(&spec, importer.as_deref(), is_resolved).await? {
+                                return Ok(true);
+                            }
+                        }
+                        Ok(false)
+                    })
+                },
+            ))))
+        }
+        (a, b) => a.or(b),
     }
 }
 
@@ -859,6 +1059,9 @@ struct WorkerBundleOptions {
     resolve: rolldown_common::ResolveOptions,
     minify: rolldown_common::RawMinifyOptions,
     sourcemap: oj_config::Sourcemap,
+    /// The client's `build.assetsDir`, under which Vite names a worker's
+    /// files by default.
+    assets_dir: String,
 }
 
 /// One worker entry's bundle (Vite's bundleWorkerEntry) on its container's
@@ -897,8 +1100,10 @@ async fn bundle_worker(
         };
         client_external(&facts, Some(&h.host), None)
     });
-    let name = |given: &Option<String>, default: &str| {
-        given.clone().unwrap_or_else(|| default.to_string())
+    let name = |given: &Option<String>, tail: &str| {
+        given
+            .clone()
+            .unwrap_or_else(|| oj_config::assets_dir_path(&options.assets_dir, tail))
     };
     let format = if worker.is_module() {
         OutputFormat::Esm
@@ -920,11 +1125,9 @@ async fn bundle_worker(
             format: Some(format),
             minify: Some(options.minify),
             sourcemap: sourcemap(options.sourcemap),
-            entry_filenames: Some(name(&worker.entry_file_names, "assets/[name]-[hash].js").into()),
-            chunk_filenames: Some(name(&worker.chunk_file_names, "assets/[name]-[hash].js").into()),
-            asset_filenames: Some(
-                name(&worker.asset_file_names, "assets/[name]-[hash][extname]").into(),
-            ),
+            entry_filenames: Some(name(&worker.entry_file_names, "[name]-[hash].js").into()),
+            chunk_filenames: Some(name(&worker.chunk_file_names, "[name]-[hash].js").into()),
+            asset_filenames: Some(name(&worker.asset_file_names, "[name]-[hash][extname]").into()),
             preserve_entry_signatures: Some(rolldown_common::PreserveEntrySignatures::False),
             ..Default::default()
         })

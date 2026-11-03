@@ -11,7 +11,8 @@
 //! The dev bundle points at the files on the dev server (`/@oj-start/fs/...`,
 //! the worker's own URL on the dev pipeline); a build emits them through one
 //! content-hash [`Emitter`] shared by the client, server and worker bundles,
-//! so a server render and the browser agree on every `/assets/<hash>` URL.
+//! so a server render and the browser agree on every
+//! `<base><assetsDir>/<name>-<hash>` URL.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -411,10 +412,15 @@ type WorkerBundling = HashMap<(PathBuf, Vec<PathBuf>), Arc<tokio::sync::OnceCell
 
 /// The build's content-hash emitter: every asset, stylesheet and worker the
 /// client, server and worker bundles import is written once into
-/// `<client>/assets/<name>-<hash><ext>`, at the same URL for all of them.
+/// `<client>/<assetsDir>/<name>-<hash><ext>`, at the same URL for all of them.
 pub(crate) struct Emitter {
+    /// The client's outDir, where a worker bundle's files are named from.
+    client_dir: PathBuf,
+    /// `<client>/<assetsDir>`.
     assets_dir: PathBuf,
     base: String,
+    /// The URL prefix of a file in `assets_dir`: `<base><assetsDir>/`.
+    assets_url: String,
     styles: Arc<Styles>,
     written: Mutex<std::collections::HashSet<String>>,
     /// Stylesheets mid-emit (a sheet's own `url()` naming itself must not recurse).
@@ -442,10 +448,29 @@ pub(crate) struct Emitter {
 }
 
 impl Emitter {
+    /// An emitter writing under Vite's default `assets` directory.
+    #[cfg(test)]
     pub fn new(client_dir: &Path, base: &str, styles: Arc<Styles>) -> Emitter {
+        Emitter::in_assets_dir(client_dir, "assets", base, styles)
+    }
+
+    /// An emitter writing under the client's `build.assetsDir` (normalized:
+    /// `/`-separated, no surrounding slashes; empty is the client's root).
+    pub fn in_assets_dir(
+        client_dir: &Path,
+        assets_dir: &str,
+        base: &str,
+        styles: Arc<Styles>,
+    ) -> Emitter {
         Emitter {
-            assets_dir: client_dir.join("assets"),
+            client_dir: client_dir.to_path_buf(),
+            assets_dir: if assets_dir.is_empty() {
+                client_dir.to_path_buf()
+            } else {
+                client_dir.join(assets_dir)
+            },
             base: base.to_string(),
+            assets_url: format!("{base}{}", oj_config::assets_dir_path(assets_dir, "")),
             styles,
             written: Mutex::new(Default::default()),
             emitting: Mutex::new(Default::default()),
@@ -531,7 +556,7 @@ impl Emitter {
             std::fs::create_dir_all(&self.assets_dir).map_err(|e| e.to_string())?;
             std::fs::write(self.assets_dir.join(&name), bytes).map_err(|e| e.to_string())?;
         }
-        Ok(format!("{}assets/{name}", self.base))
+        Ok(format!("{}{name}", self.assets_url))
     }
 
     /// CSS a worker bundle's plugins routed through its `vite:css-post`:
@@ -673,7 +698,7 @@ impl Emitter {
             Some((i, old)) if old != url => {
                 urls[i] = url;
                 // Nothing else links the placeholder sheet.
-                if let Some((_, file)) = old.rsplit_once("assets/") {
+                if let Some(file) = old.strip_prefix(&self.assets_url) {
                     let _ = std::fs::remove_file(self.assets_dir.join(file));
                 }
             }
@@ -688,13 +713,16 @@ impl Emitter {
     /// compiled) appended to the first stylesheet the client emitted, as the
     /// plugin's generateBundle does (`current + '\n' + css`): the file keeps
     /// the name it was hashed and linked under. With no stylesheet it is the
-    /// plugin's writeBundle fallback, `assets/<name>`, linked from nowhere.
+    /// plugin's writeBundle fallback, `<assetsDir>/<name>`, linked from nowhere.
     pub fn append_generated_css(&self, name: &str, css: &str) -> Result<(), String> {
         // The first CSS asset in the bundle, a `?url` one as well (the app
         // links that one itself).
         let first = self.emitted_css.lock().unwrap().first().cloned();
-        let file = match first.as_deref().and_then(|u| u.rsplit_once("assets/")) {
-            Some((_, file)) => self.assets_dir.join(file),
+        let file = match first
+            .as_deref()
+            .and_then(|u| u.strip_prefix(&self.assets_url))
+        {
+            Some(file) => self.assets_dir.join(file),
             None => {
                 std::fs::create_dir_all(&self.assets_dir).map_err(|e| e.to_string())?;
                 return std::fs::write(self.assets_dir.join(name), css).map_err(|e| e.to_string());
@@ -847,8 +875,7 @@ impl Emitter {
             .unwrap()
             .insert(bundle.file_name.clone())
         {
-            let assets = self.assets_dir.parent().unwrap_or(&self.assets_dir);
-            let dest = assets.join(&bundle.file_name);
+            let dest = self.client_dir.join(&bundle.file_name);
             if let Some(parent) = dest.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
