@@ -1522,6 +1522,12 @@ fn build_router(
                 }),
             )
             .route(
+                "/@react-refresh",
+                get(|State(state): State<Arc<ServerState>>| async move {
+                    js(state.oj_paths.react_refresh_js.clone())
+                }),
+            )
+            .route(
                 "/@oj/refresh-preamble.js",
                 get(|State(state): State<Arc<ServerState>>| async move {
                     js(state.oj_paths.refresh_preamble_js.clone())

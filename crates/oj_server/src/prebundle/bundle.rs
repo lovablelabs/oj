@@ -421,6 +421,9 @@ impl Plugin for DepBundlePlugin {
 struct Built {
     file: String,
     cjs: bool,
+    /// The entry chunk's static chunk imports (rolldown's `chunk.imports`,
+    /// Vite's too): what its fileHash covers.
+    imports: Vec<String>,
 }
 
 impl Prebundle {
@@ -476,11 +479,11 @@ impl Prebundle {
                 }
                 None => (b.file.clone(), b.cjs || forced),
             };
-            // Vite hashes the entry chunk with its imports, so a rerun that
-            // moves a dep into another chunk reloads. A facade's own bytes
-            // name only its bundle, so the bundle is hashed with it: its
-            // chunk imports are what a rerun moves.
-            let file_hash = entry_hash(&self.out_dir, &file, &b.file);
+            // Vite's fileHash: the served file and its entry chunk's imports,
+            // so a rerun that moves a dep into another chunk reloads and one
+            // that only rewrites an entry's code does not. A facade's entry
+            // chunk is its bundle, whose imports are what a rerun moves.
+            let file_hash = entry_hash(&file, &b.imports);
             out.insert(
                 dep.clone(),
                 Prebuilt {
@@ -553,6 +556,7 @@ impl Prebundle {
                 Built {
                     file: chunk.filename.to_string(),
                     cjs: needs_interop(facade, &exports),
+                    imports: chunk.imports.iter().map(|i| i.to_string()).collect(),
                 },
             );
         }
@@ -656,20 +660,15 @@ fn is_export_identifier(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
 }
 
-/// A served entry's fileHash: the file the dep is served as, and the bundled
-/// entry behind it when that is another file (a named-export facade). Empty
-/// when a file is missing, which never matches, so the commit reloads.
-pub(super) fn entry_hash(out_dir: &Path, served: &str, bundled: &str) -> String {
-    let mut hasher = blake3::Hasher::new();
-    for file in std::iter::once(served).chain((bundled != served).then_some(bundled)) {
-        let Ok(bytes) = std::fs::read(out_dir.join(file)) else {
-            return String::new();
-        };
-        hasher.update(file.as_bytes());
-        hasher.update(b"\0");
-        hasher.update(&bytes);
-    }
-    hasher.finalize().to_hex()[..16].to_string()
+/// A served entry's fileHash, Vite's `getHash(metadata.hash + file +
+/// JSON.stringify(chunk.imports))`: the file the dep is served as and its
+/// entry chunk's imports, never the chunk's code. `metadata.hash` is left out:
+/// it is fixed for an optimizer's life (and a cached manifest loads only under
+/// its own), so it never tells two hashes apart.
+pub(super) fn entry_hash(served: &str, imports: &[String]) -> String {
+    let imports = serde_json::to_string(imports).unwrap_or_default();
+    let hash = blake3::hash(format!("{served}{imports}").as_bytes());
+    hash.to_hex()[..16].to_string()
 }
 
 const DEP_NAMES_JS: &str = include_str!("../assets/dep-names.mjs");
