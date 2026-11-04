@@ -61,3 +61,53 @@ export default { css: { devSourcemap: true }, plugins: [
     }
   },
 );
+
+// oj passes a vite.config app's `environments` to the host as read from the
+// file, and the host's config already holds the file (the app's resolve, or
+// the file itself when that failed). Merged a second time, every
+// per-environment array would carry each entry twice; Vite's own resolve
+// sees the file once.
+for (const throws of [false, true]) {
+  test(
+    `the file's per-environment arrays appear once ${throws ? "when the resolve fails" : "over the app's resolve"}`,
+    { skip: !fs.existsSync(viteSrc) && "fixture vite not installed" },
+    async () => {
+      const fx = tmpProject({ prefix: "oj-config-envs-" });
+      fs.symlinkSync(viteSrc, path.join(fx.root, "node_modules", "vite"), "dir");
+      const dump = path.join(fx.root, "dump.json");
+      const environments = { ssr: { resolve: { conditions: ["node-only"], noExternal: ["pkg-a"] } } };
+      fx.write(
+        "vite.config.mjs",
+        `import fs from "node:fs";
+export default { environments: ${JSON.stringify(environments)}, plugins: [
+  ${throws ? `{ name: "thrower", config() { throw new Error("boom"); } },` : ""}
+  { name: "dump", configResolved(c) { fs.writeFileSync(${JSON.stringify(dump)}, JSON.stringify(c.environments?.ssr?.resolve)); } },
+] };\n`,
+      );
+      const host = rpcSidecar("plugin-host.mjs", {
+        args: [
+          path.join(fx.root, "vite.config.mjs"),
+          JSON.stringify({
+            pluginsFormat: "vite",
+            // As oj sends it: the file's environments, verbatim.
+            config: { root: fx.root, base: "/", mode: "development", command: "serve", environments },
+            env: { command: "serve", mode: "development" },
+            environment: { name: "client", mode: "dev" },
+            ojStartMode: true,
+          }),
+        ],
+        env: { OJ_CACHE_ROOT: fx.root },
+        cwd: fx.root,
+      });
+      try {
+        await host.initSignal();
+        const ssr = JSON.parse(fs.readFileSync(dump, "utf8"));
+        assert.deepEqual(ssr.conditions, ["node-only"], JSON.stringify(ssr));
+        assert.deepEqual(ssr.noExternal, ["pkg-a"], JSON.stringify(ssr));
+      } finally {
+        host.close();
+        fx.cleanup();
+      }
+    },
+  );
+}

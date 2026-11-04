@@ -2225,6 +2225,11 @@ async function hostConfig(rc, list, { replay = false, container = main } = {}) {
   const rebase = !rc;
   // A copy: the hooks edit it in place, and every hostConfig starts from it.
   let config = plainCopy(initial.config ?? {});
+  // A vite.config app's `environments` in oj's values are the file's own,
+  // read verbatim, and both bases below already hold the file (a resolve
+  // only exists for a loaded file): merged again they would concatenate
+  // every per-environment array (`resolve.conditions`, `noExternal`) twice.
+  if (userViteConfig) delete config.environments;
   if (rc) {
     // The user's resolved config is the base; oj's own values (root, define,
     // server, environments) overlay it, but for the CLI-level ones Vite's
