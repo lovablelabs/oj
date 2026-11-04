@@ -356,13 +356,15 @@ pub(crate) fn hot_glue(
         )
     };
     let runtime = &paths.refresh_runtime;
+    // The preamble check is Vite's refresh wrapper's: only `$RefreshReg$`,
+    // which every preamble sets (oj's, Start's, plugin-react's documented one).
     format!(
         r#"
 {ctx}import * as RefreshRuntime from {runtime:?};
 const inWebWorker = typeof WorkerGlobalScope !== "undefined" && self instanceof WorkerGlobalScope;
 import * as __oj_currentExports from {self_specifier:?};
 if (import.meta.hot && !inWebWorker) {{
-  if (!window.__oj_refresh_installed__) {{
+  if (!window.$RefreshReg$) {{
     throw new Error("oj: Fast Refresh preamble missing; was index.html served by oj?");
   }}
   const currentExports = __oj_currentExports;

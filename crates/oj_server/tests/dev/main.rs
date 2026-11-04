@@ -85,6 +85,7 @@ mod pre_resolve_id;
 mod preprocessors;
 mod query_assets;
 mod redirect_passthrough;
+mod refresh_harness;
 mod resolve_created_files;
 mod restart_check;
 mod ssr_externalize;
