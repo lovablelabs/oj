@@ -159,7 +159,10 @@ test("configResolved sees Vite's lightningcss targets", async () => {
   assert.deepEqual(seen.css.lightningcss, {
     targets: { chrome: 7274496, edge: 7274496, firefox: 7471104, safari: 1049600, ios_saf: 1049600 },
   });
-  const own = await resolvedCss({ transformer: "lightningcss", lightningcss: { targets: { chrome: 1 }, drafts: { customMedia: true } } });
+  const own = await resolvedCss({
+    transformer: "lightningcss",
+    lightningcss: { targets: { chrome: 1 }, drafts: { customMedia: true } },
+  });
   assert.deepEqual(own.css.lightningcss, { targets: { chrome: 1 }, drafts: { customMedia: true } });
   const postcss = await resolvedCss({ devSourcemap: true });
   assert.equal(postcss.css.lightningcss, undefined, "postcss keeps no lightningcss options");

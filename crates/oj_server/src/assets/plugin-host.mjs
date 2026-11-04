@@ -576,14 +576,31 @@ const BASELINE_WIDELY_AVAILABLE_TARGET = ["chrome111", "edge111", "firefox114", 
 // `major << 16 | minor << 8`, the lowest version per browser kept. The `esYYYY`
 // expansion is left out: no default oj fills in names one.
 function lightningcssTargets(esbuildTarget) {
-  const browsers = { chrome: "chrome", edge: "edge", firefox: "firefox", hermes: false, ie: "ie", ios: "ios_saf", node: false, opera: "opera", rhino: false, safari: "safari" };
+  const browsers = {
+    chrome: "chrome",
+    edge: "edge",
+    firefox: "firefox",
+    hermes: false,
+    ie: "ie",
+    ios: "ios_saf",
+    node: false,
+    opera: "opera",
+    rhino: false,
+    safari: "safari",
+  };
   const targets = {};
   for (const entry of esbuildTarget) {
     if (entry === "esnext") continue;
     const index = entry.search(/\d/);
     const browser = index >= 0 ? browsers[entry.slice(0, index)] : undefined;
     if (browser === false) continue;
-    const [major, minor = 0] = index >= 0 ? entry.slice(index).split(".").map((v) => parseInt(v, 10)) : [];
+    const [major, minor = 0] =
+      index >= 0
+        ? entry
+            .slice(index)
+            .split(".")
+            .map((v) => parseInt(v, 10))
+        : [];
     if (!browser || Number.isNaN(major) || Number.isNaN(minor)) throw new Error(`Unsupported target "${entry}"`);
     const version = (major << 16) | (minor << 8);
     if (!targets[browser] || version < targets[browser]) targets[browser] = version;
