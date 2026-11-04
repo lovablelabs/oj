@@ -595,6 +595,10 @@ struct Chain {
     client: Option<Arg>,
 }
 
+/// A middleware chain: where its root ends, its links innermost first, and
+/// the spans of the calls inside it.
+type MiddlewareChain<'s> = (usize, Vec<Link<'s>>, Vec<(u32, u32)>);
+
 /// One `.name(..)` link of a middleware chain: from the end of what it is
 /// called on, parentheses included (where `.name` starts), to its own end.
 struct Link<'s> {
@@ -644,17 +648,14 @@ impl Finder<'_> {
     /// variable holding a middleware, followed by method links. Where its
     /// root ends, the links innermost first, and the spans of the calls
     /// inside it (the chain's own, never candidates). None when it is not one.
-    fn middleware_links<'s>(
-        &self,
-        call: &'s CallExpression,
-    ) -> Option<(usize, Vec<Link<'s>>, Vec<(u32, u32)>)> {
+    fn middleware_links<'s>(&self, call: &'s CallExpression) -> Option<MiddlewareChain<'s>> {
         if self.bindings.factory(&call.callee) == Some(Factory::Middleware) {
             return Some((call.span.end as usize, Vec::new(), Vec::new()));
         }
         let Expression::StaticMemberExpression(m) = call.callee.without_parentheses() else {
             return None;
         };
-        let (root_end, mut links, mut inner) = match m.object.without_parentheses() {
+        let (root_end, mut links, inner) = match m.object.without_parentheses() {
             Expression::CallExpression(c) => {
                 let (root_end, links, mut inner) = self.middleware_links(c)?;
                 inner.push((c.span.start, c.span.end));
