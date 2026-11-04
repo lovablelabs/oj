@@ -37,6 +37,20 @@ pub fn server_fn_id(rel: &str, name: &str) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!("{rel}#{name}").as_bytes())
 }
 
+/// The id Start's own compiler gives the same function in Vite dev
+/// (`generateFunctionId` in dev mode): `base64url(JSON.stringify({ file, export }))`,
+/// `file` being the dev-server specifier of the split provider module
+/// (`/<path>?tss-serverfn-split`) and `export` its handler. A module served
+/// file by file, outside oj's bundles, is compiled by Start's plugin and calls
+/// under this id.
+pub fn vite_dev_server_fn_id(rel: &str, name: &str) -> String {
+    use base64::Engine;
+    let file = serde_json::Value::String(format!("/{rel}?tss-serverfn-split"));
+    let export = serde_json::Value::String(format!("{name}_createServerFn_handler"));
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(format!("{{\"file\":{file},\"export\":{export}}}").as_bytes())
+}
+
 /// Every server function declared in `code`, in source order.
 pub fn find_server_fns(code: &str) -> Vec<ServerFn> {
     if !code.contains("createServerFn") {
@@ -524,6 +538,17 @@ mod tests {
     #[test]
     fn ids_match_node_buffer_base64url() {
         assert_eq!(server_fn_id("src/a.ts", "fn"), "c3JjL2EudHMjZm4");
+    }
+
+    /// Start 1.171's dev id, byte for byte: `Buffer.from(JSON.stringify({ file:
+    /// "/src/server/data.ts?tss-serverfn-split", export:
+    /// "getB_createServerFn_handler" })).toString("base64url")` in Node.
+    #[test]
+    fn vite_dev_ids_match_starts_dev_compiler() {
+        assert_eq!(
+            vite_dev_server_fn_id("src/server/data.ts", "getB"),
+            "eyJmaWxlIjoiL3NyYy9zZXJ2ZXIvZGF0YS50cz90c3Mtc2VydmVyZm4tc3BsaXQiLCJleHBvcnQiOiJnZXRCX2NyZWF0ZVNlcnZlckZuX2hhbmRsZXIifQ"
+        );
     }
 
     // The shape that blanked a preview: a comment inside the handler with an
