@@ -476,9 +476,11 @@ impl Prebundle {
                 }
                 None => (b.file.clone(), b.cjs || forced),
             };
-            let file_hash = std::fs::read(self.out_dir.join(&file))
-                .map(|bytes| blake3::hash(&bytes).to_hex()[..16].to_string())
-                .unwrap_or_default();
+            // Vite hashes the entry chunk with its imports, so a rerun that
+            // moves a dep into another chunk reloads. A facade's own bytes
+            // name only its bundle, so the bundle is hashed with it: its
+            // chunk imports are what a rerun moves.
+            let file_hash = entry_hash(&self.out_dir, &file, &b.file);
             out.insert(
                 dep.clone(),
                 Prebuilt {
@@ -652,6 +654,22 @@ fn is_export_identifier(name: &str) -> bool {
     let mut chars = name.chars();
     matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_' || c == '$')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+}
+
+/// A served entry's fileHash: the file the dep is served as, and the bundled
+/// entry behind it when that is another file (a named-export facade). Empty
+/// when a file is missing, which never matches, so the commit reloads.
+pub(super) fn entry_hash(out_dir: &Path, served: &str, bundled: &str) -> String {
+    let mut hasher = blake3::Hasher::new();
+    for file in std::iter::once(served).chain((bundled != served).then_some(bundled)) {
+        let Ok(bytes) = std::fs::read(out_dir.join(file)) else {
+            return String::new();
+        };
+        hasher.update(file.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(&bytes);
+    }
+    hasher.finalize().to_hex()[..16].to_string()
 }
 
 const DEP_NAMES_JS: &str = include_str!("../assets/dep-names.mjs");

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A dependency the startup scan missed (one an edit brings in, such as a Radix component) no longer leaves the page with two copies of React. Its re-optimization can move React into a new chunk, but React's prebundled entry is served through a named-export facade whose own bytes never change, so oj saw no changed entry and skipped the reload (Vite skips it only when no entry's chunk imports changed). The page kept the old React while the new dependency imported the new one: `Invalid hook call` and `Cannot read properties of null (reading 'useState')`. An entry's hash now covers the bundle behind its facade, so the rerun reloads.
+
 ## [0.4.0] - 2026-11-01
 
 ### Added
