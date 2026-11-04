@@ -58,6 +58,7 @@ mod lingui_macro_shim;
 mod listen;
 mod new_url_asset;
 mod optimize_alias;
+mod optimize_late_react_dep;
 mod optimize_linked;
 mod optimize_plan;
 mod optimize_reload;
