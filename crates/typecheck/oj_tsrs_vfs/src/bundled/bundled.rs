@@ -39,6 +39,8 @@ pub fn embedded_file(path: &str) -> Option<&'static str> {
 
 // TestingLibPath returns the path to the source bundled libs directory.
 // It's only valid to use where the source code is available.
+// Relative to this crate's root, where its own tests run: an absolute
+// CARGO_MANIFEST_DIR in the rlib fails builds that reject a baked-in source path.
 pub fn testing_lib_path() -> String {
-    tspath::normalize_slashes(concat!(env!("CARGO_MANIFEST_DIR"), "/libs"))
+    tspath::normalize_slashes("libs")
 }
