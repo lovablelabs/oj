@@ -16,6 +16,7 @@ pub const VITE_CONFIG_NODE_JS: &str = include_str!("../assets/vite-config-node.m
 pub const NATIVE_PLUGINS_JS: &str = include_str!("../assets/native-plugins.mjs");
 /// Sibling module (`./vite-html.mjs`) of the plugin host: Vite's dev HTML transform.
 pub const VITE_HTML_JS: &str = include_str!("../assets/vite-html.mjs");
+pub const SOURCEMAP_COMBINE_JS: &str = include_str!("../assets/sourcemap-combine.mjs");
 /// Vite's own picomatch and tinyglobby, loaded from the app's vite: a Start
 /// asset, which the plugin host imports as `./start/vite-globs.mjs`.
 pub const VITE_GLOBS_JS: &str = include_str!("../assets/start/vite-globs.mjs");

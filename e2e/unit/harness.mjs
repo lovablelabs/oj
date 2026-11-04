@@ -345,11 +345,13 @@ export function bootHost(fx, { prefix = "oj-host-run-" } = {}) {
   const hostScript = path.join(runDir, "plugin-host.mjs");
   fs.copyFileSync(asset("plugin-host.mjs"), hostScript);
   // The host's siblings (./discovered-deps.mjs, ./vite-config-node.mjs,
-  // ./vite-html.mjs) are materialized next to it by oj the same way.
+  // ./vite-html.mjs, ./sourcemap-combine.mjs) are materialized next to it by
+  // oj the same way.
   fs.copyFileSync(asset("discovered-deps.mjs"), path.join(runDir, "discovered-deps.mjs"));
   fs.copyFileSync(asset("vite-config-node.mjs"), path.join(runDir, "vite-config-node.mjs"));
   fs.copyFileSync(asset("native-plugins.mjs"), path.join(runDir, "native-plugins.mjs"));
   fs.copyFileSync(asset("vite-html.mjs"), path.join(runDir, "vite-html.mjs"));
+  fs.copyFileSync(asset("sourcemap-combine.mjs"), path.join(runDir, "sourcemap-combine.mjs"));
   fs.mkdirSync(path.join(runDir, "start"));
   for (const name of ["vite-globs.mjs", "glob-libs.mjs"]) {
     fs.copyFileSync(asset(`start/${name}`), path.join(runDir, "start", name));
