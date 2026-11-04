@@ -425,3 +425,53 @@ fn a_middlewares_server_half_stays_out_of_the_client() {
         "the client holds the middleware's server half"
     );
 }
+
+/// A `server-only` marker in dev: once Start's plugin knows the marked file,
+/// the importer's next compile gets the mock; once the marker is gone, the
+/// client gets the module itself again (the plugin forgets a changed file's
+/// marker).
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_serves_a_module_again_once_its_server_only_marker_is_gone() {
+    let marked = format!("import \"@tanstack/react-start/server-only\";\n{SECRET}");
+    let route = |n: u32| {
+        about(
+            &format!("import {{ secret }} from \"../lib/secret\"; // {n}"),
+            USES_SECRET,
+        )
+    };
+    let files = [
+        ("src/lib/secret.ts", marked),
+        ("src/routes/about.tsx", route(0)),
+    ];
+    let Some(app) = app_with("ip-dev-marker", &files, None) else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let dev = Server::oj_dev(&app.0);
+    // The first load resolves the importer before the marked file's own
+    // imports reveal the marker, as in Vite; the importer's next compile
+    // gets the mock.
+    let _ = visit(&dev).await;
+    std::fs::write(app.0.join("src/routes/about.tsx"), route(1)).unwrap();
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let (_, mocked, _, _) = visit(&dev).await;
+    assert_ne!(
+        mocked.as_deref(),
+        Some("server-secret"),
+        "the marked module ran in the page"
+    );
+
+    std::fs::write(app.0.join("src/lib/secret.ts"), SECRET).unwrap();
+    std::fs::write(app.0.join("src/routes/about.tsx"), route(2)).unwrap();
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let (hydrated, secret, _, errors) = visit(&dev).await;
+    assert_eq!(
+        secret.as_deref(),
+        Some("server-secret"),
+        "the unmarked module is still mocked; errors: {errors:?}\n{}",
+        dev.output()
+    );
+    assert!(hydrated, "the page did not hydrate: {errors:?}");
+}

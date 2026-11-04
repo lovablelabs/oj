@@ -2001,18 +2001,26 @@ function pluginContext(c) {
       // plugin per environment from that environment's config.resolve).
       const [envName, consumer] = environmentOf(c);
       if (c.bundle) {
-        const viaPlugin = await chain(null);
-        if (viaPlugin != null) return viaPlugin;
-        const pre = transformResolveStore.getStore();
-        if (pre && pre.map && pre.map.has(source)) {
-          const id = pre.map.get(source);
+        // The order the bundle's own resolve takes (StartHostPlugin's
+        // resolve_id), which is Vite's: the hooks before its resolver, the
+        // bundler's resolver (aliases included), then the rest of the chain,
+        // so a normal plugin never answers an id the resolver resolves.
+        const viaPre = await chain("pre");
+        if (viaPre != null) return viaPre;
+        const core = await (async () => {
+          const pre = transformResolveStore.getStore();
+          if (pre && pre.map && pre.map.has(source)) {
+            const id = pre.map.get(source);
+            return id == null ? null : { id };
+          }
+          const r = await asyncRpc("bundlerResolve", [source, importer ?? "", !!(options && options.isEntry)], c.id);
+          // Outside a running bundle (no bundler to ask) oj's resolver answers.
+          if (!r || !r.fallback) return r ?? null;
+          const id = await ctxRpc("resolve", [source, importer ?? "", envName, consumer]);
           return id == null ? null : { id };
-        }
-        const r = await asyncRpc("bundlerResolve", [source, importer ?? "", !!(options && options.isEntry)], c.id);
-        // Outside a running bundle (no bundler to ask) oj's resolver answers.
-        if (!r || !r.fallback) return r ?? null;
-        const id = await ctxRpc("resolve", [source, importer ?? "", envName, consumer]);
-        return id == null ? null : { id };
+        })();
+        if (core != null) return core;
+        return chain("post");
       }
       // Vite's chain: the `order: "pre"` hooks, then the alias plugin, whose
       // match resolves the aliased id again skipping itself, then the

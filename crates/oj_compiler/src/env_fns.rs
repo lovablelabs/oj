@@ -58,6 +58,28 @@ const FACTORIES: [(&str, Factory); 4] = [
 /// `stripMethodCall`s): the server implementation and its input validation.
 const SERVER_MIDDLEWARE_LINKS: [&str; 3] = ["server", "validator", "inputValidator"];
 
+/// The links that make a middleware call a compiler candidate (Start's
+/// `candidateCallIdentifier`). The compiler walks each candidate's chain
+/// inward, so a server or validator link goes only when one of these is at
+/// or after it: `createMiddleware().validator(v)` alone keeps its validator.
+const MIDDLEWARE_CANDIDATES: [&str; 3] = ["server", "client", "createMiddlewares"];
+
+/// The index of a chain's outermost candidate link.
+fn last_candidate(links: &[Link]) -> Option<usize> {
+    links
+        .iter()
+        .rposition(|l| MIDDLEWARE_CANDIDATES.contains(&l.name))
+}
+
+/// Whether the client drops any link of a middleware chain.
+fn strips_any(links: &[Link]) -> bool {
+    last_candidate(links).is_some_and(|c| {
+        links[..=c]
+            .iter()
+            .any(|l| SERVER_MIDDLEWARE_LINKS.contains(&l.name))
+    })
+}
+
 /// `code` with its environment functions compiled for `env`; `None` when it
 /// has none. `path` picks the parser's language. Like TanStack's compiler, it
 /// fails when this side's implementation is not a plain expression
@@ -607,8 +629,9 @@ impl Finder<'_> {
     ) -> Option<String> {
         let mut text = self.code[start..root_end].to_string();
         self.kept.push((start, root_end));
-        for link in links {
-            if SERVER_MIDDLEWARE_LINKS.contains(&link.name) {
+        let covered = last_candidate(links);
+        for (i, link) in links.iter().enumerate() {
+            if covered.is_some_and(|c| i <= c) && SERVER_MIDDLEWARE_LINKS.contains(&link.name) {
                 if link.no_args && link.name != "server" {
                     self.error.get_or_insert_with(|| {
                         format!(
@@ -669,12 +692,10 @@ impl<'a> Visit<'a> for Finder<'_> {
             if let Some(text) = text {
                 self.edits.push(Edit { start, end, text });
             }
-        } else if let Some((root_end, links)) = self.middleware_links(call).filter(|(_, links)| {
-            self.env == Env::Client
-                && links
-                    .iter()
-                    .any(|l| SERVER_MIDDLEWARE_LINKS.contains(&l.name))
-        }) {
+        } else if let Some((root_end, links)) = self
+            .middleware_links(call)
+            .filter(|(_, links)| self.env == Env::Client && strips_any(links))
+        {
             if let Some(text) = self.client_middleware(start, root_end, &links) {
                 self.edits.push(Edit { start, end, text });
             }
@@ -783,6 +804,24 @@ mod tests {
             "{client}"
         );
         assert!(!client.contains("secret"), "{client}");
+    }
+
+    #[test]
+    fn only_links_a_candidate_covers_are_dropped() {
+        let import = "import { createMiddleware } from \"@tanstack/react-start\";\n";
+        // No server, client or createMiddlewares link: no compiler candidate.
+        let alone = format!("{import}export const m = createMiddleware().validator(check);\n");
+        assert_eq!(rewrite_env_fns(&alone, "a.ts", Env::Client).unwrap(), None);
+        // A validator after the outermost candidate stays; the server goes.
+        let after =
+            format!("{import}export const m = createMiddleware().server(s).validator(check);\n");
+        let client = rewrite_env_fns(&after, "a.ts", Env::Client)
+            .unwrap()
+            .unwrap();
+        assert!(
+            client.contains("export const m = createMiddleware().validator(check);"),
+            "{client}"
+        );
     }
 
     #[test]
