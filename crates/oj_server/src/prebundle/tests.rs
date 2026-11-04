@@ -1221,3 +1221,30 @@ fn static_react_export_names_match_requiring_them() {
         }
     }
 }
+
+/// A named-export facade's bytes name only its bundle, so a rerun that moves
+/// the bundle's chunk imports must still change the dep's fileHash.
+#[test]
+fn a_facade_entry_hash_follows_its_bundle() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path();
+    let facade = "import __m from \"./react.mjs\";\nexport default __m;\n";
+    std::fs::write(out.join("react__oj_named.mjs"), facade).unwrap();
+    std::fs::write(out.join("react.mjs"), "import \"./react-aaaa.mjs\";\n").unwrap();
+    let before = super::bundle::entry_hash(out, "react__oj_named.mjs", "react.mjs");
+    assert_eq!(before.len(), 16);
+    std::fs::write(out.join("react.mjs"), "import \"./react-bbbb.mjs\";\n").unwrap();
+    let after = super::bundle::entry_hash(out, "react__oj_named.mjs", "react.mjs");
+    assert_ne!(before, after, "the bundle's chunk import moved");
+    assert_eq!(
+        after,
+        super::bundle::entry_hash(out, "react__oj_named.mjs", "react.mjs"),
+        "deterministic"
+    );
+    // An entry served as itself hashes that one file; a missing one is empty.
+    assert_eq!(
+        super::bundle::entry_hash(out, "react.mjs", "react.mjs").len(),
+        16
+    );
+    assert_eq!(super::bundle::entry_hash(out, "gone.mjs", "gone.mjs"), "");
+}
