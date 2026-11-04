@@ -4,7 +4,9 @@
 // Under Start a throwing config hook is skipped per plugin, and the host's
 // config falls back from the app's failed Vite resolve to its own: the hooks
 // that ran inside that resolve keep what they did (in-place edits included),
-// and none of them, the throwing one either, runs a second time.
+// and none of them, the throwing one either, runs a second time. The file's
+// own values stay under the hooks' (Vite merges the loaded file under the
+// inline config before any hook runs): its `css` reaches configResolved.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -25,10 +27,10 @@ test(
     fx.write(
       "vite.config.mjs",
       `import fs from "node:fs";
-export default { plugins: [
+export default { css: { devSourcemap: true }, plugins: [
   { name: "edits-in-place", config(c) { c.define ??= {}; c.define.__A__ = "1"; c.resolve ??= {}; c.resolve.dedupe = ["a-dedupe"]; } },
   { name: "thrower", config() { fs.appendFileSync(${JSON.stringify(calls)}, "thrower\\n"); throw new Error("boom"); } },
-  { name: "dump", configResolved(c) { fs.writeFileSync(${JSON.stringify(dump)}, JSON.stringify({ define: c.define, dedupe: c.resolve?.dedupe })); } },
+  { name: "dump", configResolved(c) { fs.writeFileSync(${JSON.stringify(dump)}, JSON.stringify({ define: c.define, dedupe: c.resolve?.dedupe, css: c.css })); } },
 ] };\n`,
     );
     const host = rpcSidecar("plugin-host.mjs", {
@@ -51,6 +53,8 @@ export default { plugins: [
       assert.equal(seen.define?.__A__, "1", JSON.stringify(seen));
       assert.deepEqual(seen.dedupe, ["a-dedupe"], JSON.stringify(seen));
       assert.equal(fs.readFileSync(calls, "utf8"), "thrower\n", "the throwing hook ran once");
+      assert.equal(seen.css?.devSourcemap, true, JSON.stringify(seen));
+      assert.equal(seen.css?.transformer, "postcss", JSON.stringify(seen));
     } finally {
       host.close();
       fx.cleanup();

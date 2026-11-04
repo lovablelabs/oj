@@ -597,6 +597,9 @@ function withResolvedDefaults(config) {
         chunkSizeWarningLimit: 500,
       },
       server: { headers: {} },
+      // Vite's resolveCSSOptions defaults, the user's css merged over them:
+      // @tailwindcss/vite reads `config?.css.devSourcemap` in configResolved.
+      css: { transformer: "postcss", preprocessorMaxWorkers: true, devSourcemap: false },
       define: {},
       resolve: {},
       optimizeDeps: {},
@@ -2228,6 +2231,12 @@ async function hostConfig(rc, list, { replay = false, container = main } = {}) {
     // resolve already took in; the plugin list is replaced below.
     const { plugins: _fresh, ...base } = rc;
     config = mergeConfigLite(base, withoutCliInline(config));
+  } else if (userViteConfig) {
+    // No resolve to start from (it failed, or the app has no Vite): the
+    // loaded file under oj's values, as Vite's resolveConfig merges the file
+    // under the inline config before any config hook runs.
+    const { plugins: _file, ...file } = plainCopy(userViteConfig);
+    config = mergeConfigLite(file, config);
   }
   // Coerce experimental.bundledDev off BEFORE the config/configResolved hooks
   // run, so TanStack's start-manifest-plugin emits the standard dev client entry

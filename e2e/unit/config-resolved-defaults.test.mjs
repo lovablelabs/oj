@@ -87,3 +87,65 @@ test("config and configResolved expose config.plugins and build defaults", async
     fx.cleanup();
   }
 });
+
+// Vite's resolved config always carries `css` (resolveCSSOptions: transformer
+// "postcss", preprocessorMaxWorkers true, devSourcemap false, the user's own
+// options over them). @tailwindcss/vite reads `config?.css.devSourcemap` in
+// configResolved, which throws without it, and its stylesheet then 500s.
+async function resolvedCss(userCss) {
+  const fx = tmpProject({ prefix: "oj-cfg-css-" });
+  fx.write(
+    "oj.plugins.mjs",
+    `let seen = null;
+     export default [
+       {
+         name: "reads-css",
+         configResolved(config) {
+           const devSourcemap = config?.css.devSourcemap ?? false;
+           seen = { css: config.css, devSourcemap };
+         },
+         transform(code, id) {
+           if (id.endsWith("probe.js")) return "export default " + JSON.stringify(seen) + ";";
+           return null;
+         },
+       },
+     ];\n`,
+  );
+  const host = rpcSidecar("plugin-host.mjs", {
+    args: [
+      path.join(fx.root, "oj.plugins.mjs"),
+      JSON.stringify({
+        config: { root: fx.root, ...(userCss ? { css: userCss } : {}) },
+        env: { command: "serve", mode: "development" },
+        environment: { name: "client" },
+      }),
+    ],
+    env: { OJ_CACHE_ROOT: fx.root },
+    cwd: fx.root,
+  });
+  try {
+    const res = await host.send({ id: 1, hook: "transform", args: ["", path.join(fx.root, "probe.js")] });
+    return JSON.parse(
+      JSON.parse(res.result)
+        .code.replace(/^export default /, "")
+        .replace(/;$/, ""),
+    );
+  } finally {
+    host.close();
+    fx.cleanup();
+  }
+}
+
+test("configResolved sees Vite's css defaults", async () => {
+  const seen = await resolvedCss(null);
+  assert.ok(seen, "configResolved ran without throwing");
+  assert.deepEqual(seen.css, { transformer: "postcss", preprocessorMaxWorkers: true, devSourcemap: false });
+  assert.equal(seen.devSourcemap, false);
+});
+
+test("configResolved keeps the user's css over the defaults", async () => {
+  const seen = await resolvedCss({ devSourcemap: true, modules: { localsConvention: "camelCase" } });
+  assert.equal(seen.devSourcemap, true);
+  assert.equal(seen.css.transformer, "postcss");
+  assert.deepEqual(seen.css.modules, { localsConvention: "camelCase" });
+});
