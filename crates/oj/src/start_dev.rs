@@ -330,7 +330,7 @@ pub async fn start_dev(
     oj_server::boot_phase("route tree ready");
     let resolver = {
         let (root, cache) = (root.clone(), cache.clone());
-        tokio::task::spawn_blocking(move || generate_server_fn_resolver(&root, &cache))
+        tokio::task::spawn_blocking(move || generate_server_fn_resolver(&root, &cache, true))
     };
     resolver.await??;
     oj_server::boot_phase("resolver ready");
@@ -1356,7 +1356,7 @@ async fn rebundle_worker(
                                 .is_ok_and(|s| s.contains("createServerFn")))
                 });
                 if routes_changed || server_fn_changed {
-                    let _ = generate_server_fn_resolver(&r, &c);
+                    let _ = generate_server_fn_resolver(&r, &c, true);
                 }
                 // A route-set change rewrites the generated tree, a bundled
                 // input, even when the triggering paths missed the closure.
@@ -1918,7 +1918,7 @@ pub async fn start_build(
         let (r, c) = (root.clone(), cache.clone());
         tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
             generate_route_tree(&r, &c, &gen_env)?;
-            generate_server_fn_resolver(&r, &c)
+            generate_server_fn_resolver(&r, &c, false)
         })
         .await??;
     }
@@ -2049,10 +2049,14 @@ fn generate_route_tree(
     Ok(())
 }
 
-fn generate_server_fn_resolver(root: &Path, cache: &Path) -> anyhow::Result<()> {
-    let store = codegen_store(root, cache, "server-fn", None, Some("createServerFn"), &[]);
-    let dest = cache.join("server-fn-resolver.mjs");
-    let outputs = [("server-fn-resolver.mjs", dest.as_path())];
+/// Dev and build resolvers differ (`dev` adds Start's dev ids), so each is
+/// cached under its own kind and written to its own file.
+fn generate_server_fn_resolver(root: &Path, cache: &Path, dev: bool) -> anyhow::Result<()> {
+    let kind = if dev { "server-fn" } else { "server-fn-build" };
+    let store = codegen_store(root, cache, kind, None, Some("createServerFn"), &[]);
+    let file = crate::start_bundle::server_fn_resolver_file(dev);
+    let dest = cache.join(file);
+    let outputs = [(file, dest.as_path())];
     let inputs = list_src_ts_files(root);
     match store.restore(&inputs, &outputs) {
         Ok(stats) => {
@@ -2068,7 +2072,7 @@ fn generate_server_fn_resolver(root: &Path, cache: &Path) -> anyhow::Result<()> 
         }
         Err(miss) => println!("  oj start: server-fn resolver cache miss ({miss})"),
     }
-    let count = crate::start_bundle::write_server_fn_resolver(root, cache)
+    let count = crate::start_bundle::write_server_fn_resolver(root, cache, dev)
         .map_err(|e| anyhow::anyhow!("server-fn resolver: {e}"))?;
     eprintln!(
         "{}: server-fn resolver ({count} function(s))",
