@@ -568,6 +568,46 @@ function fillResolvedServerScalars(server) {
   return server;
 }
 
+// Vite's ESBUILD_BASELINE_WIDELY_AVAILABLE_TARGET, the build target its
+// `'baseline-widely-available'` default stands for.
+const BASELINE_WIDELY_AVAILABLE_TARGET = ["chrome111", "edge111", "firefox114", "safari16.4", "ios16.4"];
+// Vite's convertTargets (plugins/css.ts) for browser-version targets: each
+// esbuild `<browser><major>[.<minor>]` becomes lightningcss's
+// `major << 16 | minor << 8`, the lowest version per browser kept. The `esYYYY`
+// expansion is left out: no default oj fills in names one.
+function lightningcssTargets(esbuildTarget) {
+  const browsers = {
+    chrome: "chrome",
+    edge: "edge",
+    firefox: "firefox",
+    hermes: false,
+    ie: "ie",
+    ios: "ios_saf",
+    node: false,
+    opera: "opera",
+    rhino: false,
+    safari: "safari",
+  };
+  const targets = {};
+  for (const entry of esbuildTarget) {
+    if (entry === "esnext") continue;
+    const index = entry.search(/\d/);
+    const browser = index >= 0 ? browsers[entry.slice(0, index)] : undefined;
+    if (browser === false) continue;
+    const [major, minor = 0] =
+      index >= 0
+        ? entry
+            .slice(index)
+            .split(".")
+            .map((v) => parseInt(v, 10))
+        : [];
+    if (!browser || Number.isNaN(major) || Number.isNaN(minor)) throw new Error(`Unsupported target "${entry}"`);
+    const version = (major << 16) | (minor << 8);
+    if (!targets[browser] || version < targets[browser]) targets[browser] = version;
+  }
+  return targets;
+}
+
 function withResolvedDefaults(config) {
   const c = config ?? {};
   const merged = mergeConfigLite(
@@ -597,6 +637,9 @@ function withResolvedDefaults(config) {
         chunkSizeWarningLimit: 500,
       },
       server: { headers: {} },
+      // Vite's resolveCSSOptions defaults, the user's css merged over them:
+      // @tailwindcss/vite reads `config?.css.devSourcemap` in configResolved.
+      css: { transformer: "postcss", preprocessorMaxWorkers: true, devSourcemap: false },
       define: {},
       resolve: {},
       optimizeDeps: {},
@@ -611,6 +654,12 @@ function withResolvedDefaults(config) {
     },
     c,
   );
+  // resolveCSSOptions: the lightningcss transformer gets Vite's baseline
+  // browser targets unless the user set their own.
+  if (merged.css?.transformer === "lightningcss") {
+    merged.css.lightningcss ??= {};
+    merged.css.lightningcss.targets ??= lightningcssTargets(BASELINE_WIDELY_AVAILABLE_TARGET);
+  }
   if (typeof merged.createResolver !== "function") merged.createResolver = makeCreateResolver(merged);
   // Vite's resolved config ALWAYS carries an absolute `cacheDir`
   // (config.ts: user value resolved from root, else `node_modules/.vite`
@@ -2222,12 +2271,23 @@ async function hostConfig(rc, list, { replay = false, container = main } = {}) {
   const rebase = !rc;
   // A copy: the hooks edit it in place, and every hostConfig starts from it.
   let config = plainCopy(initial.config ?? {});
+  // A vite.config app's `environments` in oj's values are the file's own,
+  // read verbatim, and both bases below already hold the file (a resolve
+  // only exists for a loaded file): merged again they would concatenate
+  // every per-environment array (`resolve.conditions`, `noExternal`) twice.
+  if (userViteConfig) delete config.environments;
   if (rc) {
     // The user's resolved config is the base; oj's own values (root, define,
     // server, environments) overlay it, but for the CLI-level ones Vite's
     // resolve already took in; the plugin list is replaced below.
     const { plugins: _fresh, ...base } = rc;
     config = mergeConfigLite(base, withoutCliInline(config));
+  } else if (userViteConfig) {
+    // No resolve to start from (it failed, or the app has no Vite): the
+    // loaded file under oj's values, as Vite's resolveConfig merges the file
+    // under the inline config before any config hook runs.
+    const { plugins: _file, ...file } = plainCopy(userViteConfig);
+    config = mergeConfigLite(file, config);
   }
   // Coerce experimental.bundledDev off BEFORE the config/configResolved hooks
   // run, so TanStack's start-manifest-plugin emits the standard dev client entry
