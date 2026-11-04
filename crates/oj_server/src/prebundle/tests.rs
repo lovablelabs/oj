@@ -1266,7 +1266,7 @@ async fn a_rerun_reloads_on_moved_chunk_imports_not_on_code() {
         "late-a",
         &[
             ("index.js", "import { shared } from \"./shared.js\";\nexport const a = () => shared + \"-v1\";\n"),
-            ("shared.js", "export const shared = \"s\";\n"),
+            ("shared.js", "export const shared = { id: \"s\" };\n"),
         ],
     );
     let only_a = || OptimizeInput {
@@ -1308,7 +1308,7 @@ async fn a_rerun_reloads_on_moved_chunk_imports_not_on_code() {
         .await;
     let code = app.read_out(&both["late-a"].file);
     assert!(
-        code.contains("import "),
+        code.contains("from \"./"),
         "late-a now imports a chunk: {code}"
     );
     assert_ne!(
