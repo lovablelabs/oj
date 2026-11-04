@@ -15,11 +15,21 @@ use crate::App;
 
 const WAIT: Duration = Duration::from_secs(20);
 
-/// plugin-react's preamble (`preambleCode`), as a harness page inlines it.
+/// The preamble plugin-react documented before 6, as a harness page inlines it.
 const PREAMBLE: &str = r#"import RefreshRuntime from "/@react-refresh";
 RefreshRuntime.injectIntoGlobalHook(window);
 window.$RefreshReg$ = () => {};
 window.$RefreshSig$ = () => (type) => type;"#;
+
+/// plugin-react 6's own `preambleCode` (base `/`): a named import.
+const PREAMBLE_6: &str = r#"import { injectIntoGlobalHook } from "/@react-refresh";
+injectIntoGlobalHook(window);
+window.$RefreshReg$ = () => {};
+window.$RefreshSig$ = () => (type) => type;"#;
+
+/// The same preamble from an app module the page imports (a test setup
+/// file), which oj compiles: its `/@react-refresh` import is oj's runtime.
+const FROM_SOURCE: &str = r#"import "/src/preamble.ts";"#;
 
 /// The preamble's stubs alone, which Vite's check accepts.
 const STUBS: &str = r#"window.$RefreshReg$ = () => {};
@@ -41,7 +51,7 @@ fn config() -> String {
     name: "harness",
     configureServer(server) {{
       server.middlewares.use((req, res, next) => {{
-        const pages = {{ "/harness": "{full}", "/stubs": "{stubs}" }};
+        const pages = {{ "/harness": "{full}", "/stubs": "{stubs}", "/named": "{named}", "/source": "{source}" }};
         if (!(req.url in pages)) return next();
         res.setHeader("content-type", "text/html");
         res.end(pages[req.url]);
@@ -52,6 +62,8 @@ fn config() -> String {
 "#,
         full = page(PREAMBLE),
         stubs = page(STUBS),
+        named = page(PREAMBLE_6),
+        source = page(FROM_SOURCE),
     )
 }
 
@@ -70,6 +82,7 @@ async fn a_harness_page_mounts_a_component_with_vites_preamble() {
             "import { useState } from \"react\";\n\
              export function Card() {\n  const [text] = useState(\"card-mounted\");\n  return <p id=\"card\">{text}</p>;\n}\n",
         ),
+        ("src/preamble.ts", PREAMBLE_6),
         (
             "src/mount.tsx",
             "import { createRoot } from \"react-dom/client\";\nimport { Card } from \"./Card\";\n\
@@ -91,7 +104,7 @@ async fn a_harness_page_mounts_a_component_with_vites_preamble() {
     );
 
     let listening = server.listen().await;
-    for path in ["/harness", "/stubs"] {
+    for path in ["/harness", "/stubs", "/named", "/source"] {
         let page = Page::open(&format!("http://127.0.0.1:{}{path}", listening.addr.port())).await;
         let mounted = page
             .poll(
