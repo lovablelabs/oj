@@ -359,7 +359,10 @@ Three transform sites share that id:
   the extracted function, so the browser makes an HTTP RPC to `/_serverFn/<id>`
   instead of running the handler.
 - The resolver. `write_server_fn_resolver` scans `src/` for the same declarations and
-  writes a manifest mapping each id to its module's exported handler. Each
+  writes a manifest mapping each id to its module's exported handler. In dev it
+  also maps Start's own Vite dev id (`base64url({ file, export })`), which a
+  module imported by its source path calls under; a build maps oj's ids only,
+  as a Vite build knows only its build ids. Each
   module loads on the first call through a literal relative `import()`, which
   the dev loader hook resolves and the prod server bundle bundles, as Start's
   own build resolver does. A static import would run every `*.functions.ts`

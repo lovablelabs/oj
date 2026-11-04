@@ -139,17 +139,27 @@ async fn renders_and_calls(label: &str, server: &Server) {
         }
         page.close().await;
     }
-    // Start's Vite dev id for the same function resolves to it as well.
+    // Start's Vite dev id for the same function resolves to it in dev; a
+    // build, like a Vite build, does not know it.
     let id = oj_compiler::server_fns::vite_dev_server_fn_id(
         "src/server/guarded.functions.ts",
         "guarded",
     );
     let (status, body) = server.call(&id);
-    assert!(
-        status == 200 && body.contains("guarded-POST"),
-        "{label}: the server fn by Start's dev id answered {status} {body:?}, want guarded-POST\n{}",
-        server.output()
-    );
+    if label == "dev" {
+        assert!(
+            status == 200 && body.contains("guarded-POST"),
+            "{label}: the server fn by Start's dev id answered {status} {body:?}, want guarded-POST\n{}",
+            server.output()
+        );
+    } else {
+        assert_eq!(status, 500, "{label}: the server fn by Start's dev id");
+        assert!(
+            server.logs(&format!("Server function info not found for {id}")),
+            "{label}: Start's dev id did not fail as an unknown id\n{}",
+            server.output()
+        );
+    }
     let (status, _) = server.call("constructor");
     assert_eq!(status, 500, "{label}: /_serverFn/constructor");
     assert!(
