@@ -374,12 +374,20 @@ pub(crate) fn write_server_fn_resolver(root: &Path, cache: &Path) -> std::io::Re
             "let {var};\nconst {var}_load = async () => ({var} ??= await import({}));\n",
             json(&spec)
         ));
+        // Each function answers to oj's id and to the one Start's plugin
+        // gives it in Vite dev, which a file imported outside oj's bundles
+        // calls under (a browser `import("/src/x.functions.ts")`).
         for f in fns {
-            manifest.push_str(&format!(
-                "  {}: {{ functionName: {}, importer: {var}_load }},\n",
-                json(&oj_compiler::server_fns::server_fn_id(&rel, &f.name)),
-                json(&format!("{}_createServerFn_handler", f.name)),
-            ));
+            let handler = json(&format!("{}_createServerFn_handler", f.name));
+            for id in [
+                oj_compiler::server_fns::server_fn_id(&rel, &f.name),
+                oj_compiler::server_fns::vite_dev_server_fn_id(&rel, &f.name),
+            ] {
+                manifest.push_str(&format!(
+                    "  {}: {{ functionName: {handler}, importer: {var}_load }},\n",
+                    json(&id),
+                ));
+            }
             count += 1;
         }
     }
@@ -519,13 +527,18 @@ mod tests {
         );
         // Both functions of the file share its one importer.
         assert_eq!(out.matches("import(").count(), 1, "{out}");
-        let id = oj_compiler::server_fns::server_fn_id("src/server/data.ts", "getB");
-        assert!(
-            out.contains(&format!(
-                "\"{id}\": {{ functionName: \"getB_createServerFn_handler\", importer: __m0_load }},"
-            )),
-            "{out}"
-        );
+        // Under oj's id and Start's Vite dev id alike.
+        for id in [
+            oj_compiler::server_fns::server_fn_id("src/server/data.ts", "getB"),
+            oj_compiler::server_fns::vite_dev_server_fn_id("src/server/data.ts", "getB"),
+        ] {
+            assert!(
+                out.contains(&format!(
+                    "\"{id}\": {{ functionName: \"getB_createServerFn_handler\", importer: __m0_load }},"
+                )),
+                "{out}"
+            );
+        }
         // Only the manifest's own keys are ids, never `Object.prototype` names.
         assert!(
             out.contains("const manifest = {\n  __proto__: null,\n"),

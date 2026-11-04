@@ -121,8 +121,35 @@ async fn renders_and_calls(label: &str, server: &Server) {
             server.output()
         );
         assert_eq!(page.errors(), Vec::<String>::new(), "{label}: page errors");
+        // The module imported by its source path, outside oj's client bundle,
+        // as a browser test does in Vite dev: Start's plugin compiles it and
+        // its stub calls under Start's dev id.
+        if label == "dev" {
+            let out: String = page
+                .eval(
+                    "import('/src/server/guarded.functions.ts').then((m) => m.guarded()).then((r) => String(r), (e) => 'error ' + String(e))",
+                )
+                .await;
+            assert_eq!(
+                out,
+                "guarded-POST",
+                "{label}: the source-imported function's call\n{}",
+                server.output()
+            );
+        }
         page.close().await;
     }
+    // Start's Vite dev id for the same function resolves to it as well.
+    let id = oj_compiler::server_fns::vite_dev_server_fn_id(
+        "src/server/guarded.functions.ts",
+        "guarded",
+    );
+    let (status, body) = server.call(&id);
+    assert!(
+        status == 200 && body.contains("guarded-POST"),
+        "{label}: the server fn by Start's dev id answered {status} {body:?}, want guarded-POST\n{}",
+        server.output()
+    );
     let (status, _) = server.call("constructor");
     assert_eq!(status, 500, "{label}: /_serverFn/constructor");
     assert!(

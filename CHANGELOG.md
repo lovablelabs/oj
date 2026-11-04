@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A TanStack Start server function imported by its source path in dev (`import("/src/x.functions.ts")` from a browser test) can be called. Start's Vite plugin compiles such a module with its own dev id, `base64url({ file, export })`, which oj's resolver did not know, so the call failed with `Server function info not found`. The resolver now maps each server function under both ids.
+
 ## [0.4.0] - 2026-11-01
 
 ### Added
