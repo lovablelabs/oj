@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A dependency the startup scan missed (one an edit brings in, such as a Radix component) no longer leaves the page with two copies of React. Its re-optimization can move React into a new chunk, but React's prebundled entry is served through a named-export facade whose own bytes never change, so oj saw no changed entry and skipped the reload (Vite skips it only when no entry's chunk imports changed). The page kept the old React while the new dependency imported the new one: `Invalid hook call` and `Cannot read properties of null (reading 'useState')`. An entry's hash now covers the bundle behind its facade, so the rerun reloads.
+- A TanStack Start server function imported by its source path in dev (`import("/src/x.functions.ts")` from a browser test) can be called. Start's Vite plugin compiles such a module with its own dev id, `base64url({ file, export })`, which oj's resolver did not know, so the call failed with `Server function info not found`. The resolver now maps each server function under both ids.
 
 ## [0.4.0] - 2026-11-01
 

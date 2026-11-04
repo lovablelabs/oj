@@ -141,7 +141,7 @@ impl StartConfig {
         let mut out = self.client_aliases();
         out.push((
             "#tanstack-start-server-fn-resolver".into(),
-            self.cache.join("server-fn-resolver.mjs"),
+            self.cache.join(server_fn_resolver_file(false)),
         ));
         out.push((
             "@tanstack/react-start/server-entry".into(),
@@ -324,8 +324,16 @@ impl StartConfig {
 /// loaded module): a static import would evaluate every `*.functions.ts`
 /// inside the framework's import of the resolver, a cycle back through
 /// `@tanstack/react-start` that can run one before its middleware
-/// initializes. How many functions it maps.
-pub(crate) fn write_server_fn_resolver(root: &Path, cache: &Path) -> std::io::Result<usize> {
+/// initializes. In dev (`dev`) each function also answers to Start's own Vite
+/// dev id; a build maps oj's ids only, as a Vite build knows only its build
+/// ids. Each writes its own file (`server_fn_resolver_file`), so a build run
+/// beside a dev server never swaps the dev resolver out. How many functions
+/// it maps.
+pub(crate) fn write_server_fn_resolver(
+    root: &Path,
+    cache: &Path,
+    dev: bool,
+) -> std::io::Result<usize> {
     let mut files = Vec::new();
     let mut stack = vec![root.join("src")];
     while let Some(dir) = stack.pop() {
@@ -374,12 +382,23 @@ pub(crate) fn write_server_fn_resolver(root: &Path, cache: &Path) -> std::io::Re
             "let {var};\nconst {var}_load = async () => ({var} ??= await import({}));\n",
             json(&spec)
         ));
+        // In dev each function answers to oj's id and to the one Start's
+        // plugin gives it in Vite dev, which a file imported outside oj's
+        // bundles calls under (a browser `import("/src/x.functions.ts")`).
         for f in fns {
-            manifest.push_str(&format!(
-                "  {}: {{ functionName: {}, importer: {var}_load }},\n",
-                json(&oj_compiler::server_fns::server_fn_id(&rel, &f.name)),
-                json(&format!("{}_createServerFn_handler", f.name)),
-            ));
+            let handler = json(&format!("{}_createServerFn_handler", f.name));
+            let mut ids = vec![oj_compiler::server_fns::server_fn_id(&rel, &f.name)];
+            if dev {
+                ids.push(oj_compiler::server_fns::vite_dev_server_fn_id(
+                    &rel, &f.name,
+                ));
+            }
+            for id in ids {
+                manifest.push_str(&format!(
+                    "  {}: {{ functionName: {handler}, importer: {var}_load }},\n",
+                    json(&id),
+                ));
+            }
             count += 1;
         }
     }
@@ -400,8 +419,17 @@ pub(crate) fn write_server_fn_resolver(root: &Path, cache: &Path) -> std::io::Re
          if (!action) throw new Error(\"Server function module export not resolved for serverFn ID: \" + id);\n  \
          return action;\n}}\n"
     );
-    std::fs::write(cache.join("server-fn-resolver.mjs"), out)?;
+    std::fs::write(cache.join(server_fn_resolver_file(dev)), out)?;
     Ok(count)
+}
+
+/// The resolver's file in the Start cache: dev's, or the build's.
+pub(crate) fn server_fn_resolver_file(dev: bool) -> &'static str {
+    if dev {
+        "server-fn-resolver.mjs"
+    } else {
+        "server-fn-resolver.build.mjs"
+    }
 }
 
 fn json(s: &str) -> String {
@@ -504,7 +532,7 @@ mod tests {
             "export const c = createServerFn().handler(() => 3);\n",
         )
         .unwrap();
-        assert_eq!(write_server_fn_resolver(&root, &cache).unwrap(), 2);
+        assert_eq!(write_server_fn_resolver(&root, &cache, true).unwrap(), 2);
         let out = std::fs::read_to_string(cache.join("server-fn-resolver.mjs")).unwrap();
         // Loaded on the first call, never imported statically: a static import
         // runs the module inside the framework's import of the resolver.
@@ -519,13 +547,18 @@ mod tests {
         );
         // Both functions of the file share its one importer.
         assert_eq!(out.matches("import(").count(), 1, "{out}");
-        let id = oj_compiler::server_fns::server_fn_id("src/server/data.ts", "getB");
-        assert!(
-            out.contains(&format!(
-                "\"{id}\": {{ functionName: \"getB_createServerFn_handler\", importer: __m0_load }},"
-            )),
-            "{out}"
-        );
+        // Under oj's id and Start's Vite dev id alike.
+        for id in [
+            oj_compiler::server_fns::server_fn_id("src/server/data.ts", "getB"),
+            oj_compiler::server_fns::vite_dev_server_fn_id("src/server/data.ts", "getB"),
+        ] {
+            assert!(
+                out.contains(&format!(
+                    "\"{id}\": {{ functionName: \"getB_createServerFn_handler\", importer: __m0_load }},"
+                )),
+                "{out}"
+            );
+        }
         // Only the manifest's own keys are ids, never `Object.prototype` names.
         assert!(
             out.contains("const manifest = {\n  __proto__: null,\n"),
@@ -542,6 +575,16 @@ mod tests {
         }
         assert!(!out.contains("skip.js") && !out.contains("plain"), "{out}");
         assert!(out.contains("export async function getServerFnById(id)"));
+        // A build maps oj's ids only: a Vite build knows no dev id.
+        // Into its own file: the dev resolver stays as it was.
+        assert_eq!(write_server_fn_resolver(&root, &cache, false).unwrap(), 2);
+        let dev_out = std::fs::read_to_string(cache.join("server-fn-resolver.mjs")).unwrap();
+        assert_eq!(dev_out, out);
+        let out = std::fs::read_to_string(cache.join("server-fn-resolver.build.mjs")).unwrap();
+        let id = oj_compiler::server_fns::server_fn_id("src/server/data.ts", "getB");
+        assert!(out.contains(&format!("\"{id}\": ")), "{out}");
+        let dev_id = oj_compiler::server_fns::vite_dev_server_fn_id("src/server/data.ts", "getB");
+        assert!(!out.contains(&dev_id), "{out}");
         let _ = std::fs::remove_dir_all(&root);
     }
 
