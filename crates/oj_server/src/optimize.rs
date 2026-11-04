@@ -56,10 +56,10 @@ pub struct DepMeta {
     /// Importer rewrite target `/@oj-deps/<file>?v=<version>`; the version query
     /// is what lets the response be served immutable (Vite's ensureVersionQuery).
     pub url: String,
-    /// Content hash of the entry as served, a named-export facade's bundle
-    /// included (Vite's fileHash): a re-optimization whose previously served
-    /// entries all hash the same commits without a reload. Empty for a
-    /// provisional (registered, not yet bundled) entry.
+    /// Vite's fileHash: the served file and its entry chunk's imports (a
+    /// named-export facade's bundle's), not its code. A re-optimization whose
+    /// previously served entries all hash the same commits without a reload.
+    /// Empty for a provisional (registered, not yet bundled) entry.
     pub file_hash: String,
 }
 
