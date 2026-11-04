@@ -62,6 +62,8 @@ const SERVER_MIDDLEWARE_LINKS: [&str; 3] = ["server", "validator", "inputValidat
 /// `candidateCallIdentifier`). The compiler walks each candidate's chain
 /// inward, so a server or validator link goes only when one of these is at
 /// or after it: `createMiddleware().validator(v)` alone keeps its validator.
+/// Every covered link goes, a repeated one too, where the compiler strips
+/// only the innermost of each name and would ship a second `.server(..)`.
 const MIDDLEWARE_CANDIDATES: [&str; 3] = ["server", "client", "createMiddlewares"];
 
 /// The index of a chain's outermost candidate link.

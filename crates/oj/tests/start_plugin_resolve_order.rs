@@ -4,8 +4,10 @@
 //! A plugin's `this.resolve` inside a Start bundle takes Vite's order (its
 //! pluginContainer resolve): the hooks before Vite's resolver, the resolver,
 //! then the normal ones. An `enforce: "pre"` plugin resolving a relative
-//! import gets the file, never a normal plugin's answer for that id, and an id
-//! the resolver cannot find still reaches the normal plugin that serves it.
+//! import gets the file, never a normal plugin's answer for that id; an id the
+//! resolver cannot find still reaches the normal plugin that serves it; and an
+//! aliased import reaches the `enforce: "pre"` hooks already aliased, as
+//! Vite's alias plugin re-resolves it before them.
 
 #[allow(dead_code)]
 mod start_app;
@@ -18,8 +20,21 @@ const PLUGINS: &str = r#"function resolveOrderPlugins() {
       name: "fixture-pre-delegates",
       enforce: "pre",
       async resolveId(source, importer) {
+        // The aliased import only ever reaches this.resolve: the bundle
+        // aliases the module's own imports before any hook sees them.
+        if (source === "order-via-alias") return this.resolve("@order/aliased-probe", importer, { skipSelf: true });
         if (source !== "./order-probe" && source !== "order-fallback") return;
         return this.resolve(source, importer, { skipSelf: true });
+      },
+    },
+    {
+      name: "fixture-pre-sees-aliases",
+      enforce: "pre",
+      resolveId(id) {
+        if (id.endsWith("/src/routes/aliased-probe")) return "\0order-alias-seen";
+      },
+      load(id) {
+        if (id === "\0order-alias-seen") return 'export const aliased = "order-alias-seen";';
       },
     },
     {
@@ -43,6 +58,11 @@ fn write_app(root: &Path) {
         "export const probe = \"order-file-ok\";\n",
     )
     .unwrap();
+    std::fs::write(
+        root.join("src/routes/aliased-probe.ts"),
+        "export const aliased = \"order-alias-unseen\";\n",
+    )
+    .unwrap();
     let about = root.join("src/routes/about.tsx");
     let source = std::fs::read_to_string(&about).unwrap();
     let import = "import { rootRoute } from \"./__root\";";
@@ -55,11 +75,11 @@ fn write_app(root: &Path) {
         .replacen(
             import,
             &format!(
-                "{import}\nimport {{ probe }} from \"./order-probe\";\nimport {{ fallback }} from \"order-fallback\";"
+                "{import}\nimport {{ probe }} from \"./order-probe\";\nimport {{ fallback }} from \"order-fallback\";\nimport {{ aliased }} from \"order-via-alias\";"
             ),
             1,
         )
-        .replacen(heading, &format!("{heading}\n      <p id=\"order\">{{probe}}|{{fallback}}</p>"), 1);
+        .replacen(heading, &format!("{heading}\n      <p id=\"order\">{{probe}}|{{fallback}}|{{aliased}}</p>"), 1);
     std::fs::write(&about, source).unwrap();
     let config = root.join("vite.config.ts");
     let source = std::fs::read_to_string(&config).unwrap();
@@ -73,6 +93,14 @@ fn write_app(root: &Path) {
         .replacen(
             "export default defineConfig(",
             &format!("{PLUGINS}\nexport default defineConfig("),
+            1,
+        )
+        .replacen(
+            "  publicDir: ",
+            &format!(
+                "  resolve: {{ alias: {{ \"@order\": {:?} }} }},\n  publicDir: ",
+                root.join("src/routes").display().to_string()
+            ),
             1,
         );
     std::fs::write(&config, source).unwrap();
@@ -110,5 +138,9 @@ fn a_pre_plugins_resolve_takes_vites_order_in_a_start_bundle() {
     assert!(
         js.contains("order-fallback-ok"),
         "the id the resolver cannot find never reached the normal plugin"
+    );
+    assert!(
+        js.contains("order-alias-seen") && !js.contains("order-alias-unseen"),
+        "the enforce: \"pre\" hooks saw the import before its alias"
     );
 }
