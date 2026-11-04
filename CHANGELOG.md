@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The resolved config plugins get always has `css`, with Vite's defaults (`transformer: "postcss"`, `preprocessorMaxWorkers: true`, `devSourcemap: false`) under the app's own `css`. When the app's Vite resolve failed, it had none, and `@tailwindcss/vite`, which reads `config?.css.devSourcemap` in `configResolved`, threw: the app's stylesheet answered 500 and the page rendered unstyled.
 - When the app's Vite resolve fails (or the app has no Vite), the config the plugin host falls back to keeps the config file's own values under oj's, as Vite's `resolveConfig` merges the file under the inline config. It held only oj's values, so a file's `css` (and its other settings) never reached the plugins.
 - A `vite.config` app's per-environment arrays (`environments.ssr.resolve.conditions`, `noExternal`) reach plugins once. oj passed the file's `environments` to the plugin host on top of a config that already held the file, so each entry appeared twice.
+- With `css.transformer: "lightningcss"`, the resolved config plugins get carries Vite's default `css.lightningcss.targets` (its baseline browsers: Chrome and Edge 111, Firefox 114, Safari and iOS 16.4) unless the app sets its own.
 
 ## [0.4.0] - 2026-11-01
 

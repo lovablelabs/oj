@@ -568,6 +568,29 @@ function fillResolvedServerScalars(server) {
   return server;
 }
 
+// Vite's ESBUILD_BASELINE_WIDELY_AVAILABLE_TARGET, the build target its
+// `'baseline-widely-available'` default stands for.
+const BASELINE_WIDELY_AVAILABLE_TARGET = ["chrome111", "edge111", "firefox114", "safari16.4", "ios16.4"];
+// Vite's convertTargets (plugins/css.ts) for browser-version targets: each
+// esbuild `<browser><major>[.<minor>]` becomes lightningcss's
+// `major << 16 | minor << 8`, the lowest version per browser kept. The `esYYYY`
+// expansion is left out: no default oj fills in names one.
+function lightningcssTargets(esbuildTarget) {
+  const browsers = { chrome: "chrome", edge: "edge", firefox: "firefox", hermes: false, ie: "ie", ios: "ios_saf", node: false, opera: "opera", rhino: false, safari: "safari" };
+  const targets = {};
+  for (const entry of esbuildTarget) {
+    if (entry === "esnext") continue;
+    const index = entry.search(/\d/);
+    const browser = index >= 0 ? browsers[entry.slice(0, index)] : undefined;
+    if (browser === false) continue;
+    const [major, minor = 0] = index >= 0 ? entry.slice(index).split(".").map((v) => parseInt(v, 10)) : [];
+    if (!browser || Number.isNaN(major) || Number.isNaN(minor)) throw new Error(`Unsupported target "${entry}"`);
+    const version = (major << 16) | (minor << 8);
+    if (!targets[browser] || version < targets[browser]) targets[browser] = version;
+  }
+  return targets;
+}
+
 function withResolvedDefaults(config) {
   const c = config ?? {};
   const merged = mergeConfigLite(
@@ -614,6 +637,12 @@ function withResolvedDefaults(config) {
     },
     c,
   );
+  // resolveCSSOptions: the lightningcss transformer gets Vite's baseline
+  // browser targets unless the user set their own.
+  if (merged.css?.transformer === "lightningcss") {
+    merged.css.lightningcss ??= {};
+    merged.css.lightningcss.targets ??= lightningcssTargets(BASELINE_WIDELY_AVAILABLE_TARGET);
+  }
   if (typeof merged.createResolver !== "function") merged.createResolver = makeCreateResolver(merged);
   // Vite's resolved config ALWAYS carries an absolute `cacheDir`
   // (config.ts: user value resolved from root, else `node_modules/.vite`

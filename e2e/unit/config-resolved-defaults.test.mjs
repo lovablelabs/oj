@@ -149,3 +149,18 @@ test("configResolved keeps the user's css over the defaults", async () => {
   assert.equal(seen.css.transformer, "postcss");
   assert.deepEqual(seen.css.modules, { localsConvention: "camelCase" });
 });
+
+// resolveCSSOptions: the lightningcss transformer gets Vite's baseline
+// browser targets (convertTargets of chrome111, edge111, firefox114,
+// safari16.4, ios16.4), the values Vite 8's own resolveConfig produces; the
+// user's own targets stay as they are.
+test("configResolved sees Vite's lightningcss targets", async () => {
+  const seen = await resolvedCss({ transformer: "lightningcss" });
+  assert.deepEqual(seen.css.lightningcss, {
+    targets: { chrome: 7274496, edge: 7274496, firefox: 7471104, safari: 1049600, ios_saf: 1049600 },
+  });
+  const own = await resolvedCss({ transformer: "lightningcss", lightningcss: { targets: { chrome: 1 }, drafts: { customMedia: true } } });
+  assert.deepEqual(own.css.lightningcss, { targets: { chrome: 1 }, drafts: { customMedia: true } });
+  const postcss = await resolvedCss({ devSourcemap: true });
+  assert.equal(postcss.css.lightningcss, undefined, "postcss keeps no lightningcss options");
+});
