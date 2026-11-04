@@ -19,6 +19,10 @@ pub(crate) struct OjPublicPaths {
     /// entry) still gets a full reload when its app graph fails to load.
     pub(crate) refresh_runtime_js: Bytes,
     pub(crate) refresh_preamble_js: Bytes,
+    /// `/@react-refresh`, plugin-react's runtime path, which pages written
+    /// for Vite import in their preamble: oj's runtime re-exported, so they
+    /// share the one instance oj's compiled modules register with.
+    pub(crate) react_refresh_js: Bytes,
 }
 
 impl OjPublicPaths {
@@ -31,8 +35,12 @@ impl OjPublicPaths {
             &format!("{refresh_runtime:?}"),
             1,
         );
+        let react_refresh_js = format!(
+            "export * from {refresh_runtime:?};\nexport {{ default }} from {refresh_runtime:?};\n"
+        );
         OjPublicPaths {
             refresh_preamble: at("/@oj/refresh-preamble.js"),
+            react_refresh_js: Bytes::from(react_refresh_js),
             refresh_runtime_js: Bytes::from(refresh_runtime_js),
             refresh_preamble_js: Bytes::from(refresh_preamble_js),
             client,

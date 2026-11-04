@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A page oj did not serve itself (a browser-test harness, an `<iframe>` fixture) can mount the app's components with Vite's React Refresh preamble. `/@react-refresh`, which plugin-react serves and its documented preamble imports, answered 404. It now serves oj's refresh runtime (re-exported, so the page shares the instance oj's modules use). A component module checks for `window.$RefreshReg$`, as Vite's refresh wrapper does, instead of oj's own flag, so the preamble's stubs alone are enough as they are under Vite. Before, both failed with `oj: Fast Refresh preamble missing`.
+
 ## [0.4.0] - 2026-11-01
 
 ### Added

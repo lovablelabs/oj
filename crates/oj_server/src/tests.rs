@@ -765,6 +765,14 @@ fn oj_modules_are_imported_under_the_base() {
         "{preamble}"
     );
     assert!(!preamble.contains(r#""/@oj/"#), "{preamble}");
+    // plugin-react's `/@react-refresh` re-exports the based runtime: one instance.
+    let react_refresh = std::str::from_utf8(&paths.react_refresh_js).unwrap();
+    assert_eq!(
+        react_refresh,
+        "export * from \"/app/@oj/refresh-runtime.js\";\nexport { default } from \"/app/@oj/refresh-runtime.js\";\n"
+    );
+    // A component module asks for what Vite's refresh wrapper does.
+    assert!(glue.contains("if (!window.$RefreshReg$)"), "{glue}");
     assert!(paths.owns("/app/@oj/refresh-runtime.js") && paths.owns("/@oj/routes.js"));
     assert!(!paths.owns("/app/src/main.tsx"));
 
