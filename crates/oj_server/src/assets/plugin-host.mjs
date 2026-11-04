@@ -35,6 +35,7 @@ import {
   resolveHtmlTransforms,
   transformDevHtml,
 } from "./vite-html.mjs";
+import { combineSourcemaps } from "./sourcemap-combine.mjs";
 import readline from "node:readline";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { format as formatUtil, stripVTControlCharacters } from "node:util";
@@ -2248,6 +2249,7 @@ async function runConfigHook(
 // configResolved over `list` with `resolved`, on Vite's minimal context.
 async function runConfigResolved(list, resolved, container = main) {
   const resolvedContext = minimalContext({ watchMode: command === "serve" });
+  await fillStartConfigContext(list, resolved, resolvedContext);
   for (const { p, fn } of hooksOf(list, "configResolved")) {
     initStage(`configResolved:${p.name ?? "?"}`);
     try {
@@ -2256,8 +2258,37 @@ async function runConfigResolved(list, resolved, container = main) {
       if (!ojStartMode) throw e;
       container.configHookSkipped = true;
       process.stderr.write(`${OJ} plugin host: configResolved(${p.name ?? "?"}) skipped: ${(e && e.message) || e}\n`);
+      if (isImportProtection(p)) disableImportProtection(list, e);
     }
   }
+}
+// Start's import protection (its resolve/transform plugin pair) runs as
+// Start ships it. It reads Start's config context, which the
+// `tanstack-start-core:config` plugin fills in its config hook; oj leaves that
+// plugin out (oj applies the config it returns itself), so the hook runs once
+// for that side effect alone and its answer is dropped.
+const IMPORT_PROTECTION = "tanstack-start-core:import-protection";
+const isImportProtection = (p) => typeof p?.name === "string" && p.name.startsWith(IMPORT_PROTECTION);
+const startConfigFilled = new WeakSet();
+async function fillStartConfigContext(list, resolved, ctx) {
+  if (!list.some(isImportProtection)) return;
+  const startConfig = allPlugins.find((p) => p?.name === "tanstack-start-core:config");
+  const hook = startConfig && hookFn(startConfig, "config");
+  if (!hook || startConfigFilled.has(startConfig)) return;
+  startConfigFilled.add(startConfig);
+  try {
+    await hook.call(ctx, plainCopy(resolved), { command, mode: env.mode, isSsrBuild: false, isPreview: false });
+  } catch {
+    // Import protection's configResolved then fails and turns it off.
+  }
+}
+// A pair that cannot read Start's config would check against an empty root:
+// both plugins leave every environment instead.
+function disableImportProtection(list, e) {
+  for (const p of list) if (isImportProtection(p)) p.applyToEnvironment = () => false;
+  process.stderr.write(
+    `${OJ} plugin host: Start import protection is off, its config did not resolve: ${(e && e.message) || e}\n`,
+  );
 }
 // Vite's resolveConfig over `rc` (the app's Vite resolve, or null) for the
 // plugins of `list`: their config hooks, then every environment's
@@ -4957,8 +4988,14 @@ async function transform(c, code, id, resolvedJson, phase) {
       }
       if (!hookTransformMatches(p.transform, id, current)) continue;
       let r;
+      // Rollup's transform context adds getCombinedSourcemap: the maps of the
+      // transforms before this one, collapsed back to the loaded code.
+      const ctx = Object.create(ctxFor(c, p));
+      const chainSoFar = maps.slice();
+      const brokenSoFar = mapBroken != null;
+      ctx.getCombinedSourcemap = () => combineSourcemaps(id, code, chainSoFar, brokenSoFar);
       try {
-        r = await handler.call(ctxFor(c, p), current, id, transformOptions);
+        r = await handler.call(ctx, current, id, transformOptions);
       } catch (e) {
         throw decoratePluginError(e, p, id);
       }

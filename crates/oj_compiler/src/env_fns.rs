@@ -8,7 +8,10 @@
 //! - `createIsomorphicFn().server(s).client(c)` becomes this side's function,
 //!   or a no-op when it has none;
 //! - `createServerOnlyFn(f)` / `createClientOnlyFn(f)` become `f` on their
-//!   side, and a function that throws on the other.
+//!   side, and a function that throws on the other;
+//! - `createMiddleware()` chains lose their `.server(..)`, `.validator(..)`
+//!   and `.inputValidator(..)` links on the client (handleCreateMiddleware),
+//!   keeping `.middleware(..)` and `.client(..)`.
 //!
 //! A call counts when its factory is imported from a `@tanstack/*` module
 //! (the framework packages re-export `@tanstack/start-fn-stubs`), by name or
@@ -41,13 +44,19 @@ enum Factory {
     Isomorphic,
     ServerOnly,
     ClientOnly,
+    Middleware,
 }
 
-const FACTORIES: [(&str, Factory); 3] = [
+const FACTORIES: [(&str, Factory); 4] = [
     ("createIsomorphicFn", Factory::Isomorphic),
     ("createServerOnlyFn", Factory::ServerOnly),
     ("createClientOnlyFn", Factory::ClientOnly),
+    ("createMiddleware", Factory::Middleware),
 ];
+
+/// The middleware links the client drops (handleCreateMiddleware's
+/// `stripMethodCall`s): the server implementation and its input validation.
+const SERVER_MIDDLEWARE_LINKS: [&str; 3] = ["server", "validator", "inputValidator"];
 
 /// `code` with its environment functions compiled for `env`; `None` when it
 /// has none. `path` picks the parser's language. Like TanStack's compiler, it
@@ -518,6 +527,15 @@ struct Chain {
     client: Option<Arg>,
 }
 
+/// One `.name(..)` link of a middleware chain: from the end of the call it
+/// is made on (where `.name` starts) to its own end.
+struct Link<'s> {
+    name: &'s str,
+    from: usize,
+    end: usize,
+    no_args: bool,
+}
+
 /// A factory call's implementation argument.
 #[derive(Clone, Copy)]
 enum Arg {
@@ -552,6 +570,60 @@ impl Finder<'_> {
             chain.client = Some(arg);
         }
         Some(chain)
+    }
+
+    /// `call` as `createMiddleware(..)` followed by method links: where the
+    /// factory call ends, and the links innermost first. None when it is not
+    /// one (a chain on a variable holding a middleware is left alone, as for
+    /// the other factories).
+    fn middleware_links<'s>(&self, call: &'s CallExpression) -> Option<(usize, Vec<Link<'s>>)> {
+        if self.bindings.factory(&call.callee) == Some(Factory::Middleware) {
+            return Some((call.span.end as usize, Vec::new()));
+        }
+        let Expression::StaticMemberExpression(m) = call.callee.without_parentheses() else {
+            return None;
+        };
+        let Expression::CallExpression(inner) = m.object.without_parentheses() else {
+            return None;
+        };
+        let (root_end, mut links) = self.middleware_links(inner)?;
+        links.push(Link {
+            name: m.property.name.as_str(),
+            from: inner.span.end as usize,
+            end: call.span.end as usize,
+            no_args: call.arguments.is_empty(),
+        });
+        Some((root_end, links))
+    }
+
+    /// The client's middleware chain at `start..root_end` + `links`: the
+    /// factory call and the links it keeps, each as written. None (and the
+    /// error recorded) for a validator link without its validator.
+    fn client_middleware(
+        &mut self,
+        start: usize,
+        root_end: usize,
+        links: &[Link],
+    ) -> Option<String> {
+        let mut text = self.code[start..root_end].to_string();
+        self.kept.push((start, root_end));
+        for link in links {
+            if SERVER_MIDDLEWARE_LINKS.contains(&link.name) {
+                if link.no_args && link.name != "server" {
+                    self.error.get_or_insert_with(|| {
+                        format!(
+                            "createMiddleware().{}() must be called with a validator!",
+                            link.name
+                        )
+                    });
+                    return None;
+                }
+                continue;
+            }
+            text.push_str(&self.code[link.from..link.end]);
+            self.kept.push((link.from, link.end));
+        }
+        Some(text)
     }
 
     /// `arg` as replacement text, or `error` recorded when it is not one.
@@ -595,6 +667,15 @@ impl<'a> Visit<'a> for Finder<'_> {
                 }),
             };
             if let Some(text) = text {
+                self.edits.push(Edit { start, end, text });
+            }
+        } else if let Some((root_end, links)) = self.middleware_links(call).filter(|(_, links)| {
+            self.env == Env::Client
+                && links
+                    .iter()
+                    .any(|l| SERVER_MIDDLEWARE_LINKS.contains(&l.name))
+        }) {
+            if let Some(text) = self.client_middleware(start, root_end, &links) {
                 self.edits.push(Edit { start, end, text });
             }
         } else if let Some(factory @ (Factory::ServerOnly | Factory::ClientOnly)) =
@@ -643,6 +724,81 @@ mod tests {
         rewrite_env_fns(&format!("{IMPORT}{body}"), "a.ts", env)
             .unwrap()
             .unwrap_or_else(|| panic!("rewritten: {body}"))
+    }
+
+    const MIDDLEWARE: &str = "import { createMiddleware } from \"@tanstack/react-start\";\n\
+        import { getRequest } from \"@tanstack/react-start/server\";\n\
+        import { z } from \"zod\";\n\
+        import { base } from \"./base\";\n\
+        export const authed = createMiddleware({ type: \"function\" })\n\
+        \x20 .middleware([base])\n\
+        \x20 .validator(z.string())\n\
+        \x20 .client(({ next }) => next())\n\
+        \x20 .server(({ next }) => next({ context: { method: getRequest().method } }));\n";
+
+    #[test]
+    fn client_middleware_drops_its_server_links_and_what_only_they_used() {
+        let client = rewrite_env_fns(MIDDLEWARE, "a.ts", Env::Client)
+            .unwrap()
+            .unwrap();
+        assert!(
+            client.contains("export const authed = createMiddleware({ type: \"function\" })\n  .middleware([base])"),
+            "{client}"
+        );
+        assert!(client.contains(".client(({ next }) => next())"), "{client}");
+        for gone in [".server(", ".validator(", "getRequest", "zod"] {
+            assert!(!client.contains(gone), "{gone} stayed:\n{client}");
+        }
+        assert!(
+            client.contains("import { base } from \"./base\";"),
+            "{client}"
+        );
+        assert_eq!(
+            client.lines().count(),
+            MIDDLEWARE.lines().count(),
+            "{client}"
+        );
+        // The server keeps the whole chain.
+        assert_eq!(
+            rewrite_env_fns(MIDDLEWARE, "a.ts", Env::Server).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn client_middleware_without_server_links_is_left_alone() {
+        let code = "import { createMiddleware } from \"@tanstack/react-start\";\n\
+            export const m = createMiddleware().client(({ next }) => next());\n";
+        assert_eq!(rewrite_env_fns(code, "a.ts", Env::Client).unwrap(), None);
+    }
+
+    #[test]
+    fn client_middleware_through_a_namespace_import_drops_its_server_link() {
+        let code = "import * as start from \"@tanstack/react-start\";\n\
+            import { secret } from \"./secret\";\n\
+            export const m = start.createMiddleware().server(({ next }) => next({ context: secret() }));\n";
+        let client = rewrite_env_fns(code, "a.ts", Env::Client).unwrap().unwrap();
+        assert!(
+            client.contains("export const m = start.createMiddleware();"),
+            "{client}"
+        );
+        assert!(!client.contains("secret"), "{client}");
+    }
+
+    #[test]
+    fn a_middleware_validator_without_one_fails_like_tanstack() {
+        for link in ["validator", "inputValidator"] {
+            let code = format!(
+                "import {{ createMiddleware }} from \"@tanstack/react-start\";\n\
+                 export const m = createMiddleware().{link}().server(() => 1);\n"
+            );
+            assert_eq!(
+                rewrite_env_fns(&code, "a.ts", Env::Client),
+                Err(format!(
+                    "createMiddleware().{link}() must be called with a validator!"
+                ))
+            );
+        }
     }
 
     #[test]
