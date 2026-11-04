@@ -141,7 +141,7 @@ impl StartConfig {
         let mut out = self.client_aliases();
         out.push((
             "#tanstack-start-server-fn-resolver".into(),
-            self.cache.join("server-fn-resolver.mjs"),
+            self.cache.join(server_fn_resolver_file(false)),
         ));
         out.push((
             "@tanstack/react-start/server-entry".into(),
@@ -326,7 +326,9 @@ impl StartConfig {
 /// `@tanstack/react-start` that can run one before its middleware
 /// initializes. In dev (`dev`) each function also answers to Start's own Vite
 /// dev id; a build maps oj's ids only, as a Vite build knows only its build
-/// ids. How many functions it maps.
+/// ids. Each writes its own file (`server_fn_resolver_file`), so a build run
+/// beside a dev server never swaps the dev resolver out. How many functions
+/// it maps.
 pub(crate) fn write_server_fn_resolver(
     root: &Path,
     cache: &Path,
@@ -417,8 +419,17 @@ pub(crate) fn write_server_fn_resolver(
          if (!action) throw new Error(\"Server function module export not resolved for serverFn ID: \" + id);\n  \
          return action;\n}}\n"
     );
-    std::fs::write(cache.join("server-fn-resolver.mjs"), out)?;
+    std::fs::write(cache.join(server_fn_resolver_file(dev)), out)?;
     Ok(count)
+}
+
+/// The resolver's file in the Start cache: dev's, or the build's.
+pub(crate) fn server_fn_resolver_file(dev: bool) -> &'static str {
+    if dev {
+        "server-fn-resolver.mjs"
+    } else {
+        "server-fn-resolver.build.mjs"
+    }
 }
 
 fn json(s: &str) -> String {
@@ -565,8 +576,11 @@ mod tests {
         assert!(!out.contains("skip.js") && !out.contains("plain"), "{out}");
         assert!(out.contains("export async function getServerFnById(id)"));
         // A build maps oj's ids only: a Vite build knows no dev id.
+        // Into its own file: the dev resolver stays as it was.
         assert_eq!(write_server_fn_resolver(&root, &cache, false).unwrap(), 2);
-        let out = std::fs::read_to_string(cache.join("server-fn-resolver.mjs")).unwrap();
+        let dev_out = std::fs::read_to_string(cache.join("server-fn-resolver.mjs")).unwrap();
+        assert_eq!(dev_out, out);
+        let out = std::fs::read_to_string(cache.join("server-fn-resolver.build.mjs")).unwrap();
         let id = oj_compiler::server_fns::server_fn_id("src/server/data.ts", "getB");
         assert!(out.contains(&format!("\"{id}\": ")), "{out}");
         let dev_id = oj_compiler::server_fns::vite_dev_server_fn_id("src/server/data.ts", "getB");

@@ -2050,12 +2050,13 @@ fn generate_route_tree(
 }
 
 /// Dev and build resolvers differ (`dev` adds Start's dev ids), so each is
-/// cached under its own kind.
+/// cached under its own kind and written to its own file.
 fn generate_server_fn_resolver(root: &Path, cache: &Path, dev: bool) -> anyhow::Result<()> {
     let kind = if dev { "server-fn" } else { "server-fn-build" };
     let store = codegen_store(root, cache, kind, None, Some("createServerFn"), &[]);
-    let dest = cache.join("server-fn-resolver.mjs");
-    let outputs = [("server-fn-resolver.mjs", dest.as_path())];
+    let file = crate::start_bundle::server_fn_resolver_file(dev);
+    let dest = cache.join(file);
+    let outputs = [(file, dest.as_path())];
     let inputs = list_src_ts_files(root);
     match store.restore(&inputs, &outputs) {
         Ok(stats) => {
