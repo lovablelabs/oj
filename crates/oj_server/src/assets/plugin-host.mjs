@@ -2264,9 +2264,9 @@ async function runConfigResolved(list, resolved, container = main) {
       await fn.call(resolvedContext, resolved);
     } catch (e) {
       if (!ojStartMode) throw e;
+      if (isImportProtection(p)) disableImportProtection(list, e);
       container.configHookSkipped = true;
       process.stderr.write(`${OJ} plugin host: configResolved(${p.name ?? "?"}) skipped: ${(e && e.message) || e}\n`);
-      if (isImportProtection(p)) disableImportProtection(list, e);
     }
   }
 }
@@ -2286,17 +2286,20 @@ async function fillStartConfigContext(list, resolved, ctx) {
   startConfigFilled.add(startConfig);
   try {
     await hook.call(ctx, plainCopy(resolved), { command, mode: env.mode, isSsrBuild: false, isPreview: false });
-  } catch {
-    // Import protection's configResolved then fails and turns it off.
+  } catch (e) {
+    // Import protection's configResolved then fails too, and says so.
+    process.stderr.write(`${OJ} plugin host: Start's config hook failed: ${(e && e.message) || e}\n`);
   }
 }
-// A pair that cannot read Start's config would check against an empty root:
-// both plugins leave every environment instead.
+// A pair that cannot read Start's config would check against an empty root.
+// A build fails, as Vite's does on the same error: it would ship what the
+// plugin exists to keep out. A dev server leaves both plugins out of every
+// environment and says so.
 function disableImportProtection(list, e) {
+  const reason = (e && e.message) || e;
+  if (command === "build") throw new Error(`Start import protection could not read its config: ${reason}`);
   for (const p of list) if (isImportProtection(p)) p.applyToEnvironment = () => false;
-  process.stderr.write(
-    `${OJ} plugin host: Start import protection is off, its config did not resolve: ${(e && e.message) || e}\n`,
-  );
+  process.stderr.write(`${OJ} plugin host: Start import protection is off, its config did not resolve: ${reason}\n`);
 }
 // Vite's resolveConfig over `rc` (the app's Vite resolve, or null) for the
 // plugins of `list`: their config hooks, then every environment's
@@ -5001,7 +5004,9 @@ async function transform(c, code, id, resolvedJson, phase) {
       const ctx = Object.create(ctxFor(c, p));
       const chainSoFar = maps.slice();
       const brokenSoFar = mapBroken != null;
-      ctx.getCombinedSourcemap = () => combineSourcemaps(id, code, chainSoFar, brokenSoFar);
+      // A transform that returned code without a map breaks a build's chain
+      // (Rollup's missing link); Vite's dev _getCombinedSourcemap skips it.
+      ctx.getCombinedSourcemap = () => combineSourcemaps(id, code, chainSoFar, brokenSoFar && command === "build");
       try {
         r = await handler.call(ctx, current, id, transformOptions);
       } catch (e) {

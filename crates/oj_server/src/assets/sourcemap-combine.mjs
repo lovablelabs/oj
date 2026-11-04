@@ -165,12 +165,14 @@ export function combineSourcemaps(id, originalCode, chain, broken = false) {
   const out = last.lines.map((segs) => {
     const line = [];
     for (const seg of segs) {
-      if (seg.length === 1) continue;
+      // Each link of the chain has one source, the previous code (Rollup's
+      // Link): a segment on any other source maps nowhere.
+      if (seg.length === 1 || seg[1] !== 0) continue;
       let traced = seg;
       let name = seg.length > 4 ? last.names[seg[4]] : undefined;
       for (let i = maps.length - 2; i >= 0 && traced; i--) {
         const inner = segmentAt(maps[i].lines, traced[2], traced[3]);
-        if (!inner || inner.length === 1) {
+        if (!inner || inner.length === 1 || inner[1] !== 0) {
           traced = null;
           break;
         }

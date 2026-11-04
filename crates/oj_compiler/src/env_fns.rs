@@ -58,29 +58,13 @@ const FACTORIES: [(&str, Factory); 4] = [
 /// `stripMethodCall`s): the server implementation and its input validation.
 const SERVER_MIDDLEWARE_LINKS: [&str; 3] = ["server", "validator", "inputValidator"];
 
-/// The links that make a middleware call a compiler candidate (Start's
-/// `candidateCallIdentifier`). The compiler walks each candidate's chain
-/// inward, so a server or validator link goes only when one of these is at
-/// or after it: `createMiddleware().validator(v)` alone keeps its validator.
-/// Every covered link goes, a repeated one too, where the compiler strips
-/// only the innermost of each name and would ship a second `.server(..)`.
+/// The calls a middleware chain must end in to be a compiler candidate
+/// (Start's `candidateCallIdentifier`). Only a chain's outermost call is one
+/// (the calls inside it are the chain's own links), and from it the compiler
+/// records the innermost link of each name, so it drops at most one
+/// `.server(..)`, `.validator(..)` and `.inputValidator(..)` each, and none
+/// of a chain ending in another link (`createMiddleware().server(s).validator(v)`).
 const MIDDLEWARE_CANDIDATES: [&str; 3] = ["server", "client", "createMiddlewares"];
-
-/// The index of a chain's outermost candidate link.
-fn last_candidate(links: &[Link]) -> Option<usize> {
-    links
-        .iter()
-        .rposition(|l| MIDDLEWARE_CANDIDATES.contains(&l.name))
-}
-
-/// Whether the client drops any link of a middleware chain.
-fn strips_any(links: &[Link]) -> bool {
-    last_candidate(links).is_some_and(|c| {
-        links[..=c]
-            .iter()
-            .any(|l| SERVER_MIDDLEWARE_LINKS.contains(&l.name))
-    })
-}
 
 /// `code` with its environment functions compiled for `env`; `None` when it
 /// has none. `path` picks the parser's language. Like TanStack's compiler, it
@@ -256,10 +240,11 @@ fn rewrite_outermost(
     if parsed.fatal_error {
         return Ok(None);
     }
-    let bindings = Bindings::of(&parsed.program, reexported);
+    let mut bindings = Bindings::of(&parsed.program, reexported);
     if bindings.is_empty() {
         return Ok(None);
     }
+    bindings.find_middlewares(&parsed.program);
     let mut finder = Finder {
         bindings: &bindings,
         env,
@@ -267,6 +252,7 @@ fn rewrite_outermost(
         edits: Vec::new(),
         kept: Vec::new(),
         error: None,
+        chain_inner: HashSet::new(),
     };
     finder.visit_program(&parsed.program);
     if let Some(error) = finder.error {
@@ -464,6 +450,9 @@ fn source_type(path: &str) -> SourceType {
 struct Bindings {
     names: Vec<(String, Factory)>,
     namespaces: Vec<String>,
+    /// Module variables holding a middleware (`const base = createMiddleware()`),
+    /// whose chains the compiler resolves through the binding.
+    middlewares: Vec<String>,
 }
 
 impl Bindings {
@@ -500,6 +489,59 @@ impl Bindings {
 
     fn is_empty(&self) -> bool {
         self.names.is_empty() && self.namespaces.is_empty()
+    }
+
+    /// The module variables whose initializer is a middleware: a chain on
+    /// the factory or on another such variable, to a fixed point.
+    fn find_middlewares(&mut self, program: &Program) {
+        let declarators: Vec<_> = program
+            .body
+            .iter()
+            .filter_map(|statement| match statement {
+                Statement::VariableDeclaration(var) => Some(var),
+                Statement::ExportDeclaration(export) => match &export.declaration {
+                    oxc_ast::ast::Declaration::VariableDeclaration(var) => Some(var),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .flat_map(|var| var.declarations.iter())
+            .filter_map(|d| match (&d.id, &d.init) {
+                (BindingPattern::BindingIdentifier(id), Some(init)) => {
+                    Some((id.name.as_str(), init))
+                }
+                _ => None,
+            })
+            .collect();
+        loop {
+            let found: Vec<String> = declarators
+                .iter()
+                .filter(|(name, init)| {
+                    !self.middlewares.iter().any(|m| m == name) && self.is_middleware(init)
+                })
+                .map(|(name, _)| name.to_string())
+                .collect();
+            if found.is_empty() {
+                return;
+            }
+            self.middlewares.extend(found);
+        }
+    }
+
+    /// Whether `expr` is a middleware: the factory's call, a chain on one, or
+    /// a variable holding one.
+    fn is_middleware(&self, expr: &Expression) -> bool {
+        match expr.without_parentheses() {
+            Expression::Identifier(id) => self.middlewares.iter().any(|m| *m == id.name.as_str()),
+            Expression::CallExpression(call) => {
+                self.factory(&call.callee) == Some(Factory::Middleware)
+                    || matches!(
+                        call.callee.without_parentheses(),
+                        Expression::StaticMemberExpression(m) if self.is_middleware(&m.object)
+                    )
+            }
+            _ => false,
+        }
     }
 
     /// The factory `callee` names, when it is one.
@@ -542,6 +584,8 @@ struct Finder<'b> {
     kept: Vec<(usize, usize)>,
     /// The first call TanStack's compiler rejects.
     error: Option<String>,
+    /// The calls inside a middleware chain already seen, as spans.
+    chain_inner: HashSet<(u32, u32)>,
 }
 
 /// An isomorphic chain's implementations.
@@ -551,8 +595,8 @@ struct Chain {
     client: Option<Arg>,
 }
 
-/// One `.name(..)` link of a middleware chain: from the end of the call it
-/// is made on (where `.name` starts) to its own end.
+/// One `.name(..)` link of a middleware chain: from the end of what it is
+/// called on, parentheses included (where `.name` starts), to its own end.
 struct Link<'s> {
     name: &'s str,
     from: usize,
@@ -596,58 +640,83 @@ impl Finder<'_> {
         Some(chain)
     }
 
-    /// `call` as `createMiddleware(..)` followed by method links: where the
-    /// factory call ends, and the links innermost first. None when it is not
-    /// one (a chain on a variable holding a middleware is left alone, as for
-    /// the other factories).
-    fn middleware_links<'s>(&self, call: &'s CallExpression) -> Option<(usize, Vec<Link<'s>>)> {
+    /// `call` as a middleware chain: `createMiddleware(..)`, or a module
+    /// variable holding a middleware, followed by method links. Where its
+    /// root ends, the links innermost first, and the spans of the calls
+    /// inside it (the chain's own, never candidates). None when it is not one.
+    fn middleware_links<'s>(
+        &self,
+        call: &'s CallExpression,
+    ) -> Option<(usize, Vec<Link<'s>>, Vec<(u32, u32)>)> {
         if self.bindings.factory(&call.callee) == Some(Factory::Middleware) {
-            return Some((call.span.end as usize, Vec::new()));
+            return Some((call.span.end as usize, Vec::new(), Vec::new()));
         }
         let Expression::StaticMemberExpression(m) = call.callee.without_parentheses() else {
             return None;
         };
-        let Expression::CallExpression(inner) = m.object.without_parentheses() else {
-            return None;
+        let (root_end, mut links, mut inner) = match m.object.without_parentheses() {
+            Expression::CallExpression(c) => {
+                let (root_end, links, mut inner) = self.middleware_links(c)?;
+                inner.push((c.span.start, c.span.end));
+                (root_end, links, inner)
+            }
+            Expression::Identifier(id)
+                if self
+                    .bindings
+                    .middlewares
+                    .iter()
+                    .any(|n| n == id.name.as_str()) =>
+            {
+                (id.span.end as usize, Vec::new(), Vec::new())
+            }
+            _ => return None,
         };
-        let (root_end, mut links) = self.middleware_links(inner)?;
         links.push(Link {
             name: m.property.name.as_str(),
-            from: inner.span.end as usize,
+            from: m.object.span().end as usize,
             end: call.span.end as usize,
             no_args: call.arguments.is_empty(),
         });
-        Some((root_end, links))
+        Some((root_end, links, inner))
     }
 
-    /// The client's middleware chain at `start..root_end` + `links`: the
-    /// factory call and the links it keeps, each as written. None (and the
-    /// error recorded) for a validator link without its validator.
-    fn client_middleware(
-        &mut self,
-        start: usize,
-        root_end: usize,
-        links: &[Link],
-    ) -> Option<String> {
-        let mut text = self.code[start..root_end].to_string();
-        self.kept.push((start, root_end));
-        let covered = last_candidate(links);
-        for (i, link) in links.iter().enumerate() {
-            if covered.is_some_and(|c| i <= c) && SERVER_MIDDLEWARE_LINKS.contains(&link.name) {
-                if link.no_args && link.name != "server" {
-                    self.error.get_or_insert_with(|| {
-                        format!(
-                            "createMiddleware().{}() must be called with a validator!",
-                            link.name
-                        )
-                    });
-                    return None;
-                }
-                continue;
-            }
-            text.push_str(&self.code[link.from..link.end]);
-            self.kept.push((link.from, link.end));
+    /// The client's middleware chain `start..end` with the links Start's
+    /// compiler drops cut out, or None when it drops none. None too (and the
+    /// error recorded) for a dropped validator link without its validator.
+    fn client_middleware(&mut self, start: usize, end: usize, links: &[Link]) -> Option<String> {
+        if !links
+            .last()
+            .is_some_and(|l| MIDDLEWARE_CANDIDATES.contains(&l.name))
+        {
+            return None;
         }
+        // The innermost of each name, as the compiler's methodChain keeps it.
+        let mut dropped: Vec<&Link> = SERVER_MIDDLEWARE_LINKS
+            .iter()
+            .filter_map(|name| links.iter().find(|l| l.name == *name))
+            .collect();
+        if dropped.is_empty() {
+            return None;
+        }
+        if let Some(link) = dropped.iter().find(|l| l.no_args && l.name != "server") {
+            self.error.get_or_insert_with(|| {
+                format!(
+                    "createMiddleware().{}() must be called with a validator!",
+                    link.name
+                )
+            });
+            return None;
+        }
+        dropped.sort_by_key(|l| l.from);
+        let mut text = String::new();
+        let mut cursor = start;
+        for link in dropped {
+            text.push_str(&self.code[cursor..link.from]);
+            self.kept.push((cursor, link.from));
+            cursor = link.end;
+        }
+        text.push_str(&self.code[cursor..end]);
+        self.kept.push((cursor, end));
         Some(text)
     }
 
@@ -694,12 +763,14 @@ impl<'a> Visit<'a> for Finder<'_> {
             if let Some(text) = text {
                 self.edits.push(Edit { start, end, text });
             }
-        } else if let Some((root_end, links)) = self
-            .middleware_links(call)
-            .filter(|(_, links)| self.env == Env::Client && strips_any(links))
-        {
-            if let Some(text) = self.client_middleware(start, root_end, &links) {
-                self.edits.push(Edit { start, end, text });
+        } else if let Some((_, links, inner)) = self.middleware_links(call) {
+            // A call inside a chain is one of its links, never a candidate.
+            let outermost = !self.chain_inner.contains(&(span.start, span.end));
+            self.chain_inner.extend(inner);
+            if outermost && self.env == Env::Client {
+                if let Some(text) = self.client_middleware(start, end, &links) {
+                    self.edits.push(Edit { start, end, text });
+                }
             }
         } else if let Some(factory @ (Factory::ServerOnly | Factory::ClientOnly)) =
             self.bindings.factory(&call.callee)
@@ -809,20 +880,53 @@ mod tests {
     }
 
     #[test]
-    fn only_links_a_candidate_covers_are_dropped() {
+    fn only_a_chain_ending_in_a_candidate_drops_links_like_tanstack() {
         let import = "import { createMiddleware } from \"@tanstack/react-start\";\n";
-        // No server, client or createMiddlewares link: no compiler candidate.
-        let alone = format!("{import}export const m = createMiddleware().validator(check);\n");
-        assert_eq!(rewrite_env_fns(&alone, "a.ts", Env::Client).unwrap(), None);
-        // A validator after the outermost candidate stays; the server goes.
-        let after =
-            format!("{import}export const m = createMiddleware().server(s).validator(check);\n");
-        let client = rewrite_env_fns(&after, "a.ts", Env::Client)
-            .unwrap()
-            .unwrap();
+        let client =
+            |body: &str| rewrite_env_fns(&format!("{import}{body}"), "a.ts", Env::Client).unwrap();
+        // The outermost call is not `.server`/`.client`/`.createMiddlewares`:
+        // no candidate, nothing dropped, as Start's compiler.
+        for body in [
+            "export const m = createMiddleware().validator(check);\n",
+            "export const m = createMiddleware().server(s).validator(check);\n",
+            "export const m = createMiddleware().validator(v).server(s).middleware([a]);\n",
+        ] {
+            assert_eq!(client(body), None, "{body}");
+        }
+        // Only the innermost link of each name goes.
+        let out = client("export const m = createMiddleware().server(a).server(b);\n").unwrap();
         assert!(
-            client.contains("export const m = createMiddleware().validator(check);"),
-            "{client}"
+            out.contains("export const m = createMiddleware().server(b);"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn a_parenthesized_middleware_chain_stays_valid() {
+        let code = "import { createMiddleware } from \"@tanstack/react-start\";\n\
+            import { getRequest } from \"@tanstack/react-start/server\";\n\
+            export const m = (createMiddleware().middleware([a])).server(() => getRequest());\n";
+        let out = rewrite_env_fns(code, "a.ts", Env::Client).unwrap().unwrap();
+        assert!(
+            out.contains("export const m = (createMiddleware().middleware([a]));"),
+            "{out}"
+        );
+        assert!(!out.contains("getRequest"), "{out}");
+    }
+
+    #[test]
+    fn a_middleware_held_in_a_variable_drops_its_server_link() {
+        let code = "import { createMiddleware } from \"@tanstack/react-start\";\n\
+            import { getRequest } from \"@tanstack/react-start/server\";\n\
+            const base = createMiddleware({ type: \"function\" });\n\
+            const logged = base.middleware([log]);\n\
+            export const m = logged.server(() => getRequest());\n";
+        let out = rewrite_env_fns(code, "a.ts", Env::Client).unwrap().unwrap();
+        assert!(out.contains("export const m = logged;"), "{out}");
+        assert!(!out.contains("getRequest"), "{out}");
+        assert!(
+            out.contains("const logged = base.middleware([log]);"),
+            "{out}"
         );
     }
 

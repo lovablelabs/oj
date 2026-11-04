@@ -456,11 +456,17 @@ async fn dev_serves_a_module_again_once_its_server_only_marker_is_gone() {
     let _ = visit(&dev).await;
     std::fs::write(app.0.join("src/routes/about.tsx"), route(1)).unwrap();
     tokio::time::sleep(Duration::from_secs(4)).await;
-    let (_, mocked, _, _) = visit(&dev).await;
+    let (_, mocked, console, _) = visit(&dev).await;
     assert_ne!(
         mocked.as_deref(),
         Some("server-secret"),
         "the marked module ran in the page"
+    );
+    assert!(
+        console
+            .iter()
+            .any(|c| c.contains("[import-protection] Mocked import used in dev client")),
+        "the page did not use the mock: {console:?}"
     );
 
     std::fs::write(app.0.join("src/lib/secret.ts"), SECRET).unwrap();

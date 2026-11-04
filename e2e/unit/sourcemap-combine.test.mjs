@@ -129,3 +129,66 @@ test("a transform hook's getCombinedSourcemap covers the transforms before it", 
     fx.cleanup();
   }
 });
+
+test("a segment on another source maps nowhere, as each link has one source", () => {
+  const twoSources = {
+    version: 3,
+    sources: ["/a.js", "/helper.js"],
+    names: [],
+    mappings: encodeMappings([
+      [
+        [0, 0, 0, 0],
+        [4, 1, 0, 0],
+      ],
+    ]),
+  };
+  const map = combineSourcemaps("/a.js", "abcd efgh", [twoSources]);
+  assert.deepEqual(original(map, 0, 0), [0, 0]);
+  assert.equal(decodeMappings(map.mappings)[0].length, 1, "the helper.js segment is dropped");
+});
+
+// A map-less transform breaks a build's chain (Rollup's missing link) but not
+// a dev server's (Vite's _getCombinedSourcemap skips it).
+for (const [command, mode, broken] of [
+  ["build", "production", true],
+  ["serve", "development", false],
+]) {
+  test(`after a map-less transform, ${command}'s combined map ${broken ? "maps nothing" : "still maps"}`, async () => {
+    const fx = tmpProject({ prefix: "oj-combined-broken-" });
+    fx.write(
+      "oj.plugins.mjs",
+      `export default [{
+  name: "bare",
+  transform(code) { return code + "\\n"; },
+}, {
+  name: "reader",
+  transform(code) {
+    return { code: code + "//" + JSON.stringify(this.getCombinedSourcemap()), map: null };
+  },
+}];
+`,
+    );
+    const host = rpcSidecar("plugin-host.mjs", {
+      args: [
+        path.join(fx.root, "oj.plugins.mjs"),
+        JSON.stringify({ config: { root: fx.root }, env: { command, mode }, environment: { name: "client" } }),
+      ],
+      env: { OJ_CACHE_ROOT: fx.root },
+      cwd: fx.root,
+    });
+    try {
+      const res = await host.send({
+        id: 1,
+        hook: "transform",
+        args: ["export const a = 1", path.join(fx.root, "x.js"), ""],
+      });
+      assert.equal(res.error, undefined, `${res.error}\n${host.stderr()}`);
+      const code = JSON.parse(res.result).code;
+      const map = JSON.parse(code.slice(code.indexOf("//") + 2));
+      assert.equal(map.mappings === "", broken, JSON.stringify(map));
+    } finally {
+      host.close();
+      fx.cleanup();
+    }
+  });
+}
