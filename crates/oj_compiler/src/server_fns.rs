@@ -634,6 +634,32 @@ mod tests {
         parses(&out, rel);
     }
 
+    // Review of the dead-code pass: a recursive helper and a destructured
+    // binding that only the handler used leave the client with it, as
+    // babel-dead-code-elimination drops them (findRemovableBindings, the
+    // pattern visitors), so the server entry is never imported there.
+    #[test]
+    fn a_recursive_or_destructured_helper_only_the_handler_used_leaves_the_client() {
+        let code = [
+            "import { createServerFn } from \"@tanstack/react-start\";",
+            "import * as S from \"@tanstack/react-start/server\";",
+            "const { getRequest } = S;",
+            "function hdr(n: string, d = 0): string | null {",
+            "  return d > 2 ? null : getRequest()?.headers.get(n) ?? hdr(n, d + 1);",
+            "}",
+            "export const ask = createServerFn().handler(async () => hdr(\"x\"));",
+            "",
+        ]
+        .join("\n");
+        let rel = "src/lib/ask.functions.ts";
+        let out = client(&code, rel);
+        for gone in ["@tanstack/react-start/server", "getRequest", "hdr"] {
+            assert!(!out.contains(gone), "{gone} left in:\n{out}");
+        }
+        assert_eq!(lines(&out), lines(&code));
+        parses(&out, rel);
+    }
+
     #[test]
     fn brackets_in_strings_templates_and_regexes_stay_inside_the_handler() {
         let code = [
