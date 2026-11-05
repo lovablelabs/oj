@@ -13,6 +13,7 @@ mod resolve;
 mod schema;
 mod server;
 mod ssr;
+mod start;
 
 pub use build::{
     assets_dir_path, build_assets_dir, build_chunk_size_warning_limit, build_css_minify,
@@ -43,3 +44,4 @@ pub use server::{
     server_strict_port, server_warmup_files,
 };
 pub use ssr::{package_name_of, ssr_externals, ssr_runner_backed, SsrExternals};
+pub use start::{start_route_tree, start_routes_dir, StartRouterPaths};

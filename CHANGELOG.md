@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - In TanStack Start dev, saving a route file no longer waits on the route tree generator. Since 0.4.2 every route edit reran it before the rebuild (about half a second each). It now reruns only when an edit gives a route its only-`server` shape or takes it away, which moves the route in or out of the client's tree, as Start reloads the client only then.
-- A TanStack Start app whose `tsr.config.json` sets `generatedRouteTree` gets its route tree back from oj's codegen cache. The cache stored and restored `src/routeTree.gen.ts` instead, so a cache hit left the configured tree missing.
+- A TanStack Start app's route tree and routes directory are where Start puts them: `tanstackStart({ srcDirectory, router: { generatedRouteTree, routesDirectory } })`, default `src/routeTree.gen.ts` and `src/routes`. oj read `tsr.config.json` for both, which Start overrides, so an app that set the tree on Start got a second tree from oj at the default path, and an app that set it in `tsr.config.json` got its tree where Vite never writes it. oj now uses the paths Start's own router generator runs with when the app's config resolves, the codegen cache stores and restores that tree, and an app whose routes are outside `src/routes` is still served as a Start app.
 
 ## [0.4.2] - 2026-11-05
 

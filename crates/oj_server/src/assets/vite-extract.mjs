@@ -252,6 +252,59 @@ function resolvePkg(spec) {
   return null;
 }
 
+// TanStack Start puts the route tree and reads the routes where
+// tanstackStart({ srcDirectory, router }) says (src/routeTree.gen.ts and
+// src/routes by default): start-plugin-core's parseStartConfig resolves both
+// and passes them to the router generator inline, over tsr.config.json. The
+// generator its router plugin runs from configResolved has them, so the run
+// the app's resolveConfig makes is recorded here.
+let startRouterPaths = null;
+
+// The package `name` as Node resolves it from `fromDir` (its real directory).
+function packageDir(fromDir, name) {
+  for (let dir = fromDir; ; dir = dirname(dir)) {
+    const candidate = resolve(dir, "node_modules", name);
+    if (existsSync(resolve(candidate, "package.json"))) return fs.realpathSync(candidate);
+    if (dirname(dir) === dir) return null;
+  }
+}
+
+// Wraps the router generator Start's router plugin imports (resolved the way
+// Start's own packages resolve it, so it is the same module instance) to
+// record the first run's paths. Returns the undo.
+async function recordStartRouterPaths() {
+  startRouterPaths = null;
+  let dir = null;
+  for (const framework of ["@tanstack/react-start", "@tanstack/solid-start", "@tanstack/vue-start"]) {
+    dir = packageDir(appRoot, framework);
+    if (dir) break;
+  }
+  for (const name of ["@tanstack/start-plugin-core", "@tanstack/router-plugin", "@tanstack/router-generator"]) {
+    dir = dir && packageDir(dir, name);
+  }
+  if (!dir) return () => {};
+  let generator;
+  try {
+    const entry = esmEntry(resolve(dir, "package.json"), "@tanstack/router-generator");
+    generator = (await import(pathToFileURL(entry).href)).Generator;
+  } catch {
+    return () => {};
+  }
+  const proto = generator?.prototype;
+  const run = proto?.run;
+  if (typeof run !== "function") return () => {};
+  proto.run = function (...args) {
+    const c = this?.config;
+    if (!startRouterPaths && typeof c?.routesDirectory === "string" && typeof c?.generatedRouteTree === "string") {
+      startRouterPaths = { routesDirectory: c.routesDirectory, generatedRouteTree: c.generatedRouteTree };
+    }
+    return run.apply(this, args);
+  };
+  return () => {
+    proto.run = run;
+  };
+}
+
 const absDeps = (deps) => (deps ?? []).filter((d) => typeof d === "string").map((d) => resolve(appRoot, d));
 
 // Vite's `externalize-deps` config-bundling plugin, mirrored (one copy lives
@@ -1592,7 +1645,14 @@ export async function extract(input) {
   observedReadsTruncated = false;
   try {
     installConfigReadRecorder();
-    const { config, raw, deps, runnerBacked, merge } = (await loadConfig()) ?? {};
+    const restoreGenerator = await recordStartRouterPaths();
+    let loaded;
+    try {
+      loaded = await loadConfig();
+    } finally {
+      restoreGenerator();
+    }
+    const { config, raw, deps, runnerBacked, merge } = loaded ?? {};
     const c = config ?? {};
     warnUnsupported(raw ?? c, input.spaBuild === true);
     // Extraction is the single runner-backed detection authority (the plugin
@@ -1697,6 +1757,7 @@ export async function extract(input) {
       css: extractCss(c.css),
       envPrefix: extractEnvPrefix(c.envPrefix),
       envDir: typeof c.envDir === "string" ? c.envDir : null,
+      startRouter: startRouterPaths,
       cors: extractCors(c.server?.cors),
       allowedHosts: extractAllowedHosts(c.server?.allowedHosts),
       preview: extractPreview(c.preview),

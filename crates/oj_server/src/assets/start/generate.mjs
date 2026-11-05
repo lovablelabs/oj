@@ -56,13 +56,16 @@ async function main() {
   ]);
 
   // getConfig merges as { ...tsr.config.json, ...inline }, so anything passed
-  // inline cannot be configured by the app. Only `target` is genuinely ours to
-  // decide; the rest are the generator's own documented settings, and an app that
-  // keeps its route tree somewhere other than src/routeTree.gen.ts has to be able
-  // to say so. Pass them as defaults under the file rather than overrides above it.
+  // inline cannot be configured by the app. Start passes its routes directory
+  // and route tree inline (start-plugin-core's parseStartConfig, from
+  // tanstackStart's `srcDirectory` and `router`), so tsr.config.json never sets
+  // them under Start; oj passes the same two (OJ_ROUTES_DIRECTORY,
+  // OJ_GENERATED_ROUTE_TREE). The rest are defaults under the file.
+  const START_PATHS = {
+    routesDirectory: process.env.OJ_ROUTES_DIRECTORY || pathResolve(root, "src/routes"),
+    generatedRouteTree: process.env.OJ_GENERATED_ROUTE_TREE || pathResolve(root, "src/routeTree.gen.ts"),
+  };
   const OJ_DEFAULTS = {
-    routesDirectory: "./src/routes",
-    generatedRouteTree: "./src/routeTree.gen.ts",
     autoCodeSplitting: false,
     routeFileIgnorePattern: "\\.(test|spec|stories|bench)\\.|\\.d\\.ts$",
   };
@@ -74,9 +77,8 @@ async function main() {
     }
   })();
 
-  // The tree the app configured (tsr.config.json) or oj's default; the footer's
-  // import is written relative to wherever that file lives.
-  const GENERATED_ROUTE_TREE = configured.generatedRouteTree ?? OJ_DEFAULTS.generatedRouteTree;
+  // The footer's import is written relative to wherever the tree lives.
+  const GENERATED_ROUTE_TREE = START_PATHS.generatedRouteTree;
 
   // The framework's own Vite plugin appends a `declare module` block naming the
   // router entry and, when there is one, the start entry (start-plugin-core's
@@ -146,6 +148,7 @@ async function main() {
   const config = getConfig(
     {
       ...Object.fromEntries(Object.entries(OJ_DEFAULTS).filter(([k]) => !(k in configured))),
+      ...START_PATHS,
       target: "react",
       // The declare-module footer the framework's plugin writes; an app that sets
       // routeTreeFileFooter itself keeps its own.

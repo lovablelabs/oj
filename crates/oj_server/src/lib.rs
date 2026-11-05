@@ -224,25 +224,17 @@ pub fn write_start_assets(dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// The TanStack Router route tree the generator writes for `root`:
-/// `tsr.config.json`'s `generatedRouteTree` when set, `src/routeTree.gen.ts`
-/// otherwise.
-pub fn start_route_tree(root: &Path) -> PathBuf {
-    std::fs::read_to_string(root.join("tsr.config.json"))
-        .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .and_then(|v| {
-            let rel = v.get("generatedRouteTree")?.as_str()?.to_owned();
-            Some(root.join(rel.trim_start_matches("./")))
-        })
-        .unwrap_or_else(|| root.join("src").join("routeTree.gen.ts"))
-}
-
+/// A TanStack Start app: `@tanstack/react-start` in its package.json, and
+/// Start's default routes directory or a Vite config that calls
+/// `tanstackStart()` (whose `router.routesDirectory` may move the routes).
 pub fn is_tanstack_start_app(root: &Path) -> bool {
-    root.join("src/routes").is_dir()
-        && std::fs::read_to_string(root.join("package.json"))
-            .map(|s| s.contains("@tanstack/react-start"))
-            .unwrap_or(false)
+    let depends = std::fs::read_to_string(root.join("package.json"))
+        .is_ok_and(|s| s.contains("@tanstack/react-start"));
+    depends
+        && (root.join("src/routes").is_dir()
+            || plugins::vite_config_file(root, None)
+                .and_then(|f| std::fs::read_to_string(f).ok())
+                .is_some_and(|s| s.contains("tanstackStart(")))
 }
 
 type Defines = Vec<(String, String)>;

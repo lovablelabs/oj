@@ -103,6 +103,12 @@ impl StartConfig {
             .unwrap_or_else(|| self.cache.join("start-entry.ts"))
     }
 
+    /// Start's generated route tree (`tanstackStart`'s `srcDirectory` and
+    /// `router.generatedRouteTree`; see `oj_config::start_route_tree`).
+    pub fn route_tree(&self) -> PathBuf {
+        oj_config::start_route_tree(&self.config, &self.root)
+    }
+
     /// The app's own Start server entry (`tanstackStart({ server: { entry } })`),
     /// when it configures one; else the bundle enters at oj's.
     pub fn server_entry(&self) -> Option<PathBuf> {
