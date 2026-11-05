@@ -300,40 +300,72 @@ impl CjsCache {
     }
 }
 
-/// Whether module code calls `require(...)` with no `require` binding of its
-/// own (a `createRequire` result is one). A guarded `typeof require` call
-/// counts too: Node's entry, which it then gets, is Vite's pick anyway.
+/// Whether module code calls a `require` no scope of its own declares (a
+/// `createRequire` result or a wrapper's parameter is declared): directly,
+/// through a member (`require.resolve(id)`, esbuild's `__require` shim
+/// calling `require.apply`) or as `(0, require)(id)`. A call guarded by
+/// `typeof require` counts too: Node's entry, which it then gets, is Vite's
+/// pick anyway.
 fn calls_undeclared_require(src: &str) -> bool {
-    use oxc_ast::ast::{BindingIdentifier, CallExpression, Expression};
+    use oxc_ast::ast::{CallExpression, Expression};
     use oxc_ast_visit::{walk, Visit};
 
-    #[derive(Default)]
-    struct Scan {
+    struct Scan<'s> {
+        scoping: &'s oxc_semantic::Scoping,
         calls: bool,
-        declared: bool,
     }
-    impl<'a> Visit<'a> for Scan {
+    impl Scan<'_> {
+        fn global_require(&self, expr: &Expression) -> bool {
+            match expr.without_parentheses() {
+                Expression::Identifier(id) => {
+                    id.name == "require"
+                        && id
+                            .reference_id
+                            .get()
+                            .is_some_and(|r| self.scoping.get_reference(r).symbol_id().is_none())
+                }
+                Expression::SequenceExpression(seq) => seq
+                    .expressions
+                    .last()
+                    .is_some_and(|e| self.global_require(e)),
+                _ => false,
+            }
+        }
+    }
+    impl<'a> Visit<'a> for Scan<'_> {
         fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
-            if matches!(&it.callee, Expression::Identifier(id) if id.name == "require") {
+            let callee = it.callee.without_parentheses();
+            let object = match callee {
+                Expression::StaticMemberExpression(m) => Some(&m.object),
+                Expression::ComputedMemberExpression(m) => Some(&m.object),
+                _ => None,
+            };
+            if self.global_require(callee) || object.is_some_and(|o| self.global_require(o)) {
                 self.calls = true;
             }
             walk::walk_call_expression(self, it);
         }
-        fn visit_binding_identifier(&mut self, it: &BindingIdentifier<'a>) {
-            if it.name == "require" {
-                self.declared = true;
-            }
-        }
     }
 
-    if !src.contains("require") {
+    static WORD: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let word = WORD.get_or_init(|| regex::Regex::new(r"\brequire\b").expect("require regex"));
+    if !word.is_match(src) {
         return false;
     }
     let allocator = oxc_allocator::Allocator::default();
     let parsed = oxc_parser::Parser::new(&allocator, src, oxc_span::SourceType::mjs()).parse();
-    let mut scan = Scan::default();
+    if !parsed.diagnostics.is_empty() {
+        return false;
+    }
+    let semantic = oxc_semantic::SemanticBuilder::new()
+        .build(&parsed.program)
+        .semantic;
+    let mut scan = Scan {
+        scoping: semantic.scoping(),
+        calls: false,
+    };
     scan.visit_program(&parsed.program);
-    scan.calls && !scan.declared
+    scan.calls
 }
 
 /// The package a bare specifier names (`@scope/name` or `name`), or None for
@@ -716,7 +748,9 @@ impl StartHost {
                 if let Ok(StartResolution::Dependency(p)) =
                     self.bridge.resolve_start(&importer_id, spec).await
                 {
-                    if let Some(node) = self.node_entry_instead(spec, &p.to_string_lossy()) {
+                    if let Some(node) =
+                        self.vite_external_instead(&importer_id, spec, &p.to_string_lossy())
+                    {
                         return Ok(Some(node));
                     }
                     if let Ok(u) = url::Url::from_file_path(&p) {
@@ -773,19 +807,27 @@ impl StartHost {
         self.resolved(resolution, spec, &importer_id)
     }
 
-    /// Node's own entry for the bare `spec`, in place of the ESM build
-    /// `file` the resolver picked, when that build calls an undeclared
-    /// `require`. Vite loads every external through Node's resolution
-    /// (fetchModule's tryNodeResolve: mainFields ["main"], the external
+    /// The file Vite's module runner would load for the bare `spec`, in
+    /// place of the ESM build `file` the resolver picked, when that build
+    /// calls an undeclared `require`. Vite loads every external as fetchModule
+    /// resolves it (tryNodeResolve: mainFields ["main"], the external
     /// conditions), so turndown runs as its CommonJS `main` there; the
     /// `module` entry oj prefers for externals throws "require is not
-    /// defined" on import.
-    fn node_entry_instead(&self, spec: &str, file: &str) -> Option<HostResolved> {
+    /// defined" on import. None (the picked file stands) for an aliased
+    /// import, which Vite never externalizes, or another package's file.
+    fn vite_external_instead(
+        &self,
+        importer: &str,
+        spec: &str,
+        file: &str,
+    ) -> Option<HostResolved> {
         let package = bare_package(spec)?;
         if pkg_name_of_path(file).as_deref() != Some(package) || !self.cjs.esm_calls_require(file) {
             return None;
         }
-        Some(HostResolved::External(spec.to_string()))
+        let vite = self.bridge.resolve_external(importer, spec)?;
+        let url = url::Url::from_file_path(&vite).ok()?;
+        Some(HostResolved::External(url.to_string()))
     }
 
     /// The host's answer for `spec`, resolved to `resolution`: the intent and
@@ -838,7 +880,7 @@ impl StartHost {
                 if self.claims_dependency(&abs) {
                     return Ok(Some(self.module_url(&abs, importer_id)));
                 }
-                if let Some(node) = self.node_entry_instead(spec, &abs) {
+                if let Some(node) = self.vite_external_instead(&importer_id, spec, &abs) {
                     return Ok(Some(node));
                 }
                 // Hand the engine the exact file the Vite-style resolver
@@ -1784,8 +1826,29 @@ mod tests {
         assert!(!calls_undeclared_require(
             "function require(id) { return id; }\nexport const x = require('x');\n"
         ));
+        // A declaration in one scope leaves another's call undeclared: a
+        // wrapper's `require` parameter beside a top-level call.
+        assert!(calls_undeclared_require(
+            "function wrap(exports, require) { return require('a'); }\nconst d = require('d');\nexport { d, wrap };\n"
+        ));
+        // esbuild's shim, through `require.apply`; a member call; a sequence.
+        assert!(calls_undeclared_require(
+            "var __require = (x => typeof require !== 'undefined' ? require : x)(function (x) {\n  if (typeof require !== 'undefined') return require.apply(this, arguments);\n  throw Error('Dynamic require of \"' + x + '\" is not supported');\n});\nvar d = __require('d');\nexport { d };\n"
+        ));
+        assert!(calls_undeclared_require(
+            "export const p = require.resolve('x');\n"
+        ));
+        assert!(calls_undeclared_require(
+            "export const x = (0, require)('x');\n"
+        ));
+        assert!(calls_undeclared_require(
+            "export const x = require?.('x');\n"
+        ));
         // No call: a mention, a member, a property, a string.
         assert!(!calls_undeclared_require("export const x = 1;\n"));
+        assert!(!calls_undeclared_require(
+            "export const required = true;\nexport function f() { return required; }\n"
+        ));
         assert!(!calls_undeclared_require(
             "export const r = typeof require;\nexport const y = module.require('y');\nexport const s = 'require(x)';\nexport const o = { require: 1 };\n"
         ));
