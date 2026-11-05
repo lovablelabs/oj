@@ -109,7 +109,7 @@ pub(crate) fn get_flow_node_of_node(node: P<Node>) -> Option<P<FlowNode>> {
 
 impl Checker {
     // flow.go:77
-    pub(crate) fn get_flow_type_of_reference(
+    pub fn get_flow_type_of_reference(
         &mut self,
         reference: P<Node>,
         declared_type: P<Type>,
@@ -3087,7 +3087,7 @@ impl Checker {
     // flow.go:1727
     // Public for lint rules (tsgolint's shim exposes Checker_getAccessedPropertyName).
     /// tsrs: a property access's name is borrowed from the node (the common case, asked per narrowing step).
-    fn get_accessed_property_name(
+    pub fn get_accessed_property_name(
         &mut self,
         access: P<Node>,
     ) -> (std::borrow::Cow<'static, str>, bool) {
@@ -3634,7 +3634,7 @@ impl Checker {
     }
 
     // flow.go:2107
-    pub(crate) fn get_property_name_for_known_symbol_name(&mut self, symbol_name: &str) -> String {
+    pub fn get_property_name_for_known_symbol_name(&mut self, symbol_name: &str) -> String {
         let ctor_type = self.get_global_es_symbol_constructor_symbol_or_nil();
         if let Some(ctor_type) = ctor_type {
             let ctor_symbol_type = self.get_type_of_symbol(ctor_type);
@@ -4043,7 +4043,7 @@ impl Checker {
     }
 
     // flow.go:2389
-    fn get_type_with_default(
+    pub fn get_type_with_default(
         &mut self,
         t: P<Type>,
         default_expression: Option<P<Node>>,
@@ -4060,7 +4060,7 @@ impl Checker {
     // For example, when a variable of type number | string | boolean is assigned a value of type number | boolean,
     // we remove type string.
     // flow.go:2399
-    fn get_assignment_reduced_type(
+    pub fn get_assignment_reduced_type(
         &mut self,
         declared_type: P<Type>,
         assigned_type: P<Type>,

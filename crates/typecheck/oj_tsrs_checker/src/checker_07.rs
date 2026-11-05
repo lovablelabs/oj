@@ -1204,7 +1204,7 @@ impl Checker {
 
     // We approximate own properties as non-methods plus methods that are inside the object literal
     // checker.go:13798
-    pub(crate) fn is_spreadable_property(prop: P<Symbol>) -> bool {
+    pub fn is_spreadable_property(prop: P<Symbol>) -> bool {
         let declarations = prop.declarations();
         !declarations.iter().any(|&d| ast::is_private_identifier_class_element_declaration(d))
             && !prop.flags().intersects(
@@ -2122,7 +2122,7 @@ impl Checker {
     }
 
     // checker.go:14289
-    pub(crate) fn is_deprecated_symbol(&mut self, symbol: P<Symbol>) -> bool {
+    pub fn is_deprecated_symbol(&mut self, symbol: P<Symbol>) -> bool {
         let parent_symbol = self.get_parent_of_symbol(symbol);
         let declarations = symbol.declarations();
         if let Some(parent_symbol) = parent_symbol

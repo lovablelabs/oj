@@ -95,7 +95,7 @@ impl Relation {
 
 impl Checker {
     // relater.go:117
-    pub(crate) fn is_type_identical_to(&mut self, source: P<Type>, target: P<Type>) -> bool {
+    pub fn is_type_identical_to(&mut self, source: P<Type>, target: P<Type>) -> bool {
         let relation = self.identity_relation;
         self.is_type_related_to(source, target, relation)
     }
@@ -143,7 +143,7 @@ impl Checker {
     }
 
     // relater.go:149
-    pub(crate) fn is_type_assignable_to(&mut self, source: P<Type>, target: P<Type>) -> bool {
+    pub fn is_type_assignable_to(&mut self, source: P<Type>, target: P<Type>) -> bool {
         let relation = self.assignable_relation;
         self.is_type_related_to(source, target, relation)
     }
@@ -2511,14 +2511,57 @@ impl Checker {
         for &t in types {
             if t.flags().intersects(TypeFlags::Object | TypeFlags::InstantiableNonPrimitive) {
                 for p in self.get_properties_of_type(t).iter().copied() {
-                    let prop_type = self.get_type_of_symbol(p);
-                    if is_unit_type(prop_type) {
+                    if self.is_property_of_unit_type(p) {
                         return p.name().to_string();
                     }
                 }
             }
         }
         String::new()
+    }
+
+    // Reports whether a property has a unit type, without resolving the types of methods, which are function types, or
+    // instantiating the type of an instantiated or mapped property when the type it is instantiated from already rules
+    // out a unit type.
+    pub(crate) fn is_property_of_unit_type(&mut self, prop: P<Symbol>) -> bool {
+        // A method is typed as a function type only when none of the flags getTypeOfSymbol checks before it are set
+        if prop.flags().intersection(
+            SymbolFlags::Method
+                | SymbolFlags::Accessor
+                | SymbolFlags::Variable
+                | SymbolFlags::Property,
+        ) == SymbolFlags::Method
+        {
+            return false;
+        }
+        let check_flags = prop.check_flags();
+        if check_flags.intersects(CheckFlags::Instantiated | CheckFlags::Mapped) {
+            let links = self.value_symbol_links.get(prop);
+            if links.resolved_type.get().is_none() {
+                let uninstantiated = if check_flags.intersects(CheckFlags::Instantiated) {
+                    self.get_type_of_symbol(links.target().unwrap())
+                } else {
+                    let mapped_type = links.containing_type().unwrap();
+                    self.get_template_type_from_mapped_type(
+                        mapped_type.as_mapped_type().target.get().unwrap_or(mapped_type),
+                    )
+                };
+                // An object type other than a mapped type or a generic tuple type never instantiates to a unit type or
+                // to never, so neither does a union containing one. A homomorphic mapped type instantiated for a
+                // primitive is that primitive. A generic tuple type has a variadic element, like
+                // [string, ...T, number], and it normalizes to never when that element is instantiated to never. The
+                // tuple then drops out of a union, so with T = never the union [string, ...T, number] | K is just K,
+                // which can be a unit type.
+                if uninstantiated.distributed_iter().any(|t| {
+                    t.flags().intersects(TypeFlags::Object)
+                        && !t.object_flags().intersects(ObjectFlags::Mapped)
+                        && !Self::is_generic_tuple_type(t)
+                }) {
+                    return false;
+                }
+            }
+        }
+        is_unit_type(self.get_type_of_symbol(prop))
     }
 
     // relater.go:1169

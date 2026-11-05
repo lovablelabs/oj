@@ -178,7 +178,8 @@ mod services;
 pub use tsrs_astnav as astnav;
 
 // Exported Go package-level functions (the baseline writer, the language service and the project system call them).
-pub(crate) use checker_14::get_mapped_type_modifiers;
+pub use checker_09::is_non_deferred_type_reference;
+pub use checker_14::get_mapped_type_modifiers;
 pub use exports::{
     get_declaration_modifier_flags_from_symbol_exported, get_property_name_from_type_exported,
     is_distributed_type_parameter, is_tuple_type_exported, is_tuple_type_target,

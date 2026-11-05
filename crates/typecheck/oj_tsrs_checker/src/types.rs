@@ -2433,6 +2433,10 @@ pub struct TupleElementInfo {
 
 impl TupleElementInfo {
     #[inline]
+    pub fn tuple_element_flags(self) -> ElementFlags {
+        self.flags
+    }
+    #[inline]
     pub fn labeled_declaration(self) -> Option<P<Node>> {
         self.labeled_declaration
     }
@@ -2452,8 +2456,16 @@ embeds!(TupleType, interface_type, InterfaceType);
 
 impl TupleType {
     #[inline]
+    pub fn min_length(&self) -> usize {
+        self.min_length.get()
+    }
+    #[inline]
     pub fn fixed_length(&self) -> usize {
         self.fixed_length.get()
+    }
+    #[inline]
+    pub fn combined_flags(&self) -> ElementFlags {
+        self.combined_flags.get()
     }
     #[inline]
     pub fn is_readonly(&self) -> bool {
@@ -3247,7 +3259,7 @@ impl TypePredicate {
 #[derive(Default)]
 pub struct IndexInfo {
     pub(crate) key_type: Cell<Option<P<Type>>>,
-    pub(crate) value_type: Cell<Option<P<Type>>>,
+    pub value_type: Cell<Option<P<Type>>>,
     pub(crate) is_readonly: Cell<bool>,
     pub(crate) declaration: Cell<Option<P<Node>>>, // IndexSignatureDeclaration
     pub(crate) index_symbol: Cell<Option<P<Symbol>>>, // Synthetic property symbol for this index signature

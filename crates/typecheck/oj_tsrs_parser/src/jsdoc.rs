@@ -29,12 +29,12 @@ thread_local! {
 
 // parseJSDocForNode lazily parses JSDoc for a node in a TS file.
 // Called on first access to Node.JSDoc() for non-JS source files.
-fn parse_jsdoc_for_node(source_file: &'static SourceFile, node: P<Node>) -> Vec<P<Node>> {
+fn parse_jsdoc_for_node(source_file: &'static SourceFile, node: P<Node>) -> &'static [P<Node>] {
     let mut p = LAZY_JSDOC_PARSER.with(Cell::take).unwrap_or_else(|| Box::new(new_parser()));
     p.initialize_text_state(source_file.text(), source_file.script_kind());
     p.source_text_index = source_file.text_index.get();
     let start = p.parse_jsdoc_comments(node);
-    let jsdoc = p.node_stack[start..].to_vec();
+    let jsdoc = alloc_slice(&p.node_stack[start..]);
     p.recycle();
     LAZY_JSDOC_PARSER.with(|cell| cell.set(Some(p)));
     jsdoc

@@ -18,7 +18,7 @@ use crate::*;
 
 // parseJSDocForNode is the package-level function for lazily parsing JSDoc.
 // It is set by the parser crate via set_parse_jsdoc_for_node.
-pub type ParseJSDocForNodeFn = fn(&'static SourceFile, P<Node>) -> Vec<P<Node>>;
+pub type ParseJSDocForNodeFn = fn(&'static SourceFile, P<Node>) -> &'static [P<Node>];
 
 static PARSE_JSDOC_FOR_NODE: OnceLock<ParseJSDocForNodeFn> = OnceLock::new();
 
@@ -2395,7 +2395,7 @@ impl SourceFile {
         if let Some(&jsdocs) = cache.get(&n) {
             return jsdocs;
         }
-        let jsdocs = alloc_vec(parse(self, n));
+        let jsdocs = parse(self, n);
         cache.insert(n, jsdocs);
         jsdocs
     }

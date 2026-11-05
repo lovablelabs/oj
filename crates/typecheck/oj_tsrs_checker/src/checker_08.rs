@@ -2362,7 +2362,7 @@ impl Checker {
     }
 
     // checker.go:16720
-    pub(crate) fn get_declaration_of_alias_symbol(symbol: P<Symbol>) -> Option<P<Node>> {
+    pub fn get_declaration_of_alias_symbol(symbol: P<Symbol>) -> Option<P<Node>> {
         symbol.declarations().iter().rev().copied().find(|d| ast::is_alias_symbol_declaration(*d))
     }
 
@@ -3325,10 +3325,7 @@ impl Checker {
     }
 
     // checker.go:17383
-    pub(crate) fn get_constraint_of_type_parameter(
-        &mut self,
-        type_parameter: P<Type>,
-    ) -> Option<P<Type>> {
+    pub fn get_constraint_of_type_parameter(&mut self, type_parameter: P<Type>) -> Option<P<Type>> {
         if self.has_non_circular_base_constraint(type_parameter) {
             return self.get_constraint_from_type_parameter(type_parameter);
         }
