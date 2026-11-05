@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A Vite config that reads an env var gets the value of the run. oj caches the evaluated config across runs, and its key covered only a fixed list of vars (`VITE_*`, `NODE_ENV` and a few more), so a config reading another var (`process.env.API_URL` in a `define`, or `loadEnv(mode, dir, "")`) kept the value of the run that filled the cache. The extractor now records the vars the config and its plugins read, and the cache keys on their values: on the whole env (less the shell's session vars) when the config copied it, and on the `envPrefix` vars Vite's own loadEnv keeps. Vite evaluates the config on every start.
+
 ## [0.4.3] - 2026-11-05
 
 ### Changed
