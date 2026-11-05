@@ -1,7 +1,7 @@
 //! `oj dev` eagerly crawls the module graph by default (parallel pre-compile,
 //! warm HMR); `--lazy` compiles on demand (Vite's model) and never runs the
 //! crawl. The witness is the graph snapshot the crawl writes once the graph is
-//! ready, which nothing else writes.
+//! ready (the app page's static preloads), which nothing else writes.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -63,10 +63,13 @@ async fn default_runs_the_eager_crawl() {
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    // The snapshot is the page's static preloads, what its entry imports:
+    // the crawl compiled the entry to find them (an entry is no preload, its
+    // script fetches it), and never what nothing imports.
     let crawled = std::fs::read_to_string(&snapshot).unwrap();
     assert!(
-        crawled.contains("main.tsx"),
-        "crawl reached the entry:\n{crawled}"
+        crawled.contains("dep.tsx") && !crawled.contains("unused.tsx"),
+        "crawl reached the entry's imports:\n{crawled}"
     );
 }
 

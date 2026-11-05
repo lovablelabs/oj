@@ -72,7 +72,7 @@ async fn svg_import_and_new_url_resolve_to_the_served_file() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_png_is_its_module_or_its_file_by_sec_fetch_dest() {
+async fn png_import_preloads_its_url_module_not_the_image() {
     let app = App::new(&[
         (
             "package.json",
@@ -86,14 +86,17 @@ async fn a_png_is_its_module_or_its_file_by_sec_fetch_dest() {
     ]);
     std::fs::write(app.root.join("src/hero.png"), PNG_1X1).unwrap();
     let server = app.serve().await;
-    // The crawl reaches the image, and the page still names it nowhere: Vite's
-    // dev page preloads none of its modules.
+    // The page preloads the image's `?url` module, never the raw file its
+    // `<img src>` fetches: `/src/hero.png` is both, told apart by
+    // `Sec-Fetch-Dest`, which every hop must forward.
     if crate::crawled(&app.root).await {
         let html = server.text("/").await;
-        assert!(!html.contains("hero.png"), "{html}");
+        assert!(
+            html.contains(r#"<link rel="modulepreload" href="/src/hero.png?url" />"#),
+            "{html}"
+        );
+        assert!(!html.contains(r#"href="/src/hero.png""#), "{html}");
     }
-    // `/src/hero.png` is both the `<img src>`'s raw file and the module an
-    // import of it fetches, told apart by `Sec-Fetch-Dest`.
 
     for (dest, mime) in [("script", "text/javascript"), ("image", "image/png")] {
         let req = Request::get("/src/hero.png")
