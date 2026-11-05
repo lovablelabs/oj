@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- rolldown 1.3.0 (from 1.2.16) and oxc 0.157 (from 0.156). `oj build` output still matches `vite build` byte for byte on the parity apps. In TanStack Start dev, a `server.watch` debounce delay can be given as `debounceDelay`, rolldown's new name; `debounceDuration` still works.
+
 ### Fixed
 
 - TanStack Start routes are code split as Start splits them under Vite. Start's router plugin runs TanStack's code splitter in the client and the server, so a route imports its component lazily from `route.tsx?tsr-split=component`, and what the component shares with the route's options moves to `?tsr-shared`. oj now runs those splitter plugins (and the router generator that tells them which files are routes) in its Start hosts. Dev SSR keeps a module's query when the plugins transform it, and the build gives each route component its own chunk, the same chunks Vite's build makes. Before, the route tree imported every component with its route, so a route with `ssr: false` whose component imports a browser-only library (one touching `window` as it loads) failed every page with `window is not defined`, in dev and from the build.

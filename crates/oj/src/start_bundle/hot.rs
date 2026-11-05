@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use oj_compiler::glob::GlobCall;
-use rolldown_common::{HmrUpdate, Output};
+use rolldown_common::{HmrUpdate, Output, WatcherFileWatcherOptions};
 use rolldown_dev::{BundlerConfig, DevEngine, DevOptions, DevWatchOptions, ErrorStage};
 use rolldown_plugin::__inner::SharedPluginable;
 use rolldown_utils::pattern_filter::StringOrRegex;
@@ -433,8 +433,8 @@ fn unresolved_in_patch(code: &str, importer: &str, declared: &Declared) -> Optio
 fn watch_options(watch: Option<&serde_json::Value>) -> DevWatchOptions {
     let Some(w) = watch else {
         return DevWatchOptions {
-            disable_watcher: Some(true),
-            skip_write: Some(true),
+            enabled: Some(false),
+            skip_write: true,
             ..Default::default()
         };
     };
@@ -454,17 +454,23 @@ fn watch_options(watch: Option<&serde_json::Value>) -> DevWatchOptions {
                 .collect(),
         )
     };
-    DevWatchOptions {
-        skip_write: Some(true),
+    let watcher = WatcherFileWatcherOptions {
         use_polling: w.get("usePolling").and_then(|v| v.as_bool()),
         poll_interval: w
             .get("pollInterval")
             .or_else(|| w.get("interval"))
             .and_then(|v| v.as_u64()),
-        use_debounce: w.get("useDebounce").and_then(|v| v.as_bool()),
-        debounce_duration: w.get("debounceDuration").and_then(|v| v.as_u64()),
-        debounce_tick_rate: w.get("debounceTickRate").and_then(|v| v.as_u64()),
         compare_contents_for_polling: w.get("compareContentsForPolling").and_then(|v| v.as_bool()),
+        use_debounce: w.get("useDebounce").and_then(|v| v.as_bool()),
+        debounce_delay: w
+            .get("debounceDelay")
+            .or_else(|| w.get("debounceDuration"))
+            .and_then(|v| v.as_u64()),
+        debounce_tick_rate: w.get("debounceTickRate").and_then(|v| v.as_u64()),
+    };
+    DevWatchOptions {
+        skip_write: true,
+        watcher: Some(watcher),
         include: patterns("include"),
         exclude: patterns("exclude"),
         ..Default::default()
@@ -531,14 +537,16 @@ mod tests {
     #[test]
     fn watch_options_follow_server_watch() {
         let off = watch_options(None);
-        assert_eq!(off.disable_watcher, Some(true));
+        assert_eq!(off.enabled, Some(false));
         let polling = watch_options(Some(
-            &serde_json::json!({ "usePolling": true, "interval": 300 }),
+            &serde_json::json!({ "usePolling": true, "interval": 300, "debounceDuration": 50 }),
         ));
-        assert_eq!(polling.use_polling, Some(true));
-        assert_eq!(polling.poll_interval, Some(300));
-        assert_eq!(polling.skip_write, Some(true));
-        assert_eq!(polling.disable_watcher, None);
+        let watcher = polling.watcher.as_ref().unwrap();
+        assert_eq!(watcher.use_polling, Some(true));
+        assert_eq!(watcher.poll_interval, Some(300));
+        assert_eq!(watcher.debounce_delay, Some(50));
+        assert!(polling.skip_write);
+        assert_eq!(polling.enabled, None);
     }
 
     #[test]
