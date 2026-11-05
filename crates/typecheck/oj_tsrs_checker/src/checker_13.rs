@@ -650,10 +650,11 @@ impl Checker {
                         | TypeFlags::Intersection
                         | TypeFlags::InstantiableNonPrimitive,
                 ) {
-                    key_property = self.get_properties_of_type(source).iter().copied().find(|&p| {
-                        let t = self.get_type_of_symbol(p);
-                        is_unit_type(t)
-                    });
+                    key_property = self
+                        .get_properties_of_type(source)
+                        .iter()
+                        .copied()
+                        .find(|&p| self.is_property_of_unit_type(p));
                 }
                 if let Some(key_property) = key_property {
                     let t = self.get_type_of_symbol(key_property);
@@ -2395,7 +2396,7 @@ impl Checker {
             reason = "without the census the wrapper is a forwarding call; inlined, callers call the body as before (notes/perf-checker-algorithms.md)"
         )
     )]
-    pub(crate) fn get_indexed_access_type_or_undefined(
+    pub fn get_indexed_access_type_or_undefined(
         &mut self,
         object_type: P<Type>,
         index_type: P<Type>,
@@ -3453,7 +3454,7 @@ impl Checker {
     }
 
     // checker.go:27906
-    pub(crate) fn get_base_constraint_of_type(&mut self, t: P<Type>) -> Option<P<Type>> {
+    pub fn get_base_constraint_of_type(&mut self, t: P<Type>) -> Option<P<Type>> {
         if t.flags().intersects(
             TypeFlags::InstantiableNonPrimitive
                 | TypeFlags::UnionOrIntersection

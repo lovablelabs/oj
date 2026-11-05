@@ -60,6 +60,25 @@ impl Checker {
         self.type_to_string(t, None)
     }
 
+    /// Preserves Go's byte truncation, including a possible incomplete UTF-8 character.
+    pub fn type_to_string_bytes_exported(&mut self, t: P<Type>) -> Vec<u8> {
+        self.type_to_string_ex_with(
+            t,
+            None,
+            TypeFormatFlags::AllowUniqueESSymbolType
+                | TypeFormatFlags::UseAliasDefinedOutsideCurrentScope,
+            None,
+            |result, cut| {
+                let mut bytes = result.into_bytes();
+                if let Some(cut) = cut {
+                    bytes.truncate(cut);
+                    bytes.extend_from_slice(b"...");
+                }
+                bytes
+            },
+        )
+    }
+
     // printer.go:47
     pub(crate) fn type_to_string(
         &mut self,
@@ -101,11 +120,28 @@ impl Checker {
         flags: TypeFormatFlags,
         vc: Option<P<VerbosityContext>>,
     ) -> String {
+        self.type_to_string_ex_with(t, enclosing_declaration, flags, vc, |result, cut| {
+            if let Some(cut) = cut {
+                tsrs_core::utf8::from_utf8_lossy(&result.as_bytes()[..cut]).into_owned() + "..."
+            } else {
+                result
+            }
+        })
+    }
+
+    fn type_to_string_ex_with<R>(
+        &mut self,
+        t: P<Type>,
+        enclosing_declaration: Option<P<Node>>,
+        flags: TypeFormatFlags,
+        vc: Option<P<VerbosityContext>>,
+        finish: impl FnOnce(String, Option<usize>) -> R,
+    ) -> R {
         // Serialization of types can lead to (lazy) resolution of members, which can cause diagnostics that again require
         // serialization of types. This can potentially result in infinite recursion and stack overflows. To prevent that,
         // after a certain number of recursive invocations the function simply returns "?".
         if self.serialization_level >= MAX_SERIALIZATION_LEVEL {
-            return "?".to_string();
+            return finish("?".to_string(), None);
         }
         let mut new_line = "";
         if flags.intersects(TypeFormatFlags::MultilineObjectLiterals) {
@@ -165,11 +201,9 @@ impl Checker {
             if let Some(vc) = vc {
                 vc.truncated.set(true);
             }
-            // Go slices bytes; a cut inside a multi-byte character yields U+FFFD here instead of the raw bytes.
-            let cut = &result.as_bytes()[0..max_length - "...".len()];
-            return tsrs_core::utf8::from_utf8_lossy(cut).into_owned() + "...";
+            return finish(result, Some(max_length - "...".len()));
         }
-        result
+        finish(result, None)
     }
 
     // printer.go:120
