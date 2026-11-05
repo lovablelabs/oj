@@ -5,8 +5,8 @@
 //! plugin does it in Vite: the client code splitter deletes the route options
 //! `ssr`, `server` and `headers` (its `deleteNodes`) and drops what only they
 //! used. A server route importing a `*.server.ts` module, with import
-//! protection set to fail (`behavior: "error"`, the setting Lovable's Vite
-//! config ships), hydrates in dev and builds; the server still answers the
+//! protection set to fail (`behavior: "error"`), hydrates in dev and builds;
+//! the server still answers the
 //! route with its handler. Before, the client bundled the handler and its
 //! import: import protection threw in dev, the client entry answered 404 and
 //! the page never hydrated.

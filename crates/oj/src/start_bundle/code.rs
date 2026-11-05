@@ -434,7 +434,7 @@ mod tests {
         let text = [
             "import { Route as rootRouteImport } from './routes/__root'",
             "import { Route as ApiHookRouteImport } from './routes/api/public/hook'",
-            "import { Route as ConsentRouteImport } from './routes/[.]lovable.oauth.consent'",
+            "import { Route as ConsentRouteImport } from './routes/[.]well-known.consent'",
             "import type { getRouter } from './router.tsx'",
             "import { createStart } from \"@tanstack/react-start\";",
             "const x = 1",
@@ -444,7 +444,7 @@ mod tests {
         for want in [
             "/app/src/routes/__root",
             "/app/src/routes/api/public/hook",
-            "/app/src/routes/[.]lovable.oauth.consent",
+            "/app/src/routes/[.]well-known.consent",
             "/app/src/router",
         ] {
             assert!(files.contains(Path::new(want)), "{want}: {files:?}");
