@@ -44,6 +44,78 @@ pub fn names_a_route_factory(code: &str) -> bool {
     })
 }
 
+/// The generator's file route factories (router-generator's
+/// `routeConstructors`).
+const FILE_ROUTE_FNS: &[&str] = &["createFileRoute", "createLazyFileRoute"];
+
+/// Whether the TanStack generator sees the route module as server-only: the
+/// options of its `createFileRoute(id)({...})` are an object literal whose
+/// only key is `server` (its `createFileRouteProps`, from
+/// `getCreateFileRouteProps`). Start's client route tree leaves such a route
+/// out. A module with no such call or more than one, or whose options are not
+/// an object literal, is not server-only. None when the module does not parse.
+pub fn is_server_only_route(code: &str, path: &str) -> Option<bool> {
+    if !FILE_ROUTE_FNS.iter().any(|f| code.contains(f)) {
+        return Some(false);
+    }
+    let allocator = Allocator::default();
+    let source_type = SourceType::from_path(path.split('?').next().unwrap_or(path))
+        .unwrap_or_else(|_| SourceType::tsx());
+    let parsed = Parser::new(&allocator, code, source_type).parse();
+    if parsed.fatal_error {
+        return None;
+    }
+    let mut finder = FileRouteProps::default();
+    finder.visit_program(&parsed.program);
+    Some(match finder.calls.as_slice() {
+        [Some(props)] => props.len() == 1 && props[0] == "server",
+        _ => false,
+    })
+}
+
+/// Each `createFileRoute(id)(options)` call's option keys, None when the
+/// options are not an object literal.
+#[derive(Default)]
+struct FileRouteProps {
+    calls: Vec<Option<Vec<String>>>,
+}
+
+impl<'a> Visit<'a> for FileRouteProps {
+    fn visit_call_expression(&mut self, call: &CallExpression<'a>) {
+        if let Expression::CallExpression(inner) = &call.callee {
+            let file_route = matches!(&inner.callee,
+                Expression::Identifier(id) if FILE_ROUTE_FNS.contains(&id.name.as_str()));
+            if file_route {
+                let props = match call.arguments.first() {
+                    Some(Argument::ObjectExpression(o)) => Some(
+                        o.properties
+                            .iter()
+                            .filter_map(|prop| {
+                                let ObjectPropertyKind::ObjectProperty(p) = prop else {
+                                    return None;
+                                };
+                                match &p.key {
+                                    _ if p.computed => None,
+                                    PropertyKey::StaticIdentifier(id) => Some(id.name.to_string()),
+                                    PropertyKey::StringLiteral(lit) => {
+                                        lit.value.as_str().map(str::to_string)
+                                    }
+                                    _ => None,
+                                }
+                            })
+                            .collect::<std::collections::BTreeSet<_>>()
+                            .into_iter()
+                            .collect(),
+                    ),
+                    _ => None,
+                };
+                self.calls.push(props);
+            }
+        }
+        walk::walk_call_expression(self, call);
+    }
+}
+
 /// The route module with `deleted` keys gone from its route options and,
 /// when one went, what only they used gone too (the reference compile's
 /// `deadCodeElimination` with the identifiers referenced before its edits).
@@ -287,6 +359,39 @@ mod tests {
 
     // The last option goes with its comma; a computed key and a nested
     // `server` stay (only the route options' own keys are deleted).
+    #[test]
+    fn a_route_whose_only_option_is_server_is_server_only() {
+        let route = |options: &str| {
+            format!(
+                "import {{ createFileRoute }} from \"@tanstack/react-router\";\nexport const Route = createFileRoute(\"/api/x\")({options});\n"
+            )
+        };
+        let only = |options: &str| is_server_only_route(&route(options), "src/routes/x.tsx");
+        assert_eq!(only("{ server: { handlers: {} } }"), Some(true));
+        assert_eq!(only("{ \"server\": {} }"), Some(true));
+        assert_eq!(only("{ server: {}, component: Page }"), Some(false));
+        assert_eq!(only("{ component: Page }"), Some(false));
+        // Keys the generator does not count: computed ones and spreads.
+        assert_eq!(only("{ [\"server\"]: {} }"), Some(false));
+        assert_eq!(only("{ server: {}, ...rest }"), Some(true));
+        // Options that are not an object literal give no props.
+        assert_eq!(only("options"), Some(false));
+        let lazy = "export const Route = createLazyFileRoute(\"/x\")({ server: {} });\n";
+        assert_eq!(
+            is_server_only_route(lazy, "src/routes/x.lazy.tsx"),
+            Some(true)
+        );
+        assert_eq!(
+            is_server_only_route("export const x = 1;\n", "src/routes/x.tsx"),
+            Some(false)
+        );
+        // Mid-edit, a file that does not parse says nothing.
+        assert_eq!(
+            is_server_only_route(&route("{ server: {"), "src/routes/x.tsx"),
+            None
+        );
+    }
+
     #[test]
     fn only_the_route_options_own_keys_are_deleted() {
         let code = "export const Route = createFileRoute(\"/x\")({ component: C, [server]: 1, loader: () => ({ server: 2 }), server: { handlers: {} }, });\n";
