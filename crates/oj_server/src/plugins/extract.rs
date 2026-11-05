@@ -1001,7 +1001,7 @@ pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues)
             let map = rc.alias.get_or_insert_with(Default::default);
             for (find, replacement) in valias {
                 if let Some(s) = replacement.as_str() {
-                    map.entry(find).or_insert_with(|| s.to_string());
+                    map.insert_if_absent(find, s.to_string());
                 }
             }
         }

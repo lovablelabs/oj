@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- An import that matches a `resolve.alias` entry now resolves through that entry, in dev and in TanStack Start's server render, as Vite resolves it. oj tried tsconfig `paths` before the aliases, and kept the aliases sorted. So `{ "@/integrations/supabase/client": "./src/appBackend.ts", "@": "./src" }` sent the client import to the file `@` or tsconfig `paths` gave it, not the one written for it. As in Vite, aliases now go first, and the first entry that matches in the written order wins, from an object or a `[{ find, replacement }]` array. A tsconfig `paths` target that is a declaration file (`.d.ts`) is no longer served as the module, as vite-tsconfig-paths passes on one.
+
 ## [0.4.3] - 2026-11-05
 
 ### Changed

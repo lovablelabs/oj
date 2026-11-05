@@ -187,7 +187,7 @@ pub fn top_level_alias(config: &OjConfig) -> Vec<(String, String)> {
         .resolve
         .as_ref()
         .and_then(|r| r.alias.as_ref())
-        .map(|a| a.clone().into_iter().collect())
+        .map(|a| a.0.clone())
         .unwrap_or_default()
 }
 
@@ -287,23 +287,21 @@ pub fn resolve_preserve_symlinks(config: &OjConfig) -> bool {
 
 /// Top-level `resolve.alias`, overlaid by the environment's string entries.
 pub fn resolve_alias(config: &OjConfig, env_name: &str) -> Vec<(String, String)> {
-    let mut merged: std::collections::BTreeMap<String, String> = config
-        .resolve
-        .as_ref()
-        .and_then(|r| r.alias.as_ref())
-        .map(|a| a.clone().into_iter().collect())
-        .unwrap_or_default();
+    let mut merged = top_level_alias(config);
     if let Some(env_alias) = env_resolve(config, env_name)
         .and_then(|r| r.get("alias"))
         .and_then(|a| a.as_object())
     {
         for (find, replacement) in env_alias {
             if let Some(s) = replacement.as_str() {
-                merged.insert(find.clone(), s.to_string());
+                match merged.iter_mut().find(|(f, _)| f == find) {
+                    Some(entry) => entry.1 = s.to_string(),
+                    None => merged.push((find.clone(), s.to_string())),
+                }
             }
         }
     }
-    merged.into_iter().collect()
+    merged
 }
 
 #[cfg(test)]
@@ -314,6 +312,46 @@ mod tests {
     use crate::load::load;
     use crate::optimize::optimize_deps_lists;
     use crate::server::{config_defines, environment_defines};
+
+    // Vite tries the alias entries in the written order (normalizeAlias keeps
+    // an object's key order), from an object or a `{ find, replacement }`
+    // array; an environment's entry replaces the top-level one in place.
+    #[test]
+    fn aliases_keep_the_written_order() {
+        let from = |json: &str| -> OjConfig { serde_json::from_str(json).unwrap() };
+        let pairs = |list: &[(&str, &str)]| -> Vec<(String, String)> {
+            list.iter()
+                .map(|(f, r)| (f.to_string(), r.to_string()))
+                .collect()
+        };
+        let object = from(
+            r##"{ "resolve": { "alias": { "@/lib/client": "/backend.ts", "@": "/src", "#x": "/x" } } }"##,
+        );
+        assert_eq!(
+            crate::top_level_alias(&object),
+            pairs(&[("@/lib/client", "/backend.ts"), ("@", "/src"), ("#x", "/x")])
+        );
+        let array = from(
+            r#"{ "resolve": { "alias": [{ "find": "@", "replacement": "/src" }, { "find": "@/lib/client", "replacement": "/backend.ts" }, { "find": "@", "replacement": "/ignored" }] } }"#,
+        );
+        assert_eq!(
+            crate::top_level_alias(&array),
+            pairs(&[("@", "/src"), ("@/lib/client", "/backend.ts")]),
+            "the first entry for a find stands"
+        );
+        let env = from(
+            r#"{ "resolve": { "alias": { "b": "/b", "a": "/a" } },
+                 "environments": { "ssr": { "resolve": { "alias": { "a": "/ssr-a", "c": "/c" } } } } }"#,
+        );
+        assert_eq!(
+            crate::resolve_alias(&env, "ssr"),
+            pairs(&[("b", "/b"), ("a", "/ssr-a"), ("c", "/c")])
+        );
+        assert_eq!(
+            crate::resolve_alias(&env, "client"),
+            pairs(&[("b", "/b"), ("a", "/a")])
+        );
+    }
 
     #[test]
     fn external_conditions_fall_back_from_environment_to_ssr_sugar_to_top_level() {

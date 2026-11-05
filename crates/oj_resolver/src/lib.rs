@@ -13,7 +13,7 @@ mod spec;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use oxc_resolver::Resolver;
+use oxc_resolver::{ResolveOptions, Resolver};
 
 pub use defaults::{
     default_extension_alias, default_extensions, default_main_fields, default_server_main_fields,
@@ -25,6 +25,13 @@ use spec::package_name;
 
 pub struct OjResolver {
     inner: Resolver,
+    /// `inner` without tsconfig `paths`, when a tsconfig is in play: what an
+    /// aliased import, or one whose `paths` target is a declaration file,
+    /// resolves with.
+    no_paths: Option<Resolver>,
+    /// The `resolve.alias` finds, which go before tsconfig `paths` (Vite's
+    /// alias plugin runs ahead of every resolver plugin).
+    alias_finds: Vec<String>,
     root: PathBuf,
     /// `resolve.dedupe` package names.
     dedupe: HashSet<String>,
@@ -71,8 +78,18 @@ impl OjResolver {
     }
 
     pub fn with_settings(root: &Path, settings: ResolveSettings) -> Self {
+        let options = settings::resolve_options(root, &settings);
+        let inner = Resolver::new(options.clone());
+        let no_paths = options.tsconfig.is_some().then(|| {
+            inner.clone_with_options(ResolveOptions {
+                tsconfig: None,
+                ..options
+            })
+        });
         Self {
-            inner: Resolver::new(settings::resolve_options(root, &settings)),
+            inner,
+            no_paths,
+            alias_finds: settings.alias.into_iter().map(|(find, _)| find).collect(),
             root: root.to_path_buf(),
             dedupe: settings.dedupe.into_iter().collect(),
         }
@@ -88,8 +105,16 @@ impl OjResolver {
                 *c = "require".to_string();
             }
         }
+        let no_paths = self.no_paths.as_ref().map(|_| {
+            self.inner.clone_with_options(ResolveOptions {
+                tsconfig: None,
+                ..options.clone()
+            })
+        });
         Self {
             inner: self.inner.clone_with_options(options),
+            no_paths,
+            alias_finds: self.alias_finds.clone(),
             root: self.root.clone(),
             dedupe: self.dedupe.clone(),
         }
@@ -110,7 +135,49 @@ impl OjResolver {
         self.inner.clear_cache();
     }
 
+    /// Whether a `resolve.alias` find takes `specifier`: the whole of it, or
+    /// a prefix up to a `/` (a find ending in `$` only exactly), as oxc and
+    /// Vite's alias plugin match.
+    fn aliased(&self, specifier: &str) -> bool {
+        self.alias_finds
+            .iter()
+            .any(|find| match find.strip_suffix('$') {
+                Some(exact) => specifier == exact,
+                None => {
+                    specifier == find
+                        || specifier
+                            .strip_prefix(find.as_str())
+                            .is_some_and(|rest| rest.starts_with('/'))
+                }
+            })
+    }
+
+    /// `specifier` from `importer_dir`. An alias goes first, as Vite's alias
+    /// plugin runs ahead of tsconfig `paths` (vite-tsconfig-paths, or
+    /// `resolve.tsconfigPaths`), where oxc tries `paths` first. A `paths`
+    /// target that is a declaration file is no answer, as vite-tsconfig-paths
+    /// passes on one (`resolvedToDeclarationFile`).
     pub fn resolve(&self, importer_dir: &Path, specifier: &str) -> Result<PathBuf, ResolveFailure> {
+        let Some(no_paths) = &self.no_paths else {
+            return self.resolve_with(&self.inner, importer_dir, specifier);
+        };
+        if self.aliased(specifier) {
+            return self.resolve_with(no_paths, importer_dir, specifier);
+        }
+        match self.resolve_with(&self.inner, importer_dir, specifier) {
+            Ok(path) if is_declaration_file(&path) => {
+                self.resolve_with(no_paths, importer_dir, specifier)
+            }
+            other => other,
+        }
+    }
+
+    fn resolve_with(
+        &self,
+        resolver: &Resolver,
+        importer_dir: &Path,
+        specifier: &str,
+    ) -> Result<PathBuf, ResolveFailure> {
         let deduped = self.should_dedupe(specifier);
         let base = if deduped {
             self.root.as_path()
@@ -123,9 +190,9 @@ impl OjResolver {
             reason,
             ignored,
         };
-        match self.inner.resolve(base, specifier) {
+        match resolver.resolve(base, specifier) {
             Ok(resolution) => {
-                match directory_entry(&self.inner, base, specifier, resolution.path()) {
+                match directory_entry(resolver, base, specifier, resolution.path()) {
                     DirectoryEntry::Resolved(entry) => Ok(entry),
                     DirectoryEntry::NotApplicable => Ok(resolution.full_path()),
                     DirectoryEntry::Unresolvable(dir) => Err(failure(
@@ -140,7 +207,7 @@ impl OjResolver {
             Err(err) => {
                 // A deduped package installed only nested: retry from the importer.
                 if deduped {
-                    if let Ok(resolution) = self.inner.resolve(importer_dir, specifier) {
+                    if let Ok(resolution) = resolver.resolve(importer_dir, specifier) {
                         return Ok(resolution.full_path());
                     }
                 }
@@ -148,6 +215,14 @@ impl OjResolver {
             }
         }
     }
+}
+
+/// A TypeScript declaration file (`.d.ts`, `.d.mts`, `.d.cts`).
+fn is_declaration_file(path: &Path) -> bool {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    [".d.ts", ".d.mts", ".d.cts"]
+        .iter()
+        .any(|ext| name.ends_with(ext))
 }
 
 #[cfg(test)]
@@ -166,6 +241,118 @@ mod tests {
         let resolver = OjResolver::new(&playground_root());
         let resolved = resolver.resolve(&playground_src(), "./App").unwrap();
         assert!(resolved.ends_with("App.tsx"), "got {resolved:?}");
+    }
+
+    /// A project whose tsconfig `paths` name a declaration file for the
+    /// client module, and `@/*` for the rest.
+    fn supabase_project() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for (file, body) in [
+            (
+                "src/integrations/supabase/client.ts",
+                "export const who = 1;",
+            ),
+            ("src/appBackend.ts", "export const who = 2;"),
+            (
+                "src/types/existingSupabaseClient.d.ts",
+                "export declare const supabase: 1;",
+            ),
+            ("src/lib/helper.ts", "export const helper = 1;"),
+            (
+                "tsconfig.json",
+                r#"{ "compilerOptions": { "baseUrl": ".", "paths": { "@/integrations/supabase/client": ["./src/types/existingSupabaseClient.d.ts"], "@/*": ["./src/*"] } } }"#,
+            ),
+        ] {
+            let path = root.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, body).unwrap();
+        }
+        tmp
+    }
+
+    fn aliased(root: &Path, alias: &[(&str, &str)]) -> OjResolver {
+        let alias: Vec<(String, String)> = alias
+            .iter()
+            .map(|(f, r)| (f.to_string(), root.join(r).to_string_lossy().into_owned()))
+            .collect();
+        OjResolver::with_options(root, &["import".to_string()], &alias, &[])
+    }
+
+    // Vite's alias plugin runs ahead of tsconfig `paths`, and takes the first
+    // entry that matches in the written order.
+    #[test]
+    fn an_alias_goes_before_tsconfig_paths_in_written_order() {
+        let tmp = supabase_project();
+        let root = tmp.path().canonicalize().unwrap();
+        let src = root.join("src");
+        let client = "@/integrations/supabase/client";
+        let specific_first = aliased(
+            &root,
+            &[
+                ("@/integrations/supabase/client", "src/appBackend.ts"),
+                ("@", "src"),
+            ],
+        );
+        assert_eq!(
+            specific_first.resolve(&src, client).unwrap(),
+            src.join("appBackend.ts")
+        );
+        let at_first = aliased(
+            &root,
+            &[
+                ("@", "src"),
+                ("@/integrations/supabase/client", "src/appBackend.ts"),
+            ],
+        );
+        assert_eq!(
+            at_first.resolve(&src, client).unwrap(),
+            src.join("integrations/supabase/client.ts")
+        );
+        // A find ending in `$` takes only the exact specifier.
+        let exact = aliased(&root, &[("@/lib$", "src/appBackend.ts")]);
+        assert_eq!(
+            exact.resolve(&src, "@/lib").unwrap(),
+            src.join("appBackend.ts")
+        );
+        assert_eq!(
+            exact.resolve(&src, "@/lib/helper").unwrap(),
+            src.join("lib/helper.ts"),
+            "the paths answer what the exact find leaves"
+        );
+    }
+
+    // A `paths` target that is a declaration file is no answer
+    // (vite-tsconfig-paths' resolvedToDeclarationFile); the rest still map.
+    #[test]
+    fn a_paths_target_that_is_a_declaration_file_is_no_answer() {
+        let tmp = supabase_project();
+        let root = tmp.path().canonicalize().unwrap();
+        let src = root.join("src");
+        let resolver = OjResolver::new(&root);
+        let failure = resolver
+            .resolve(&src, "@/integrations/supabase/client")
+            .unwrap_err();
+        assert!(!failure.ignored, "{failure}");
+        assert_eq!(
+            resolver.resolve(&src, "@/lib/helper").unwrap(),
+            src.join("lib/helper.ts")
+        );
+        // The require variant keeps both rules.
+        let require = aliased(
+            &root,
+            &[("@/integrations/supabase/client", "src/appBackend.ts")],
+        )
+        .require_variant();
+        assert_eq!(
+            require
+                .resolve(&src, "@/integrations/supabase/client")
+                .unwrap(),
+            src.join("appBackend.ts")
+        );
+        assert!(require
+            .resolve(&src, "@/integrations/supabase/client/x")
+            .is_err());
     }
 
     #[test]
