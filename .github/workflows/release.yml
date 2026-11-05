@@ -176,7 +176,7 @@ jobs:
         if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload --clobber "$GITHUB_REF_NAME" "${{ steps.package.outputs.file }}"
+        run: tools/release-upload.sh "$GITHUB_REF_NAME" "${{ steps.package.outputs.file }}"
 
   # The pinned V8 snapshot bundle (issue #211): snapshot creation is
   # run-nondeterministic, so reproducible nix builds consume a prebuilt bundle
@@ -238,7 +238,7 @@ jobs:
         if: steps.stale.outputs.stale == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$GITHUB_REF_NAME" "${{ steps.harvest.outputs.pin_file }}"
+        run: tools/release-upload.sh "$GITHUB_REF_NAME" "${{ steps.harvest.outputs.pin_file }}"
       - name: open the pin bump PR
         if: steps.stale.outputs.stale == 'true'
         env:
