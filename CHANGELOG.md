@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- In TanStack Start dev, saving a route file no longer waits on the route tree generator. Since 0.4.2 every route edit reran it before the rebuild (about half a second each). It now reruns only when an edit gives a route its only-`server` shape or takes it away, which moves the route in or out of the client's tree, as Start reloads the client only then.
+- A TanStack Start app whose `tsr.config.json` sets `generatedRouteTree` gets its route tree back from oj's codegen cache. The cache stored and restored `src/routeTree.gen.ts` instead, so a cache hit left the configured tree missing.
+
 ## [0.4.2] - 2026-11-05
 
 ### Changed
