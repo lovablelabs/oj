@@ -319,6 +319,20 @@ impl DevBundler {
             }
         }
         if !hot {
+            // A build runs no watchChange (the dev engine's does, before each
+            // rebuild): Start's import protection forgets the batch here.
+            if let Some(h) = host.filter(|_| !changed.is_empty()) {
+                let files: Vec<String> = changed
+                    .iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect();
+                if let Err(e) = h.host.import_protection_changed(&files).await {
+                    eprintln!(
+                        "{}: import protection did not take the change: {e}",
+                        oj_server::oj_brand()
+                    );
+                }
+            }
             eprintln!("{}: client bundling", oj_server::oj_brand());
             return self.build(host).await.map(|files| Run::Output { files });
         }
