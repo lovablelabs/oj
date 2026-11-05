@@ -4941,14 +4941,20 @@ function oxcStripOptions(c) {
 // "pre" hooks (enforce or order "pre") see the source before vite:css compiles
 // it, "normal" ones the compiled CSS before vite:css-post turns it into JS,
 // "post" ones (enforce or order "post") that JS module.
+function inTransformPhase(slot, phase) {
+  return phase === "after-pre" ? slot !== "pre" : slot === phase;
+}
+
 function cssPhaseOf(p, rank) {
   if (rank < 0 || (rank === 0 && enforceRank(p) < 0)) return "pre";
   if (rank > 0 || enforceRank(p) > 0) return "post";
   return "normal";
 }
 
-// `phase` (a cssPhaseOf slot) runs only that slot's hooks; without one, the
-// whole chain. Module info is final after the whole chain or the "post" slot.
+// `phase` (a cssPhaseOf slot) runs only that slot's hooks; "after-pre" runs
+// the "normal" and "post" ones (what follows Start's compiler, an `enforce:
+// "pre"` plugin oj runs natively); without one, the whole chain. Module info
+// is final after the whole chain, the "post" slot or "after-pre".
 async function transform(c, code, id, resolvedJson, phase) {
   const bucket = new Set();
   const chunkBucket = [];
@@ -4973,7 +4979,7 @@ async function transform(c, code, id, resolvedJson, phase) {
     // on top of the plugin's enforce; getSortedPluginsByHook applies to transform
     // like to every other hook.
     for (const { p, fn: handler, rank } of pluginsWithHook(c, "transform")) {
-      if (phase && cssPhaseOf(p, rank) !== phase) continue;
+      if (phase && !inTransformPhase(cssPhaseOf(p, rank), phase)) continue;
       // The strip runs BEFORE this plugin's filter is evaluated: Vite
       // evaluates a hook's filter against the code the hook would receive
       // (post-oxc for normal/post plugins), so a `filter.code` that matches
@@ -5034,7 +5040,7 @@ async function transform(c, code, id, resolvedJson, phase) {
         mapBroken,
         emittedChunks: chunkBucket,
       });
-    if (phase && phase !== "post") return result();
+    if (phase && phase !== "post" && phase !== "after-pre") return result();
     const prior = c.moduleInfoCache.get(id);
     const info = makeModuleInfo(
       id,

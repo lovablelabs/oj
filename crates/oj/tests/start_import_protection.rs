@@ -183,6 +183,66 @@ fn a_server_only_import_only_a_server_fn_uses_builds() {
     );
 }
 
+/// A `*.functions.ts` module outside the routes (so the router's code
+/// splitter never sees it) whose only use of `@tanstack/react-start/server`
+/// is inside a server function's handler. Start's compiler drops the handler
+/// on the client and, with its dead-code pass, the import it used: the client
+/// never imports the server entry, the build passes, and the dev page
+/// hydrates without an import-protection error.
+const HANDLER_ONLY_FNS: &str = r#"import { createServerFn } from "@tanstack/react-start";
+import { getRequest } from "@tanstack/react-start/server";
+
+export const whoAsks = createServerFn({ method: "POST" }).handler(async () => {
+  return getRequest()?.method ?? "none";
+});
+"#;
+
+fn handler_only_files() -> [(&'static str, String); 2] {
+    [
+        ("src/lib/who.functions.ts", HANDLER_ONLY_FNS.to_string()),
+        (
+            "src/routes/about.tsx",
+            about(
+                "import { whoAsks } from \"../lib/who.functions\";",
+                "const extra = <button onClick={() => whoAsks()}>ask</button>;",
+            ),
+        ),
+    ]
+}
+
+#[test]
+fn a_functions_modules_server_import_only_its_handler_uses_builds() {
+    let Some(app) = app_with("ip-fns-module", &handler_only_files(), None) else {
+        return;
+    };
+    let (ok, text) = build(&app.0);
+    assert!(ok, "the build failed:\n{text}");
+    assert!(!text.contains("[import-protection]"), "{text}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_hydrates_a_page_whose_functions_module_imports_the_server_entry() {
+    let Some(app) = app_with("ip-fns-module-dev", &handler_only_files(), None) else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let dev = Server::oj_dev(&app.0);
+    let (hydrated, _, console, errors) = visit(&dev).await;
+    assert!(
+        hydrated,
+        "the page did not hydrate: {errors:?} {console:?}\n{}",
+        dev.output()
+    );
+    assert!(
+        !dev.output().contains("[import-protection]")
+            && !console.iter().any(|c| c.contains("[import-protection]")),
+        "import protection flagged a handler-only import: {console:?}\n{}",
+        dev.output()
+    );
+}
+
 #[test]
 fn the_start_server_entry_in_client_code_fails_the_build() {
     let files = [(

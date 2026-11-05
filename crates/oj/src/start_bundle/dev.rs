@@ -415,19 +415,26 @@ impl DevBundler {
                     entries: h.facts.alias.clone(),
                 }));
             }
-            plugins.push(Pluginable::new_shared(StartHostPlugin::new(
-                Arc::clone(&h.host),
-                h.ctx.clone(),
-                &h.facts,
-                start.command,
-                &start.root,
-                Arc::clone(&emit),
-                start.jsx_config(),
-            )));
+            plugins.push(Pluginable::new_shared(
+                StartHostPlugin::new(
+                    Arc::clone(&h.host),
+                    h.ctx.clone(),
+                    &h.facts,
+                    start.command,
+                    &start.root,
+                    Arc::clone(&emit),
+                    start.jsx_config(),
+                )
+                .compiling(
+                    StartCodePlugin::new(&start.root, CodeTarget::Client)
+                        .with_alias(h.facts.alias.clone()),
+                ),
+            ));
         }
         plugins.push(Pluginable::new_shared(
             StartCodePlugin::new(&start.root, CodeTarget::Client)
                 .with_alias(host.map(|h| h.facts.alias.clone()).unwrap_or_default())
+                .compiled_in_host(host.is_some())
                 .recording_globs(Arc::clone(&glob_scopes)),
         ));
         plugins.push(Pluginable::new_shared(

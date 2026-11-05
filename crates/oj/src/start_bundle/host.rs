@@ -17,7 +17,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use oj_server::plugins::{PluginHost, ResolvedId};
+use oj_server::plugins::{HostTransform, PluginHost, ResolvedId};
 use rolldown_common::{ModuleType, ResolvedExternal};
 use rolldown_plugin::{
     HookLoadArgs, HookLoadOutput, HookLoadReturn, HookRenderChunkArgs, HookRenderChunkOutput,
@@ -184,6 +184,9 @@ pub(crate) struct StartHostPlugin {
     render_chunk_enabled: Arc<tokio::sync::OnceCell<bool>>,
     warned_virtual: Mutex<HashSet<String>>,
     map_warnings: Arc<crate::build::MapWarnings>,
+    /// Start's compiler, run in its Vite slot: after the plugins' "pre"
+    /// transforms, before their "normal" and "post" ones.
+    compile: Option<Arc<super::code::StartCodePlugin>>,
 }
 
 impl std::fmt::Debug for StartHostPlugin {
@@ -216,7 +219,18 @@ impl StartHostPlugin {
             render_chunk_enabled: Arc::new(tokio::sync::OnceCell::new()),
             warned_virtual: Mutex::new(HashSet::new()),
             map_warnings: Arc::default(),
+            compile: None,
         }
+    }
+
+    /// Runs `compile` (Start's compiler) between the plugins' "pre" and
+    /// "normal" transforms, where TanStack's `enforce: "pre"` compiler sits
+    /// in Vite: a "normal" plugin (Start's import protection among them)
+    /// sees the compiled module, without the server functions' handlers or
+    /// what only they imported.
+    pub fn compiling(mut self, compile: super::code::StartCodePlugin) -> Self {
+        self.compile = Some(Arc::new(compile));
+        self
     }
 
     /// Reports rolldown's moduleParsed to the host (a build), its code as JS.
@@ -587,15 +601,43 @@ impl Plugin for StartHostPlugin {
         // "normal" transforms; the module standing in for it gets the "post"
         // ones, as Vite's vite:css-post output does.
         let phase = is_compiled_stylesheet(id).then_some("post");
+        // Start's compiler runs on every script, whether or not a plugin
+        // transforms it; a compiled stylesheet only gets the "post" ones.
+        let compile = self.compile.clone().filter(|_| phase.is_none());
         async move {
-            if !pass {
-                return Ok(None);
-            }
-            let t = match phase {
-                Some(phase) => host.transform_phase(code, id, phase).await,
-                None => host.transform(code, id, "{}").await,
+            let fail = |e: String| anyhow::anyhow!("plugin transform failed for {id}:\n{e}");
+            let t = match (phase, compile) {
+                (Some(phase), _) => {
+                    if !pass {
+                        return Ok(None);
+                    }
+                    host.transform_phase(code, id, phase).await.map_err(fail)?
+                }
+                (None, None) => {
+                    if !pass {
+                        return Ok(None);
+                    }
+                    host.transform(code, id, "{}").await.map_err(fail)?
+                }
+                (None, Some(compile)) => {
+                    let mut t = if pass {
+                        host.transform_phase(code, id, "pre").await.map_err(fail)?
+                    } else {
+                        HostTransform::unchanged(code)
+                    };
+                    if let Some(out) = compile.compile(&ctx, &t.code, id).await? {
+                        t.code = out;
+                    }
+                    if !id.starts_with("\0oj-") && host.hook_wants_transform(id, &t.code) {
+                        let rest = host
+                            .transform_phase(&t.code, id, "after-pre")
+                            .await
+                            .map_err(fail)?;
+                        t.then(rest);
+                    }
+                    t
+                }
             };
-            let t = t.map_err(|e| anyhow::anyhow!("plugin transform failed for {id}:\n{e}"))?;
             crate::build::forward_emitted_chunks(&ctx.inner, &t.chunks, &emit);
             Ok((t.code != code).then(|| HookTransformOutput {
                 map: crate::build::host_chain_map(
