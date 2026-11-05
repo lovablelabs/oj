@@ -472,7 +472,10 @@ fn expand_synthesized<'a>(
     if scan(&F_IMPORT_PAREN, source_text) {
         synthesized |= glob::expand_dynamic_import_vars(allocator, dir, program, source_text);
     }
-    if source_text.contains("import.meta.url") {
+    // Vite's asset-import-meta-url applies to the client environment only
+    // (`consumer === "client"`): on the server `new URL(.., import.meta.url)`
+    // stays, resolved at run time against the module's own file.
+    if !opts.ssr && source_text.contains("import.meta.url") {
         synthesized |= glob::expand_new_url_asset(allocator, dir, program, source_text);
     }
     synthesized
