@@ -51,6 +51,7 @@ mod hot_update_burst;
 mod html_entry;
 mod html_env;
 mod html_proxy;
+mod json_import_attributes;
 mod jsx_import_source;
 mod lazy_flag;
 mod leave_out_config;
