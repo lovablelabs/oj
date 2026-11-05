@@ -112,7 +112,9 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - runner: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
-          - runner: macos-15
+          # The standard Mac runner's 7GB swaps through the fat-LTO link
+          # (~55 of its ~80 minutes); xlarge has the memory to finish it.
+          - runner: macos-15-xlarge
             target: aarch64-apple-darwin
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
