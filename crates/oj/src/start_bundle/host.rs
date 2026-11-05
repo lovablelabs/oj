@@ -588,11 +588,11 @@ impl Plugin for StartHostPlugin {
     ) -> impl std::future::Future<Output = HookTransformReturn> + Send {
         let id: &str = args.id;
         let code: &str = args.code;
-        let pass = !id.starts_with("\0oj-")
-            // A `.svg` was componentized (or left an asset) by its load, where
-            // the plugins already saw the markup.
-            && !id.split('?').next().unwrap_or(id).ends_with(".svg")
-            && self.host.hook_wants_transform(id, code);
+        // oj's own modules take no plugin transform. A `.svg` takes them
+        // all, as in Vite: its load (svgr's, or the asset URL) only produced
+        // the module's code, which the transforms then see.
+        let eligible = !id.starts_with("\0oj-");
+        let pass = eligible && self.host.hook_wants_transform(id, code);
         let host = Arc::clone(&self.host);
         let emit = Arc::clone(&self.emit);
         let sourcemap = ctx.inner.options().is_sourcemap_enabled();
@@ -601,9 +601,13 @@ impl Plugin for StartHostPlugin {
         // "normal" transforms; the module standing in for it gets the "post"
         // ones, as Vite's vite:css-post output does.
         let phase = is_compiled_stylesheet(id).then_some("post");
-        // Start's compiler runs on every script, whether or not a plugin
-        // transforms it; a compiled stylesheet only gets the "post" ones.
-        let compile = self.compile.clone().filter(|_| phase.is_none());
+        // Start's compiler, for a module it can change: the plugins' chain
+        // splits around it. Any other module takes the whole chain in one
+        // call, as the compile would leave it as it is.
+        let compile = self
+            .compile
+            .clone()
+            .filter(|c| phase.is_none() && c.may_compile(id, code));
         async move {
             let fail = |e: String| anyhow::anyhow!("plugin transform failed for {id}:\n{e}");
             let t = match (phase, compile) {
@@ -628,7 +632,10 @@ impl Plugin for StartHostPlugin {
                     if let Some(out) = compile.compile(&ctx, &t.code, id).await? {
                         t.code = out;
                     }
-                    if !id.starts_with("\0oj-") && host.hook_wants_transform(id, &t.code) {
+                    // Once the "pre" slot ran, the rest of the chain runs too:
+                    // it finishes the module's info (moduleParsed), whether or
+                    // not a later plugin wants the compiled code.
+                    if pass || (eligible && host.hook_wants_transform(id, &t.code)) {
                         let rest = host
                             .transform_phase(&t.code, id, "after-pre")
                             .await

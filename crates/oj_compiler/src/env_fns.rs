@@ -23,12 +23,11 @@
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    Argument, BindingIdentifier, BindingPattern, CallExpression, Expression,
-    ImportDeclarationSpecifier, ModuleExportName, Program, Statement,
+    Argument, BindingPattern, CallExpression, Expression, ImportDeclarationSpecifier,
+    ModuleExportName, Program, Statement,
 };
 use oxc_ast_visit::{walk, Visit};
 use oxc_parser::Parser;
-use oxc_semantic::{Scoping, SemanticBuilder};
 use oxc_span::{GetSpan, SourceType};
 use std::collections::HashSet;
 
@@ -102,7 +101,8 @@ pub fn rewrite_env_fns_with(
     Ok(changed.then(|| drop_dead_bindings(code, out, path)))
 }
 
-fn has_factory_name(code: &str) -> bool {
+/// Whether `code` names one of the factories (the compile's cheap gate).
+pub fn has_factory_name(code: &str) -> bool {
     FACTORIES.iter().any(|(name, _)| code.contains(name))
 }
 
@@ -299,145 +299,9 @@ fn apply(code: &str, edits: Vec<Edit>) -> String {
     out
 }
 
-/// TanStack's dead-code pass (babel-dead-code-elimination, with the bindings
-/// referenced before the rewrite as its candidates): a module-level import,
-/// variable or function that was used and no longer is goes, repeatedly, so
-/// whatever only it used goes with it. Exported declarations stay.
-pub(crate) fn drop_dead_bindings(before: &str, mut after: String, path: &str) -> String {
-    let allocator = Allocator::default();
-    let parsed = Parser::new(&allocator, before, source_type(path)).parse();
-    if parsed.fatal_error {
-        return after;
-    }
-    let scoping = SemanticBuilder::new()
-        .build(&parsed.program)
-        .semantic
-        .into_scoping();
-    let mut candidates = HashSet::new();
-    for_each_binding(&parsed.program, &mut |id| {
-        if references(&scoping, id) > 0 {
-            candidates.insert(id.name.to_string());
-        }
-    });
-    if candidates.is_empty() {
-        return after;
-    }
-    while let Some(next) = drop_unreferenced(&after, path, &candidates) {
-        after = next;
-    }
-    after
-}
-
-/// One pass of [`drop_dead_bindings`]: `None` when nothing is dead.
-fn drop_unreferenced(code: &str, path: &str, candidates: &HashSet<String>) -> Option<String> {
-    let allocator = Allocator::default();
-    let parsed = Parser::new(&allocator, code, source_type(path)).parse();
-    if parsed.fatal_error {
-        return None;
-    }
-    let scoping = SemanticBuilder::new()
-        .build(&parsed.program)
-        .semantic
-        .into_scoping();
-    let dead = |id: &BindingIdentifier| {
-        candidates.contains(id.name.as_str()) && references(&scoping, id) == 0
-    };
-    let text = |span: oxc_span::Span| &code[span.start as usize..span.end as usize];
-    let mut edits = Vec::new();
-    for statement in &parsed.program.body {
-        let span = statement.span();
-        let (start, end) = (span.start as usize, span.end as usize);
-        match statement {
-            Statement::ImportDeclaration(import) if !import.import_kind.is_type() => {
-                let Some(specifiers) = &import.specifiers else {
-                    continue;
-                };
-                let kept: Vec<_> = specifiers.iter().filter(|s| !dead(s.local())).collect();
-                if kept.len() == specifiers.len() {
-                    continue;
-                }
-                let text = if kept.is_empty() {
-                    String::new()
-                } else {
-                    let mut clauses = Vec::new();
-                    let mut named = Vec::new();
-                    for specifier in kept {
-                        match specifier {
-                            ImportDeclarationSpecifier::ImportSpecifier(_) => {
-                                named.push(text(specifier.span()))
-                            }
-                            _ => clauses.push(text(specifier.span()).to_string()),
-                        }
-                    }
-                    if !named.is_empty() {
-                        clauses.push(format!("{{ {} }}", named.join(", ")));
-                    }
-                    let tail = &code[import.source.span.start as usize..end];
-                    format!("import {} from {tail}", clauses.join(", "))
-                };
-                edits.push(Edit { start, end, text });
-            }
-            Statement::VariableDeclaration(var) => {
-                let is_dead = |d: &&oxc_ast::ast::VariableDeclarator| matches!(&d.id, BindingPattern::BindingIdentifier(id) if dead(id));
-                let kept: Vec<_> = var.declarations.iter().filter(|d| !is_dead(d)).collect();
-                if kept.len() == var.declarations.len() {
-                    continue;
-                }
-                let text = if kept.is_empty() {
-                    String::new()
-                } else {
-                    let kind = &code[start..var.declarations[0].span.start as usize];
-                    let list: Vec<_> = kept.iter().map(|d| text(d.span)).collect();
-                    let semi = if text(span).ends_with(';') { ";" } else { "" };
-                    format!("{kind}{}{semi}", list.join(", "))
-                };
-                edits.push(Edit { start, end, text });
-            }
-            Statement::FunctionDeclaration(f) if f.id.as_ref().is_some_and(dead) => {
-                edits.push(Edit {
-                    start,
-                    end,
-                    text: String::new(),
-                });
-            }
-            _ => {}
-        }
-    }
-    let out = apply(code, edits);
-    (out != code).then_some(out)
-}
-
-/// The module-level bindings the dead-code pass may drop: imports, variables
-/// bound to a plain name, and function declarations, not exported ones.
-fn for_each_binding(program: &Program, f: &mut impl FnMut(&BindingIdentifier)) {
-    for statement in &program.body {
-        match statement {
-            Statement::ImportDeclaration(import) => {
-                for specifier in import.specifiers.iter().flatten() {
-                    f(specifier.local());
-                }
-            }
-            Statement::VariableDeclaration(var) => {
-                for declarator in &var.declarations {
-                    if let BindingPattern::BindingIdentifier(id) = &declarator.id {
-                        f(id);
-                    }
-                }
-            }
-            Statement::FunctionDeclaration(func) => {
-                if let Some(id) = &func.id {
-                    f(id);
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-fn references(scoping: &Scoping, id: &BindingIdentifier) -> usize {
-    id.symbol_id
-        .get()
-        .map_or(1, |symbol| scoping.get_resolved_reference_ids(symbol).len())
+/// TanStack's dead-code pass, run after the edits (see [`crate::dce`]).
+pub(crate) fn drop_dead_bindings(before: &str, after: String, path: &str) -> String {
+    crate::dce::drop_dead_bindings(before, after, path)
 }
 
 fn source_type(path: &str) -> SourceType {
