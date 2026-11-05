@@ -227,10 +227,23 @@ impl Plugin for StartCodePlugin {
 
         Ok(match code {
             Cow::Borrowed(_) => None,
-            Cow::Owned(out) => Some(HookTransformOutput {
-                code: Some(out),
-                ..Default::default()
-            }),
+            Cow::Owned(out) => {
+                // The rewrites keep every line: a line map, as Vite's own
+                // (and Start's compiler) return one.
+                let map = (out.matches('\n').count() == original.matches('\n').count())
+                    .then(|| oj_compiler::line_map_json(id, original, &out))
+                    .and_then(|json| {
+                        oxc_sourcemap::SourceMap::from_json_string(&json)
+                            .ok()
+                            .map(|m| m.into_owned())
+                    })
+                    .map_or(rolldown_plugin::HookTransformOutputMap::Omitted, Into::into);
+                Some(HookTransformOutput {
+                    code: Some(out),
+                    map,
+                    ..Default::default()
+                })
+            }
         })
     }
 }

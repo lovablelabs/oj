@@ -4983,7 +4983,20 @@ function cssPhaseOf(p, rank) {
 // `phase` (a cssPhaseOf slot, or a compile phase: see compilePhaseOf) runs
 // only that slot's hooks; without one, the whole chain. Module info is final
 // after the whole chain, the "post" slot or "after-compile".
-async function transform(c, code, id, resolvedJson, phase) {
+// `priorJson` ({ original, maps, broken }), for a phase that continues a
+// chain run elsewhere (a Start bundle's "after-compile"): the code the chain
+// started from and the maps before this call, so getCombinedSourcemap still
+// collapses back to the loaded code.
+async function transform(c, code, id, resolvedJson, phase, priorJson) {
+  let prior = null;
+  if (priorJson) {
+    try {
+      prior = JSON.parse(priorJson);
+    } catch {}
+  }
+  const chainStart = typeof prior?.original === "string" ? prior.original : code;
+  const priorMaps = Array.isArray(prior?.maps) ? prior.maps : [];
+  const priorBroken = !!prior?.broken;
   const bucket = new Set();
   const chunkBucket = [];
   let resolveMap = null;
@@ -5036,11 +5049,12 @@ async function transform(c, code, id, resolvedJson, phase) {
       // Rollup's transform context adds getCombinedSourcemap: the maps of the
       // transforms before this one, collapsed back to the loaded code.
       const ctx = Object.create(ctxFor(c, p));
-      const chainSoFar = maps.slice();
-      const brokenSoFar = mapBroken != null;
+      const chainSoFar = priorMaps.concat(maps);
+      const brokenSoFar = priorBroken || mapBroken != null;
       // A transform that returned code without a map breaks a build's chain
       // (Rollup's missing link); Vite's dev _getCombinedSourcemap skips it.
-      ctx.getCombinedSourcemap = () => combineSourcemaps(id, code, chainSoFar, brokenSoFar && command === "build");
+      ctx.getCombinedSourcemap = () =>
+        combineSourcemaps(id, chainStart, chainSoFar, brokenSoFar && command === "build");
       try {
         r = await handler.call(ctx, current, id, transformOptions);
       } catch (e) {
@@ -6184,7 +6198,7 @@ async function run(hook, args, c) {
   }
   if (hook === "transform") return gateOnBuildStart(c).then(() => transform(c, args[0], args[1], args[2]));
   if (hook === "transformPhase")
-    return gateOnBuildStart(c).then(() => transform(c, args[0], args[1], args[2], args[3]));
+    return gateOnBuildStart(c).then(() => transform(c, args[0], args[1], args[2], args[3], args[4]));
   if (hook === "resolveId") return gateOnBuildStart(c).then(() => resolveId(c, args[0], args[1]));
   if (hook === "resolveIdPhase")
     return gateOnBuildStart(c).then(() => resolveIdPhase(c, args[0], args[1], args[2], args[3]));

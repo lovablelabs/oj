@@ -8,6 +8,29 @@ pub fn map_json_to_data_url(json: &str) -> String {
     )
 }
 
+/// A map for an edit that keeps every line where it was (Start's compile):
+/// each generated line maps to the same source line from its first column,
+/// so an unedited line maps exactly and an edited one from where it starts.
+pub fn line_map_json(source: &str, original: &str, generated: &str) -> String {
+    let lines = generated.matches('\n').count() + 1;
+    let mut mappings = String::with_capacity(lines * 5);
+    for line in 0..lines {
+        if line > 0 {
+            mappings.push(';');
+        }
+        // VLQ [generated column 0, source 0, source line +1, column 0].
+        mappings.push_str(if line == 0 { "AAAA" } else { "AACA" });
+    }
+    serde_json::json!({
+        "version": 3,
+        "sources": [source],
+        "sourcesContent": [original],
+        "names": [],
+        "mappings": mappings,
+    })
+    .to_string()
+}
+
 /// Folds oj's map through the plugin `input_maps` (applied last to first) so
 /// served positions trace to the original source. Unparseable plugin maps are
 /// skipped; a failed fold degrades to oj's own map.
@@ -67,6 +90,26 @@ fn compose_two<'i>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_line_map_maps_each_line_to_itself() {
+        let original = "import a from \"a\";\nconst x = handler();\nexport { x };\n";
+        let generated = "import a from \"a\";\nconst x = createClientRpc(\"id\");\nexport { x };\n";
+        let json = line_map_json("src/x.ts", original, generated);
+        let map = oxc_sourcemap::SourceMap::from_json_string(&json).unwrap();
+        let lookup = map.generate_lookup_table();
+        for line in 0..4u32 {
+            let token = map
+                .lookup_token(&lookup, line, 0)
+                .expect("a token per line");
+            assert_eq!(
+                (token.get_src_line(), token.get_src_col()),
+                (line, 0),
+                "line {line}"
+            );
+        }
+        assert_eq!(map.get_source(0), Some("src/x.ts"));
+    }
 
     #[test]
     fn compose_two_traces_served_position_back_to_original_source() {

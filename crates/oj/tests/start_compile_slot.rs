@@ -53,7 +53,13 @@ function slotAfterPlugins() {
     {
       name: "fixture-slot-normal",
       transform(code, id) {
-        if (slot(id)) return code + `\nexport const normalSaw = ${JSON.stringify(saw(code, "normal"))};\n`;
+        if (slot(id)) {
+          // Rollup's getCombinedSourcemap collapses back to the loaded code,
+          // the module as written, even after Start's compiler.
+          const combined = this.getCombinedSourcemap();
+          const from = combined.sourcesContent?.[0]?.includes("getRequest") ? "combined-from-source" : "combined-from-compiled";
+          return code + `\nexport const normalSaw = ${JSON.stringify(saw(code, "normal"))};\nexport const combinedFrom = ${JSON.stringify(from)};\n`;
+        }
         if (id.split("?")[0].endsWith(".svg")) return code + `\n;(globalThis.__slotSvg ??= []).push("svg-normal-ran");\n`;
       },
     },
@@ -83,14 +89,14 @@ fn write_app(root: &Path) {
         .replacen(
             import,
             &format!(
-                "{import}\nimport {{ slotFn, preSaw, normalSaw, latePreSaw, lateOrderedSaw }} from \"../lib/slot.functions\";"
+                "{import}\nimport {{ slotFn, preSaw, normalSaw, latePreSaw, lateOrderedSaw, combinedFrom }} from \"../lib/slot.functions\";"
             ),
             1,
         )
         .replacen(
             heading,
             &format!(
-                "{heading}\n      <p id=\"slot\" onClick={{() => slotFn()}}>{{preSaw}}|{{normalSaw}}|{{latePreSaw}}|{{lateOrderedSaw}}</p>"
+                "{heading}\n      <p id=\"slot\" onClick={{() => slotFn()}}>{{preSaw}}|{{normalSaw}}|{{latePreSaw}}|{{lateOrderedSaw}}|{{combinedFrom}}</p>"
             ),
             1,
         );
@@ -146,6 +152,10 @@ fn the_compiler_runs_after_the_pre_transforms_and_before_the_normal_ones() {
     assert!(
         js.contains("late-pre-saw-compiled"),
         "a pre plugin listed after tanstackStart() ran before the compiler"
+    );
+    assert!(
+        js.contains("combined-from-source"),
+        "getCombinedSourcemap after the compiler does not reach the module as written"
     );
     assert!(
         js.contains("late-ordered-saw-raw"),

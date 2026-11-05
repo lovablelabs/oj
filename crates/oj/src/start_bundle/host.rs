@@ -632,14 +632,25 @@ impl Plugin for StartHostPlugin {
                         HostTransform::unchanged(code)
                     };
                     if let Some(out) = compile.compile(&ctx, &t.code, id).await? {
+                        // Start's compiler returns its map (generateFromAst);
+                        // oj's edits keep every line, so a line map stands in.
+                        t.maps.push(oj_compiler::line_map_json(id, &t.code, &out));
+                        t.map_plugins
+                            .push("tanstack-start-core::server-fn".to_string());
                         t.code = out;
                     }
                     // Once the first phase ran, the rest of the chain runs too:
                     // it finishes the module's info (moduleParsed), whether or
                     // not a later plugin wants the compiled code.
                     if pass || (eligible && host.hook_wants_transform(id, &t.code)) {
+                        let prior = serde_json::json!({
+                            "original": code,
+                            "maps": t.maps,
+                            "broken": t.map_broken.is_some(),
+                        })
+                        .to_string();
                         let rest = host
-                            .transform_phase(&t.code, id, "after-compile")
+                            .transform_phase_after(&t.code, id, "after-compile", &prior)
                             .await
                             .map_err(fail)?;
                         t.then(rest);

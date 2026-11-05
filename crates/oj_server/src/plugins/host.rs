@@ -1139,6 +1139,22 @@ impl PluginHost {
         Ok(HostTransform::parse(raw, code))
     }
 
+    /// [`PluginHost::transform_phase`] continuing a chain run elsewhere:
+    /// `prior` is `{ original, maps, broken }`, the code the chain started
+    /// from and its maps so far, for the plugins' getCombinedSourcemap.
+    pub async fn transform_phase_after(
+        &self,
+        code: &str,
+        id: &str,
+        phase: &str,
+        prior: &str,
+    ) -> Result<HostTransform, String> {
+        let raw = self
+            .call("transformPhase", &[code, id, "{}", phase, prior])
+            .await?;
+        Ok(HostTransform::parse(raw, code))
+    }
+
     pub async fn seed_chunk_names(&self, map_json: &str) -> Result<Option<String>, String> {
         self.call("seedChunkNames", &[map_json]).await
     }
