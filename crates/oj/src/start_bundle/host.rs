@@ -337,6 +337,22 @@ fn is_script(path: &str) -> bool {
     )
 }
 
+/// The file a module under a query comes from (`/abs/route.tsx` for
+/// `/abs/route.tsx?tsr-split=component`), when it is one on disk: Vite's
+/// module graph files every module under `cleanUrl(id)` (`fileToModulesMap`)
+/// and a change to that file updates all of them (`getModulesByFile`). The
+/// bundler only maps a file to the module whose id it is, so the transform
+/// makes the file its dependency (`addWatchFile`), and an edit to the route
+/// updates its split component too.
+fn file_behind_query(id: &str) -> Option<&str> {
+    if id.starts_with('\0') {
+        return None;
+    }
+    let clean = id.split(['?', '#']).next().unwrap_or(id);
+    (clean.len() < id.len() && Path::new(clean).is_absolute() && Path::new(clean).is_file())
+        .then_some(clean)
+}
+
 fn is_app_source(path: &str) -> bool {
     !path.contains("/node_modules/")
         && matches!(
@@ -367,6 +383,29 @@ impl Plugin for StartHostPlugin {
             }
         }
         usage
+    }
+
+    /// Rolldown's dev engine runs this for each changed file before it
+    /// rebuilds or computes an update: Start's import protection forgets what
+    /// it learned about the file there, ahead of the recompile (see
+    /// `importProtectionChanged` in the host).
+    async fn watch_change(
+        &self,
+        _ctx: &rolldown_plugin::PluginContext,
+        path: &str,
+        _event: rolldown_common::WatcherChangeKind,
+    ) -> rolldown_plugin::HookNoopReturn {
+        if let Err(e) = self
+            .host
+            .import_protection_changed(&[path.to_string()])
+            .await
+        {
+            eprintln!(
+                "{}: import protection did not take the change: {e}",
+                oj_server::oj_brand()
+            );
+        }
+        Ok(())
     }
 
     async fn build_start(
@@ -592,6 +631,9 @@ impl Plugin for StartHostPlugin {
         // all, as in Vite: its load (svgr's, or the asset URL) only produced
         // the module's code, which the transforms then see.
         let eligible = !id.starts_with("\0oj-");
+        if let Some(file) = file_behind_query(id) {
+            ctx.add_watch_file(file);
+        }
         let pass = eligible && self.host.hook_wants_transform(id, code);
         let host = Arc::clone(&self.host);
         let emit = Arc::clone(&self.emit);
@@ -896,6 +938,38 @@ mod tests {
             "{line}"
         );
         assert!(build_start_skipped("boom").contains("plugin \"unknown\" buildStart failed"));
+    }
+
+    /// Vite files a module under `cleanUrl(id)`: a route's split component
+    /// and shared bindings come from the route file, and an edit to it is
+    /// theirs too. A module without a query is the file's own (the bundler
+    /// maps it already); a virtual id or a file that is not there has none.
+    #[test]
+    fn a_queried_module_comes_from_its_file() {
+        let dir = std::env::temp_dir().join(format!("oj-file-behind-query-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let route = dir.join("map.tsx");
+        std::fs::write(&route, "export {};\n").unwrap();
+        let file = route.to_string_lossy().into_owned();
+        for id in [
+            format!("{file}?tsr-split=component"),
+            format!("{file}?tsr-shared=1"),
+            format!("{file}#x"),
+        ] {
+            assert_eq!(file_behind_query(&id), Some(file.as_str()), "{id}");
+        }
+        assert_eq!(file_behind_query(&file), None);
+        assert_eq!(
+            file_behind_query(&format!("\0{file}?tsr-split=component")),
+            None
+        );
+        assert_eq!(file_behind_query("virtual:x?tsr-split=component"), None);
+        let gone = dir.join("gone.tsx").to_string_lossy().into_owned();
+        assert_eq!(
+            file_behind_query(&format!("{gone}?tsr-split=component")),
+            None
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// The ids vite:css and vite:css-post take (CSS_LANGS_RE, not `?raw`,

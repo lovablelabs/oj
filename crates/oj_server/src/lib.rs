@@ -296,8 +296,10 @@ struct ServerState {
     crawl_done: tokio::sync::watch::Receiver<bool>,
     fs_allow: Arc<Mutex<std::collections::HashSet<PathBuf>>>,
     /// What each module the ssr pipeline served imports, as its own code
-    /// says: only those resolutions are safe module paths.
-    ssr_imports: Mutex<HashMap<PathBuf, std::collections::HashSet<String>>>,
+    /// says: only those resolutions are safe module paths. By file, then by
+    /// module id: a route file is its own module and the ones its queries
+    /// make (`?tsr-split=component`), each with its own imports.
+    ssr_imports: Mutex<crate::ssr::ModuleImports>,
     /// `server.fs.strict` (default true). When false the allow list is not
     /// consulted for `/@fs/` paths; the deny list always is, as in Vite.
     fs_strict: bool,

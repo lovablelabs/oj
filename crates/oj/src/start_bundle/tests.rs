@@ -1492,3 +1492,64 @@ async fn render_start_runs_in_the_build_only() {
     assert_eq!(render_starts(super::Command::Serve).await, 0);
     assert_eq!(render_starts(super::Command::Build).await, 3);
 }
+
+/// A route file with a server handler, the route tree importing it, and the
+/// entry importing the tree.
+fn route_with_a_server_handler() -> App {
+    App::new(&[
+        ("src/entry.ts", "import { routeTree } from \"./routeTree.gen\";\nconsole.log(routeTree);\n"),
+        (
+            "src/routeTree.gen.ts",
+            "import { Route as HookRoute } from \"./routes/hook\";\nexport const routeTree = [HookRoute];\n",
+        ),
+        (
+            "src/routes/hook.ts",
+            "import { createFileRoute } from \"./fake-router\";\n\
+             export const Route = createFileRoute(\"/hook\")({\n  \
+               server: { handlers: { GET: () => \"server-handler-only\" } },\n  \
+               component: () => \"hook-page\",\n});\n",
+        ),
+        (
+            "src/routes/fake-router.ts",
+            "export const createFileRoute = (_id: string) => (options: unknown) => options;\n",
+        ),
+    ])
+}
+
+// Start's client code splitter deletes a route's `server`, `ssr` and
+// `headers` options (`deleteNodes`). A client bundle with no plugin host to
+// run it deletes them itself; one whose host runs Start's splitter leaves
+// them to it, which counts what they share with the component before it
+// deletes them.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_client_deletes_server_route_options_unless_its_host_splits_routes() {
+    let app = route_with_a_server_handler();
+    let alone = bundle(
+        &app,
+        "src/entry.ts",
+        vec![Pluginable::new_shared(StartCodePlugin::new(
+            &app.dir,
+            CodeTarget::Client,
+        ))],
+    )
+    .await
+    .unwrap();
+    assert!(alone.contains("hook-page"), "{alone}");
+    assert!(
+        !alone.contains("server-handler-only"),
+        "the handler reached the client:\n{alone}"
+    );
+    let split_in_host = bundle(
+        &app,
+        "src/entry.ts",
+        vec![Pluginable::new_shared(
+            StartCodePlugin::new(&app.dir, CodeTarget::Client).routes_split_in_host(true),
+        )],
+    )
+    .await
+    .unwrap();
+    assert!(
+        split_in_host.contains("server-handler-only"),
+        "oj deleted what the host's splitter deletes:\n{split_in_host}"
+    );
+}

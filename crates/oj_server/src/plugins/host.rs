@@ -1469,6 +1469,13 @@ impl PluginHost {
         self.call_unit("watchChange", &[file, event]).await
     }
 
+    /// Hands changed files to Start's import protection, which forgets what
+    /// it learned about them (see `importProtectionChanged` in the host).
+    pub async fn import_protection_changed(&self, files: &[String]) -> Result<(), String> {
+        let json = serde_json::to_string(files).map_err(|e| e.to_string())?;
+        self.call_unit("importProtectionChanged", &[&json]).await
+    }
+
     #[inline]
     pub async fn close_bundle(&self) -> Result<(), String> {
         self.call_unit("closeBundle", &[]).await

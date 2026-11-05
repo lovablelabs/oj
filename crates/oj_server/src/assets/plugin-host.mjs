@@ -2318,6 +2318,7 @@ async function generateWithoutWriting() {
   const run = proto.run;
   const quiet = () => {};
   proto.run = function (...args) {
+    routeGenerators.add(this);
     const error = this.logger?.error ?? console.error;
     this.logger = { log: quiet, debug: quiet, info: quiet, warn: quiet, error };
     return run.apply(this, args);
@@ -2329,6 +2330,46 @@ async function generateWithoutWriting() {
       return { mtimeMs: undefined };
     }
   };
+}
+// The generators the router plugin runs here (one per plugin instance).
+const routeGenerators = new Set();
+// TanStack's `routeFactoryCallCodeFilter`: what the reference compile looks at.
+const ROUTE_FACTORY_CALL = [
+  /\bcreateFileRoute\s*\(/,
+  /\bcreateRootRoute\s*\(/,
+  /\bcreateRootRouteWithContext\s*(?:<|\()/,
+];
+// Files a generator was asked about and still did not take, by mtime.
+const notRoutes = new Map();
+// Under Vite the generator's watchChange updates the route list before the
+// route tree it writes in the same run can import a new route, so a route is
+// listed by the time it is transformed. oj's watcher runs the plugins'
+// watchChange apart from the rebundle the new route tree starts, so a
+// route-shaped module the generator does not know yet waits for the run in
+// flight, then for one the generator plugin makes for that file, as a
+// watchChange for its creation would.
+async function routesKnow(code, id) {
+  if (!routeGenerators.size || typeof id !== "string" || id.startsWith("\0")) return;
+  if (!ROUTE_FACTORY_CALL.some((re) => re.test(code))) return;
+  const file = id.split("?")[0].replace(/\\/g, "/");
+  for (const g of routeGenerators) if (g.runPromise) await g.runPromise.catch(() => {});
+  const missing = [...routeGenerators].filter(
+    (g) => !g.routeNodeCache?.has(file) && g.isFileRelevantForRouteTreeGeneration?.(file),
+  );
+  if (!missing.length) return;
+  let mtime;
+  try {
+    mtime = statSync(file).mtimeMs;
+  } catch {
+    return;
+  }
+  if (notRoutes.get(file) === mtime) return;
+  for (const p of allPlugins) {
+    if (p?.name !== "tanstack:router-generator") continue;
+    const fn = hookFn(p, "watchChange");
+    if (fn) await fn.call(minimalContext({ watchMode: command === "serve" }), file, { event: "create" });
+  }
+  if (missing.some((g) => !g.routeNodeCache?.has(file))) notRoutes.set(file, mtime);
 }
 // A pair that cannot read Start's config would check against an empty root.
 // A build fails, as Vite's does on the same error: it would ship what the
@@ -3732,6 +3773,7 @@ async function hotUpdateEnvironment(env, file, timestamp, type) {
   };
   const context = (env.pluginContainer && env.pluginContainer.minimalContext) || { environment: env };
   for (const plugin of sortedHotUpdatePlugins(env)) {
+    if (!firstImportProtectionPass(plugin, file)) continue;
     if (plugin.hotUpdate) {
       const hook = plugin.hotUpdate;
       const handler = typeof hook === "object" ? hook.handler : hook;
@@ -5028,6 +5070,7 @@ function cssPhaseOf(p, rank) {
 // started from and the maps before this call, so getCombinedSourcemap still
 // collapses back to the loaded code.
 async function transform(c, code, id, resolvedJson, phase, priorJson) {
+  await routesKnow(code, id);
   let prior = null;
   if (priorJson) {
     try {
@@ -5874,6 +5917,7 @@ async function handleHotUpdate(c, file, timestamp, type, modulesJson) {
   };
   let filtered = null;
   for (const { p, fn } of hotUpdatePlugins(c, hmrContext.type)) {
+    if (!firstImportProtectionPass(p, file)) continue;
     let r;
     try {
       r = await fn.call(ctxFor(c, p), hmrContext);
@@ -5893,6 +5937,62 @@ async function handleHotUpdate(c, file, timestamp, type, modulesJson) {
   if (filtered === null) return null;
   if (filtered.length === 0) return "skip";
   return JSON.stringify({ action: "filter", modules: filtered });
+}
+
+// Start's import protection forgets what it learned about a file (its
+// server-only/client-only marker, the resolutions it cached for it and for its
+// importers) in its hotUpdate, for the modules Vite's environment graphs hold
+// for the file: the client graph's for an edited importer, the server graph's
+// for a marked file the client only ever got a mock of. A Start client
+// bundle's container is in no graph oj runs hotUpdate over, and Start's server
+// render runs in oj's engine, so neither reaches it. Each changed file stands
+// for the module those graphs would carry. Only import protection runs: its
+// hook clears its own state, where another plugin's could reload the page.
+// Start's import protection reaches every environment's state from any one
+// environment's hotUpdate (its plugin is shared across them), so Vite's passes
+// for a change all clear it before the bundle rebuilds. oj's passes run on
+// their own clocks: the dev engine's watchChange before its rebuild, the dev
+// server's hotUpdate passes whenever its watcher gets there, possibly mid
+// rebuild, where clearing again would drop the export list a mock just
+// recorded for its importer. So the hook runs once per change of a file (its
+// mtime and size), per plugin instance, whichever path reaches it first.
+const importProtectionSeen = new WeakMap();
+function firstImportProtectionPass(p, file) {
+  if (!isImportProtection(p)) return true;
+  let seen = importProtectionSeen.get(p);
+  if (!seen) importProtectionSeen.set(p, (seen = new Map()));
+  const st = statSync(file, { throwIfNoEntry: false });
+  const stamp = st ? `${st.mtimeMs}:${st.size}` : "gone";
+  if (seen.get(file) === stamp) return false;
+  seen.set(file, stamp);
+  return true;
+}
+
+async function importProtectionChanged(c, filesJson) {
+  let files;
+  try {
+    files = JSON.parse(filesJson);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(files)) return null;
+  const timestamp = Date.now();
+  for (const p of c.plugins) {
+    const fn = isImportProtection(p) && hookHandler(p.hotUpdate);
+    if (!fn) continue;
+    for (const file of files) {
+      if (typeof file !== "string" || !firstImportProtectionPass(p, file)) continue;
+      await fn.call(ctxFor(c, p), {
+        type: existsSync(file) ? "update" : "delete",
+        file,
+        timestamp,
+        modules: [{ id: file, file }],
+        read: () => readModifiedFile(file),
+        server: devServer,
+      });
+    }
+  }
+  return null;
 }
 
 // Vite 6+ (handleHMRUpdate): a plugin's `hotUpdate`, with this.environment,
@@ -6260,6 +6360,7 @@ async function run(hook, args, c) {
   }
   if (hook === "wsConnection") return wsConnection();
   if (hook === "watchChange") return watchChange(c, args[0], args[1]);
+  if (hook === "importProtectionChanged") return importProtectionChanged(c, args[0]);
   if (hook === "getEmittedFiles") {
     return JSON.stringify(c.emitted.map(({ fileName, source }) => ({ fileName, source })));
   }
