@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- TanStack Start dev serves the routes the app has after a restart. The client bundle restored from oj's cache kept the route tree it was built with, so a route created while no dev server ran answered on the server but 404'd in the browser after hydration, until `.oj-cache` was deleted. The cache now keys the client bundle by the route trees it loads, so a changed tree rebuilds it and an unchanged one still restores.
+- TanStack Start dev serves the routes the app has after a restart. The client bundle restored from oj's cache kept the route tree it was built with, so a route created while no dev server ran answered on the server but 404'd in the browser after hydration, until `.oj-cache` was deleted. The cache now keys the client bundle by the route trees it loads, so a changed tree rebuilds it and an unchanged one still restores. The key also covers the env client code inlines (`import.meta.env` from the `.env` files in `envDir` and the process variables `envPrefix` admits), a config file given by `--config`, and `oj.config.json`. Before, an edit to any of these while no server ran restored the old bundle, unlike Vite, which reads them anew on every start.
 
 ## [0.4.3] - 2026-11-05
 

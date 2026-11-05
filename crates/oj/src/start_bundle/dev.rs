@@ -134,16 +134,34 @@ impl DevBundler {
         &self.start.root
     }
 
-    /// The trees the client bundle's routes come from: the client's own
-    /// (generate.mjs's pruned tree in the cache), and the generated tree it
-    /// stands in for and falls back to. Neither is in closure.json (the dev
-    /// server regenerates and rebundles on a route change itself), so the
-    /// bundle store keys a generation by their contents.
-    pub(crate) fn route_trees(&self) -> [PathBuf; 2] {
-        [
+    /// The files the client bundle depends on that closure.json does not
+    /// list, which the bundle store keys a generation by: the trees its
+    /// routes come from (the client's own, generate.mjs's pruned tree in the
+    /// cache, and the generated tree it stands in for and falls back to; the
+    /// dev server regenerates and rebundles on a route change itself), and a
+    /// config file given by `--config`, which the store's epoch cannot name.
+    pub(crate) fn cache_key_files(&self) -> Vec<PathBuf> {
+        let mut files = vec![
             self.start.cache.join(super::CLIENT_ROUTE_TREE),
             self.start.route_tree(),
-        ]
+        ];
+        files.extend(self.config_file.clone());
+        files
+    }
+
+    /// What client code sees of the environment, which the bundle store keys
+    /// a generation by too: the mode, NODE_ENV and the prefixed vars of the
+    /// `.env` files in `envDir` and of the process (Vite's loadEnv with
+    /// `envPrefix`), the values `import.meta.env` inlines.
+    pub(crate) fn cache_key_env(&self) -> String {
+        let env = &self.start.app_env;
+        serde_json::json!({
+            "mode": env.mode(),
+            "nodeEnv": env.node_env(),
+            "prefixes": env.prefixes(),
+            "vars": env.exposed_vars(oj_env::get(), &[]),
+        })
+        .to_string()
     }
 
     pub(crate) fn set_hot_enabled(&self, enabled: bool) {

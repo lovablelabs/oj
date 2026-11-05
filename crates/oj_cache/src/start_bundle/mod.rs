@@ -250,6 +250,17 @@ impl StartBundleStore {
         self
     }
 
+    /// This store with `value` in its key, named `label`: an input of the
+    /// bundle that is no file (the env its code inlines).
+    pub fn keyed_by(mut self, label: &str, value: &str) -> Self {
+        let digest = blake3::hash(value.as_bytes());
+        self.salt.push(':');
+        self.salt.push_str(label);
+        self.salt.push(':');
+        self.salt.push_str(&digest.to_hex());
+        self
+    }
+
     /// The generation `current` names, when its closure still hashes to a
     /// stored key. The key covers every file the bundle read, but a file an
     /// `import.meta.glob` would expand to now and the bundle never read (one

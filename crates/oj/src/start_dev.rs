@@ -1689,10 +1689,7 @@ fn pinned_output(
     cache: &Path,
     mode: &str,
 ) -> Option<oj_cache::start_bundle::PinnedBundle> {
-    match start_bundle_store(root, mode)
-        .keyed_by_files(&bundler.route_trees())
-        .persist(cache)
-    {
+    match keyed_bundle_store(bundler, root, mode).persist(cache) {
         Some((key, pinned)) => {
             save_stylex_rules(bundler, cache, &key);
             save_generated_sheets(bundler, cache, &key);
@@ -2299,6 +2296,18 @@ fn start_bundle_store(root: &Path, mode: &str) -> oj_cache::start_bundle::StartB
     )
 }
 
+/// The client bundle's store, keyed by what the bundle depends on beyond its
+/// closure: the route trees, a `--config` file and the env its code sees.
+fn keyed_bundle_store(
+    bundler: &ClientBundler,
+    root: &Path,
+    mode: &str,
+) -> oj_cache::start_bundle::StartBundleStore {
+    start_bundle_store(root, mode)
+        .keyed_by_files(&bundler.cache_key_files())
+        .keyed_by("env", &bundler.cache_key_env())
+}
+
 fn bundle_client_entry_cached(
     bundler: &ClientBundler,
     cache: &Path,
@@ -2306,7 +2315,7 @@ fn bundle_client_entry_cached(
 ) -> anyhow::Result<oj_cache::start_bundle::PinnedBundle> {
     let root = bundler.root();
     let _ = std::fs::remove_file(cache.join(CLIENT_ERROR_FILE));
-    let store = start_bundle_store(root, mode).keyed_by_files(&bundler.route_trees());
+    let store = keyed_bundle_store(bundler, root, mode);
     let stylex = bundler.stylex();
     match store.restore(cache, |scopes| restorable_glob_members(scopes, cache)) {
         // A restored bundle never ran the StyleX transform: its modules'

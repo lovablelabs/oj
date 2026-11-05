@@ -11,6 +11,11 @@
 //! the old tree: the new route answered on the server and 404'd in the
 //! browser until `.oj-cache` was deleted.
 //!
+//! The same holds for the other inputs a restore cannot see in the closure:
+//! the env client code inlines (`import.meta.env`, from the `.env` files in
+//! `envDir` and the process vars `envPrefix` admits) and a config file given
+//! by `--config`. Vite reads all of them anew on every start.
+//!
 //! The app is the Start fixture (see `start_app`) moved to file-based
 //! routing.
 
@@ -92,7 +97,12 @@ fn client_bundle(dev: &Server) -> String {
 
 /// One `oj dev` boot of `root`: its client bundle and its log.
 fn boot(root: &Path) -> (String, String) {
-    let dev = Server::oj_dev(root);
+    boot_with(root, &[], &[])
+}
+
+/// [`boot`] with extra arguments and environment variables.
+fn boot_with(root: &Path, args: &[&str], env: &[(&str, &str)]) -> (String, String) {
+    let dev = Server::oj_dev_with_args(root, args, env);
     let (status, _) = dev.request("GET", "/", &[]);
     assert_eq!(status, 200, "the page\n{}", dev.output());
     let bundle = client_bundle(&dev);
@@ -129,4 +139,88 @@ fn a_route_added_between_boots_is_in_the_restored_client_bundle() {
         "an unchanged app rebuilt its client bundle\n{log}"
     );
     assert!(bundle.contains("\"/extra\""), "{log}");
+}
+
+/// The home route renders what the client sees of the env and the config.
+const ENV_INDEX: &str = r#"import { createFileRoute } from "@tanstack/react-router";
+
+export const Route = createFileRoute("/")({
+  component: () => (
+    <p id="seen">
+      {[import.meta.env.FIXTURE_FILE, import.meta.env.FIXTURE_SHELL, __FIXTURE_DEFINE__].join("|")}
+    </p>
+  ),
+});
+"#;
+
+/// An env var from a `.env` file in `envDir`, one from the shell admitted by
+/// `envPrefix`, and a define in a `--config` file each change the client
+/// bundle: a boot after any of them changed rebuilds it with the new value,
+/// and a boot with nothing changed restores it.
+#[test]
+fn the_env_and_a_config_file_key_the_restored_client_bundle() {
+    let Some(app) = file_routed("client-cache-env") else {
+        return;
+    };
+    let root = &app.0;
+    std::fs::write(root.join("src/routes/index.tsx"), ENV_INDEX).unwrap();
+    // The config under a name the store's epoch does not list, given by
+    // --config, with the env files in a directory of their own.
+    let config = std::fs::read_to_string(root.join("vite.config.ts")).unwrap();
+    std::fs::remove_file(root.join("vite.config.ts")).unwrap();
+    let config = config.replacen("envPrefix: [", "envDir: \"env\",\n  envPrefix: [", 1);
+    assert!(config.contains("envDir"), "{config}");
+    std::fs::write(root.join("vite.app.config.ts"), &config).unwrap();
+    std::fs::create_dir_all(root.join("env")).unwrap();
+    std::fs::write(root.join("env/.env"), "FIXTURE_FILE=file-one\n").unwrap();
+    let args = ["--config", "vite.app.config.ts"];
+    let shell = |v: &'static str| [("FIXTURE_SHELL", v)];
+
+    let (bundle, log) = boot_with(root, &args, &shell("shell-one"));
+    assert!(
+        bundle.contains("file-one")
+            && bundle.contains("shell-one")
+            && bundle.contains("fixture-define-marker"),
+        "{log}"
+    );
+
+    let restored = |log: &str| log.contains("client bundle restored from cache");
+    let (bundle, log) = boot_with(root, &args, &shell("shell-one"));
+    assert!(
+        restored(&log),
+        "an unchanged app rebuilt its client bundle\n{log}"
+    );
+    assert!(bundle.contains("file-one"), "{log}");
+
+    std::fs::write(root.join("env/.env"), "FIXTURE_FILE=file-two\n").unwrap();
+    let (bundle, log) = boot_with(root, &args, &shell("shell-one"));
+    assert!(
+        !restored(&log) && bundle.contains("file-two") && !bundle.contains("file-one"),
+        "an envDir file edit kept the old bundle\n{log}"
+    );
+
+    let (bundle, log) = boot_with(root, &args, &shell("shell-two"));
+    assert!(
+        !restored(&log) && bundle.contains("shell-two") && !bundle.contains("shell-one"),
+        "a prefixed shell var kept the old bundle\n{log}"
+    );
+
+    std::fs::write(
+        root.join("vite.app.config.ts"),
+        config.replace("fixture-define-marker", "define-two"),
+    )
+    .unwrap();
+    let (bundle, log) = boot_with(root, &args, &shell("shell-two"));
+    assert!(
+        !restored(&log)
+            && bundle.contains("define-two")
+            && !bundle.contains("fixture-define-marker"),
+        "a --config file edit kept the old bundle\n{log}"
+    );
+
+    let (_, log) = boot_with(root, &args, &shell("shell-two"));
+    assert!(
+        restored(&log),
+        "an unchanged app rebuilt its client bundle\n{log}"
+    );
 }
