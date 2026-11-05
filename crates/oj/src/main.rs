@@ -509,6 +509,15 @@ fn main() -> anyhow::Result<()> {
     if std::env::var_os("MIMALLOC_ARENA_PURGE_MULT").is_none() {
         std::env::set_var("MIMALLOC_ARENA_PURGE_MULT", "0");
     }
+    // An error never carries a stack backtrace: `RUST_BACKTRACE=1` (which a
+    // sandbox may set for panics) would otherwise make anyhow capture one for
+    // every error, and rolldown prints a plugin's error with it, so a failed
+    // resolve reads as a panic (pages of frames under "Stack backtrace:").
+    // `RUST_LIB_BACKTRACE` governs only library backtraces, so a panic still
+    // prints its own; a user-set value wins.
+    if std::env::var_os("RUST_LIB_BACKTRACE").is_none() {
+        std::env::set_var("RUST_LIB_BACKTRACE", "0");
+    }
     // `oj typecheck` takes tsc's command line, which clap cannot parse: every
     // argument goes to the tsc driver as it is (`oj typecheck --help` is tsc's).
     let mut args = std::env::args_os().skip(1);
