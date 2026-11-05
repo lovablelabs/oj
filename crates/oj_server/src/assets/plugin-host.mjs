@@ -2318,6 +2318,7 @@ async function generateWithoutWriting() {
   const run = proto.run;
   const quiet = () => {};
   proto.run = function (...args) {
+    routeGenerators.add(this);
     const error = this.logger?.error ?? console.error;
     this.logger = { log: quiet, debug: quiet, info: quiet, warn: quiet, error };
     return run.apply(this, args);
@@ -2329,6 +2330,46 @@ async function generateWithoutWriting() {
       return { mtimeMs: undefined };
     }
   };
+}
+// The generators the router plugin runs here (one per plugin instance).
+const routeGenerators = new Set();
+// TanStack's `routeFactoryCallCodeFilter`: what the reference compile looks at.
+const ROUTE_FACTORY_CALL = [
+  /\bcreateFileRoute\s*\(/,
+  /\bcreateRootRoute\s*\(/,
+  /\bcreateRootRouteWithContext\s*(?:<|\()/,
+];
+// Files a generator was asked about and still did not take, by mtime.
+const notRoutes = new Map();
+// Under Vite the generator's watchChange updates the route list before the
+// route tree it writes in the same run can import a new route, so a route is
+// listed by the time it is transformed. oj's watcher runs the plugins'
+// watchChange apart from the rebundle the new route tree starts, so a
+// route-shaped module the generator does not know yet waits for the run in
+// flight, then for one the generator plugin makes for that file, as a
+// watchChange for its creation would.
+async function routesKnow(code, id) {
+  if (!routeGenerators.size || typeof id !== "string" || id.startsWith("\0")) return;
+  if (!ROUTE_FACTORY_CALL.some((re) => re.test(code))) return;
+  const file = id.split("?")[0].replace(/\\/g, "/");
+  for (const g of routeGenerators) if (g.runPromise) await g.runPromise.catch(() => {});
+  const missing = [...routeGenerators].filter(
+    (g) => !g.routeNodeCache?.has(file) && g.isFileRelevantForRouteTreeGeneration?.(file),
+  );
+  if (!missing.length) return;
+  let mtime;
+  try {
+    mtime = statSync(file).mtimeMs;
+  } catch {
+    return;
+  }
+  if (notRoutes.get(file) === mtime) return;
+  for (const p of allPlugins) {
+    if (p?.name !== "tanstack:router-generator") continue;
+    const fn = hookFn(p, "watchChange");
+    if (fn) await fn.call(minimalContext({ watchMode: command === "serve" }), file, { event: "create" });
+  }
+  if (missing.some((g) => !g.routeNodeCache?.has(file))) notRoutes.set(file, mtime);
 }
 // A pair that cannot read Start's config would check against an empty root.
 // A build fails, as Vite's does on the same error: it would ship what the
@@ -5028,6 +5069,7 @@ function cssPhaseOf(p, rank) {
 // started from and the maps before this call, so getCombinedSourcemap still
 // collapses back to the loaded code.
 async function transform(c, code, id, resolvedJson, phase, priorJson) {
+  await routesKnow(code, id);
   let prior = null;
   if (priorJson) {
     try {
