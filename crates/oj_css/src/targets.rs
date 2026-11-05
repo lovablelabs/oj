@@ -37,21 +37,26 @@ fn es_browsers(entry: &str) -> Option<Vec<&'static str>> {
 
 /// esbuild-style targets as lightningcss browsers, like Vite's
 /// `convertTargets`: `es<year>` expands to Vite's browsers for that year, the
-/// lowest version per browser wins, other non-browser names (`esnext`,
-/// `node18`) are skipped, and no browser at all means the baseline.
+/// lowest version per browser wins, and other non-browser names (`esnext`,
+/// `node18`) are skipped. A list that names no browser gives no targets, so
+/// nothing is lowered, as Vite's `undefined` does (`build.target: 'esnext'`).
+/// An empty list (no `build.cssTarget` given, as in dev) means the baseline.
 pub fn browser_targets(list: &[String]) -> Targets {
+    if list.is_empty() {
+        return preset(BASELINE);
+    }
     let expanded = list
         .iter()
         .flat_map(|t| es_browsers(t).unwrap_or_else(|| vec![t.as_str()]));
-    let browsers = parse_browsers(expanded).or_else(|| {
-        let preset = if list.iter().any(|t| t == "modules") {
-            MODULES
-        } else {
-            BASELINE
-        };
-        parse_browsers(preset.iter().copied())
-    });
-    Targets::from(browsers.expect("presets name browsers"))
+    match parse_browsers(expanded) {
+        Some(browsers) => Targets::from(browsers),
+        None if list.iter().any(|t| t == "modules") => preset(MODULES),
+        None => Targets::default(),
+    }
+}
+
+fn preset(browsers: &[&str]) -> Targets {
+    Targets::from(parse_browsers(browsers.iter().copied()).expect("presets name browsers"))
 }
 
 fn parse_browsers<'a>(list: impl Iterator<Item = &'a str>) -> Option<Browsers> {
@@ -205,12 +210,28 @@ mod tests {
             .browsers
             .unwrap();
         assert_eq!(b.chrome, Some(100 << 16));
-        // No browser at all (esnext, empty) is Vite's baseline default.
-        for list in [s(&["esnext"]), Vec::new()] {
-            let b = browser_targets(&list).browsers.unwrap();
-            assert_eq!(b.chrome, Some(111 << 16));
-            assert_eq!(b.safari, Some((16 << 16) | (4 << 8)));
+        // Targets naming no browser give none, as Vite's `undefined` does.
+        for list in [s(&["esnext"]), s(&["node18", "esnext"])] {
+            assert!(browser_targets(&list).browsers.is_none(), "{list:?}");
         }
+        // An empty list (no cssTarget, as in dev) is Vite's baseline default.
+        let b = browser_targets(&[]).browsers.unwrap();
+        assert_eq!(b.chrome, Some(111 << 16));
+        assert_eq!(b.safari, Some((16 << 16) | (4 << 8)));
+    }
+
+    #[test]
+    fn an_esnext_target_lowers_nothing() {
+        let css = "@media (width <= 600px) { .a { & .b { user-select: none } } }";
+        let esnext = CssResolveConfig {
+            targets: vec!["esnext".into()],
+            minify: true,
+            ..Default::default()
+        };
+        let out = compile_css_with("/p.css", css, &esnext.as_ref())
+            .unwrap()
+            .css;
+        assert_eq!(out, "@media (width<=600px){.a{& .b{user-select:none}}}");
     }
 
     #[test]
@@ -232,9 +253,8 @@ mod tests {
             .browsers
             .unwrap();
         assert_eq!(b.chrome, Some(80 << 16));
-        // A year Vite has no browsers for is skipped, leaving the baseline.
-        let b = browser_targets(&s(&["es2099"])).browsers.unwrap();
-        assert_eq!(b.chrome, Some(111 << 16));
+        // A year Vite has no browsers for is skipped (Vite's build throws).
+        assert!(browser_targets(&s(&["es2099"])).browsers.is_none());
     }
 
     #[test]

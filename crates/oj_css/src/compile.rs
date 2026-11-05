@@ -284,7 +284,14 @@ pub(crate) fn compile_css_depth(
     let flags = lightning.map_or(ParserFlags::empty(), |l| l.parser_flags());
     let mut stylesheet = parse_stylesheet(source, url, modules, flags)?;
 
-    let targets = browser_targets(resolve.targets);
+    // Vite lowers to `build.cssTarget` only in its build minify (minifyCSS),
+    // so an unminified build compile keeps the sheet's syntax. No targets (dev)
+    // still means the baseline.
+    let targets = if mode.minify || resolve.targets.is_empty() {
+        browser_targets(resolve.targets)
+    } else {
+        lightningcss::targets::Targets::default()
+    };
     let targets = lightning.map_or(targets, |l| l.targets(targets));
     stylesheet
         .minify(MinifyOptions {
@@ -563,6 +570,26 @@ mod tests {
             out.contains('\n') && out.contains("color: red"),
             "cssMinify false keeps whitespace: {out}"
         );
+    }
+
+    /// Vite applies `build.cssTarget` in minifyCSS only: with `cssMinify` off
+    /// the build keeps the sheet's syntax, whatever the target.
+    #[test]
+    fn an_unminified_build_compile_does_not_lower_to_the_css_target() {
+        let src = "@media (width >= 48rem) { .a { & .b { color: red } } }";
+        let mut cfg = CssResolveConfig {
+            targets: vec!["es2022".into()],
+            minify: false,
+            ..Default::default()
+        };
+        let out = compile_css_with("/a.css", src, &cfg.as_ref()).unwrap().css;
+        assert!(
+            out.contains("width >= 48rem") && out.contains("& .b"),
+            "{out}"
+        );
+        cfg.minify = true;
+        let out = compile_css_with("/a.css", src, &cfg.as_ref()).unwrap().css;
+        assert_eq!(out, "@media (min-width:48rem){.a .b{color:red}}");
     }
 
     #[test]
