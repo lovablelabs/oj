@@ -322,15 +322,6 @@ async fn a_warm_session_keeps_every_dep_url() {
     }
 }
 
-/// The `/@oj-deps/` modulepreload hrefs oj's dev HTML carries.
-fn dep_preloads(html: &str) -> Vec<String> {
-    Regex::new(r#"<link rel="modulepreload" href="(/@oj-deps/[^"]+)""#)
-        .unwrap()
-        .captures_iter(html)
-        .map(|c| c[1].to_string())
-        .collect()
-}
-
 /// `a-esm` and `b-esm` share `shared-esm` (a chunk of the first pre-bundle);
 /// `late-esm` is imported only by `extra.js`, which no entry reaches, so the
 /// scan misses it and a request for `extra.js` discovers it at serve time.
@@ -386,33 +377,22 @@ async fn discover_late(server: &crate::Server) -> String {
     late
 }
 
-/// Every dep preload in the page is a URL an import names (so preload and
-/// import share one cache entry) and serves 200, never the outdated 504.
-async fn assert_preloads_match_imports(server: &crate::Server, imports: &[String]) {
-    let preloads = dep_preloads(&server.text("/").await);
+/// Every dep URL an import names serves 200, never the outdated 504, and the
+/// page preloads none of them (Vite's dev page carries no modulepreload).
+async fn assert_imports_serve(server: &crate::Server, imports: &[String]) {
     for url in imports {
-        assert!(
-            preloads.contains(url),
-            "no preload names the import {url}: {preloads:?}"
-        );
+        assert_eq!(server.get(url).await.status, 200, "import {url}");
     }
-    for url in &preloads {
-        // A chunk preloads bare, as dep files import it.
-        assert!(
-            imports.contains(url) || !url.contains("?v="),
-            "the preload {url} is no URL an import names: {imports:?}"
-        );
-        assert_eq!(server.get(url).await.status, 200, "preload {url}");
-    }
+    let html = server.text("/").await;
+    assert!(!html.contains("modulepreload"), "{html}");
 }
 
 // Vite's resolve gives each optimized entry its own browserHash
 // (optimizedDepInfoFromFile), and a rerun that needs no reload keeps the
 // committed entries' versions: after a discovery, entries carry different
-// versions, so a preload stamped with the session's base version names a URL
-// no import uses, and a discovered dep's preload is the outdated 504.
+// versions, and each serves under its own.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_discovered_dep_preloads_under_its_own_version() {
+async fn a_discovered_dep_serves_under_its_own_version() {
     crate::require_fixture!("vite");
     let app = preload_app();
     let server = app.serve().await;
@@ -432,13 +412,13 @@ async fn a_discovered_dep_preloads_under_its_own_version() {
     );
     let mut imports = first;
     imports.push(late);
-    assert_preloads_match_imports(&server, &imports).await;
+    assert_imports_serve(&server, &imports).await;
 }
 
 // The same on a warm boot: the manifest restores each entry's own version,
 // a discovered dep's included, before any request is served.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_warm_session_preloads_every_entry_under_its_import_url() {
+async fn a_warm_session_serves_every_entry_under_its_import_url() {
     crate::require_fixture!("vite");
     let app = preload_app();
     {
@@ -451,7 +431,7 @@ async fn a_warm_session_preloads_every_entry_under_its_import_url() {
     let mut imports = dep_urls(&server.text("/main.js").await);
     imports.extend(dep_urls(&server.text("/extra.js").await));
     assert_eq!(imports.len(), 3, "{imports:?}");
-    assert_preloads_match_imports(&server, &imports).await;
+    assert_imports_serve(&server, &imports).await;
 }
 
 /// Vite runs `optimizeDeps.rolldownOptions.plugins` in the scan's own

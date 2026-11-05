@@ -520,7 +520,8 @@ async fn dev_serves_a_module_again_once_its_server_only_marker_is_gone() {
     assert_ne!(
         mocked.as_deref(),
         Some("server-secret"),
-        "the marked module ran in the page"
+        "the marked module ran in the page\n{}",
+        dev.output()
     );
     assert!(
         console

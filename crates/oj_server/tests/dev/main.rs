@@ -341,3 +341,24 @@ impl Server {
 }
 
 pub const INDEX_HTML: &str = r#"<!doctype html><html><head><title>t</title></head><body><script type="module" src="/src/main.js"></script></body></html>"#;
+
+/// Waits until the dev server's eager crawl has walked `root`'s graph (the
+/// snapshot it writes once done). False when OJ_CACHE_DIR puts the cache
+/// outside the app, where concurrent tests share one snapshot.
+pub async fn crawled(root: &Path) -> bool {
+    let cache = oj_cache::cache_root(root);
+    if !cache.starts_with(root) {
+        eprintln!("skipping the crawl wait: OJ_CACHE_DIR shares the graph snapshot");
+        return false;
+    }
+    let snapshot = cache.join("graph-snapshot.json");
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !snapshot.exists() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the eager crawl never finished"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    true
+}

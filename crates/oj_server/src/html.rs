@@ -41,11 +41,12 @@ pub(crate) async fn serve_html(
             }),
     };
     match transformed {
-        Ok(out) => (
-            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-            inject_module_preloads(out, state),
-        )
-            .into_response(),
+        // Vite's dev page carries no modulepreload of its own: devHtmlHook
+        // adds the client script alone, and warms the page's modules on the
+        // server (preTransformRequest), as oj's eager crawl does. A preload
+        // per crawled module made a big app's page fetch its whole graph
+        // before it could boot.
+        Ok(out) => ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], out).into_response(),
         Err(e) => {
             eprintln!("oj: transformIndexHtml failed for {url}: {e}");
             (
@@ -256,63 +257,6 @@ pub(crate) async fn serve_fallback(
     forward_to_plugin_middleware(&state, &method, &uri, &headers, body)
         .await
         .unwrap_or_else(|| (StatusCode::NOT_FOUND, "oj: not found").into_response())
-}
-
-/// The preload href: the exact URL the importer names, so preload and import
-/// share one cache entry. `?import` for styles; a pre-bundled entry's current
-/// URL from `entries` (file name to URL), whose version moves with every
-/// rerun; anything else under `/@oj-deps/` bare, as dep files import their
-/// chunks. An app asset is imported as `?url` (an `.svg` stays bare when
-/// `svg_compiled`, for svgr), never by the url its `<img src>` fetches.
-pub(crate) fn preload_href(
-    path: &str,
-    entries: &HashMap<String, String>,
-    svg_compiled: bool,
-) -> String {
-    if is_style_url(path) {
-        format!("{path}?import")
-    } else if !path.starts_with("/@")
-        && !path.contains("/node_modules/")
-        && is_asset_path(Path::new(path))
-        && !(svg_compiled && path.ends_with(".svg"))
-    {
-        format!("{path}?url")
-    } else if let Some(url) = path
-        .strip_prefix("/@oj-deps/")
-        .and_then(|file| entries.get(file))
-    {
-        url.clone()
-    } else {
-        path.to_string()
-    }
-}
-
-pub(crate) fn inject_module_preloads(html: String, state: &ServerState) -> String {
-    let paths: Vec<String> = if *state.crawl_done.borrow() {
-        served_module_paths(state)
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect()
-    } else {
-        state.preload_snapshot.clone()
-    };
-    if paths.is_empty() {
-        return html;
-    }
-    let entries = state.optimized.entry_urls();
-    let links: String = paths
-        .iter()
-        .map(|p| {
-            format!(
-                "<link rel=\"modulepreload\" href=\"{}\" />\n",
-                preload_href(p, &entries, state.plugins_have_transform)
-            )
-        })
-        .collect();
-    match html.find("</head>") {
-        Some(idx) => format!("{}{links}{}", &html[..idx], &html[idx..]),
-        None => format!("{html}\n{links}"),
-    }
 }
 
 pub fn html_entry_src(src: &str) -> Option<String> {

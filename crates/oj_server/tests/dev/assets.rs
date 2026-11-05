@@ -6,7 +6,7 @@
 //! import.meta.url)` resolves to that same file, and the url the page got
 //! fetches with 200.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::Request;
@@ -72,7 +72,7 @@ async fn svg_import_and_new_url_resolve_to_the_served_file() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn png_import_preloads_its_url_module_not_the_image() {
+async fn a_png_is_its_module_or_its_file_by_sec_fetch_dest() {
     let app = App::new(&[
         (
             "package.json",
@@ -86,23 +86,14 @@ async fn png_import_preloads_its_url_module_not_the_image() {
     ]);
     std::fs::write(app.root.join("src/hero.png"), PNG_1X1).unwrap();
     let server = app.serve().await;
-
-    // The preload list comes from the eager crawl, which runs in the background.
-    let deadline = Instant::now() + WAIT;
-    let html = loop {
+    // The crawl reaches the image, and the page still names it nowhere: Vite's
+    // dev page preloads none of its modules.
+    if crate::crawled(&app.root).await {
         let html = server.text("/").await;
-        if html.contains("hero.png") || Instant::now() > deadline {
-            break html;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    };
-    // `/src/hero.png` is the `<img src>`'s raw file: preloading it as a module
-    // only works while every hop forwards `Sec-Fetch-Dest`.
-    assert!(
-        html.contains(r#"<link rel="modulepreload" href="/src/hero.png?url" />"#),
-        "{html}"
-    );
-    assert!(!html.contains(r#"href="/src/hero.png""#), "{html}");
+        assert!(!html.contains("hero.png"), "{html}");
+    }
+    // `/src/hero.png` is both the `<img src>`'s raw file and the module an
+    // import of it fetches, told apart by `Sec-Fetch-Dest`.
 
     for (dest, mime) in [("script", "text/javascript"), ("image", "image/png")] {
         let req = Request::get("/src/hero.png")

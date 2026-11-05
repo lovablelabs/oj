@@ -7,13 +7,9 @@
 //! the same lifted module (env values, CSP nonces, the dev client, relative
 //! urls of a SPA fallback, inline modules and styles).
 
-use std::time::{Duration, Instant};
-
 use regex::Regex;
 
 use crate::App;
-
-const WAIT: Duration = Duration::from_secs(20);
 
 const PAGE: &str = r#"<!doctype html>
 <html>
@@ -49,16 +45,7 @@ fn app(plugins: &str) -> App {
 
 async fn page_and_module(app: &App) -> (String, String) {
     let server = app.serve().await;
-    // The page's modulepreload links come from the eager crawl, which runs in
-    // the background: compare pages once it has listed the inline style.
-    let deadline = Instant::now() + WAIT;
-    let html = loop {
-        let html = server.text("/dashboard/settings").await;
-        if html.contains(r#"rel="modulepreload""#) || Instant::now() > deadline {
-            break html;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    };
+    let html = server.text("/dashboard/settings").await;
     let src = Regex::new(r#"src="([^"]*html-proxy[^"]*)""#)
         .unwrap()
         .captures(&html)
@@ -96,4 +83,54 @@ async fn the_native_transform_matches_the_hosts() {
         assert!(native_html.contains(want), "{want}:\n{native_html}");
     }
     assert!(native_module.contains("window.__X"), "{native_module}");
+}
+
+/// Vite's dev page adds the client script alone (devHtmlHook's one tag,
+/// `head-prepend`); it warms the page's modules on the server instead
+/// (preTransformRequest), and sends no modulepreload for them. Once oj's
+/// eager crawl has walked the graph the page still names none of its
+/// modules: a big app's page used to preload its whole graph (hundreds of
+/// links) and stalled on a slow connection before it booted. A link the page
+/// writes itself stays.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dev_page_preloads_none_of_its_modules() {
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"no-preloads","version":"1.0.0"}"#,
+        ),
+        (
+            "index.html",
+            r#"<!doctype html><html><head><title>t</title><link rel="modulepreload" href="/src/own.js"></head><body><script type="module" src="/src/main.js"></script></body></html>"#,
+        ),
+        ("src/own.js", "export const own = 1;\n"),
+        ("src/a.js", "export const a = 1;\n"),
+        (
+            "src/b.js",
+            "import { a } from \"./a.js\";\nexport const b = a + 1;\n",
+        ),
+        ("src/style.css", ".x { color: red; }\n"),
+        (
+            "src/main.js",
+            "import { b } from \"./b.js\";\nimport \"./style.css\";\nconsole.log(b);\n",
+        ),
+    ]);
+    let server = app.serve().await;
+    assert_eq!(server.get("/src/main.js").await.status, 200);
+    if !crate::crawled(&app.root).await {
+        return;
+    }
+    let html = server.text("/").await;
+    let preloads: Vec<&str> = html
+        .match_indices("rel=\"modulepreload\"")
+        .map(|(at, _)| {
+            &html[html[..at].rfind('<').unwrap()..at + html[at..].find('>').unwrap() + 1]
+        })
+        .collect();
+    assert_eq!(
+        preloads,
+        [r#"<link rel="modulepreload" href="/src/own.js">"#],
+        "the page preloads the crawled modules:\n{html}"
+    );
+    assert!(html.contains("/@oj/client.js"), "{html}");
 }

@@ -385,6 +385,29 @@ impl Plugin for StartHostPlugin {
         usage
     }
 
+    /// Rolldown's dev engine runs this for each changed file before it
+    /// rebuilds or computes an update: Start's import protection forgets what
+    /// it learned about the file there, ahead of the recompile (see
+    /// `importProtectionChanged` in the host).
+    async fn watch_change(
+        &self,
+        _ctx: &rolldown_plugin::PluginContext,
+        path: &str,
+        _event: rolldown_common::WatcherChangeKind,
+    ) -> rolldown_plugin::HookNoopReturn {
+        if let Err(e) = self
+            .host
+            .import_protection_changed(&[path.to_string()])
+            .await
+        {
+            eprintln!(
+                "{}: import protection did not take the change: {e}",
+                oj_server::oj_brand()
+            );
+        }
+        Ok(())
+    }
+
     async fn build_start(
         &self,
         ctx: &PluginContext,
