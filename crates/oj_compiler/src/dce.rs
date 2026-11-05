@@ -50,9 +50,14 @@ pub(crate) fn drop_dead_bindings(before: &str, mut after: String, path: &str) ->
     // No early exit without candidates: Babel's empty-pattern visitors run
     // regardless.
     let (module, nested_keys) = start;
-    // The edit kept every line: a nested candidate is the declaration of the
-    // same name at the same place among that line's declarations of it.
-    let Some(mut nested) = Analysis::of(&after, path, |a| a.offsets_of(&nested_keys)) else {
+    // The edit kept every line: a nested candidate is found again through
+    // the part of its line the edit left as it was. One inside an edited
+    // stretch stays unmatched, so it is kept (never another one dropped).
+    let mapped: Vec<(String, u32)> = nested_keys
+        .into_iter()
+        .filter_map(|(name, at)| map_offset(before, &after, at).map(|to| (name, to)))
+        .collect();
+    let Some(mut nested) = Analysis::of(&after, path, |a| a.nested_at(&mapped)) else {
         return after;
     };
     while let Some((out, edits)) = drop_pass(&after, path, &module, &nested) {
@@ -72,7 +77,6 @@ struct Decl {
     name: String,
     /// The binding identifier's start: a nested declaration's key.
     at: u32,
-    line: usize,
     symbol: SymbolId,
     /// Babel's `binding.path.node`: the import specifier, the declarator,
     /// the function or the class.
@@ -117,7 +121,6 @@ impl<'s, 'a> Analysis<'s, 'a> {
         let root = scoping.root_scope_id();
         let spans = reference_spans(program);
         let mut collect = Collect {
-            code,
             scoping,
             root,
             exported: 0,
@@ -203,8 +206,9 @@ impl<'s, 'a> Analysis<'s, 'a> {
         let mut users: HashMap<SymbolId, Vec<SymbolId>> = HashMap::new();
         let mut queue = Vec::new();
         let mut symbols: Vec<SymbolId> = Vec::new();
+        let mut seen = HashSet::new();
         for d in &module {
-            if symbols.contains(&d.symbol) {
+            if !seen.insert(d.symbol) {
                 continue;
             }
             symbols.push(d.symbol);
@@ -213,6 +217,23 @@ impl<'s, 'a> Analysis<'s, 'a> {
                 queue.push(d.symbol);
             }
         }
+        // Module bindings' nodes never nest (an import specifier, a
+        // module-scope declarator, a top-level function or class), so the one
+        // holding a reference is found by its start.
+        let mut containers: Vec<(Span, Vec<SymbolId>)> = Vec::new();
+        let mut sorted: Vec<&Decl> = module.clone();
+        sorted.sort_by_key(|d| (d.container.start, d.container.end));
+        for d in sorted {
+            match containers.last_mut() {
+                Some((span, symbols)) if *span == d.container => symbols.push(d.symbol),
+                _ => containers.push((d.container, vec![d.symbol])),
+            }
+        }
+        let holder = |span: Span| -> Option<&Vec<SymbolId>> {
+            let i = containers.partition_point(|(c, _)| c.start <= span.start);
+            let (c, symbols) = containers.get(i.checked_sub(1)?)?;
+            (span.end <= c.end).then_some(symbols)
+        };
         for &symbol in &symbols {
             for &span in self
                 .reads
@@ -220,18 +241,16 @@ impl<'s, 'a> Analysis<'s, 'a> {
                 .map(Vec::as_slice)
                 .unwrap_or_default()
             {
-                let within: Vec<SymbolId> = module
-                    .iter()
-                    .filter(|c| c.container.start <= span.start && span.end <= c.container.end)
-                    .map(|c| c.symbol)
-                    .collect();
-                if within.is_empty() {
-                    if alive.insert(symbol) {
-                        queue.push(symbol);
+                match holder(span) {
+                    None => {
+                        if alive.insert(symbol) {
+                            queue.push(symbol);
+                        }
                     }
-                } else {
-                    for c in within {
-                        users.entry(c).or_default().push(symbol);
+                    Some(holders) => {
+                        for &c in holders {
+                            users.entry(c).or_default().push(symbol);
+                        }
                     }
                 }
             }
@@ -251,44 +270,32 @@ impl<'s, 'a> Analysis<'s, 'a> {
             .collect()
     }
 
-    /// The candidates: module names, and nested `(name, line, ordinal)`.
-    fn start_candidates(&self) -> (HashSet<String>, HashSet<(String, usize, usize)>) {
+    /// The candidates: module names, and nested `(name, offset)`.
+    fn start_candidates(&self) -> (HashSet<String>, Vec<(String, u32)>) {
         let mut module = HashSet::new();
-        let mut nested = HashSet::new();
-        for (d, ordinal) in self.decls.iter().zip(self.ordinals()) {
+        let mut nested = Vec::new();
+        for d in &self.decls {
             if !self.read(d.symbol) || self.removable.contains(&d.symbol) {
                 continue;
             }
             if d.module {
                 module.insert(d.name.clone());
             } else {
-                nested.insert((d.name.clone(), d.line, ordinal));
+                nested.push((d.name.clone(), d.at));
             }
         }
         (module, nested)
     }
 
-    /// Each declaration's place among the same name's declarations on its line.
-    fn ordinals(&self) -> Vec<usize> {
-        let mut count: HashMap<(&str, usize), usize> = HashMap::new();
-        let mut order: Vec<usize> = (0..self.decls.len()).collect();
-        order.sort_by_key(|&i| self.decls[i].at);
-        let mut out = vec![0; self.decls.len()];
-        for i in order {
-            let d = &self.decls[i];
-            let n = count.entry((d.name.as_str(), d.line)).or_default();
-            out[i] = *n;
-            *n += 1;
-        }
-        out
-    }
-
-    fn offsets_of(&self, keys: &HashSet<(String, usize, usize)>) -> HashSet<u32> {
-        self.decls
+    /// The nested declarations at `offsets` that bind `name`.
+    fn nested_at(&self, mapped: &[(String, u32)]) -> HashSet<u32> {
+        mapped
             .iter()
-            .zip(self.ordinals())
-            .filter(|(d, o)| !d.module && keys.contains(&(d.name.clone(), d.line, *o)))
-            .map(|(d, _)| d.at)
+            .filter(|(name, at)| {
+                self.decl_at(*at)
+                    .is_some_and(|d| !d.module && d.name == *name)
+            })
+            .map(|(_, at)| *at)
             .collect()
     }
 
@@ -301,9 +308,45 @@ fn line_of(code: &str, at: u32) -> usize {
     code[..at as usize].matches('\n').count()
 }
 
+/// `at` in `before` as an offset in `after`, which has the same lines: exact
+/// in the part of its line before the first change or after the last one,
+/// None inside the changed stretch.
+fn map_offset(before: &str, after: &str, at: u32) -> Option<u32> {
+    let at = at as usize;
+    let line = line_of(before, at as u32);
+    let bounds = |code: &str| -> Option<(usize, usize)> {
+        let start = if line == 0 {
+            0
+        } else {
+            code.match_indices('\n').nth(line - 1)?.0 + 1
+        };
+        let end = code[start..].find('\n').map_or(code.len(), |e| start + e);
+        Some((start, end))
+    };
+    let (bs, be) = bounds(before)?;
+    let (as_, ae) = bounds(after)?;
+    let (b, a) = (&before.as_bytes()[bs..be], &after.as_bytes()[as_..ae]);
+    let prefix = b.iter().zip(a).take_while(|(x, y)| x == y).count();
+    let room = b.len().min(a.len()) - prefix;
+    let suffix = b
+        .iter()
+        .rev()
+        .zip(a.iter().rev())
+        .take(room)
+        .take_while(|(x, y)| x == y)
+        .count();
+    let col = at - bs;
+    if col < prefix {
+        Some((as_ + col) as u32)
+    } else if col >= b.len() - suffix {
+        Some((as_ + a.len() - (b.len() - col)) as u32)
+    } else {
+        None
+    }
+}
+
 /// Every declared name, at every depth.
 struct Collect<'s> {
-    code: &'s str,
     scoping: &'s Scoping,
     root: oxc_syntax::scope::ScopeId,
     /// Depth inside export declarations.
@@ -321,7 +364,6 @@ impl Collect<'_> {
         self.out.push(Decl {
             name: id.name.to_string(),
             at: id.span.start,
-            line: line_of(self.code, id.span.start),
             symbol,
             container,
             module: self.scoping.symbol_scope_id(symbol) == self.root,
@@ -994,6 +1036,36 @@ mod tests {
         assert!(out.contains("for (let i = 0; i < 1; i++)"), "{out}");
         assert!(!out.contains("getRequest"), "{out}");
         assert!(out.contains("for (const x of xs)"), "{out}");
+    }
+
+    // On one line, the edit removes a read declaration of `a`; a later
+    // declaration of `a` that nothing read is not taken for it (and its
+    // side effect stays), as Babel's candidates are the nodes themselves.
+    #[test]
+    fn a_later_same_named_declaration_on_the_edited_line_is_not_a_candidate() {
+        let before = "export function make() { const o = [keep(() => { const a = 1; return a; }), () => { const a = side2(); }]; return o; }\n";
+        let out = dce(before, "() => { const a = 1; return a; }");
+        assert!(out.contains("const a = side2();"), "{out}");
+    }
+
+    #[test]
+    fn offsets_map_through_an_edit_on_their_line() {
+        let before = "const x = 1; keep(() => handler()); const y = 2;\nnext();\n";
+        let after = "const x = 1; keep(); const y = 2;\nnext();\n";
+        let at = |code: &str, s: &str| code.find(s).unwrap() as u32;
+        assert_eq!(
+            map_offset(before, after, at(before, "x =")),
+            Some(at(after, "x ="))
+        );
+        assert_eq!(
+            map_offset(before, after, at(before, "y =")),
+            Some(at(after, "y ="))
+        );
+        assert_eq!(map_offset(before, after, at(before, "handler")), None);
+        assert_eq!(
+            map_offset(before, after, at(before, "next")),
+            Some(at(after, "next"))
+        );
     }
 
     #[test]
