@@ -224,3 +224,74 @@ fn the_env_and_a_config_file_key_the_restored_client_bundle() {
         "an unchanged app rebuilt its client bundle\n{log}"
     );
 }
+
+/// The home route renders the defines the config makes.
+const DEFINES_INDEX: &str = r#"import { createFileRoute } from "@tanstack/react-router";
+
+export const Route = createFileRoute("/")({
+  component: () => <p id="seen">{[__FIXTURE_DEFINE__, __FIXTURE_COMPUTED__].join("|")}</p>,
+});
+"#;
+
+/// A define from a file the config imports, and one the config computes from
+/// an env var no `envPrefix` exposes, each change the client bundle. Vite
+/// restarts on an edit to a config import (`configFileDependencies`) and
+/// evaluates the config anew on every start; the store keys the bundle by
+/// the imported files and by the defines the evaluated config came to.
+#[test]
+fn defines_from_config_imports_and_the_env_key_the_restored_client_bundle() {
+    let Some(app) = file_routed("client-cache-defines") else {
+        return;
+    };
+    let root = &app.0;
+    std::fs::write(root.join("src/routes/index.tsx"), DEFINES_INDEX).unwrap();
+    let config = std::fs::read_to_string(root.join("vite.config.ts")).unwrap();
+    let literal = r#"define: { __FIXTURE_DEFINE__: JSON.stringify("fixture-define-marker") },"#;
+    assert!(config.contains(literal), "{config}");
+    let config = format!(
+        "import {{ importedDefine }} from \"./fixture-defines\";\n{}",
+        config.replace(
+            literal,
+            r#"define: {
+    __FIXTURE_DEFINE__: JSON.stringify(importedDefine),
+    __FIXTURE_COMPUTED__: JSON.stringify(process.env.TSS_FIXTURE_COMPUTED ?? "computed-unset"),
+  },"#,
+        )
+    );
+    std::fs::write(root.join("vite.config.ts"), config).unwrap();
+    let helper = root.join("fixture-defines.ts");
+    std::fs::write(&helper, "export const importedDefine = \"imported-one\";\n").unwrap();
+    let env = |v: &'static str| [("TSS_FIXTURE_COMPUTED", v)];
+    let restored = |log: &str| log.contains("client bundle restored from cache");
+
+    let (bundle, log) = boot_with(root, &[], &env("computed-one"));
+    assert!(
+        bundle.contains("imported-one") && bundle.contains("computed-one"),
+        "{log}"
+    );
+
+    let (_, log) = boot_with(root, &[], &env("computed-one"));
+    assert!(
+        restored(&log),
+        "an unchanged app rebuilt its client bundle\n{log}"
+    );
+
+    std::fs::write(&helper, "export const importedDefine = \"imported-two\";\n").unwrap();
+    let (bundle, log) = boot_with(root, &[], &env("computed-one"));
+    assert!(
+        !restored(&log) && bundle.contains("imported-two") && !bundle.contains("imported-one"),
+        "an edit to a file the config imports kept the old bundle\n{log}"
+    );
+
+    let (bundle, log) = boot_with(root, &[], &env("computed-two"));
+    assert!(
+        !restored(&log) && bundle.contains("computed-two") && !bundle.contains("computed-one"),
+        "a define computed from the env kept the old bundle\n{log}"
+    );
+
+    let (_, log) = boot_with(root, &[], &env("computed-two"));
+    assert!(
+        restored(&log),
+        "an unchanged app rebuilt its client bundle\n{log}"
+    );
+}

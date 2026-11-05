@@ -2297,7 +2297,8 @@ fn start_bundle_store(root: &Path, mode: &str) -> oj_cache::start_bundle::StartB
 }
 
 /// The client bundle's store, keyed by what the bundle depends on beyond its
-/// closure: the route trees, a `--config` file and the env its code sees.
+/// closure: the route trees, the config and its imports, and the defines its
+/// code inlines.
 fn keyed_bundle_store(
     bundler: &ClientBundler,
     root: &Path,
@@ -2305,7 +2306,7 @@ fn keyed_bundle_store(
 ) -> oj_cache::start_bundle::StartBundleStore {
     start_bundle_store(root, mode)
         .keyed_by_files(&bundler.cache_key_files())
-        .keyed_by("env", &bundler.cache_key_env())
+        .keyed_by("defines", &bundler.cache_key_defines())
 }
 
 fn bundle_client_entry_cached(
