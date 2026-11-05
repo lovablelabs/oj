@@ -4964,8 +4964,13 @@ function noteStartCompilerPosition(list) {
 }
 function compilePhaseOf(p, rank) {
   if (rank < 0) return "before-compile";
-  if (rank > 0 || enforceRank(p) >= 0) return "after-compile";
-  return !startCompilerFound || beforeStartCompiler.has(p) ? "before-compile" : "after-compile";
+  if (rank > 0) return "after-compile";
+  // Listed before the compiler, or returned by an applyToEnvironment that
+  // was: Vite's resolveEnvironmentPlugins puts returned plugins at their
+  // parent's place without sorting them again, whatever their own enforce.
+  if (beforeStartCompiler.has(p)) return "before-compile";
+  if (enforceRank(p) >= 0) return "after-compile";
+  return startCompilerFound ? "after-compile" : "before-compile";
 }
 function inTransformPhase(p, rank, phase) {
   if (phase === "before-compile" || phase === "after-compile") return compilePhaseOf(p, rank) === phase;

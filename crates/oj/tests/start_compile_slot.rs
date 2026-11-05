@@ -20,6 +20,22 @@ const PLUGINS: &str = r#"function slotPlugins() {
   const saw = (code, who) => `${who}-saw-${code.includes("getRequest") ? "raw" : "compiled"}`;
   return [
     {
+      // Its child has no enforce, yet sits where the parent does: before
+      // the compiler (Vite's resolveEnvironmentPlugins does not sort again).
+      name: "fixture-slot-env-parent",
+      enforce: "pre",
+      applyToEnvironment() {
+        return [
+          {
+            name: "fixture-slot-env-child",
+            transform(code, id) {
+              if (slot(id)) return code + `\nexport const envChildSaw = ${JSON.stringify(saw(code, "env-child"))};\n`;
+            },
+          },
+        ];
+      },
+    },
+    {
       name: "fixture-slot-pre",
       enforce: "pre",
       transform(code, id) {
@@ -89,14 +105,14 @@ fn write_app(root: &Path) {
         .replacen(
             import,
             &format!(
-                "{import}\nimport {{ slotFn, preSaw, normalSaw, latePreSaw, lateOrderedSaw, combinedFrom }} from \"../lib/slot.functions\";"
+                "{import}\nimport {{ slotFn, preSaw, normalSaw, latePreSaw, lateOrderedSaw, combinedFrom, envChildSaw }} from \"../lib/slot.functions\";"
             ),
             1,
         )
         .replacen(
             heading,
             &format!(
-                "{heading}\n      <p id=\"slot\" onClick={{() => slotFn()}}>{{preSaw}}|{{normalSaw}}|{{latePreSaw}}|{{lateOrderedSaw}}|{{combinedFrom}}</p>"
+                "{heading}\n      <p id=\"slot\" onClick={{() => slotFn()}}>{{preSaw}}|{{normalSaw}}|{{latePreSaw}}|{{lateOrderedSaw}}|{{combinedFrom}}|{{envChildSaw}}</p>"
             ),
             1,
         );
@@ -152,6 +168,10 @@ fn the_compiler_runs_after_the_pre_transforms_and_before_the_normal_ones() {
     assert!(
         js.contains("late-pre-saw-compiled"),
         "a pre plugin listed after tanstackStart() ran before the compiler"
+    );
+    assert!(
+        js.contains("env-child-saw-raw"),
+        "a plugin applyToEnvironment returned did not take its parent's place before the compiler"
     );
     assert!(
         js.contains("combined-from-source"),

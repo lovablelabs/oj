@@ -3,179 +3,63 @@
 
 //! TanStack's dead-code pass, `deadCodeElimination(ast, refIdents)` from
 //! babel-dead-code-elimination, which Start's compiler and the router's code
-//! splitter run after their edits with the identifiers referenced before
-//! them (`findReferencedIdentifiers`) as candidates. A module-level binding
-//! that was used and no longer is goes, repeatedly, so whatever only it used
-//! goes with it:
+//! splitter run after their edits with `findReferencedIdentifiers` of the
+//! module before them as candidates. Ported rule for rule:
 //!
-//! - a binding is dead when nothing outside the dead bindings uses it
-//!   (`findRemovableBindings`): an unused one, but also a self-recursive
-//!   helper, or a group of helpers that only call each other;
-//! - candidates are the bindings referenced before the edit and not already
-//!   dead then, so code that was dead to begin with stays;
-//! - a reassigned binding is never dropped (`constantViolations`);
-//! - imports lose their dead specifiers (all of them: the declaration goes),
-//!   declarators bound to a dead name go, a destructuring pattern loses its
-//!   dead names (an object pattern with a rest element keeps its other
-//!   properties) and goes once empty, function declarations go;
-//! - exported declarations stay (Babel counts the export as a reference).
+//! - candidates: the declared names (import specifiers, declarators,
+//!   destructured names, function declarations, at every scope) that were
+//!   read before the edit, minus the module bindings already removable then;
+//! - `findRemovableBindings`, over the module's bindings only: a reference
+//!   inside another binding's node is an edge from it, one anywhere else (an
+//!   export included) keeps it, as do a reassignment or a loop iterator; what
+//!   nothing kept reaches is removable (a self-recursive helper, helpers that
+//!   only call each other);
+//! - `shouldBeRemoved`, for a candidate: removable, or not read, never
+//!   reassigned (redeclared counts), not a `for…of`/`for…in` iterator, and
+//!   Babel's rest rule in an object pattern; a function declaration's name is
+//!   looked up from inside the function, as Babel's scope does;
+//! - removal: import specifiers (an import left with none goes), declarators
+//!   (a `for` head's included), dead names in patterns, function
+//!   declarations; any pattern left empty in a declarator goes, as Babel's
+//!   pattern visitors remove it; classes stay; repeated until nothing goes.
 //!
-//! Edits keep the module's line count.
+//! Edits only delete (a removed statement that is not in a statement list
+//! becomes `;`) and keep the module's line count. A nested binding is known
+//! by its offset, carried through each pass's edits; a module one by name,
+//! as Babel's program scope holds one binding per name.
 
 use std::collections::{HashMap, HashSet};
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    BindingIdentifier, BindingPattern, Declaration, ExportDefaultDeclarationKind,
-    ImportDeclarationSpecifier, Program, Statement, VariableDeclaration,
+    BindingIdentifier, BindingPattern, ImportDeclarationSpecifier, Program, Statement,
+    VariableDeclaration,
 };
+use oxc_ast_visit::{walk, Visit};
 use oxc_parser::Parser;
-use oxc_semantic::{Semantic, SemanticBuilder};
+use oxc_semantic::{Scoping, Semantic, SemanticBuilder};
 use oxc_span::{GetSpan, SourceType, Span};
+use oxc_syntax::symbol::SymbolId;
 
 /// `after` with what only the edit's removed code used gone, the candidates
-/// being the bindings `before` used: module-level ones by name, nested ones
-/// (Babel's visitors reach every scope) by name and line, which the edits
-/// keep.
+/// being the bindings `before` read.
 pub(crate) fn drop_dead_bindings(before: &str, mut after: String, path: &str) -> String {
-    let allocator = Allocator::default();
-    let parsed = Parser::new(&allocator, before, source_type(path)).parse();
-    if parsed.fatal_error {
+    let Some(start) = Analysis::of(before, path, |a| a.start_candidates()) else {
         return after;
-    }
-    let semantic = SemanticBuilder::new().build(&parsed.program).semantic;
-    let graph = Graph::of(&parsed.program, &semantic);
-    let module: HashSet<String> = graph
-        .bindings
-        .iter()
-        .enumerate()
-        .filter(|(i, b)| b.referenced && !graph.dead.contains(i))
-        .map(|(_, b)| b.name.clone())
-        .collect();
-    let mut nested = HashSet::new();
-    let scoping = semantic.scoping();
-    for (name, at, symbol) in nested_bindings(&parsed.program) {
-        if !scoping.get_resolved_reference_ids(symbol).is_empty() {
-            nested.insert((name, line_of(before, at)));
-        }
-    }
-    let candidates = Candidates { module, nested };
-    if candidates.module.is_empty() && candidates.nested.is_empty() {
+    };
+    // No early exit without candidates: Babel's empty-pattern visitors run
+    // regardless.
+    let (module, nested_keys) = start;
+    // The edit kept every line: a nested candidate is the declaration of the
+    // same name at the same place among that line's declarations of it.
+    let Some(mut nested) = Analysis::of(&after, path, |a| a.offsets_of(&nested_keys)) else {
         return after;
-    }
-    while let Some(next) = drop_pass(&after, path, &candidates) {
-        after = next;
+    };
+    while let Some((out, edits)) = drop_pass(&after, path, &module, &nested) {
+        nested = remap(&nested, &edits);
+        after = out;
     }
     after
-}
-
-/// The bindings referenced before the edit (`findReferencedIdentifiers`).
-struct Candidates {
-    module: HashSet<String>,
-    nested: HashSet<(String, usize)>,
-}
-
-fn line_of(code: &str, at: u32) -> usize {
-    code[..at as usize].matches('\n').count()
-}
-
-/// The names nested declarations bind: declarators and function
-/// declarations below the module level, loop heads left out (a loop
-/// iterator is never dropped, and Babel keeps a reassigned `for` counter).
-fn nested_bindings(program: &Program) -> Vec<(String, u32, oxc_syntax::symbol::SymbolId)> {
-    use oxc_ast_visit::Visit;
-    struct Collect {
-        top: HashSet<u32>,
-        heads: HashSet<u32>,
-        out: Vec<(String, u32, oxc_syntax::symbol::SymbolId)>,
-    }
-    impl Collect {
-        fn push(&mut self, id: &BindingIdentifier) {
-            if let Some(symbol) = id.symbol_id.get() {
-                self.out.push((id.name.to_string(), id.span.start, symbol));
-            }
-        }
-    }
-    impl<'a> Visit<'a> for Collect {
-        fn visit_variable_declaration(&mut self, it: &VariableDeclaration<'a>) {
-            if !self.top.contains(&it.span.start) && !self.heads.contains(&it.span.start) {
-                for d in &it.declarations {
-                    for id in pattern_names(&d.id) {
-                        self.push(id);
-                    }
-                }
-            }
-            oxc_ast_visit::walk::walk_variable_declaration(self, it);
-        }
-        fn visit_function(
-            &mut self,
-            it: &oxc_ast::ast::Function<'a>,
-            flags: oxc_syntax::scope::ScopeFlags,
-        ) {
-            if it.is_declaration() && !self.top.contains(&it.span.start) {
-                if let Some(id) = &it.id {
-                    self.push(id);
-                }
-            }
-            oxc_ast_visit::walk::walk_function(self, it, flags);
-        }
-        fn visit_for_statement(&mut self, it: &oxc_ast::ast::ForStatement<'a>) {
-            if let Some(oxc_ast::ast::ForStatementInit::VariableDeclaration(v)) = &it.init {
-                self.heads.insert(v.span.start);
-            }
-            oxc_ast_visit::walk::walk_for_statement(self, it);
-        }
-        fn visit_for_of_statement(&mut self, it: &oxc_ast::ast::ForOfStatement<'a>) {
-            if let oxc_ast::ast::ForStatementLeft::VariableDeclaration(v) = &it.left {
-                self.heads.insert(v.span.start);
-            }
-            oxc_ast_visit::walk::walk_for_of_statement(self, it);
-        }
-        fn visit_for_in_statement(&mut self, it: &oxc_ast::ast::ForInStatement<'a>) {
-            if let oxc_ast::ast::ForStatementLeft::VariableDeclaration(v) = &it.left {
-                self.heads.insert(v.span.start);
-            }
-            oxc_ast_visit::walk::walk_for_in_statement(self, it);
-        }
-    }
-    let mut c = Collect {
-        top: top_level_starts(program),
-        heads: HashSet::new(),
-        out: Vec::new(),
-    };
-    c.visit_program(program);
-    c.out
-}
-
-/// The start offsets of module-level declarations (the ones [`Graph`] owns).
-fn top_level_starts(program: &Program) -> HashSet<u32> {
-    let mut out = HashSet::new();
-    for statement in &program.body {
-        match statement {
-            Statement::VariableDeclaration(v) => {
-                out.insert(v.span.start);
-            }
-            Statement::FunctionDeclaration(f) => {
-                out.insert(f.span.start);
-            }
-            Statement::ExportDeclaration(e) => match &e.declaration {
-                Declaration::VariableDeclaration(v) => {
-                    out.insert(v.span.start);
-                }
-                Declaration::FunctionDeclaration(f) => {
-                    out.insert(f.span.start);
-                }
-                _ => {}
-            },
-            Statement::ExportDefaultDeclaration(e) => {
-                if let ExportDefaultDeclarationKind::FunctionDeclaration(f) = &e.declaration {
-                    out.insert(f.span.start);
-                }
-            }
-            _ => {}
-        }
-    }
-    out
 }
 
 fn source_type(path: &str) -> SourceType {
@@ -183,497 +67,772 @@ fn source_type(path: &str) -> SourceType {
         .unwrap_or_else(|_| SourceType::tsx())
 }
 
-/// A module-level binding the pass may drop.
-struct Binding {
+/// A declared name.
+struct Decl {
     name: String,
-    /// The node its references are attributed to (Babel's `binding.path`):
-    /// the import specifier, the declarator, the function.
+    /// The binding identifier's start: a nested declaration's key.
+    at: u32,
+    line: usize,
+    symbol: SymbolId,
+    /// Babel's `binding.path.node`: the import specifier, the declarator,
+    /// the function or the class.
     container: Span,
-    /// Exported, reassigned or otherwise never dropped.
-    pinned: bool,
-    /// Any reference at all (`binding.referenced`).
-    referenced: bool,
-    /// Where it is referenced.
-    refs: Vec<Span>,
+    /// Declared in the module scope.
+    module: bool,
+    /// Inside an export declaration (at any depth: a namespace's included).
+    exported: bool,
+    /// A `for…of` / `for…in` head's (`isLoopIteratorBinding`).
+    loop_iter: bool,
+    is_class: bool,
 }
 
-/// The module's droppable bindings and which of them are dead.
-struct Graph {
-    bindings: Vec<Binding>,
-    dead: HashSet<usize>,
+/// One parse of a module: its declarations, references and the module
+/// bindings `findRemovableBindings` finds removable.
+struct Analysis<'s, 'a> {
+    code: &'s str,
+    scoping: &'s Scoping,
+    decls: Vec<Decl>,
+    reads: HashMap<SymbolId, Vec<Span>>,
+    written: HashSet<SymbolId>,
+    removable: HashSet<SymbolId>,
+    by_at: HashMap<u32, usize>,
+    program: &'s Program<'a>,
 }
 
-impl Graph {
-    fn of(program: &Program, semantic: &Semantic) -> Graph {
-        let scoping = semantic.scoping();
-        let spans = reference_spans(program);
-        let mut bindings = Vec::new();
-        let mut add = |id: &BindingIdentifier, container: Span, exported: bool| {
-            let Some(symbol) = id.symbol_id.get() else {
-                return;
-            };
-            let mut refs = Vec::new();
-            let mut written = false;
-            for &rid in scoping.get_resolved_reference_ids(symbol) {
-                let reference = scoping.get_reference(rid);
-                if reference.is_write() {
-                    written = true;
-                }
-                // A reference with no identifier node (an export specifier's
-                // local) sits outside every binding: it keeps the binding.
-                refs.push(
-                    spans
-                        .get(&rid)
-                        .copied()
-                        .unwrap_or(Span::new(u32::MAX, u32::MAX)),
-                );
-            }
-            bindings.push(Binding {
-                name: id.name.to_string(),
-                container,
-                pinned: exported || written,
-                referenced: !refs.is_empty() || exported,
-                refs,
-            });
-        };
-        for statement in &program.body {
-            match statement {
-                Statement::ImportDeclaration(import) if !import.import_kind.is_type() => {
-                    for s in import.specifiers.iter().flatten() {
-                        add(s.local(), s.span(), false);
-                    }
-                }
-                Statement::VariableDeclaration(var) => declarators(var, false, &mut add),
-                Statement::FunctionDeclaration(f) => {
-                    if let Some(id) = &f.id {
-                        add(id, f.span, false);
-                    }
-                }
-                Statement::ExportDeclaration(e) => match &e.declaration {
-                    Declaration::VariableDeclaration(var) => declarators(var, true, &mut add),
-                    Declaration::FunctionDeclaration(f) => {
-                        if let Some(id) = &f.id {
-                            add(id, f.span, true);
-                        }
-                    }
-                    _ => {}
-                },
-                Statement::ExportDefaultDeclaration(e) => {
-                    if let ExportDefaultDeclarationKind::FunctionDeclaration(f) = &e.declaration {
-                        if let Some(id) = &f.id {
-                            add(id, f.span, true);
-                        }
-                    }
-                }
-                _ => {}
-            }
+impl<'s, 'a> Analysis<'s, 'a> {
+    /// `f` over the analysis of `code`, or None when it does not parse.
+    fn of<T>(code: &str, path: &str, f: impl FnOnce(&Analysis) -> T) -> Option<T> {
+        let allocator = Allocator::default();
+        let parsed = Parser::new(&allocator, code, source_type(path)).parse();
+        if parsed.fatal_error {
+            return None;
         }
+        let semantic = SemanticBuilder::new().build(&parsed.program).semantic;
+        let analysis = Analysis::new(code, &parsed.program, &semantic);
+        Some(f(&analysis))
+    }
 
-        // findRemovableBindings: a reference inside another binding's node is
-        // an edge from that binding; one anywhere else keeps it alive, as do
-        // the pinned ones; what nothing alive reaches is dead.
-        let container_of = |span: Span| -> Vec<usize> {
-            bindings
-                .iter()
-                .enumerate()
-                .filter(|(_, b)| b.container.start <= span.start && span.end <= b.container.end)
-                .map(|(i, _)| i)
-                .collect()
+    fn new(code: &'s str, program: &'s Program<'a>, semantic: &'s Semantic<'a>) -> Self {
+        let scoping = semantic.scoping();
+        let root = scoping.root_scope_id();
+        let spans = reference_spans(program);
+        let mut collect = Collect {
+            code,
+            scoping,
+            root,
+            exported: 0,
+            heads: HashSet::new(),
+            out: Vec::new(),
         };
-        let mut alive = vec![false; bindings.len()];
-        let mut users: HashMap<usize, Vec<usize>> = HashMap::new();
-        let mut queue = Vec::new();
-        for (i, b) in bindings.iter().enumerate() {
-            if b.pinned {
-                alive[i] = true;
-                queue.push(i);
+        collect.visit_program(program);
+        let decls = collect.out;
+
+        let mut reads: HashMap<SymbolId, Vec<Span>> = HashMap::new();
+        let mut written = HashSet::new();
+        let mut seen = HashSet::new();
+        for d in &decls {
+            if !seen.insert(d.symbol) {
                 continue;
             }
-            for &r in &b.refs {
-                let within = container_of(r);
+            // A redeclaration is a constant violation in Babel's scope.
+            if !scoping.symbol_redeclarations(d.symbol).is_empty() {
+                written.insert(d.symbol);
+            }
+            for &rid in scoping.get_resolved_reference_ids(d.symbol) {
+                let reference = scoping.get_reference(rid);
+                if reference.is_write() {
+                    written.insert(d.symbol);
+                }
+                if reference.is_read() || !reference.is_write() {
+                    // An export specifier's local has no identifier node: it
+                    // sits outside every binding and keeps it.
+                    let span = spans
+                        .get(&rid)
+                        .copied()
+                        .unwrap_or(Span::new(u32::MAX, u32::MAX));
+                    reads.entry(d.symbol).or_default().push(span);
+                }
+            }
+        }
+        let by_at = decls.iter().enumerate().map(|(i, d)| (d.at, i)).collect();
+        let mut analysis = Analysis {
+            code,
+            scoping,
+            by_at,
+            decls,
+            reads,
+            written,
+            removable: HashSet::new(),
+            program,
+        };
+        analysis.removable = analysis.find_removable();
+        analysis
+    }
+
+    /// Babel's `binding.referenced`, for any binding (a parameter too).
+    fn read(&self, symbol: SymbolId) -> bool {
+        match self.reads.get(&symbol) {
+            Some(r) => !r.is_empty(),
+            None => self
+                .scoping
+                .get_resolved_reference_ids(symbol)
+                .iter()
+                .any(|&rid| {
+                    let r = self.scoping.get_reference(rid);
+                    r.is_read() || !r.is_write()
+                }),
+        }
+    }
+
+    /// Babel's `constantViolations` are not empty.
+    fn reassigned(&self, symbol: SymbolId) -> bool {
+        self.written.contains(&symbol)
+            || (!self.reads.contains_key(&symbol)
+                && (!self.scoping.symbol_redeclarations(symbol).is_empty()
+                    || self
+                        .scoping
+                        .get_resolved_reference_ids(symbol)
+                        .iter()
+                        .any(|&rid| self.scoping.get_reference(rid).is_write())))
+    }
+
+    /// `findRemovableBindings` over the module's bindings.
+    fn find_removable(&self) -> HashSet<SymbolId> {
+        let module: Vec<&Decl> = self.decls.iter().filter(|d| d.module).collect();
+        let mut alive: HashSet<SymbolId> = HashSet::new();
+        let mut users: HashMap<SymbolId, Vec<SymbolId>> = HashMap::new();
+        let mut queue = Vec::new();
+        let mut symbols: Vec<SymbolId> = Vec::new();
+        for d in &module {
+            if symbols.contains(&d.symbol) {
+                continue;
+            }
+            symbols.push(d.symbol);
+            let keep = d.exported || d.loop_iter || self.written.contains(&d.symbol);
+            if keep && alive.insert(d.symbol) {
+                queue.push(d.symbol);
+            }
+        }
+        for &symbol in &symbols {
+            for &span in self
+                .reads
+                .get(&symbol)
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+            {
+                let within: Vec<SymbolId> = module
+                    .iter()
+                    .filter(|c| c.container.start <= span.start && span.end <= c.container.end)
+                    .map(|c| c.symbol)
+                    .collect();
                 if within.is_empty() {
-                    if !alive[i] {
-                        alive[i] = true;
-                        queue.push(i);
+                    if alive.insert(symbol) {
+                        queue.push(symbol);
                     }
                 } else {
                     for c in within {
-                        users.entry(c).or_default().push(i);
+                        users.entry(c).or_default().push(symbol);
                     }
                 }
             }
         }
         while let Some(c) = queue.pop() {
             for &target in users.get(&c).map(Vec::as_slice).unwrap_or_default() {
-                if !alive[target] {
-                    alive[target] = true;
+                if alive.insert(target) {
                     queue.push(target);
                 }
             }
         }
-        let dead = (0..bindings.len()).filter(|i| !alive[*i]).collect();
-        Graph { bindings, dead }
+        // A binding nothing reads is not "removable" in Babel's sense (no
+        // self-loop): it goes through the plain unreferenced rule instead.
+        symbols
+            .into_iter()
+            .filter(|s| !alive.contains(s) && self.read(*s))
+            .collect()
     }
 
-    fn is_dead(&self, name: &str) -> bool {
-        self.bindings
+    /// The candidates: module names, and nested `(name, line, ordinal)`.
+    fn start_candidates(&self) -> (HashSet<String>, HashSet<(String, usize, usize)>) {
+        let mut module = HashSet::new();
+        let mut nested = HashSet::new();
+        for (d, ordinal) in self.decls.iter().zip(self.ordinals()) {
+            if !self.read(d.symbol) || self.removable.contains(&d.symbol) {
+                continue;
+            }
+            if d.module {
+                module.insert(d.name.clone());
+            } else {
+                nested.insert((d.name.clone(), d.line, ordinal));
+            }
+        }
+        (module, nested)
+    }
+
+    /// Each declaration's place among the same name's declarations on its line.
+    fn ordinals(&self) -> Vec<usize> {
+        let mut count: HashMap<(&str, usize), usize> = HashMap::new();
+        let mut order: Vec<usize> = (0..self.decls.len()).collect();
+        order.sort_by_key(|&i| self.decls[i].at);
+        let mut out = vec![0; self.decls.len()];
+        for i in order {
+            let d = &self.decls[i];
+            let n = count.entry((d.name.as_str(), d.line)).or_default();
+            out[i] = *n;
+            *n += 1;
+        }
+        out
+    }
+
+    fn offsets_of(&self, keys: &HashSet<(String, usize, usize)>) -> HashSet<u32> {
+        self.decls
             .iter()
-            .enumerate()
-            .any(|(i, b)| b.name == name && self.dead.contains(&i))
+            .zip(self.ordinals())
+            .filter(|(d, o)| !d.module && keys.contains(&(d.name.clone(), d.line, *o)))
+            .map(|(d, _)| d.at)
+            .collect()
+    }
+
+    fn decl_at(&self, at: u32) -> Option<&Decl> {
+        self.by_at.get(&at).map(|&i| &self.decls[i])
+    }
+}
+
+fn line_of(code: &str, at: u32) -> usize {
+    code[..at as usize].matches('\n').count()
+}
+
+/// Every declared name, at every depth.
+struct Collect<'s> {
+    code: &'s str,
+    scoping: &'s Scoping,
+    root: oxc_syntax::scope::ScopeId,
+    /// Depth inside export declarations.
+    exported: usize,
+    /// `for…of` / `for…in` heads, by start.
+    heads: HashSet<u32>,
+    out: Vec<Decl>,
+}
+
+impl Collect<'_> {
+    fn push(&mut self, id: &BindingIdentifier, container: Span, loop_iter: bool, is_class: bool) {
+        let Some(symbol) = id.symbol_id.get() else {
+            return;
+        };
+        self.out.push(Decl {
+            name: id.name.to_string(),
+            at: id.span.start,
+            line: line_of(self.code, id.span.start),
+            symbol,
+            container,
+            module: self.scoping.symbol_scope_id(symbol) == self.root,
+            exported: self.exported > 0,
+            loop_iter,
+            is_class,
+        });
+    }
+}
+
+impl<'a> Visit<'a> for Collect<'_> {
+    fn visit_import_declaration(&mut self, it: &oxc_ast::ast::ImportDeclaration<'a>) {
+        if !it.import_kind.is_type() {
+            for s in it.specifiers.iter().flatten() {
+                self.push(s.local(), s.span(), false, false);
+            }
+        }
+    }
+    fn visit_export_declaration(&mut self, it: &oxc_ast::ast::ExportDeclaration<'a>) {
+        self.exported += 1;
+        walk::walk_export_declaration(self, it);
+        self.exported -= 1;
+    }
+    fn visit_export_default_declaration(
+        &mut self,
+        it: &oxc_ast::ast::ExportDefaultDeclaration<'a>,
+    ) {
+        self.exported += 1;
+        walk::walk_export_default_declaration(self, it);
+        self.exported -= 1;
+    }
+    fn visit_variable_declaration(&mut self, it: &VariableDeclaration<'a>) {
+        let loop_iter = self.heads.contains(&it.span.start);
+        for d in &it.declarations {
+            for id in pattern_names(&d.id) {
+                self.push(id, d.span, loop_iter, false);
+            }
+        }
+        // Inside a declarator's initializer a function or class is not
+        // exported by the declaration around it.
+        let exported = std::mem::take(&mut self.exported);
+        walk::walk_variable_declaration(self, it);
+        self.exported = exported;
+    }
+    fn visit_function(
+        &mut self,
+        it: &oxc_ast::ast::Function<'a>,
+        flags: oxc_syntax::scope::ScopeFlags,
+    ) {
+        if it.is_declaration() {
+            if let Some(id) = &it.id {
+                self.push(id, it.span, false, false);
+            }
+        }
+        let exported = std::mem::take(&mut self.exported);
+        walk::walk_function(self, it, flags);
+        self.exported = exported;
+    }
+    fn visit_class(&mut self, it: &oxc_ast::ast::Class<'a>) {
+        if it.is_declaration() {
+            if let Some(id) = &it.id {
+                self.push(id, it.span, false, true);
+            }
+        }
+        let exported = std::mem::take(&mut self.exported);
+        walk::walk_class(self, it);
+        self.exported = exported;
+    }
+    fn visit_for_of_statement(&mut self, it: &oxc_ast::ast::ForOfStatement<'a>) {
+        if let oxc_ast::ast::ForStatementLeft::VariableDeclaration(v) = &it.left {
+            self.heads.insert(v.span.start);
+        }
+        walk::walk_for_of_statement(self, it);
+    }
+    fn visit_for_in_statement(&mut self, it: &oxc_ast::ast::ForInStatement<'a>) {
+        if let oxc_ast::ast::ForStatementLeft::VariableDeclaration(v) = &it.left {
+            self.heads.insert(v.span.start);
+        }
+        walk::walk_for_in_statement(self, it);
     }
 }
 
 /// Every identifier reference's span, by reference id.
 fn reference_spans(program: &Program) -> HashMap<oxc_syntax::reference::ReferenceId, Span> {
     use oxc_ast::ast::IdentifierReference;
-    use oxc_ast_visit::Visit;
-    struct Collect(HashMap<oxc_syntax::reference::ReferenceId, Span>);
-    impl<'a> Visit<'a> for Collect {
+    struct Spans(HashMap<oxc_syntax::reference::ReferenceId, Span>);
+    impl<'a> Visit<'a> for Spans {
         fn visit_identifier_reference(&mut self, it: &IdentifierReference<'a>) {
             if let Some(id) = it.reference_id.get() {
                 self.0.insert(id, it.span);
             }
         }
     }
-    let mut c = Collect(HashMap::new());
-    c.visit_program(program);
-    c.0
-}
-
-fn declarators(
-    var: &VariableDeclaration,
-    exported: bool,
-    add: &mut impl FnMut(&BindingIdentifier, Span, bool),
-) {
-    for d in &var.declarations {
-        for id in pattern_names(&d.id) {
-            add(id, d.span, exported);
-        }
-    }
+    let mut s = Spans(HashMap::new());
+    s.visit_program(program);
+    s.0
 }
 
 /// The names a binding pattern declares (Babel's `findVariables`).
 fn pattern_names<'p, 'a>(pattern: &'p BindingPattern<'a>) -> Vec<&'p BindingIdentifier<'a>> {
-    let mut out = Vec::new();
-    fn walk<'p, 'a>(p: &'p BindingPattern<'a>, out: &mut Vec<&'p BindingIdentifier<'a>>) {
+    fn walk_p<'p, 'a>(p: &'p BindingPattern<'a>, out: &mut Vec<&'p BindingIdentifier<'a>>) {
         match p {
             BindingPattern::BindingIdentifier(id) => out.push(id),
             BindingPattern::ObjectPattern(o) => {
                 for prop in &o.properties {
-                    walk(&prop.value, out);
+                    walk_p(&prop.value, out);
                 }
                 if let Some(rest) = &o.rest {
-                    walk(&rest.argument, out);
+                    walk_p(&rest.argument, out);
                 }
             }
             BindingPattern::ArrayPattern(a) => {
                 for el in a.elements.iter().flatten() {
-                    walk(el, out);
+                    walk_p(el, out);
                 }
                 if let Some(rest) = &a.rest {
-                    walk(&rest.argument, out);
+                    walk_p(&rest.argument, out);
                 }
             }
-            BindingPattern::AssignmentPattern(a) => walk(&a.left, out),
+            BindingPattern::AssignmentPattern(a) => walk_p(&a.left, out),
         }
     }
-    walk(pattern, &mut out);
+    let mut out = Vec::new();
+    walk_p(pattern, &mut out);
     out
 }
 
-/// One pass: `None` when nothing is dead. Each changed declaration is
-/// rewritten whole; what changes inside a kept one waits for the next pass.
-fn drop_pass(code: &str, path: &str, candidates: &Candidates) -> Option<String> {
-    use oxc_ast_visit::Visit;
-    let allocator = Allocator::default();
-    let parsed = Parser::new(&allocator, code, source_type(path)).parse();
-    if parsed.fatal_error {
-        return None;
-    }
-    let semantic = SemanticBuilder::new().build(&parsed.program).semantic;
-    let graph = Graph::of(&parsed.program, &semantic);
-    let scoping = semantic.scoping();
-    let root = scoping.root_scope_id();
-    let dead = |id: &BindingIdentifier| {
-        let Some(symbol) = id.symbol_id.get() else {
-            return false;
-        };
-        if scoping.symbol_scope_id(symbol) == root {
-            return candidates.module.contains(id.name.as_str()) && graph.is_dead(id.name.as_str());
-        }
-        // Below the module level, Babel's `binding.referenced`: no reference
-        // left, and never reassigned.
-        candidates
-            .nested
-            .contains(&(id.name.to_string(), line_of(code, id.span.start)))
-            && scoping.get_resolved_reference_ids(symbol).is_empty()
-    };
-    let text = |span: Span| &code[span.start as usize..span.end as usize];
-    let mut edits: Vec<(usize, usize, String)> = Vec::new();
+/// An edit: delete `start..end`, writing `with` (and the newlines it took).
+#[derive(Clone)]
+struct Edit {
+    start: usize,
+    end: usize,
+    with: &'static str,
+}
 
-    // Module-level imports.
-    for statement in &parsed.program.body {
-        let Statement::ImportDeclaration(import) = statement else {
-            continue;
-        };
-        if import.import_kind.is_type() {
-            continue;
-        }
-        let Some(specifiers) = &import.specifiers else {
-            continue;
-        };
-        let kept: Vec<_> = specifiers.iter().filter(|s| !dead(s.local())).collect();
-        if kept.len() == specifiers.len() {
-            continue;
-        }
-        let (start, end) = (import.span.start as usize, import.span.end as usize);
-        let replacement = if kept.is_empty() {
-            String::new()
-        } else {
-            let mut clauses = Vec::new();
-            let mut named = Vec::new();
-            for specifier in kept {
-                match specifier {
-                    ImportDeclarationSpecifier::ImportSpecifier(_) => {
-                        named.push(text(specifier.span()))
-                    }
-                    _ => clauses.push(text(specifier.span()).to_string()),
+/// Nested candidate offsets carried through `edits` (sorted, disjoint): one
+/// inside a deleted range is gone.
+fn remap(offsets: &HashSet<u32>, edits: &[Applied]) -> HashSet<u32> {
+    offsets
+        .iter()
+        .filter_map(|&at| {
+            let at = at as usize;
+            let mut shift: isize = 0;
+            for &(start, end, written) in edits {
+                if end <= at {
+                    shift += written as isize - (end - start) as isize;
+                } else if start <= at {
+                    return None;
+                } else {
+                    break;
                 }
             }
-            if !named.is_empty() {
-                clauses.push(format!("{{ {} }}", named.join(", ")));
-            }
-            let tail = &code[import.source.span.start as usize..end];
-            format!("import {} from {tail}", clauses.join(", "))
-        };
-        edits.push((start, end, replacement));
-    }
+            Some((at as isize + shift) as u32)
+        })
+        .collect()
+}
 
-    // Declarations at every depth.
-    struct Walk<'c, D: Fn(&BindingIdentifier) -> bool> {
-        code: &'c str,
-        dead: D,
-        top: HashSet<u32>,
-        heads: HashSet<u32>,
-        edits: Vec<(usize, usize, String)>,
-    }
-    impl<'a, D: Fn(&BindingIdentifier) -> bool> Visit<'a> for Walk<'_, D> {
-        fn visit_variable_declaration(&mut self, var: &VariableDeclaration<'a>) {
-            if self.heads.contains(&var.span.start) {
-                return oxc_ast_visit::walk::walk_variable_declaration(self, var);
-            }
-            let code = self.code;
-            let mut changed = false;
-            let mut kept = Vec::new();
-            for d in &var.declarations {
-                match rebuild(&d.id, code, &self.dead) {
-                    Rebuilt::Same => {
-                        kept.push(code[d.span.start as usize..d.span.end as usize].to_string())
-                    }
-                    Rebuilt::Gone => changed = true,
-                    Rebuilt::Changed(id) => {
-                        changed = true;
-                        kept.push(format!(
-                            "{id}{}",
-                            &code[d.id.span().end as usize..d.span.end as usize]
-                        ));
-                    }
+/// Deletions removing `removed` items of a comma-separated list (`items` in
+/// order): an item before a kept one goes with what follows it up to the
+/// next item; a trailing run goes from the last kept item's end.
+fn list_deletions(items: &[Span], removed: &[bool]) -> Vec<(usize, usize)> {
+    let last_kept = removed.iter().rposition(|r| !r);
+    let mut out = Vec::new();
+    for (i, item) in items.iter().enumerate() {
+        if !removed[i] {
+            continue;
+        }
+        match last_kept {
+            Some(k) if i < k => out.push((item.start as usize, items[i + 1].start as usize)),
+            Some(k) => {
+                if i == k + 1 {
+                    out.push((items[k].end as usize, items.last().unwrap().end as usize));
                 }
             }
-            if !changed {
-                return oxc_ast_visit::walk::walk_variable_declaration(self, var);
-            }
-            let (start, end) = (var.span.start as usize, var.span.end as usize);
-            let replacement = if kept.is_empty() {
-                // A nested statement goes as an empty one, valid wherever a
-                // statement is (`if (x) var a = 1;`).
-                if self.top.contains(&var.span.start) {
-                    String::new()
-                } else {
-                    ";".to_string()
-                }
-            } else {
-                let kind = &code[start..var.declarations[0].span.start as usize];
-                let semi = if code[start..end].ends_with(';') {
-                    ";"
-                } else {
-                    ""
-                };
-                format!("{kind}{}{semi}", kept.join(", "))
-            };
-            self.edits.push((start, end, replacement));
-        }
-        fn visit_function(
-            &mut self,
-            f: &oxc_ast::ast::Function<'a>,
-            flags: oxc_syntax::scope::ScopeFlags,
-        ) {
-            if f.is_declaration() && f.id.as_ref().is_some_and(|id| (self.dead)(id)) {
-                self.edits
-                    .push((f.span.start as usize, f.span.end as usize, String::new()));
-                return;
-            }
-            oxc_ast_visit::walk::walk_function(self, f, flags);
-        }
-        fn visit_for_statement(&mut self, it: &oxc_ast::ast::ForStatement<'a>) {
-            if let Some(oxc_ast::ast::ForStatementInit::VariableDeclaration(v)) = &it.init {
-                self.heads.insert(v.span.start);
-            }
-            oxc_ast_visit::walk::walk_for_statement(self, it);
-        }
-        fn visit_for_of_statement(&mut self, it: &oxc_ast::ast::ForOfStatement<'a>) {
-            if let oxc_ast::ast::ForStatementLeft::VariableDeclaration(v) = &it.left {
-                self.heads.insert(v.span.start);
-            }
-            oxc_ast_visit::walk::walk_for_of_statement(self, it);
-        }
-        fn visit_for_in_statement(&mut self, it: &oxc_ast::ast::ForInStatement<'a>) {
-            if let oxc_ast::ast::ForStatementLeft::VariableDeclaration(v) = &it.left {
-                self.heads.insert(v.span.start);
-            }
-            oxc_ast_visit::walk::walk_for_in_statement(self, it);
+            None => out.push((item.start as usize, item.end as usize)),
         }
     }
-    let mut walk = Walk {
-        code,
-        dead: &dead,
-        top: top_level_starts(&parsed.program),
-        heads: HashSet::new(),
-        edits: Vec::new(),
-    };
-    walk.visit_program(&parsed.program);
-    edits.extend(walk.edits);
+    out
+}
+
+/// Where an identifier sits in its pattern, for Babel's rest rule.
+#[derive(Clone, Copy, PartialEq)]
+enum Place {
+    /// A declarator's id, an array element, a default's left side.
+    Plain,
+    /// An object property's value; `true` when the pattern ends in a rest.
+    PropertyValue(bool),
+    /// An object pattern's rest argument.
+    Rest,
+}
+
+/// An applied edit: `(start, end, bytes written in its place)`.
+type Applied = (usize, usize, usize);
+
+/// One pass: the new code and its edits, or None when nothing is dead.
+fn drop_pass(
+    code: &str,
+    path: &str,
+    module: &HashSet<String>,
+    nested: &HashSet<u32>,
+) -> Option<(String, Vec<Applied>)> {
+    let edits = Analysis::of(code, path, |a| {
+        let mut walk = Removals {
+            a,
+            module,
+            nested,
+            lists: HashSet::new(),
+            for_inits: HashSet::new(),
+            heads: HashSet::new(),
+            edits: Vec::new(),
+        };
+        walk.visit_program(a.program);
+        walk.edits
+    })?;
     if edits.is_empty() {
         return None;
     }
-    edits.sort_by_key(|e| e.0);
+    let mut edits = edits;
+    edits.sort_by_key(|e| (e.start, std::cmp::Reverse(e.end)));
     let mut out = String::with_capacity(code.len());
+    let mut applied = Vec::new();
     let mut last = 0;
-    for (start, end, replacement) in edits {
+    for Edit { start, end, with } in edits {
         if start < last {
             continue;
         }
         out.push_str(&code[last..start]);
-        let lost = code[start..end].matches('\n').count();
-        let kept = replacement.matches('\n').count();
-        out.push_str(&replacement);
-        out.push_str(&"\n".repeat(lost.saturating_sub(kept)));
+        let newlines = code[start..end].matches('\n').count();
+        out.push_str(with);
+        out.push_str(&"\n".repeat(newlines));
+        applied.push((start, end, with.len() + newlines));
         last = end;
     }
     out.push_str(&code[last..]);
-    (out != code).then_some(out)
+    (out != code).then_some((out, applied))
 }
 
-enum Rebuilt {
-    Same,
-    Gone,
-    Changed(String),
+struct Removals<'r, 's, 'a> {
+    a: &'r Analysis<'s, 'a>,
+    module: &'r HashSet<String>,
+    nested: &'r HashSet<u32>,
+    /// Statements that are a statement list's items, by start.
+    lists: HashSet<u32>,
+    /// A `for` statement's init declaration, by start.
+    for_inits: HashSet<u32>,
+    /// `for…of` / `for…in` heads, by start.
+    heads: HashSet<u32>,
+    edits: Vec<Edit>,
 }
 
-/// A declarator's pattern without its dead names: Babel's VariableDeclarator
-/// visitor (and its ObjectPattern/ArrayPattern cleanup of emptied patterns).
-fn rebuild(
-    pattern: &BindingPattern,
-    code: &str,
-    dead: &impl Fn(&BindingIdentifier) -> bool,
-) -> Rebuilt {
-    let text = |span: Span| &code[span.start as usize..span.end as usize];
-    match pattern {
-        BindingPattern::BindingIdentifier(id) => {
-            if dead(id) {
-                Rebuilt::Gone
-            } else {
-                Rebuilt::Same
-            }
+impl Removals<'_, '_, '_> {
+    /// Babel's `shouldBeRemoved`.
+    fn dead(
+        &self,
+        id: &BindingIdentifier,
+        place: Place,
+        own_scope: Option<oxc_syntax::scope::ScopeId>,
+    ) -> bool {
+        let Some(decl) = self.a.decl_at(id.span.start) else {
+            return false;
+        };
+        let candidate = if decl.module {
+            self.module.contains(&decl.name)
+        } else {
+            self.nested.contains(&decl.at)
+        };
+        if !candidate || decl.exported || decl.is_class {
+            return false;
         }
-        BindingPattern::AssignmentPattern(a) => match rebuild(&a.left, code, dead) {
-            Rebuilt::Same => Rebuilt::Same,
-            Rebuilt::Gone => Rebuilt::Gone,
-            Rebuilt::Changed(left) => Rebuilt::Changed(format!(
-                "{left}{}",
-                &code[a.left.span().end as usize..a.span.end as usize]
-            )),
-        },
-        BindingPattern::ObjectPattern(o) => {
-            let mut parts = Vec::new();
-            let mut changed = false;
-            // A property can only go when no rest element follows it: the rest
-            // would gather it instead (Babel's shouldBeRemoved).
-            let has_rest = o.rest.is_some();
-            for prop in &o.properties {
-                let whole = text(prop.span).to_string();
-                if has_rest {
-                    parts.push(whole);
-                    continue;
+        // `ident.scope.getBinding(name)`: a function declaration's name is
+        // looked up from inside the function, where a parameter or a local
+        // of the same name answers.
+        let symbol = own_scope
+            .and_then(|scope| self.a.scoping.get_binding(scope, id.name))
+            .unwrap_or(decl.symbol);
+        if self.a.removable.contains(&symbol) {
+            return true;
+        }
+        if self.a.read(symbol) || self.a.reassigned(symbol) || decl.loop_iter {
+            return false;
+        }
+        match place {
+            Place::Rest => true,
+            Place::PropertyValue(rest_last) => !rest_last,
+            Place::Plain => true,
+        }
+    }
+
+    /// A declarator id's deletions and whether nothing of it is left.
+    fn pattern(&self, p: &BindingPattern, place: Place, out: &mut Vec<(usize, usize)>) -> bool {
+        match p {
+            BindingPattern::BindingIdentifier(id) => self.dead(id, place, None),
+            BindingPattern::AssignmentPattern(a) => match &a.left {
+                // A default's identifier goes with its property (or element).
+                BindingPattern::BindingIdentifier(id) => self.dead(id, Place::Plain, None),
+                left => self.pattern(left, Place::Plain, out),
+            },
+            BindingPattern::ObjectPattern(o) => {
+                let rest_last = o.rest.is_some();
+                let mut items: Vec<Span> = o.properties.iter().map(|p| p.span).collect();
+                let mut removed: Vec<bool> = o
+                    .properties
+                    .iter()
+                    .map(|prop| {
+                        let mut inner = Vec::new();
+                        let gone =
+                            self.pattern(&prop.value, Place::PropertyValue(rest_last), &mut inner);
+                        if !gone {
+                            out.extend(inner);
+                        }
+                        gone
+                    })
+                    .collect();
+                if let Some(rest) = &o.rest {
+                    items.push(rest.span);
+                    let mut inner = Vec::new();
+                    let gone = self.pattern(&rest.argument, Place::Rest, &mut inner);
+                    if !gone {
+                        out.extend(inner);
+                    }
+                    removed.push(gone);
                 }
-                match rebuild(&prop.value, code, dead) {
-                    Rebuilt::Same => parts.push(whole),
-                    Rebuilt::Gone => changed = true,
-                    Rebuilt::Changed(value) => {
-                        changed = true;
-                        parts.push(format!(
-                            "{}{value}{}",
-                            &code[prop.span.start as usize..prop.value.span().start as usize],
-                            &code[prop.value.span().end as usize..prop.span.end as usize]
-                        ));
+                if removed.iter().all(|r| *r) {
+                    // Empty, or left empty: Babel's ObjectPattern visitor.
+                    return true;
+                }
+                out.extend(list_deletions(&items, &removed));
+                false
+            }
+            BindingPattern::ArrayPattern(arr) => {
+                let mut any_left = false;
+                for el in arr.elements.iter().flatten() {
+                    let mut inner = Vec::new();
+                    if self.pattern(el, Place::Plain, &mut inner) {
+                        // A hole keeps its comma.
+                        let s = el.span();
+                        out.push((s.start as usize, s.end as usize));
+                    } else {
+                        out.extend(inner);
+                        any_left = true;
                     }
                 }
-            }
-            if let Some(rest) = &o.rest {
-                match rebuild(&rest.argument, code, dead) {
-                    Rebuilt::Gone => changed = true,
-                    _ => parts.push(text(rest.span).to_string()),
+                if let Some(rest) = &arr.rest {
+                    let mut inner = Vec::new();
+                    if self.pattern(&rest.argument, Place::Plain, &mut inner) {
+                        out.push((rest.span.start as usize, rest.span.end as usize));
+                    } else {
+                        out.extend(inner);
+                        any_left = true;
+                    }
                 }
-            }
-            if !changed {
-                Rebuilt::Same
-            } else if parts.is_empty() {
-                Rebuilt::Gone
-            } else {
-                Rebuilt::Changed(format!("{{ {} }}", parts.join(", ")))
+                // Empty, or every element a hole: Babel's ArrayPattern visitor.
+                !any_left
             }
         }
-        BindingPattern::ArrayPattern(a) => {
+    }
+
+    fn remove_statement(&mut self, span: Span) {
+        let with = if self.lists.contains(&span.start) || self.for_inits.contains(&span.start) {
+            ""
+        } else {
+            // Not in a statement list (`if (x) var a = 1;`): an empty one.
+            ";"
+        };
+        self.edits.push(Edit {
+            start: span.start as usize,
+            end: span.end as usize,
+            with,
+        });
+    }
+}
+
+impl<'a> Visit<'a> for Removals<'_, '_, 'a> {
+    fn visit_statements(&mut self, it: &oxc_allocator::Vec<'a, Statement<'a>>) {
+        for s in it.iter() {
+            self.lists.insert(s.span().start);
+        }
+        walk::walk_statements(self, it);
+    }
+
+    fn visit_import_declaration(&mut self, import: &oxc_ast::ast::ImportDeclaration<'a>) {
+        if import.import_kind.is_type() {
+            return;
+        }
+        let Some(specifiers) = &import.specifiers else {
+            return;
+        };
+        let removed: Vec<bool> = specifiers
+            .iter()
+            .map(|s| self.dead(s.local(), Place::Plain, None))
+            .collect();
+        if !removed.iter().any(|r| *r) {
+            return;
+        }
+        if removed.iter().all(|r| *r) {
+            return self.remove_statement(import.span);
+        }
+        // `import D, * as N, { a, b } from`: the default, the namespace and
+        // the braced named group are one comma list; the named ones are a
+        // list of their own inside the braces.
+        let code = self.a.code;
+        let named: Vec<usize> = specifiers
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| matches!(s, ImportDeclarationSpecifier::ImportSpecifier(_)))
+            .map(|(i, _)| i)
+            .collect();
+        let mut clauses: Vec<Span> = Vec::new();
+        let mut clause_removed: Vec<bool> = Vec::new();
+        for (i, s) in specifiers.iter().enumerate() {
+            if !named.contains(&i) {
+                clauses.push(s.span());
+                clause_removed.push(removed[i]);
+            }
+        }
+        if let (Some(&first), Some(&last)) = (named.first(), named.last()) {
+            let first_start = specifiers[first].span().start as usize;
+            let last_end = specifiers[last].span().end as usize;
+            let open = code[..first_start].rfind('{').unwrap_or(first_start);
+            let close = code[last_end..]
+                .find('}')
+                .map_or(last_end, |c| last_end + c + 1);
+            let group_gone = named.iter().all(|&i| removed[i]);
+            clauses.push(Span::new(open as u32, close as u32));
+            clause_removed.push(group_gone);
+            if !group_gone {
+                let spans: Vec<Span> = named.iter().map(|&i| specifiers[i].span()).collect();
+                let flags: Vec<bool> = named.iter().map(|&i| removed[i]).collect();
+                for (start, end) in list_deletions(&spans, &flags) {
+                    self.edits.push(Edit {
+                        start,
+                        end,
+                        with: "",
+                    });
+                }
+            }
+        }
+        for (start, end) in list_deletions(&clauses, &clause_removed) {
+            self.edits.push(Edit {
+                start,
+                end,
+                with: "",
+            });
+        }
+    }
+
+    fn visit_variable_declaration(&mut self, var: &VariableDeclaration<'a>) {
+        if self.heads.contains(&var.span.start) {
+            return walk::walk_variable_declaration(self, var);
+        }
+        let mut removed = Vec::with_capacity(var.declarations.len());
+        let mut inner = Vec::new();
+        for d in &var.declarations {
             let mut parts = Vec::new();
-            let mut changed = false;
-            for el in &a.elements {
-                match el {
-                    None => parts.push(String::new()),
-                    Some(p) => match rebuild(p, code, dead) {
-                        Rebuilt::Same => parts.push(text(p.span()).to_string()),
-                        Rebuilt::Gone => {
-                            changed = true;
-                            parts.push(String::new());
-                        }
-                        Rebuilt::Changed(t) => {
-                            changed = true;
-                            parts.push(t);
-                        }
-                    },
-                }
+            let gone = self.pattern(&d.id, Place::Plain, &mut parts);
+            if !gone {
+                inner.extend(parts);
             }
-            let mut rest = None;
-            if let Some(r) = &a.rest {
-                match rebuild(&r.argument, code, dead) {
-                    Rebuilt::Gone => changed = true,
-                    _ => rest = Some(text(r.span).to_string()),
-                }
-            }
-            if !changed {
-                return Rebuilt::Same;
-            }
-            if rest.is_none() && parts.iter().all(String::is_empty) {
-                return Rebuilt::Gone;
-            }
-            // Trailing holes carry no binding.
-            while parts.last().is_some_and(String::is_empty) && rest.is_none() {
-                parts.pop();
-            }
-            if let Some(r) = rest {
-                parts.push(r);
-            }
-            Rebuilt::Changed(format!("[{}]", parts.join(", ")))
+            removed.push(gone);
         }
+        if removed.iter().all(|r| *r) && !var.declarations.is_empty() {
+            return self.remove_statement(var.span);
+        }
+        let spans: Vec<Span> = var.declarations.iter().map(|d| d.span).collect();
+        let mut edits: Vec<(usize, usize)> = list_deletions(&spans, &removed);
+        edits.extend(inner);
+        if edits.is_empty() {
+            return walk::walk_variable_declaration(self, var);
+        }
+        for (start, end) in edits {
+            self.edits.push(Edit {
+                start,
+                end,
+                with: "",
+            });
+        }
+        // What changes inside a kept declarator waits for the next pass.
+    }
+
+    fn visit_function(
+        &mut self,
+        f: &oxc_ast::ast::Function<'a>,
+        flags: oxc_syntax::scope::ScopeFlags,
+    ) {
+        if f.is_declaration() {
+            if let Some(id) = &f.id {
+                if self.dead(id, Place::Plain, f.scope_id.get()) {
+                    return self.remove_statement(f.span);
+                }
+            }
+        }
+        walk::walk_function(self, f, flags);
+    }
+
+    fn visit_for_statement(&mut self, it: &oxc_ast::ast::ForStatement<'a>) {
+        if let Some(oxc_ast::ast::ForStatementInit::VariableDeclaration(v)) = &it.init {
+            self.for_inits.insert(v.span.start);
+        }
+        walk::walk_for_statement(self, it);
+    }
+    fn visit_for_of_statement(&mut self, it: &oxc_ast::ast::ForOfStatement<'a>) {
+        if let oxc_ast::ast::ForStatementLeft::VariableDeclaration(v) = &it.left {
+            self.heads.insert(v.span.start);
+        }
+        walk::walk_for_of_statement(self, it);
+    }
+    fn visit_for_in_statement(&mut self, it: &oxc_ast::ast::ForInStatement<'a>) {
+        if let oxc_ast::ast::ForStatementLeft::VariableDeclaration(v) = &it.left {
+            self.heads.insert(v.span.start);
+        }
+        walk::walk_for_in_statement(self, it);
     }
 }
 
@@ -695,6 +854,146 @@ mod tests {
         );
         assert_eq!(out.lines().count(), before.lines().count(), "lines:\n{out}");
         out
+    }
+
+    // The reviewer's cases, each with what babel-dead-code-elimination
+    // makes of it after the same edit (Babel ran on each one).
+
+    // A multi-line destructure only the removed code used goes whole, and a
+    // later binding in the same function is still found: oj's own edits
+    // never move lines or offsets out from under the candidates.
+    #[test]
+    fn babel_a_multi_line_destructure_goes_whole() {
+        let before = "export function make() {\n  const {\n    a,\n    b,\n  } = pick();\n  const h = () => b;\n  return keep(() => [a, h()]);\n}\n";
+        let out = dce(before, "() => [a, h()]");
+        assert!(!out.contains("pick") && !out.contains("const h"), "{out}");
+    }
+
+    #[test]
+    fn babel_a_multi_line_destructure_and_a_server_helper_go() {
+        let before = "import { getRequest } from \"@tanstack/react-start/server\";\nexport function make() {\n  const {\n    a,\n    b,\n  } = pick();\n  const h = () => b;\n  const g = () => getRequest();\n  return [keep(() => [a, h(), g()])];\n}\n";
+        let out = dce(before, "() => [a, h(), g()]");
+        for gone in ["pick", "const h", "const g", "getRequest"] {
+            assert!(!out.contains(gone), "{gone} left in:\n{out}");
+        }
+    }
+
+    // A redeclared `var` is a constant violation: both declarations stay.
+    #[test]
+    fn babel_a_redeclared_var_stays() {
+        let before =
+            "export function make() {\n  var a = 1;\n  var a = 2;\n  return keep(() => a);\n}\n";
+        let out = dce(before, "() => a");
+        assert_eq!(out.matches("var a").count(), 2, "{out}");
+    }
+
+    // Only assigned, never read: never a candidate.
+    #[test]
+    fn babel_a_binding_only_assigned_stays() {
+        let before =
+            "export function make() {\n  let cached;\n  return keep(() => { cached = 1; });\n}\n";
+        let out = dce(before, "() => { cached = 1; }");
+        assert!(out.contains("let cached;"), "{out}");
+    }
+
+    // Two declarations of one name on one line are two candidates.
+    #[test]
+    fn babel_same_named_declarations_on_one_line_stay_apart() {
+        let before = "export function make() { const a = g(); function k() { const a = side(); } return [k, keep(() => a)]; }\n";
+        let out = dce(before, "() => a");
+        assert!(!out.contains("g()"), "{out}");
+        assert!(out.contains("const a = side();"), "{out}");
+    }
+
+    // A module-level `var` declared in a block is a module binding.
+    #[test]
+    fn babel_a_block_var_at_module_level_goes_with_its_import() {
+        let before = "import { getRequest } from \"@tanstack/react-start/server\";\nif (globalThis.x) { var helper = getRequest; }\nexport const fn = keep(() => helper());\n";
+        let out = dce(before, "() => helper()");
+        assert!(
+            !out.contains("helper =") && !out.contains("getRequest"),
+            "{out}"
+        );
+        assert!(out.contains("if (globalThis.x) {"), "{out}");
+    }
+
+    // Babel's rest rule reaches only a property whose value is the name: a
+    // defaulted one goes even with a rest after it.
+    #[test]
+    fn babel_a_defaulted_property_goes_before_a_rest() {
+        let before = "export function make(obj: any) {\n  const { a = 1, ...rest } = obj;\n  return [rest, keep(() => a)];\n}\n";
+        let out = dce(before, "() => a");
+        assert!(
+            out.contains("...rest } = obj;") && !out.contains("a = 1"),
+            "{out}"
+        );
+    }
+
+    // An empty pattern in a declarator goes, even one empty from the start.
+    #[test]
+    fn babel_an_empty_pattern_goes() {
+        let before = "export function make(obj: any) {\n  const {} = obj;\n  const [] = obj;\n  return keep(() => 1);\n}\n";
+        let out = dce(before, "() => 1");
+        assert!(!out.contains("= obj"), "{out}");
+    }
+
+    // A class in a cycle with a helper: the helper (and its import) goes,
+    // the class stays (Babel has no class visitor).
+    #[test]
+    fn babel_a_class_cycle_drops_the_helper_and_keeps_the_class() {
+        let before = "import { getRequest } from \"@tanstack/react-start/server\";\nclass C { m() { return h(); } }\nfunction h() { getRequest(); return new C(); }\nexport const fn = keep(() => h());\n";
+        let out = dce(before, "() => h()");
+        assert!(
+            !out.contains("function h") && !out.contains("getRequest"),
+            "{out}"
+        );
+        assert!(out.contains("class C"), "{out}");
+    }
+
+    // Babel looks a function declaration's name up from inside it: a
+    // parameter of the same name that is read keeps the function.
+    #[test]
+    fn babel_a_function_whose_parameter_shares_its_name_stays() {
+        let before = "export function make() {\n  function req(req: number) { return req; }\n  return keep(() => req(1));\n}\n";
+        let out = dce(before, "() => req(1)");
+        assert!(out.contains("function req(req: number)"), "{out}");
+    }
+
+    #[test]
+    fn babel_one_declarator_of_a_list_goes() {
+        let before = "import { getRequest } from \"@tanstack/react-start/server\";\nconst a = getRequest,\n  b = 2;\nexport const fn = keep(() => a());\n";
+        let out = dce(before, "() => a()");
+        assert!(
+            !out.contains("getRequest") && out.contains("b = 2;"),
+            "{out}"
+        );
+    }
+
+    // An export inside a namespace is an export.
+    #[test]
+    fn babel_a_namespace_export_stays() {
+        let before =
+            "export namespace N {\n  export const x = 1;\n  export const f = keep(() => x);\n}\n";
+        let out = dce(before, "() => x");
+        assert!(out.contains("export const x = 1;"), "{out}");
+    }
+
+    // A type reference reads the binding.
+    #[test]
+    fn babel_a_type_reference_keeps_its_binding() {
+        let before = "export function make() {\n  const schema = mk();\n  type T = typeof schema;\n  let v: T | undefined;\n  return [v, keep(() => schema)];\n}\n";
+        let out = dce(before, "() => schema");
+        assert!(out.contains("const schema = mk();"), "{out}");
+    }
+
+    // A `for` head's declarator goes like any other; a loop iterator stays.
+    #[test]
+    fn babel_a_for_head_declarator_goes() {
+        let before = "import { getRequest } from \"@tanstack/react-start/server\";\nexport function make(xs: number[]) {\n  for (let i = 0, req = getRequest; i < 1; i++) { keep(() => req()); }\n  for (const x of xs) keep(() => x);\n}\n";
+        let out = dce(before, "() => req()");
+        assert!(out.contains("for (let i = 0; i < 1; i++)"), "{out}");
+        assert!(!out.contains("getRequest"), "{out}");
+        assert!(out.contains("for (const x of xs)"), "{out}");
     }
 
     #[test]

@@ -634,9 +634,15 @@ impl Plugin for StartHostPlugin {
                     if let Some(out) = compile.compile(&ctx, &t.code, id).await? {
                         // Start's compiler returns its map (generateFromAst);
                         // oj's edits keep every line, so a line map stands in.
-                        t.maps.push(oj_compiler::line_map_json(id, &t.code, &out));
-                        t.map_plugins
-                            .push("tanstack-start-core::server-fn".to_string());
+                        // Should one ever move lines, the chain breaks instead
+                        // of pointing at lines that are not there.
+                        if out.matches('\n').count() == t.code.matches('\n').count() {
+                            t.maps.push(oj_compiler::line_map_json(id, &t.code, &out));
+                            t.map_plugins
+                                .push("tanstack-start-core::server-fn".to_string());
+                        } else if t.map_broken.is_none() {
+                            t.map_broken = Some("tanstack-start-core::server-fn".to_string());
+                        }
                         t.code = out;
                     }
                     // Once the first phase ran, the rest of the chain runs too:
