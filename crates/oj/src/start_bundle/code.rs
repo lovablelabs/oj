@@ -236,6 +236,18 @@ impl Plugin for StartCodePlugin {
 }
 
 impl StartCodePlugin {
+    /// Whether [`StartCodePlugin::compile`] can change `code` at all: its
+    /// passes all start from a factory, `createServerFn` or (on the client) a
+    /// route factory call named in the source, so a module naming none takes
+    /// the plugins' whole chain in one call.
+    pub(crate) fn may_compile(&self, id: &str, code: &str) -> bool {
+        is_script(id)
+            && (oj_compiler::env_fns::has_factory_name(code)
+                || code.contains("createServerFn")
+                || (matches!(self.target, CodeTarget::Client)
+                    && oj_compiler::route_options::names_a_route_factory(code)))
+    }
+
     /// TanStack's start-compiler (`tanstack-start-core::server-fn:<env>`, an
     /// `enforce: "pre"` plugin): the environment functions compiled per
     /// environment in every module, its own packages included, so the other

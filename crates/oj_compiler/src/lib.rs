@@ -5,6 +5,7 @@ pub mod assets;
 pub mod bundle;
 pub mod cjs;
 mod compile;
+mod dce;
 mod env;
 pub mod env_fns;
 pub mod glob;
