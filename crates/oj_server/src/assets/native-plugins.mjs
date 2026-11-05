@@ -41,6 +41,13 @@ export const OJ_NATIVE_PLUGIN_NAMES = new Set([
 // worker they spawn throws asynchronously; skip them outright.
 export const OJ_UNSUPPORTED_PLUGIN_NAMES = new Set(["vite-plugin-checker"]);
 
+// Start's router plugin: the code splitter pair it adds per environment
+// (client and server, sharing one route list) and the router generator, whose
+// run fills that list (`routesByFile`, the files the route tree imports).
+export function isRouteSplitting(name) {
+  return typeof name === "string" && /^tanstack-router:code-splitter:|^tanstack:router-generator$/.test(name);
+}
+
 // Framework plugins oj reimplements natively (vite:*, TanStack's): a Start
 // host leaves them out, and config extraction counts their config hooks as
 // oj's work. A name that is not a string (`name: null` on a disabled
@@ -49,6 +56,9 @@ export function isReimplemented(name) {
   if (typeof name !== "string") return false;
   // Start's import protection has no oj counterpart: it runs as Start ships it.
   if (name.startsWith("tanstack-start-core:import-protection")) return false;
+  // Nor have Start's route code splitters (one per environment), nor the
+  // router generator whose run gives them the routes to split.
+  if (isRouteSplitting(name)) return false;
   return name.startsWith("vite:") || /^tanstack[-:]/.test(name);
 }
 

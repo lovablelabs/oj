@@ -952,12 +952,14 @@ fn compile_ssr(
         },
         rules => (source, rules),
     };
+    let served = PathBuf::from(id.split('?').next().unwrap_or(id));
+    // A file under a query (`route.tsx?tsr-split=component`) compiles as the
+    // file's own language.
     let compile_path: PathBuf = if from_plugin {
         PathBuf::from("virtual.tsx")
     } else {
-        PathBuf::from(id)
+        served.clone()
     };
-    let served = PathBuf::from(id.split('?').next().unwrap_or(id));
     let specs = oj_compiler::imports(&source, &compile_path)
         .into_iter()
         .collect();
