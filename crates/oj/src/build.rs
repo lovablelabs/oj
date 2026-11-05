@@ -1565,11 +1565,14 @@ fn expand_import_meta(
     code: &str,
     root: &Path,
     alias: &[(String, String)],
+    client: bool,
 ) -> Option<String> {
     let has_glob = code.contains("import.meta.glob");
     // Vite's dynamicImportVarsOptions.exclude defaults to node_modules.
     let has_dynamic = code.contains("import(") && !id.contains("/node_modules/");
-    let has_new_url = code.contains("import.meta.url");
+    // Vite's asset-import-meta-url is a client-environment plugin: a server
+    // bundle keeps `new URL(.., import.meta.url)` as written.
+    let has_new_url = client && code.contains("import.meta.url");
     if !has_glob && !has_dynamic && !has_new_url {
         return None;
     }
@@ -1799,12 +1802,12 @@ impl Plugin for OjCssPlugin {
                 return vite_json_module(id, code);
             }
             Ok(
-                expand_import_meta(id, code, &self.root, &self.resolve.alias).map(|code| {
-                    rolldown_plugin::HookTransformOutput {
+                expand_import_meta(id, code, &self.root, &self.resolve.alias, self.client).map(
+                    |code| rolldown_plugin::HookTransformOutput {
                         code: Some(code),
                         ..Default::default()
-                    }
-                }),
+                    },
+                ),
             )
         }
     }
@@ -7365,6 +7368,7 @@ mod tests {
             "const m = import.meta.glob(\"@/assets/*.png\");\n",
             &dir,
             &alias,
+            true,
         )
         .expect("aliased glob expands");
         assert!(
@@ -7382,7 +7386,8 @@ mod tests {
                 "/app/src/a.ts",
                 "export const a = 1;\n",
                 Path::new("/app"),
-                &[]
+                &[],
+                true
             ),
             None
         );
@@ -7393,7 +7398,8 @@ mod tests {
                 "/app/src/r.tsx",
                 "const P = lazy(() => import(\"./pages/P\"));\n",
                 Path::new("/app"),
-                &[]
+                &[],
+                true
             ),
             None
         );
@@ -7403,7 +7409,8 @@ mod tests {
                 "/app/node_modules/x/index.js",
                 "export const c = (n) => import(`./c/${n}.js`);\n",
                 Path::new("/app"),
-                &[]
+                &[],
+                true
             ),
             None
         );
@@ -7418,6 +7425,7 @@ mod tests {
             "const load = (l) => import(`./locales/${l}.json`);\n",
             &dir,
             &[],
+            true,
         )
         .expect("matching variable dynamic import expands");
         assert!(
@@ -7436,7 +7444,7 @@ mod tests {
             "/app/src/main.js",
             "const w = new Worker(new URL(\"./w.ts\", import.meta.url), { type: \"module\" });\nconst s = new SharedWorker(new URL(\"./w.ts\", import.meta.url));\n",
             Path::new("/app"),
-            &[],
+            &[], true
         )
         .expect("new URL asset expands");
         assert!(
@@ -7458,6 +7466,18 @@ mod tests {
             !out.contains("w.ts?url"),
             "the worker entry is not a plain asset: {out}"
         );
+    }
+
+    // Vite's asset-import-meta-url is client-only: a server bundle keeps
+    // `new URL(.., import.meta.url)` (a directory one included) as written.
+    #[test]
+    fn a_server_bundle_keeps_new_url_as_written() {
+        let code = "const dir = new URL(\"./data/\", import.meta.url);\nconst png = new URL(\"./a.png\", import.meta.url);\n";
+        assert_eq!(
+            expand_import_meta("/app/src/server/g.ts", code, Path::new("/app"), &[], false),
+            None
+        );
+        assert!(expand_import_meta("/app/src/g.ts", code, Path::new("/app"), &[], true).is_some());
     }
 
     // The transform hook must answer `None` for a module it did not change: a

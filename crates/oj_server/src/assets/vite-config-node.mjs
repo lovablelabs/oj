@@ -10,9 +10,10 @@
 // Start loads the config again in every client rebundle. oj only runs Node
 // projects' configs, so the Deno branch is switched off for these calls.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 let depth = 0;
 let deno;
@@ -34,6 +35,36 @@ export async function asNode(load) {
 /** The app's vite as Node's `import("vite")` from `root` finds it. */
 export function appViteEntry(root) {
   return esmEntry(createRequire(join(root, "package.json")).resolve("vite"), "vite");
+}
+
+// The package `name` as Node resolves it from `fromDir` (its real directory).
+function packageDir(fromDir, name) {
+  for (let dir = fromDir; ; dir = dirname(dir)) {
+    const candidate = join(dir, "node_modules", name);
+    if (existsSync(join(candidate, "package.json"))) return realpathSync(candidate);
+    if (dirname(dir) === dir) return null;
+  }
+}
+
+/** The router generator's `Generator` class Start's router plugin runs,
+ *  resolved the way Start's own packages resolve it (so it is the same module
+ *  instance), or null for an app without Start. */
+export async function startRouterGenerator(root) {
+  let dir = null;
+  for (const framework of ["@tanstack/react-start", "@tanstack/solid-start", "@tanstack/vue-start"]) {
+    dir = packageDir(root, framework);
+    if (dir) break;
+  }
+  for (const name of ["@tanstack/start-plugin-core", "@tanstack/router-plugin", "@tanstack/router-generator"]) {
+    dir = dir && packageDir(dir, name);
+  }
+  if (!dir) return null;
+  try {
+    const entry = esmEntry(join(dir, "package.json"), "@tanstack/router-generator");
+    return (await import(pathToFileURL(entry).href)).Generator ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /** The file Node's `import(name)` loads for the package `resolved` (a path

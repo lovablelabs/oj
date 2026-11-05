@@ -504,6 +504,32 @@ pub(crate) fn apply_alias(aliases: &[(String, String)], spec: &str) -> String {
     spec.to_string()
 }
 
+/// What the ssr pipeline's modules import: by file, then by module id.
+pub(crate) type ModuleImports =
+    HashMap<PathBuf, HashMap<String, std::collections::HashSet<String>>>;
+
+/// A module's imports as its latest compile has them. The modules of one file
+/// (the route itself and the ones its queries make, `?tsr-split=component`)
+/// each keep their own, as Vite's module graph files every module of a file.
+pub(crate) fn record_module_imports(
+    imports: &mut ModuleImports,
+    file: PathBuf,
+    id: &str,
+    specs: std::collections::HashSet<String>,
+) {
+    imports
+        .entry(file)
+        .or_default()
+        .insert(id.to_string(), specs);
+}
+
+/// Whether some module of `file` imports `spec`.
+pub(crate) fn file_imports(imports: &ModuleImports, file: &Path, spec: &str) -> bool {
+    imports
+        .get(file)
+        .is_some_and(|modules| modules.values().any(|specs| specs.contains(spec)))
+}
+
 /// Vite's safeModulePaths: the file an import of code the pipeline served
 /// resolved to may load, wherever it is. This route is HTTP, so the import
 /// must be one the importer's own code makes, never just what a request names.
@@ -511,12 +537,7 @@ fn record_safe_module_path(state: &ServerState, importer: &str, spec: &str, reso
     let s = resolved.to_string_lossy();
     let file = Path::new(s.split('?').next().unwrap_or(&s));
     let importer_file = Path::new(importer.split('?').next().unwrap_or(importer));
-    let imported = state
-        .ssr_imports
-        .lock()
-        .unwrap()
-        .get(importer_file)
-        .is_some_and(|specs| specs.contains(spec));
+    let imported = file_imports(&state.ssr_imports.lock().unwrap(), importer_file, spec);
     if imported && file.is_absolute() {
         crate::util::allow_root(&state.fs_allow, file.to_path_buf());
     }
@@ -952,16 +973,18 @@ fn compile_ssr(
         },
         rules => (source, rules),
     };
+    let served = PathBuf::from(id.split('?').next().unwrap_or(id));
+    // A file under a query (`route.tsx?tsr-split=component`) compiles as the
+    // file's own language.
     let compile_path: PathBuf = if from_plugin {
         PathBuf::from("virtual.tsx")
     } else {
-        PathBuf::from(id)
+        served.clone()
     };
-    let served = PathBuf::from(id.split('?').next().unwrap_or(id));
     let specs = oj_compiler::imports(&source, &compile_path)
         .into_iter()
         .collect();
-    state.ssr_imports.lock().unwrap().insert(served, specs);
+    record_module_imports(&mut state.ssr_imports.lock().unwrap(), served, id, specs);
     // Compile as dev + ssr so `import.meta.env.SSR` is true and `DEV`/`MODE`
     // match the client; Fast Refresh stays off on the server.
     let mut opts = dev_compile_opts(state);
@@ -1098,5 +1121,51 @@ pub fn css_modules_options(config: &oj_config::OjConfig) -> oj_css::CssModulesOp
         hash_prefix: m.hash_prefix,
         // postcss-modules' `process.cwd()`: where oj was started, as Vite.
         context: oj_env::get().cwd.clone(),
+    }
+}
+
+#[cfg(test)]
+mod module_imports_tests {
+    use super::*;
+
+    fn specs(list: &[&str]) -> std::collections::HashSet<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// A route file and its split component are two modules with their own
+    /// imports: compiling one keeps the other's, and a recompile replaces
+    /// only its own.
+    #[test]
+    fn each_module_of_a_file_keeps_its_own_imports() {
+        let file = PathBuf::from("/app/src/routes/map.tsx");
+        let mut imports = ModuleImports::new();
+        record_module_imports(
+            &mut imports,
+            file.clone(),
+            "/app/src/routes/map.tsx",
+            specs(&["@tanstack/react-router"]),
+        );
+        record_module_imports(
+            &mut imports,
+            file.clone(),
+            "/app/src/routes/map.tsx?tsr-split=component",
+            specs(&["../lib/browser-map"]),
+        );
+        assert!(file_imports(&imports, &file, "@tanstack/react-router"));
+        assert!(file_imports(&imports, &file, "../lib/browser-map"));
+        record_module_imports(
+            &mut imports,
+            file.clone(),
+            "/app/src/routes/map.tsx?tsr-split=component",
+            specs(&["../lib/other"]),
+        );
+        assert!(!file_imports(&imports, &file, "../lib/browser-map"));
+        assert!(file_imports(&imports, &file, "../lib/other"));
+        assert!(file_imports(&imports, &file, "@tanstack/react-router"));
+        assert!(!file_imports(
+            &imports,
+            Path::new("/app/src/routes/index.tsx"),
+            "../lib/other"
+        ));
     }
 }

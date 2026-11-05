@@ -20,12 +20,13 @@ import { createRequire, isBuiltin } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, isAbsolute, join, posix, relative, resolve as pathResolve } from "node:path";
 import { foldIncludeSnapshot } from "./discovered-deps.mjs";
-import { appViteEntry, asNode } from "./vite-config-node.mjs";
+import { appViteEntry, asNode, startRouterGenerator } from "./vite-config-node.mjs";
 import {
   OJ_NATIVE_PLUGIN_NAMES,
   OJ_UNSUPPORTED_PLUGIN_NAMES,
   flattenPlugins,
   isReimplemented,
+  isRouteSplitting,
 } from "./native-plugins.mjs";
 import { idFilterGlob, idFilterRegExp, loadViteGlobs, viteGlobs } from "./start/vite-globs.mjs";
 import {
@@ -2287,7 +2288,8 @@ const IMPORT_PROTECTION = "tanstack-start-core:import-protection";
 const isImportProtection = (p) => typeof p?.name === "string" && p.name.startsWith(IMPORT_PROTECTION);
 const startConfigFilled = new WeakSet();
 async function fillStartConfigContext(list, resolved, ctx) {
-  if (!list.some(isImportProtection)) return;
+  if (!list.some((p) => isImportProtection(p) || isRouteSplitting(p?.name))) return;
+  if (list.some((p) => isRouteSplitting(p?.name))) await generateWithoutWriting();
   const startConfig = allPlugins.find((p) => p?.name === "tanstack-start-core:config");
   const hook = startConfig && hookFn(startConfig, "config");
   if (!hook || startConfigFilled.has(startConfig)) return;
@@ -2298,6 +2300,76 @@ async function fillStartConfigContext(list, resolved, ctx) {
     // Import protection's configResolved then fails too, and says so.
     process.stderr.write(`${OJ} plugin host: Start's config hook failed: ${(e && e.message) || e}\n`);
   }
+}
+// Start's code splitters split the routes its router generator found: the
+// generator's run (its configResolved and watchChange) fills their shared
+// route list. oj writes the route tree itself, once, before any host starts
+// (start/generate.mjs, with the same config), so the generator here reads the
+// routes and keeps its writes to itself: a second writer of the same files
+// would race the first one's. What it finds is that step's to report too
+// (a file that exports no Route), so its logger keeps errors alone.
+let generatorQuiet = false;
+async function generateWithoutWriting() {
+  if (generatorQuiet) return;
+  generatorQuiet = true;
+  const Generator = await startRouterGenerator(initial.config?.root ?? process.cwd());
+  const proto = Generator?.prototype;
+  if (!proto || typeof proto.safeFileWrite !== "function" || typeof proto.run !== "function") return;
+  const run = proto.run;
+  const quiet = () => {};
+  proto.run = function (...args) {
+    routeGenerators.add(this);
+    const error = this.logger?.error ?? console.error;
+    this.logger = { log: quiet, debug: quiet, info: quiet, warn: quiet, error };
+    return run.apply(this, args);
+  };
+  proto.safeFileWrite = async function (opts) {
+    try {
+      return await this.fs.stat(opts.filePath);
+    } catch {
+      return { mtimeMs: undefined };
+    }
+  };
+}
+// The generators the router plugin runs here (one per plugin instance).
+const routeGenerators = new Set();
+// TanStack's `routeFactoryCallCodeFilter`: what the reference compile looks at.
+const ROUTE_FACTORY_CALL = [
+  /\bcreateFileRoute\s*\(/,
+  /\bcreateRootRoute\s*\(/,
+  /\bcreateRootRouteWithContext\s*(?:<|\()/,
+];
+// Files a generator was asked about and still did not take, by mtime.
+const notRoutes = new Map();
+// Under Vite the generator's watchChange updates the route list before the
+// route tree it writes in the same run can import a new route, so a route is
+// listed by the time it is transformed. oj's watcher runs the plugins'
+// watchChange apart from the rebundle the new route tree starts, so a
+// route-shaped module the generator does not know yet waits for the run in
+// flight, then for one the generator plugin makes for that file, as a
+// watchChange for its creation would.
+async function routesKnow(code, id) {
+  if (!routeGenerators.size || typeof id !== "string" || id.startsWith("\0")) return;
+  if (!ROUTE_FACTORY_CALL.some((re) => re.test(code))) return;
+  const file = id.split("?")[0].replace(/\\/g, "/");
+  for (const g of routeGenerators) if (g.runPromise) await g.runPromise.catch(() => {});
+  const missing = [...routeGenerators].filter(
+    (g) => !g.routeNodeCache?.has(file) && g.isFileRelevantForRouteTreeGeneration?.(file),
+  );
+  if (!missing.length) return;
+  let mtime;
+  try {
+    mtime = statSync(file).mtimeMs;
+  } catch {
+    return;
+  }
+  if (notRoutes.get(file) === mtime) return;
+  for (const p of allPlugins) {
+    if (p?.name !== "tanstack:router-generator") continue;
+    const fn = hookFn(p, "watchChange");
+    if (fn) await fn.call(minimalContext({ watchMode: command === "serve" }), file, { event: "create" });
+  }
+  if (missing.some((g) => !g.routeNodeCache?.has(file))) notRoutes.set(file, mtime);
 }
 // A pair that cannot read Start's config would check against an empty root.
 // A build fails, as Vite's does on the same error: it would ship what the
@@ -4998,6 +5070,7 @@ function cssPhaseOf(p, rank) {
 // started from and the maps before this call, so getCombinedSourcemap still
 // collapses back to the loaded code.
 async function transform(c, code, id, resolvedJson, phase, priorJson) {
+  await routesKnow(code, id);
   let prior = null;
   if (priorJson) {
     try {

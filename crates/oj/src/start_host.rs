@@ -955,7 +955,16 @@ impl StartHost {
         // Vite runs load before the fs read, but only plugins whose filter can
         // claim the id are consulted; the gate skips the per-module isolate RPC
         // for everything else (the whole server graph on the first render).
+        // The full id first, as Vite's load sees it: a plugin's load may key
+        // on its own query (`?tsr-split=...`); then the file.
         let plugin_loaded = match self.bridge.plugin_host().await {
+            Some(host) if query.is_some() && host.hook_wants_load(id) => {
+                match host.load(id).await.ok().flatten() {
+                    Some(code) => Some(code),
+                    None if host.hook_wants_load(&clean) => host.load(&clean).await.ok().flatten(),
+                    None => None,
+                }
+            }
             Some(host) if host.hook_wants_load(&clean) => host.load(&clean).await.ok().flatten(),
             Some(_) => {
                 if oj_server::plugins::hook_gate_debug() {
@@ -998,9 +1007,12 @@ impl StartHost {
         } else {
             raw
         };
+        // The plugins see the id with its query, as Vite's transforms do: a
+        // route's `?tsr-split=component` is what TanStack's code splitter
+        // compiles into the split-off component, from the route file's code.
         let code = self
             .bridge
-            .transform_module(&clean, raw, from_plugin, true)
+            .transform_module(id, raw, from_plugin, true)
             .await
             .map_err(|e| e.to_string())?;
         Ok(js(code))

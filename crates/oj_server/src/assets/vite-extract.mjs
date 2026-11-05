@@ -6,7 +6,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
 import fs, { writeFileSync, readFileSync, existsSync, unlinkSync } from "node:fs";
 import { format } from "node:util";
-import { asNode, esmEntry } from "./vite-config-node.mjs";
+import { asNode, esmEntry, startRouterGenerator } from "./vite-config-node.mjs";
 import {
   OJ_NATIVE_PLUGIN_NAMES,
   OJ_UNSUPPORTED_PLUGIN_NAMES,
@@ -260,36 +260,12 @@ function resolvePkg(spec) {
 // the app's resolveConfig makes is recorded here.
 let startRouterPaths = null;
 
-// The package `name` as Node resolves it from `fromDir` (its real directory).
-function packageDir(fromDir, name) {
-  for (let dir = fromDir; ; dir = dirname(dir)) {
-    const candidate = resolve(dir, "node_modules", name);
-    if (existsSync(resolve(candidate, "package.json"))) return fs.realpathSync(candidate);
-    if (dirname(dir) === dir) return null;
-  }
-}
-
 // Wraps the router generator Start's router plugin imports (resolved the way
 // Start's own packages resolve it, so it is the same module instance) to
 // record the first run's paths. Returns the undo.
 async function recordStartRouterPaths() {
   startRouterPaths = null;
-  let dir = null;
-  for (const framework of ["@tanstack/react-start", "@tanstack/solid-start", "@tanstack/vue-start"]) {
-    dir = packageDir(appRoot, framework);
-    if (dir) break;
-  }
-  for (const name of ["@tanstack/start-plugin-core", "@tanstack/router-plugin", "@tanstack/router-generator"]) {
-    dir = dir && packageDir(dir, name);
-  }
-  if (!dir) return () => {};
-  let generator;
-  try {
-    const entry = esmEntry(resolve(dir, "package.json"), "@tanstack/router-generator");
-    generator = (await import(pathToFileURL(entry).href)).Generator;
-  } catch {
-    return () => {};
-  }
+  const generator = await startRouterGenerator(appRoot);
   const proto = generator?.prototype;
   const run = proto?.run;
   if (typeof run !== "function") return () => {};
