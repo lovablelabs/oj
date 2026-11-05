@@ -42,6 +42,10 @@ pub(crate) struct StartCodePlugin {
     /// The app's `resolve.alias`, which an aliased glob pattern resolves
     /// through (Vite's toAbsoluteGlob -> resolveId).
     alias: Vec<AliasEntry>,
+    /// The plugin host's transform runs [`StartCodePlugin::compile`] in its
+    /// slot (between the plugins' "pre" and "normal" transforms), so this
+    /// plugin leaves it out.
+    compiled_in_host: bool,
     warned: Mutex<HashSet<String>>,
 }
 
@@ -58,12 +62,18 @@ impl StartCodePlugin {
             target,
             glob_scopes: None,
             alias: Vec::new(),
+            compiled_in_host: false,
             warned: Mutex::new(HashSet::new()),
         }
     }
 
     pub fn with_alias(mut self, alias: Vec<AliasEntry>) -> Self {
         self.alias = alias;
+        self
+    }
+
+    pub fn compiled_in_host(mut self, yes: bool) -> Self {
+        self.compiled_in_host = yes;
         self
     }
 
@@ -181,34 +191,8 @@ impl Plugin for StartCodePlugin {
             }
         }
 
-        // TanStack's start-compiler compiles the environment functions per
-        // environment in every module, its own packages included, so the
-        // other side's code is not bundled (a worker runs in the browser).
-        let env = match self.target {
-            CodeTarget::Server => oj_compiler::env_fns::Env::Server,
-            CodeTarget::Client | CodeTarget::Worker { .. } => oj_compiler::env_fns::Env::Client,
-        };
-        let path = file.to_string_lossy();
-        let reexported = self.reexported_factories(&ctx, &code, &path, id).await?;
-        if let Some(out) =
-            oj_compiler::env_fns::rewrite_env_fns_with(&code, &path, env, &reexported)
-                .map_err(|e| anyhow::anyhow!("{id}: {e}"))?
-        {
-            code = Cow::Owned(out);
-        }
-
-        if app && code.contains("createServerFn") {
-            let rel = file
-                .strip_prefix(&self.root)
-                .map(|p| p.to_string_lossy().replace('\\', "/"))
-                .unwrap_or_else(|_| file.to_string_lossy().into_owned());
-            let rewritten = match self.target {
-                CodeTarget::Client => oj_compiler::server_fns::rewrite_client(&code, &rel)
-                    .map_err(|e| anyhow::anyhow!("{e}"))?,
-                CodeTarget::Server => oj_compiler::server_fns::rewrite_server(&code, &rel),
-                CodeTarget::Worker { .. } => None,
-            };
-            if let Some(out) = rewritten {
+        if !self.compiled_in_host {
+            if let Some(out) = self.compile(&ctx, &code, id).await? {
                 code = Cow::Owned(out);
             }
         }
@@ -224,6 +208,56 @@ impl Plugin for StartCodePlugin {
 }
 
 impl StartCodePlugin {
+    /// TanStack's start-compiler (`tanstack-start-core::server-fn:<env>`, an
+    /// `enforce: "pre"` plugin): the environment functions compiled per
+    /// environment in every module, its own packages included, so the other
+    /// side's code is not bundled (a worker runs in the browser), then the
+    /// `createServerFn` split in app code. The rewritten code, or None.
+    pub(crate) async fn compile(
+        &self,
+        ctx: &SharedTransformPluginContext,
+        code: &str,
+        id: &str,
+    ) -> anyhow::Result<Option<String>> {
+        if !is_script(id) {
+            return Ok(None);
+        }
+        let file = PathBuf::from(id.split('?').next().unwrap_or(id));
+        let mut code: Cow<str> = Cow::Borrowed(code);
+        let env = match self.target {
+            CodeTarget::Server => oj_compiler::env_fns::Env::Server,
+            CodeTarget::Client | CodeTarget::Worker { .. } => oj_compiler::env_fns::Env::Client,
+        };
+        let path = file.to_string_lossy();
+        let reexported = self.reexported_factories(ctx, &code, &path, id).await?;
+        if let Some(out) =
+            oj_compiler::env_fns::rewrite_env_fns_with(&code, &path, env, &reexported)
+                .map_err(|e| anyhow::anyhow!("{id}: {e}"))?
+        {
+            code = Cow::Owned(out);
+        }
+
+        if is_app_code(id) && code.contains("createServerFn") {
+            let rel = file
+                .strip_prefix(&self.root)
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|_| file.to_string_lossy().into_owned());
+            let rewritten = match self.target {
+                CodeTarget::Client => oj_compiler::server_fns::rewrite_client(&code, &rel)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?,
+                CodeTarget::Server => oj_compiler::server_fns::rewrite_server(&code, &rel),
+                CodeTarget::Worker { .. } => None,
+            };
+            if let Some(out) = rewritten {
+                code = Cow::Owned(out);
+            }
+        }
+        Ok(match code {
+            Cow::Borrowed(_) => None,
+            Cow::Owned(out) => Some(out),
+        })
+    }
+
     /// Vite's resolution of a URL's file: a relative one through the bundler
     /// from the importer; a `/` one from the project root (else a public file,
     /// left as written); any other with preferRelative, the importer's

@@ -2938,6 +2938,27 @@ pub struct HostTransform {
 }
 
 impl HostTransform {
+    /// `code` with no plugin's transform.
+    pub fn unchanged(code: &str) -> Self {
+        Self {
+            code: code.to_string(),
+            ..Self::default()
+        }
+    }
+
+    /// This chain followed by `next`, which ran on what it returned (and on
+    /// whatever ran between them, which returned no map).
+    pub fn then(&mut self, next: HostTransform) {
+        self.code = next.code;
+        self.watch_files.extend(next.watch_files);
+        self.maps.extend(next.maps);
+        self.map_plugins.extend(next.map_plugins);
+        if self.map_broken.is_none() {
+            self.map_broken = next.map_broken;
+        }
+        self.chunks.extend(next.chunks);
+    }
+
     /// A reply that is not the host's JSON is the code itself; none leaves
     /// `code` as it was.
     fn parse(raw: Option<String>, code: &str) -> Self {

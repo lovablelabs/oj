@@ -205,12 +205,16 @@ fn client_plugins(
                 Arc::clone(emit),
                 start.jsx_config(),
             )
-            .with_module_parsed(),
+            .with_module_parsed()
+            .compiling(
+                StartCodePlugin::new(&start.root, target.clone()).with_alias(h.facts.alias.clone()),
+            ),
         ));
     }
     plugins.push(Pluginable::new_shared(
         StartCodePlugin::new(&start.root, target)
-            .with_alias(host.map(|h| h.facts.alias.clone()).unwrap_or_default()),
+            .with_alias(host.map(|h| h.facts.alias.clone()).unwrap_or_default())
+            .compiled_in_host(host.is_some()),
     ));
     plugins.push(Pluginable::new_shared(
         StartAssetsPlugin::new(
@@ -545,16 +549,22 @@ pub(crate) async fn build(
                         Arc::clone(&emit),
                         start.jsx_config(),
                     )
-                    .with_module_parsed(),
+                    .with_module_parsed()
+                    .compiling(
+                        StartCodePlugin::new(&start.root, CodeTarget::Server)
+                            .with_alias(h.facts.alias.clone()),
+                    ),
                 ));
             }
             plugins.push(Pluginable::new_shared(
-                StartCodePlugin::new(&start.root, CodeTarget::Server).with_alias(
-                    server_host
-                        .as_ref()
-                        .map(|h| h.facts.alias.clone())
-                        .unwrap_or_default(),
-                ),
+                StartCodePlugin::new(&start.root, CodeTarget::Server)
+                    .with_alias(
+                        server_host
+                            .as_ref()
+                            .map(|h| h.facts.alias.clone())
+                            .unwrap_or_default(),
+                    )
+                    .compiled_in_host(server_host.is_some()),
             ));
             plugins.push(Pluginable::new_shared(
                 StartAssetsPlugin::new(

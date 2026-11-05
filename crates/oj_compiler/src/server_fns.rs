@@ -132,8 +132,9 @@ impl std::error::Error for ClientRewriteError {}
 /// becomes `createClientRpc(id)` and every `.validator()` / `.inputValidator()`
 /// link is dropped, so neither the handler nor the validator reaches the
 /// browser. A text scan cannot delimit a handler body (`return /\)/`, a `(` in
-/// JSX text), hence the parse. Line counts are kept. `rel` is the app-relative
-/// path, which also picks the parser's language. `Ok(None)` when the module
+/// JSX text), hence the parse. A module-level binding only the dropped code
+/// used goes too, as Start's dead-code pass drops it. Line counts are kept.
+/// `rel` is the app-relative path, which also picks the parser's language. `Ok(None)` when the module
 /// declares no server function.
 pub fn rewrite_client(code: &str, rel: &str) -> Result<Option<String>, ClientRewriteError> {
     let fns = find_server_fns(code);
@@ -179,6 +180,10 @@ pub fn rewrite_client(code: &str, rel: &str) -> Result<Option<String>, ClientRew
         let lines = code[start..end].matches('\n').count();
         out.replace_range(start..end, &format!("{text}{}", "\n".repeat(lines)));
     }
+    // Start's compiler then runs its dead-code pass over the module: what only
+    // the handler or a validator used (an import of
+    // `@tanstack/react-start/server`, a helper) leaves the client with them.
+    let out = crate::env_fns::drop_dead_bindings(code, out, rel);
     // After the directive prologue (or a hashbang), on its line: the rewrite
     // must not shift source lines, nor turn `"use client"` into a statement.
     let at = prologue_end(&parsed.program, code);
@@ -579,6 +584,52 @@ mod tests {
             assert!(!out.contains(gone), "{gone} left in:\n{out}");
         }
         assert!(out.contains("export const after = 1;"));
+        assert_eq!(lines(&out), lines(&code));
+        parses(&out, rel);
+    }
+
+    // Start's compiler runs its dead-code pass after the rewrite: an import
+    // or helper only the handler or a validator used leaves the client, so
+    // the client never imports `@tanstack/react-start/server` (which import
+    // protection denies there). What the rest of the module uses, and an
+    // import that was unused to begin with, stay.
+    #[test]
+    fn what_only_the_handler_used_leaves_the_client() {
+        let code = [
+            "import { createServerFn } from \"@tanstack/react-start\";",
+            "import { getRequest, setResponseStatus } from \"@tanstack/react-start/server\";",
+            "import { z } from \"zod\";",
+            "import { shared } from \"./shared\";",
+            "import { untouched } from \"./untouched\";",
+            "const secretHeader = () => getRequest()?.headers.get(\"x-secret\");",
+            "export const ask = createServerFn({ method: \"POST\" })",
+            "  .inputValidator(z.object({ q: z.string() }))",
+            "  .handler(async ({ data }) => {",
+            "    setResponseStatus(200);",
+            "    return shared(data.q) + secretHeader();",
+            "  });",
+            "export const label = shared(\"label\");",
+            "",
+        ]
+        .join("\n");
+        let rel = "src/lib/ask.functions.ts";
+        let out = client(&code, rel);
+        for gone in [
+            "@tanstack/react-start/server",
+            "secretHeader",
+            "zod",
+            "getRequest",
+        ] {
+            assert!(!out.contains(gone), "{gone} left in:\n{out}");
+        }
+        for kept in [
+            "import { createServerFn } from \"@tanstack/react-start\";",
+            "import { shared } from \"./shared\";",
+            "import { untouched } from \"./untouched\";",
+            "export const label = shared(\"label\");",
+        ] {
+            assert!(out.contains(kept), "{kept} is gone:\n{out}");
+        }
         assert_eq!(lines(&out), lines(&code));
         parses(&out, rel);
     }

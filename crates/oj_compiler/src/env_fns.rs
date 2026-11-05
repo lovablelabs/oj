@@ -303,7 +303,7 @@ fn apply(code: &str, edits: Vec<Edit>) -> String {
 /// referenced before the rewrite as its candidates): a module-level import,
 /// variable or function that was used and no longer is goes, repeatedly, so
 /// whatever only it used goes with it. Exported declarations stay.
-fn drop_dead_bindings(before: &str, mut after: String, path: &str) -> String {
+pub(crate) fn drop_dead_bindings(before: &str, mut after: String, path: &str) -> String {
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, before, source_type(path)).parse();
     if parsed.fatal_error {
