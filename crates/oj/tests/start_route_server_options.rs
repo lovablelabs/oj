@@ -387,19 +387,27 @@ async fn only_an_edit_that_flips_a_routes_shape_regenerates_the_tree() {
     assert_eq!(route_tree_runs(&dev), runs + 1, "{}", dev.output());
 }
 
-// The route tree's codegen cache stores and restores the tree the generator
-// writes, the one tsr.config.json's `generatedRouteTree` names. Before, it
-// handled src/routeTree.gen.ts: a cache hit left the configured tree missing.
+/// Adds `options` (`key: value, ...`) to the app's `tanstackStart({...})`.
+fn start_options(root: &Path, options: &str) {
+    let config = root.join("vite.config.ts");
+    let source = std::fs::read_to_string(&config).unwrap();
+    let call = "importProtection: { behavior: \"error\" } })";
+    assert!(source.contains(call), "{source}");
+    let with = format!("importProtection: {{ behavior: \"error\" }}, {options} }})");
+    std::fs::write(&config, source.replacen(call, &with, 1)).unwrap();
+}
+
+// Start puts the route tree where `tanstackStart({ router })` says
+// (`<srcDirectory>/<generatedRouteTree>`), and oj puts it there too: one tree,
+// and the codegen cache restores that file. Before, oj read tsr.config.json for
+// the path, so with the tree configured on Start oj wrote src/routeTree.gen.ts
+// while the router imported the configured one.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_configured_route_tree_is_restored_from_the_cache() {
+async fn the_route_tree_goes_where_tanstack_start_puts_it() {
     let Some(app) = file_routed("route-tree-configured") else {
         return;
     };
-    std::fs::write(
-        app.0.join("tsr.config.json"),
-        r#"{ "generatedRouteTree": "./src/routes.gen.ts" }"#,
-    )
-    .unwrap();
+    start_options(&app.0, "router: { generatedRouteTree: \"routes.gen.ts\" }");
     std::fs::write(
         app.0.join("src/router.tsx"),
         ROUTER.replace("./routeTree.gen", "./routes.gen"),
@@ -419,6 +427,11 @@ async fn a_configured_route_tree_is_restored_from_the_cache() {
             "{boot} boot: no configured tree\n{}",
             dev.output()
         );
+        assert!(
+            !app.0.join("src/routeTree.gen.ts").exists(),
+            "{boot} boot: a second tree at the default path\n{}",
+            dev.output()
+        );
         if boot == "second" {
             let out = dev.output();
             assert!(
@@ -427,5 +440,76 @@ async fn a_configured_route_tree_is_restored_from_the_cache() {
                 "the second boot regenerated the tree\n{out}"
             );
         }
+    }
+}
+
+// Under Start, tsr.config.json does not move the route tree: Start passes its
+// own paths to the generator over the file. oj follows, so the tree stays at
+// src/routeTree.gen.ts as in Vite.
+#[tokio::test(flavor = "multi_thread")]
+async fn tsr_config_json_does_not_move_starts_route_tree() {
+    let Some(app) = file_routed("route-tree-tsr-config") else {
+        return;
+    };
+    std::fs::write(
+        app.0.join("tsr.config.json"),
+        r#"{ "generatedRouteTree": "./src/routes.gen.ts" }"#,
+    )
+    .unwrap();
+    let dev = Server::oj_dev(&app.0);
+    let (status, _) = dev.request("GET", "/", &[]);
+    assert_eq!(status, 200, "{}", dev.output());
+    assert!(
+        app.0.join("src/routeTree.gen.ts").is_file(),
+        "{}",
+        dev.output()
+    );
+    assert!(
+        !app.0.join("src/routes.gen.ts").exists(),
+        "{}",
+        dev.output()
+    );
+}
+
+// `tanstackStart({ router: { routesDirectory } })` moves the routes: oj reads
+// them there, and a route added there reaches the tree.
+#[tokio::test(flavor = "multi_thread")]
+async fn routes_live_where_tanstack_start_reads_them() {
+    let Some(app) = file_routed("route-dir-configured") else {
+        return;
+    };
+    start_options(&app.0, "router: { routesDirectory: \"pages\" }");
+    std::fs::rename(app.0.join("src/routes"), app.0.join("src/pages")).unwrap();
+    // The hook's server-only import, one level up from src/pages/api.
+    let dev = Server::oj_dev(&app.0);
+    let (status, body) = dev.request("GET", "/", &[]);
+    assert_eq!(status, 200, "{body}\n{}", dev.output());
+    std::fs::write(
+        app.0.join("src/pages/added.tsx"),
+        "import { createFileRoute } from \"@tanstack/react-router\";\n\nexport const Route = createFileRoute(\"/added\")({\n  component: () => <p>added</p>,\n});\n",
+    )
+    .unwrap();
+    let tree = app.0.join("src/routeTree.gen.ts");
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while !std::fs::read_to_string(&tree).is_ok_and(|s| s.contains("./pages/added")) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the added route never reached the tree\n{}",
+            dev.output()
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    // The server picks the new tree up once the rebuild lands.
+    loop {
+        let (status, body) = dev.request("GET", "/added", &[]);
+        if status == 200 && body.contains("added") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the added route never answered: {status}\n{}",
+            dev.output()
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }

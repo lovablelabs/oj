@@ -26,6 +26,8 @@ struct StartState {
     /// The scripts' env (see `script_env`), resolved once at boot for the
     /// watch-reload codegen and rebundles.
     script_env: Arc<[(String, String)]>,
+    /// Where the app's Start keeps its routes and generated route tree.
+    routes: RoutePaths,
     /// The session's client bundler, shared by the boot bundle and rebundles.
     bundler: Arc<ClientBundler>,
     proxy_prefixes: Vec<String>,
@@ -320,11 +322,16 @@ pub async fn start_dev(
     // them concurrently would let the resolver scan half-written files and
     // persist a cache key over content that was still moving.
     // The scripts' env, resolved once and shared by boot and every rebundle.
-    let script_vars: Arc<[(String, String)]> =
-        script_env(oj_env::get(), &root, config_file.as_deref(), "serve", &mode)?.into();
+    let (script_vars, routes) = {
+        let inputs = script_inputs(oj_env::get(), &root, config_file.as_deref(), "serve", &mode)?;
+        let vars: Arc<[(String, String)]> =
+            script_vars(oj_env::get(), &root, &inputs.app_env).into();
+        (vars, RoutePaths::of(&inputs.config, &root))
+    };
     let route_tree = {
         let (root, cache, env) = (root.clone(), cache.clone(), Arc::clone(&script_vars));
-        tokio::task::spawn_blocking(move || generate_route_tree(&root, &cache, &env))
+        let routes = routes.clone();
+        tokio::task::spawn_blocking(move || generate_route_tree(&root, &routes, &cache, &env))
     };
     route_tree.await??;
     oj_server::boot_phase("route tree ready");
@@ -535,6 +542,7 @@ pub async fn start_dev(
     let state = Arc::new(StartState {
         restarter: Arc::clone(&built.restarter),
         script_env: Arc::clone(&script_vars),
+        routes: routes.clone(),
         bundler,
         proxy_prefixes: built.proxy_prefixes.clone(),
         base,
@@ -565,7 +573,7 @@ pub async fn start_dev(
         mode: mode.clone(),
         runner_dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         regen_hashes: std::sync::Mutex::new(
-            regen_output_files(&root, &cache)
+            regen_output_files(&routes.tree, &cache)
                 .into_iter()
                 .map(|p| {
                     let h = file_content_hash(&p);
@@ -785,25 +793,26 @@ async fn runner_render_warm(app: axum::Router) -> bool {
     )
 }
 
-/// The routes directory the app configured (tsr.config.json's
-/// `routesDirectory`, the same file the route-tree generator merges its
-/// defaults under) or the generator's default. Rust-side walkers must agree
-/// with generate.mjs: a custom layout otherwise regenerates trees the watcher
-/// never notices and warms nothing.
-fn resolved_routes_dir(root: &Path) -> PathBuf {
-    let configured = std::fs::read_to_string(root.join("tsr.config.json"))
-        .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .and_then(|v| {
-            v.get("routesDirectory")
-                .and_then(|d| d.as_str())
-                .map(String::from)
-        });
-    let rel = configured.unwrap_or_else(|| "./src/routes".to_string());
-    root.join(rel.trim_start_matches("./"))
+/// Where the app's Start keeps its routes and generated route tree: what
+/// `tanstackStart({ srcDirectory, router })` resolves to, which wins over
+/// tsr.config.json under Start (see `oj_config::start_route_tree`).
+#[derive(Debug, Clone)]
+struct RoutePaths {
+    dir: PathBuf,
+    tree: PathBuf,
 }
 
-fn list_route_files(root: &Path) -> std::collections::BTreeSet<PathBuf> {
+impl RoutePaths {
+    fn of(config: &oj_config::OjConfig, root: &Path) -> Self {
+        RoutePaths {
+            dir: oj_config::start_routes_dir(config, root),
+            tree: oj_config::start_route_tree(config, root),
+        }
+    }
+}
+
+/// The route files under `dir` (the routes directory).
+fn list_route_files(dir: &Path) -> std::collections::BTreeSet<PathBuf> {
     let mut out = std::collections::BTreeSet::new();
     fn walk(dir: &Path, out: &mut std::collections::BTreeSet<PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -818,7 +827,7 @@ fn list_route_files(root: &Path) -> std::collections::BTreeSet<PathBuf> {
             }
         }
     }
-    walk(&resolved_routes_dir(root), &mut out);
+    walk(dir, &mut out);
     out
 }
 
@@ -1100,14 +1109,8 @@ fn client_inputs(state: &StartState, paths: &[PathBuf]) -> Vec<PathBuf> {
 /// cache dir the watcher does not even see. The rebundle worker snapshots
 /// their content hashes around a run and pushes the ones the run actually
 /// rewrote to the worker environments itself.
-fn regen_output_files(root: &Path, cache: &Path) -> [PathBuf; 2] {
-    // The generator honors tsr.config.json's `generatedRouteTree` (generate.mjs
-    // passes oj's default under the file, not over it): snapshot the tree the
-    // app actually configured.
-    [
-        oj_server::start_route_tree(root),
-        cache.join("server-fn-resolver.mjs"),
-    ]
+fn regen_output_files(tree: &Path, cache: &Path) -> [PathBuf; 2] {
+    [tree.to_path_buf(), cache.join("server-fn-resolver.mjs")]
 }
 
 /// Content hash for regen-output change detection (None: missing/unreadable).
@@ -1132,7 +1135,7 @@ fn changed_regen_outputs(
             let current = file_content_hash(f);
             match seen.insert((*f).clone(), current) {
                 Some(last) => current != last,
-                // Never seen (a tsr.config change moved the tree): only a file
+                // Never seen (a config change moved the tree): only a file
                 // that exists is a change worth pushing.
                 None => current.is_some(),
             }
@@ -1305,11 +1308,12 @@ async fn rebundle_worker(
     wake: Arc<tokio::sync::Notify>,
     shutdown: Arc<std::sync::atomic::AtomicBool>,
 ) {
-    let mut prev_routes = list_route_files(&root);
+    let routes = state.routes.clone();
+    let mut prev_routes = list_route_files(&routes.dir);
     // Each route file's server-only shape, for the edits that flip it.
     let shapes = {
-        let r = root.clone();
-        let seeded = tokio::task::spawn_blocking(move || route_shapes(&list_route_files(&r)))
+        let dir = routes.dir.clone();
+        let seeded = tokio::task::spawn_blocking(move || route_shapes(&list_route_files(&dir)))
             .await
             .unwrap_or_default();
         Arc::new(std::sync::Mutex::new(seeded))
@@ -1329,7 +1333,7 @@ async fn rebundle_worker(
             continue;
         };
         let paths: Vec<PathBuf> = run.paths.into_iter().collect();
-        let regen_files = regen_output_files(&root, &cache);
+        let regen_files = regen_output_files(&routes.tree, &cache);
         // The gate: a batch whose paths miss the last bundle's input closure
         // cannot change the client bundle (rollup watch semantics; Vite only
         // acts on files its module graphs know). Regen checks still run below
@@ -1348,11 +1352,12 @@ async fn rebundle_worker(
             let generation = state.bundler.hot.generation();
             let deferral = Arc::clone(&state);
             let shapes = Arc::clone(&shapes);
+            let routes = routes.clone();
             // Every batch, bundled or not: a style edit the gate passes over
             // must still recompile at the next bundle.
             bundler.note_changes(&changed);
             tokio::task::spawn_blocking(move || {
-                let routes_now = list_route_files(&r);
+                let routes_now = list_route_files(&routes.dir);
                 let routes_changed = routes_now != routes_prev;
                 // An edit that flips a route's only-`server` shape moves it in
                 // or out of the client's tree: Start invalidates the tree and
@@ -1373,12 +1378,12 @@ async fn rebundle_worker(
                 let client_tree = c.join(crate::start_bundle::CLIENT_ROUTE_TREE);
                 let client_tree_before = std::fs::read(&client_tree).ok();
                 if routes_changed || shape_flipped {
-                    let _ = generate_route_tree(&r, &c, &env);
+                    let _ = generate_route_tree(&r, &routes, &c, &env);
                 }
                 let client_tree_changed = std::fs::read(&client_tree).ok() != client_tree_before;
                 let mut inputs = inputs;
                 if client_tree_changed {
-                    inputs.push(oj_server::start_route_tree(&r));
+                    inputs.push(routes.tree.clone());
                 }
                 let server_fn_changed = changed.iter().any(|p| {
                     let is_ts = p.extension().is_some_and(|e| e == "ts" || e == "tsx");
@@ -1948,8 +1953,9 @@ pub async fn start_build(
     {
         let gen_env = script_vars(oj_env::get(), &root, &app_env);
         let (r, c) = (root.clone(), cache.clone());
+        let routes = RoutePaths::of(&config, &root);
         tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-            generate_route_tree(&r, &c, &gen_env)?;
+            generate_route_tree(&r, &routes, &c, &gen_env)?;
             generate_server_fn_resolver(&r, &c, false)
         })
         .await??;
@@ -2060,6 +2066,7 @@ fn route_shapes(
 
 fn generate_route_tree(
     root: &Path,
+    routes: &RoutePaths,
     cache: &Path,
     script_env: &[(String, String)],
 ) -> anyhow::Result<()> {
@@ -2070,6 +2077,13 @@ fn generate_route_tree(
         "OJ_CLIENT_ROUTE_TREE".to_string(),
         client.to_string_lossy().into_owned(),
     ));
+    // Start's paths, passed inline over tsr.config.json as Start passes them.
+    for (name, path) in [
+        ("OJ_ROUTES_DIRECTORY", &routes.dir),
+        ("OJ_GENERATED_ROUTE_TREE", &routes.tree),
+    ] {
+        script_env.push((name.to_string(), path.to_string_lossy().into_owned()));
+    }
     let script_env = script_env.as_slice();
     let store = codegen_store(
         root,
@@ -2079,13 +2093,12 @@ fn generate_route_tree(
         None,
         script_env,
     );
-    // The tree the generator writes: tsr.config.json's generatedRouteTree.
-    let dest = oj_server::start_route_tree(root);
+    let dest = routes.tree.as_path();
     let outputs = [
-        ("routeTree.gen.ts", dest.as_path()),
+        ("routeTree.gen.ts", dest),
         (crate::start_bundle::CLIENT_ROUTE_TREE, client.as_path()),
     ];
-    let inputs: Vec<PathBuf> = list_route_files(root).into_iter().collect();
+    let inputs: Vec<PathBuf> = list_route_files(&routes.dir).into_iter().collect();
     match store.restore(&inputs, &outputs) {
         Ok(stats) => {
             println!(
@@ -2107,7 +2120,7 @@ fn generate_route_tree(
         script_env,
         "route tree generation",
     )?;
-    let inputs: Vec<PathBuf> = list_route_files(root).into_iter().collect();
+    let inputs: Vec<PathBuf> = list_route_files(&routes.dir).into_iter().collect();
     store.persist(&inputs, &outputs);
     Ok(())
 }
@@ -2346,20 +2359,6 @@ fn client_module_count(cache: &Path) -> usize {
 /// Vite's rule for the dev server too: the shell's NODE_ENV wins (so
 /// `NODE_ENV=production oj dev` is PROD, as in Vite and oj's generic server),
 /// else `.env[.mode]` NODE_ENV=development, else development.
-/// The environment the one-shot scripts receive as their `run(env)` argument:
-/// the same values `node` used to get as spawn env. Resolved once per command;
-/// `.env` edits restart the process, so it never goes stale.
-fn script_env(
-    env: &oj_env::Env,
-    root: &Path,
-    config_file: Option<&Path>,
-    command: &str,
-    mode: &str,
-) -> anyhow::Result<Vec<(String, String)>> {
-    let inputs = script_inputs(env, root, config_file, command, mode)?;
-    Ok(script_vars(env, root, &inputs.app_env))
-}
-
 /// What the Start scripts (route codegen, the SSR runtime's `process.env`)
 /// see: the app root and cache, NODE_ENV, and every var of the mode's `.env`
 /// files, the shell winning, as TanStack Start's load-env plugin assigns them.
@@ -4570,7 +4569,8 @@ mod tests {
     #[test]
     fn script_env_node_env_shell_wins_then_env_files() {
         let node_env = |env: &oj_env::Env, root: &Path, mode: &str| -> String {
-            let vars = script_env(env, root, None, "serve", mode).unwrap();
+            let inputs = script_inputs(env, root, None, "serve", mode).unwrap();
+            let vars = script_vars(env, root, &inputs.app_env);
             vars.into_iter()
                 .find(|(k, _)| k == "NODE_ENV")
                 .map(|(_, v)| v)
@@ -4907,7 +4907,7 @@ mod tests {
         std::fs::write(routes.join("styles.css"), "").unwrap();
         std::fs::write(routes.join("data.json"), "").unwrap();
         std::fs::write(routes.join("nested").join("deep.tsx"), "").unwrap();
-        let found = list_route_files(&root);
+        let found = list_route_files(&routes);
         let names: Vec<String> = found
             .iter()
             .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
@@ -4941,7 +4941,7 @@ mod tests {
     #[test]
     fn list_route_files_missing_dir_is_empty() {
         let root = tmp("noroutes");
-        assert!(list_route_files(&root).is_empty());
+        assert!(list_route_files(&root.join("src/routes")).is_empty());
     }
 
     #[test]

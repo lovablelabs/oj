@@ -56,6 +56,11 @@ pub struct OjConfig {
     /// `{ options }`, the object its `stylex.vite(...)` call received.
     #[serde(skip)]
     pub vite_stylex: Option<serde_json::Value>,
+    /// The paths TanStack Start's router generator ran with when the app's
+    /// config resolved, from extraction (not a config key). See
+    /// `start_route_tree`.
+    #[serde(skip)]
+    pub vite_start_router: Option<crate::StartRouterPaths>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]

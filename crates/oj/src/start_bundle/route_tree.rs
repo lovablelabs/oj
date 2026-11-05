@@ -25,10 +25,10 @@ pub(crate) struct ClientRouteTree {
 }
 
 impl ClientRouteTree {
-    pub fn new(root: &std::path::Path, cache: &std::path::Path) -> Self {
+    pub fn new(start: &super::StartConfig) -> Self {
         Self {
-            tree: oj_server::start_route_tree(root),
-            client: cache.join(super::CLIENT_ROUTE_TREE),
+            tree: start.route_tree(),
+            client: start.cache.join(super::CLIENT_ROUTE_TREE),
         }
     }
 }

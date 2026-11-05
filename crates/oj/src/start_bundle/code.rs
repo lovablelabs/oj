@@ -46,6 +46,8 @@ pub(crate) struct StartCodePlugin {
     /// slot (between the plugins' "pre" and "normal" transforms), so this
     /// plugin leaves it out.
     compiled_in_host: bool,
+    /// The generated route tree (`StartConfig::route_tree`).
+    route_tree: PathBuf,
     /// The route files the generated route tree imports (extensionless), by
     /// the tree's modification time.
     route_files: Mutex<Option<(std::time::SystemTime, HashSet<PathBuf>)>>,
@@ -66,9 +68,16 @@ impl StartCodePlugin {
             glob_scopes: None,
             alias: Vec::new(),
             compiled_in_host: false,
+            route_tree: root.join("src").join("routeTree.gen.ts"),
             route_files: Mutex::new(None),
             warned: Mutex::new(HashSet::new()),
         }
+    }
+
+    /// The route tree the app's Start generates, when not Start's default.
+    pub fn with_route_tree(mut self, tree: PathBuf) -> Self {
+        self.route_tree = tree;
+        self
     }
 
     pub fn with_alias(mut self, alias: Vec<AliasEntry>) -> Self {
@@ -333,14 +342,14 @@ impl StartCodePlugin {
     /// Whether `file` is a route the generator knows (the code splitter's
     /// `routesByFile`): one the generated route tree imports.
     fn is_route_file(&self, file: &Path) -> bool {
-        let tree = oj_server::start_route_tree(&self.root);
-        let Ok(modified) = std::fs::metadata(&tree).and_then(|m| m.modified()) else {
+        let tree = &self.route_tree;
+        let Ok(modified) = std::fs::metadata(tree).and_then(|m| m.modified()) else {
             return false;
         };
         let mut cache = self.route_files.lock().unwrap();
         if cache.as_ref().map(|(at, _)| *at) != Some(modified) {
-            let text = std::fs::read_to_string(&tree).unwrap_or_default();
-            *cache = Some((modified, route_tree_imports(&tree, &text)));
+            let text = std::fs::read_to_string(tree).unwrap_or_default();
+            *cache = Some((modified, route_tree_imports(tree, &text)));
         }
         let stem = file.with_extension("");
         cache

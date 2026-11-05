@@ -192,7 +192,7 @@ fn client_plugins(
     // Start's client route tree (route-tree-client-plugin, a "pre" load).
     if matches!(target, CodeTarget::Client) {
         plugins.push(Pluginable::new_shared(
-            super::route_tree::ClientRouteTree::new(&start.root, &start.cache),
+            super::route_tree::ClientRouteTree::new(start),
         ));
     }
     if let Some(h) = host {
@@ -213,12 +213,15 @@ fn client_plugins(
             )
             .with_module_parsed()
             .compiling(
-                StartCodePlugin::new(&start.root, target.clone()).with_alias(h.facts.alias.clone()),
+                StartCodePlugin::new(&start.root, target.clone())
+                    .with_route_tree(start.route_tree())
+                    .with_alias(h.facts.alias.clone()),
             ),
         ));
     }
     plugins.push(Pluginable::new_shared(
         StartCodePlugin::new(&start.root, target)
+            .with_route_tree(start.route_tree())
             .with_alias(host.map(|h| h.facts.alias.clone()).unwrap_or_default())
             .compiled_in_host(host.is_some()),
     ));
@@ -558,12 +561,14 @@ pub(crate) async fn build(
                     .with_module_parsed()
                     .compiling(
                         StartCodePlugin::new(&start.root, CodeTarget::Server)
+                            .with_route_tree(start.route_tree())
                             .with_alias(h.facts.alias.clone()),
                     ),
                 ));
             }
             plugins.push(Pluginable::new_shared(
                 StartCodePlugin::new(&start.root, CodeTarget::Server)
+                    .with_route_tree(start.route_tree())
                     .with_alias(
                         server_host
                             .as_ref()

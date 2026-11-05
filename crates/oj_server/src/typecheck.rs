@@ -701,8 +701,11 @@ mod imp {
             self.signatures_due = None;
             if let Some(checker) = &self.checker {
                 // Its one declaration types every route: about 20 s to emit on
-                // a large app.
-                let route_tree = crate::start_route_tree(&self.root);
+                // a large app. The worker has only the root, so this is
+                // Start's default tree; a configured one is emitted like any
+                // other file.
+                let route_tree =
+                    oj_config::start_route_tree(&oj_config::OjConfig::default(), &self.root);
                 checker.record_signatures(&[route_tree]);
             }
         }

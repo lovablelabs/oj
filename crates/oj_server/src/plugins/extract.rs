@@ -65,6 +65,9 @@ pub struct ViteValues {
     pub active_plugins: Option<usize>,
     /// The config's `@stylexjs/unplugin` (`{ options }`), which oj runs natively.
     pub stylex: Option<serde_json::Value>,
+    /// The routes directory and route tree TanStack Start's router generator
+    /// ran with (`startRouter`).
+    pub start_router: Option<oj_config::StartRouterPaths>,
     /// Why the app's Vite failed to resolve the config (a throwing plugin
     /// hook), which fails Vite's createServer.
     pub resolve_error: Option<String>,
@@ -852,6 +855,12 @@ pub(crate) fn parse_vite_values(json: &serde_json::Value) -> ViteValues {
             .and_then(|v| v.as_u64())
             .map(|n| n as usize),
         stylex: non_null(json, "stylex"),
+        start_router: json.get("startRouter").and_then(|v| {
+            Some(oj_config::StartRouterPaths {
+                routes_directory: v.get("routesDirectory")?.as_str()?.into(),
+                generated_route_tree: v.get("generatedRouteTree")?.as_str()?.into(),
+            })
+        }),
         resolve_error: str_field(json, "resolveError"),
     }
 }
@@ -941,6 +950,7 @@ fn exclude_stylex_dependencies(config: &mut oj_config::OjConfig, root: &Path, co
 pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues) {
     config.vite_active_plugins = v.active_plugins;
     config.vite_stylex = v.stylex;
+    config.vite_start_router = v.start_router;
     if config.base.is_none() {
         config.base = v.base;
     }

@@ -411,7 +411,7 @@ impl DevBundler {
         }
         // Start's client route tree (route-tree-client-plugin, a "pre" load).
         plugins.push(Pluginable::new_shared(
-            super::route_tree::ClientRouteTree::new(&start.root, &start.cache),
+            super::route_tree::ClientRouteTree::new(start),
         ));
         if let Some(h) = host {
             if !h.facts.alias.is_empty() {
@@ -431,12 +431,14 @@ impl DevBundler {
                 )
                 .compiling(
                     StartCodePlugin::new(&start.root, CodeTarget::Client)
+                        .with_route_tree(start.route_tree())
                         .with_alias(h.facts.alias.clone()),
                 ),
             ));
         }
         plugins.push(Pluginable::new_shared(
             StartCodePlugin::new(&start.root, CodeTarget::Client)
+                .with_route_tree(start.route_tree())
                 .with_alias(host.map(|h| h.facts.alias.clone()).unwrap_or_default())
                 .compiled_in_host(host.is_some())
                 .recording_globs(Arc::clone(&glob_scopes)),

@@ -1504,6 +1504,7 @@ fn merge_adopts_only_unset_fields() {
         html: None,
         active_plugins: None,
         stylex: None,
+        start_router: None,
         resolve_error: None,
     };
     merge_vite_values(&mut config, v);
@@ -1559,6 +1560,7 @@ fn merge_never_overrides_config() {
         html: None,
         active_plugins: None,
         stylex: None,
+        start_router: None,
         resolve_error: None,
     };
     merge_vite_values(&mut config, v);

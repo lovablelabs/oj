@@ -18,8 +18,10 @@ driver, and the dev and prod runtime shims, embedded into the binary with
 
 ## Detection
 
-`is_tanstack_start_app(root)` returns true when the app has a `src/routes`
-directory and `@tanstack/react-start` in its `package.json`. `oj dev` and
+`is_tanstack_start_app(root)` returns true when the app has
+`@tanstack/react-start` in its `package.json` and either a `src/routes`
+directory or a Vite config calling `tanstackStart(` (whose
+`router.routesDirectory` may put the routes elsewhere). `oj dev` and
 `oj build` route such apps to `start_dev` / `start_build` instead of the normal
 pipeline.
 
