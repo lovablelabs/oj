@@ -1667,6 +1667,13 @@ function ojRunsNatively(p, c = main) {
   const name = p && p.name;
   return OJ_NATIVE_PLUGIN_NAMES.has(name) || (c.leaveOut && isReimplemented(name));
 }
+// Where Start's compiler sits among the plugins (noteStartCompilerPosition),
+// set as the plugins load.
+const beforeStartCompiler = new WeakSet();
+// Every plugin whose place against the compiler is known (the list holding
+// it, and what those plugins' applyToEnvironment returns). A worker
+// container's plugins are fresh objects no compiler sits among.
+const placedForStartCompiler = new WeakSet();
 // Vite's picomatch, for plugin `filter` ids.
 await loadViteGlobs(initial.config?.root ?? process.cwd());
 try {
@@ -1685,6 +1692,7 @@ try {
   allPlugins = await flattenPlugins(list);
   nativePlugins = allPlugins.filter((p) => OJ_NATIVE_PLUGIN_NAMES.has(p && p.name));
   main.rawPlugins = allPlugins;
+  noteStartCompilerPosition(allPlugins);
   main.plugins = hostedPlugins(allPlugins, userConfig);
 } catch (e) {
   process.stderr.write(`${OJ} plugin host: failed to load ${pluginsPath}: ${(e && e.stack) || e}\n`);
@@ -2550,6 +2558,8 @@ async function environmentPlugins(environment, candidates, c = main) {
       continue;
     }
     const returned = applied.filter((ap) => !ojRunsNatively(ap, c));
+    if (beforeStartCompiler.has(p)) for (const ap of returned) beforeStartCompiler.add(ap);
+    if (placedForStartCompiler.has(p)) for (const ap of returned) placedForStartCompiler.add(ap);
     for (const ap of returned) {
       const ignored = ignoredEnvironmentPluginHooks.filter((hook) => ap[hook]);
       if (ignored.length > 0) {
@@ -4941,8 +4951,36 @@ function oxcStripOptions(c) {
 // "pre" hooks (enforce or order "pre") see the source before vite:css compiles
 // it, "normal" ones the compiled CSS before vite:css-post turns it into JS,
 // "post" ones (enforce or order "post") that JS module.
-function inTransformPhase(slot, phase) {
-  return phase === "after-pre" ? slot !== "pre" : slot === phase;
+// Start's compiler (`tanstack-start-core::server-fn:<env>`) is an `enforce:
+// "pre"` plugin with no hook `order`, so in Vite it transforms at its place
+// in the plugin array: after every `order: "pre"` hook and the unordered
+// "pre" plugins listed before it, ahead of the ones listed after it and of
+// everything else. oj runs it natively between a bundle's two compile
+// phases: "before-compile" is what Vite runs before it, "after-compile" the
+// rest. The plugins listed before it (in Vite's enforce-sorted order), and
+// what their applyToEnvironment returns.
+function noteStartCompilerPosition(list) {
+  const sorted = list.filter(Boolean).sort((a, b) => enforceRank(a) - enforceRank(b));
+  const at = sorted.findIndex((p) => typeof p.name === "string" && p.name.startsWith("tanstack-start-core::server-fn"));
+  if (at < 0) return;
+  for (const p of sorted) placedForStartCompiler.add(p);
+  for (const p of sorted.slice(0, at)) beforeStartCompiler.add(p);
+}
+function compilePhaseOf(p, rank) {
+  if (rank < 0) return "before-compile";
+  if (rank > 0) return "after-compile";
+  // Listed before the compiler, or returned by an applyToEnvironment that
+  // was: Vite's resolveEnvironmentPlugins puts returned plugins at their
+  // parent's place without sorting them again, whatever their own enforce.
+  if (beforeStartCompiler.has(p)) return "before-compile";
+  if (enforceRank(p) >= 0) return "after-compile";
+  // A "pre" plugin listed after the compiler; one from a list without it
+  // (a worker's) runs with the "pre" ones before it.
+  return placedForStartCompiler.has(p) ? "after-compile" : "before-compile";
+}
+function inTransformPhase(p, rank, phase) {
+  if (phase === "before-compile" || phase === "after-compile") return compilePhaseOf(p, rank) === phase;
+  return cssPhaseOf(p, rank) === phase;
 }
 
 function cssPhaseOf(p, rank) {
@@ -4951,11 +4989,23 @@ function cssPhaseOf(p, rank) {
   return "normal";
 }
 
-// `phase` (a cssPhaseOf slot) runs only that slot's hooks; "after-pre" runs
-// the "normal" and "post" ones (what follows Start's compiler, an `enforce:
-// "pre"` plugin oj runs natively); without one, the whole chain. Module info
-// is final after the whole chain, the "post" slot or "after-pre".
-async function transform(c, code, id, resolvedJson, phase) {
+// `phase` (a cssPhaseOf slot, or a compile phase: see compilePhaseOf) runs
+// only that slot's hooks; without one, the whole chain. Module info is final
+// after the whole chain, the "post" slot or "after-compile".
+// `priorJson` ({ original, maps, broken }), for a phase that continues a
+// chain run elsewhere (a Start bundle's "after-compile"): the code the chain
+// started from and the maps before this call, so getCombinedSourcemap still
+// collapses back to the loaded code.
+async function transform(c, code, id, resolvedJson, phase, priorJson) {
+  let prior = null;
+  if (priorJson) {
+    try {
+      prior = JSON.parse(priorJson);
+    } catch {}
+  }
+  const chainStart = typeof prior?.original === "string" ? prior.original : code;
+  const priorMaps = Array.isArray(prior?.maps) ? prior.maps : [];
+  const priorBroken = !!prior?.broken;
   const bucket = new Set();
   const chunkBucket = [];
   let resolveMap = null;
@@ -4979,7 +5029,7 @@ async function transform(c, code, id, resolvedJson, phase) {
     // on top of the plugin's enforce; getSortedPluginsByHook applies to transform
     // like to every other hook.
     for (const { p, fn: handler, rank } of pluginsWithHook(c, "transform")) {
-      if (phase && !inTransformPhase(cssPhaseOf(p, rank), phase)) continue;
+      if (phase && !inTransformPhase(p, rank, phase)) continue;
       // The strip runs BEFORE this plugin's filter is evaluated: Vite
       // evaluates a hook's filter against the code the hook would receive
       // (post-oxc for normal/post plugins), so a `filter.code` that matches
@@ -5008,11 +5058,12 @@ async function transform(c, code, id, resolvedJson, phase) {
       // Rollup's transform context adds getCombinedSourcemap: the maps of the
       // transforms before this one, collapsed back to the loaded code.
       const ctx = Object.create(ctxFor(c, p));
-      const chainSoFar = maps.slice();
-      const brokenSoFar = mapBroken != null;
+      const chainSoFar = priorMaps.concat(maps);
+      const brokenSoFar = priorBroken || mapBroken != null;
       // A transform that returned code without a map breaks a build's chain
       // (Rollup's missing link); Vite's dev _getCombinedSourcemap skips it.
-      ctx.getCombinedSourcemap = () => combineSourcemaps(id, code, chainSoFar, brokenSoFar && command === "build");
+      ctx.getCombinedSourcemap = () =>
+        combineSourcemaps(id, chainStart, chainSoFar, brokenSoFar && command === "build");
       try {
         r = await handler.call(ctx, current, id, transformOptions);
       } catch (e) {
@@ -5040,7 +5091,7 @@ async function transform(c, code, id, resolvedJson, phase) {
         mapBroken,
         emittedChunks: chunkBucket,
       });
-    if (phase && phase !== "post" && phase !== "after-pre") return result();
+    if (phase && phase !== "post" && phase !== "after-compile") return result();
     const prior = c.moduleInfoCache.get(id);
     const info = makeModuleInfo(
       id,
@@ -6156,7 +6207,7 @@ async function run(hook, args, c) {
   }
   if (hook === "transform") return gateOnBuildStart(c).then(() => transform(c, args[0], args[1], args[2]));
   if (hook === "transformPhase")
-    return gateOnBuildStart(c).then(() => transform(c, args[0], args[1], args[2], args[3]));
+    return gateOnBuildStart(c).then(() => transform(c, args[0], args[1], args[2], args[3], args[4]));
   if (hook === "resolveId") return gateOnBuildStart(c).then(() => resolveId(c, args[0], args[1]));
   if (hook === "resolveIdPhase")
     return gateOnBuildStart(c).then(() => resolveIdPhase(c, args[0], args[1], args[2], args[3]));

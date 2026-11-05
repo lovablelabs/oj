@@ -9,6 +9,8 @@
     "e2e/fixtures/**",
     "crates/oj_stylex/conformance/**",
     "crates/oj_stylex/testdata/**",
+    "crates/oj_compiler/tests/dce_parity/*.ts",
+    "crates/oj_compiler/tests/dce_parity/*.tsx",
     "crates/oj/src/build/vite_preload/**",
     "**/node_modules/**",
     "**/dist/**",

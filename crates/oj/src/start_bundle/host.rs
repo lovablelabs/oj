@@ -184,8 +184,8 @@ pub(crate) struct StartHostPlugin {
     render_chunk_enabled: Arc<tokio::sync::OnceCell<bool>>,
     warned_virtual: Mutex<HashSet<String>>,
     map_warnings: Arc<crate::build::MapWarnings>,
-    /// Start's compiler, run in its Vite slot: after the plugins' "pre"
-    /// transforms, before their "normal" and "post" ones.
+    /// Start's compiler, run in its Vite slot: between the host's
+    /// "before-compile" and "after-compile" transforms (`compilePhaseOf`).
     compile: Option<Arc<super::code::StartCodePlugin>>,
 }
 
@@ -223,11 +223,11 @@ impl StartHostPlugin {
         }
     }
 
-    /// Runs `compile` (Start's compiler) between the plugins' "pre" and
-    /// "normal" transforms, where TanStack's `enforce: "pre"` compiler sits
-    /// in Vite: a "normal" plugin (Start's import protection among them)
-    /// sees the compiled module, without the server functions' handlers or
-    /// what only they imported.
+    /// Runs `compile` (Start's compiler) where TanStack's `enforce: "pre"`
+    /// compiler sits in Vite: after the `order: "pre"` hooks and the "pre"
+    /// plugins listed before it, before the rest. A plugin after it (Start's
+    /// import protection among them) sees the compiled module, without the
+    /// server functions' handlers or what only they imported.
     pub fn compiling(mut self, compile: super::code::StartCodePlugin) -> Self {
         self.compile = Some(Arc::new(compile));
         self
@@ -625,19 +625,38 @@ impl Plugin for StartHostPlugin {
                 }
                 (None, Some(compile)) => {
                     let mut t = if pass {
-                        host.transform_phase(code, id, "pre").await.map_err(fail)?
+                        host.transform_phase(code, id, "before-compile")
+                            .await
+                            .map_err(fail)?
                     } else {
                         HostTransform::unchanged(code)
                     };
                     if let Some(out) = compile.compile(&ctx, &t.code, id).await? {
+                        // Start's compiler returns its map (generateFromAst);
+                        // oj's edits keep every line, so a line map stands in.
+                        // Should one ever move lines, the chain breaks instead
+                        // of pointing at lines that are not there.
+                        if out.matches('\n').count() == t.code.matches('\n').count() {
+                            t.maps.push(oj_compiler::line_map_json(id, &t.code, &out));
+                            t.map_plugins
+                                .push("tanstack-start-core::server-fn".to_string());
+                        } else if t.map_broken.is_none() {
+                            t.map_broken = Some("tanstack-start-core::server-fn".to_string());
+                        }
                         t.code = out;
                     }
-                    // Once the "pre" slot ran, the rest of the chain runs too:
+                    // Once the first phase ran, the rest of the chain runs too:
                     // it finishes the module's info (moduleParsed), whether or
                     // not a later plugin wants the compiled code.
                     if pass || (eligible && host.hook_wants_transform(id, &t.code)) {
+                        let prior = serde_json::json!({
+                            "original": code,
+                            "maps": t.maps,
+                            "broken": t.map_broken.is_some(),
+                        })
+                        .to_string();
                         let rest = host
-                            .transform_phase(&t.code, id, "after-pre")
+                            .transform_phase_after(&t.code, id, "after-compile", &prior)
                             .await
                             .map_err(fail)?;
                         t.then(rest);

@@ -86,19 +86,21 @@ pub fn rewrite_env_fns_with(
     }
     let mut out = code.to_string();
     let mut changed = false;
+    let mut map = crate::dce::EditMap::default();
     // A factory call inside a kept function is compiled on the next pass,
     // once the call around it is gone.
     for _ in 0..16 {
-        let Some((next, nested)) = rewrite_outermost(&out, path, env, reexported)? else {
+        let Some((next, nested, step)) = rewrite_outermost(&out, path, env, reexported)? else {
             break;
         };
         out = next;
+        map.push(step);
         changed = true;
         if !nested {
             break;
         }
     }
-    Ok(changed.then(|| drop_dead_bindings(code, out, path)))
+    Ok(changed.then(|| drop_dead_bindings(code, out, path, &map)))
 }
 
 /// Whether `code` names one of the factories (the compile's cheap gate).
@@ -232,7 +234,7 @@ fn rewrite_outermost(
     path: &str,
     env: Env,
     reexported: &[(String, String)],
-) -> Result<Option<(String, bool)>, String> {
+) -> Result<Option<(String, bool, Vec<crate::dce::Replaced>)>, String> {
     #[cfg(test)]
     tests::PASSES.with(|n| n.set(n.get() + 1));
     let allocator = Allocator::default();
@@ -279,29 +281,49 @@ fn rewrite_outermost(
     if outermost.is_empty() {
         return Ok(None);
     }
-    Ok(Some((apply(code, outermost), nested)))
+    let (out, step) = apply(code, outermost);
+    Ok(Some((out, nested, step)))
 }
 
 /// `code` with `edits` (sorted, disjoint) applied, each padded with the
-/// newlines it removed.
-fn apply(code: &str, edits: Vec<Edit>) -> String {
+/// newlines it removed, and what each replacement did.
+fn apply(code: &str, edits: Vec<Edit>) -> (String, Vec<crate::dce::Replaced>) {
     let mut out = String::with_capacity(code.len());
+    let mut step = Vec::with_capacity(edits.len());
     let mut last = 0;
-    for Edit { start, end, text } in edits {
+    for Edit {
+        start,
+        end,
+        text,
+        moved,
+    } in edits
+    {
         out.push_str(&code[last..start]);
         let lost = code[start..end].matches('\n').count();
         let kept = text.matches('\n').count();
+        let padding = lost.saturating_sub(kept);
+        step.push(crate::dce::Replaced {
+            start,
+            end,
+            len: text.len() + padding,
+            moved,
+        });
         out.push_str(&text);
-        out.push_str(&"\n".repeat(lost.saturating_sub(kept)));
+        out.push_str(&"\n".repeat(padding));
         last = end;
     }
     out.push_str(&code[last..]);
-    out
+    (out, step)
 }
 
 /// TanStack's dead-code pass, run after the edits (see [`crate::dce`]).
-pub(crate) fn drop_dead_bindings(before: &str, after: String, path: &str) -> String {
-    crate::dce::drop_dead_bindings(before, after, path)
+pub(crate) fn drop_dead_bindings(
+    before: &str,
+    after: String,
+    path: &str,
+    map: &crate::dce::EditMap,
+) -> String {
+    crate::dce::drop_dead_bindings(before, after, path, map)
 }
 
 fn source_type(path: &str) -> SourceType {
@@ -437,6 +459,9 @@ struct Edit {
     start: usize,
     end: usize,
     text: String,
+    /// The stretches of the code `text` carries over: `(start, end, offset
+    /// in text)`.
+    moved: Vec<crate::dce::Moved>,
 }
 
 struct Finder<'b> {
@@ -548,7 +573,12 @@ impl Finder<'_> {
     /// The client's middleware chain `start..end` with the links Start's
     /// compiler drops cut out, or None when it drops none. None too (and the
     /// error recorded) for a dropped validator link without its validator.
-    fn client_middleware(&mut self, start: usize, end: usize, links: &[Link]) -> Option<String> {
+    fn client_middleware(
+        &mut self,
+        start: usize,
+        end: usize,
+        links: &[Link],
+    ) -> Option<(String, Vec<crate::dce::Moved>)> {
         if !links
             .last()
             .is_some_and(|l| MIDDLEWARE_CANDIDATES.contains(&l.name))
@@ -574,23 +604,33 @@ impl Finder<'_> {
         }
         dropped.sort_by_key(|l| l.from);
         let mut text = String::new();
+        let mut moved = Vec::new();
         let mut cursor = start;
         for link in dropped {
+            moved.push((cursor, link.from, text.len()));
             text.push_str(&self.code[cursor..link.from]);
             self.kept.push((cursor, link.from));
             cursor = link.end;
         }
+        moved.push((cursor, end, text.len()));
         text.push_str(&self.code[cursor..end]);
         self.kept.push((cursor, end));
-        Some(text)
+        Some((text, moved))
     }
 
     /// `arg` as replacement text, or `error` recorded when it is not one.
-    fn arg_text(&mut self, arg: Arg, error: impl FnOnce() -> String) -> Option<String> {
+    fn arg_text(
+        &mut self,
+        arg: Arg,
+        error: impl FnOnce() -> String,
+    ) -> Option<(String, Vec<crate::dce::Moved>)> {
         match arg {
             Arg::Expr(start, end) => {
                 self.kept.push((start, end));
-                Some(format!("({})", &self.code[start..end]))
+                Some((
+                    format!("({})", &self.code[start..end]),
+                    vec![(start, end, 1)],
+                ))
             }
             Arg::NotAFunction => {
                 self.error.get_or_insert_with(error);
@@ -620,21 +660,31 @@ impl<'a> Visit<'a> for Finder<'_> {
                 Env::Client => (chain.client, "client"),
             };
             let text = match side {
-                None => Some("(() => {})".to_string()),
+                None => Some(("(() => {})".to_string(), Vec::new())),
                 Some(arg) => self.arg_text(arg, || {
                     format!("createIsomorphicFn().{name}(func) must be called with a function!")
                 }),
             };
-            if let Some(text) = text {
-                self.edits.push(Edit { start, end, text });
+            if let Some((text, moved)) = text {
+                self.edits.push(Edit {
+                    start,
+                    end,
+                    text,
+                    moved,
+                });
             }
         } else if let Some((_, links, inner)) = self.middleware_links(call) {
             // A call inside a chain is one of its links, never a candidate.
             let outermost = !self.chain_inner.contains(&(span.start, span.end));
             self.chain_inner.extend(inner);
             if outermost && self.env == Env::Client {
-                if let Some(text) = self.client_middleware(start, end, &links) {
-                    self.edits.push(Edit { start, end, text });
+                if let Some((text, moved)) = self.client_middleware(start, end, &links) {
+                    self.edits.push(Edit {
+                        start,
+                        end,
+                        text,
+                        moved,
+                    });
                 }
             }
         } else if let Some(factory @ (Factory::ServerOnly | Factory::ClientOnly)) =
@@ -650,13 +700,21 @@ impl<'a> Visit<'a> for Finder<'_> {
                 })
             } else {
                 let side = name.to_lowercase();
-                Some(format!(
-                    "(() => {{ throw new Error({:?}); }})",
-                    format!("create{name}OnlyFn() functions can only be called on the {side}!")
+                Some((
+                    format!(
+                        "(() => {{ throw new Error({:?}); }})",
+                        format!("create{name}OnlyFn() functions can only be called on the {side}!")
+                    ),
+                    Vec::new(),
                 ))
             };
-            if let Some(text) = text {
-                self.edits.push(Edit { start, end, text });
+            if let Some((text, moved)) = text {
+                self.edits.push(Edit {
+                    start,
+                    end,
+                    text,
+                    moved,
+                });
             }
         }
         walk::walk_call_expression(self, call);
@@ -913,6 +971,20 @@ mod tests {
         let server = rewrite_env_fns(code, "a.js", Env::Server).unwrap().unwrap();
         assert!(server.contains("import { db } from \"./db\";"), "{server}");
         assert!(server.contains("function load()"), "{server}");
+    }
+
+    // The client branch moves up several lines into the call's place; the
+    // dead-code pass follows it there. A declaration in it that nothing read
+    // before the edit is not a candidate (Babel's candidates are the nodes,
+    // which the edit moves), so its side effect stays, while one only the
+    // server branch held goes with that branch.
+    #[test]
+    fn a_moved_branch_keeps_what_it_declared() {
+        let code = "import { createIsomorphicFn } from \"@tanstack/react-start\";\nexport const f = createIsomorphicFn()\n  .server(() => {\n    const a = 1;\n    return a;\n  })\n  .client(() => {\n    let z = 0;\n    const a = side();\n    return z;\n  });\n";
+        let client = rewrite_env_fns(code, "a.ts", Env::Client).unwrap().unwrap();
+        assert!(client.contains("const a = side();"), "{client}");
+        assert!(client.contains("let z = 0;"), "{client}");
+        assert!(!client.contains("const a = 1;"), "{client}");
     }
 
     #[test]
