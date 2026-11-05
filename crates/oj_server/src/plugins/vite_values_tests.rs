@@ -185,6 +185,23 @@ async fn spawn_live_host(tag: &str) -> (PathBuf, std::sync::Arc<PluginHost>) {
     (root, host)
 }
 
+// The push dispatcher must not keep its host alive: a strong self-Arc there
+// made every dropped host (and its isolate) immortal. `oj build --watch`
+// creates and drops one host per rebuild, so this was a per-build engine leak.
+#[tokio::test]
+async fn dropping_the_last_host_handle_releases_the_host() {
+    let (_root, host) = spawn_live_host("drop").await;
+    let weak = std::sync::Arc::downgrade(&host);
+    drop(host);
+    for _ in 0..200 {
+        if weak.upgrade().is_none() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("PluginHost is still strongly referenced after its last handle was dropped");
+}
+
 /// Rewind respawn spacing after an induced death: these tests target revive
 /// semantics, not keeper timing.
 fn clear_respawn_spacing(host: &PluginHost) {
