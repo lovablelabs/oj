@@ -421,6 +421,9 @@ impl Plugin for DepBundlePlugin {
 struct Built {
     file: String,
     cjs: bool,
+    /// The entry chunk's static chunk imports (rolldown's `chunk.imports`,
+    /// Vite's too): what its fileHash covers.
+    imports: Vec<String>,
 }
 
 impl Prebundle {
@@ -476,9 +479,11 @@ impl Prebundle {
                 }
                 None => (b.file.clone(), b.cjs || forced),
             };
-            let file_hash = std::fs::read(self.out_dir.join(&file))
-                .map(|bytes| blake3::hash(&bytes).to_hex()[..16].to_string())
-                .unwrap_or_default();
+            // Vite's fileHash: the served file and its entry chunk's imports,
+            // so a rerun that moves a dep into another chunk reloads and one
+            // that only rewrites an entry's code does not. A facade's entry
+            // chunk is its bundle, whose imports are what a rerun moves.
+            let file_hash = entry_hash(&file, &b.imports);
             out.insert(
                 dep.clone(),
                 Prebuilt {
@@ -551,6 +556,7 @@ impl Prebundle {
                 Built {
                     file: chunk.filename.to_string(),
                     cjs: needs_interop(facade, &exports),
+                    imports: chunk.imports.iter().map(|i| i.to_string()).collect(),
                 },
             );
         }
@@ -652,6 +658,17 @@ fn is_export_identifier(name: &str) -> bool {
     let mut chars = name.chars();
     matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_' || c == '$')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+}
+
+/// A served entry's fileHash, Vite's `getHash(metadata.hash + file +
+/// JSON.stringify(chunk.imports))`: the file the dep is served as and its
+/// entry chunk's imports, never the chunk's code. `metadata.hash` is left out:
+/// it is fixed for an optimizer's life (and a cached manifest loads only under
+/// its own), so it never tells two hashes apart.
+pub(super) fn entry_hash(served: &str, imports: &[String]) -> String {
+    let imports = serde_json::to_string(imports).unwrap_or_default();
+    let hash = blake3::hash(format!("{served}{imports}").as_bytes());
+    hash.to_hex()[..16].to_string()
 }
 
 const DEP_NAMES_JS: &str = include_str!("../assets/dep-names.mjs");

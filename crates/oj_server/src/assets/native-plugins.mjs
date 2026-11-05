@@ -46,7 +46,10 @@ export const OJ_UNSUPPORTED_PLUGIN_NAMES = new Set(["vite-plugin-checker"]);
 // oj's work. A name that is not a string (`name: null` on a disabled
 // factory) is never one of them.
 export function isReimplemented(name) {
-  return typeof name === "string" && (name.startsWith("vite:") || /^tanstack[-:]/.test(name));
+  if (typeof name !== "string") return false;
+  // Start's import protection has no oj counterpart: it runs as Start ships it.
+  if (name.startsWith("tanstack-start-core:import-protection")) return false;
+  return name.startsWith("vite:") || /^tanstack[-:]/.test(name);
 }
 
 // Vite's asyncFlatten over arraify, falsy entries dropped: plugin options may

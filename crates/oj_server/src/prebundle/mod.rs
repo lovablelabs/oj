@@ -113,8 +113,9 @@ pub(crate) struct Prebuilt {
     /// The file under the deps dir.
     pub file: String,
     pub needs_interop: bool,
-    /// Vite's fileHash: a rerun whose served entries all hash the same
-    /// commits without a reload. Empty for a planned, not yet bundled, dep.
+    /// Vite's fileHash, over the served file and its entry chunk's imports: a
+    /// rerun whose served entries all hash the same commits without a reload.
+    /// Empty for a planned, not yet bundled, dep.
     pub file_hash: String,
 }
 

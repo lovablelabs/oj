@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-04
+
+### Fixed
+
+- A dependency the startup scan missed (one an edit brings in, such as a Radix component) no longer leaves the page with two copies of React. Its re-optimization can move React into a new chunk, but React's prebundled entry is served through a named-export facade whose own bytes never change, so oj saw no changed entry and skipped the reload (Vite skips it only when no entry's chunk imports changed). The page kept the old React while the new dependency imported the new one: `Invalid hook call` and `Cannot read properties of null (reading 'useState')`. An entry's hash now covers the bundle behind its facade, so the rerun reloads.
+- A TanStack Start server function imported by its source path in dev (`import("/src/x.functions.ts")` from a browser test) can be called. Start's Vite plugin compiles such a module with its own dev id, `base64url({ file, export })`, which oj's resolver did not know, so the call failed with `Server function info not found`. The resolver now maps each server function under both ids.
+- A dependency re-optimization reloads the page only when a served dep's chunk imports change, as in Vite (its `fileHash` is the entry's file and `JSON.stringify(chunk.imports)`). oj hashed the entry's whole code, so a rerun that only rewrote an entry's code, with the same chunks, reloaded where Vite does not.
+- A page oj did not serve itself (a browser-test harness, an `<iframe>` fixture) can mount the app's components with Vite's React Refresh preamble. `/@react-refresh`, which plugin-react serves and its documented preamble imports, answered 404. It now serves oj's refresh runtime (re-exported, so the page shares the instance oj's modules use). A component module checks for `window.$RefreshReg$`, as Vite's refresh wrapper does, instead of oj's own flag, so the preamble's stubs alone are enough as they are under Vite. Before, both failed with `oj: Fast Refresh preamble missing`.
+- The resolved config plugins get always has `css`, with Vite's defaults (`transformer: "postcss"`, `preprocessorMaxWorkers: true`, `devSourcemap: false`) under the app's own `css`. When the app's Vite resolve failed, it had none, and `@tailwindcss/vite`, which reads `config?.css.devSourcemap` in `configResolved`, threw: the app's stylesheet answered 500 and the page rendered unstyled.
+- When the app's Vite resolve fails (or the app has no Vite), the config the plugin host falls back to keeps the config file's own values under oj's, as Vite's `resolveConfig` merges the file under the inline config. It held only oj's values, so a file's `css` (and its other settings) never reached the plugins.
+- A `vite.config` app's per-environment arrays (`environments.ssr.resolve.conditions`, `noExternal`) reach plugins once. oj passed the file's `environments` to the plugin host on top of a config that already held the file, so each entry appeared twice.
+- With `css.transformer: "lightningcss"`, the resolved config plugins get carries Vite's default `css.lightningcss.targets` (its baseline browsers: Chrome and Edge 111, Firefox 114, Safari and iOS 16.4) unless the app sets its own.
+- TanStack Start's import protection runs under oj, as Start ships it (its `tanstack-start-core:import-protection` plugins, which oj had left out with the Start plugins it reimplements). `oj build` let a client-used `*.server.*` file, a `@tanstack/<framework>-start/server` import or a `server-only` marked module through, and shipped that server code in the client bundle; it now fails with Start's error, as `vite build` does (a `*.client.*` file in server code alike). In dev the import is mocked and its use logged in the page, as under `vite dev`, where oj served the real module. `importProtection` options apply. Start's config context, which the plugin reads, is filled by running Start's config hook for its side effect only. If that config cannot be read, `oj build` fails rather than ship unchecked, and `oj dev` warns and runs without it.
+- Start client bundles drop a middleware's server half, as Start's compiler does (`handleCreateMiddleware`): from a `createMiddleware()` chain (or one on a module variable holding a middleware) whose outermost call is `.server(..)`, `.client(..)` or `.createMiddlewares(..)`, the innermost `.server(..)`, `.validator(..)` and `.inputValidator(..)` links, and with them the imports only those used. The client shipped a middleware's server half, `@tanstack/react-start/server` imports included.
+- A plugin's `this.resolve` inside a Start bundle takes Vite's order: the hooks before Vite's resolver, the resolver, then the normal hooks. It ran every hook before the resolver, so a normal plugin could answer an import the resolver resolves.
+- A plugin's transform hook has `this.getCombinedSourcemap()` (Rollup's): the maps of the module's earlier transforms collapsed back to the loaded code. It was missing, so a plugin pointing at a location (import protection's code frame) pointed at compiled code.
+
+### Changed
+
+- No library oj builds embeds its absolute source path (`oj_tsrs_vfs`'s `testing_lib_path` is relative), so oj builds under Bazel's rules_rs without patches to its own crates; a CI job keeps it that way.
+
 ## [0.4.0] - 2026-11-01
 
 ### Added

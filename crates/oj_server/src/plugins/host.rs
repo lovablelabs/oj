@@ -2209,6 +2209,12 @@ impl HostCore {
             VITE_HTML_JS,
         )
         .map_err(|e| e.to_string())?;
+        ensure_asset(
+            oj_cache::cache_root(&self.boot.root).as_path(),
+            "sourcemap-combine.mjs",
+            SOURCEMAP_COMBINE_JS,
+        )
+        .map_err(|e| e.to_string())?;
         super::ensure_glob_assets(oj_cache::cache_root(&self.boot.root).as_path())
             .map_err(|e| e.to_string())?;
         if std::fs::read(&script).ok().as_deref() != Some(PLUGIN_HOST_JS.as_bytes()) {

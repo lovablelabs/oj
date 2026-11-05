@@ -35,6 +35,7 @@ import {
   resolveHtmlTransforms,
   transformDevHtml,
 } from "./vite-html.mjs";
+import { combineSourcemaps } from "./sourcemap-combine.mjs";
 import readline from "node:readline";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { format as formatUtil, stripVTControlCharacters } from "node:util";
@@ -568,6 +569,46 @@ function fillResolvedServerScalars(server) {
   return server;
 }
 
+// Vite's ESBUILD_BASELINE_WIDELY_AVAILABLE_TARGET, the build target its
+// `'baseline-widely-available'` default stands for.
+const BASELINE_WIDELY_AVAILABLE_TARGET = ["chrome111", "edge111", "firefox114", "safari16.4", "ios16.4"];
+// Vite's convertTargets (plugins/css.ts) for browser-version targets: each
+// esbuild `<browser><major>[.<minor>]` becomes lightningcss's
+// `major << 16 | minor << 8`, the lowest version per browser kept. The `esYYYY`
+// expansion is left out: no default oj fills in names one.
+function lightningcssTargets(esbuildTarget) {
+  const browsers = {
+    chrome: "chrome",
+    edge: "edge",
+    firefox: "firefox",
+    hermes: false,
+    ie: "ie",
+    ios: "ios_saf",
+    node: false,
+    opera: "opera",
+    rhino: false,
+    safari: "safari",
+  };
+  const targets = {};
+  for (const entry of esbuildTarget) {
+    if (entry === "esnext") continue;
+    const index = entry.search(/\d/);
+    const browser = index >= 0 ? browsers[entry.slice(0, index)] : undefined;
+    if (browser === false) continue;
+    const [major, minor = 0] =
+      index >= 0
+        ? entry
+            .slice(index)
+            .split(".")
+            .map((v) => parseInt(v, 10))
+        : [];
+    if (!browser || Number.isNaN(major) || Number.isNaN(minor)) throw new Error(`Unsupported target "${entry}"`);
+    const version = (major << 16) | (minor << 8);
+    if (!targets[browser] || version < targets[browser]) targets[browser] = version;
+  }
+  return targets;
+}
+
 function withResolvedDefaults(config) {
   const c = config ?? {};
   const merged = mergeConfigLite(
@@ -597,6 +638,9 @@ function withResolvedDefaults(config) {
         chunkSizeWarningLimit: 500,
       },
       server: { headers: {} },
+      // Vite's resolveCSSOptions defaults, the user's css merged over them:
+      // @tailwindcss/vite reads `config?.css.devSourcemap` in configResolved.
+      css: { transformer: "postcss", preprocessorMaxWorkers: true, devSourcemap: false },
       define: {},
       resolve: {},
       optimizeDeps: {},
@@ -611,6 +655,12 @@ function withResolvedDefaults(config) {
     },
     c,
   );
+  // resolveCSSOptions: the lightningcss transformer gets Vite's baseline
+  // browser targets unless the user set their own.
+  if (merged.css?.transformer === "lightningcss") {
+    merged.css.lightningcss ??= {};
+    merged.css.lightningcss.targets ??= lightningcssTargets(BASELINE_WIDELY_AVAILABLE_TARGET);
+  }
   if (typeof merged.createResolver !== "function") merged.createResolver = makeCreateResolver(merged);
   // Vite's resolved config ALWAYS carries an absolute `cacheDir`
   // (config.ts: user value resolved from root, else `node_modules/.vite`
@@ -1951,18 +2001,26 @@ function pluginContext(c) {
       // plugin per environment from that environment's config.resolve).
       const [envName, consumer] = environmentOf(c);
       if (c.bundle) {
-        const viaPlugin = await chain(null);
-        if (viaPlugin != null) return viaPlugin;
-        const pre = transformResolveStore.getStore();
-        if (pre && pre.map && pre.map.has(source)) {
-          const id = pre.map.get(source);
+        // The order the bundle's own resolve takes (StartHostPlugin's
+        // resolve_id), which is Vite's: the hooks before its resolver, the
+        // bundler's resolver (aliases included), then the rest of the chain,
+        // so a normal plugin never answers an id the resolver resolves.
+        const viaPre = await chain("pre");
+        if (viaPre != null) return viaPre;
+        const core = await (async () => {
+          const pre = transformResolveStore.getStore();
+          if (pre && pre.map && pre.map.has(source)) {
+            const id = pre.map.get(source);
+            return id == null ? null : { id };
+          }
+          const r = await asyncRpc("bundlerResolve", [source, importer ?? "", !!(options && options.isEntry)], c.id);
+          // Outside a running bundle (no bundler to ask) oj's resolver answers.
+          if (!r || !r.fallback) return r ?? null;
+          const id = await ctxRpc("resolve", [source, importer ?? "", envName, consumer]);
           return id == null ? null : { id };
-        }
-        const r = await asyncRpc("bundlerResolve", [source, importer ?? "", !!(options && options.isEntry)], c.id);
-        // Outside a running bundle (no bundler to ask) oj's resolver answers.
-        if (!r || !r.fallback) return r ?? null;
-        const id = await ctxRpc("resolve", [source, importer ?? "", envName, consumer]);
-        return id == null ? null : { id };
+        })();
+        if (core != null) return core;
+        return chain("post");
       }
       // Vite's chain: the `order: "pre"` hooks, then the alias plugin, whose
       // match resolves the aliased id again skipping itself, then the
@@ -2199,16 +2257,49 @@ async function runConfigHook(
 // configResolved over `list` with `resolved`, on Vite's minimal context.
 async function runConfigResolved(list, resolved, container = main) {
   const resolvedContext = minimalContext({ watchMode: command === "serve" });
+  await fillStartConfigContext(list, resolved, resolvedContext);
   for (const { p, fn } of hooksOf(list, "configResolved")) {
     initStage(`configResolved:${p.name ?? "?"}`);
     try {
       await fn.call(resolvedContext, resolved);
     } catch (e) {
       if (!ojStartMode) throw e;
+      if (isImportProtection(p)) disableImportProtection(list, e);
       container.configHookSkipped = true;
       process.stderr.write(`${OJ} plugin host: configResolved(${p.name ?? "?"}) skipped: ${(e && e.message) || e}\n`);
     }
   }
+}
+// Start's import protection (its resolve/transform plugin pair) runs as
+// Start ships it. It reads Start's config context, which the
+// `tanstack-start-core:config` plugin fills in its config hook; oj leaves that
+// plugin out (oj applies the config it returns itself), so the hook runs once
+// for that side effect alone and its answer is dropped.
+const IMPORT_PROTECTION = "tanstack-start-core:import-protection";
+const isImportProtection = (p) => typeof p?.name === "string" && p.name.startsWith(IMPORT_PROTECTION);
+const startConfigFilled = new WeakSet();
+async function fillStartConfigContext(list, resolved, ctx) {
+  if (!list.some(isImportProtection)) return;
+  const startConfig = allPlugins.find((p) => p?.name === "tanstack-start-core:config");
+  const hook = startConfig && hookFn(startConfig, "config");
+  if (!hook || startConfigFilled.has(startConfig)) return;
+  startConfigFilled.add(startConfig);
+  try {
+    await hook.call(ctx, plainCopy(resolved), { command, mode: env.mode, isSsrBuild: false, isPreview: false });
+  } catch (e) {
+    // Import protection's configResolved then fails too, and says so.
+    process.stderr.write(`${OJ} plugin host: Start's config hook failed: ${(e && e.message) || e}\n`);
+  }
+}
+// A pair that cannot read Start's config would check against an empty root.
+// A build fails, as Vite's does on the same error: it would ship what the
+// plugin exists to keep out. A dev server leaves both plugins out of every
+// environment and says so.
+function disableImportProtection(list, e) {
+  const reason = (e && e.message) || e;
+  if (command === "build") throw new Error(`Start import protection could not read its config: ${reason}`);
+  for (const p of list) if (isImportProtection(p)) p.applyToEnvironment = () => false;
+  process.stderr.write(`${OJ} plugin host: Start import protection is off, its config did not resolve: ${reason}\n`);
 }
 // Vite's resolveConfig over `rc` (the app's Vite resolve, or null) for the
 // plugins of `list`: their config hooks, then every environment's
@@ -2222,12 +2313,23 @@ async function hostConfig(rc, list, { replay = false, container = main } = {}) {
   const rebase = !rc;
   // A copy: the hooks edit it in place, and every hostConfig starts from it.
   let config = plainCopy(initial.config ?? {});
+  // A vite.config app's `environments` in oj's values are the file's own,
+  // read verbatim, and both bases below already hold the file (a resolve
+  // only exists for a loaded file): merged again they would concatenate
+  // every per-environment array (`resolve.conditions`, `noExternal`) twice.
+  if (userViteConfig) delete config.environments;
   if (rc) {
     // The user's resolved config is the base; oj's own values (root, define,
     // server, environments) overlay it, but for the CLI-level ones Vite's
     // resolve already took in; the plugin list is replaced below.
     const { plugins: _fresh, ...base } = rc;
     config = mergeConfigLite(base, withoutCliInline(config));
+  } else if (userViteConfig) {
+    // No resolve to start from (it failed, or the app has no Vite): the
+    // loaded file under oj's values, as Vite's resolveConfig merges the file
+    // under the inline config before any config hook runs.
+    const { plugins: _file, ...file } = plainCopy(userViteConfig);
+    config = mergeConfigLite(file, config);
   }
   // Coerce experimental.bundledDev off BEFORE the config/configResolved hooks
   // run, so TanStack's start-manifest-plugin emits the standard dev client entry
@@ -4897,8 +4999,16 @@ async function transform(c, code, id, resolvedJson, phase) {
       }
       if (!hookTransformMatches(p.transform, id, current)) continue;
       let r;
+      // Rollup's transform context adds getCombinedSourcemap: the maps of the
+      // transforms before this one, collapsed back to the loaded code.
+      const ctx = Object.create(ctxFor(c, p));
+      const chainSoFar = maps.slice();
+      const brokenSoFar = mapBroken != null;
+      // A transform that returned code without a map breaks a build's chain
+      // (Rollup's missing link); Vite's dev _getCombinedSourcemap skips it.
+      ctx.getCombinedSourcemap = () => combineSourcemaps(id, code, chainSoFar, brokenSoFar && command === "build");
       try {
-        r = await handler.call(ctxFor(c, p), current, id, transformOptions);
+        r = await handler.call(ctx, current, id, transformOptions);
       } catch (e) {
         throw decoratePluginError(e, p, id);
       }

@@ -87,3 +87,83 @@ test("config and configResolved expose config.plugins and build defaults", async
     fx.cleanup();
   }
 });
+
+// Vite's resolved config always carries `css` (resolveCSSOptions: transformer
+// "postcss", preprocessorMaxWorkers true, devSourcemap false, the user's own
+// options over them). @tailwindcss/vite reads `config?.css.devSourcemap` in
+// configResolved, which throws without it, and its stylesheet then 500s.
+async function resolvedCss(userCss) {
+  const fx = tmpProject({ prefix: "oj-cfg-css-" });
+  fx.write(
+    "oj.plugins.mjs",
+    `let seen = null;
+     export default [
+       {
+         name: "reads-css",
+         configResolved(config) {
+           const devSourcemap = config?.css.devSourcemap ?? false;
+           seen = { css: config.css, devSourcemap };
+         },
+         transform(code, id) {
+           if (id.endsWith("probe.js")) return "export default " + JSON.stringify(seen) + ";";
+           return null;
+         },
+       },
+     ];\n`,
+  );
+  const host = rpcSidecar("plugin-host.mjs", {
+    args: [
+      path.join(fx.root, "oj.plugins.mjs"),
+      JSON.stringify({
+        config: { root: fx.root, ...(userCss ? { css: userCss } : {}) },
+        env: { command: "serve", mode: "development" },
+        environment: { name: "client" },
+      }),
+    ],
+    env: { OJ_CACHE_ROOT: fx.root },
+    cwd: fx.root,
+  });
+  try {
+    const res = await host.send({ id: 1, hook: "transform", args: ["", path.join(fx.root, "probe.js")] });
+    return JSON.parse(
+      JSON.parse(res.result)
+        .code.replace(/^export default /, "")
+        .replace(/;$/, ""),
+    );
+  } finally {
+    host.close();
+    fx.cleanup();
+  }
+}
+
+test("configResolved sees Vite's css defaults", async () => {
+  const seen = await resolvedCss(null);
+  assert.ok(seen, "configResolved ran without throwing");
+  assert.deepEqual(seen.css, { transformer: "postcss", preprocessorMaxWorkers: true, devSourcemap: false });
+  assert.equal(seen.devSourcemap, false);
+});
+
+test("configResolved keeps the user's css over the defaults", async () => {
+  const seen = await resolvedCss({ devSourcemap: true, modules: { localsConvention: "camelCase" } });
+  assert.equal(seen.devSourcemap, true);
+  assert.equal(seen.css.transformer, "postcss");
+  assert.deepEqual(seen.css.modules, { localsConvention: "camelCase" });
+});
+
+// resolveCSSOptions: the lightningcss transformer gets Vite's baseline
+// browser targets (convertTargets of chrome111, edge111, firefox114,
+// safari16.4, ios16.4), the values Vite 8's own resolveConfig produces; the
+// user's own targets stay as they are.
+test("configResolved sees Vite's lightningcss targets", async () => {
+  const seen = await resolvedCss({ transformer: "lightningcss" });
+  assert.deepEqual(seen.css.lightningcss, {
+    targets: { chrome: 7274496, edge: 7274496, firefox: 7471104, safari: 1049600, ios_saf: 1049600 },
+  });
+  const own = await resolvedCss({
+    transformer: "lightningcss",
+    lightningcss: { targets: { chrome: 1 }, drafts: { customMedia: true } },
+  });
+  assert.deepEqual(own.css.lightningcss, { targets: { chrome: 1 }, drafts: { customMedia: true } });
+  const postcss = await resolvedCss({ devSourcemap: true });
+  assert.equal(postcss.css.lightningcss, undefined, "postcss keeps no lightningcss options");
+});

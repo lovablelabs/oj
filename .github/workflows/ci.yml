@@ -18,6 +18,17 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: make lint
 
+  # rules_typescript builds oj under Bazel, whose rules_rs rejects an rlib that
+  # embeds the build's absolute path.
+  source-paths:
+    name: no library bakes in its source path
+    runs-on: ubuntu-latest-m-public
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: tools/check-baked-source-paths.sh
+
   unit:
     name: unit tests
     runs-on: ubuntu-latest-m-public

@@ -1221,3 +1221,98 @@ fn static_react_export_names_match_requiring_them() {
         }
     }
 }
+
+/// Vite's fileHash covers the served file and its entry chunk's imports, in
+/// order, never the chunk's code. A facade is hashed by its bundle's imports.
+#[test]
+fn an_entry_hash_is_its_file_and_chunk_imports() {
+    use super::bundle::entry_hash;
+    let imports = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let base = entry_hash("react__oj_named.mjs", &imports(&["react-aaaa.mjs"]));
+    assert_eq!(base.len(), 16);
+    assert_eq!(
+        base,
+        entry_hash("react__oj_named.mjs", &imports(&["react-aaaa.mjs"])),
+        "deterministic"
+    );
+    assert_ne!(
+        base,
+        entry_hash("react__oj_named.mjs", &imports(&["react-bbbb.mjs"])),
+        "a chunk import moved"
+    );
+    assert_ne!(
+        base,
+        entry_hash("react.mjs", &imports(&["react-aaaa.mjs"])),
+        "another file"
+    );
+    // `JSON.stringify(chunk.imports)`: order counts, and an empty list is `[]`.
+    assert_ne!(
+        entry_hash("a.mjs", &imports(&["x.mjs", "y.mjs"])),
+        entry_hash("a.mjs", &imports(&["y.mjs", "x.mjs"]))
+    );
+    assert_ne!(
+        entry_hash("a.mjs", &[]),
+        entry_hash("a.mjs", &imports(&["x.mjs"]))
+    );
+}
+
+/// A rerun that rewrites an entry's code but not its chunk imports keeps its
+/// fileHash (no reload, as in Vite), and one that splits the entry's code into
+/// a shared chunk changes it (a reload).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rerun_reloads_on_moved_chunk_imports_not_on_code() {
+    let app = App::new();
+    app.esm(
+        "late-a",
+        &[
+            ("index.js", "import { shared } from \"./shared.js\";\nexport const a = () => shared + \"-v1\";\n"),
+            ("shared.js", "export const shared = { id: \"s\" };\n"),
+        ],
+    );
+    let only_a = || OptimizeInput {
+        include: vec!["late-a".into()],
+        ..Default::default()
+    };
+    let first = app.optimize(only_a()).await;
+    let first_code = app.read_out(&first["late-a"].file);
+
+    // The dep's code changes; its bundle still imports no chunk.
+    app.write(
+        "node_modules/late-a/index.js",
+        "import { shared } from \"./shared.js\";\nexport const a = () => shared + \"-v2\";\n",
+    );
+    let edited = app.optimize(only_a()).await;
+    assert_ne!(
+        first_code,
+        app.read_out(&edited["late-a"].file),
+        "the code moved"
+    );
+    assert_eq!(
+        first["late-a"].file_hash, edited["late-a"].file_hash,
+        "same chunk imports, same fileHash"
+    );
+
+    // A second dep sharing `shared.js` splits it into a chunk both import.
+    app.esm(
+        "late-b",
+        &[(
+            "index.js",
+            "export { shared as b } from \"late-a/shared.js\";\n",
+        )],
+    );
+    let both = app
+        .optimize(OptimizeInput {
+            include: vec!["late-a".into(), "late-b".into()],
+            ..Default::default()
+        })
+        .await;
+    let code = app.read_out(&both["late-a"].file);
+    assert!(
+        code.contains("from \"./"),
+        "late-a now imports a chunk: {code}"
+    );
+    assert_ne!(
+        edited["late-a"].file_hash, both["late-a"].file_hash,
+        "a moved chunk import changes the fileHash"
+    );
+}
