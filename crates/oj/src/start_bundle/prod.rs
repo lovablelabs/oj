@@ -215,7 +215,8 @@ fn client_plugins(
             .compiling(
                 StartCodePlugin::new(&start.root, target.clone())
                     .with_route_tree(start.route_tree())
-                    .with_alias(h.facts.alias.clone()),
+                    .with_alias(h.facts.alias.clone())
+                    .routes_split_in_host(true),
             ),
         ));
     }

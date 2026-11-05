@@ -46,6 +46,9 @@ pub(crate) struct StartCodePlugin {
     /// slot (between the plugins' "pre" and "normal" transforms), so this
     /// plugin leaves it out.
     compiled_in_host: bool,
+    /// The plugin host runs Start's code splitter on this bundle's routes,
+    /// and so deletes the client's server-only route options itself.
+    routes_split_in_host: bool,
     /// The generated route tree (`StartConfig::route_tree`).
     route_tree: PathBuf,
     /// The route files the generated route tree imports (extensionless), by
@@ -68,6 +71,7 @@ impl StartCodePlugin {
             glob_scopes: None,
             alias: Vec::new(),
             compiled_in_host: false,
+            routes_split_in_host: false,
             route_tree: root.join("src").join("routeTree.gen.ts"),
             route_files: Mutex::new(None),
             warned: Mutex::new(HashSet::new()),
@@ -87,6 +91,11 @@ impl StartCodePlugin {
 
     pub fn compiled_in_host(mut self, yes: bool) -> Self {
         self.compiled_in_host = yes;
+        self
+    }
+
+    pub fn routes_split_in_host(mut self, yes: bool) -> Self {
+        self.routes_split_in_host = yes;
         self
     }
 
@@ -318,8 +327,14 @@ impl StartCodePlugin {
         // Start's router plugin then runs the code splitter's reference
         // compile on the client's route files with `deleteNodes: ["ssr",
         // "server", "headers"]`: a route's server handlers, and what only
-        // they used, never reach the browser.
+        // they used, never reach the browser. Where a plugin host runs Start's
+        // own splitter, it deletes them itself, after it has counted what
+        // they share with the component (`computeSharedBindings` on the whole
+        // route): deleting them here first would split the route differently.
+        // A bundle with no host to run it (no Vite config) has oj delete
+        // them.
         if matches!(self.target, CodeTarget::Client)
+            && !self.routes_split_in_host
             && is_app_code(id)
             && !id.contains('?')
             && oj_compiler::route_options::names_a_route_factory(&code)
