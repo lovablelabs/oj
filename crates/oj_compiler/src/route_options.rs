@@ -146,11 +146,20 @@ pub fn delete_route_options(code: &str, path: &str, deleted: &[&str]) -> Option<
     }
     edits.sort_by_key(|e| std::cmp::Reverse(e.0));
     let mut out = code.to_string();
+    let mut step = Vec::with_capacity(edits.len());
     for (start, end) in edits {
         let lines = code[start..end].matches('\n').count();
+        step.push(crate::dce::Replaced {
+            start,
+            end,
+            len: lines,
+            moved: Vec::new(),
+        });
         out.replace_range(start..end, &"\n".repeat(lines));
     }
-    Some(crate::env_fns::drop_dead_bindings(code, out, path))
+    let mut map = crate::dce::EditMap::default();
+    map.push(step);
+    Some(crate::env_fns::drop_dead_bindings(code, out, path, &map))
 }
 
 /// The spans to delete for `options`' `deleted` keys: each property with

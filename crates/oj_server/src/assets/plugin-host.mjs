@@ -1670,7 +1670,10 @@ function ojRunsNatively(p, c = main) {
 // Where Start's compiler sits among the plugins (noteStartCompilerPosition),
 // set as the plugins load.
 const beforeStartCompiler = new WeakSet();
-let startCompilerFound = false;
+// Every plugin whose place against the compiler is known (the list holding
+// it, and what those plugins' applyToEnvironment returns). A worker
+// container's plugins are fresh objects no compiler sits among.
+const placedForStartCompiler = new WeakSet();
 // Vite's picomatch, for plugin `filter` ids.
 await loadViteGlobs(initial.config?.root ?? process.cwd());
 try {
@@ -2556,6 +2559,7 @@ async function environmentPlugins(environment, candidates, c = main) {
     }
     const returned = applied.filter((ap) => !ojRunsNatively(ap, c));
     if (beforeStartCompiler.has(p)) for (const ap of returned) beforeStartCompiler.add(ap);
+    if (placedForStartCompiler.has(p)) for (const ap of returned) placedForStartCompiler.add(ap);
     for (const ap of returned) {
       const ignored = ignoredEnvironmentPluginHooks.filter((hook) => ap[hook]);
       if (ignored.length > 0) {
@@ -4959,7 +4963,7 @@ function noteStartCompilerPosition(list) {
   const sorted = list.filter(Boolean).sort((a, b) => enforceRank(a) - enforceRank(b));
   const at = sorted.findIndex((p) => typeof p.name === "string" && p.name.startsWith("tanstack-start-core::server-fn"));
   if (at < 0) return;
-  startCompilerFound = true;
+  for (const p of sorted) placedForStartCompiler.add(p);
   for (const p of sorted.slice(0, at)) beforeStartCompiler.add(p);
 }
 function compilePhaseOf(p, rank) {
@@ -4970,7 +4974,9 @@ function compilePhaseOf(p, rank) {
   // parent's place without sorting them again, whatever their own enforce.
   if (beforeStartCompiler.has(p)) return "before-compile";
   if (enforceRank(p) >= 0) return "after-compile";
-  return startCompilerFound ? "after-compile" : "before-compile";
+  // A "pre" plugin listed after the compiler; one from a list without it
+  // (a worker's) runs with the "pre" ones before it.
+  return placedForStartCompiler.has(p) ? "after-compile" : "before-compile";
 }
 function inTransformPhase(p, rank, phase) {
   if (phase === "before-compile" || phase === "after-compile") return compilePhaseOf(p, rank) === phase;

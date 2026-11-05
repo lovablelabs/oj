@@ -176,14 +176,23 @@ pub fn rewrite_client(code: &str, rel: &str) -> Result<Option<String>, ClientRew
     }
     edits.sort_by_key(|e| std::cmp::Reverse(e.0));
     let mut out = code.to_string();
+    let mut step = Vec::with_capacity(edits.len());
     for (start, end, text) in edits {
         let lines = code[start..end].matches('\n').count();
+        step.push(crate::dce::Replaced {
+            start,
+            end,
+            len: text.len() + lines,
+            moved: Vec::new(),
+        });
         out.replace_range(start..end, &format!("{text}{}", "\n".repeat(lines)));
     }
+    let mut map = crate::dce::EditMap::default();
+    map.push(step);
     // Start's compiler then runs its dead-code pass over the module: what only
     // the handler or a validator used (an import of
     // `@tanstack/react-start/server`, a helper) leaves the client with them.
-    let out = crate::env_fns::drop_dead_bindings(code, out, rel);
+    let out = crate::env_fns::drop_dead_bindings(code, out, rel, &map);
     // After the directive prologue (or a hashbang), on its line: the rewrite
     // must not shift source lines, nor turn `"use client"` into a statement.
     let at = prologue_end(&parsed.program, code);

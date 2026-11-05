@@ -32,8 +32,7 @@ use std::collections::{HashMap, HashSet};
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    BindingIdentifier, BindingPattern, ImportDeclarationSpecifier, Program, Statement,
-    VariableDeclaration,
+    BindingIdentifier, BindingPattern, ImportDeclarationSpecifier, Program, VariableDeclaration,
 };
 use oxc_ast_visit::{walk, Visit};
 use oxc_parser::Parser;
@@ -41,25 +40,87 @@ use oxc_semantic::{Scoping, Semantic, SemanticBuilder};
 use oxc_span::{GetSpan, SourceType, Span};
 use oxc_syntax::symbol::SymbolId;
 
-/// `after` with what only the edit's removed code used gone, the candidates
-/// being the bindings `before` read.
-pub(crate) fn drop_dead_bindings(before: &str, mut after: String, path: &str) -> String {
+/// What a caller's edit did to the code, so a candidate found before it is
+/// found again after it: each step's replacements, with the stretches of the
+/// old code a replacement carries over (Babel's candidates are the nodes
+/// themselves, which an edit moves without changing).
+#[derive(Default, Debug)]
+pub(crate) struct EditMap {
+    steps: Vec<Vec<Replaced>>,
+}
+
+/// A stretch of the old code a replacement carries over: `(old start, old
+/// end, offset in the replacement)`.
+pub(crate) type Moved = (usize, usize, usize);
+
+/// One replacement: `start..end` of the old code became `len` bytes, which
+/// hold the `moved` stretches.
+#[derive(Debug, Clone)]
+pub(crate) struct Replaced {
+    pub start: usize,
+    pub end: usize,
+    pub len: usize,
+    pub moved: Vec<Moved>,
+}
+
+impl EditMap {
+    /// A step's replacements (disjoint), applied to the previous step's code.
+    pub(crate) fn push(&mut self, mut step: Vec<Replaced>) {
+        step.sort_by_key(|r| r.start);
+        self.steps.push(step);
+    }
+
+    /// `at` in the code before every step, in the code after them; None when
+    /// a replacement dropped it.
+    pub(crate) fn map(&self, at: u32) -> Option<u32> {
+        let mut at = at as usize;
+        for step in &self.steps {
+            let mut shift: isize = 0;
+            let mut inside = None;
+            for r in step {
+                if r.end <= at {
+                    shift += r.len as isize - (r.end - r.start) as isize;
+                    continue;
+                }
+                if r.start <= at {
+                    let new_start = (r.start as isize + shift) as usize;
+                    let &(from, _, offset) =
+                        r.moved.iter().find(|(s, e, _)| *s <= at && at < *e)?;
+                    inside = Some(new_start + offset + (at - from));
+                }
+                break;
+            }
+            at = inside.unwrap_or((at as isize + shift) as usize);
+        }
+        Some(at as u32)
+    }
+}
+
+/// `after` (what `map` made of `before`) with what only the edit's removed
+/// code used gone, the candidates being the bindings `before` read.
+pub(crate) fn drop_dead_bindings(
+    before: &str,
+    mut after: String,
+    path: &str,
+    map: &EditMap,
+) -> String {
     let Some(start) = Analysis::of(before, path, |a| a.start_candidates()) else {
         return after;
     };
     // No early exit without candidates: Babel's empty-pattern visitors run
     // regardless.
     let (module, nested_keys) = start;
-    // The edit kept every line: a nested candidate is found again through
-    // the part of its line the edit left as it was. One inside an edited
-    // stretch stays unmatched, so it is kept (never another one dropped).
     let mapped: Vec<(String, u32)> = nested_keys
         .into_iter()
-        .filter_map(|(name, at)| map_offset(before, &after, at).map(|to| (name, to)))
+        .filter_map(|(name, at)| map.map(at).map(|to| (name, to)))
         .collect();
     let Some(mut nested) = Analysis::of(&after, path, |a| a.nested_at(&mapped)) else {
         return after;
     };
+    if let Some((out, edits)) = strip_type_exports(&after, path) {
+        nested = remap(&nested, &edits);
+        after = out;
+    }
     while let Some((out, edits)) = drop_pass(&after, path, &module, &nested) {
         nested = remap(&nested, &edits);
         after = out;
@@ -100,6 +161,7 @@ struct Analysis<'s, 'a> {
     written: HashSet<SymbolId>,
     removable: HashSet<SymbolId>,
     by_at: HashMap<u32, usize>,
+    typeof_refs: HashSet<oxc_syntax::reference::ReferenceId>,
     program: &'s Program<'a>,
 }
 
@@ -119,7 +181,7 @@ impl<'s, 'a> Analysis<'s, 'a> {
     fn new(code: &'s str, program: &'s Program<'a>, semantic: &'s Semantic<'a>) -> Self {
         let scoping = semantic.scoping();
         let root = scoping.root_scope_id();
-        let spans = reference_spans(program);
+        let (spans, typeof_refs) = reference_spans(program);
         let mut collect = Collect {
             scoping,
             root,
@@ -146,7 +208,9 @@ impl<'s, 'a> Analysis<'s, 'a> {
                 if reference.is_write() {
                     written.insert(d.symbol);
                 }
-                if reference.is_read() || !reference.is_write() {
+                // Babel's scope counts value references (a `typeof x` in a
+                // type among them), not a type annotation's.
+                if reference.is_read() || typeof_refs.contains(&rid) {
                     // An export specifier's local has no identifier node: it
                     // sits outside every binding and keeps it.
                     let span = spans
@@ -162,6 +226,7 @@ impl<'s, 'a> Analysis<'s, 'a> {
             code,
             scoping,
             by_at,
+            typeof_refs,
             decls,
             reads,
             written,
@@ -182,7 +247,7 @@ impl<'s, 'a> Analysis<'s, 'a> {
                 .iter()
                 .any(|&rid| {
                     let r = self.scoping.get_reference(rid);
-                    r.is_read() || !r.is_write()
+                    r.is_read() || self.typeof_refs.contains(&rid)
                 }),
         }
     }
@@ -199,74 +264,103 @@ impl<'s, 'a> Analysis<'s, 'a> {
                         .any(|&rid| self.scoping.get_reference(rid).is_write())))
     }
 
-    /// `findRemovableBindings` over the module's bindings.
+    /// `findRemovableBindings` over the module's bindings, as Babel writes
+    /// it: a reference inside another binding's node is an edge from that
+    /// binding; one outside every binding node (an export's included), a
+    /// reassignment or a loop iterator excludes the binding, and exclusion
+    /// spreads to what an excluded binding references. Of the rest, a
+    /// binding that references itself alone, or a strongly connected group
+    /// nothing outside it references, is removable.
     fn find_removable(&self) -> HashSet<SymbolId> {
-        let module: Vec<&Decl> = self.decls.iter().filter(|d| d.module).collect();
-        let mut alive: HashSet<SymbolId> = HashSet::new();
-        let mut users: HashMap<SymbolId, Vec<SymbolId>> = HashMap::new();
-        let mut queue = Vec::new();
         let mut symbols: Vec<SymbolId> = Vec::new();
-        let mut seen = HashSet::new();
-        for d in &module {
-            if !seen.insert(d.symbol) {
+        let mut index: HashMap<SymbolId, usize> = HashMap::new();
+        let mut excluded: Vec<bool> = Vec::new();
+        for d in self.decls.iter().filter(|d| d.module) {
+            if let Some(&i) = index.get(&d.symbol) {
+                excluded[i] |= d.exported || d.loop_iter;
                 continue;
             }
+            index.insert(d.symbol, symbols.len());
             symbols.push(d.symbol);
-            let keep = d.exported || d.loop_iter || self.written.contains(&d.symbol);
-            if keep && alive.insert(d.symbol) {
-                queue.push(d.symbol);
-            }
+            excluded.push(d.exported || d.loop_iter || self.written.contains(&d.symbol));
         }
-        // Module bindings' nodes never nest (an import specifier, a
-        // module-scope declarator, a top-level function or class), so the one
-        // holding a reference is found by its start.
-        let mut containers: Vec<(Span, Vec<SymbolId>)> = Vec::new();
-        let mut sorted: Vec<&Decl> = module.clone();
-        sorted.sort_by_key(|d| (d.container.start, d.container.end));
-        for d in sorted {
+        let n = symbols.len();
+        // Module binding nodes never nest (an import specifier, a
+        // module-scope declarator, a top-level function or class), so the
+        // one holding a reference is found by its start. Babel maps a node to
+        // one binding, the last declared in it (a destructuring declarator's).
+        let mut containers: Vec<(Span, usize)> = Vec::new();
+        let mut module: Vec<&Decl> = self.decls.iter().filter(|d| d.module).collect();
+        module.sort_by_key(|d| (d.container.start, d.container.end, d.at));
+        for d in module {
+            let i = index[&d.symbol];
             match containers.last_mut() {
-                Some((span, symbols)) if *span == d.container => symbols.push(d.symbol),
-                _ => containers.push((d.container, vec![d.symbol])),
+                Some((span, holder)) if *span == d.container => *holder = i,
+                _ => containers.push((d.container, i)),
             }
         }
-        let holder = |span: Span| -> Option<&Vec<SymbolId>> {
-            let i = containers.partition_point(|(c, _)| c.start <= span.start);
-            let (c, symbols) = containers.get(i.checked_sub(1)?)?;
-            (span.end <= c.end).then_some(symbols)
+        let holder = |span: Span| -> Option<usize> {
+            let k = containers.partition_point(|(c, _)| c.start <= span.start);
+            let (c, i) = containers.get(k.checked_sub(1)?)?;
+            (span.end <= c.end).then_some(*i)
         };
-        for &symbol in &symbols {
+        let mut refs: Vec<Vec<usize>> = vec![Vec::new(); n];
+        for i in 0..n {
+            if excluded[i] {
+                continue;
+            }
             for &span in self
                 .reads
-                .get(&symbol)
+                .get(&symbols[i])
                 .map(Vec::as_slice)
                 .unwrap_or_default()
             {
                 match holder(span) {
+                    Some(c) => {
+                        if !refs[c].contains(&i) {
+                            refs[c].push(i);
+                        }
+                    }
                     None => {
-                        if alive.insert(symbol) {
-                            queue.push(symbol);
-                        }
-                    }
-                    Some(holders) => {
-                        for &c in holders {
-                            users.entry(c).or_default().push(symbol);
-                        }
+                        excluded[i] = true;
+                        break;
                     }
                 }
             }
         }
+        let mut queue: Vec<usize> = (0..n).filter(|&i| excluded[i]).collect();
         while let Some(c) = queue.pop() {
-            for &target in users.get(&c).map(Vec::as_slice).unwrap_or_default() {
-                if alive.insert(target) {
-                    queue.push(target);
+            let targets = std::mem::take(&mut refs[c]);
+            for &t in &targets {
+                if !excluded[t] {
+                    excluded[t] = true;
+                    queue.push(t);
+                }
+            }
+            refs[c] = targets;
+        }
+        let scc = strongly_connected(n, &refs, &excluded);
+        let mut has_incoming = vec![false; scc.count];
+        let mut size = vec![0usize; scc.count];
+        for src in (0..n).filter(|&i| !excluded[i]) {
+            size[scc.id[src]] += 1;
+            for &dst in &refs[src] {
+                if !excluded[dst] && scc.id[src] != scc.id[dst] {
+                    has_incoming[scc.id[dst]] = true;
                 }
             }
         }
-        // A binding nothing reads is not "removable" in Babel's sense (no
-        // self-loop): it goes through the plain unreferenced rule instead.
-        symbols
-            .into_iter()
-            .filter(|s| !alive.contains(s) && self.read(*s))
+        (0..n)
+            .filter(|&i| !excluded[i])
+            .filter(|&i| {
+                let c = scc.id[i];
+                if size[c] == 1 {
+                    refs[i].contains(&i)
+                } else {
+                    !has_incoming[c]
+                }
+            })
+            .map(|i| symbols[i])
             .collect()
     }
 
@@ -304,45 +398,70 @@ impl<'s, 'a> Analysis<'s, 'a> {
     }
 }
 
-fn line_of(code: &str, at: u32) -> usize {
-    code[..at as usize].matches('\n').count()
+struct Scc {
+    id: Vec<usize>,
+    count: usize,
 }
 
-/// `at` in `before` as an offset in `after`, which has the same lines: exact
-/// in the part of its line before the first change or after the last one,
-/// None inside the changed stretch.
-fn map_offset(before: &str, after: &str, at: u32) -> Option<u32> {
-    let at = at as usize;
-    let line = line_of(before, at as u32);
-    let bounds = |code: &str| -> Option<(usize, usize)> {
-        let start = if line == 0 {
-            0
-        } else {
-            code.match_indices('\n').nth(line - 1)?.0 + 1
-        };
-        let end = code[start..].find('\n').map_or(code.len(), |e| start + e);
-        Some((start, end))
-    };
-    let (bs, be) = bounds(before)?;
-    let (as_, ae) = bounds(after)?;
-    let (b, a) = (&before.as_bytes()[bs..be], &after.as_bytes()[as_..ae]);
-    let prefix = b.iter().zip(a).take_while(|(x, y)| x == y).count();
-    let room = b.len().min(a.len()) - prefix;
-    let suffix = b
-        .iter()
-        .rev()
-        .zip(a.iter().rev())
-        .take(room)
-        .take_while(|(x, y)| x == y)
-        .count();
-    let col = at - bs;
-    if col < prefix {
-        Some((as_ + col) as u32)
-    } else if col >= b.len() - suffix {
-        Some((as_ + a.len() - (b.len() - col)) as u32)
-    } else {
-        None
+/// Tarjan's strongly connected components over the nodes not `excluded`,
+/// iteratively (a long chain of helpers must not overflow the stack).
+fn strongly_connected(n: usize, edges: &[Vec<usize>], excluded: &[bool]) -> Scc {
+    const UNSEEN: usize = usize::MAX;
+    let mut index = vec![UNSEEN; n];
+    let mut low = vec![0usize; n];
+    let mut on_stack = vec![false; n];
+    let mut stack: Vec<usize> = Vec::new();
+    let mut id = vec![UNSEEN; n];
+    let mut count = 0;
+    let mut next = 0;
+    for root in 0..n {
+        if excluded[root] || index[root] != UNSEEN {
+            continue;
+        }
+        // (node, how far through its edges)
+        let mut work: Vec<(usize, usize)> = vec![(root, 0)];
+        index[root] = next;
+        low[root] = next;
+        next += 1;
+        stack.push(root);
+        on_stack[root] = true;
+        while let Some(top) = work.last_mut() {
+            let v = top.0;
+            if top.1 < edges[v].len() {
+                let w = edges[v][top.1];
+                top.1 += 1;
+                if excluded[w] {
+                    continue;
+                }
+                if index[w] == UNSEEN {
+                    index[w] = next;
+                    low[w] = next;
+                    next += 1;
+                    stack.push(w);
+                    on_stack[w] = true;
+                    work.push((w, 0));
+                } else if on_stack[w] {
+                    low[v] = low[v].min(index[w]);
+                }
+                continue;
+            }
+            work.pop();
+            if let Some(&(parent, _)) = work.last() {
+                low[parent] = low[parent].min(low[v]);
+            }
+            if low[v] == index[v] {
+                while let Some(w) = stack.pop() {
+                    on_stack[w] = false;
+                    id[w] = count;
+                    if w == v {
+                        break;
+                    }
+                }
+                count += 1;
+            }
+        }
     }
+    Scc { id, count }
 }
 
 /// Every declared name, at every depth.
@@ -444,22 +563,49 @@ impl<'a> Visit<'a> for Collect<'_> {
         }
         walk::walk_for_in_statement(self, it);
     }
+    // A namespace's body has its own exports: what it does not export is not
+    // exported by `export namespace N`.
+    fn visit_ts_module_block(&mut self, it: &oxc_ast::ast::TSModuleBlock<'a>) {
+        let exported = std::mem::take(&mut self.exported);
+        walk::walk_ts_module_block(self, it);
+        self.exported = exported;
+    }
 }
 
-/// Every identifier reference's span, by reference id.
-fn reference_spans(program: &Program) -> HashMap<oxc_syntax::reference::ReferenceId, Span> {
+/// Every identifier reference's span, by reference id, and the ones inside
+/// a `typeof` type query (a value read in a type, which Babel's scope counts
+/// as a reference; oxc resolves it to a plain type reference).
+fn reference_spans(
+    program: &Program,
+) -> (
+    HashMap<oxc_syntax::reference::ReferenceId, Span>,
+    HashSet<oxc_syntax::reference::ReferenceId>,
+) {
     use oxc_ast::ast::IdentifierReference;
-    struct Spans(HashMap<oxc_syntax::reference::ReferenceId, Span>);
+    #[derive(Default)]
+    struct Spans {
+        spans: HashMap<oxc_syntax::reference::ReferenceId, Span>,
+        typeof_refs: HashSet<oxc_syntax::reference::ReferenceId>,
+        in_query: usize,
+    }
     impl<'a> Visit<'a> for Spans {
         fn visit_identifier_reference(&mut self, it: &IdentifierReference<'a>) {
             if let Some(id) = it.reference_id.get() {
-                self.0.insert(id, it.span);
+                self.spans.insert(id, it.span);
+                if self.in_query > 0 {
+                    self.typeof_refs.insert(id);
+                }
             }
         }
+        fn visit_ts_type_query(&mut self, it: &oxc_ast::ast::TSTypeQuery<'a>) {
+            self.in_query += 1;
+            walk::walk_ts_type_query(self, it);
+            self.in_query -= 1;
+        }
     }
-    let mut s = Spans(HashMap::new());
+    let mut s = Spans::default();
     s.visit_program(program);
-    s.0
+    (s.spans, s.typeof_refs)
 }
 
 /// The names a binding pattern declares (Babel's `findVariables`).
@@ -521,6 +667,206 @@ fn remap(offsets: &HashSet<u32>, edits: &[Applied]) -> HashSet<u32> {
         .collect()
 }
 
+/// The last `{` in `code[from..to]` outside comments.
+fn brace_before(code: &str, from: usize, to: usize) -> Option<usize> {
+    outside_comments(code, from, to)
+        .filter(|&i| code.as_bytes()[i] == b'{')
+        .last()
+}
+
+/// The first `}` in `code[from..to]` outside comments.
+fn brace_after(code: &str, from: usize, to: usize) -> Option<usize> {
+    outside_comments(code, from, to).find(|&i| code.as_bytes()[i] == b'}')
+}
+
+/// The byte offsets of `code[from..to]` outside comments.
+fn outside_comments(code: &str, from: usize, to: usize) -> impl Iterator<Item = usize> + '_ {
+    let bytes = code.as_bytes();
+    let mut i = from;
+    std::iter::from_fn(move || {
+        while i < to {
+            if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+                i = code[i + 2..].find("*/").map_or(to, |e| i + 2 + e + 2);
+                continue;
+            }
+            if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'/') {
+                i = code[i..].find('\n').map_or(to, |e| i + e);
+                continue;
+            }
+            let at = i;
+            i += 1;
+            return Some(at);
+        }
+        None
+    })
+}
+
+/// The deletions taking `removed` specifiers (not all of them) out of
+/// `import`: the default, the namespace and the braced named group are one
+/// comma list; the named ones are a list of their own inside the braces.
+fn import_deletions(
+    code: &str,
+    import: &oxc_ast::ast::ImportDeclaration,
+    removed: &[bool],
+) -> Vec<(usize, usize)> {
+    let Some(specifiers) = &import.specifiers else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let named: Vec<usize> = specifiers
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| matches!(s, ImportDeclarationSpecifier::ImportSpecifier(_)))
+        .map(|(i, _)| i)
+        .collect();
+    let mut clauses: Vec<Span> = Vec::new();
+    let mut clause_removed: Vec<bool> = Vec::new();
+    for (i, s) in specifiers.iter().enumerate() {
+        if !named.contains(&i) {
+            clauses.push(s.span());
+            clause_removed.push(removed[i]);
+        }
+    }
+    if let (Some(&first), Some(&last)) = (named.first(), named.last()) {
+        let first_start = specifiers[first].span().start as usize;
+        let last_end = specifiers[last].span().end as usize;
+        let open =
+            brace_before(code, import.span.start as usize, first_start).unwrap_or(first_start);
+        let close = brace_after(code, last_end, import.source.span.start as usize)
+            .map_or(last_end, |c| c + 1);
+        let group_gone = named.iter().all(|&i| removed[i]);
+        clauses.push(Span::new(open as u32, close as u32));
+        clause_removed.push(group_gone);
+        if !group_gone {
+            let spans: Vec<Span> = named.iter().map(|&i| specifiers[i].span()).collect();
+            let flags: Vec<bool> = named.iter().map(|&i| removed[i]).collect();
+            out.extend(list_deletions(&spans, &flags));
+        }
+    }
+    out.extend(list_deletions(&clauses, &clause_removed));
+    out
+}
+
+/// `@tanstack/router-utils`' `stripTypeExports`, which its
+/// `deadCodeElimination` runs first: type-only imports and exports go, as
+/// do the type-only specifiers of the others (a statement left with none
+/// goes). The new code and its edits, or None when there are none.
+fn strip_type_exports(code: &str, path: &str) -> Option<(String, Vec<Applied>)> {
+    use oxc_ast::ast::{Declaration, Statement};
+    let allocator = Allocator::default();
+    let parsed = Parser::new(&allocator, code, source_type(path)).parse();
+    if parsed.fatal_error {
+        return None;
+    }
+    let mut edits: Vec<Edit> = Vec::new();
+    let whole = |span: Span| Edit {
+        start: span.start as usize,
+        end: span.end as usize,
+        with: ";",
+    };
+    let specifier_list =
+        |specifiers: &[oxc_ast::ast::ExportSpecifier], span: Span, edits: &mut Vec<Edit>| {
+            let removed: Vec<bool> = specifiers.iter().map(|s| s.export_kind.is_type()).collect();
+            if !removed.iter().any(|r| *r) {
+                return;
+            }
+            if removed.iter().all(|r| *r) {
+                return edits.push(whole(span));
+            }
+            let spans: Vec<Span> = specifiers.iter().map(|s| s.span).collect();
+            for (start, end) in list_deletions(&spans, &removed) {
+                edits.push(Edit {
+                    start,
+                    end,
+                    with: "",
+                });
+            }
+        };
+    for statement in &parsed.program.body {
+        match statement {
+            Statement::ImportDeclaration(i) => {
+                if i.import_kind.is_type() {
+                    edits.push(whole(i.span));
+                    continue;
+                }
+                let Some(specifiers) = &i.specifiers else {
+                    continue;
+                };
+                let removed: Vec<bool> = specifiers
+                    .iter()
+                    .map(|s| matches!(s, ImportDeclarationSpecifier::ImportSpecifier(n) if n.import_kind.is_type()))
+                    .collect();
+                if !removed.iter().any(|r| *r) {
+                    continue;
+                }
+                if removed.iter().all(|r| *r) {
+                    edits.push(whole(i.span));
+                    continue;
+                }
+                for (start, end) in import_deletions(code, i, &removed) {
+                    edits.push(Edit {
+                        start,
+                        end,
+                        with: "",
+                    });
+                }
+            }
+            Statement::ExportNamedDeclaration(e) => {
+                if e.export_kind.is_type() {
+                    edits.push(whole(e.span));
+                } else {
+                    specifier_list(&e.specifiers, e.span, &mut edits);
+                }
+            }
+            Statement::ExportFromDeclaration(e) => {
+                if e.export_kind.is_type() {
+                    edits.push(whole(e.span));
+                } else {
+                    specifier_list(&e.specifiers, e.span, &mut edits);
+                }
+            }
+            Statement::ExportAllDeclaration(e) if e.export_kind.is_type() => {
+                edits.push(whole(e.span));
+            }
+            Statement::ExportDeclaration(e)
+                if matches!(
+                    e.declaration,
+                    Declaration::TSTypeAliasDeclaration(_) | Declaration::TSInterfaceDeclaration(_)
+                ) =>
+            {
+                edits.push(whole(e.span));
+            }
+            _ => {}
+        }
+    }
+    if edits.is_empty() {
+        return None;
+    }
+    Some(apply_edits(code, edits))
+}
+
+/// `code` with `edits` applied (an edit inside an earlier one is skipped),
+/// each padded with the newlines it removed, and what each one did.
+fn apply_edits(code: &str, mut edits: Vec<Edit>) -> (String, Vec<Applied>) {
+    edits.sort_by_key(|e| (e.start, std::cmp::Reverse(e.end)));
+    let mut out = String::with_capacity(code.len());
+    let mut applied = Vec::new();
+    let mut last = 0;
+    for Edit { start, end, with } in edits {
+        if start < last {
+            continue;
+        }
+        out.push_str(&code[last..start]);
+        let newlines = code[start..end].matches('\n').count();
+        out.push_str(with);
+        out.push_str(&"\n".repeat(newlines));
+        applied.push((start, end, with.len() + newlines));
+        last = end;
+    }
+    out.push_str(&code[last..]);
+    (out, applied)
+}
+
 /// Deletions removing `removed` items of a comma-separated list (`items` in
 /// order): an item before a kept one goes with what follows it up to the
 /// next item; a trailing run goes from the last kept item's end.
@@ -570,8 +916,9 @@ fn drop_pass(
             a,
             module,
             nested,
-            lists: HashSet::new(),
             for_inits: HashSet::new(),
+            labels: HashMap::new(),
+            block_slots: HashSet::new(),
             heads: HashSet::new(),
             edits: Vec::new(),
         };
@@ -581,23 +928,7 @@ fn drop_pass(
     if edits.is_empty() {
         return None;
     }
-    let mut edits = edits;
-    edits.sort_by_key(|e| (e.start, std::cmp::Reverse(e.end)));
-    let mut out = String::with_capacity(code.len());
-    let mut applied = Vec::new();
-    let mut last = 0;
-    for Edit { start, end, with } in edits {
-        if start < last {
-            continue;
-        }
-        out.push_str(&code[last..start]);
-        let newlines = code[start..end].matches('\n').count();
-        out.push_str(with);
-        out.push_str(&"\n".repeat(newlines));
-        applied.push((start, end, with.len() + newlines));
-        last = end;
-    }
-    out.push_str(&code[last..]);
+    let (out, applied) = apply_edits(code, edits);
     (out != code).then_some((out, applied))
 }
 
@@ -605,10 +936,13 @@ struct Removals<'r, 's, 'a> {
     a: &'r Analysis<'s, 'a>,
     module: &'r HashSet<String>,
     nested: &'r HashSet<u32>,
-    /// Statements that are a statement list's items, by start.
-    lists: HashSet<u32>,
     /// A `for` statement's init declaration, by start.
     for_inits: HashSet<u32>,
+    /// A labeled statement's body, by start: the label statement's span.
+    labels: HashMap<u32, Span>,
+    /// An `if` consequent's or a loop body's start (Babel's removal hooks
+    /// leave an empty block there).
+    block_slots: HashSet<u32>,
     /// `for…of` / `for…in` heads, by start.
     heads: HashSet<u32>,
     edits: Vec<Edit>,
@@ -721,11 +1055,20 @@ impl Removals<'_, '_, '_> {
         }
     }
 
+    /// Babel's `path.remove()` with its removal hooks: a labeled statement
+    /// goes with its body; an `if` consequent or a loop body becomes `{}`; a
+    /// `for` head's declaration leaves nothing; anything else leaves `;`, so
+    /// the statements around it stay apart (`foo()` and `;[1].forEach()`).
     fn remove_statement(&mut self, span: Span) {
-        let with = if self.lists.contains(&span.start) || self.for_inits.contains(&span.start) {
+        let mut span = span;
+        while let Some(&label) = self.labels.get(&span.start) {
+            span = label;
+        }
+        let with = if self.for_inits.contains(&span.start) {
             ""
+        } else if self.block_slots.contains(&span.start) {
+            "{}"
         } else {
-            // Not in a statement list (`if (x) var a = 1;`): an empty one.
             ";"
         };
         self.edits.push(Edit {
@@ -737,13 +1080,6 @@ impl Removals<'_, '_, '_> {
 }
 
 impl<'a> Visit<'a> for Removals<'_, '_, 'a> {
-    fn visit_statements(&mut self, it: &oxc_allocator::Vec<'a, Statement<'a>>) {
-        for s in it.iter() {
-            self.lists.insert(s.span().start);
-        }
-        walk::walk_statements(self, it);
-    }
-
     fn visit_import_declaration(&mut self, import: &oxc_ast::ast::ImportDeclaration<'a>) {
         if import.import_kind.is_type() {
             return;
@@ -761,47 +1097,7 @@ impl<'a> Visit<'a> for Removals<'_, '_, 'a> {
         if removed.iter().all(|r| *r) {
             return self.remove_statement(import.span);
         }
-        // `import D, * as N, { a, b } from`: the default, the namespace and
-        // the braced named group are one comma list; the named ones are a
-        // list of their own inside the braces.
-        let code = self.a.code;
-        let named: Vec<usize> = specifiers
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| matches!(s, ImportDeclarationSpecifier::ImportSpecifier(_)))
-            .map(|(i, _)| i)
-            .collect();
-        let mut clauses: Vec<Span> = Vec::new();
-        let mut clause_removed: Vec<bool> = Vec::new();
-        for (i, s) in specifiers.iter().enumerate() {
-            if !named.contains(&i) {
-                clauses.push(s.span());
-                clause_removed.push(removed[i]);
-            }
-        }
-        if let (Some(&first), Some(&last)) = (named.first(), named.last()) {
-            let first_start = specifiers[first].span().start as usize;
-            let last_end = specifiers[last].span().end as usize;
-            let open = code[..first_start].rfind('{').unwrap_or(first_start);
-            let close = code[last_end..]
-                .find('}')
-                .map_or(last_end, |c| last_end + c + 1);
-            let group_gone = named.iter().all(|&i| removed[i]);
-            clauses.push(Span::new(open as u32, close as u32));
-            clause_removed.push(group_gone);
-            if !group_gone {
-                let spans: Vec<Span> = named.iter().map(|&i| specifiers[i].span()).collect();
-                let flags: Vec<bool> = named.iter().map(|&i| removed[i]).collect();
-                for (start, end) in list_deletions(&spans, &flags) {
-                    self.edits.push(Edit {
-                        start,
-                        end,
-                        with: "",
-                    });
-                }
-            }
-        }
-        for (start, end) in list_deletions(&clauses, &clause_removed) {
+        for (start, end) in import_deletions(self.a.code, import, &removed) {
             self.edits.push(Edit {
                 start,
                 end,
@@ -862,18 +1158,37 @@ impl<'a> Visit<'a> for Removals<'_, '_, 'a> {
         if let Some(oxc_ast::ast::ForStatementInit::VariableDeclaration(v)) = &it.init {
             self.for_inits.insert(v.span.start);
         }
+        self.block_slots.insert(it.body.span().start);
         walk::walk_for_statement(self, it);
+    }
+    fn visit_labeled_statement(&mut self, it: &oxc_ast::ast::LabeledStatement<'a>) {
+        self.labels.insert(it.body.span().start, it.span);
+        walk::walk_labeled_statement(self, it);
+    }
+    fn visit_if_statement(&mut self, it: &oxc_ast::ast::IfStatement<'a>) {
+        self.block_slots.insert(it.consequent.span().start);
+        walk::walk_if_statement(self, it);
+    }
+    fn visit_while_statement(&mut self, it: &oxc_ast::ast::WhileStatement<'a>) {
+        self.block_slots.insert(it.body.span().start);
+        walk::walk_while_statement(self, it);
+    }
+    fn visit_do_while_statement(&mut self, it: &oxc_ast::ast::DoWhileStatement<'a>) {
+        self.block_slots.insert(it.body.span().start);
+        walk::walk_do_while_statement(self, it);
     }
     fn visit_for_of_statement(&mut self, it: &oxc_ast::ast::ForOfStatement<'a>) {
         if let oxc_ast::ast::ForStatementLeft::VariableDeclaration(v) = &it.left {
             self.heads.insert(v.span.start);
         }
+        self.block_slots.insert(it.body.span().start);
         walk::walk_for_of_statement(self, it);
     }
     fn visit_for_in_statement(&mut self, it: &oxc_ast::ast::ForInStatement<'a>) {
         if let oxc_ast::ast::ForStatementLeft::VariableDeclaration(v) = &it.left {
             self.heads.insert(v.span.start);
         }
+        self.block_slots.insert(it.body.span().start);
         walk::walk_for_in_statement(self, it);
     }
 }
@@ -886,7 +1201,15 @@ mod tests {
     fn dce(before: &str, remove: &str) -> String {
         assert!(before.contains(remove), "{remove} not in {before}");
         let after = before.replacen(remove, "", 1);
-        let out = drop_dead_bindings(before, after, "src/x.ts");
+        let at = before.find(remove).unwrap();
+        let mut map = EditMap::default();
+        map.push(vec![Replaced {
+            start: at,
+            end: at + remove.len(),
+            len: 0,
+            moved: Vec::new(),
+        }]);
+        let out = drop_dead_bindings(before, after, "src/x.ts", &map);
         let allocator = Allocator::default();
         let parsed = Parser::new(&allocator, &out, SourceType::ts()).parse();
         assert!(
@@ -1049,22 +1372,113 @@ mod tests {
     }
 
     #[test]
-    fn offsets_map_through_an_edit_on_their_line() {
-        let before = "const x = 1; keep(() => handler()); const y = 2;\nnext();\n";
-        let after = "const x = 1; keep(); const y = 2;\nnext();\n";
+    fn offsets_map_through_replacements_and_what_they_carry() {
+        // `keep(() => handler())` -> `keep((() => handler()))`'s shape: the
+        // call becomes `(` + its argument + `)`, the argument carried over.
+        let before = "const x = 1; f(() => { const a = 1; }); const y = 2;";
+        let call = before.find("f(").unwrap();
+        let arg = before.find("() =>").unwrap();
+        let arg_end = before.find("})").unwrap() + 1;
+        let end = arg_end + 1;
+        let mut map = EditMap::default();
+        map.push(vec![Replaced {
+            start: call,
+            end,
+            len: 2 + (arg_end - arg),
+            moved: vec![(arg, arg_end, 1)],
+        }]);
+        let after = format!(
+            "{}({}){}",
+            &before[..call],
+            &before[arg..arg_end],
+            &before[end..]
+        );
         let at = |code: &str, s: &str| code.find(s).unwrap() as u32;
-        assert_eq!(
-            map_offset(before, after, at(before, "x =")),
-            Some(at(after, "x ="))
+        assert_eq!(map.map(at(before, "x =")), Some(at(&after, "x =")));
+        assert_eq!(map.map(at(before, "a =")), Some(at(&after, "a =")));
+        assert_eq!(map.map(at(before, "y =")), Some(at(&after, "y =")));
+        assert_eq!(map.map(at(before, "f(")), None);
+    }
+
+    /// `code` printed the same way whatever produced it: no comments, and no
+    /// empty statements in a statement list (oj leaves `;` where a statement
+    /// went, Babel's printer drops the node).
+    fn normalized(code: &str, path: &str) -> String {
+        use oxc_ast_visit::VisitMut;
+        struct NoEmpty;
+        impl<'a> VisitMut<'a> for NoEmpty {
+            fn visit_statements(
+                &mut self,
+                it: &mut oxc_allocator::Vec<'a, oxc_ast::ast::Statement<'a>>,
+            ) {
+                it.retain(|s| !matches!(s, oxc_ast::ast::Statement::EmptyStatement(_)));
+                oxc_ast_visit::walk_mut::walk_statements(self, it);
+            }
+        }
+        let allocator = Allocator::default();
+        let mut parsed = Parser::new(&allocator, code, source_type(path)).parse();
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "{path} does not parse: {:?}\n{code}",
+            parsed.diagnostics
         );
-        assert_eq!(
-            map_offset(before, after, at(before, "y =")),
-            Some(at(after, "y ="))
-        );
-        assert_eq!(map_offset(before, after, at(before, "handler")), None);
-        assert_eq!(
-            map_offset(before, after, at(before, "next")),
-            Some(at(after, "next"))
+        NoEmpty.visit_program(&mut parsed.program);
+        oxc_codegen::Codegen::new()
+            .with_options(oxc_codegen::CodegenOptions {
+                comments: oxc_codegen::CommentOptions::disabled(),
+                ..Default::default()
+            })
+            .build(&parsed.program)
+            .code
+    }
+
+    // The parity corpus (tests/dce_parity): each case marks the expression
+    // the edit replaces with `undefined`, and its `.babel.*` file is what
+    // babel-dead-code-elimination, run as @tanstack/router-utils runs it,
+    // makes of it (generate.mjs). oj's pass must agree on every one.
+    #[test]
+    fn matches_babel_dead_code_elimination_on_the_parity_corpus() {
+        const OPEN: &str = "/*<*/";
+        const CLOSE: &str = "/*>*/";
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/dce_parity");
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| (n.ends_with(".ts") || n.ends_with(".tsx")) && !n.contains(".babel."))
+            .collect();
+        names.sort();
+        assert!(names.len() >= 30, "the corpus is missing: {names:?}");
+        let mut failures = Vec::new();
+        for name in &names {
+            let marked = std::fs::read_to_string(dir.join(name)).unwrap();
+            let start = marked.find(OPEN).expect("an opening marker");
+            let end = marked.find(CLOSE).expect("a closing marker") - OPEN.len();
+            let code = marked.replacen(OPEN, "", 1).replacen(CLOSE, "", 1);
+            let after = format!("{}undefined{}", &code[..start], &code[end..]);
+            let mut map = EditMap::default();
+            map.push(vec![Replaced {
+                start,
+                end,
+                len: "undefined".len(),
+                moved: Vec::new(),
+            }]);
+            let out = drop_dead_bindings(&code, after, name, &map);
+            let golden_name = name.replacen(".ts", ".babel.ts", 1);
+            let golden = std::fs::read_to_string(dir.join(&golden_name)).unwrap_or_else(|_| {
+                panic!("{golden_name} missing: run tests/dce_parity/generate.mjs")
+            });
+            let (ours, theirs) = (normalized(&out, name), normalized(&golden, name));
+            if ours != theirs {
+                failures.push(format!("== {name}\n-- oj\n{ours}\n-- babel\n{theirs}"));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} of {} differ from Babel:\n{}",
+            failures.len(),
+            names.len(),
+            failures.join("\n")
         );
     }
 
@@ -1206,16 +1620,16 @@ mod tests {
         assert!(out.contains("const unusedFromStart = 1;"), "{out}");
     }
 
-    // A nested declaration that is a statement's whole body goes as an empty
-    // statement, so the code still parses.
+    // A nested declaration that is an `if`'s whole consequent becomes an
+    // empty block, as Babel's removal hooks replace it.
     #[test]
-    fn a_nested_declaration_as_a_whole_body_becomes_an_empty_statement() {
+    fn a_nested_declaration_as_a_whole_body_becomes_an_empty_block() {
         let before = "export function f(x: boolean) {\n\
                       \x20 if (x) var a = 1;\n\
                       \x20 return wrap(() => a);\n\
                       }\n";
         let out = dce(before, "() => a");
-        assert!(out.contains("if (x) ;"), "{out}");
+        assert!(out.contains("if (x) {}"), "{out}");
     }
 
     #[test]
