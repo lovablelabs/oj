@@ -52,14 +52,18 @@ pub(crate) fn spawn_crawl(state: Arc<ServerState>, done_tx: tokio::sync::watch::
             paths.len(),
             started.elapsed()
         );
-        save_graph_snapshot(&state.root, &paths);
+        // What the app's page preloads next boot, before this crawl is done.
+        let preloads = {
+            let graph = state.graph.lock().unwrap();
+            crate::html::static_preloads(&graph, &html_entries(&state.root))
+        };
+        save_graph_snapshot(&state.root, &preloads);
         let _ = done_tx.send(true);
     });
 }
 
 /// The graph's modules minus the files only stylesheets pull in (Vite's
-/// file-only entries): those are HMR edges, never served as modules, so a
-/// modulepreload of one would compile a partial without its importer.
+/// file-only entries): those are HMR edges, never served as modules.
 pub(crate) fn served_module_paths(state: &ServerState) -> Vec<PathBuf> {
     let graph = state.graph.lock().unwrap();
     graph
@@ -138,8 +142,7 @@ pub(crate) fn load_graph_snapshot(root: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
-pub(crate) fn save_graph_snapshot(root: &Path, paths: &[PathBuf]) {
-    let urls: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+pub(crate) fn save_graph_snapshot(root: &Path, urls: &[String]) {
     let path = snapshot_path(root);
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);

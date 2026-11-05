@@ -85,23 +85,33 @@ async fn the_native_transform_matches_the_hosts() {
     assert!(native_module.contains("window.__X"), "{native_module}");
 }
 
-/// Vite's dev page adds the client script alone (devHtmlHook's one tag,
-/// `head-prepend`); it warms the page's modules on the server instead
-/// (preTransformRequest), and sends no modulepreload for them. Once oj's
-/// eager crawl has walked the graph the page still names none of its
-/// modules: a big app's page used to preload its whole graph (hundreds of
-/// links) and stalled on a slow connection before it booted. A link the page
-/// writes itself stays.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_dev_page_preloads_none_of_its_modules() {
-    let app = App::new(&[
+/// The `modulepreload` links a page carries, in order.
+fn preloads(html: &str) -> Vec<String> {
+    Regex::new(r#"<link rel="modulepreload" href="([^"]+)""#)
+        .unwrap()
+        .captures_iter(html)
+        .map(|c| c[1].to_string())
+        .collect()
+}
+
+/// An app with two pages: the root page's script imports a chain, a sheet,
+/// JSON (with its attributes) and an image statically, and a lazy route by
+/// `import()`; `about.html` has a graph of its own. The root page has an
+/// inline style and a modulepreload link of its own.
+fn two_page_app(config: &str) -> App {
+    App::new(&[
         (
             "package.json",
-            r#"{"name":"no-preloads","version":"1.0.0"}"#,
+            r#"{"name":"static-preloads","version":"1.0.0"}"#,
         ),
+        ("oj.config.json", config),
         (
             "index.html",
-            r#"<!doctype html><html><head><title>t</title><link rel="modulepreload" href="/src/own.js"></head><body><script type="module" src="/src/main.js"></script></body></html>"#,
+            r#"<!doctype html><html><head><title>t</title><style>body { color: red; }</style><link rel="modulepreload" href="/src/own.js"></head><body><script type="module" src="/src/main.js"></script></body></html>"#,
+        ),
+        (
+            "about.html",
+            r#"<!doctype html><html><head><title>about</title></head><body><script type="module" src="/src/about.js"></script></body></html>"#,
         ),
         ("src/own.js", "export const own = 1;\n"),
         ("src/a.js", "export const a = 1;\n"),
@@ -109,28 +119,170 @@ async fn a_dev_page_preloads_none_of_its_modules() {
             "src/b.js",
             "import { a } from \"./a.js\";\nexport const b = a + 1;\n",
         ),
-        ("src/style.css", ".x { color: red; }\n"),
+        ("src/style.css", ".x { color: blue; }\n"),
+        ("src/data.json", r#"{ "n": 7 }"#),
+        ("src/lazy.js", "export default \"lazy\";\n"),
+        (
+            "src/about.js",
+            "import { a } from \"./a.js\";\nimport \"./only-about.js\";\nwindow.__ABOUT = a;\n",
+        ),
+        ("src/only-about.js", "export {};\n"),
         (
             "src/main.js",
-            "import { b } from \"./b.js\";\nimport \"./style.css\";\nconsole.log(b);\n",
+            "import { b } from \"./b.js\";\n\
+             import \"./style.css\";\n\
+             import data from \"./data.json\" with { type: \"json\" };\n\
+             import pic from \"./pic.png\";\n\
+             window.__LAZY = () => import(\"./lazy.js\");\n\
+             window.__MAIN = [b, data.n, pic];\n",
         ),
-    ]);
+    ])
+}
+
+const ROOT_PRELOADS: [&str; 5] = [
+    "/src/b.js",
+    "/src/data.json",
+    "/src/pic.png?url",
+    "/src/style.css?import",
+    "/src/a.js",
+];
+
+fn write_png(app: &App) {
+    std::fs::write(app.root.join("src/pic.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+}
+
+/// Once the crawl has walked the graph, a page preloads what its module
+/// script imports statically, under the URL each import names (a sheet's
+/// `?import`, an image's `?url`), and every link serves as the module it
+/// names. A module only an `import()` reaches stays out, even after it has
+/// loaded; so do the page's inline style (its compile is no module the page
+/// imports) and oj's runtime. A link the page writes itself stays first.
+///
+/// Vite's dev page carries no modulepreload and walks these imports one round
+/// trip per level; oj keeps the page's static graph to one round, which over
+/// HTTP/2 with latency is the page's import depth in round trips saved. The
+/// whole crawled graph (lazy routes, every page's modules) was the old list.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dev_page_preloads_its_static_graph_only() {
+    let app = two_page_app(r#"{"appType":"mpa"}"#);
+    write_png(&app);
     let server = app.serve().await;
-    assert_eq!(server.get("/src/main.js").await.status, 200);
+    if !crate::crawled(&app.root).await {
+        return;
+    }
+    // The lazy route loads, as a click would load it.
+    assert_eq!(server.get("/src/lazy.js").await.status, 200);
+    let html = server.text("/").await;
+    let mut want = vec!["/src/own.js".to_string()];
+    want.extend(ROOT_PRELOADS.iter().map(|s| s.to_string()));
+    assert_eq!(preloads(&html), want, "{html}");
+    for url in &ROOT_PRELOADS {
+        let req = axum::http::Request::get(*url)
+            .header("sec-fetch-dest", "script")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let res = server.request(req).await;
+        assert_eq!(res.status, 200, "{url}");
+        assert_eq!(res.headers["content-type"], "text/javascript", "{url}");
+    }
+    // What the next boot preloads before its crawl is done: the same list.
+    let snapshot: Vec<String> = serde_json::from_slice(
+        &std::fs::read(oj_cache::cache_root(&app.root).join("graph-snapshot.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        snapshot.iter().map(String::as_str).collect::<Vec<_>>(),
+        [
+            "/src/b.js",
+            "/src/data.json",
+            "/src/pic.png",
+            "/src/style.css",
+            "/src/a.js"
+        ]
+    );
+}
+
+/// Each page preloads its own graph: `about.html`, once its script has been
+/// served, preloads what that script imports and none of the root page's.
+#[tokio::test(flavor = "multi_thread")]
+async fn each_page_preloads_its_own_graph() {
+    let app = two_page_app(r#"{"appType":"mpa"}"#);
+    write_png(&app);
+    let server = app.serve().await;
+    if !crate::crawled(&app.root).await {
+        return;
+    }
+    assert_eq!(
+        preloads(&server.text("/about.html").await),
+        Vec::<String>::new()
+    );
+    assert_eq!(server.get("/src/about.js").await.status, 200);
+    assert_eq!(server.get("/src/only-about.js").await.status, 200);
+    let html = server.text("/about.html").await;
+    assert_eq!(
+        preloads(&html),
+        ["/src/a.js", "/src/only-about.js"],
+        "{html}"
+    );
+}
+
+/// A `cspNonce` page's preloads carry its nonce, as its own links do: the
+/// page's policy would block a link without it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_nonced_pages_preloads_carry_the_nonce() {
+    let app = two_page_app(r#"{"appType":"mpa","html":{"cspNonce":"n0nce"}}"#);
+    write_png(&app);
+    let server = app.serve().await;
     if !crate::crawled(&app.root).await {
         return;
     }
     let html = server.text("/").await;
-    let preloads: Vec<&str> = html
-        .match_indices("rel=\"modulepreload\"")
-        .map(|(at, _)| {
-            &html[html[..at].rfind('<').unwrap()..at + html[at..].find('>').unwrap() + 1]
-        })
+    let links: Vec<&str> = html
+        .lines()
+        .filter(|l| l.contains("rel=\"modulepreload\""))
         .collect();
-    assert_eq!(
-        preloads,
-        [r#"<link rel="modulepreload" href="/src/own.js">"#],
-        "the page preloads the crawled modules:\n{html}"
+    assert!(!links.is_empty(), "{html}");
+    for link in links {
+        assert!(link.contains("nonce=\"n0nce\""), "{link}");
+    }
+}
+
+/// The page boots on its preloads: every module runs, the JSON import with
+/// its attributes included, and no request fails (no preload of a URL that
+/// is no module, such as the inline style's proxy).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_page_boots_on_its_preloads() {
+    if crate::browser::skip() {
+        return;
+    }
+    let app = two_page_app(r#"{"appType":"mpa"}"#);
+    write_png(&app);
+    let server = app.serve().await;
+    if !crate::crawled(&app.root).await {
+        return;
+    }
+    let listening = server.listen().await;
+    let page =
+        crate::browser::Page::open(&format!("http://127.0.0.1:{}/", listening.addr.port())).await;
+    let ran = page
+        .poll(
+            "Array.isArray(window.__MAIN) && window.__MAIN[0] === 2 && window.__MAIN[1] === 7",
+            std::time::Duration::from_secs(20),
+        )
+        .await;
+    let failed: Vec<String> = page
+        .eval("performance.getEntriesByType('resource').filter((e) => e.responseStatus >= 400).map((e) => e.name)")
+        .await;
+    let errors = page.errors();
+    let console = page.console();
+    page.close().await;
+    assert!(ran, "the page never ran: {errors:?} {console:?}");
+    assert_eq!(errors, Vec::<String>::new(), "page errors");
+    assert_eq!(failed, Vec::<String>::new(), "failed requests");
+    assert!(
+        !console
+            .iter()
+            .any(|c| c.contains("404") || c.contains("Failed to load")),
+        "{console:?}"
     );
-    assert!(html.contains("/@oj/client.js"), "{html}");
 }

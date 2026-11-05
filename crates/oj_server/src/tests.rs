@@ -2828,3 +2828,140 @@ fn an_aliased_external_hands_node_the_alias_target() {
     assert_eq!(apply("lib/a.js"), "real-lib/dist/a.js");
     assert_eq!(apply("react"), "react");
 }
+
+#[test]
+fn preload_hints_name_the_exact_import_url() {
+    let entries: HashMap<String, String> = [(
+        "react.mjs".to_string(),
+        "/@oj-deps/react.mjs?v=1d335a14".to_string(),
+    )]
+    .into();
+    assert_eq!(
+        preload_href("/src/main.tsx", &entries, false),
+        "/src/main.tsx"
+    );
+    assert_eq!(
+        preload_href("/src/a.css", &entries, false),
+        "/src/a.css?import"
+    );
+    // A pre-bundled entry preloads under the URL importers name it by now,
+    // not the session's base version, so the preload and the later import
+    // hit one immutable cache entry and a rerun leaves no stale hint.
+    assert_eq!(
+        preload_href("/@oj-deps/react.mjs", &entries, false),
+        "/@oj-deps/react.mjs?v=1d335a14"
+    );
+    assert_eq!(
+        preload_href("/@oj-deps/chunk-AB12CD.mjs", &entries, false),
+        "/@oj-deps/chunk-AB12CD.mjs",
+        "dep files import chunks bare"
+    );
+    assert_eq!(
+        preload_href("/@oj-deps/react.mjs", &HashMap::new(), false),
+        "/@oj-deps/react.mjs",
+        "no entry, no query"
+    );
+    assert_eq!(
+        preload_href("/@id/6e6f6465", &entries, false),
+        "/@id/6e6f6465",
+        "stubs are unversioned"
+    );
+    // The bare asset url is the `<img src>`'s raw file; the import is `?url`.
+    assert_eq!(
+        preload_href("/src/assets/hero.png", &entries, false),
+        "/src/assets/hero.png?url"
+    );
+    assert_eq!(
+        preload_href("/src/logo.svg", &entries, false),
+        "/src/logo.svg?url"
+    );
+    assert_eq!(
+        preload_href("/src/logo.svg", &entries, true),
+        "/src/logo.svg",
+        "a transform plugin may componentize a bare svg import"
+    );
+    assert_eq!(
+        preload_href("/node_modules/pkg/icon.png", &entries, false),
+        "/node_modules/pkg/icon.png",
+        "a dependency's asset import is not marked"
+    );
+}
+
+/// A graph of `(importer, imports)` edges, as the dev server records them
+/// (static imports only).
+fn graph_of(edges: &[(&str, &[&str])]) -> oj_graph::ModuleGraph {
+    let mut graph = oj_graph::ModuleGraph::new();
+    for (importer, imports) in edges {
+        graph.set_imports(Path::new(importer), imports);
+    }
+    graph
+}
+
+/// A page preloads the static imports its module scripts reach, breadth
+/// first: never a module only an `import()` reaches (the graph knows the lazy
+/// route once it loaded, with no edge to it), another page's modules, the
+/// files a stylesheet inlined, the page's own inline style or oj's runtime.
+/// A cycle ends, and an entry is not preloaded (its script fetches it).
+#[test]
+fn a_page_preloads_what_its_scripts_import_statically() {
+    let graph = graph_of(&[
+        (
+            "/src/main.js",
+            &[
+                "/src/b.js",
+                "/src/style.css",
+                "/src/data.json",
+                "/@oj/client.js",
+                "/index.html?html-proxy&index=0.css",
+            ],
+        ),
+        ("/src/b.js", &["/src/a.js"]),
+        ("/src/a.js", &["/src/main.js"]),
+        ("/src/style.css", &["/src/partial.css"]),
+        ("/src/lazy.js", &["/src/lazy-only.js"]),
+        ("/src/about.js", &["/src/a.js", "/src/only-about.js"]),
+    ]);
+    assert_eq!(
+        static_preloads(&graph, &["/src/main.js".to_string()]),
+        ["/src/b.js", "/src/data.json", "/src/style.css", "/src/a.js"]
+    );
+    assert_eq!(
+        static_preloads(&graph, &["/src/about.js".to_string()]),
+        [
+            "/src/a.js",
+            "/src/only-about.js",
+            "/src/main.js",
+            "/src/b.js",
+            "/src/data.json",
+            "/src/style.css"
+        ],
+        "another page reaches what its own imports reach, the root's entry included"
+    );
+    assert_eq!(
+        static_preloads(&graph, &["/src/unknown.js".to_string()]),
+        Vec::<String>::new(),
+        "a script the graph does not know yet preloads nothing"
+    );
+}
+
+/// The page's module scripts as the graph names them: without the base or a
+/// query oj adds, its own inline modules as served, never oj's runtime or a
+/// classic script.
+#[test]
+fn a_pages_module_entries_are_its_scripts_as_the_graph_names_them() {
+    let html = r#"<head>
+<script type="module" src="/app/@oj/client.js"></script>
+<script type="module" src="/app/src/main.js?t=123"></script>
+<script type=module src='/app/index.html?html-proxy&index=0.js'></script>
+<script src="/app/src/classic.js"></script>
+<script type="module">inline()</script>
+</head>"#;
+    assert_eq!(
+        page_module_entries(html, "/app/"),
+        ["/src/main.js", "/index.html?html-proxy&index=0.js"]
+    );
+    assert_eq!(
+        page_module_entries(r#"<script type="module" src="/src/main.js"></script>"#, "/"),
+        ["/src/main.js"]
+    );
+}

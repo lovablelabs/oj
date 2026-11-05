@@ -377,22 +377,60 @@ async fn discover_late(server: &crate::Server) -> String {
     late
 }
 
-/// Every dep URL an import names serves 200, never the outdated 504, and the
-/// page preloads none of them (Vite's dev page carries no modulepreload).
-async fn assert_imports_serve(server: &crate::Server, imports: &[String]) {
+/// The `/@oj-deps/` modulepreload hrefs oj's dev HTML carries.
+fn dep_preloads(html: &str) -> Vec<String> {
+    Regex::new(r#"<link rel="modulepreload" href="(/@oj-deps/[^"]+)""#)
+        .unwrap()
+        .captures_iter(html)
+        .map(|c| c[1].to_string())
+        .collect()
+}
+
+/// The page preloads the deps its own graph imports, each under the URL the
+/// import names (so preload and import share one cache entry), and every
+/// one serves 200, never the outdated 504. `unreached` is imported only by a
+/// module the page does not reach, and is not preloaded.
+async fn assert_preloads_match_imports(
+    app: &App,
+    server: &crate::Server,
+    imports: &[String],
+    unreached: Option<&str>,
+) {
+    if !crate::crawled(&app.root).await {
+        return;
+    }
+    let preloads = dep_preloads(&server.text("/").await);
     for url in imports {
+        if Some(url.as_str()) == unreached {
+            assert!(
+                !preloads.contains(url),
+                "the page preloads {url}, which it never imports: {preloads:?}"
+            );
+        } else {
+            assert!(
+                preloads.contains(url),
+                "no preload names the import {url}: {preloads:?}"
+            );
+        }
         assert_eq!(server.get(url).await.status, 200, "import {url}");
     }
-    let html = server.text("/").await;
-    assert!(!html.contains("modulepreload"), "{html}");
+    for url in &preloads {
+        // A chunk preloads bare, as dep files import it.
+        assert!(
+            imports.contains(url) || !url.contains("?v="),
+            "the preload {url} is no URL an import names: {imports:?}"
+        );
+        assert_eq!(server.get(url).await.status, 200, "preload {url}");
+    }
 }
 
 // Vite's resolve gives each optimized entry its own browserHash
 // (optimizedDepInfoFromFile), and a rerun that needs no reload keeps the
 // committed entries' versions: after a discovery, entries carry different
-// versions, and each serves under its own.
+// versions, so a preload stamped with the session's base version names a URL
+// no import uses, and a discovered dep's preload is the outdated 504.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_discovered_dep_serves_under_its_own_version() {
+async fn a_discovered_dep_preloads_under_its_own_version() {
     crate::require_fixture!("vite");
     let app = preload_app();
     let server = app.serve().await;
@@ -411,14 +449,14 @@ async fn a_discovered_dep_serves_under_its_own_version() {
         "no reload: the committed entries keep their versions"
     );
     let mut imports = first;
-    imports.push(late);
-    assert_imports_serve(&server, &imports).await;
+    imports.push(late.clone());
+    assert_preloads_match_imports(&app, &server, &imports, Some(&late)).await;
 }
 
 // The same on a warm boot: the manifest restores each entry's own version,
 // a discovered dep's included, before any request is served.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_warm_session_serves_every_entry_under_its_import_url() {
+async fn a_warm_session_preloads_every_entry_under_its_import_url() {
     crate::require_fixture!("vite");
     let app = preload_app();
     {
@@ -429,9 +467,11 @@ async fn a_warm_session_serves_every_entry_under_its_import_url() {
     }
     let server = app.serve().await;
     let mut imports = dep_urls(&server.text("/main.js").await);
-    imports.extend(dep_urls(&server.text("/extra.js").await));
+    let extra = dep_urls(&server.text("/extra.js").await);
+    imports.extend(extra.iter().cloned());
     assert_eq!(imports.len(), 3, "{imports:?}");
-    assert_imports_serve(&server, &imports).await;
+    let late = extra.into_iter().find(|u| u.contains("late")).unwrap();
+    assert_preloads_match_imports(&app, &server, &imports, Some(&late)).await;
 }
 
 /// Vite runs `optimizeDeps.rolldownOptions.plugins` in the scan's own
