@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- In a TanStack Start client bundle, a `require()` inside a dependency resolves with the `require` export condition, as in Vite (its `getConditions` adds `import` or `require` by the import's kind). oj passed `import` in the condition list it gave rolldown, so a `require()` matched it too and got the ESM build of a dual package. A browser UMD that `require()`s `@babel/runtime` helpers (automation-events, which Tone uses) got a module namespace where it expects the helper function, and threw `_createClass is not a function`. The SPA build passed the same list and is fixed too.
+
 ## [0.4.1] - 2026-11-04
 
 ### Fixed

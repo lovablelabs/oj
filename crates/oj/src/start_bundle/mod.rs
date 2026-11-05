@@ -307,7 +307,7 @@ impl StartConfig {
             alias: Some(alias),
             extensions: oj_config::resolve_extensions(&self.config),
             main_fields: main_fields.map(oj_resolver::with_main_fallback),
-            condition_names: conditions,
+            condition_names: conditions.map(oj_resolver::rolldown_conditions),
             symlinks,
             extension_alias: Some(oj_resolver::default_extension_alias()),
             ..Default::default()

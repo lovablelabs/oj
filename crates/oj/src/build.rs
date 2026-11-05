@@ -2354,7 +2354,7 @@ fn rolldown_resolve(
     // unless `ssr.target: "webworker"` says this ssr bundle itself targets a
     // worker runtime: it never executes under Node then, and Node conditions
     // would pick the wrong entries, so the environment's own list stands.
-    let condition_names = Some(
+    let condition_names = Some(oj_resolver::rolldown_conditions(
         if env == "ssr"
             && oj_config::ssr_runner_backed(config)
             && !oj_config::ssr_externals(config).webworker()
@@ -2363,7 +2363,7 @@ fn rolldown_resolve(
         } else {
             oj_config::resolve_conditions_for(config, env, false)
         },
-    );
+    ));
     let symlinks = config
         .resolve
         .as_ref()
@@ -7105,7 +7105,10 @@ mod tests {
             .unwrap();
         assert_eq!(
             conditions,
-            oj_config::node_server_conditions(&runner_backed, false)
+            oj_resolver::rolldown_conditions(oj_config::node_server_conditions(
+                &runner_backed,
+                false
+            ))
         );
         assert!(conditions.contains(&"node".to_string()));
         assert!(!conditions.contains(&"workerd".to_string()));
@@ -7156,9 +7159,15 @@ mod tests {
             .unwrap();
         assert_eq!(
             conditions,
-            oj_config::node_server_conditions(&node_target, false)
+            oj_resolver::rolldown_conditions(oj_config::node_server_conditions(
+                &node_target,
+                false
+            ))
         );
         assert!(!conditions.contains(&"workerd".to_string()));
+        // rolldown adds `import` or `require` per import kind: the list never
+        // carries one, or a `require()` would match `import` too.
+        assert!(!conditions.contains(&"import".to_string()));
     }
 
     // Vite's pkg.main fallback at the build seam: dev's OjResolver appends
