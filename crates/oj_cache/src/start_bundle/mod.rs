@@ -227,6 +227,29 @@ impl StartBundleStore {
         }
     }
 
+    /// This store with the contents of `files` in its key: inputs of the
+    /// bundle that no closure lists (a missing one keys as missing). A
+    /// generation built from other contents is then no restore's match.
+    pub fn keyed_by_files(mut self, files: &[PathBuf]) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        for file in files {
+            hasher.update(file.as_os_str().as_encoded_bytes());
+            match fs::read(file) {
+                Ok(bytes) => {
+                    hasher.update(&[1]);
+                    hasher.update(&(bytes.len() as u64).to_le_bytes());
+                    hasher.update(&bytes);
+                }
+                Err(_) => {
+                    hasher.update(&[0]);
+                }
+            }
+        }
+        self.salt.push_str(":inputs:");
+        self.salt.push_str(&hasher.finalize().to_hex());
+        self
+    }
+
     /// The generation `current` names, when its closure still hashes to a
     /// stored key. The key covers every file the bundle read, but a file an
     /// `import.meta.glob` would expand to now and the bundle never read (one

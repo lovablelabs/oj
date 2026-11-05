@@ -134,6 +134,18 @@ impl DevBundler {
         &self.start.root
     }
 
+    /// The trees the client bundle's routes come from: the client's own
+    /// (generate.mjs's pruned tree in the cache), and the generated tree it
+    /// stands in for and falls back to. Neither is in closure.json (the dev
+    /// server regenerates and rebundles on a route change itself), so the
+    /// bundle store keys a generation by their contents.
+    pub(crate) fn route_trees(&self) -> [PathBuf; 2] {
+        [
+            self.start.cache.join(super::CLIENT_ROUTE_TREE),
+            self.start.route_tree(),
+        ]
+    }
+
     pub(crate) fn set_hot_enabled(&self, enabled: bool) {
         self.hot_enabled
             .store(enabled, std::sync::atomic::Ordering::SeqCst);

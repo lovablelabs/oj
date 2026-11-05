@@ -1689,7 +1689,10 @@ fn pinned_output(
     cache: &Path,
     mode: &str,
 ) -> Option<oj_cache::start_bundle::PinnedBundle> {
-    match start_bundle_store(root, mode).persist(cache) {
+    match start_bundle_store(root, mode)
+        .keyed_by_files(&bundler.route_trees())
+        .persist(cache)
+    {
         Some((key, pinned)) => {
             save_stylex_rules(bundler, cache, &key);
             save_generated_sheets(bundler, cache, &key);
@@ -2303,7 +2306,7 @@ fn bundle_client_entry_cached(
 ) -> anyhow::Result<oj_cache::start_bundle::PinnedBundle> {
     let root = bundler.root();
     let _ = std::fs::remove_file(cache.join(CLIENT_ERROR_FILE));
-    let store = start_bundle_store(root, mode);
+    let store = start_bundle_store(root, mode).keyed_by_files(&bundler.route_trees());
     let stylex = bundler.stylex();
     match store.restore(cache, |scopes| restorable_glob_members(scopes, cache)) {
         // A restored bundle never ran the StyleX transform: its modules'
