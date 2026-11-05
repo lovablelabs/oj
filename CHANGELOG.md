@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- In TanStack Start dev, a server render no longer fails with "require is not defined" when it imports a dependency like turndown, whose `module` build calls `require` (a build meant for a bundler) while its `main` is CommonJS. oj loads a dependency's `module` entry on the server, where Vite loads Node's entry. It now loads Node's entry when the `module` build calls a `require` it never declares, from the app or from another dependency, as Vite does.
+
 ## [0.4.3] - 2026-11-05
 
 ### Changed
