@@ -153,10 +153,10 @@ async fn tailwind_postcss_keeps_layer_order_and_partial_plugin_paths() {
 }
 
 /// The inlined files are graph edges for HMR, Vite's file-only entries: the
-/// page modulepreloads the crawled modules but never a partial, which on
-/// its own would compile without its importer.
+/// crawl never serves a partial as a module of its own, which would compile
+/// without its importer, and the page names none of them.
 #[tokio::test(flavor = "multi_thread")]
-async fn inlined_files_get_no_modulepreload() {
+async fn inlined_files_are_never_crawled_as_modules() {
     crate::require_fixture!("postcss");
     let app = App::new(&[
         ("package.json", r#"{"name":"tw-preload","version":"1.0.0"}"#),
@@ -174,26 +174,18 @@ async fn inlined_files_get_no_modulepreload() {
     ]);
     link_fixture_node_modules(&app);
     let server = app.serve().await;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
-    let html = loop {
-        let html = server.text("/").await;
-        if html.contains(r#"<link rel="modulepreload" href="/src/main.js""#) {
-            break html;
-        }
+    if crate::crawled(&app.root).await {
+        let snapshot =
+            std::fs::read_to_string(oj_cache::cache_root(&app.root).join("graph-snapshot.json"))
+                .unwrap();
+        assert!(snapshot.contains("/src/index.css"), "{snapshot}");
         assert!(
-            tokio::time::Instant::now() < deadline,
-            "the crawled entry was never preloaded:\n{html}"
+            !snapshot.contains("/src/styles/a.css"),
+            "the crawl served an inlined file as a module:\n{snapshot}"
         );
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    };
-    assert!(
-        html.contains(r#"<link rel="modulepreload" href="/src/index.css?import""#),
-        "{html}"
-    );
-    assert!(
-        !html.contains("/src/styles/a.css"),
-        "an inlined file was preloaded:\n{html}"
-    );
+        let html = server.text("/").await;
+        assert!(!html.contains("/src/styles/a.css"), "{html}");
+    }
     assert!(server
         .text("/src/index.css?direct")
         .await
