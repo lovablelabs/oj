@@ -1119,7 +1119,7 @@ impl Checker {
     // Return the contextual type for a given expression node. During overload resolution, a contextual type may temporarily
     // be "pushed" onto a node using the contextualType property.
     // checker.go:31175
-    pub(crate) fn get_apparent_type_of_contextual_type(
+    pub fn get_apparent_type_of_contextual_type(
         &mut self,
         node: P<Node>,
         context_flags: ContextFlags,
@@ -1562,7 +1562,7 @@ impl Checker {
     }
 
     // checker.go:31467
-    pub(crate) fn has_type_facts(&mut self, t: P<Type>, mask: TypeFacts) -> bool {
+    pub fn has_type_facts(&mut self, t: P<Type>, mask: TypeFacts) -> bool {
         self.get_type_facts(t, mask) != TypeFacts::None
     }
 
@@ -1920,7 +1920,7 @@ impl Checker {
     //
     // This is used to reflect the runtime behavior of the `await` keyword.
     // checker.go:31742
-    pub(crate) fn get_awaited_type(&mut self, t: P<Type>) -> Option<P<Type>> {
+    pub fn get_awaited_type(&mut self, t: P<Type>) -> Option<P<Type>> {
         self.get_awaited_type_ex(t, None, None, &[])
     }
 
