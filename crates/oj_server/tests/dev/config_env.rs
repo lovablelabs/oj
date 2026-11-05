@@ -149,7 +149,7 @@ const ran = (name) => ({
 export default {
   plugins: [
     ran("user-probe"),
-    Promise.resolve([ran("tanstack-start-core:config"), Promise.resolve(ran("tanstack:router-generator"))]),
+    Promise.resolve([ran("tanstack-start-core:config"), Promise.resolve(ran("tanstack-start:route-tree-client-plugin"))]),
   ],
 };
 "#;
@@ -203,8 +203,10 @@ async fn start_bundle_host_leaves_out_promise_wrapped_tanstack_plugins() {
 }
 
 /// The Start SSR host leaves the same plugins out of its Vite resolve as a
-/// bundle host: TanStack's config hooks (the route generator's among them)
+/// bundle host: TanStack's config hooks (the client route tree's among them)
 /// do work oj's own Start pipeline does, so only the user's hook runs, once.
+/// (The router generator and the code splitters run as Start ships them; see
+/// the plugin host's `isRouteSplitting`.)
 #[tokio::test(flavor = "multi_thread")]
 async fn start_ssr_host_leaves_tanstack_config_hooks_out_of_its_resolve() {
     require_fixture!("vite");
