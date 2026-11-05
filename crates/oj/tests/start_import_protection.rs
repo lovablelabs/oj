@@ -84,10 +84,16 @@ fn app_with(name: &str, files: &[(&str, String)], options: Option<&str>) -> Opti
 
 /// `oj build`: whether it succeeded, and its output.
 fn build(root: &Path) -> (bool, String) {
+    build_with(root, &[])
+}
+
+/// `oj build` with extra environment variables.
+fn build_with(root: &Path, env: &[(&str, &str)]) -> (bool, String) {
     let _ = std::fs::remove_dir_all(root.join(".oj-cache"));
     let out = Command::new(env!("CARGO_BIN_EXE_oj"))
         .arg("build")
         .arg(root)
+        .envs(env.iter().copied())
         .output()
         .unwrap();
     let text = format!(
@@ -154,6 +160,36 @@ fn a_server_only_file_the_client_uses_fails_the_build() {
             // The frame is the source the importer wrote, not compiled JSX.
             "> 15 |   const extra = <p id=\"secret\">{secret()}</p>;",
         ],
+    );
+}
+
+// `RUST_BACKTRACE=1` (a sandbox may set it for panics) leaves the error as
+// Start writes it: no stack backtrace under it, which read as a rolldown
+// panic in the log.
+#[test]
+fn a_denied_import_fails_without_a_stack_backtrace() {
+    let files = [
+        ("src/server/secret.server.ts", SECRET.to_string()),
+        (
+            "src/routes/about.tsx",
+            about(
+                "import { secret } from \"../server/secret.server\";",
+                USES_SECRET,
+            ),
+        ),
+    ];
+    let Some(app) = app_with("ip-backtrace", &files, None) else {
+        return;
+    };
+    let (ok, text) = build_with(&app.0, &[("RUST_BACKTRACE", "1")]);
+    assert!(!ok, "the build succeeded:\n{text}");
+    assert!(
+        text.contains("[import-protection] Import denied in client environment"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("Stack backtrace"),
+        "the error carries a backtrace:\n{text}"
     );
 }
 
