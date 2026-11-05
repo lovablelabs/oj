@@ -24,6 +24,7 @@ pub(crate) mod hosts;
 pub(crate) mod hot;
 pub(crate) mod prod;
 pub(crate) mod refresh;
+pub(crate) mod route_tree;
 pub(crate) mod shims;
 
 use std::path::{Path, PathBuf};
@@ -438,6 +439,10 @@ fn json(s: &str) -> String {
 
 /// The framework's server-function URL prefix (`TSS_SERVER_FN_BASE`).
 pub(crate) const SERVER_FN_BASE: &str = "/_serverFn/";
+
+/// The client's route tree generate.mjs writes in the cache dir (see
+/// [`route_tree::ClientRouteTree`]).
+pub(crate) const CLIENT_ROUTE_TREE: &str = "route-tree.client.js";
 
 /// The router entry for `root`: package.json `imports["#tanstack-router-entry"]`
 /// when it names an existing file, else `src/router.{tsx,ts,jsx,js}`, else
