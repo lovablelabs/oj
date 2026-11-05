@@ -14,6 +14,7 @@ pub mod interop;
 pub mod json;
 pub mod meta_glob;
 mod rewrite;
+pub mod route_options;
 mod scan;
 pub mod server_fns;
 mod sourcemap;

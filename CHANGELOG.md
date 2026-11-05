@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A TanStack Start file route's `server` handlers (and its `ssr` and `headers` options) stay out of the client, as Start's client code splitter deletes them (its `deleteNodes`) along with what only they used. oj's client bundled them, so a server route's handler, and the server-only modules it imports, shipped to the browser. With import protection set to fail (`behavior: "error"`), the dev client bundle failed instead: `/@oj-start/client-entry.js` answered 404 and the page never hydrated.
 - In TanStack Start dev, a `*.functions.ts` module whose `@tanstack/react-start/server` import (or any other import) only its server functions' handlers use no longer trips Start's import protection on the client. Start's compiler drops the handler on the client and then runs its dead-code pass, so the import goes too. oj's client rewrite kept the import, and it ran after the plugins' transforms, so import protection's dev check saw the original module and swapped in a mock of the server entry. The rewrite now drops what only the handler or a validator used. It also runs in the compiler's Vite slot: after the plugins' `pre` transforms and before their `normal` and `post` ones.
 
 ## [0.4.1] - 2026-11-04
