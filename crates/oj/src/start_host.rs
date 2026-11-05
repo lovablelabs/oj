@@ -998,9 +998,12 @@ impl StartHost {
         } else {
             raw
         };
+        // The plugins see the id with its query, as Vite's transforms do: a
+        // route's `?tsr-split=component` is what TanStack's code splitter
+        // compiles into the split-off component, from the route file's code.
         let code = self
             .bridge
-            .transform_module(&clean, raw, from_plugin, true)
+            .transform_module(id, raw, from_plugin, true)
             .await
             .map_err(|e| e.to_string())?;
         Ok(js(code))

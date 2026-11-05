@@ -43,7 +43,7 @@ async fn hosted_names(
 
 const PROMISED_TANSTACK: &str = r#"const tanstackStart = () => [
   { name: "tanstack-start-core:config" },
-  Promise.resolve({ name: "tanstack:router-generator" }),
+  Promise.resolve({ name: "tanstack-start:route-tree-client-plugin" }),
   { name: "vite:react-babel" },
 ];
 export default {
@@ -89,6 +89,45 @@ async fn start_ssr_host_drops_promise_wrapped_framework_plugins() {
     assert_eq!(names, ["user-first", "user-nested", "user-last"]);
 }
 
+// Start's router plugin as Vite runs it: its code splitters and the router
+// generator that fills their route list run in a Start host, as Start ships
+// them (oj has no counterpart); the client tree plugin, which oj does
+// natively, stays out.
+#[tokio::test]
+async fn a_start_host_keeps_the_route_code_splitters_and_their_generator() {
+    let src = r#"export default {
+  plugins: [
+    { name: "tanstack-start:route-tree-client-plugin" },
+    { name: "tanstack:router-generator" },
+    { name: "tanstack-router:code-splitter:compile-reference-file" },
+    { name: "tanstack-router:code-splitter:compile-virtual-file" },
+    { name: "tanstack-router:code-splitter:compile-shared-file" },
+    { name: "user" },
+  ],
+};
+"#;
+    for host in ["client", "ssr"] {
+        let names = hosted_names(
+            &format!("splitters-{host}"),
+            "vite.config.mjs",
+            src,
+            bundle_host(host),
+        )
+        .await;
+        assert_eq!(
+            names,
+            [
+                "tanstack:router-generator",
+                "tanstack-router:code-splitter:compile-reference-file",
+                "tanstack-router:code-splitter:compile-virtual-file",
+                "tanstack-router:code-splitter:compile-shared-file",
+                "user",
+            ],
+            "the {host} host"
+        );
+    }
+}
+
 // Outside Start only oj's native plugins (vite:react-babel) are left out: the
 // rest of the same config's plugins run, each flattened to its own entry.
 #[tokio::test]
@@ -103,7 +142,7 @@ async fn non_start_host_flattens_promised_plugins_into_entries() {
         [
             "user-first",
             "tanstack-start-core:config",
-            "tanstack:router-generator",
+            "tanstack-start:route-tree-client-plugin",
             "tanstack-react-start:server-fn",
             "user-nested",
             "user-last",
