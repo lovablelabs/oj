@@ -4957,9 +4957,7 @@ function oxcStripOptions(c) {
 // what their applyToEnvironment returns.
 function noteStartCompilerPosition(list) {
   const sorted = list.filter(Boolean).sort((a, b) => enforceRank(a) - enforceRank(b));
-  const at = sorted.findIndex(
-    (p) => typeof p.name === "string" && p.name.startsWith("tanstack-start-core::server-fn"),
-  );
+  const at = sorted.findIndex((p) => typeof p.name === "string" && p.name.startsWith("tanstack-start-core::server-fn"));
   if (at < 0) return;
   startCompilerFound = true;
   for (const p of sorted.slice(0, at)) beforeStartCompiler.add(p);
