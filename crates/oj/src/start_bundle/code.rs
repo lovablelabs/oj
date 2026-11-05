@@ -46,6 +46,9 @@ pub(crate) struct StartCodePlugin {
     /// slot (between the plugins' "pre" and "normal" transforms), so this
     /// plugin leaves it out.
     compiled_in_host: bool,
+    /// The route files the generated route tree imports (extensionless), by
+    /// the tree's modification time.
+    route_files: Mutex<Option<(std::time::SystemTime, HashSet<PathBuf>)>>,
     warned: Mutex<HashSet<String>>,
 }
 
@@ -63,6 +66,7 @@ impl StartCodePlugin {
             glob_scopes: None,
             alias: Vec::new(),
             compiled_in_host: false,
+            route_files: Mutex::new(None),
             warned: Mutex::new(HashSet::new()),
         }
     }
@@ -87,6 +91,30 @@ impl StartCodePlugin {
             eprintln!("{message}");
         }
     }
+}
+
+/// The files a generated route tree imports (`import { Route as X } from
+/// "./routes/x"`), extensionless and absolute.
+fn route_tree_imports(tree: &Path, text: &str) -> HashSet<PathBuf> {
+    let dir = tree.parent().unwrap_or(tree);
+    text.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if !line.starts_with("import ") {
+                return None;
+            }
+            let (_, rest) = line.rsplit_once(" from ")?;
+            let spec = rest.trim().trim_end_matches(';').trim_matches(['\'', '"']);
+            let rel = spec.strip_prefix("./")?;
+            let path = dir.join(rel);
+            // An import naming its extension (`./routes/x.tsx`).
+            let stem = match path.extension().and_then(|e| e.to_str()) {
+                Some("ts" | "tsx" | "js" | "jsx" | "mjs") => path.with_extension(""),
+                _ => path,
+            };
+            Some(stem)
+        })
+        .collect()
 }
 
 /// App source the server-fn and glob rewrites own: not a dependency, not a
@@ -252,10 +280,47 @@ impl StartCodePlugin {
                 code = Cow::Owned(out);
             }
         }
+
+        // Start's router plugin then runs the code splitter's reference
+        // compile on the client's route files with `deleteNodes: ["ssr",
+        // "server", "headers"]`: a route's server handlers, and what only
+        // they used, never reach the browser.
+        if matches!(self.target, CodeTarget::Client)
+            && is_app_code(id)
+            && !id.contains('?')
+            && oj_compiler::route_options::names_a_route_factory(&code)
+            && self.is_route_file(&file)
+        {
+            if let Some(out) = oj_compiler::route_options::delete_route_options(
+                &code,
+                &path,
+                oj_compiler::route_options::CLIENT_DELETED_ROUTE_OPTIONS,
+            ) {
+                code = Cow::Owned(out);
+            }
+        }
         Ok(match code {
             Cow::Borrowed(_) => None,
             Cow::Owned(out) => Some(out),
         })
+    }
+
+    /// Whether `file` is a route the generator knows (the code splitter's
+    /// `routesByFile`): one the generated route tree imports.
+    fn is_route_file(&self, file: &Path) -> bool {
+        let tree = self.root.join("src").join("routeTree.gen.ts");
+        let Ok(modified) = std::fs::metadata(&tree).and_then(|m| m.modified()) else {
+            return false;
+        };
+        let mut cache = self.route_files.lock().unwrap();
+        if cache.as_ref().map(|(at, _)| *at) != Some(modified) {
+            let text = std::fs::read_to_string(&tree).unwrap_or_default();
+            *cache = Some((modified, route_tree_imports(&tree, &text)));
+        }
+        let stem = file.with_extension("");
+        cache
+            .as_ref()
+            .is_some_and(|(_, files)| files.contains(&stem))
     }
 
     /// Vite's resolution of a URL's file: a relative one through the bundler
@@ -359,6 +424,33 @@ impl StartCodePlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The code splitter's routesByFile, read off the generated tree: every
+    // route import, a dotted file name and a footer import naming its
+    // extension included.
+    #[test]
+    fn the_route_files_are_the_trees_imports() {
+        let tree = Path::new("/app/src/routeTree.gen.ts");
+        let text = [
+            "import { Route as rootRouteImport } from './routes/__root'",
+            "import { Route as ApiHookRouteImport } from './routes/api/public/hook'",
+            "import { Route as ConsentRouteImport } from './routes/[.]lovable.oauth.consent'",
+            "import type { getRouter } from './router.tsx'",
+            "import { createStart } from \"@tanstack/react-start\";",
+            "const x = 1",
+        ]
+        .join("\n");
+        let files = route_tree_imports(tree, &text);
+        for want in [
+            "/app/src/routes/__root",
+            "/app/src/routes/api/public/hook",
+            "/app/src/routes/[.]lovable.oauth.consent",
+            "/app/src/router",
+        ] {
+            assert!(files.contains(Path::new(want)), "{want}: {files:?}");
+        }
+        assert_eq!(files.len(), 4, "{files:?}");
+    }
 
     #[test]
     fn app_code_is_the_apps_scripts() {
