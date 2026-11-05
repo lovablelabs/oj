@@ -313,3 +313,119 @@ async fn an_edit_that_gives_a_server_route_a_page_reaches_the_client_tree() {
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 }
+
+/// How many times the dev server brought the route tree current (each run
+/// prints whether it was restored from the codegen cache or generated).
+fn route_tree_runs(dev: &Server) -> usize {
+    let out = dev.output();
+    out.matches("route tree restored from cache").count()
+        + out.matches("route tree cache miss").count()
+}
+
+/// Waits until a rebuild for `file` shows in the output.
+async fn rebuilt_for(dev: &Server, file: &str, after: usize) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while dev.output()[after..]
+        .lines()
+        .all(|l| !(l.contains("rebuilding for") && l.contains(file)))
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no rebuild for {file}\n{}",
+            dev.output()
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+// Start reruns its client tree only when an edit flips a route's only-`server`
+// shape (its generator plugin's afterTransform): any other route edit leaves
+// the tree alone, so a save does not wait on the generator.
+#[tokio::test(flavor = "multi_thread")]
+async fn only_an_edit_that_flips_a_routes_shape_regenerates_the_tree() {
+    let Some(app) = file_routed("route-server-shape") else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let dev = Server::oj_dev(&app.0);
+    let _ = client_route_ids(&dev).await;
+    let runs = route_tree_runs(&dev);
+
+    let index = app.0.join("src/routes/index.tsx");
+    let mark = dev.output().len();
+    std::fs::write(
+        &index,
+        INDEX.replace("useState(\"ssr\")", "useState(\"ssr2\")"),
+    )
+    .unwrap();
+    rebuilt_for(&dev, "index.tsx", mark).await;
+    assert_eq!(
+        route_tree_runs(&dev),
+        runs,
+        "an edit keeping the route's shape reran the generator\n{}",
+        dev.output()
+    );
+
+    // A page without JSX: hook.ts is plain TypeScript, which the generator
+    // parses without JSX.
+    let page = HOOK_WITH_PAGE.replace(
+        "component: () => <p id=\"hook-page\">hook page</p>,",
+        "component: () => null,",
+    );
+    std::fs::write(app.0.join("src/routes/api/hook.ts"), page).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while route_tree_runs(&dev) == runs {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the edit giving the server route a page did not regenerate\n{}",
+            dev.output()
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert_eq!(route_tree_runs(&dev), runs + 1, "{}", dev.output());
+}
+
+// The route tree's codegen cache stores and restores the tree the generator
+// writes, the one tsr.config.json's `generatedRouteTree` names. Before, it
+// handled src/routeTree.gen.ts: a cache hit left the configured tree missing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_configured_route_tree_is_restored_from_the_cache() {
+    let Some(app) = file_routed("route-tree-configured") else {
+        return;
+    };
+    std::fs::write(
+        app.0.join("tsr.config.json"),
+        r#"{ "generatedRouteTree": "./src/routes.gen.ts" }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        app.0.join("src/router.tsx"),
+        ROUTER.replace("./routeTree.gen", "./routes.gen"),
+    )
+    .unwrap();
+    for boot in ["first", "second"] {
+        // A checkout without the generated tree (it is often gitignored) but
+        // with the cache: the restore must write the configured tree.
+        if boot == "second" {
+            std::fs::remove_file(app.0.join("src/routes.gen.ts")).unwrap();
+        }
+        let dev = Server::oj_dev(&app.0);
+        let (status, _) = dev.request("GET", "/", &[]);
+        assert_eq!(status, 200, "{boot} boot\n{}", dev.output());
+        assert!(
+            app.0.join("src/routes.gen.ts").is_file(),
+            "{boot} boot: no configured tree\n{}",
+            dev.output()
+        );
+        if boot == "second" {
+            let out = dev.output();
+            assert!(
+                out.contains("route tree restored from cache")
+                    && !out.contains("route tree cache miss"),
+                "the second boot regenerated the tree\n{out}"
+            );
+        }
+    }
+}

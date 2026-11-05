@@ -1306,6 +1306,14 @@ async fn rebundle_worker(
     shutdown: Arc<std::sync::atomic::AtomicBool>,
 ) {
     let mut prev_routes = list_route_files(&root);
+    // Each route file's server-only shape, for the edits that flip it.
+    let shapes = {
+        let r = root.clone();
+        let seeded = tokio::task::spawn_blocking(move || route_shapes(&list_route_files(&r)))
+            .await
+            .unwrap_or_default();
+        Arc::new(std::sync::Mutex::new(seeded))
+    };
     loop {
         let run = pending
             .lock()
@@ -1339,20 +1347,32 @@ async fn rebundle_worker(
             let changed: Vec<PathBuf> = paths.clone();
             let generation = state.bundler.hot.generation();
             let deferral = Arc::clone(&state);
+            let shapes = Arc::clone(&shapes);
             // Every batch, bundled or not: a style edit the gate passes over
             // must still recompile at the next bundle.
             bundler.note_changes(&changed);
             tokio::task::spawn_blocking(move || {
                 let routes_now = list_route_files(&r);
                 let routes_changed = routes_now != routes_prev;
-                // An edited route regenerates too, as Start's generator runs
-                // on every route file change: a route that gains or loses
-                // its only-`server` shape moves in or out of the client's
-                // tree (Start reloads the client when that flips).
-                let route_edited = changed.iter().any(|p| routes_now.contains(p));
+                // An edit that flips a route's only-`server` shape moves it in
+                // or out of the client's tree: Start invalidates the tree and
+                // reloads the client only then (its generator plugin's
+                // afterTransform). Other edits leave the tree as it is.
+                let shape_flipped = {
+                    let mut known = shapes
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut flipped = false;
+                    for p in changed.iter().filter(|p| routes_now.contains(*p)) {
+                        if let Some(now) = route_shape(p) {
+                            flipped |= known.insert(p.clone(), now) != Some(now);
+                        }
+                    }
+                    flipped
+                };
                 let client_tree = c.join(crate::start_bundle::CLIENT_ROUTE_TREE);
                 let client_tree_before = std::fs::read(&client_tree).ok();
-                if routes_changed || route_edited {
+                if routes_changed || shape_flipped {
                     let _ = generate_route_tree(&r, &c, &env);
                 }
                 let client_tree_changed = std::fs::read(&client_tree).ok() != client_tree_before;
@@ -2022,6 +2042,22 @@ fn codegen_store(
     )
 }
 
+/// Whether `path` is a server-only route as the generator sees it; None when
+/// it cannot be read or parsed (mid-edit).
+fn route_shape(path: &Path) -> Option<bool> {
+    let code = std::fs::read_to_string(path).ok()?;
+    oj_compiler::route_options::is_server_only_route(&code, &path.to_string_lossy())
+}
+
+fn route_shapes(
+    routes: &std::collections::BTreeSet<PathBuf>,
+) -> std::collections::HashMap<PathBuf, bool> {
+    routes
+        .iter()
+        .filter_map(|p| Some((p.clone(), route_shape(p)?)))
+        .collect()
+}
+
 fn generate_route_tree(
     root: &Path,
     cache: &Path,
@@ -2043,7 +2079,8 @@ fn generate_route_tree(
         None,
         script_env,
     );
-    let dest = root.join("src").join("routeTree.gen.ts");
+    // The tree the generator writes: tsr.config.json's generatedRouteTree.
+    let dest = oj_server::start_route_tree(root);
     let outputs = [
         ("routeTree.gen.ts", dest.as_path()),
         (crate::start_bundle::CLIENT_ROUTE_TREE, client.as_path()),
@@ -2061,6 +2098,9 @@ fn generate_route_tree(
         }
         Err(miss) => println!("  oj start: route tree cache miss ({miss})"),
     }
+    // A crawl that fails writes no client tree: the client then loads the
+    // generated one, not a tree left by an earlier run.
+    let _ = std::fs::remove_file(&client);
     run_script_process(
         root,
         &cache.join("generate.mjs"),
