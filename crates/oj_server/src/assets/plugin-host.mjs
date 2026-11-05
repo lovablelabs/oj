@@ -1667,6 +1667,10 @@ function ojRunsNatively(p, c = main) {
   const name = p && p.name;
   return OJ_NATIVE_PLUGIN_NAMES.has(name) || (c.leaveOut && isReimplemented(name));
 }
+// Where Start's compiler sits among the plugins (noteStartCompilerPosition),
+// set as the plugins load.
+const beforeStartCompiler = new WeakSet();
+let startCompilerFound = false;
 // Vite's picomatch, for plugin `filter` ids.
 await loadViteGlobs(initial.config?.root ?? process.cwd());
 try {
@@ -1685,6 +1689,7 @@ try {
   allPlugins = await flattenPlugins(list);
   nativePlugins = allPlugins.filter((p) => OJ_NATIVE_PLUGIN_NAMES.has(p && p.name));
   main.rawPlugins = allPlugins;
+  noteStartCompilerPosition(allPlugins);
   main.plugins = hostedPlugins(allPlugins, userConfig);
 } catch (e) {
   process.stderr.write(`${OJ} plugin host: failed to load ${pluginsPath}: ${(e && e.stack) || e}\n`);
@@ -2550,6 +2555,7 @@ async function environmentPlugins(environment, candidates, c = main) {
       continue;
     }
     const returned = applied.filter((ap) => !ojRunsNatively(ap, c));
+    if (beforeStartCompiler.has(p)) for (const ap of returned) beforeStartCompiler.add(ap);
     for (const ap of returned) {
       const ignored = ignoredEnvironmentPluginHooks.filter((hook) => ap[hook]);
       if (ignored.length > 0) {
@@ -4941,8 +4947,31 @@ function oxcStripOptions(c) {
 // "pre" hooks (enforce or order "pre") see the source before vite:css compiles
 // it, "normal" ones the compiled CSS before vite:css-post turns it into JS,
 // "post" ones (enforce or order "post") that JS module.
-function inTransformPhase(slot, phase) {
-  return phase === "after-pre" ? slot !== "pre" : slot === phase;
+// Start's compiler (`tanstack-start-core::server-fn:<env>`) is an `enforce:
+// "pre"` plugin with no hook `order`, so in Vite it transforms at its place
+// in the plugin array: after every `order: "pre"` hook and the unordered
+// "pre" plugins listed before it, ahead of the ones listed after it and of
+// everything else. oj runs it natively between a bundle's two compile
+// phases: "before-compile" is what Vite runs before it, "after-compile" the
+// rest. The plugins listed before it (in Vite's enforce-sorted order), and
+// what their applyToEnvironment returns.
+function noteStartCompilerPosition(list) {
+  const sorted = list.filter(Boolean).sort((a, b) => enforceRank(a) - enforceRank(b));
+  const at = sorted.findIndex(
+    (p) => typeof p.name === "string" && p.name.startsWith("tanstack-start-core::server-fn"),
+  );
+  if (at < 0) return;
+  startCompilerFound = true;
+  for (const p of sorted.slice(0, at)) beforeStartCompiler.add(p);
+}
+function compilePhaseOf(p, rank) {
+  if (rank < 0) return "before-compile";
+  if (rank > 0 || enforceRank(p) >= 0) return "after-compile";
+  return !startCompilerFound || beforeStartCompiler.has(p) ? "before-compile" : "after-compile";
+}
+function inTransformPhase(p, rank, phase) {
+  if (phase === "before-compile" || phase === "after-compile") return compilePhaseOf(p, rank) === phase;
+  return cssPhaseOf(p, rank) === phase;
 }
 
 function cssPhaseOf(p, rank) {
@@ -4951,10 +4980,9 @@ function cssPhaseOf(p, rank) {
   return "normal";
 }
 
-// `phase` (a cssPhaseOf slot) runs only that slot's hooks; "after-pre" runs
-// the "normal" and "post" ones (what follows Start's compiler, an `enforce:
-// "pre"` plugin oj runs natively); without one, the whole chain. Module info
-// is final after the whole chain, the "post" slot or "after-pre".
+// `phase` (a cssPhaseOf slot, or a compile phase: see compilePhaseOf) runs
+// only that slot's hooks; without one, the whole chain. Module info is final
+// after the whole chain, the "post" slot or "after-compile".
 async function transform(c, code, id, resolvedJson, phase) {
   const bucket = new Set();
   const chunkBucket = [];
@@ -4979,7 +5007,7 @@ async function transform(c, code, id, resolvedJson, phase) {
     // on top of the plugin's enforce; getSortedPluginsByHook applies to transform
     // like to every other hook.
     for (const { p, fn: handler, rank } of pluginsWithHook(c, "transform")) {
-      if (phase && !inTransformPhase(cssPhaseOf(p, rank), phase)) continue;
+      if (phase && !inTransformPhase(p, rank, phase)) continue;
       // The strip runs BEFORE this plugin's filter is evaluated: Vite
       // evaluates a hook's filter against the code the hook would receive
       // (post-oxc for normal/post plugins), so a `filter.code` that matches
@@ -5040,7 +5068,7 @@ async function transform(c, code, id, resolvedJson, phase) {
         mapBroken,
         emittedChunks: chunkBucket,
       });
-    if (phase && phase !== "post" && phase !== "after-pre") return result();
+    if (phase && phase !== "post" && phase !== "after-compile") return result();
     const prior = c.moduleInfoCache.get(id);
     const info = makeModuleInfo(
       id,

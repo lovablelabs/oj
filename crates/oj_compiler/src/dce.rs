@@ -34,7 +34,9 @@ use oxc_semantic::{Semantic, SemanticBuilder};
 use oxc_span::{GetSpan, SourceType, Span};
 
 /// `after` with what only the edit's removed code used gone, the candidates
-/// being the module-level bindings `before` used.
+/// being the bindings `before` used: module-level ones by name, nested ones
+/// (Babel's visitors reach every scope) by name and line, which the edits
+/// keep.
 pub(crate) fn drop_dead_bindings(before: &str, mut after: String, path: &str) -> String {
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, before, source_type(path)).parse();
@@ -43,20 +45,137 @@ pub(crate) fn drop_dead_bindings(before: &str, mut after: String, path: &str) ->
     }
     let semantic = SemanticBuilder::new().build(&parsed.program).semantic;
     let graph = Graph::of(&parsed.program, &semantic);
-    let candidates: HashSet<String> = graph
+    let module: HashSet<String> = graph
         .bindings
         .iter()
         .enumerate()
         .filter(|(i, b)| b.referenced && !graph.dead.contains(i))
         .map(|(_, b)| b.name.clone())
         .collect();
-    if candidates.is_empty() {
+    let mut nested = HashSet::new();
+    let scoping = semantic.scoping();
+    for (name, at, symbol) in nested_bindings(&parsed.program) {
+        if !scoping.get_resolved_reference_ids(symbol).is_empty() {
+            nested.insert((name, line_of(before, at)));
+        }
+    }
+    let candidates = Candidates { module, nested };
+    if candidates.module.is_empty() && candidates.nested.is_empty() {
         return after;
     }
     while let Some(next) = drop_pass(&after, path, &candidates) {
         after = next;
     }
     after
+}
+
+/// The bindings referenced before the edit (`findReferencedIdentifiers`).
+struct Candidates {
+    module: HashSet<String>,
+    nested: HashSet<(String, usize)>,
+}
+
+fn line_of(code: &str, at: u32) -> usize {
+    code[..at as usize].matches('\n').count()
+}
+
+/// The names nested declarations bind: declarators and function
+/// declarations below the module level, loop heads left out (a loop
+/// iterator is never dropped, and Babel keeps a reassigned `for` counter).
+fn nested_bindings(program: &Program) -> Vec<(String, u32, oxc_syntax::symbol::SymbolId)> {
+    use oxc_ast_visit::Visit;
+    struct Collect {
+        top: HashSet<u32>,
+        heads: HashSet<u32>,
+        out: Vec<(String, u32, oxc_syntax::symbol::SymbolId)>,
+    }
+    impl Collect {
+        fn push(&mut self, id: &BindingIdentifier) {
+            if let Some(symbol) = id.symbol_id.get() {
+                self.out.push((id.name.to_string(), id.span.start, symbol));
+            }
+        }
+    }
+    impl<'a> Visit<'a> for Collect {
+        fn visit_variable_declaration(&mut self, it: &VariableDeclaration<'a>) {
+            if !self.top.contains(&it.span.start) && !self.heads.contains(&it.span.start) {
+                for d in &it.declarations {
+                    for id in pattern_names(&d.id) {
+                        self.push(id);
+                    }
+                }
+            }
+            oxc_ast_visit::walk::walk_variable_declaration(self, it);
+        }
+        fn visit_function(
+            &mut self,
+            it: &oxc_ast::ast::Function<'a>,
+            flags: oxc_syntax::scope::ScopeFlags,
+        ) {
+            if it.is_declaration() && !self.top.contains(&it.span.start) {
+                if let Some(id) = &it.id {
+                    self.push(id);
+                }
+            }
+            oxc_ast_visit::walk::walk_function(self, it, flags);
+        }
+        fn visit_for_statement(&mut self, it: &oxc_ast::ast::ForStatement<'a>) {
+            if let Some(oxc_ast::ast::ForStatementInit::VariableDeclaration(v)) = &it.init {
+                self.heads.insert(v.span.start);
+            }
+            oxc_ast_visit::walk::walk_for_statement(self, it);
+        }
+        fn visit_for_of_statement(&mut self, it: &oxc_ast::ast::ForOfStatement<'a>) {
+            if let oxc_ast::ast::ForStatementLeft::VariableDeclaration(v) = &it.left {
+                self.heads.insert(v.span.start);
+            }
+            oxc_ast_visit::walk::walk_for_of_statement(self, it);
+        }
+        fn visit_for_in_statement(&mut self, it: &oxc_ast::ast::ForInStatement<'a>) {
+            if let oxc_ast::ast::ForStatementLeft::VariableDeclaration(v) = &it.left {
+                self.heads.insert(v.span.start);
+            }
+            oxc_ast_visit::walk::walk_for_in_statement(self, it);
+        }
+    }
+    let mut c = Collect {
+        top: top_level_starts(program),
+        heads: HashSet::new(),
+        out: Vec::new(),
+    };
+    c.visit_program(program);
+    c.out
+}
+
+/// The start offsets of module-level declarations (the ones [`Graph`] owns).
+fn top_level_starts(program: &Program) -> HashSet<u32> {
+    let mut out = HashSet::new();
+    for statement in &program.body {
+        match statement {
+            Statement::VariableDeclaration(v) => {
+                out.insert(v.span.start);
+            }
+            Statement::FunctionDeclaration(f) => {
+                out.insert(f.span.start);
+            }
+            Statement::ExportDeclaration(e) => match &e.declaration {
+                Declaration::VariableDeclaration(v) => {
+                    out.insert(v.span.start);
+                }
+                Declaration::FunctionDeclaration(f) => {
+                    out.insert(f.span.start);
+                }
+                _ => {}
+            },
+            Statement::ExportDefaultDeclaration(e) => {
+                if let ExportDefaultDeclarationKind::FunctionDeclaration(f) = &e.declaration {
+                    out.insert(f.span.start);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 fn source_type(path: &str) -> SourceType {
@@ -262,8 +381,10 @@ fn pattern_names<'p, 'a>(pattern: &'p BindingPattern<'a>) -> Vec<&'p BindingIden
     out
 }
 
-/// One pass: `None` when nothing is dead.
-fn drop_pass(code: &str, path: &str, candidates: &HashSet<String>) -> Option<String> {
+/// One pass: `None` when nothing is dead. Each changed declaration is
+/// rewritten whole; what changes inside a kept one waits for the next pass.
+fn drop_pass(code: &str, path: &str, candidates: &Candidates) -> Option<String> {
+    use oxc_ast_visit::Visit;
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, code, source_type(path)).parse();
     if parsed.fatal_error {
@@ -271,84 +392,167 @@ fn drop_pass(code: &str, path: &str, candidates: &HashSet<String>) -> Option<Str
     }
     let semantic = SemanticBuilder::new().build(&parsed.program).semantic;
     let graph = Graph::of(&parsed.program, &semantic);
+    let scoping = semantic.scoping();
+    let root = scoping.root_scope_id();
     let dead = |id: &BindingIdentifier| {
-        candidates.contains(id.name.as_str()) && graph.is_dead(id.name.as_str())
+        let Some(symbol) = id.symbol_id.get() else {
+            return false;
+        };
+        if scoping.symbol_scope_id(symbol) == root {
+            return candidates.module.contains(id.name.as_str()) && graph.is_dead(id.name.as_str());
+        }
+        // Below the module level, Babel's `binding.referenced`: no reference
+        // left, and never reassigned.
+        candidates
+            .nested
+            .contains(&(id.name.to_string(), line_of(code, id.span.start)))
+            && scoping.get_resolved_reference_ids(symbol).is_empty()
     };
     let text = |span: Span| &code[span.start as usize..span.end as usize];
     let mut edits: Vec<(usize, usize, String)> = Vec::new();
+
+    // Module-level imports.
     for statement in &parsed.program.body {
-        let span = statement.span();
-        let (start, end) = (span.start as usize, span.end as usize);
-        match statement {
-            Statement::ImportDeclaration(import) if !import.import_kind.is_type() => {
-                let Some(specifiers) = &import.specifiers else {
-                    continue;
-                };
-                let kept: Vec<_> = specifiers.iter().filter(|s| !dead(s.local())).collect();
-                if kept.len() == specifiers.len() {
-                    continue;
+        let Statement::ImportDeclaration(import) = statement else {
+            continue;
+        };
+        if import.import_kind.is_type() {
+            continue;
+        }
+        let Some(specifiers) = &import.specifiers else {
+            continue;
+        };
+        let kept: Vec<_> = specifiers.iter().filter(|s| !dead(s.local())).collect();
+        if kept.len() == specifiers.len() {
+            continue;
+        }
+        let (start, end) = (import.span.start as usize, import.span.end as usize);
+        let replacement = if kept.is_empty() {
+            String::new()
+        } else {
+            let mut clauses = Vec::new();
+            let mut named = Vec::new();
+            for specifier in kept {
+                match specifier {
+                    ImportDeclarationSpecifier::ImportSpecifier(_) => {
+                        named.push(text(specifier.span()))
+                    }
+                    _ => clauses.push(text(specifier.span()).to_string()),
                 }
-                let replacement = if kept.is_empty() {
+            }
+            if !named.is_empty() {
+                clauses.push(format!("{{ {} }}", named.join(", ")));
+            }
+            let tail = &code[import.source.span.start as usize..end];
+            format!("import {} from {tail}", clauses.join(", "))
+        };
+        edits.push((start, end, replacement));
+    }
+
+    // Declarations at every depth.
+    struct Walk<'c, D: Fn(&BindingIdentifier) -> bool> {
+        code: &'c str,
+        dead: D,
+        top: HashSet<u32>,
+        heads: HashSet<u32>,
+        edits: Vec<(usize, usize, String)>,
+    }
+    impl<'a, D: Fn(&BindingIdentifier) -> bool> Visit<'a> for Walk<'_, D> {
+        fn visit_variable_declaration(&mut self, var: &VariableDeclaration<'a>) {
+            if self.heads.contains(&var.span.start) {
+                return oxc_ast_visit::walk::walk_variable_declaration(self, var);
+            }
+            let code = self.code;
+            let mut changed = false;
+            let mut kept = Vec::new();
+            for d in &var.declarations {
+                match rebuild(&d.id, code, &self.dead) {
+                    Rebuilt::Same => {
+                        kept.push(code[d.span.start as usize..d.span.end as usize].to_string())
+                    }
+                    Rebuilt::Gone => changed = true,
+                    Rebuilt::Changed(id) => {
+                        changed = true;
+                        kept.push(format!(
+                            "{id}{}",
+                            &code[d.id.span().end as usize..d.span.end as usize]
+                        ));
+                    }
+                }
+            }
+            if !changed {
+                return oxc_ast_visit::walk::walk_variable_declaration(self, var);
+            }
+            let (start, end) = (var.span.start as usize, var.span.end as usize);
+            let replacement = if kept.is_empty() {
+                // A nested statement goes as an empty one, valid wherever a
+                // statement is (`if (x) var a = 1;`).
+                if self.top.contains(&var.span.start) {
                     String::new()
                 } else {
-                    let mut clauses = Vec::new();
-                    let mut named = Vec::new();
-                    for specifier in kept {
-                        match specifier {
-                            ImportDeclarationSpecifier::ImportSpecifier(_) => {
-                                named.push(text(specifier.span()))
-                            }
-                            _ => clauses.push(text(specifier.span()).to_string()),
-                        }
-                    }
-                    if !named.is_empty() {
-                        clauses.push(format!("{{ {} }}", named.join(", ")));
-                    }
-                    let tail = &code[import.source.span.start as usize..end];
-                    format!("import {} from {tail}", clauses.join(", "))
-                };
-                edits.push((start, end, replacement));
-            }
-            Statement::VariableDeclaration(var) => {
-                let mut changed = false;
-                let mut kept = Vec::new();
-                for d in &var.declarations {
-                    match rebuild(&d.id, code, &dead) {
-                        Rebuilt::Same => kept.push(text(d.span).to_string()),
-                        Rebuilt::Gone => changed = true,
-                        Rebuilt::Changed(id) => {
-                            changed = true;
-                            kept.push(format!(
-                                "{id}{}",
-                                &code[d.id.span().end as usize..d.span.end as usize]
-                            ));
-                        }
-                    }
+                    ";".to_string()
                 }
-                if !changed {
-                    continue;
-                }
-                let replacement = if kept.is_empty() {
-                    String::new()
+            } else {
+                let kind = &code[start..var.declarations[0].span.start as usize];
+                let semi = if code[start..end].ends_with(';') {
+                    ";"
                 } else {
-                    let kind = &code[start..var.declarations[0].span.start as usize];
-                    let semi = if text(span).ends_with(';') { ";" } else { "" };
-                    format!("{kind}{}{semi}", kept.join(", "))
+                    ""
                 };
-                edits.push((start, end, replacement));
+                format!("{kind}{}{semi}", kept.join(", "))
+            };
+            self.edits.push((start, end, replacement));
+        }
+        fn visit_function(
+            &mut self,
+            f: &oxc_ast::ast::Function<'a>,
+            flags: oxc_syntax::scope::ScopeFlags,
+        ) {
+            if f.is_declaration() && f.id.as_ref().is_some_and(|id| (self.dead)(id)) {
+                self.edits
+                    .push((f.span.start as usize, f.span.end as usize, String::new()));
+                return;
             }
-            Statement::FunctionDeclaration(f) if f.id.as_ref().is_some_and(dead) => {
-                edits.push((start, end, String::new()));
+            oxc_ast_visit::walk::walk_function(self, f, flags);
+        }
+        fn visit_for_statement(&mut self, it: &oxc_ast::ast::ForStatement<'a>) {
+            if let Some(oxc_ast::ast::ForStatementInit::VariableDeclaration(v)) = &it.init {
+                self.heads.insert(v.span.start);
             }
-            _ => {}
+            oxc_ast_visit::walk::walk_for_statement(self, it);
+        }
+        fn visit_for_of_statement(&mut self, it: &oxc_ast::ast::ForOfStatement<'a>) {
+            if let oxc_ast::ast::ForStatementLeft::VariableDeclaration(v) = &it.left {
+                self.heads.insert(v.span.start);
+            }
+            oxc_ast_visit::walk::walk_for_of_statement(self, it);
+        }
+        fn visit_for_in_statement(&mut self, it: &oxc_ast::ast::ForInStatement<'a>) {
+            if let oxc_ast::ast::ForStatementLeft::VariableDeclaration(v) = &it.left {
+                self.heads.insert(v.span.start);
+            }
+            oxc_ast_visit::walk::walk_for_in_statement(self, it);
         }
     }
+    let mut walk = Walk {
+        code,
+        dead: &dead,
+        top: top_level_starts(&parsed.program),
+        heads: HashSet::new(),
+        edits: Vec::new(),
+    };
+    walk.visit_program(&parsed.program);
+    edits.extend(walk.edits);
     if edits.is_empty() {
         return None;
     }
+    edits.sort_by_key(|e| e.0);
     let mut out = String::with_capacity(code.len());
     let mut last = 0;
     for (start, end, replacement) in edits {
+        if start < last {
+            continue;
+        }
         out.push_str(&code[last..start]);
         let lost = code[start..end].matches('\n').count();
         let kept = replacement.matches('\n').count();
@@ -594,6 +798,53 @@ mod tests {
             "dead before the edit: {out}"
         );
         assert!(!out.contains("import { side }"), "{out}");
+    }
+
+    // Babel's visitors reach every scope: a helper declared inside a factory
+    // that only the removed code used goes, then the import only it used.
+    #[test]
+    fn a_nested_helper_only_the_removed_code_used_goes() {
+        let before = "import { getRequest } from \"@tanstack/react-start/server\";\n\
+                      export function makeFns() {\n\
+                      \x20 const req = () => getRequest();\n\
+                      \x20 function header() { return req(); }\n\
+                      \x20 const kept = 1;\n\
+                      \x20 return wrap(() => header(), kept);\n\
+                      }\n";
+        let out = dce(before, "() => header(), ");
+        for gone in ["getRequest", "const req", "function header"] {
+            assert!(!out.contains(gone), "{gone} left in:\n{out}");
+        }
+        assert!(out.contains("const kept = 1;"), "{out}");
+    }
+
+    #[test]
+    fn nested_reassigned_loop_and_already_unused_bindings_stay() {
+        let before = "export function f(xs: number[]) {\n\
+                      \x20 let n = 0;\n\
+                      \x20 n = n + 1;\n\
+                      \x20 for (const x of xs) use(x);\n\
+                      \x20 for (let i = 0; i < 2; i++) use(i);\n\
+                      \x20 const unusedFromStart = 1;\n\
+                      \x20 return wrap(() => n);\n\
+                      }\n";
+        let out = dce(before, "() => n");
+        assert!(out.contains("let n = 0;"), "reassigned: {out}");
+        assert!(out.contains("for (const x of xs)"), "{out}");
+        assert!(out.contains("for (let i = 0;"), "{out}");
+        assert!(out.contains("const unusedFromStart = 1;"), "{out}");
+    }
+
+    // A nested declaration that is a statement's whole body goes as an empty
+    // statement, so the code still parses.
+    #[test]
+    fn a_nested_declaration_as_a_whole_body_becomes_an_empty_statement() {
+        let before = "export function f(x: boolean) {\n\
+                      \x20 if (x) var a = 1;\n\
+                      \x20 return wrap(() => a);\n\
+                      }\n";
+        let out = dce(before, "() => a");
+        assert!(out.contains("if (x) ;"), "{out}");
     }
 
     #[test]

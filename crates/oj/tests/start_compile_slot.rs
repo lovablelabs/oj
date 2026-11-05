@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
-//! Where Start's compiler runs among the app's plugins in a Start bundle:
-//! after the "pre" transforms and before the "normal" ones, as TanStack's
-//! `enforce: "pre"` compiler plugin sits in Vite. A "pre" plugin sees a
-//! server-fn module as written (its handler and the `getRequest` import),
-//! a "normal" one sees it compiled (the handler and what only it used gone).
+//! Where Start's compiler runs among the app's plugins in a Start bundle, as
+//! TanStack's `enforce: "pre"` compiler plugin (no hook `order`) sits in Vite:
+//! after every `order: "pre"` hook and the "pre" plugins listed before
+//! `tanstackStart()`, before the "pre" plugins listed after it and every
+//! "normal" one. The ones before it see a server-fn module as written (its
+//! handler and the `getRequest` import), the ones after it see it compiled.
 //! A `.svg` svgr componentized at load takes the transforms once, as Vite
 //! runs them on what a load returned.
 
@@ -23,6 +24,30 @@ const PLUGINS: &str = r#"function slotPlugins() {
       enforce: "pre",
       transform(code, id) {
         if (slot(id)) return code + `\nexport const preSaw = ${JSON.stringify(saw(code, "pre"))};\n`;
+      },
+    },
+  ];
+}
+// Listed after tanstackStart(): an unordered "pre" plugin there runs after
+// Start's compiler, a hook with `order: "pre"` before it.
+function slotAfterPlugins() {
+  const slot = (id) => id.split("?")[0].endsWith("/lib/slot.functions.ts");
+  const saw = (code, who) => `${who}-saw-${code.includes("getRequest") ? "raw" : "compiled"}`;
+  return [
+    {
+      name: "fixture-slot-late-pre",
+      enforce: "pre",
+      transform(code, id) {
+        if (slot(id)) return code + `\nexport const latePreSaw = ${JSON.stringify(saw(code, "late-pre"))};\n`;
+      },
+    },
+    {
+      name: "fixture-slot-late-ordered",
+      transform: {
+        order: "pre",
+        handler(code, id) {
+          if (slot(id)) return code + `\nexport const lateOrderedSaw = ${JSON.stringify(saw(code, "late-ordered"))};\n`;
+        },
       },
     },
     {
@@ -58,14 +83,14 @@ fn write_app(root: &Path) {
         .replacen(
             import,
             &format!(
-                "{import}\nimport {{ slotFn, preSaw, normalSaw }} from \"../lib/slot.functions\";"
+                "{import}\nimport {{ slotFn, preSaw, normalSaw, latePreSaw, lateOrderedSaw }} from \"../lib/slot.functions\";"
             ),
             1,
         )
         .replacen(
             heading,
             &format!(
-                "{heading}\n      <p id=\"slot\" onClick={{() => slotFn()}}>{{preSaw}}|{{normalSaw}}</p>"
+                "{heading}\n      <p id=\"slot\" onClick={{() => slotFn()}}>{{preSaw}}|{{normalSaw}}|{{latePreSaw}}|{{lateOrderedSaw}}</p>"
             ),
             1,
         );
@@ -73,8 +98,14 @@ fn write_app(root: &Path) {
     let config = root.join("vite.config.ts");
     let source = std::fs::read_to_string(&config).unwrap();
     assert!(source.contains("  plugins: [\n"), "{source}");
+    assert!(source.contains("    react(),\n  ],"), "{source}");
     let source = source
         .replacen("  plugins: [\n", "  plugins: [\n    ...slotPlugins(),\n", 1)
+        .replacen(
+            "    react(),\n  ],",
+            "    react(),\n    ...slotAfterPlugins(),\n  ],",
+            1,
+        )
         .replacen(
             "export default defineConfig(",
             &format!("{PLUGINS}\nexport default defineConfig("),
@@ -111,6 +142,14 @@ fn the_compiler_runs_after_the_pre_transforms_and_before_the_normal_ones() {
     assert!(
         js.contains("normal-saw-compiled"),
         "the normal plugin did not see the compiled module"
+    );
+    assert!(
+        js.contains("late-pre-saw-compiled"),
+        "a pre plugin listed after tanstackStart() ran before the compiler"
+    );
+    assert!(
+        js.contains("late-ordered-saw-raw"),
+        "an order: \"pre\" hook listed after tanstackStart() ran after the compiler"
     );
     assert!(
         !js.contains("getRequest"),
