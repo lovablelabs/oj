@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `oj typecheck` and the dev server's checker run on tsrs 0.21.0 (from 0.20.1), still TypeScript 7.1.0-beta. Its checker changes are speedups that keep results the same: key-property lookups skip resolving property types that cannot be unit types, and declaration and JSDoc paths allocate less.
 
+### Fixed
+
+- `oj build` lowers CSS for `build.target` / `build.cssTarget` the way `vite build` does. An `es<year>` target (`es2022`) now stands for Vite's browsers for that year (chrome94, safari16.4, ...); before it was skipped and the CSS was lowered for the baseline, so Tailwind v4's `@media (width>=48rem)` stayed where Vite writes `@media (min-width:48rem)`. A target that names no browser (`esnext`) lowers nothing, as in Vite, instead of the baseline. And with `build.cssMinify` off (`build.minify: false`), the CSS keeps its syntax: Vite lowers only while minifying, and oj lowered each stylesheet regardless.
+
 ## [0.4.1] - 2026-11-04
 
 ### Fixed
