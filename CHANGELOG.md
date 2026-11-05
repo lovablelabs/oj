@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-11-05
+
 ### Changed
 
 - `oj typecheck` and the dev server's checker run on tsrs 0.21.0 (from 0.20.1), still TypeScript 7.1.0-beta. Its checker changes are speedups that keep results the same: key-property lookups skip resolving property types that cannot be unit types, and declaration and JSDoc paths allocate less.
