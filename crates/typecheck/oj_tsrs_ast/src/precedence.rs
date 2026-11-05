@@ -104,7 +104,7 @@ bitflags! {
 }
 
 // Gets the precedence of an operator
-fn get_operator_precedence(
+pub fn get_operator_precedence(
     node_kind: Kind,
     operator_kind: Kind,
     flags: OperatorPrecedenceFlags,

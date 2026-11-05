@@ -547,7 +547,7 @@ impl Checker {
     /// tsrs: the case that returns `t` itself (no flag below and not mapped: most object types) inline; called about
     /// 1.8G times on the 38k-file codebase, where the out-of-line body spent most of its instructions on its frame.
     #[inline]
-    pub(crate) fn get_apparent_type(&mut self, t: P<Type>) -> P<Type> {
+    pub fn get_apparent_type(&mut self, t: P<Type>) -> P<Type> {
         const SLOW: TypeFlags = TypeFlags::Instantiable
             .union(TypeFlags::Intersection)
             .union(TypeFlags::StringLike)
@@ -945,7 +945,7 @@ pub(crate) fn is_conflicting_private_property(prop: P<Symbol>) -> bool {
 
 impl Checker {
     // checker.go:22289
-    pub(crate) fn get_type_arguments(&mut self, t: P<Type>) -> &'static [P<Type>] {
+    pub fn get_type_arguments(&mut self, t: P<Type>) -> &'static [P<Type>] {
         let d = t.as_type_reference();
         if d.resolved_type_arguments.get().is_none() {
             let n = d.target.get().unwrap().as_interface_type();
@@ -2692,7 +2692,7 @@ impl Checker {
     }
 
     // checker.go:23232
-    pub(crate) fn get_type_from_type_node(&mut self, node: P<Node>) -> P<Type> {
+    pub fn get_type_from_type_node(&mut self, node: P<Node>) -> P<Type> {
         let t = self.get_type_from_type_node_worker(node);
         self.get_conditional_flow_type_of_type(t, Some(node))
     }
@@ -3655,7 +3655,7 @@ impl Checker {
     }
 
     // checker.go:23942
-    pub(crate) fn is_array_type(&self, t: P<Type>) -> bool {
+    pub fn is_array_type(&self, t: P<Type>) -> bool {
         t.object_flags().intersects(ObjectFlags::Reference)
             && (t.target() == Some(self.global_array_type)
                 || t.target() == Some(self.global_readonly_array_type))

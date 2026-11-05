@@ -39,7 +39,7 @@ impl Checker {
     }
 
     // checker.go:2196
-    pub(crate) fn get_immediate_aliased_symbol(&mut self, symbol: P<Symbol>) -> Option<P<Symbol>> {
+    pub fn get_immediate_aliased_symbol(&mut self, symbol: P<Symbol>) -> Option<P<Symbol>> {
         assert!(symbol.flags().intersects(SymbolFlags::Alias), "Should only get Alias here.");
         let links = self.alias_symbol_links.get(symbol);
         if links.immediate_target.get().is_none() {
@@ -1555,8 +1555,8 @@ impl Checker {
         fn check_property_or_accessor(
             c: &mut Checker,
             node: P<Node>,
-            instance_names: &mut FxHashMap<String, u8>,
-            static_names: &mut FxHashMap<String, u8>,
+            instance_names: &mut FxHashMap<&'static str, u8>,
+            static_names: &mut FxHashMap<&'static str, u8>,
             symbol: P<Symbol>,
             kind: u8,
             is_static: bool,
@@ -1566,7 +1566,7 @@ impl Checker {
                 let state = names.get(symbol.name()).copied().unwrap_or(0);
                 if state == 0 {
                     // On first occurrence just record the kind
-                    names.insert(symbol.name().to_string(), kind);
+                    names.insert(symbol.name(), kind);
                 } else if state == 1 || state == 2 && kind != 2 {
                     // Error on second property or combination of property and accessor
                     c.report_duplicate_member_errors(
@@ -1577,14 +1577,14 @@ impl Checker {
                         &diagnostics::DUPLICATE_IDENTIFIER_0,
                     );
                     // Record that errors have been reported
-                    names.insert(symbol.name().to_string(), 3);
+                    names.insert(symbol.name(), 3);
                 }
             }
         }
 
-        let mut instance_names: FxHashMap<String, u8> = FxHashMap::default();
-        let mut static_names: FxHashMap<String, u8> = FxHashMap::default();
-        let mut private_names: FxHashMap<String, u8> = FxHashMap::default();
+        let mut instance_names: FxHashMap<&'static str, u8> = FxHashMap::default();
+        let mut static_names: FxHashMap<&'static str, u8> = FxHashMap::default();
+        let mut private_names: FxHashMap<&'static str, u8> = FxHashMap::default();
         let node_in_ambient_context = node.flags().intersects(NodeFlags::Ambient);
         for &member in node.members() {
             if ast::is_constructor_declaration(member) {
@@ -1655,7 +1655,7 @@ impl Checker {
                     let mut flags = private_names.get(symbol.name()).copied().unwrap_or(0);
                     if flags != 3 {
                         flags |= if_else(ast::is_static(member), 2, 1);
-                        private_names.insert(symbol.name().to_string(), flags);
+                        private_names.insert(symbol.name(), flags);
                         if flags == 3 {
                             self.report_duplicate_member_errors(
                                 node,
@@ -2212,13 +2212,13 @@ impl Checker {
         let mut body_declaration: Option<P<Node>> = None;
         let mut last_seen_non_ambient_declaration: Option<P<Node>> = None;
         let mut previous_declaration: Option<P<Node>> = None;
-        let declarations: Vec<P<Node>> = symbol.declarations().to_vec();
+        let declarations = symbol.declarations();
         let is_constructor = symbol.flags().intersects(SymbolFlags::Constructor);
         let mut duplicate_function_declaration = false;
         let mut multiple_constructor_implementation = false;
         let mut has_non_ambient_class = false;
         let mut function_declarations: Vec<P<Node>> = Vec::new();
-        for &node in &declarations {
+        for &node in declarations {
             let in_ambient_context = node.flags().intersects(NodeFlags::Ambient);
             let in_ambient_context_or_interface = in_ambient_context
                 || node.parent().is_some_and(|parent| {
@@ -2314,7 +2314,7 @@ impl Checker {
                     None
                 }
             }));
-            for &declaration in &declarations {
+            for &declaration in declarations {
                 let diagnostic: Option<&'static Message> = match declaration.kind() {
                     Kind::ClassDeclaration => Some(&diagnostics::CLASS_DECLARATION_CANNOT_IMPLEMENT_OVERLOAD_LIST_FOR_0),
                     Kind::FunctionDeclaration => Some(&diagnostics::FUNCTION_WITH_BODIES_CAN_ONLY_MERGE_WITH_CLASSES_THAT_ARE_AMBIENT),
@@ -2341,7 +2341,7 @@ impl Checker {
         if has_overloads {
             check_flag_agreement_between_overloads(
                 self,
-                &declarations,
+                declarations,
                 body_declaration,
                 flags_to_check,
                 some_node_flags,
@@ -2349,7 +2349,7 @@ impl Checker {
             );
             check_question_token_agreement_between_overloads(
                 self,
-                &declarations,
+                declarations,
                 body_declaration,
                 some_have_question_token,
                 all_have_question_token,

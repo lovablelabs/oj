@@ -34,7 +34,7 @@ impl PseudoBigInt {
         self.base10_value.to_string()
     }
 
-    fn sign(self) -> BigIntSign {
+    pub fn sign(self) -> BigIntSign {
         if self.base10_value.is_empty() {
             return BigIntSign::Zero;
         }

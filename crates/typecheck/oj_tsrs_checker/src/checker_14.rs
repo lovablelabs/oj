@@ -1703,7 +1703,7 @@ impl Checker {
 }
 
 // checker.go:29482
-pub(crate) fn get_mapped_type_modifiers(t: P<Type>) -> MappedTypeModifiers {
+pub fn get_mapped_type_modifiers(t: P<Type>) -> MappedTypeModifiers {
     let declaration = t.as_mapped_type().declaration.get().unwrap().as_mapped_type_node();
     let mut modifiers = MappedTypeModifiers::empty();
     if let Some(readonly_token) = declaration.readonly_token {
@@ -1834,12 +1834,12 @@ impl Checker {
     }
 
     // checker.go:29576
-    pub(crate) fn remove_definitely_falsy_types(&mut self, t: P<Type>) -> P<Type> {
+    pub fn remove_definitely_falsy_types(&mut self, t: P<Type>) -> P<Type> {
         self.filter_type(t, |c, t| c.has_type_facts(t, TypeFacts::Truthy))
     }
 
     // checker.go:29580
-    pub(crate) fn extract_definitely_falsy_types(&mut self, t: P<Type>) -> P<Type> {
+    pub fn extract_definitely_falsy_types(&mut self, t: P<Type>) -> P<Type> {
         self.map_type(t, |c, t| Some(c.get_definitely_falsy_part_of_type(t))).unwrap()
     }
 
@@ -2199,7 +2199,7 @@ impl Checker {
     }
 
     // checker.go:29803
-    pub(crate) fn get_type_of_property_or_index_signature_of_type(
+    pub fn get_type_of_property_or_index_signature_of_type(
         &mut self,
         t: P<Type>,
         name: &str,
@@ -2237,7 +2237,7 @@ impl Checker {
      * @returns the contextual type of an expression.
      */
     // checker.go:29832
-    pub(crate) fn get_contextual_type(
+    pub fn get_contextual_type(
         &mut self,
         node: P<Node>,
         context_flags: ContextFlags,
@@ -2958,7 +2958,7 @@ impl Checker {
     }
 
     // checker.go:30261
-    pub(crate) fn get_contextual_type_for_argument_at_index(
+    pub fn get_contextual_type_for_argument_at_index(
         &mut self,
         call_target: P<Node>,
         arg_index: usize,

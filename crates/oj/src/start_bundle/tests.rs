@@ -737,6 +737,95 @@ async fn the_server_bundle_never_takes_a_packages_browser_build() {
     );
 }
 
+/// A dep's browser UMD (automation-events, under Tone) `require()`s a helper
+/// whose `exports` map has `import` (ESM) and `default` (CJS) builds, as
+/// `@babel/runtime` does. Vite resolves a `require()` with `require` in place
+/// of `import` (getConditions), so the UMD factory gets the CJS function; the
+/// ESM build would hand it a namespace and throw `_createClass is not a
+/// function`. An ESM import of the same helper still takes its ESM build.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_require_call_takes_the_require_build_of_a_dual_package() {
+    let app = App::new(&[
+        (
+            "src/entry.js",
+            "import { make } from \"umd-dep\";\nimport helper from \"dual-helper/fn\";\nconsole.log(make(), helper());\n",
+        ),
+        (
+            "node_modules/umd-dep/package.json",
+            r#"{"name":"umd-dep","main":"node.js","module":"esm.js","browser":"umd.js"}"#,
+        ),
+        ("node_modules/umd-dep/node.js", "exports.make = () => \"umd-dep-node\";"),
+        ("node_modules/umd-dep/esm.js", "export const make = () => \"umd-dep-esm\";"),
+        (
+            "node_modules/umd-dep/umd.js",
+            r#"(function (global, factory) {
+  typeof exports === "object" && typeof module !== "undefined" ? factory(exports, require("dual-helper/fn")) :
+  factory(global.umdDep = {}, global.helper);
+})(this, function (exports, helper) {
+  exports.make = function () { return helper(); };
+});
+"#,
+        ),
+        (
+            "node_modules/dual-helper/package.json",
+            r#"{"name":"dual-helper","exports":{"./fn":{"node":"./fn.cjs","import":"./fn.mjs","default":"./fn.cjs"}}}"#,
+        ),
+        (
+            "node_modules/dual-helper/fn.cjs",
+            "function fn() { return \"helper-cjs-build\"; }\nmodule.exports = fn, module.exports.__esModule = true, module.exports[\"default\"] = module.exports;\n",
+        ),
+        (
+            "node_modules/dual-helper/fn.mjs",
+            "export default function fn() { return \"helper-esm-build\"; }\n",
+        ),
+    ]);
+    let mut start = app.start();
+    start.config = serde_json::from_value(serde_json::json!({
+        "resolve": { "mainFields": ["browser", "module", "jsnext:main", "jsnext"] }
+    }))
+    .unwrap();
+    let options = BundlerOptions {
+        input: Some(vec![InputItem {
+            name: Some("entry".into()),
+            import: app.dir.join("src/entry.js").to_string_lossy().into_owned(),
+        }]),
+        cwd: Some(app.dir.clone()),
+        platform: Some(Platform::Browser),
+        format: Some(OutputFormat::Esm),
+        resolve: Some(start.resolve_options(
+            &[],
+            start.client_main_fields(),
+            Some(start.client_conditions()),
+        )),
+        ..Default::default()
+    };
+    let mut bundler = BundlerBuilder::default()
+        .with_options(options)
+        .build()
+        .unwrap();
+    let out = bundler.generate().await.unwrap();
+    let code: String = out
+        .assets
+        .iter()
+        .filter_map(|o| match o {
+            rolldown_common::Output::Chunk(c) => Some(c.code.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        code.contains("umdDep") && !code.contains("umd-dep-esm"),
+        "the client takes the dep's browser build, as Vite does:\n{code}"
+    );
+    assert!(
+        code.contains("helper-cjs-build"),
+        "the require() took the helper's ESM build:\n{code}"
+    );
+    assert!(
+        code.contains("helper-esm-build"),
+        "the ESM import keeps the helper's ESM build:\n{code}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn environment_functions_compile_per_bundle_in_app_and_dep_code() {
     // A dep compiled the same way: TanStack's own packages call the factories.

@@ -5,7 +5,7 @@
 [tsrs](https://github.com/oxc-project/tsrs), the Rust port of the
 TypeScript 7 compiler, whose crates are vendored here as `oj_tsrs_*`.
 
-Vendored: tsrs 0.20.1 (`77d3cddb44540734abc33a42ccca4d3f33bee527`), TypeScript 7.1.0-beta.
+Vendored: tsrs 0.21.0 (`38931a58019107ba31581791e26a7aa414c9e015`), TypeScript 7.1.0-beta.
 Licensed Apache-2.0; each crate carries tsrs's `LICENSE` and `NOTICE`.
 
 Do not edit the `oj_tsrs_*` crates by hand. To move to another tsrs

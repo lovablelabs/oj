@@ -868,10 +868,12 @@ impl Region {
         Region::new_in(first_chunk, true, false)
     }
 
-    /// A region to be used only through `enter_scratch` (one file's emit): like `new`, but its chunks are not in the
+    /// An unregistered region: like `new`, but its chunks are not in the
     /// registry, so `containing` never returns it and creating or freeing it takes no global lock. Lazily filled data
     /// of an object inside it (`enter_owner`) goes to the current target, the region itself while it is entered. A
     /// process with only scratch regions (the CLI) keeps `enter_owner` / `enter_table_owner` free.
+    /// Use `enter_scratch` for temporary data whose escaping caches must survive the region. A request that owns
+    /// all cached data may use `enter` directly, retaining every participating region until all consumers are gone.
     pub fn new_scratch(first_chunk: usize) -> Region {
         Region::new_in(first_chunk, false, false)
     }

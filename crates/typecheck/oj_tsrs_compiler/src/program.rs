@@ -1134,11 +1134,17 @@ impl Program {
         let unbound: Vec<P<SourceFile>> =
             self.files.iter().copied().filter(|f| !f.is_bound()).collect();
         if self.single_threaded() {
+            let _regions = crate::programregions::enter(self.opts.regions.as_deref());
             // Go's single-threaded work group runs queued functions last-queued first, so files bind in reverse
             // program order. The order is observable: the binder assigns symbol ids (private names).
             unbound.into_iter().rev().for_each(crate::fileregions::bind);
         } else {
-            worker_pool().install(|| unbound.into_par_iter().for_each(crate::fileregions::bind));
+            worker_pool().install(|| {
+                unbound.into_par_iter().for_each(|file| {
+                    let _regions = crate::programregions::enter(self.opts.regions.as_deref());
+                    crate::fileregions::bind(file);
+                });
+            });
         }
     }
 
@@ -2641,7 +2647,8 @@ impl Program {
     }
 
     // program.go:1488
-    fn get_semantic_diagnostics_with_checker(
+    /// Collects a file's semantic diagnostics using an exclusively borrowed checker for this program.
+    pub fn get_semantic_diagnostics_with_checker(
         &'static self,
         ctx: &Context,
         c: &mut Checker,

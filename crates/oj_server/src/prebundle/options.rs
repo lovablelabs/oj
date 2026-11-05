@@ -28,10 +28,6 @@ const BASELINE_TARGET: &[&str] = &[
     "ios16.4",
 ];
 
-/// The conditions rolldown's resolver adds itself per import kind; Vite's
-/// esbuild-era contract kept them out of the configured list.
-const IMPLICIT_CONDITIONS: &[&str] = &["import", "require", "default"];
-
 pub(crate) struct DepOptions {
     platform: Platform,
     resolve: ResolveOptions,
@@ -150,12 +146,7 @@ impl DepOptions {
                     input.main_fields.clone()
                 }
             })),
-            condition_names: Some(
-                conditions
-                    .into_iter()
-                    .filter(|c| !IMPLICIT_CONDITIONS.contains(&c.as_str()))
-                    .collect(),
-            ),
+            condition_names: Some(oj_resolver::rolldown_conditions(conditions)),
             extensions: es("resolveExtensions")
                 .and_then(strings)
                 .or_else(|| (!input.extensions.is_empty()).then(|| input.extensions.clone())),

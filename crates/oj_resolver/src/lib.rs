@@ -17,7 +17,7 @@ use oxc_resolver::Resolver;
 
 pub use defaults::{
     default_extension_alias, default_extensions, default_main_fields, default_server_main_fields,
-    with_main_fallback,
+    rolldown_conditions, with_main_fallback,
 };
 use exports::{directory_entry, DirectoryEntry};
 pub use settings::ResolveSettings;
