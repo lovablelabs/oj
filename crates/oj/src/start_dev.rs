@@ -1345,8 +1345,20 @@ async fn rebundle_worker(
             tokio::task::spawn_blocking(move || {
                 let routes_now = list_route_files(&r);
                 let routes_changed = routes_now != routes_prev;
-                if routes_changed {
+                // An edited route regenerates too, as Start's generator runs
+                // on every route file change: a route that gains or loses
+                // its only-`server` shape moves in or out of the client's
+                // tree (Start reloads the client when that flips).
+                let route_edited = changed.iter().any(|p| routes_now.contains(p));
+                let client_tree = c.join(crate::start_bundle::CLIENT_ROUTE_TREE);
+                let client_tree_before = std::fs::read(&client_tree).ok();
+                if routes_changed || route_edited {
                     let _ = generate_route_tree(&r, &c, &env);
+                }
+                let client_tree_changed = std::fs::read(&client_tree).ok() != client_tree_before;
+                let mut inputs = inputs;
+                if client_tree_changed {
+                    inputs.push(oj_server::start_route_tree(&r));
                 }
                 let server_fn_changed = changed.iter().any(|p| {
                     let is_ts = p.extension().is_some_and(|e| e == "ts" || e == "tsx");
@@ -1363,7 +1375,7 @@ async fn rebundle_worker(
                 // Nothing to bring current while no page runs the bundle; a
                 // runner document that loaded it since (it marks the bundle
                 // loaded before it looks for a deferral) still gets it.
-                let wants = needs_bundle || routes_changed;
+                let wants = needs_bundle || routes_changed || client_tree_changed;
                 let bundling = wants
                     && (pages_run_bundle || {
                         deferral
@@ -2015,6 +2027,14 @@ fn generate_route_tree(
     cache: &Path,
     script_env: &[(String, String)],
 ) -> anyhow::Result<()> {
+    // The client's pruned tree (generate.mjs), beside the generated one.
+    let client = cache.join(crate::start_bundle::CLIENT_ROUTE_TREE);
+    let mut script_env = script_env.to_vec();
+    script_env.push((
+        "OJ_CLIENT_ROUTE_TREE".to_string(),
+        client.to_string_lossy().into_owned(),
+    ));
+    let script_env = script_env.as_slice();
     let store = codegen_store(
         root,
         cache,
@@ -2024,7 +2044,10 @@ fn generate_route_tree(
         script_env,
     );
     let dest = root.join("src").join("routeTree.gen.ts");
-    let outputs = [("routeTree.gen.ts", dest.as_path())];
+    let outputs = [
+        ("routeTree.gen.ts", dest.as_path()),
+        (crate::start_bundle::CLIENT_ROUTE_TREE, client.as_path()),
+    ];
     let inputs: Vec<PathBuf> = list_route_files(root).into_iter().collect();
     match store.restore(&inputs, &outputs) {
         Ok(stats) => {

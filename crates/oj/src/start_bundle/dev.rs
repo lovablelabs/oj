@@ -409,6 +409,10 @@ impl DevBundler {
                 entry: entry.clone(),
             }));
         }
+        // Start's client route tree (route-tree-client-plugin, a "pre" load).
+        plugins.push(Pluginable::new_shared(
+            super::route_tree::ClientRouteTree::new(&start.root, &start.cache),
+        ));
         if let Some(h) = host {
             if !h.facts.alias.is_empty() {
                 plugins.push(Pluginable::new_shared(AppAliasPlugin {

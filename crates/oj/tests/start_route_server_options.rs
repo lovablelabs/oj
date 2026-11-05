@@ -11,6 +11,10 @@
 //! import: import protection threw in dev, the client entry answered 404 and
 //! the page never hydrated.
 //!
+//! The client's route tree leaves a server-only route out, as Start's
+//! route-tree-client-plugin prunes it (`pruneServerOnlySubtrees`), and takes
+//! it in once an edit gives it a component.
+//!
 //! The app is the Start fixture (see `start_app`) moved to file-based
 //! routing. The browser half skips without Chrome, unless
 //! `OJ_REQUIRE_BROWSER` is set.
@@ -198,4 +202,114 @@ fn a_server_routes_handlers_stay_out_of_the_client_build() {
         !client_has(&app.0, "hook-server-secret"),
         "the client holds the route's server handler"
     );
+    assert!(
+        !client_has(&app.0, "/api/hook"),
+        "the client's route tree holds the server-only route"
+    );
+}
+
+/// The hook route with a component as well as its handlers: no longer
+/// server-only.
+const HOOK_WITH_PAGE: &str = r#"import { createFileRoute } from "@tanstack/react-router";
+import { secret } from "../../server/hook-secret.server";
+
+export const Route = createFileRoute("/api/hook")({
+  server: {
+    handlers: {
+      GET: async () => new Response(secret()),
+    },
+  },
+  component: () => <p id="hook-page">hook page</p>,
+});
+"#;
+
+/// The client router's route ids, once the page hydrated.
+async fn client_route_ids(dev: &Server) -> Vec<String> {
+    let page = Page::open(&dev.url("/")).await;
+    let hydrated = page
+        .poll(
+            r##"document.querySelector("#hydrated")?.textContent === "hydrated""##,
+            Duration::from_secs(30),
+        )
+        .await;
+    assert!(
+        hydrated,
+        "the page did not hydrate: {:?}\n{}",
+        page.errors(),
+        dev.output()
+    );
+    let ids: Vec<String> = page
+        .eval("Object.keys(self.__TSR_ROUTER__?.routesById ?? {})")
+        .await;
+    page.close().await;
+    ids
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_client_route_tree_leaves_a_server_only_route_out_until_it_has_a_page() {
+    let Some(app) = file_routed("route-server-tree") else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let dev = Server::oj_dev(&app.0);
+    let ids = client_route_ids(&dev).await;
+    assert!(ids.iter().any(|id| id == "/"), "{ids:?}");
+    assert!(
+        !ids.iter().any(|id| id == "/api/hook"),
+        "the client's tree holds the server-only route: {ids:?}"
+    );
+
+    std::fs::write(app.0.join("src/routes/api/hook.tsx"), HOOK_WITH_PAGE).unwrap();
+    std::fs::remove_file(app.0.join("src/routes/api/hook.ts")).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let ids = client_route_ids(&dev).await;
+        if ids.iter().any(|id| id == "/api/hook") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the route with a page never reached the client's tree: {ids:?}\n{}",
+            dev.output()
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_edit_that_gives_a_server_route_a_page_reaches_the_client_tree() {
+    let Some(app) = file_routed("route-server-edit") else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let dev = Server::oj_dev(&app.0);
+    let ids = client_route_ids(&dev).await;
+    assert!(!ids.iter().any(|id| id == "/api/hook"), "{ids:?}");
+    // The same file, edited in place: the route set does not change.
+    let hook = app.0.join("src/routes/api/hook.ts");
+    std::fs::write(
+        &hook,
+        HOOK_WITH_PAGE.replace(
+            "component: () => <p id=\"hook-page\">hook page</p>,",
+            "component: () => null,",
+        ),
+    )
+    .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let ids = client_route_ids(&dev).await;
+        if ids.iter().any(|id| id == "/api/hook") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the edited route never reached the client's tree: {ids:?}\n{}",
+            dev.output()
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
 }

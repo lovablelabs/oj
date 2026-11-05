@@ -189,6 +189,12 @@ fn client_plugins(
     if let Some(plugin) = &start.stylex {
         plugins.push(crate::stylex_plugin::transform(plugin));
     }
+    // Start's client route tree (route-tree-client-plugin, a "pre" load).
+    if matches!(target, CodeTarget::Client) {
+        plugins.push(Pluginable::new_shared(
+            super::route_tree::ClientRouteTree::new(&start.root, &start.cache),
+        ));
+    }
     if let Some(h) = host {
         if !h.facts.alias.is_empty() {
             plugins.push(Pluginable::new_shared(AppAliasPlugin {

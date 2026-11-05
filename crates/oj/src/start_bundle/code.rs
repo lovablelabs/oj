@@ -308,7 +308,7 @@ impl StartCodePlugin {
     /// Whether `file` is a route the generator knows (the code splitter's
     /// `routesByFile`): one the generated route tree imports.
     fn is_route_file(&self, file: &Path) -> bool {
-        let tree = self.root.join("src").join("routeTree.gen.ts");
+        let tree = oj_server::start_route_tree(&self.root);
         let Ok(modified) = std::fs::metadata(&tree).and_then(|m| m.modified()) else {
             return false;
         };
