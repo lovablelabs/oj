@@ -518,6 +518,13 @@ pub struct ResolveConfig {
     /// with instead of the environment's conditions.
     pub external_conditions: Option<Vec<String>>,
     pub preserve_symlinks: Option<bool>,
+    /// Vite 8's `resolve.tsconfigPaths`: its own resolver applies tsconfig
+    /// `paths`.
+    pub tsconfig_paths: Option<bool>,
+    /// Whether vite-tsconfig-paths is among the resolved plugins, as the
+    /// plugin host reports it (None when no host ran).
+    #[serde(skip)]
+    pub tsconfig_paths_plugin: Option<bool>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]

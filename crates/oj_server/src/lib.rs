@@ -1238,6 +1238,20 @@ fn block_on_host<T: Send>(
     })
 }
 
+/// How the app's Vite applies tsconfig `paths`: vite-tsconfig-paths when
+/// the plugin host saw it (or saw no plugins at all), else Vite 8's own
+/// `resolve.tsconfigPaths`, else none, where oj keeps them as a fallback.
+pub fn tsconfig_paths(config: &oj_config::OjConfig) -> oj_resolver::TsconfigPaths {
+    let resolve = config.resolve.as_ref();
+    let plugin = resolve.and_then(|r| r.tsconfig_paths_plugin);
+    let native = resolve.and_then(|r| r.tsconfig_paths) == Some(true);
+    match (plugin, native) {
+        (Some(true), _) | (None, false) => oj_resolver::TsconfigPaths::Plugin,
+        (_, true) => oj_resolver::TsconfigPaths::Native,
+        (Some(false), false) => oj_resolver::TsconfigPaths::Fallback,
+    }
+}
+
 fn client_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
     OjResolver::with_settings(
         root,
@@ -1249,6 +1263,7 @@ fn client_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
             main_fields: oj_config::resolve_main_fields(config),
             preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
             server: false,
+            tsconfig_paths: tsconfig_paths(config),
         },
     )
 }
@@ -1295,6 +1310,7 @@ pub(crate) fn environment_resolver(
             main_fields,
             preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
             server,
+            tsconfig_paths: tsconfig_paths(config),
         },
     )
 }
@@ -1322,6 +1338,7 @@ pub fn ssr_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
             preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
             // Vite's server environment: no `browser` main field or remap.
             server: true,
+            tsconfig_paths: tsconfig_paths(config),
         },
     )
 }
@@ -1344,6 +1361,7 @@ pub fn ssr_external_resolver(root: &Path, config: &oj_config::OjConfig) -> OjRes
             main_fields: Some(vec!["main".to_string()]),
             preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
             server: true,
+            tsconfig_paths: oj_resolver::TsconfigPaths::Off,
         },
     )
 }

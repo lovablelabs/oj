@@ -234,3 +234,97 @@ async fn a_paths_target_that_is_a_declaration_file_is_never_served() {
     let helper = server.text("/src/lib/helper.ts").await;
     assert!(helper.contains("-helper"), "{helper}");
 }
+
+/// An exact `paths` key next to `@/*`, and a `paths` key named like an
+/// installed package.
+const MODE_FILES: &[(&str, &str)] = &[
+    (
+        "package.json",
+        r#"{"name":"paths-modes","private":true,"type":"module"}"#,
+    ),
+    ("index.html", INDEX),
+    (
+        "src/main.ts",
+        "import { x } from \"@/x\";\ndocument.body.dataset.x = x;\n",
+    ),
+    (
+        "src/pkg.ts",
+        "import { ev } from \"evpkg\";\ndocument.body.dataset.ev = ev;\n",
+    ),
+    ("src/a.ts", "export const x = \"exact-key\";\n"),
+    ("src/x.ts", "export const x = \"star\";\n"),
+    ("src/evshim.ts", "export const ev = \"shim\";\n"),
+    (
+        "node_modules/evpkg/package.json",
+        r#"{"name":"evpkg","type":"module","main":"index.js"}"#,
+    ),
+    (
+        "node_modules/evpkg/index.js",
+        "export const ev = \"package\";\n",
+    ),
+    (
+        "tsconfig.json",
+        r#"{ "compilerOptions": { "paths": { "@/x": ["./src/a.ts"], "@/*": ["./src/*"], "evpkg": ["./src/evshim.ts"] } } }"#,
+    ),
+];
+
+// oj applies tsconfig `paths` the way the app's Vite does: vite-tsconfig-paths
+// tries `@/*` before the exact key, Vite 8's `resolve.tsconfigPaths` takes the
+// exact key first, and with neither Vite applies none, so the package stands
+// (oj keeps `paths` only for what plain resolution misses).
+#[tokio::test(flavor = "multi_thread")]
+async fn tsconfig_paths_follow_how_the_config_turns_them_on() {
+    crate::require_fixture!("vite", "vite-tsconfig-paths");
+    let app = App::new(MODE_FILES);
+    app.link_fixture("vite");
+    app.link_fixture("vite-tsconfig-paths");
+    // Each config: its body, whether `@/x` resolves (with neither, Vite
+    // fails it), and whether `evpkg` takes the shim.
+    let configs: &[(&str, &str, Option<&str>, bool)] = &[
+        (
+            "plugin",
+            "import tsConfigPaths from \"vite-tsconfig-paths\";\nexport default { plugins: [tsConfigPaths()] };\n",
+            Some("/src/x.ts"),
+            true,
+        ),
+        (
+            "native",
+            "export default { resolve: { tsconfigPaths: true } };\n",
+            Some("/src/a.ts"),
+            true,
+        ),
+        ("neither", "export default {};\n", None, false),
+    ];
+    for (name, body, x, shim) in configs {
+        let config_file = format!("vite.{name}.config.js");
+        app.write(&[(config_file.as_str(), body)]);
+        let vite = ViteDev::start(&app.root, &config_file);
+        let pkg = vite.imports("/src/pkg.ts");
+        let theirs_x = x.map(|_| vite.imports("/src/main.ts"));
+        drop(vite);
+        let takes_shim = |imports: &[String]| imports.iter().any(|i| i == "/src/evshim.ts");
+        assert_eq!(
+            takes_shim(&pkg),
+            *shim,
+            "vite dev, {name}: the premise ({pkg:?})"
+        );
+        if let (Some(theirs), Some(want)) = (&theirs_x, x) {
+            assert_eq!(theirs, &[*want], "vite dev, {name}: the premise");
+        }
+
+        let mut dev = app.dev();
+        dev.config = Some(app.root.join(&config_file));
+        let server = crate::serve(dev).await;
+        let ours_pkg = imports(&server.text("/src/pkg.ts").await);
+        assert_eq!(
+            takes_shim(&ours_pkg),
+            *shim,
+            "oj dev vs vite dev, {name}: evpkg ({ours_pkg:?})"
+        );
+        if let Some(theirs) = theirs_x {
+            let ours = imports(&server.text("/src/main.ts").await);
+            assert_eq!(ours, theirs, "oj dev vs vite dev, {name}: @/x");
+        }
+        drop(server);
+    }
+}

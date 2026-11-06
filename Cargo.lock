@@ -6652,6 +6652,7 @@ name = "oj_resolver"
 version = "0.4.4"
 dependencies = [
  "oxc_resolver",
+ "regex",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",

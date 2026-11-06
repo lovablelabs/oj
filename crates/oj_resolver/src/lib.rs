@@ -9,6 +9,7 @@ mod defaults;
 mod exports;
 mod settings;
 mod spec;
+mod tsconfig_paths;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -22,14 +23,19 @@ pub use defaults::{
 use exports::{directory_entry, DirectoryEntry};
 pub use settings::ResolveSettings;
 use spec::package_name;
+pub use tsconfig_paths::TsconfigPaths;
+use tsconfig_paths::{Mapped, Projects};
 
 pub struct OjResolver {
     /// oxc with tsconfig `paths`, without `resolve.alias` (applied first,
     /// by `resolve`).
     inner: Resolver,
-    /// `inner` without tsconfig `paths`, when a tsconfig is in play: what an
-    /// import whose `paths` target is a declaration file resolves with.
+    /// `inner` without tsconfig `paths`, when a tsconfig is in play: plain
+    /// resolution, what `paths` in the plugin's model fall back to.
     no_paths: Option<Resolver>,
+    /// How the app's Vite applies tsconfig `paths`.
+    tsconfig_paths: TsconfigPaths,
+    projects: Projects,
     /// `resolve.alias` as `(find, replacement)`, in the written order. They
     /// go before tsconfig `paths`: Vite's alias plugin runs ahead of every
     /// resolver plugin.
@@ -92,6 +98,8 @@ impl OjResolver {
             inner,
             no_paths,
             aliases: settings::aliases(root, &settings.alias),
+            tsconfig_paths: settings.tsconfig_paths,
+            projects: Projects::default(),
             root: root.to_path_buf(),
             dedupe: settings.dedupe.into_iter().collect(),
         }
@@ -117,6 +125,8 @@ impl OjResolver {
             inner: self.inner.clone_with_options(options),
             no_paths,
             aliases: self.aliases.clone(),
+            tsconfig_paths: self.tsconfig_paths,
+            projects: Projects::default(),
             root: self.root.clone(),
             dedupe: self.dedupe.clone(),
         }
@@ -135,6 +145,7 @@ impl OjResolver {
     /// a failed lookup stays unresolvable until this runs.
     pub fn clear_cache(&self) {
         self.inner.clear_cache();
+        self.projects.clear();
     }
 
     /// The first `resolve.alias` entry's rewrite of `specifier`, in the
@@ -173,10 +184,43 @@ impl OjResolver {
     /// A `paths` target that is a declaration file is no answer, as
     /// vite-tsconfig-paths passes on one (`resolvedToDeclarationFile`).
     pub fn resolve(&self, importer_dir: &Path, specifier: &str) -> Result<PathBuf, ResolveFailure> {
+        // No importer file: one TypeScript file in the directory stands in
+        // for it where tsconfig `paths` look at the importer.
+        self.resolve_at(
+            importer_dir,
+            &importer_dir.join("__oj_importer__.ts"),
+            specifier,
+        )
+    }
+
+    /// [`Self::resolve`] from the importing file, which tsconfig `paths`
+    /// check the way vite-tsconfig-paths does (its extension, its project's
+    /// `include`).
+    pub fn resolve_from(
+        &self,
+        importer: &Path,
+        specifier: &str,
+    ) -> Result<PathBuf, ResolveFailure> {
+        let file = Path::new(
+            importer
+                .to_str()
+                .and_then(|p| p.split(['?', '#']).next())
+                .unwrap_or_default(),
+        );
+        let dir = file.parent().unwrap_or(&self.root);
+        self.resolve_at(dir, file, specifier)
+    }
+
+    fn resolve_at(
+        &self,
+        importer_dir: &Path,
+        importer: &Path,
+        specifier: &str,
+    ) -> Result<PathBuf, ResolveFailure> {
         let Some(aliased) = self.alias(specifier) else {
-            return self.resolve_unaliased(importer_dir, specifier);
+            return self.resolve_unaliased(importer_dir, importer, specifier);
         };
-        self.resolve_unaliased(importer_dir, &aliased)
+        self.resolve_unaliased(importer_dir, importer, &aliased)
             .map_err(|failure| ResolveFailure {
                 specifier: specifier.to_string(),
                 reason: format!("aliased to '{aliased}': {}", failure.reason),
@@ -184,83 +228,69 @@ impl OjResolver {
             })
     }
 
-    /// `specifier` past the alias step: tsconfig `paths` the way
-    /// vite-tsconfig-paths applies them, then the plain resolver.
-    ///
-    /// The plugin tries the patterns longest prefix first, where a pattern
-    /// with no `*` counts as no prefix at all (`getPrefixLength`), so `@/*`
-    /// goes before an exact `@/lib/client` key; oxc and tsc take the exact
-    /// key first. A pattern's targets go in order, the first that resolves
-    /// wins; then `baseUrl`. An answer that is a declaration file is no
-    /// answer (`resolvedToDeclarationFile`): the specifier goes on to the
-    /// plain resolver, as it goes on to vite:resolve.
+    /// `specifier` past the alias step, with tsconfig `paths` as the app's
+    /// Vite applies them ([`TsconfigPaths`]).
     fn resolve_unaliased(
         &self,
         importer_dir: &Path,
+        importer: &Path,
         specifier: &str,
     ) -> Result<PathBuf, ResolveFailure> {
         let Some(no_paths) = &self.no_paths else {
             return self.resolve_with(&self.inner, importer_dir, specifier);
         };
-        // A dependency's own imports never take the app's `paths`: oxc skips
-        // an importer inside node_modules, and vite-tsconfig-paths excludes
-        // `**/node_modules` by default.
-        if importer_dir
-            .components()
-            .any(|c| c.as_os_str() == "node_modules")
-        {
-            return self.resolve_with(&self.inner, importer_dir, specifier);
-        }
-        let Some(tsconfig) = self.paths_config(importer_dir) else {
-            return self.resolve_with(&self.inner, importer_dir, specifier);
+        let plain = || self.resolve_with(no_paths, importer_dir, specifier);
+        // A tsconfig that does not parse leaves the `paths` unknown: oxc's
+        // resolver fails with an error that names it, rather than guessing.
+        let tsconfig = match self.tsconfig_paths {
+            TsconfigPaths::Plugin | TsconfigPaths::Fallback => {
+                match self.inner.resolve_tsconfig(self.root.join("tsconfig.json")) {
+                    Ok(tsconfig) => Some(tsconfig),
+                    Err(_) => return self.resolve_with(&self.inner, importer_dir, specifier),
+                }
+            }
+            TsconfigPaths::Native | TsconfigPaths::Off => None,
         };
-        let options = &tsconfig.compiler_options;
-        let candidates = options
-            .paths
-            .as_ref()
-            .map(|paths| paths_candidates(paths, specifier))
-            .unwrap_or_default();
-        if candidates.is_empty() {
-            return self.resolve_with(&self.inner, importer_dir, specifier);
-        }
-        let from_base_url = options.base_url.as_ref().map(|base| base.join(specifier));
-        let mapped = candidates
-            .iter()
-            .map(PathBuf::as_path)
-            .chain(from_base_url.as_deref())
-            .find_map(|candidate| {
-                self.resolve_with(no_paths, importer_dir, &candidate.to_string_lossy())
-                    .ok()
-            });
-        match mapped {
-            Some(declaration) if is_declaration_file(&declaration) => self
-                .resolve_with(no_paths, importer_dir, specifier)
-                .map_err(|failure| ResolveFailure {
-                    reason: format!(
-                        "{}; tsconfig paths map it to '{}', a declaration file, which has no code to run",
-                        failure.reason,
-                        declaration.display()
-                    ),
-                    ..failure
-                }),
-            Some(path) => Ok(path),
-            None => self.resolve_with(no_paths, importer_dir, specifier),
+        let mapped = || match &tsconfig {
+            Some(tsconfig) => self.mapped(tsconfig, importer_dir, importer, specifier),
+            None => Mapped::None,
+        };
+        match self.tsconfig_paths {
+            TsconfigPaths::Off => plain(),
+            TsconfigPaths::Native => self.resolve_with(&self.inner, importer_dir, specifier),
+            TsconfigPaths::Plugin => match mapped() {
+                Mapped::File(path) => Ok(path),
+                Mapped::Declaration(declaration) => {
+                    plain().map_err(|failure| declaration_failure(failure, &declaration))
+                }
+                Mapped::None => plain(),
+            },
+            TsconfigPaths::Fallback => plain().or_else(|failure| match mapped() {
+                Mapped::File(path) => Ok(path),
+                Mapped::Declaration(declaration) => Err(declaration_failure(failure, &declaration)),
+                Mapped::None => Err(failure),
+            }),
         }
     }
 
-    /// The tsconfig whose `paths` apply to an importer in `importer_dir`: a
-    /// referenced project that holds it, else the root one.
-    fn paths_config(&self, importer_dir: &Path) -> Option<std::sync::Arc<oxc_resolver::TsConfig>> {
-        let file = self.root.join("tsconfig.json");
-        let root = self.inner.resolve_tsconfig(&file).ok()?;
-        let referenced = root.references_resolved.iter().find(|r| {
-            r.compiler_options.paths.is_some()
-                && r.path.parent().is_some_and(|dir| {
-                    let base = r.compiler_options.base_url.as_deref().unwrap_or(dir);
-                    importer_dir.starts_with(base)
-                })
-        });
-        Some(referenced.cloned().unwrap_or(root))
+    /// vite-tsconfig-paths' answer: each mapped path goes through the
+    /// aliases again, then plain resolution.
+    fn mapped(
+        &self,
+        root: &std::sync::Arc<oxc_resolver::TsConfig>,
+        importer_dir: &Path,
+        importer: &Path,
+        specifier: &str,
+    ) -> Mapped {
+        let Some(no_paths) = &self.no_paths else {
+            return Mapped::None;
+        };
+        self.projects.map(root, importer, specifier, |candidate| {
+            let candidate = self
+                .alias(candidate)
+                .unwrap_or_else(|| candidate.to_string());
+            self.resolve_with(no_paths, importer_dir, &candidate).ok()
+        })
     }
 
     fn resolve_with(
@@ -308,43 +338,17 @@ impl OjResolver {
     }
 }
 
-/// A `.d.ts` file, the declaration vite-tsconfig-paths passes on
-/// (`/\.d\.ts(\?|$)/`).
-fn is_declaration_file(path: &Path) -> bool {
-    path.to_string_lossy().ends_with(".d.ts")
-}
-
-/// The files tsconfig `paths` map `specifier` to, in vite-tsconfig-paths'
-/// order: patterns by the length before their `*` (none counts as 0), longest
-/// first and stable, then each pattern's targets with every `*` replaced by
-/// what the pattern's `*` matched.
-fn paths_candidates(
-    paths: &oxc_resolver::CompilerOptionsPathsMap,
-    specifier: &str,
-) -> Vec<PathBuf> {
-    if specifier.starts_with('.') || Path::new(specifier).is_absolute() {
-        return Vec::new();
+/// `failure` for an import whose tsconfig `paths` answer was a declaration
+/// file, which the error names (an editor resolves the import fine).
+fn declaration_failure(failure: ResolveFailure, declaration: &Path) -> ResolveFailure {
+    ResolveFailure {
+        reason: format!(
+            "{}; tsconfig paths map it to '{}', a declaration file, which has no code to run",
+            failure.reason,
+            declaration.display()
+        ),
+        ..failure
     }
-    let mut patterns: Vec<(&String, &Vec<PathBuf>)> = paths.iter().collect();
-    patterns.sort_by_key(|(pattern, _)| std::cmp::Reverse(pattern.find('*').unwrap_or(0)));
-    patterns
-        .into_iter()
-        .filter_map(|(pattern, targets)| {
-            let matched = match pattern.split_once('*') {
-                None => (specifier == pattern.as_str()).then_some(""),
-                Some((prefix, suffix)) => specifier
-                    .strip_prefix(prefix)
-                    .and_then(|rest| rest.strip_suffix(suffix))
-                    .filter(|star| !star.is_empty()),
-            }?;
-            Some(
-                targets.iter().map(move |target| {
-                    PathBuf::from(target.to_string_lossy().replace('*', matched))
-                }),
-            )
-        })
-        .flatten()
-        .collect()
 }
 
 #[cfg(test)]
@@ -603,6 +607,196 @@ mod tests {
                 .unwrap(),
             root.join("node_modules/events/events.js"),
             "the dependency gets the package"
+        );
+    }
+
+    /// A project tree from `(file, body)` pairs.
+    fn tree(files: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        for (file, body) in files {
+            let path = root.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, body).unwrap();
+        }
+        (tmp, root)
+    }
+
+    fn moded(root: &Path, mode: TsconfigPaths, alias: &[(String, String)]) -> OjResolver {
+        OjResolver::with_settings(
+            root,
+            ResolveSettings {
+                conditions: vec!["import".to_string()],
+                alias: alias.to_vec(),
+                tsconfig_paths: mode,
+                ..ResolveSettings::default()
+            },
+        )
+    }
+
+    const EXACT_AND_STAR: &[(&str, &str)] = &[
+        (
+            "tsconfig.json",
+            r#"{ "compilerOptions": { "paths": { "@/x": ["./src/a.ts"], "@/client": ["./src/client.d.ts"], "@/*": ["./src/*"], "events": ["./src/events.ts"] } } }"#,
+        ),
+        ("src/a.ts", ""),
+        ("src/x.ts", ""),
+        ("src/client.d.ts", ""),
+        ("src/client.ts", ""),
+        ("src/events.ts", ""),
+        (
+            "node_modules/events/package.json",
+            r#"{"name":"events","main":"events.js"}"#,
+        ),
+        ("node_modules/events/events.js", ""),
+    ];
+
+    // The three ways an app's Vite applies tsconfig `paths`: the plugin's
+    // order (`@/*` before an exact key), Vite 8's own (`resolve.tsconfigPaths`:
+    // the exact key first, a declaration file served), and none, where oj
+    // falls back to them only for what plain resolution does not find.
+    #[test]
+    fn tsconfig_paths_follow_how_the_app_turns_them_on() {
+        let (_tmp, root) = tree(EXACT_AND_STAR);
+        let src = root.join("src");
+        let plugin = moded(&root, TsconfigPaths::Plugin, &[]);
+        assert_eq!(plugin.resolve(&src, "@/x").unwrap(), src.join("x.ts"));
+        assert_eq!(
+            plugin.resolve(&src, "@/client").unwrap(),
+            src.join("client.ts")
+        );
+        assert_eq!(
+            plugin.resolve(&src, "events").unwrap(),
+            src.join("events.ts")
+        );
+
+        let native = moded(&root, TsconfigPaths::Native, &[]);
+        assert_eq!(native.resolve(&src, "@/x").unwrap(), src.join("a.ts"));
+        assert_eq!(
+            native.resolve(&src, "@/client").unwrap(),
+            src.join("client.d.ts")
+        );
+
+        let fallback = moded(&root, TsconfigPaths::Fallback, &[]);
+        assert_eq!(
+            fallback.resolve(&src, "events").unwrap(),
+            root.join("node_modules/events/events.js"),
+            "what Vite resolves without paths stands"
+        );
+        assert_eq!(fallback.resolve(&src, "@/x").unwrap(), src.join("x.ts"));
+
+        let off = moded(&root, TsconfigPaths::Off, &[]);
+        assert!(off.resolve(&src, "@/x").is_err());
+    }
+
+    // The plugin maps imports from TypeScript files only, unless `allowJs`.
+    #[test]
+    fn tsconfig_paths_take_typescript_importers_unless_allow_js() {
+        let (_tmp, root) = tree(&[
+            (
+                "tsconfig.json",
+                r#"{ "compilerOptions": { "paths": { "@/*": ["./src/*"] } } }"#,
+            ),
+            ("src/a.ts", ""),
+            ("src/m.ts", ""),
+            ("src/m.js", ""),
+        ]);
+        let src = root.join("src");
+        let resolver = moded(&root, TsconfigPaths::Plugin, &[]);
+        assert_eq!(
+            resolver.resolve_from(&src.join("m.ts"), "@/a").unwrap(),
+            src.join("a.ts")
+        );
+        assert!(resolver.resolve_from(&src.join("m.js"), "@/a").is_err());
+        std::fs::write(
+            root.join("tsconfig.json"),
+            r#"{ "compilerOptions": { "allowJs": true, "paths": { "@/*": ["./src/*"] } } }"#,
+        )
+        .unwrap();
+        let allow_js = moded(&root, TsconfigPaths::Plugin, &[]);
+        assert_eq!(
+            allow_js.resolve_from(&src.join("m.js"), "@/a").unwrap(),
+            src.join("a.ts")
+        );
+    }
+
+    // Vite's template: a root `tsconfig.json` with no files references an
+    // app and a node project. The project whose `include` holds the importer
+    // maps it; the root one has no resolver.
+    #[test]
+    fn the_referenced_project_that_includes_the_importer_maps_it() {
+        let (_tmp, root) = tree(&[
+            (
+                "tsconfig.json",
+                r#"{ "files": [], "references": [{ "path": "./tsconfig.node.json" }, { "path": "./tsconfig.app.json" }] }"#,
+            ),
+            (
+                "tsconfig.node.json",
+                r#"{ "include": ["vite.config.ts"], "compilerOptions": { "paths": { "@/*": ["./node/*"] } } }"#,
+            ),
+            (
+                "tsconfig.app.json",
+                r#"{ "include": ["src"], "compilerOptions": { "paths": { "@/*": ["./src/*"] } } }"#,
+            ),
+            ("src/a.ts", ""),
+            ("src/m.ts", ""),
+            ("node/a.ts", ""),
+            ("vite.config.ts", ""),
+        ]);
+        let resolver = moded(&root, TsconfigPaths::Plugin, &[]);
+        assert_eq!(
+            resolver
+                .resolve_from(&root.join("src/m.ts"), "@/a")
+                .unwrap(),
+            root.join("src/a.ts")
+        );
+        assert_eq!(
+            resolver
+                .resolve_from(&root.join("vite.config.ts"), "@/a")
+                .unwrap(),
+            root.join("node/a.ts")
+        );
+    }
+
+    // Every `*` captures, a target's n-th `*` takes the n-th capture; a
+    // `baseUrl` answer that is a `.json` the id did not name is none; a
+    // mapped path goes through the aliases again.
+    #[test]
+    fn tsconfig_paths_follow_the_plugins_details() {
+        let (_tmp, root) = tree(&[
+            (
+                "tsconfig.json",
+                r#"{ "compilerOptions": { "baseUrl": ".", "paths": { "x/*/y/*": ["./src/*/*"], "@/*": ["./src/*"] } } }"#,
+            ),
+            ("src/a/b.ts", ""),
+            ("lib/data.json", "{}"),
+            ("real/c.ts", ""),
+        ]);
+        let src = root.join("src");
+        let resolver = moded(&root, TsconfigPaths::Plugin, &[]);
+        assert_eq!(
+            resolver.resolve(&src, "x/a/y/b").unwrap(),
+            src.join("a/b.ts")
+        );
+        assert!(
+            resolver.resolve(&src, "lib/data").is_err(),
+            "a .json the id did not name"
+        );
+        assert_eq!(
+            resolver.resolve(&src, "lib/data.json").unwrap(),
+            root.join("lib/data.json")
+        );
+        let aliased = moded(
+            &root,
+            TsconfigPaths::Plugin,
+            &[(
+                src.to_string_lossy().into_owned(),
+                root.join("real").to_string_lossy().into_owned(),
+            )],
+        );
+        assert_eq!(
+            aliased.resolve(&src, "@/c").unwrap(),
+            root.join("real/c.ts")
         );
     }
 

@@ -8,6 +8,7 @@ description = "Module resolution: thin policy layer over oxc_resolver (Node algo
 
 [dependencies]
 oxc_resolver.workspace = true
+regex = "1.11"
 serde_json.workspace = true
 thiserror.workspace = true
 

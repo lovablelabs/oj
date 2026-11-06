@@ -18,6 +18,8 @@ pub struct ResolveSettings {
     /// Resolving for SSR: the default mainFields drop `browser`, and the
     /// package.json `browser` object only applies when mainFields name it.
     pub server: bool,
+    /// How the app's Vite applies tsconfig `paths`.
+    pub tsconfig_paths: crate::TsconfigPaths,
 }
 
 /// The oxc options for `settings` under `root`.

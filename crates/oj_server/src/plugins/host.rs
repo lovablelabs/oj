@@ -599,7 +599,15 @@ pub(crate) fn ctx_rpc(
             let server = arg(3) == "server";
             let own = env_resolver(arg(2), arg(3));
             let resolver = own.as_deref().unwrap_or(ctx.resolver);
-            let Ok(p) = resolver.resolve(&dir, source) else {
+            // The importing file, when it is one, so tsconfig `paths` check
+            // it as vite-tsconfig-paths does.
+            let file = Path::new(importer.split('?').next().unwrap_or_default());
+            let resolved = if file.is_absolute() && file.is_file() {
+                resolver.resolve_from(file, source)
+            } else {
+                resolver.resolve(&dir, source)
+            };
+            let Ok(p) = resolved else {
                 return Ok(serde_json::Value::Null);
             };
             // The client's deps optimizer answers for the client alone: Vite

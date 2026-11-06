@@ -1365,6 +1365,10 @@ fn merge_resolve_block(
     if rc.preserve_symlinks.is_none() {
         rc.preserve_symlinks = vr.get("preserveSymlinks").and_then(|b| b.as_bool());
     }
+    if rc.tsconfig_paths.is_none() {
+        rc.tsconfig_paths = vr.get("tsconfigPaths").and_then(|b| b.as_bool());
+    }
+    rc.tsconfig_paths_plugin = vr.get("tsconfigPathsPlugin").and_then(|b| b.as_bool());
 }
 
 /// The extractor's `serverFlags`. Runs after the vite `fsStrict` value, so that

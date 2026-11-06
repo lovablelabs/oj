@@ -1759,6 +1759,13 @@ export async function extract(input) {
         if (Object.keys(resolveOut).length === 0) resolveOut = null;
       }
     }
+    // How the app applies tsconfig `paths`: vite-tsconfig-paths in the plugin
+    // list, Vite 8's own `resolve.tsconfigPaths`, or neither (no paths).
+    resolveOut = {
+      ...(resolveOut ?? {}),
+      tsconfigPaths: c.resolve?.tsconfigPaths === true,
+      tsconfigPathsPlugin: (c.plugins ?? []).some((p) => p?.name === "vite-tsconfig-paths"),
+    };
     recordEnvFilesForMode(typeof c.mode === "string" ? c.mode : mode, typeof c.envDir === "string" ? c.envDir : null);
     return {
       __ok: true,
