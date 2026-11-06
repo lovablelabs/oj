@@ -228,3 +228,60 @@ async fn an_aliased_import_renders_the_module_vite_renders() {
         }
     }
 }
+
+const CLSX_INDEX: &str = r#"import { createFileRoute } from "@tanstack/react-router";
+import clsx from "clsx";
+
+export const Route = createFileRoute("/")({
+  component: () => <p id="who">{clsx("pkg")}</p>,
+});
+"#;
+
+// With neither vite-tsconfig-paths nor `resolve.tsconfigPaths`, Vite's dev
+// server applies no tsconfig `paths`: a `paths` key named like an installed
+// package leaves the package, on the server and once the page hydrates. oj's
+// client bundle went through rolldown's resolver, which applies `paths`
+// natively ahead of packages, so it took the shim.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_paths_key_named_like_a_package_leaves_the_package_without_the_plugin() {
+    let Some(app) = alias_app("paths-neither") else {
+        return;
+    };
+    let root = &app.0;
+    std::fs::write(root.join("src/routes/index.tsx"), CLSX_INDEX).unwrap();
+    std::fs::write(
+        root.join("src/clsx-shim.ts"),
+        "export default function clsx(_: string) { return \"shim\"; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("tsconfig.json"),
+        r#"{ "compilerOptions": { "jsx": "react-jsx", "module": "ESNext", "moduleResolution": "Bundler", "target": "ES2022", "strict": true, "skipLibCheck": true, "paths": { "clsx": ["./src/clsx-shim.ts"] } } }"#,
+    )
+    .unwrap();
+    std::fs::write(root.join("vite.neither.config.ts"), config("{}")).unwrap();
+    let config = "vite.neither.config.ts";
+    let vite = ViteDev::start(root, config);
+    let theirs = server_who(&vite.get("/"));
+    drop(vite);
+    assert_eq!(
+        theirs.as_deref(),
+        Some("pkg"),
+        "vite dev: the test's premise"
+    );
+
+    let _ = std::fs::remove_dir_all(root.join(".oj-cache"));
+    let dev = Server::oj_dev_with_args(root, &["--config", config], &[]);
+    let (status, html) = dev.request("GET", "/", &[]);
+    assert_eq!(
+        (status, server_who(&html)),
+        (200, theirs),
+        "oj dev vs vite dev: the server render\n{}",
+        dev.output()
+    );
+    if !browser::skip() {
+        let (who, errors) = hydrated_who(&dev.url("")).await;
+        assert_eq!(who, "pkg", "oj dev: the hydrated page");
+        assert_eq!(errors, Vec::<String>::new(), "oj dev: page errors");
+    }
+}

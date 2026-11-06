@@ -469,6 +469,13 @@ impl DevBundler {
                     entries: h.facts.alias.clone(),
                 }));
             }
+            // Vite's dev server applies no tsconfig `paths` without the plugin
+            // or `resolve.tsconfigPaths`; rolldown's resolver would.
+            if oj_server::tsconfig_paths(&start.config) == oj_resolver::TsconfigPaths::Fallback {
+                plugins.push(Pluginable::new_shared(super::alias::TsconfigPathsPlugin {
+                    resolver: oj_server::client_resolver(&start.root, &start.config),
+                }));
+            }
             plugins.push(Pluginable::new_shared(
                 StartHostPlugin::new(
                     Arc::clone(&h.host),

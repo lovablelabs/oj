@@ -65,3 +65,70 @@ impl Plugin for AppAliasPlugin {
         Ok(Some(HookResolveIdOutput::from_id(updated)))
     }
 }
+
+/// tsconfig `paths` as the app's Vite dev server applies them, ahead of
+/// rolldown's resolver, which applies them natively (oxc's order, ahead of
+/// packages): with neither vite-tsconfig-paths nor `resolve.tsconfigPaths`,
+/// Vite's dev server applies none, so an id the `paths` would map resolves
+/// plainly first (`oj_resolver::OjResolver::tsconfig_answer`).
+pub(crate) struct TsconfigPathsPlugin {
+    pub resolver: oj_resolver::OjResolver,
+}
+
+impl std::fmt::Debug for TsconfigPathsPlugin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TsconfigPathsPlugin")
+    }
+}
+
+impl Plugin for TsconfigPathsPlugin {
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("oj:tsconfig-paths")
+    }
+
+    fn register_hook_usage(&self) -> rolldown_plugin::HookUsage {
+        rolldown_plugin::HookUsage::ResolveId
+    }
+
+    async fn resolve_id(
+        &self,
+        ctx: &PluginContext,
+        args: &HookResolveIdArgs<'_>,
+    ) -> HookResolveIdReturn {
+        let spec = args.specifier;
+        let Some(importer) = args.importer else {
+            return Ok(None);
+        };
+        if spec.starts_with('.')
+            || spec.starts_with('/')
+            || spec.contains('\0')
+            || spec.contains(':')
+        {
+            return Ok(None);
+        }
+        let file = importer.split(['?', '#']).next().unwrap_or(importer);
+        let answer = match self.resolver.tsconfig_answer(Path::new(file), spec) {
+            oj_resolver::TsconfigAnswer::File(answer) => answer,
+            oj_resolver::TsconfigAnswer::Bundler => return Ok(None),
+            // Only a declaration file answers it: Vite's dev server fails it.
+            oj_resolver::TsconfigAnswer::Unresolved => {
+                return Err(anyhow::anyhow!(
+                    "Failed to resolve import \"{spec}\" from \"{file}\": tsconfig paths map it only to a declaration file"
+                ))
+            }
+        };
+        let resolved = ctx
+            .resolve(
+                &answer.to_string_lossy(),
+                args.importer,
+                Some(PluginContextResolveOptions {
+                    import_kind: args.kind,
+                    is_entry: args.is_entry,
+                    skip_self: true,
+                    ..Default::default()
+                }),
+            )
+            .await?;
+        Ok(resolved.ok().map(HookResolveIdOutput::from_resolved_id))
+    }
+}

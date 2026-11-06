@@ -14,7 +14,7 @@ mod tsconfig_paths;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use oxc_resolver::{ResolveOptions, Resolver};
+use oxc_resolver::{ResolveOptions, Resolver, TsconfigDiscovery};
 
 pub use defaults::{
     default_extension_alias, default_extensions, default_main_fields, default_server_main_fields,
@@ -30,9 +30,13 @@ pub struct OjResolver {
     /// oxc with tsconfig `paths`, without `resolve.alias` (applied first,
     /// by `resolve`).
     inner: Resolver,
-    /// `inner` without tsconfig `paths`, when a tsconfig is in play: plain
-    /// resolution, what `paths` in the plugin's model fall back to.
-    no_paths: Option<Resolver>,
+    /// `inner` without tsconfig `paths`: plain resolution, what `paths` in
+    /// the plugin's model fall back to.
+    no_paths: Resolver,
+    /// Parses the tsconfigs the plugin's model finds, references included.
+    tsconfigs: Resolver,
+    /// Vite's searchForWorkspaceRoot, where the plugin looks for tsconfigs.
+    workspace: PathBuf,
     /// How the app's Vite applies tsconfig `paths`.
     tsconfig_paths: TsconfigPaths,
     projects: Projects,
@@ -88,15 +92,19 @@ impl OjResolver {
     pub fn with_settings(root: &Path, settings: ResolveSettings) -> Self {
         let options = settings::resolve_options(root, &settings);
         let inner = Resolver::new(options.clone());
-        let no_paths = options.tsconfig.is_some().then(|| {
-            inner.clone_with_options(ResolveOptions {
-                tsconfig: None,
-                ..options
-            })
+        let no_paths = inner.clone_with_options(ResolveOptions {
+            tsconfig: None,
+            ..options.clone()
+        });
+        let tsconfigs = inner.clone_with_options(ResolveOptions {
+            tsconfig: Some(TsconfigDiscovery::Auto),
+            ..options
         });
         Self {
             inner,
             no_paths,
+            tsconfigs,
+            workspace: workspace_root(root),
             aliases: settings::aliases(root, &settings.alias),
             tsconfig_paths: settings.tsconfig_paths,
             projects: Projects::default(),
@@ -115,15 +123,19 @@ impl OjResolver {
                 *c = "require".to_string();
             }
         }
-        let no_paths = self.no_paths.as_ref().map(|_| {
-            self.inner.clone_with_options(ResolveOptions {
-                tsconfig: None,
-                ..options.clone()
-            })
+        let no_paths = self.inner.clone_with_options(ResolveOptions {
+            tsconfig: None,
+            ..options.clone()
+        });
+        let tsconfigs = self.tsconfigs.clone_with_options(ResolveOptions {
+            tsconfig: Some(TsconfigDiscovery::Auto),
+            ..options.clone()
         });
         Self {
             inner: self.inner.clone_with_options(options),
             no_paths,
+            tsconfigs,
+            workspace: self.workspace.clone(),
             aliases: self.aliases.clone(),
             tsconfig_paths: self.tsconfig_paths,
             projects: Projects::default(),
@@ -236,25 +248,19 @@ impl OjResolver {
         importer: &Path,
         specifier: &str,
     ) -> Result<PathBuf, ResolveFailure> {
-        let Some(no_paths) = &self.no_paths else {
+        // A root tsconfig that does not parse leaves the `paths` unknown:
+        // oxc's resolver fails with an error that names it, not a guess.
+        if self.inner.options().tsconfig.is_some()
+            && self.tsconfig_paths != TsconfigPaths::Off
+            && self
+                .inner
+                .resolve_tsconfig(self.root.join("tsconfig.json"))
+                .is_err()
+        {
             return self.resolve_with(&self.inner, importer_dir, specifier);
-        };
-        let plain = || self.resolve_with(no_paths, importer_dir, specifier);
-        // A tsconfig that does not parse leaves the `paths` unknown: oxc's
-        // resolver fails with an error that names it, rather than guessing.
-        let tsconfig = match self.tsconfig_paths {
-            TsconfigPaths::Plugin | TsconfigPaths::Fallback => {
-                match self.inner.resolve_tsconfig(self.root.join("tsconfig.json")) {
-                    Ok(tsconfig) => Some(tsconfig),
-                    Err(_) => return self.resolve_with(&self.inner, importer_dir, specifier),
-                }
-            }
-            TsconfigPaths::Native | TsconfigPaths::Off => None,
-        };
-        let mapped = || match &tsconfig {
-            Some(tsconfig) => self.mapped(tsconfig, importer_dir, importer, specifier),
-            None => Mapped::None,
-        };
+        }
+        let plain = || self.resolve_with(&self.no_paths, importer_dir, specifier);
+        let mapped = || self.mapped(importer_dir, importer, specifier);
         match self.tsconfig_paths {
             TsconfigPaths::Off => plain(),
             TsconfigPaths::Native => self.resolve_with(&self.inner, importer_dir, specifier),
@@ -273,24 +279,46 @@ impl OjResolver {
         }
     }
 
+    /// What a bundler whose own resolver applies tsconfig `paths` natively
+    /// (rolldown, oxc's order, ahead of packages) should do instead, for the
+    /// app's [`TsconfigPaths`]: in `Plugin` mode take the plugin's answer; in
+    /// `Fallback` mode take the plain answer for an id `paths` would map
+    /// (Vite's dev server applies none), else the plugin's. An id whose only
+    /// `paths` answer is a declaration file is unresolved, as in Vite.
+    pub fn tsconfig_answer(&self, importer: &Path, specifier: &str) -> TsconfigAnswer {
+        let dir = importer.parent().unwrap_or(&self.root);
+        let plain = || self.resolve_with(&self.no_paths, dir, specifier).ok();
+        match self.tsconfig_paths {
+            TsconfigPaths::Native | TsconfigPaths::Off => TsconfigAnswer::Bundler,
+            TsconfigPaths::Plugin => match self.mapped(dir, importer, specifier) {
+                Mapped::File(path) => TsconfigAnswer::File(path),
+                Mapped::Declaration(_) => {
+                    plain().map_or(TsconfigAnswer::Unresolved, TsconfigAnswer::File)
+                }
+                Mapped::None => TsconfigAnswer::Bundler,
+            },
+            TsconfigPaths::Fallback => match self.mapped(dir, importer, specifier) {
+                Mapped::None => TsconfigAnswer::Bundler,
+                Mapped::File(path) => TsconfigAnswer::File(plain().unwrap_or(path)),
+                Mapped::Declaration(_) => {
+                    plain().map_or(TsconfigAnswer::Unresolved, TsconfigAnswer::File)
+                }
+            },
+        }
+    }
+
     /// vite-tsconfig-paths' answer: each mapped path goes through the
     /// aliases again, then plain resolution.
-    fn mapped(
-        &self,
-        root: &std::sync::Arc<oxc_resolver::TsConfig>,
-        importer_dir: &Path,
-        importer: &Path,
-        specifier: &str,
-    ) -> Mapped {
-        let Some(no_paths) = &self.no_paths else {
-            return Mapped::None;
-        };
-        self.projects.map(root, importer, specifier, |candidate| {
-            let candidate = self
-                .alias(candidate)
-                .unwrap_or_else(|| candidate.to_string());
-            self.resolve_with(no_paths, importer_dir, &candidate).ok()
-        })
+    fn mapped(&self, importer_dir: &Path, importer: &Path, specifier: &str) -> Mapped {
+        let load = |file: &Path| self.tsconfigs.resolve_tsconfig(file).ok();
+        self.projects
+            .map(load, &self.workspace, importer, specifier, |candidate| {
+                let candidate = self
+                    .alias(candidate)
+                    .unwrap_or_else(|| candidate.to_string());
+                self.resolve_with(&self.no_paths, importer_dir, &candidate)
+                    .ok()
+            })
     }
 
     fn resolve_with(
@@ -335,6 +363,65 @@ impl OjResolver {
                 Err(failure(err.to_string(), err.is_ignore()))
             }
         }
+    }
+}
+
+/// [`OjResolver::tsconfig_answer`]'s verdict for a bundler.
+#[derive(Debug, PartialEq, Eq)]
+pub enum TsconfigAnswer {
+    /// Resolve to this file.
+    File(PathBuf),
+    /// Leave the id to the bundler's own resolver.
+    Bundler,
+    /// Nothing answers the id, as in Vite.
+    Unresolved,
+}
+
+/// Vite's searchForWorkspaceRoot: the first workspace marker walking up
+/// (`pnpm-workspace.yaml`, `lerna.json`, a `package.json` with `workspaces`,
+/// a `deno.json(c)` with `workspace`), else the nearest ancestor with a
+/// `package.json`, else `root`. `.git` is no marker.
+pub fn workspace_root(root: &Path) -> PathBuf {
+    let mut pkg_root: Option<PathBuf> = None;
+    let mut dir = root;
+    loop {
+        if dir.join("pnpm-workspace.yaml").exists() || dir.join("lerna.json").exists() {
+            return dir.to_path_buf();
+        }
+        if dir.join("package.json").exists() {
+            if json_field_truthy(&dir.join("package.json"), "workspaces") {
+                return dir.to_path_buf();
+            }
+            if pkg_root.is_none() {
+                pkg_root = Some(dir.to_path_buf());
+            }
+        }
+        if json_field_truthy(&dir.join("deno.json"), "workspace")
+            || json_field_truthy(&dir.join("deno.jsonc"), "workspace")
+        {
+            return dir.to_path_buf();
+        }
+        match dir.parent() {
+            Some(p) => dir = p,
+            None => return pkg_root.unwrap_or_else(|| root.to_path_buf()),
+        }
+    }
+}
+
+/// The parsed `field` of a JSON file, truthy by JavaScript's rules.
+fn json_field_truthy(file: &Path, field: &str) -> bool {
+    let Ok(txt) = std::fs::read_to_string(file) else {
+        return false;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) else {
+        return false;
+    };
+    match v.get(field) {
+        None | Some(serde_json::Value::Null) => false,
+        Some(serde_json::Value::Bool(b)) => *b,
+        Some(serde_json::Value::Number(n)) => n.as_f64().is_some_and(|f| f != 0.0),
+        Some(serde_json::Value::String(s)) => !s.is_empty(),
+        Some(_) => true,
     }
 }
 
@@ -798,6 +885,87 @@ mod tests {
             aliased.resolve(&src, "@/c").unwrap(),
             root.join("real/c.ts")
         );
+    }
+
+    // The plugin finds every `tsconfig.json` / `jsconfig.json` under Vite's
+    // workspace root, nearest the importer first: a package's own tsconfig
+    // with no root one, and a workspace-level one above the app.
+    #[test]
+    fn tsconfig_paths_come_from_the_nearest_tsconfig_in_the_workspace() {
+        let (_tmp, ws) = tree(&[
+            ("pnpm-workspace.yaml", "packages: [apps/*]\n"),
+            (
+                "tsconfig.json",
+                r##"{ "compilerOptions": { "paths": { "#shared/*": ["./shared/*"] } } }"##,
+            ),
+            ("shared/util.ts", ""),
+            ("apps/web/package.json", r#"{"name":"web"}"#),
+            (
+                "apps/web/src/feature/tsconfig.json",
+                r#"{ "compilerOptions": { "paths": { "~/*": ["./*"] } } }"#,
+            ),
+            ("apps/web/src/feature/a.ts", ""),
+            ("apps/web/src/feature/m.ts", ""),
+            ("apps/web/src/m.ts", ""),
+        ]);
+        let app = ws.join("apps/web");
+        let resolver = moded(&app, TsconfigPaths::Plugin, &[]);
+        let feature = app.join("src/feature");
+        assert_eq!(
+            resolver.resolve_from(&feature.join("m.ts"), "~/a").unwrap(),
+            feature.join("a.ts"),
+            "a nested project with no root tsconfig"
+        );
+        assert_eq!(
+            resolver
+                .resolve_from(&app.join("src/m.ts"), "#shared/util")
+                .unwrap(),
+            ws.join("shared/util.ts"),
+            "the workspace's tsconfig above the app"
+        );
+        assert!(
+            resolver.resolve_from(&app.join("src/m.ts"), "~/a").is_err(),
+            "not this importer's project"
+        );
+    }
+
+    // A bundler whose own resolver applies `paths` natively (oxc's order,
+    // ahead of packages) takes the plugin's answer in `Plugin` mode, the plain
+    // answer first in `Fallback` mode, and nothing in `Native` mode.
+    #[test]
+    fn a_bundler_takes_the_answer_the_mode_gives() {
+        let (_tmp, root) = tree(EXACT_AND_STAR);
+        let m = root.join("src/m.ts");
+        let plugin = moded(&root, TsconfigPaths::Plugin, &[]);
+        use TsconfigAnswer::*;
+        assert_eq!(
+            plugin.tsconfig_answer(&m, "@/x"),
+            File(root.join("src/x.ts"))
+        );
+        let fallback = moded(&root, TsconfigPaths::Fallback, &[]);
+        assert_eq!(
+            fallback.tsconfig_answer(&m, "events"),
+            File(root.join("node_modules/events/events.js"))
+        );
+        assert_eq!(
+            fallback.tsconfig_answer(&m, "@/x"),
+            File(root.join("src/x.ts"))
+        );
+        assert_eq!(
+            fallback.tsconfig_answer(&m, "react"),
+            Bundler,
+            "no pattern: the bundler's"
+        );
+        let native = moded(&root, TsconfigPaths::Native, &[]);
+        assert_eq!(native.tsconfig_answer(&m, "@/x"), Bundler);
+        // Only a declaration file answers: unresolved, never the `.d.ts`.
+        std::fs::write(
+            root.join("tsconfig.json"),
+            r#"{ "compilerOptions": { "paths": { "@/client": ["./src/client.d.ts"] } } }"#,
+        )
+        .unwrap();
+        let plugin = moded(&root, TsconfigPaths::Plugin, &[]);
+        assert_eq!(plugin.tsconfig_answer(&m, "@/client"), Unresolved);
     }
 
     #[test]

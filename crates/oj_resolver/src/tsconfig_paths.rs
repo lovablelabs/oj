@@ -264,11 +264,61 @@ fn takes_importer(project: &TsConfig, importer: &Path) -> bool {
 #[derive(Default)]
 pub(crate) struct Projects {
     includers: Mutex<HashMap<PathBuf, Arc<Includer>>>,
+    /// The projects an importer directory sees, found once.
+    by_dir: Mutex<HashMap<PathBuf, Arc<Vec<Arc<TsConfig>>>>>,
 }
 
 impl Projects {
+    /// The projects from `dir` up to `workspace`, their references included.
+    fn projects_for(
+        &self,
+        dir: &Path,
+        load: &impl Fn(&Path) -> Option<Arc<TsConfig>>,
+        workspace: &Path,
+    ) -> Arc<Vec<Arc<TsConfig>>> {
+        if let Some(found) = self
+            .by_dir
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(dir)
+        {
+            return Arc::clone(found);
+        }
+        let mut all: Vec<Arc<TsConfig>> = Vec::new();
+        for d in dir.ancestors().take_while(|d| d.starts_with(workspace)) {
+            for name in ["tsconfig.json", "jsconfig.json"] {
+                let file = d.join(name);
+                if !file.is_file() || all.iter().any(|p| p.path == file) {
+                    continue;
+                }
+                if let Some(project) = load(&file) {
+                    all.push(project);
+                }
+            }
+        }
+        let mut i = 0;
+        while i < all.len() {
+            for r in all[i].references_resolved.clone() {
+                if !all.iter().any(|p| p.path == r.path) {
+                    all.push(r);
+                }
+            }
+            i += 1;
+        }
+        let all = Arc::new(all);
+        self.by_dir
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(dir.to_path_buf(), Arc::clone(&all));
+        all
+    }
+
     pub fn clear(&self) {
         self.includers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        self.by_dir
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clear();
@@ -282,11 +332,16 @@ impl Projects {
         }))
     }
 
-    /// The plugin's answer for `id` from `importer`: `resolve` loads a mapped
-    /// path (through the aliases), the projects come from the root one.
+    /// The plugin's answer for `id` from `importer`. The projects: each
+    /// `tsconfig.json` and `jsconfig.json` from the importer's directory up to
+    /// `workspace` (the plugin finds them all under Vite's
+    /// searchForWorkspaceRoot), with the projects they reference; `load`
+    /// parses one (None when it does not parse: the plugin logs and skips
+    /// it). `resolve` loads a mapped path (through the aliases).
     pub fn map(
         &self,
-        root: &Arc<TsConfig>,
+        load: impl Fn(&Path) -> Option<Arc<TsConfig>>,
+        workspace: &Path,
         importer: &Path,
         id: &str,
         resolve: impl Fn(&str) -> Option<PathBuf>,
@@ -299,16 +354,10 @@ impl Projects {
         {
             return Mapped::None;
         }
-        let mut all: Vec<Arc<TsConfig>> = vec![Arc::clone(root)];
-        let mut i = 0;
-        while i < all.len() {
-            for r in all[i].references_resolved.clone() {
-                if !all.iter().any(|p| p.path == r.path) {
-                    all.push(r);
-                }
-            }
-            i += 1;
-        }
+        let Some(importer_dir) = importer.parent() else {
+            return Mapped::None;
+        };
+        let all = self.projects_for(importer_dir, &load, workspace);
         let mut declaration = None;
         let mut dir = importer.parent();
         while let Some(d) = dir {

@@ -1746,52 +1746,11 @@ pub fn is_node_builtin(spec: &str) -> bool {
         || NODE_BUILTINS.binary_search(&base).is_ok()
 }
 
-// Vite's searchForWorkspaceRoot: first workspace marker walking up, else NEAREST
-// ancestor package.json. `.git` is deliberately not a marker (would expose the
-// whole repository over /@fs). Seeds server.fs.allow, matching Vite's default.
+// Vite's searchForWorkspaceRoot (see oj_resolver). `.git` is deliberately not
+// a marker (would expose the whole repository over /@fs). Seeds
+// server.fs.allow, matching Vite's default.
 pub(crate) fn workspace_root(root: &Path) -> PathBuf {
-    let mut pkg_root: Option<PathBuf> = None;
-    let mut dir = root;
-    loop {
-        if dir.join("pnpm-workspace.yaml").exists() || dir.join("lerna.json").exists() {
-            return dir.to_path_buf();
-        }
-        if dir.join("package.json").exists() {
-            if json_field_truthy(&dir.join("package.json"), "workspaces") {
-                return dir.to_path_buf();
-            }
-            if pkg_root.is_none() {
-                pkg_root = Some(dir.to_path_buf());
-            }
-        }
-        if json_field_truthy(&dir.join("deno.json"), "workspace")
-            || json_field_truthy(&dir.join("deno.jsonc"), "workspace")
-        {
-            return dir.to_path_buf();
-        }
-        match dir.parent() {
-            Some(p) => dir = p,
-            None => return pkg_root.unwrap_or_else(|| root.to_path_buf()),
-        }
-    }
-}
-
-// Vite parity: the PARSED field, truthy by JS rules; a dep literally named
-// "workspaces" must not widen the root, and deno.jsonc must be valid JSON.
-fn json_field_truthy(file: &Path, field: &str) -> bool {
-    let Ok(txt) = std::fs::read_to_string(file) else {
-        return false;
-    };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) else {
-        return false;
-    };
-    match v.get(field) {
-        None | Some(serde_json::Value::Null) => false,
-        Some(serde_json::Value::Bool(b)) => *b,
-        Some(serde_json::Value::Number(n)) => n.as_f64().is_some_and(|f| f != 0.0),
-        Some(serde_json::Value::String(s)) => !s.is_empty(),
-        Some(_) => true,
-    }
+    oj_resolver::workspace_root(root)
 }
 
 // Pre-resolve a module's static imports into a {spec: id|null} JSON map for the

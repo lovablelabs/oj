@@ -1252,7 +1252,8 @@ pub fn tsconfig_paths(config: &oj_config::OjConfig) -> oj_resolver::TsconfigPath
     }
 }
 
-fn client_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
+/// The client environment's resolver, as the dev server builds it.
+pub fn client_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
     OjResolver::with_settings(
         root,
         oj_resolver::ResolveSettings {
@@ -1445,6 +1446,7 @@ fn optimized_deps(
             node_env: node_env.to_string(),
             plugin_names,
             needs_interop: oj_config::optimize_deps_needs_interop(config),
+            tsconfig_paths: tsconfig_paths(config),
         },
         host,
         rolldown,

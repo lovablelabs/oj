@@ -7786,6 +7786,54 @@ mod tests {
         }
     }
 
+    /// Vite's build resolves an id `vite:resolve` leaves through rolldown's
+    /// own resolver, whose tsconfig (on by default) applies `paths` natively
+    /// whether or not the app turns them on: the exact key first, as oxc
+    /// does. `vite build` with neither vite-tsconfig-paths nor
+    /// `resolve.tsconfigPaths` bundles the exact key's file, and so does
+    /// `oj build`.
+    #[tokio::test]
+    async fn the_build_applies_tsconfig_paths_as_vites_build_does() {
+        let root = scratch("build-paths-neither");
+        for (file, body) in [
+            ("package.json", r#"{"type":"module"}"#),
+            ("vite.config.mjs", "export default {};\n"),
+            (
+                "tsconfig.json",
+                r#"{ "compilerOptions": { "paths": { "@/x": ["./src/a.ts"], "@/*": ["./src/*"] } } }"#,
+            ),
+            (
+                "index.html",
+                r#"<html><body><script type="module" src="/src/main.ts"></script></body></html>"#,
+            ),
+            (
+                "src/main.ts",
+                "import { x } from \"@/x\";\nconsole.log(x);\n",
+            ),
+            ("src/a.ts", "export const x = \"exact-key\";\n"),
+            ("src/x.ts", "export const x = \"star\";\n"),
+        ] {
+            let path = root.join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, body).unwrap();
+        }
+        build(
+            root.clone(),
+            Some("production"),
+            &tokio::runtime::Handle::current(),
+            CliOptions::default(),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{e:#}"));
+        let js: String = fs::read_dir(root.join("dist/assets"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|x| x == "js"))
+            .map(|e| fs::read_to_string(e.path()).unwrap())
+            .collect();
+        assert!(js.contains("exact-key") && !js.contains("\"star\""), "{js}");
+    }
+
     /// Vite's define plugin: a browser bundle gets `process.env` -> `{}` (so an
     /// arbitrary `process.env.X` is `undefined`, not a ReferenceError) and
     /// NODE_ENV inlined; a server bundle keeps `process.env` (keepProcessEnv).
