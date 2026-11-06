@@ -2493,6 +2493,10 @@ fn alias_finds_match_as_vites_pattern_matcher() {
     assert!(crate::ssr::matches_alias(&finds, "@/lib/x"));
     assert!(!crate::ssr::matches_alias(&finds, "react-dom"));
     assert!(!crate::ssr::matches_alias(&finds, "@scope/x"));
+    // A RegExp find matches as it tests: `^react$` leaves the subpath.
+    let regex = vec![oj_resolver::alias::regex_find("^react$", "")];
+    assert!(crate::ssr::matches_alias(&regex, "react"));
+    assert!(!crate::ssr::matches_alias(&regex, "react/jsx-runtime"));
 }
 
 // Vite's encodeURIPath and decodedBase: the path encoded as encodeURI does,
@@ -2827,6 +2831,11 @@ fn an_aliased_external_hands_node_the_alias_target() {
     assert_eq!(apply("my-fsx"), "my-fsx");
     assert_eq!(apply("lib/a.js"), "real-lib/dist/a.js");
     assert_eq!(apply("react"), "react");
+    let regex = [(
+        oj_resolver::alias::regex_find("^my-(.*)$", ""),
+        "node:$1".to_string(),
+    )];
+    assert_eq!(crate::ssr::apply_alias(&regex, "my-path"), "node:path");
 }
 
 #[test]

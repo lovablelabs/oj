@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A `resolve.alias` entry whose `find` is a RegExp matches and replaces as Vite's alias plugin applies it: the import it tests true on becomes `id.replace(find, replacement)`, with `$1`, `$&` and the other replacement patterns, in dev, the SSR render, the dependency scan, stylesheets, `import.meta.glob` and `oj build`. oj turned a RegExp into a path prefix, so `/^react$/` also rewrote `react/jsx-runtime`, `/^@\/lib$/` took `@/lib/helper`, and a RegExp it could not turn into a prefix was skipped.
 - `oj build` resolves `resolve.alias` before tsconfig `paths`, as dev does and as Vite's alias plugin runs in a build. The aliases went to rolldown's resolver, which tries tsconfig `paths` first, so a build could bundle a different file than dev served, or a declaration file.
 - A plugin's `this.resolve` of an id an alias maps under its own name (`{ process: "process/browser" }`) resolves again. oj applied the alias a second time to the id the plugin host had already rewritten, so `process/browser` became `process/browser/browser`.
 - A dependency's own imports no longer take the app's tsconfig `paths`, as neither vite-tsconfig-paths nor oxc applies them inside `node_modules`. A `paths` key named like a package (`events`, `zod`) handed the app's file to the dependency.

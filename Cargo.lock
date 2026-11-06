@@ -6380,6 +6380,7 @@ dependencies = [
  "globset",
  "memchr",
  "oj_env",
+ "oj_resolver",
  "oj_stylex",
  "oxc_allocator",
  "oxc_ast",
@@ -6434,6 +6435,7 @@ dependencies = [
  "lightningcss",
  "md-5",
  "md4",
+ "oj_resolver",
  "oxc_resolver",
  "parcel_sourcemap",
  "proptest",
@@ -6652,6 +6654,7 @@ name = "oj_resolver"
 version = "0.4.4"
 dependencies = [
  "oxc_resolver",
+ "regress",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",

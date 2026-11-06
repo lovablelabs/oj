@@ -18,32 +18,17 @@ enum Alias {
 
 /// `resolve.alias`, then tsconfig `paths`, as the dev server orders them.
 pub(super) struct Aliases {
-    config: Vec<Alias>,
+    config: Vec<(String, String)>,
     paths: Vec<Alias>,
 }
 
 impl Aliases {
-    /// Each `(find, replacement)` of the config, in the written order, which
-    /// matches `find` itself and `find/…`; then the root tsconfig's paths
-    /// (`tsconfig.json`, else `tsconfig.app.json`).
+    /// Each `(find, replacement)` of the config, in the written order, as
+    /// Vite's alias plugin matches them ([`oj_resolver::alias`]); then the
+    /// root tsconfig's paths (`tsconfig.json`, else `tsconfig.app.json`).
     pub fn load(root: &Path, config: &[(String, String)]) -> Aliases {
-        let config = config
-            .iter()
-            .flat_map(|(find, replacement)| {
-                [
-                    Alias::Exact {
-                        find: find.clone(),
-                        target: PathBuf::from(replacement),
-                    },
-                    Alias::Prefix {
-                        prefix: format!("{find}/"),
-                        target: PathBuf::from(replacement),
-                    },
-                ]
-            })
-            .collect();
         Aliases {
-            config,
+            config: config.to_vec(),
             paths: tsconfig_paths(root),
         }
     }
@@ -53,7 +38,7 @@ impl Aliases {
     /// tsconfig `paths` on what it gave, as the alias plugin hands the
     /// rewritten id to the rest of the pipeline.
     pub fn apply(&self, id: &str) -> Option<String> {
-        let Some(aliased) = first_rewrite(&self.config, id) else {
+        let Some(aliased) = oj_resolver::alias::first_rewrite(&self.config, id) else {
             return self.mapped(id);
         };
         Some(self.mapped(&aliased).unwrap_or(aliased))
@@ -74,16 +59,6 @@ impl Aliases {
         let found = found.to_string_lossy().into_owned();
         (!found.ends_with(".d.ts")).then_some(found)
     }
-}
-
-fn first_rewrite(aliases: &[Alias], id: &str) -> Option<String> {
-    aliases.iter().find_map(|a| match a {
-        Alias::Exact { find, target } if id == find => Some(target.to_string_lossy().into_owned()),
-        Alias::Prefix { prefix, target } => id
-            .strip_prefix(prefix.as_str())
-            .map(|rest| target.join(rest).to_string_lossy().into_owned()),
-        _ => None,
-    })
 }
 
 /// The file a mapped `paths` target loads, the way the dev resolver finds
