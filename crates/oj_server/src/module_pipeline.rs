@@ -433,6 +433,7 @@ fn record_glob_importer(state: &ServerState, file: &Path, url: &str, source: &st
     let patterns: Vec<oj_compiler::glob::GlobMatcher> =
         oj_compiler::glob::glob_patterns_aliased(source, file, Some(&state.root), &|id| {
             oj_compiler::glob::string_alias(&state.glob_alias, id)
+                .or_else(|| state.resolver.glob_mapped(file, id))
         })
         .iter()
         .map(|call| call.matcher())

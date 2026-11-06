@@ -48,6 +48,24 @@ pub enum TsconfigPaths {
     Off,
 }
 
+/// vite-tsconfig-paths' own options, as the app's Vite config passes them
+/// (`tsconfigPaths({ … })`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PluginOptions {
+    /// `root`, resolved: the project root and workspace root both.
+    pub root: Option<PathBuf>,
+    /// `projects`, resolved: the tsconfig files loaded (with their
+    /// references) in place of discovery.
+    pub projects: Option<Vec<PathBuf>>,
+    /// `projectDiscovery: "lazy"`: each importer's ancestors, found on demand.
+    pub lazy: bool,
+    /// `configNames`: the file names discovery finds.
+    pub config_names: Option<Vec<String>>,
+    /// `loose`, or an `importerFilter` function: any importer passes the
+    /// extension check.
+    pub loose: bool,
+}
+
 /// What the plugin's resolvers answered.
 pub(crate) enum Mapped {
     File(PathBuf),
@@ -56,78 +74,123 @@ pub(crate) enum Mapped {
     None,
 }
 
-/// A project's `include`/`exclude`, compiled as the plugin's getIncluder.
+/// A project's `include`/`exclude`, compiled as the plugin's getIncluder,
+/// as absolute globs: a pattern a config inherits through `extends` stays
+/// relative to the config that declares it (tsconfck rebases it there),
+/// where oxc rebases it onto the extending one.
 struct Includer {
-    dir: PathBuf,
     include: Vec<Regex>,
     exclude: Vec<Regex>,
 }
 
 impl Includer {
-    fn new(project: &TsConfig, dir: &Path) -> Includer {
-        let globs = |list: &[PathBuf]| -> Vec<Regex> {
+    fn new(project: &TsConfig) -> Includer {
+        let dir = project.path.parent().unwrap_or(Path::new("/"));
+        let globs = |base: &Path, list: &[String]| -> Vec<Regex> {
             list.iter()
-                .flat_map(|p| compiled_glob(&relative_glob(dir, p)))
+                .flat_map(|p| compiled_glob(&lexical(&base.join(p)).to_string_lossy()))
                 .collect()
         };
-        let include = match &project.include {
-            Some(list) => globs(list),
-            None => globs(&[PathBuf::from("**/*")]),
+        let include = match declared(&project.path, "include", 0) {
+            Some((base, list)) => globs(&base, &list),
+            None => globs(dir, &["**/*".to_string()]),
         };
-        let mut exclude = match &project.exclude {
-            Some(list) => globs(list),
+        let mut exclude = match declared(&project.path, "exclude", 0) {
+            Some((base, list)) => globs(&base, &list),
             None => globs(
-                &["**/node_modules", "**/bower_components", "**/jspm_packages"].map(PathBuf::from),
+                dir,
+                &["**/node_modules", "**/bower_components", "**/jspm_packages"].map(String::from),
             ),
         };
         if let Some(out) = &project.compiler_options.out_dir {
-            exclude.extend(compiled_glob(&relative_glob(dir, out)));
+            exclude.extend(compiled_glob(&lexical(out).to_string_lossy()));
         }
-        Includer {
-            dir: dir.to_path_buf(),
-            include,
-            exclude,
-        }
+        Includer { include, exclude }
     }
 
     /// Whether `exclude` takes `importer`'s directory: a file there, whatever
     /// its name (an importer known only by its directory).
     fn excludes_dir(&self, dir: &Path) -> bool {
         let probe = dir.join("__oj_importer__");
-        let rel = probe
-            .strip_prefix(&self.dir)
-            .map(|r| format!("./{}", r.to_string_lossy()))
-            .unwrap_or_else(|_| probe.to_string_lossy().into_owned());
-        self.exclude.iter().any(|g| g.is_match(&rel))
+        let probe = probe.to_string_lossy();
+        self.exclude.iter().any(|g| g.is_match(&probe))
     }
 
     fn includes(&self, importer: &Path) -> bool {
         if self.include.is_empty() && self.exclude.is_empty() {
             return true;
         }
-        let rel = importer
-            .strip_prefix(&self.dir)
-            .map(|r| format!("./{}", r.to_string_lossy()))
-            .unwrap_or_else(|_| importer.to_string_lossy().into_owned());
-        self.include.iter().any(|g| g.is_match(&rel))
-            && !self.exclude.iter().any(|g| g.is_match(&rel))
+        let path = importer.to_string_lossy();
+        let path = path.split(['?', '#']).next().unwrap_or("");
+        self.include.iter().any(|g| g.is_match(path))
+            && !self.exclude.iter().any(|g| g.is_match(path))
     }
 }
 
-/// `p` as the plugin writes a glob: relative to the project, `./`-led.
-fn relative_glob(dir: &Path, p: &Path) -> String {
-    let rel = p
-        .strip_prefix(dir)
-        .unwrap_or(p)
-        .to_string_lossy()
-        .into_owned();
-    if rel.is_empty() {
-        ".".to_string()
-    } else if rel.starts_with("./") || rel.starts_with("../") || rel.starts_with('/') {
-        rel
-    } else {
-        format!("./{rel}")
+/// `key` (`include`, `exclude`) as the config that declares it writes it,
+/// and that config's directory: the file itself, else the configs it
+/// `extends` (a later one over an earlier one, as tsc merges them).
+fn declared(file: &Path, key: &str, depth: usize) -> Option<(PathBuf, Vec<String>)> {
+    if depth > 16 {
+        return None;
     }
+    let mut text = std::fs::read_to_string(file).ok()?;
+    json_strip_comments::strip(&mut text).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let dir = file.parent()?;
+    if let Some(list) = json.get(key).and_then(|v| v.as_array()) {
+        let list = list
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect();
+        return Some((dir.to_path_buf(), list));
+    }
+    let parents: Vec<&str> = match json.get("extends") {
+        Some(serde_json::Value::String(s)) => vec![s.as_str()],
+        Some(serde_json::Value::Array(a)) => a.iter().filter_map(|v| v.as_str()).collect(),
+        _ => Vec::new(),
+    };
+    parents
+        .into_iter()
+        .rev()
+        .find_map(|ext| declared(&extended_file(dir, ext)?, key, depth + 1))
+}
+
+/// The file an `extends` entry names: relative to `dir`, or a package's
+/// (its `tsconfig.json`, or the `.json` it names) from the nearest
+/// node_modules.
+fn extended_file(dir: &Path, ext: &str) -> Option<PathBuf> {
+    let with_json = |p: PathBuf| -> Option<PathBuf> {
+        if p.is_file() {
+            return Some(p);
+        }
+        let json = PathBuf::from(format!("{}.json", p.display()));
+        if json.is_file() {
+            return Some(json);
+        }
+        let inner = p.join("tsconfig.json");
+        inner.is_file().then_some(inner)
+    };
+    if ext.starts_with('.') || Path::new(ext).is_absolute() {
+        return with_json(dir.join(ext));
+    }
+    dir.ancestors()
+        .find_map(|d| with_json(d.join("node_modules").join(ext)))
+}
+
+/// `path` with `.` and `..` folded, as `path.resolve` does.
+fn lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// addCompiledGlob: a glob whose last segment has no `*` matches the
@@ -327,7 +390,10 @@ fn locale_compare(a: &Path, b: &Path) -> std::cmp::Ordering {
 
 /// The importers a project's resolver takes: TypeScript files, any script
 /// with `allowJs` (the plugin's default importerFilter).
-fn takes_importer(project: &TsConfig, importer: &Path) -> bool {
+fn takes_importer(project: &TsConfig, importer: &Path, loose: bool) -> bool {
+    if loose {
+        return true;
+    }
     let name = importer.to_string_lossy();
     let name = name.split(['?', '#']).next().unwrap_or("");
     let ext = name.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
@@ -349,6 +415,7 @@ fn takes_importer(project: &TsConfig, importer: &Path) -> bool {
 /// The projects and their compiled globs, cached until `clear`.
 #[derive(Default)]
 pub(crate) struct Projects {
+    options: PluginOptions,
     includers: Mutex<HashMap<PathBuf, Arc<Includer>>>,
     /// The projects an importer directory sees, found once.
     by_dir: Mutex<HashMap<PathBuf, Arc<Vec<Arc<TsConfig>>>>>,
@@ -371,23 +438,49 @@ impl Projects {
             return Arc::clone(found);
         }
         let mut all: Vec<Arc<TsConfig>> = Vec::new();
-        // The plugin's discovery never descends into node_modules or .git.
-        let skipped = |d: &Path| {
-            d.components()
-                .any(|c| c.as_os_str() == "node_modules" || c.as_os_str() == ".git")
-        };
-        for d in dir
-            .ancestors()
-            .take_while(|d| d.starts_with(workspace))
-            .filter(|d| !skipped(d))
-        {
-            for name in ["tsconfig.json", "jsconfig.json"] {
-                let file = d.join(name);
-                if !file.is_file() || all.iter().any(|p| p.path == file) {
-                    continue;
-                }
+        let add = |file: PathBuf, all: &mut Vec<Arc<TsConfig>>| {
+            if file.is_file() && !all.iter().any(|p| p.path == file) {
                 if let Some(project) = load(&file) {
                     all.push(project);
+                }
+            }
+        };
+        let names: Vec<String> = self
+            .options
+            .config_names
+            .clone()
+            .unwrap_or_else(|| vec!["tsconfig.json".into(), "jsconfig.json".into()]);
+        if let Some(projects) = &self.options.projects {
+            // `projects`: those files alone (loadEagerProjects).
+            for file in projects {
+                add(file.clone(), &mut all);
+            }
+        } else if self.options.lazy {
+            // Lazy discovery: every ancestor, one named node_modules or .git
+            // skipped.
+            let skipped = |d: &Path| {
+                d.file_name()
+                    .is_some_and(|n| n == "node_modules" || n == ".git")
+            };
+            for d in dir.ancestors().filter(|d| !skipped(d)) {
+                for name in &names {
+                    add(d.join(name), &mut all);
+                }
+            }
+        } else {
+            // Eager discovery (tsconfck.findAll under the workspace root)
+            // never descends into node_modules or .git.
+            let skipped = |d: &Path| {
+                d.components()
+                    .any(|c| c.as_os_str() == "node_modules" || c.as_os_str() == ".git")
+            };
+            for d in dir
+                .ancestors()
+                .take_while(|d| d.starts_with(workspace))
+                .filter(|d| !skipped(d))
+            {
+                for name in &names {
+                    add(d.join(name), &mut all);
                 }
             }
         }
@@ -408,6 +501,18 @@ impl Projects {
         all
     }
 
+    /// The same options, empty caches.
+    pub fn fresh(&self) -> Projects {
+        Projects::new(self.options.clone())
+    }
+
+    pub fn new(options: PluginOptions) -> Projects {
+        Projects {
+            options,
+            ..Projects::default()
+        }
+    }
+
     pub fn clear(&self) {
         self.includers
             .lock()
@@ -421,10 +526,10 @@ impl Projects {
 
     fn includer(&self, project: &TsConfig) -> Arc<Includer> {
         let mut map = self.includers.lock().unwrap_or_else(|e| e.into_inner());
-        Arc::clone(map.entry(project.path.clone()).or_insert_with(|| {
-            let dir = project.path.parent().unwrap_or(Path::new("/"));
-            Arc::new(Includer::new(project, dir))
-        }))
+        Arc::clone(
+            map.entry(project.path.clone())
+                .or_insert_with(|| Arc::new(Includer::new(project))),
+        )
     }
 
     /// The plugin's answer for `id` from `importer`. The projects: each
@@ -468,7 +573,7 @@ impl Projects {
                 }
                 let passes = match importer {
                     Some(importer) => {
-                        !takes_importer(project, importer)
+                        !takes_importer(project, importer, self.options.loose)
                             || !self.includer(project).includes(importer)
                     }
                     None => self.includer(project).excludes_dir(importer_dir),

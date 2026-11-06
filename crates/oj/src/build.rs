@@ -1460,11 +1460,14 @@ async fn bundle_worker_inline(
     opts: Option<&Arc<WorkerBundleOpts>>,
     nested: OjCssPlugin,
 ) -> anyhow::Result<String> {
+    // A worker bundle resolves as Vite's: the aliases first, then the
+    // nested pipeline, then tsconfig `paths` where vite:resolve sits.
     let mut plugins: Vec<SharedPluginable> = opts
         .and_then(|o| alias_plugin(root, &o.config))
         .into_iter()
         .collect();
     plugins.push(Pluginable::new_shared(nested));
+    plugins.extend(opts.and_then(|o| tsconfig_paths_plugin(root, &o.config, "client")));
     let mut bundler = BundlerBuilder::default()
         .with_plugins(plugins)
         .with_options(BundlerOptions {
@@ -1502,11 +1505,14 @@ async fn bundle_worker_entry(
     let names = |tail: &str| {
         oj_config::assets_dir_path(opts.map_or("assets", |o| o.assets_dir.as_str()), tail)
     };
+    // A worker bundle resolves as Vite's: the aliases first, then the
+    // nested pipeline, then tsconfig `paths` where vite:resolve sits.
     let mut plugins: Vec<SharedPluginable> = opts
         .and_then(|o| alias_plugin(root, &o.config))
         .into_iter()
         .collect();
     plugins.push(Pluginable::new_shared(nested));
+    plugins.extend(opts.and_then(|o| tsconfig_paths_plugin(root, &o.config, "client")));
     let mut bundler = BundlerBuilder::default()
         .with_plugins(plugins)
         .with_options(BundlerOptions {
@@ -2378,6 +2384,7 @@ fn tsconfig_paths_plugin(
             server: env == "ssr",
             tsconfig_paths: mode,
             tsconfig_file: oj_server::tsconfig_file(config),
+            tsconfig_paths_plugin: oj_server::tsconfig_paths_plugin(root, config),
         },
     );
     Some(Pluginable::new_shared(
@@ -7895,6 +7902,66 @@ mod tests {
         assert!(js.contains("exact-key") && !js.contains("\"star\""), "{js}");
         // vite:resolve resolves the package before rolldown's own resolver
         // would map the `paths` key.
+        assert!(
+            js.contains("the-package") && !js.contains("the-shim"),
+            "{js}"
+        );
+    }
+
+    /// A worker bundle resolves as Vite builds one, through the same resolve
+    /// plugins: a `paths` key named like an installed package leaves the
+    /// package, as vite:resolve finds it before rolldown's own resolver maps
+    /// the key. The worker's bundle had no `paths` step and took the shim.
+    #[tokio::test]
+    async fn a_worker_bundle_applies_tsconfig_paths_as_vites_build_does() {
+        let root = scratch("build-worker-paths");
+        for (file, body) in [
+            ("package.json", r#"{"type":"module"}"#),
+            ("vite.config.mjs", "export default {};\n"),
+            (
+                "tsconfig.json",
+                r#"{ "compilerOptions": { "paths": { "evpkg": ["./src/evshim.ts"] } } }"#,
+            ),
+            (
+                "index.html",
+                r#"<html><body><script type="module" src="/src/main.ts"></script></body></html>"#,
+            ),
+            (
+                "src/main.ts",
+                "new Worker(new URL(\"./worker.ts\", import.meta.url), { type: \"module\" });\n",
+            ),
+            (
+                "src/worker.ts",
+                "import { ev } from \"evpkg\";\nself.postMessage(ev);\n",
+            ),
+            ("src/evshim.ts", "export const ev = \"the-shim\";\n"),
+            (
+                "node_modules/evpkg/package.json",
+                r#"{"name":"evpkg","type":"module","main":"index.js"}"#,
+            ),
+            (
+                "node_modules/evpkg/index.js",
+                "export const ev = \"the-package\";\n",
+            ),
+        ] {
+            let path = root.join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, body).unwrap();
+        }
+        build(
+            root.clone(),
+            Some("production"),
+            &tokio::runtime::Handle::current(),
+            CliOptions::default(),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{e:#}"));
+        let js: String = fs::read_dir(root.join("dist/assets"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|x| x == "js"))
+            .map(|e| fs::read_to_string(e.path()).unwrap())
+            .collect();
         assert!(
             js.contains("the-package") && !js.contains("the-shim"),
             "{js}"

@@ -132,7 +132,8 @@
     "preserveSymlinks": false,
     "tsconfigPaths": false,
     "tsconfigPathsPlugin": false,
-    "tsconfigFile": null
+    "tsconfigFile": null,
+    "configFile": null
   },
   "resolveError": null,
   "rollupOptions": {

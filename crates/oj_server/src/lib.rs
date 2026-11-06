@@ -1255,6 +1255,21 @@ pub fn tsconfig_paths(config: &oj_config::OjConfig) -> oj_resolver::TsconfigPath
     }
 }
 
+/// vite-tsconfig-paths' own options, read from the Vite config file the
+/// extractor resolved (defaults when it passes none, or none are literal).
+pub fn tsconfig_paths_plugin(
+    root: &Path,
+    config: &oj_config::OjConfig,
+) -> oj_resolver::PluginOptions {
+    config
+        .resolve
+        .as_ref()
+        .filter(|r| r.tsconfig_paths_plugin == Some(true))
+        .and_then(|r| r.vite_config_file.as_deref())
+        .and_then(|file| plugins::static_config::tsconfig_paths_options(Path::new(file), root))
+        .unwrap_or_default()
+}
+
 /// Vite's top-level `tsconfig` option, as a path.
 pub fn tsconfig_file(config: &oj_config::OjConfig) -> Option<PathBuf> {
     config
@@ -1278,6 +1293,7 @@ pub fn client_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver 
             server: false,
             tsconfig_paths: tsconfig_paths(config),
             tsconfig_file: tsconfig_file(config),
+            tsconfig_paths_plugin: tsconfig_paths_plugin(root, config),
         },
     )
 }
@@ -1326,6 +1342,7 @@ pub(crate) fn environment_resolver(
             server,
             tsconfig_paths: tsconfig_paths(config),
             tsconfig_file: tsconfig_file(config),
+            tsconfig_paths_plugin: tsconfig_paths_plugin(root, config),
         },
     )
 }
@@ -1355,6 +1372,7 @@ pub fn ssr_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
             server: true,
             tsconfig_paths: tsconfig_paths(config),
             tsconfig_file: tsconfig_file(config),
+            tsconfig_paths_plugin: tsconfig_paths_plugin(root, config),
         },
     )
 }
@@ -1379,6 +1397,7 @@ pub fn ssr_external_resolver(root: &Path, config: &oj_config::OjConfig) -> OjRes
             server: true,
             tsconfig_paths: oj_resolver::TsconfigPaths::Off,
             tsconfig_file: None,
+            tsconfig_paths_plugin: oj_resolver::PluginOptions::default(),
         },
     )
 }
@@ -1464,6 +1483,7 @@ fn optimized_deps(
             needs_interop: oj_config::optimize_deps_needs_interop(config),
             tsconfig_paths: tsconfig_paths(config),
             tsconfig_file: tsconfig_file(config),
+            tsconfig_paths_plugin: tsconfig_paths_plugin(root, config),
         },
         host,
         rolldown,
@@ -1930,7 +1950,6 @@ impl DevServer {
             dedup_defines_last_wins(oj_config::environment_defines(&config, "ssr")),
         ));
         let client_resolver = Arc::new(client_resolver(&root, &config));
-        let tsconfig_glob_aliases = client_resolver.glob_aliases();
         let ssr_resolver = Arc::new(ssr_resolver(&root, &config));
         if let Some(host) = &plugin_host {
             host.set_import_meta_env(Arc::clone(&import_meta_env));
@@ -2105,16 +2124,7 @@ impl DevServer {
                 target: None,
                 ..oj_config::ssr_externals(&config)
             },
-            // With `resolve.tsconfigPaths`, Vite's resolve plugin maps a glob
-            // through the tsconfig `paths` after the aliases.
-            glob_alias: Arc::from(
-                css_resolve
-                    .alias
-                    .iter()
-                    .cloned()
-                    .chain(tsconfig_glob_aliases)
-                    .collect::<Vec<_>>(),
-            ),
+            glob_alias: Arc::from(css_resolve.alias.clone()),
             css_resolve,
             csp_nonce: oj_config::html_csp_nonce(&config),
             fs_allow: Arc::new(Mutex::new(fs_allow_list(&root, &server_cfg))),
@@ -2494,6 +2504,12 @@ fn dev_compile_opts(state: &ServerState) -> oj_compiler::CompileOptions {
     opts.env = Some(Arc::clone(&state.import_meta_env));
     opts.root = Some(state.root.clone());
     opts.alias = Arc::clone(&state.glob_alias);
+    // With `resolve.tsconfigPaths`, Vite's resolve plugin maps a glob through
+    // the importer's tsconfig `paths` after the aliases.
+    let resolver = Arc::clone(&state.resolver);
+    opts.glob_paths = Some(oj_compiler::GlobPaths(Arc::new(
+        move |importer, pattern| resolver.glob_mapped(importer, pattern),
+    )));
     opts.stylex = state.stylex.clone();
     opts
 }

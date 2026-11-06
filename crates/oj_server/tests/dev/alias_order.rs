@@ -328,3 +328,76 @@ async fn tsconfig_paths_follow_how_the_config_turns_them_on() {
         drop(server);
     }
 }
+
+/// A root tsconfig and a nested package's own, each with `paths`, and a glob
+/// through each.
+const GLOB_FILES: &[(&str, &str)] = &[
+    (
+        "package.json",
+        r#"{"name":"native-globs","private":true,"type":"module"}"#,
+    ),
+    ("index.html", INDEX),
+    (
+        "tsconfig.json",
+        r#"{ "compilerOptions": { "paths": { "@/*": ["./src/*"] } } }"#,
+    ),
+    (
+        "src/m.ts",
+        "export const pages = import.meta.glob(\"@/pages/*.ts\");\n",
+    ),
+    ("src/pages/p.ts", "export const p = 1;\n"),
+    (
+        "pkg/tsconfig.json",
+        r#"{ "compilerOptions": { "paths": { "~/*": ["./lib/*"] } } }"#,
+    ),
+    (
+        "pkg/m.ts",
+        "export const views = import.meta.glob(\"~/views/*.ts\");\n",
+    ),
+    ("pkg/lib/views/v.ts", "export const v = 1;\n"),
+    (
+        "vite.config.js",
+        "export default { resolve: { tsconfigPaths: true } };\n",
+    ),
+];
+
+/// The `import("…")` targets of a served module, in order.
+fn dynamic_imports(js: &str) -> Vec<String> {
+    js.split("import(\"")
+        .skip(1)
+        .filter_map(|rest| rest.split_once('"').map(|(spec, _)| spec.to_string()))
+        .collect()
+}
+
+// With `resolve.tsconfigPaths`, Vite's resolve plugin maps an
+// `import.meta.glob` pattern through the `paths` of the tsconfig that owns
+// the importer (resolve_tsconfig_path_alias): a nested package's glob goes
+// through its own tsconfig, not the root one.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_glob_maps_through_the_importers_own_tsconfig_paths() {
+    crate::require_fixture!("vite");
+    let app = App::new(GLOB_FILES);
+    app.link_fixture("vite");
+    let vite = ViteDev::start(&app.root, "vite.config.js");
+    let theirs = [
+        dynamic_imports(&vite.get("/src/m.ts").1),
+        dynamic_imports(&vite.get("/pkg/m.ts").1),
+    ];
+    drop(vite);
+    assert_eq!(
+        theirs,
+        [
+            vec!["/src/pages/p.ts".to_string()],
+            vec!["/pkg/lib/views/v.ts".to_string()]
+        ],
+        "vite dev: the test's premise"
+    );
+    let mut dev = app.dev();
+    dev.config = Some(app.root.join("vite.config.js"));
+    let server = crate::serve(dev).await;
+    let ours = [
+        dynamic_imports(&server.text("/src/m.ts").await),
+        dynamic_imports(&server.text("/pkg/m.ts").await),
+    ];
+    assert_eq!(ours, theirs, "oj dev vs vite dev");
+}

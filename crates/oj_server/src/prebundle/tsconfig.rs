@@ -18,9 +18,6 @@ pub(super) struct Unresolved;
 
 pub(super) struct Aliases {
     config: Vec<(String, String)>,
-    /// The aliases a glob pattern goes through: the config's, then the
-    /// tsconfig `paths` Vite's resolve plugin maps it by.
-    glob: Vec<(String, String)>,
     resolver: oj_resolver::OjResolver,
 }
 
@@ -40,17 +37,11 @@ impl Aliases {
                 server: false,
                 tsconfig_paths: input.tsconfig_paths,
                 tsconfig_file: input.tsconfig_file.clone(),
+                tsconfig_paths_plugin: input.tsconfig_paths_plugin.clone(),
             },
         );
-        let glob = input
-            .alias
-            .iter()
-            .cloned()
-            .chain(resolver.glob_aliases())
-            .collect();
         Aliases {
             config: input.alias.clone(),
-            glob,
             resolver,
         }
     }
@@ -59,8 +50,8 @@ impl Aliases {
     /// `resolve.tsconfigPaths`, the tsconfig `paths` (Vite's resolve plugin
     /// maps a glob by them; vite-tsconfig-paths has no answer for a glob,
     /// which names no file).
-    pub fn glob(&self, id: &str) -> Option<String> {
-        first_rewrite(&self.glob, id)
+    pub fn glob(&self, id: &str, importer: &Path) -> Option<String> {
+        first_rewrite(&self.config, id).or_else(|| self.resolver.glob_mapped(importer, id))
     }
 
     /// `id` after the first `resolve.alias` entry that takes it, alone.

@@ -86,9 +86,26 @@ pub struct CompileOptions {
     /// The app's string `resolve.alias` entries (find, replacement), which an
     /// aliased `import.meta.glob("@/x/*.ts")` pattern resolves through.
     pub alias: Arc<[(String, String)]>,
+    /// What a glob pattern no alias takes maps to, from its importer: tsconfig
+    /// `paths` with `resolve.tsconfigPaths` (Vite's resolve plugin).
+    pub glob_paths: Option<GlobPaths>,
     /// The config's `@stylexjs/unplugin`, run on the parsed source before any
     /// other transform (the plugin is `enforce: 'pre'`).
     pub stylex: Option<Arc<oj_stylex::plugin::StylexPlugin>>,
+}
+
+/// A glob pattern's mapping from its importing file (see
+/// [`CompileOptions::glob_paths`]).
+#[derive(Clone)]
+pub struct GlobPaths(pub Arc<GlobPathsFn>);
+
+/// `(importer, pattern)` to the mapped pattern.
+pub type GlobPathsFn = dyn Fn(&Path, &str) -> Option<String> + Send + Sync;
+
+impl std::fmt::Debug for GlobPaths {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("GlobPaths")
+    }
 }
 
 impl CompileOptions {
@@ -103,6 +120,7 @@ impl CompileOptions {
             env: None,
             root: None,
             alias: Arc::from([]),
+            glob_paths: None,
             stylex: None,
         }
     }
@@ -118,6 +136,7 @@ impl CompileOptions {
             env: None,
             root: None,
             alias: Arc::from([]),
+            glob_paths: None,
             stylex: None,
         }
     }
@@ -465,7 +484,10 @@ fn expand_synthesized<'a>(
     let dir = path.parent().unwrap_or(path);
     let mut synthesized = false;
     if scan(&F_IMPORT_META_GLOB, source_text) {
-        let alias = |id: &str| glob::string_alias(&opts.alias, id);
+        let alias = |id: &str| {
+            glob::string_alias(&opts.alias, id)
+                .or_else(|| opts.glob_paths.as_ref().and_then(|g| (g.0)(path, id)))
+        };
         glob::expand(allocator, path, opts.root.as_deref(), &alias, program);
         synthesized = true;
     }
@@ -738,6 +760,7 @@ import React from "react";
                 env: None,
                 root: None,
                 alias: Arc::from([]),
+                glob_paths: None,
                 stylex: None,
             },
             None,
@@ -829,6 +852,7 @@ import React from "react";
                 env: None,
                 root: None,
                 alias: Arc::from([]),
+                glob_paths: None,
                 stylex: None,
             },
             None,

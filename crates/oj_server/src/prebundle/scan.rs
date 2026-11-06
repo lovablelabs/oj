@@ -576,7 +576,7 @@ impl Plugin for DepScanPlugin {
             args.code,
             Path::new(file),
             &self.0.pre.root,
-            &|id| self.0.pre.alias.glob(id),
+            &|id| self.0.pre.alias.glob(id, Path::new(file)),
             &mut scopes,
         ) {
             Ok(code) if code != args.code.as_str() => Ok(Some(HookTransformOutput {

@@ -188,7 +188,7 @@ pub fn plugin_source(root: &Path, config: Option<&Path>) -> Option<PluginSource>
 mod extract;
 mod hook_plan;
 mod host;
-mod static_config;
+pub(crate) mod static_config;
 pub use self::extract::*;
 pub use self::hook_plan::*;
 pub use self::host::*;

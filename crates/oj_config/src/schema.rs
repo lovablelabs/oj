@@ -529,6 +529,10 @@ pub struct ResolveConfig {
     /// resolver reads.
     #[serde(skip)]
     pub tsconfig_file: Option<String>,
+    /// The Vite config file Vite loaded, where vite-tsconfig-paths' options
+    /// are read.
+    #[serde(skip)]
+    pub vite_config_file: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
