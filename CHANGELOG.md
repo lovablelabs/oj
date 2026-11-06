@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-11-06
+
 ### Fixed
 
 - Edits a plugin makes to the resolved config in `configResolved` (or, for what the dev server reads as it serves, in `configureServer`) take effect where Vite reads them after those hooks, as Vite runs them inside `resolveConfig` on the config it then uses: the dev server's options (a directory pushed to `server.fs.allow` is served; not `fs.deny` or `warmup`), a build's `resolve.alias`, and `define`, `optimizeDeps` and `env` edited in place (the client environment holds those objects). What Vite copied before them stays as it was: the dev alias plugin's entries, a replaced `define`, `build.outDir` and the other build options, `envDir` and `envPrefix`. A cold start read the values before those hooks ran; the host now reads them again after, and the dev server and `oj build` use those.
