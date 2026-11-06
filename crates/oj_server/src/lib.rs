@@ -289,6 +289,10 @@ struct ServerState {
     /// `require()` specifiers of a directly-served CommonJS dep (Vite's getConditions).
     require_resolver: Arc<OjResolver>,
     ssr_resolver: Arc<OjResolver>,
+    /// How Vite's module runner resolves a bare import it externalizes.
+    ssr_external_resolver: Arc<OjResolver>,
+    /// The ssr environment's aliases: Vite never externalizes an aliased import.
+    ssr_aliases: Vec<(String, String)>,
     cache: PersistentCache,
     memory: Mutex<MemoryCache>,
     mtime_keys: Mutex<HashMap<String, (std::time::SystemTime, u64, String)>>,
@@ -1322,6 +1326,28 @@ pub fn ssr_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
     )
 }
 
+/// How Vite's module runner resolves a bare import it externalizes
+/// (fetchModule's tryNodeResolve): mainFields `["main"]`, the ssr external
+/// conditions with `import` (getConditions), extensions `.js`, `.cjs` and
+/// `.json`, `resolve.dedupe`, and no alias (an aliased import is never
+/// external).
+pub fn ssr_external_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
+    let mut conditions = oj_config::ssr_external_conditions(config, true);
+    conditions.push("import".to_string());
+    OjResolver::with_settings(
+        root,
+        oj_resolver::ResolveSettings {
+            conditions,
+            alias: Vec::new(),
+            dedupe: oj_config::resolve_dedupe(config),
+            extensions: Some([".js", ".cjs", ".json"].map(String::from).to_vec()),
+            main_fields: Some(vec!["main".to_string()]),
+            preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
+            server: true,
+        },
+    )
+}
+
 /// Vite: `allow: raw?.fs?.allow ?? [searchForWorkspaceRoot(root)]`. The workspace
 /// root is the DEFAULT, not an addition: a user allow list replaces it.
 fn fs_allow_list(
@@ -2006,6 +2032,8 @@ impl DevServer {
             require_resolver: Arc::new(client_resolver.require_variant()),
             resolver: client_resolver,
             ssr_resolver,
+            ssr_external_resolver: Arc::new(ssr_external_resolver(&root, &config)),
+            ssr_aliases: oj_config::resolve_alias(&config, "ssr"),
             cache: PersistentCache::new(oj_cache::cache_root(&root), env!("CARGO_PKG_VERSION"))
                 .with_salt_extra(&installed.digest)
                 // A cached compile embeds the JSX runtime import; a changed

@@ -686,7 +686,36 @@ fn store_extraction(
     if let Some(obj) = stored.as_object_mut() {
         obj.remove("__stderr");
     }
-    store.store(vite, command, mode_key, &deps, &stored.to_string(), stderr);
+    let env_reads = env_reads_of(json);
+    store.store(
+        vite,
+        command,
+        mode_key,
+        &deps,
+        &env_reads,
+        &stored.to_string(),
+        stderr,
+    );
+}
+
+/// The env the evaluation read (`__envReads`, `__envEnumerated`,
+/// `__envPrefixes` from vite-extract.mjs), which the cache stamps by value.
+fn env_reads_of(json: &serde_json::Value) -> oj_cache::config_extract::EnvReads {
+    let strings = |key: &str| -> Vec<String> {
+        json.get(key)
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| s.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    oj_cache::config_extract::EnvReads {
+        names: strings("__envReads"),
+        prefixes: strings("__envPrefixes"),
+        enumerated: json.get("__envEnumerated").and_then(|v| v.as_bool()) == Some(true),
+    }
 }
 
 /// Whether any config extraction ran the engine (cache miss): caches derived

@@ -3777,7 +3777,7 @@ async function hotUpdateEnvironment(env, file, timestamp, type) {
     if (plugin.hotUpdate) {
       const hook = plugin.hotUpdate;
       const handler = typeof hook === "object" ? hook.handler : hook;
-      const filtered = await handler.call(context, options);
+      const filtered = await handler.call(context, withChangedModule(plugin, options, file));
       if (filtered) options.modules = [...filtered];
     } else if (env.name === "client" && type === "update") {
       // Legacy handleHotUpdate is a client-only hook in Vite; the mixed module
@@ -5920,7 +5920,7 @@ async function handleHotUpdate(c, file, timestamp, type, modulesJson) {
     if (!firstImportProtectionPass(p, file)) continue;
     let r;
     try {
-      r = await fn.call(ctxFor(c, p), hmrContext);
+      r = await fn.call(ctxFor(c, p), withChangedModule(p, hmrContext, file));
     } catch (e) {
       // Vite records the failing hook's error and sends it to the client
       // (hmr.ts); name the plugin so the overlay says who threw.
@@ -5966,6 +5966,19 @@ function firstImportProtectionPass(p, file) {
   if (seen.get(file) === stamp) return false;
   seen.set(file, stamp);
   return true;
+}
+
+// Start's import protection clears a changed file's state only for the
+// modules its hotUpdate is handed, and it gets one pass per change (above).
+// A pass from a graph that holds nothing for the file (the dev server's, for
+// a file only the Start client bundle imports: "matched no module") would
+// use that pass up and clear nothing, and the dev engine's pass, which names
+// the file, would then be skipped: the client kept a marker the file no
+// longer has. So whichever pass comes first names the file.
+function withChangedModule(p, ctx, file) {
+  if (!isImportProtection(p)) return ctx;
+  const named = ctx.modules.some((m) => m && typeof m === "object" && (m.file === file || m.id === file));
+  return named ? ctx : { ...ctx, modules: [...ctx.modules, { id: file, file }] };
 }
 
 async function importProtectionChanged(c, filesJson) {

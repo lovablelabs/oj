@@ -197,6 +197,8 @@ pub(crate) struct CjsCache {
     pkg_is_module: Mutex<std::collections::HashMap<PathBuf, bool>>,
     /// file → (mtime at sniff time, is-CJS verdict).
     verdicts: Mutex<std::collections::HashMap<PathBuf, (std::time::SystemTime, bool)>>,
+    /// file → (mtime at scan time, calls an undeclared `require`).
+    requires: Mutex<std::collections::HashMap<PathBuf, (std::time::SystemTime, bool)>>,
 }
 
 impl CjsCache {
@@ -265,6 +267,122 @@ impl CjsCache {
         }
         verdict
     }
+}
+
+impl CjsCache {
+    /// Whether `path` is an ES module that calls a `require` it never
+    /// declares: a bundler-only build no ESM runtime can evaluate (turndown's
+    /// `module` entry requires its Node DOM parser on first use), cached per
+    /// path + mtime.
+    fn esm_calls_require(&self, path: &str) -> bool {
+        if !(path.ends_with(".js") || path.ends_with(".mjs")) || self.is_cjs_file(path) {
+            return false;
+        }
+        let file = Path::new(path);
+        let mtime = std::fs::metadata(file).ok().and_then(|m| m.modified().ok());
+        if let Some(mtime) = mtime {
+            if let Some((seen, verdict)) = self.requires.lock().unwrap().get(file) {
+                if *seen == mtime {
+                    return *verdict;
+                }
+            }
+        }
+        let verdict = std::fs::read_to_string(file)
+            .map(|src| calls_undeclared_require(&src))
+            .unwrap_or(false);
+        if let Some(mtime) = mtime {
+            self.requires
+                .lock()
+                .unwrap()
+                .insert(file.to_path_buf(), (mtime, verdict));
+        }
+        verdict
+    }
+}
+
+/// Whether module code calls a `require` no scope of its own declares (a
+/// `createRequire` result or a wrapper's parameter is declared): directly,
+/// through a member (`require.resolve(id)`, esbuild's `__require` shim
+/// calling `require.apply`) or as `(0, require)(id)`. A call guarded by
+/// `typeof require` counts too: Node's entry, which it then gets, is Vite's
+/// pick anyway.
+fn calls_undeclared_require(src: &str) -> bool {
+    use oxc_ast::ast::{CallExpression, Expression};
+    use oxc_ast_visit::{walk, Visit};
+
+    struct Scan<'s> {
+        scoping: &'s oxc_semantic::Scoping,
+        calls: bool,
+    }
+    impl Scan<'_> {
+        fn global_require(&self, expr: &Expression) -> bool {
+            match expr.without_parentheses() {
+                Expression::Identifier(id) => {
+                    id.name == "require"
+                        && id
+                            .reference_id
+                            .get()
+                            .is_some_and(|r| self.scoping.get_reference(r).symbol_id().is_none())
+                }
+                Expression::SequenceExpression(seq) => seq
+                    .expressions
+                    .last()
+                    .is_some_and(|e| self.global_require(e)),
+                _ => false,
+            }
+        }
+    }
+    impl<'a> Visit<'a> for Scan<'_> {
+        fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
+            let callee = it.callee.without_parentheses();
+            let object = match callee {
+                Expression::StaticMemberExpression(m) => Some(&m.object),
+                Expression::ComputedMemberExpression(m) => Some(&m.object),
+                _ => None,
+            };
+            if self.global_require(callee) || object.is_some_and(|o| self.global_require(o)) {
+                self.calls = true;
+            }
+            walk::walk_call_expression(self, it);
+        }
+    }
+
+    static WORD: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let word = WORD.get_or_init(|| regex::Regex::new(r"\brequire\b").expect("require regex"));
+    if !word.is_match(src) {
+        return false;
+    }
+    let allocator = oxc_allocator::Allocator::default();
+    let parsed = oxc_parser::Parser::new(&allocator, src, oxc_span::SourceType::mjs()).parse();
+    if !parsed.diagnostics.is_empty() {
+        return false;
+    }
+    let semantic = oxc_semantic::SemanticBuilder::new()
+        .build(&parsed.program)
+        .semantic;
+    let mut scan = Scan {
+        scoping: semantic.scoping(),
+        calls: false,
+    };
+    scan.visit_program(&parsed.program);
+    scan.calls
+}
+
+/// The package a bare specifier names (`@scope/name` or `name`), or None for
+/// a relative, absolute, `#` or builtin one.
+fn bare_package(spec: &str) -> Option<&str> {
+    if spec.starts_with('.') || spec.starts_with('/') || spec.starts_with('#') {
+        return None;
+    }
+    if oj_server::is_node_builtin(spec) || spec.contains(':') {
+        return None;
+    }
+    let segments = if spec.starts_with('@') { 2 } else { 1 };
+    let end = spec
+        .match_indices('/')
+        .nth(segments - 1)
+        .map_or(spec.len(), |(i, _)| i);
+    Some(&spec[..end])
 }
 
 fn has_esm_syntax(src: &str) -> bool {
@@ -630,6 +748,11 @@ impl StartHost {
                 if let Ok(StartResolution::Dependency(p)) =
                     self.bridge.resolve_start(&importer_id, spec).await
                 {
+                    if let Some(node) =
+                        self.vite_external_instead(&importer_id, spec, &p.to_string_lossy())
+                    {
+                        return Ok(Some(node));
+                    }
                     if let Ok(u) = url::Url::from_file_path(&p) {
                         return Ok(Some(HostResolved::External(u.to_string())));
                     }
@@ -684,6 +807,29 @@ impl StartHost {
         self.resolved(resolution, spec, &importer_id)
     }
 
+    /// The file Vite's module runner would load for the bare `spec`, in
+    /// place of the ESM build `file` the resolver picked, when that build
+    /// calls an undeclared `require`. Vite loads every external as fetchModule
+    /// resolves it (tryNodeResolve: mainFields ["main"], the external
+    /// conditions), so turndown runs as its CommonJS `main` there; the
+    /// `module` entry oj prefers for externals throws "require is not
+    /// defined" on import. None (the picked file stands) for an aliased
+    /// import, which Vite never externalizes, or another package's file.
+    fn vite_external_instead(
+        &self,
+        importer: &str,
+        spec: &str,
+        file: &str,
+    ) -> Option<HostResolved> {
+        let package = bare_package(spec)?;
+        if pkg_name_of_path(file).as_deref() != Some(package) || !self.cjs.esm_calls_require(file) {
+            return None;
+        }
+        let vite = self.bridge.resolve_external(importer, spec)?;
+        let url = url::Url::from_file_path(&vite).ok()?;
+        Some(HostResolved::External(url.to_string()))
+    }
+
     /// The host's answer for `spec`, resolved to `resolution`: the intent and
     /// svg `?react` read off the resolved id's own query, which a plugin may
     /// have rewritten (Vite's import analysis uses the id it got).
@@ -733,6 +879,9 @@ impl StartHost {
                 // would otherwise keep serving the first one.
                 if self.claims_dependency(&abs) {
                     return Ok(Some(self.module_url(&abs, importer_id)));
+                }
+                if let Some(node) = self.vite_external_instead(&importer_id, spec, &abs) {
+                    return Ok(Some(node));
                 }
                 // Hand the engine the exact file the Vite-style resolver
                 // picked (mainFields, extension probing, exports conditions,
@@ -1652,6 +1801,107 @@ mod tests {
             !cache.is_cjs_file(&file.to_string_lossy()),
             "an mtime move re-reads the file"
         );
+    }
+
+    #[test]
+    fn a_module_build_needs_a_bundler_when_it_calls_an_undeclared_require() {
+        // turndown's `module` build, and a call at the top level.
+        assert!(calls_undeclared_require(
+            "function f() {\n  var d = require('domino');\n  return d;\n}\nexport default f();\n"
+        ));
+        assert!(calls_undeclared_require(
+            "const x = require('./x.cjs');\nexport { x };\n"
+        ));
+        // A guarded call still needs one; Node's entry is Vite's pick anyway.
+        assert!(calls_undeclared_require(
+            "export const d = typeof require === 'function' ? require('d') : null;\n"
+        ));
+        // Its own require: createRequire, a parameter, a function.
+        assert!(!calls_undeclared_require(
+            "import { createRequire } from 'node:module';\nconst require = createRequire(import.meta.url);\nexport const x = require('./x.cjs');\n"
+        ));
+        assert!(!calls_undeclared_require(
+            "export function load(require) { return require('x'); }\n"
+        ));
+        assert!(!calls_undeclared_require(
+            "function require(id) { return id; }\nexport const x = require('x');\n"
+        ));
+        // A declaration in one scope leaves another's call undeclared: a
+        // wrapper's `require` parameter beside a top-level call.
+        assert!(calls_undeclared_require(
+            "function wrap(exports, require) { return require('a'); }\nconst d = require('d');\nexport { d, wrap };\n"
+        ));
+        // esbuild's shim, through `require.apply`; a member call; a sequence.
+        assert!(calls_undeclared_require(
+            "var __require = (x => typeof require !== 'undefined' ? require : x)(function (x) {\n  if (typeof require !== 'undefined') return require.apply(this, arguments);\n  throw Error('Dynamic require of \"' + x + '\" is not supported');\n});\nvar d = __require('d');\nexport { d };\n"
+        ));
+        assert!(calls_undeclared_require(
+            "export const p = require.resolve('x');\n"
+        ));
+        assert!(calls_undeclared_require(
+            "export const x = (0, require)('x');\n"
+        ));
+        assert!(calls_undeclared_require(
+            "export const x = require?.('x');\n"
+        ));
+        // No call: a mention, a member, a property, a string.
+        assert!(!calls_undeclared_require("export const x = 1;\n"));
+        assert!(!calls_undeclared_require(
+            "export const required = true;\nexport function f() { return required; }\n"
+        ));
+        assert!(!calls_undeclared_require(
+            "export const r = typeof require;\nexport const y = module.require('y');\nexport const s = 'require(x)';\nexport const o = { require: 1 };\n"
+        ));
+        // Unparseable code is left as it was.
+        assert!(!calls_undeclared_require("export const = require('x'"));
+    }
+
+    #[test]
+    fn a_bare_specifier_names_its_package() {
+        assert_eq!(bare_package("turndown"), Some("turndown"));
+        assert_eq!(bare_package("turndown/lib/x.js"), Some("turndown"));
+        assert_eq!(bare_package("@scope/pkg"), Some("@scope/pkg"));
+        assert_eq!(bare_package("@scope/pkg/sub"), Some("@scope/pkg"));
+        for spec in [
+            "./x",
+            "../x",
+            "/abs/x",
+            "#lib/x",
+            "node:fs",
+            "fs",
+            "virtual:x",
+        ] {
+            assert_eq!(bare_package(spec), None, "{spec}");
+        }
+    }
+
+    #[test]
+    fn only_an_es_module_is_scanned_for_require() {
+        let dir = std::env::temp_dir().join(format!("oj-esmreq-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("package.json"), "{}").unwrap();
+        let cache = CjsCache::default();
+        let esm = dir.join("index.es.js");
+        std::fs::write(&esm, "var d = require('d');\nexport default d;\n").unwrap();
+        let cjs = dir.join("index.cjs.js");
+        std::fs::write(&cjs, "module.exports = require('d');\n").unwrap();
+        let mjs = dir.join("index.mjs");
+        std::fs::write(&mjs, "export const d = require('d');\n").unwrap();
+        assert!(cache.esm_calls_require(&esm.to_string_lossy()));
+        assert!(cache.esm_calls_require(&mjs.to_string_lossy()));
+        assert!(
+            !cache.esm_calls_require(&cjs.to_string_lossy()),
+            "CommonJS has require"
+        );
+        assert!(!cache.esm_calls_require("/whatever/x.cjs"));
+        // Keyed on the mtime: a reinstalled build is scanned again.
+        std::fs::write(&esm, "export default 1;\n").unwrap();
+        let f = std::fs::OpenOptions::new().append(true).open(&esm).unwrap();
+        f.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
+            .unwrap();
+        assert!(!cache.esm_calls_require(&esm.to_string_lossy()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // The framework seam, from the consumer's side: start-server-core imports

@@ -134,6 +134,42 @@ impl DevBundler {
         &self.start.root
     }
 
+    /// The files the client bundle depends on that closure.json does not
+    /// list, which the bundle store keys a generation by: the trees its
+    /// routes come from (the client's own, generate.mjs's pruned tree in the
+    /// cache, and the generated tree it stands in for and falls back to; the
+    /// dev server regenerates and rebundles on a route change itself), and
+    /// the config file with every file it imported (Vite's
+    /// `configFileDependencies`, on which Vite restarts), which the store's
+    /// epoch cannot name.
+    pub(crate) fn cache_key_files(&self) -> Vec<PathBuf> {
+        let mut config: Vec<PathBuf> = oj_server::plugins::config_dependencies().to_vec();
+        config.extend(self.config_file.clone());
+        // A cached extraction lists the config itself and sorted, a fresh one
+        // only what it imported, in import order: the same set keys the same.
+        config.sort();
+        config.dedup();
+        let mut files = vec![
+            self.start.cache.join(super::CLIENT_ROUTE_TREE),
+            self.start.route_tree(),
+        ];
+        files.extend(config);
+        files
+    }
+
+    /// The defines the client bundle inlines, which the bundle store keys a
+    /// generation by too: `import.meta.env` (the mode, NODE_ENV, `BASE_URL`
+    /// and the `envPrefix` vars of the `.env` files in `envDir` and of the
+    /// process, Vite's loadEnv), the config's `define` and the client
+    /// environment's own. These are values of the evaluated config, so a
+    /// define the config computes (from an env var, from a file it reads)
+    /// keys the bundle by what it came to. What plugin `config` hooks add is
+    /// known only once the plugin host is open, after the restore.
+    pub(crate) fn cache_key_defines(&self) -> String {
+        let defines = self.start.client_defines(&[], &[]);
+        serde_json::to_string(&defines).unwrap_or_default()
+    }
+
     pub(crate) fn set_hot_enabled(&self, enabled: bool) {
         self.hot_enabled
             .store(enabled, std::sync::atomic::Ordering::SeqCst);

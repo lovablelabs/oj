@@ -30,6 +30,7 @@ pub(super) fn epoch_in(env: &oj_env::Env, root: &Path, mode: &str) -> String {
         "oj.config.ts",
         "oj.config.js",
         "oj.config.mjs",
+        "oj.config.json",
         ".env",
         ".env.local",
         mode_env[0].as_str(),
@@ -86,6 +87,24 @@ mod tests {
         assert_ne!(base, of(&[("NODE_ENV", "production")]));
         assert_ne!(base, of(&[("TSS_SERVER_FN_BASE", "/fn")]));
         assert_eq!(base, of(&[("TSS_OTHER", "1")]));
+    }
+
+    // Every config file oj loads is an input: `oj.config.json` among them
+    // (a candidate of oj_config's loader), not only the scripted ones.
+    #[test]
+    fn epoch_keys_on_every_config_file() {
+        let root = std::env::temp_dir().join(format!("oj-config-epoch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let env = Env::from_vars(std::iter::empty::<(&str, &str)>());
+        let of = || epoch_in(&env, &root, "development");
+        let without = of();
+        std::fs::write(root.join("oj.config.json"), r#"{"envPrefix":"A_"}"#).unwrap();
+        let with = of();
+        assert_ne!(without, with, "an oj.config.json re-keys the bundle");
+        std::fs::write(root.join("oj.config.json"), r#"{"envPrefix":"B_"}"#).unwrap();
+        assert_ne!(with, of(), "an oj.config.json edit re-keys the bundle");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     // The probed start entry is a bundle input outside the closure: a

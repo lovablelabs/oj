@@ -246,6 +246,22 @@ pub fn node_server_external_conditions(config: &OjConfig, dev: bool) -> Vec<Stri
     }
 }
 
+/// The ssr environment's `externalConditions`, as Vite's module runner
+/// resolves an external with them (fetchModule): the environment's own list
+/// (`environments.ssr.resolve`, the `ssr.resolve` sugar, then the top level),
+/// else DEFAULT_EXTERNAL_CONDITIONS.
+pub fn ssr_external_conditions(config: &OjConfig, dev: bool) -> Vec<String> {
+    match user_external_conditions(config, "ssr") {
+        Some(user) => {
+            let dev_prod = dev_prod(dev);
+            user.into_iter()
+                .map(|c| map_dev_prod(c, dev_prod))
+                .collect()
+        }
+        None => node_server_external_conditions(config, dev),
+    }
+}
+
 pub fn resolve_dedupe(config: &OjConfig) -> Vec<String> {
     config
         .resolve
@@ -339,6 +355,32 @@ mod tests {
         assert_eq!(
             crate::resolve_alias(&env, "client"),
             pairs(&[("b", "/b"), ("a", "/a")])
+        );
+    }
+
+    #[test]
+    fn ssr_external_conditions_default_to_vites_and_map_the_mode() {
+        let from = |json: &str| -> OjConfig { serde_json::from_str(json).unwrap() };
+        assert_eq!(
+            crate::ssr_external_conditions(&from("{}"), true),
+            vec!["node".to_string(), "module-sync".to_string()]
+        );
+        let env = from(
+            r#"{ "environments": { "ssr": { "resolve": { "externalConditions": ["edge", "development|production"] } } },
+                 "resolve": { "externalConditions": ["top"] } }"#,
+        );
+        assert_eq!(
+            crate::ssr_external_conditions(&env, true),
+            vec!["edge".to_string(), "development".to_string()]
+        );
+        assert_eq!(
+            crate::ssr_external_conditions(&env, false),
+            vec!["edge".to_string(), "production".to_string()]
+        );
+        let top = from(r#"{ "resolve": { "externalConditions": ["top"] } }"#);
+        assert_eq!(
+            crate::ssr_external_conditions(&top, true),
+            vec!["top".to_string()]
         );
     }
 

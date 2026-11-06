@@ -116,6 +116,18 @@ impl SsrBridge {
         Ok(start_resolution(raw, spec))
     }
 
+    /// The file Vite's module runner loads for the bare `spec` imported from
+    /// `importer` when it externalizes it (fetchModule's tryNodeResolve), or
+    /// None when an alias claims the specifier (createIsExternal never
+    /// externalizes one) or nothing resolves.
+    pub fn resolve_external(&self, importer: &str, spec: &str) -> Option<PathBuf> {
+        if aliased(&self.state.ssr_aliases, spec) {
+            return None;
+        }
+        let dir = Path::new(importer).parent().unwrap_or(&self.state.root);
+        self.state.ssr_external_resolver.resolve(dir, spec).ok()
+    }
+
     /// The ssr environment's `pre` resolveId hooks alone for `spec`, as
     /// written: what they answer ahead of the resolver (and of Vite's root
     /// and publicDir probe), or None.
@@ -486,6 +498,12 @@ pub(crate) fn matches_alias(finds: &[String], spec: &str) -> bool {
 
 /// `spec` after the first alias that matches it (the find itself, or its
 /// prefix up to `/`), as @rollup/plugin-alias replaces it.
+/// Whether an alias claims `spec`: Vite's createIsExternal never
+/// externalizes one (matchAlias).
+pub(crate) fn aliased(aliases: &[(String, String)], spec: &str) -> bool {
+    apply_alias(aliases, spec) != spec
+}
+
 pub(crate) fn apply_alias(aliases: &[(String, String)], spec: &str) -> String {
     for (find, replacement) in aliases {
         if find.ends_with('/') {

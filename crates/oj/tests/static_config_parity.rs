@@ -44,6 +44,10 @@ fn both(root: &Path, vite: &Path) -> (Option<serde_json::Value>, serde_json::Val
     let fields = evaluated.as_object_mut().unwrap();
     fields.remove("__deps");
     fields.remove("__depsTruncated");
+    // What the evaluation read of the env, for the cache like __deps.
+    fields.remove("__envReads");
+    fields.remove("__envEnumerated");
+    fields.remove("__envPrefixes");
     // The transcript, stored apart from the values in the cache.
     fields.remove("__stderr");
     (read, evaluated)

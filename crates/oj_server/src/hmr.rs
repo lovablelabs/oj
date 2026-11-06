@@ -908,6 +908,7 @@ pub(crate) fn drop_resolver_misses(
     {
         state.resolver.clear_cache();
         state.ssr_resolver.clear_cache();
+        state.ssr_external_resolver.clear_cache();
         if let Some(host) = &state.plugins {
             host.clear_environment_resolvers();
         }

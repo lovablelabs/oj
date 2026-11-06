@@ -366,3 +366,96 @@ fn extraction_counts_the_plugins_a_host_would_run() {
         "an app plugin, even build-only, counts"
     );
 }
+
+/// The process env with `vars` set over it, as a later launch would see it.
+fn env_with(vars: &[(&str, &str)]) -> oj_env::Env {
+    let mut all: Vec<(String, String)> = oj_env::get()
+        .vars()
+        .filter(|(k, _)| !vars.iter().any(|(n, _)| n == k))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    all.extend(vars.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+    oj_env::Env::from_vars(all)
+}
+
+/// Whether the cached extraction of `root` serves a launch with `env`.
+fn serves(root: &Path, config: &str, env: &oj_env::Env) -> bool {
+    extraction_store(root)
+        .lookup_in(env, &root.join(config), "serve", "development")
+        .is_some()
+}
+
+fn cached_output(root: &Path, config: &str) -> serde_json::Value {
+    let hit = extraction_store(root)
+        .lookup(&root.join(config), "serve", "development")
+        .expect("cached");
+    serde_json::from_str(&hit.output).unwrap()
+}
+
+// Vite evaluates the config on every start, so a var the config reads is an
+// input of the extraction like a file it imports: another value, or the var
+// appearing, is a cache miss. Vars it never read, and the ones oj's own
+// extractor reads (NODE_ENV), are not.
+#[test]
+fn a_var_the_config_reads_keys_the_cached_extraction() {
+    let _g = lock();
+    let dir = app(
+        r#"const api = process.env.OJ_EXTRACT_TEST_API_URL ?? "none";
+const flag = "OJ_EXTRACT_TEST_FLAG" in process.env;
+export default { define: { __API__: JSON.stringify(api), __FLAG__: String(flag) } };"#,
+    );
+    let root = dir.path();
+    let v = extract_vite_values_with(root, None, "serve", "development", true).unwrap();
+    assert_eq!(
+        v.define.as_ref().and_then(|d| d.get("__API__")),
+        Some(&serde_json::json!("\"none\""))
+    );
+    let json = cached_output(root, "vite.config.mjs");
+    assert_eq!(
+        json["__envReads"],
+        serde_json::json!(["OJ_EXTRACT_TEST_API_URL", "OJ_EXTRACT_TEST_FLAG"]),
+        "only the config's own reads"
+    );
+    assert_eq!(json["__envEnumerated"], false);
+    let config = "vite.config.mjs";
+    assert!(serves(root, config, &env_with(&[])));
+    assert!(
+        !serves(
+            root,
+            config,
+            &env_with(&[("OJ_EXTRACT_TEST_API_URL", "https://b")])
+        ),
+        "a var the config read changed"
+    );
+    assert!(
+        !serves(root, config, &env_with(&[("OJ_EXTRACT_TEST_FLAG", "")])),
+        "a var the config probed appeared"
+    );
+    assert!(serves(
+        root,
+        config,
+        &env_with(&[("OJ_EXTRACT_TEST_UNREAD", "1")])
+    ));
+}
+
+// A config that copies the env may put any var into its result.
+#[test]
+fn a_config_that_copies_the_env_keys_on_all_of_it() {
+    let _g = lock();
+    let dir = app(r#"const all = { ...process.env };
+export default { define: { __API__: JSON.stringify(all.OJ_EXTRACT_TEST_API_URL ?? "") } };"#);
+    let root = dir.path();
+    extract_vite_values_with(root, None, "serve", "development", true).unwrap();
+    assert_eq!(
+        cached_output(root, "vite.config.mjs")["__envEnumerated"],
+        true
+    );
+    let config = "vite.config.mjs";
+    assert!(serves(root, config, &env_with(&[])));
+    assert!(!serves(
+        root,
+        config,
+        &env_with(&[("OJ_EXTRACT_TEST_ANY", "1")])
+    ));
+    assert!(serves(root, config, &env_with(&[("OLDPWD", "/elsewhere")])));
+}
