@@ -188,9 +188,19 @@
     return "continue";
   };
 
+  // The changes this document had when the server rendered it, filled in
+  // from this script's url (null without one). The socket names them, so a
+  // change that went out while the page still loaded (no socket open to take
+  // it) reloads the page on connect.
+  const stamp = __OJ_PAGE_STAMP__;
   const connect = () => {
     ws = new WebSocket(
-      (location.protocol === "https:" ? "wss" : "ws") + "://" + location.host + base + "/@oj-start/hmr",
+      (location.protocol === "https:" ? "wss" : "ws") +
+        "://" +
+        location.host +
+        base +
+        "/@oj-start/hmr" +
+        (stamp == null ? "" : "?g=" + encodeURIComponent(stamp)),
     );
     ws.onopen = () => {
       if (bus.runtime) send({ type: "oj:client", id: bus.runtime.clientId });

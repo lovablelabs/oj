@@ -154,8 +154,9 @@ base dev pipeline (module compilation, asset serving) via `next.run`.
 
 The middleware handles, in order:
 
-1. `/@oj-start/hmr`: upgrade to the live-reload WebSocket. It subscribes to a
-   broadcast channel and sends `reload` on every rebuild.
+1. `/@oj-start/hmr`: upgrade to the live-reload WebSocket. It sends `reload`
+   whenever the published change count passes the stamp the page's document
+   was rendered with, on connect too (see `start_reloads.rs`).
 2. `/@oj-start/client-entry.js` and `/@oj-start/live-reload.js`: serve the two
    cached dev scripts (`no-cache`, so a rebuild always wins).
 3. `/@oj-start/fs<abspath>`: `serve_fs_asset`. The path after the prefix is the
@@ -205,8 +206,10 @@ Each pass:
    page as a hot update; anything else re-bundles the client. The engine
    reload afterwards drops changed modules (and their transitive importers)
    from the version graph and force-bumps the entry.
-5. Signal the page. A broadcast on `reload_tx` reaches every `/@oj-start/hmr`
-   WebSocket, which tells the live-reload client to snapshot state and reload.
+5. Signal the page. The run bumps the change count; once published (at once,
+   or at the editor's flush when the HMR gate holds it), every `/@oj-start/hmr`
+   WebSocket whose page is behind tells the live-reload client to snapshot
+   state and reload.
 
 ### Warm reload
 

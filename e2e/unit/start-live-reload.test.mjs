@@ -8,7 +8,7 @@ import { asset } from "./harness.mjs";
 
 // live-reload.js in a page with a stub socket, document and HMR runtime;
 // `log` records reloads, sends and the runtime's notified events.
-function loadPage({ overlays = [] } = {}) {
+function loadPage({ overlays = [], stamp = "null" } = {}) {
   const log = [];
   const sockets = [];
   class WebSocket {
@@ -44,7 +44,8 @@ function loadPage({ overlays = [] } = {}) {
   vm.createContext(page);
   const source = readFileSync(asset("start/live-reload.js"), "utf8")
     .replaceAll("__HMR_ENABLE_OVERLAY__", "true")
-    .replaceAll("__OJ_DEV_BASE__", '""');
+    .replaceAll("__OJ_DEV_BASE__", '""')
+    .replaceAll("__OJ_PAGE_STAMP__", stamp);
   vm.runInContext(source, page);
   const ws = sockets[0];
   const open = () => {
@@ -55,7 +56,7 @@ function loadPage({ overlays = [] } = {}) {
     ws.onmessage({ data: typeof frame === "string" ? frame : JSON.stringify(frame) });
     await new Promise((r) => setImmediate(r));
   };
-  return { bus: page.__ojStartHmr, log, open, receive };
+  return { bus: page.__ojStartHmr, log, open, receive, url: ws.url };
 }
 
 test("a plugin's custom frame reaches the page's hot.on listeners without a reload", async () => {
@@ -105,4 +106,9 @@ test("after the first update, an update closes the overlay instead", () => {
   assert.equal(bus.beforeApply(), "continue");
   assert.deepEqual(closed, [1]);
   assert.deepEqual(log, []);
+});
+
+test("the socket names the document's stamp, so a change it missed while loading reloads it", () => {
+  assert.equal(loadPage({ stamp: '"1f-4"' }).url, "ws://localhost/@oj-start/hmr?g=1f-4");
+  assert.equal(loadPage().url, "ws://localhost/@oj-start/hmr");
 });

@@ -57,7 +57,8 @@ struct StartState {
     /// `server.hmr.overlay` (default true), filled into the live-reload client.
     hmr_overlay: bool,
     workspace_root: PathBuf,
-    reload_tx: broadcast::Sender<()>,
+    /// The pages' reloads, as counts (see start_reloads).
+    reloads: Arc<crate::start_reloads::Epochs>,
     /// The client bundle's last failure as a `{type:"error", err}` frame,
     /// Vite's bundled dev `lastBuildError`: sent to every page when a bundle
     /// fails, replayed to each page that connects until one succeeds.
@@ -376,7 +377,6 @@ pub async fn start_dev(
             .await
         }
     };
-    let (reload_tx, _) = broadcast::channel::<()>(16);
     let (bundle_res, built_res) = tokio::join!(bundle, built_task);
     // A build error in the app's code (client-error.json records it) keeps
     // the server up, as Vite's bundled dev does: pages render the overlay and
@@ -394,6 +394,13 @@ pub async fn start_dev(
         },
     };
     let (built, watch_rx) = built_res??;
+    // The gate's hold decides when a change reaches the pages.
+    let reloads = Arc::new(crate::start_reloads::Epochs::new(
+        built
+            .hmr_gate
+            .clone()
+            .map(|gate| -> crate::start_reloads::Held { Arc::new(move || gate.reload_is_held()) }),
+    ));
     oj_server::boot_phase("bundle+build joined");
     // The in-process Start runner: an embedded engine whose module host runs
     // the dev server's SSR pipeline (StartHost); it needs the built app's
@@ -456,7 +463,7 @@ pub async fn start_dev(
     let (runner_documents_tx, runner_documents_rx) = tokio::sync::oneshot::channel::<()>();
     {
         let engine = Arc::clone(&engine);
-        let reload_tx = reload_tx.clone();
+        let reloads = Arc::clone(&reloads);
         let warm_host = built.plugin_host.clone();
         tokio::spawn(async move {
             if cf_hint {
@@ -522,7 +529,7 @@ pub async fn start_dev(
                 .await;
             oj_server::boot_phase("prewarm complete");
             if engine.revalidate().await {
-                let _ = reload_tx.send(());
+                reloads.bump();
             }
             oj_server::boot_phase("revalidate complete");
         });
@@ -554,7 +561,7 @@ pub async fn start_dev(
         live_reload: cache.join("live-reload.js"),
         hmr_overlay,
         workspace_root: workspace_root(&root),
-        reload_tx: reload_tx.clone(),
+        reloads: Arc::clone(&reloads),
         build_error: std::sync::RwLock::new(boot_error.clone()),
         error_tx: broadcast::channel(16).0,
         ws_tx: built.reload_tx.clone(),
@@ -625,13 +632,15 @@ pub async fn start_dev(
     }
 
     // A gate flush (the editor's POST /__hmr_flush, or the hold cap) releases
-    // the reload the watcher held; the rebuild itself already happened.
+    // the changes held for it. One still building (the editor flushes right
+    // after its writes) reaches the pages when its run ends, with its output.
     if let Some(gate) = &state.gate {
         let mut flushes = gate.subscribe_flush();
-        let reload_tx = state.reload_tx.clone();
+        let weak = Arc::downgrade(&state);
         tokio::spawn(async move {
             while flushes.recv().await.is_ok() {
-                let _ = reload_tx.send(());
+                let Some(state) = weak.upgrade() else { return };
+                state.reloads.flushed();
             }
         });
     }
@@ -864,9 +873,12 @@ fn asset_mime(ext: &str) -> &'static str {
     }
 }
 
-/// The live-reload client's tag, under the dev `base` prefix.
-fn reload_client(url_base: &str) -> String {
-    format!("<script type=\"module\" src=\"{url_base}/@oj-start/live-reload.js\"></script>")
+/// The live-reload client's tag, under the dev `base` prefix, with the
+/// document's stamp (see start_reloads).
+fn reload_client(url_base: &str, stamp: &str) -> String {
+    format!(
+        "<script type=\"module\" src=\"{url_base}/@oj-start/live-reload.js?g={stamp}\"></script>"
+    )
 }
 
 /// One rebundle run's inputs, handed from the watcher thread to the coalescing
@@ -1259,6 +1271,7 @@ fn spawn_start_watcher(
             // while the rebuild below still runs, and a hold taken only at
             // rebuild end would wait out the cap for a flush that already
             // happened, serving the previous bundle for minutes.
+            batch += 1;
             if let Some(gate) = &state.gate {
                 let batch_paths: Vec<PathBuf> = paths.iter().cloned().collect();
                 gate.hold_reload(&batch_paths);
@@ -1266,7 +1279,6 @@ fn spawn_start_watcher(
             // Narrate the compile batch to the editor: "Applying changes…" while
             // it rebuilds; the rebundle worker sends the done-frame so the pill
             // clears.
-            batch += 1;
             let _ = state.ws_tx.send(oj_server::update_progress_frame(
                 batch, "watch", 0, 0, None, false,
             ));
@@ -1587,13 +1599,10 @@ async fn rebundle_worker(
                 .hot
                 .refresh_styles(state.css_host.is_some(), &added);
         }
-        // The hold was taken at the watcher event; by now the editor's flush
-        // may have consumed it, in which case this run's reload goes out with
-        // the fresh bundle instead of waiting for a flush that already came.
-        let held = state.gate.as_ref().is_some_and(|g| g.reload_is_held());
-        if reload && !held {
-            let _ = state.reload_tx.send(());
-        }
+        // The hold was taken at the watcher event. A flush that came while this
+        // run built released it, and the reload reaches the pages now, with
+        // the fresh bundle; otherwise it waits for the flush.
+        let held = reload && !state.reloads.bump();
         let modules = client_module_count(&cache);
         let _ = state.ws_tx.send(oj_server::update_progress_frame(
             run.batch,
@@ -1795,7 +1804,7 @@ async fn refresh_worker(root: PathBuf, cache: PathBuf, state: Arc<StartState>) {
             .take_if(|mark| *mark < started)
             .is_some();
         if wanted {
-            let _ = state.reload_tx.send(());
+            state.reloads.bump();
         }
     }
 }
@@ -2496,7 +2505,9 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
         let (mut parts, _) = req.into_parts();
         return match WebSocketUpgrade::from_request_parts(&mut parts, &()).await {
             Ok(ws) => {
-                let rx = state.reload_tx.subscribe();
+                // The page's stamp (the changes its document had): a change it
+                // missed while loading reloads it as soon as it connects.
+                let epoch = state.reloads.page(parts.uri.query());
                 // Subscribed before the replay read: an error landing between
                 // the two arrives twice, never not at all.
                 let errors = state.error_tx.subscribe();
@@ -2528,7 +2539,7 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
                     to_plugins: Arc::clone(&state.to_plugins),
                 };
                 ws.protocols(["oj-hmr"]).on_upgrade(move |socket| {
-                    start_hmr_socket(socket, rx, errors, replay, hot, Some(events))
+                    start_hmr_socket(socket, epoch, errors, replay, hot, Some(events))
                 })
             }
             Err(e) => e.into_response(),
@@ -2541,7 +2552,12 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
                     (header::CONTENT_TYPE, "text/javascript"),
                     (header::CACHE_CONTROL, "no-cache"),
                 ],
-                render_live_reload(&js, state.hmr_overlay, &state.base),
+                render_live_reload(
+                    &js,
+                    state.hmr_overlay,
+                    &state.base,
+                    crate::start_reloads::stamp_in(req.uri().query()),
+                ),
             )
                 .into_response(),
             Err(e) => (
@@ -2634,13 +2650,18 @@ fn page_custom_frame(text: &str) -> bool {
 
 async fn start_hmr_socket(
     mut socket: WebSocket,
-    mut rx: broadcast::Receiver<()>,
+    mut epoch: crate::start_reloads::PageEpoch,
     mut errors: broadcast::Receiver<String>,
     replay: Option<String>,
     mut hot: Option<HotPage>,
     mut events: Option<PageEvents>,
 ) {
     use crate::start_hot::PageMessage;
+    // A change went out while the page loaded, before this socket could
+    // take it.
+    if epoch.behind() && socket.send(Message::Text("reload".into())).await.is_err() {
+        return;
+    }
     if let Some(frame) = replay {
         if socket.send(Message::Text(frame.into())).await.is_err() {
             return;
@@ -2683,13 +2704,11 @@ async fn start_hmr_socket(
                 Err(broadcast::error::RecvError::Lagged(_)) => {}
                 Err(broadcast::error::RecvError::Closed) => break,
             },
-            reload = rx.recv() => match reload {
-                Err(broadcast::error::RecvError::Closed) => break,
-                // A lagged receiver only missed reload pings; one reload
-                // catches the client up (Vite's per-socket queue never drops
-                // a reload, so neither may oj). The general HMR handler in
-                // oj_server carries distinct frames and skips instead.
-                Ok(()) | Err(broadcast::error::RecvError::Lagged(_)) => {
+            behind = epoch.fell_behind() => match behind {
+                None => break,
+                // A count, not a queue: however many changes went out, the
+                // page reloads once onto the newest.
+                Some(()) => {
                     if socket.send(Message::Text("reload".into())).await.is_err() {
                         break;
                     }
@@ -2760,11 +2779,14 @@ async fn forward_document(
     // with no path prefix, so a GET like /_sandbox/preview/viewers can only
     // be told from an app route by asking the middleware first; it returns
     // x-oj-fallthrough when it does not own the path, and then we SSR.
+    // The changes the document has, stamped before it renders: one that goes
+    // out while it loads reaches its socket on connect.
     if let Some(port) = state.plugin_serve.mw_port() {
+        let stamp = state.reloads.stamp();
         if let Some(resp) = oj_server::forward_get_to_plugin_mw(port, &raw, headers).await {
             // A worker-served document needs the live-reload client like the
             // runner-served ones, or edits never reload the page.
-            return inject_reload_client(resp, &state.base);
+            return inject_reload_client(resp, &state.base, &stamp);
         }
     }
     ensure_bundle_current(state).await;
@@ -2772,6 +2794,7 @@ async fn forward_document(
     forward(
         &state.engine,
         &state.base,
+        &state.reloads.stamp(),
         "GET".into(),
         document_url(&raw),
         headers,
@@ -2847,6 +2870,7 @@ async fn forward_with_body(state: &Arc<StartState>, req: Request) -> Response {
         .unwrap_or("/")
         .to_string();
     let mut headers = req.headers().clone();
+    let stamp = state.reloads.stamp();
     // A configureServer middleware may claim the request first; since a
     // streamed body cannot be replayed, the plugin host pipes an unclaimed
     // request on to the engine's loopback shim (x-oj-forward-to) instead of
@@ -2857,7 +2881,16 @@ async fn forward_with_body(state: &Arc<StartState>, req: Request) -> Response {
             Ok(body) => body,
             Err(resp) => return resp,
         };
-        return forward(&state.engine, &state.base, method, url, &headers, body).await;
+        return forward(
+            &state.engine,
+            &state.base,
+            &stamp,
+            method,
+            url,
+            &headers,
+            body,
+        )
+        .await;
     };
     if let Ok(v) = header::HeaderValue::from_str(&state.loopback_port.to_string()) {
         headers.insert("x-oj-forward-to", v);
@@ -2876,7 +2909,7 @@ async fn forward_with_body(state: &Arc<StartState>, req: Request) -> Response {
             "oj start: request fell through the plugin middleware without reaching the app",
         )
             .into_response(),
-        Ok(resp) => inject_reload_client(resp, &state.base),
+        Ok(resp) => inject_reload_client(resp, &state.base, &stamp),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("oj start: {e}")).into_response(),
     }
 }
@@ -2963,7 +2996,7 @@ async fn serve_client_chunk(
 }
 
 /// The live-reload client with Vite's `__HMR_ENABLE_OVERLAY__` filled in.
-fn render_live_reload(js: &str, overlay: bool, url_base: &str) -> String {
+fn render_live_reload(js: &str, overlay: bool, url_base: &str, stamp: Option<String>) -> String {
     js.replace(
         "__HMR_ENABLE_OVERLAY__",
         if overlay { "true" } else { "false" },
@@ -2971,6 +3004,13 @@ fn render_live_reload(js: &str, overlay: bool, url_base: &str) -> String {
     .replace(
         "__OJ_DEV_BASE__",
         &serde_json::Value::String(url_base.to_string()).to_string(),
+    )
+    .replace(
+        "__OJ_PAGE_STAMP__",
+        &stamp.map_or_else(
+            || "null".to_string(),
+            |s| serde_json::Value::String(s).to_string(),
+        ),
     )
 }
 
@@ -3211,6 +3251,7 @@ fn engine_response(resp: StartResponse) -> Response {
 async fn forward(
     engine: &StartEngine,
     url_base: &str,
+    stamp: &str,
     method: String,
     url: String,
     req_headers: &header::HeaderMap,
@@ -3220,7 +3261,7 @@ async fn forward(
         .handle(engine_request(method, url, req_headers, body, false))
         .await
     {
-        Ok(resp) => inject_reload_client(engine_response(resp), url_base),
+        Ok(resp) => inject_reload_client(engine_response(resp), url_base, stamp),
         Err(e) => {
             // The runner's 500 page shape (Vite's errorMiddleware): message +
             // stack in an HTML page the overlay can read.
@@ -3280,7 +3321,7 @@ async fn spawn_engine_loopback(engine: Arc<StartEngine>) -> anyhow::Result<u16> 
 /// passed through untouched (TanStack streams its dehydrated data into the
 /// page) and the script tag follows the final chunk; browsers parse a trailing
 /// `<script>` after `</html>` into the body.
-fn inject_reload_client(resp: Response, url_base: &str) -> Response {
+fn inject_reload_client(resp: Response, url_base: &str, stamp: &str) -> Response {
     use tokio_stream::StreamExt;
     let is_html = resp
         .headers()
@@ -3299,7 +3340,7 @@ fn inject_reload_client(resp: Response, url_base: &str) -> Response {
     }
     let (parts, body) = resp.into_parts();
     let tail = tokio_stream::once(Ok::<_, axum::Error>(axum::body::Bytes::from(
-        reload_client(url_base),
+        reload_client(url_base, stamp),
     )));
     let stream = body.into_data_stream().chain(tail);
     Response::from_parts(parts, axum::body::Body::from_stream(stream))
@@ -3618,7 +3659,7 @@ mod tests {
 
     struct HmrTestServer {
         url: String,
-        reload_tx: broadcast::Sender<()>,
+        reloads: Arc<crate::start_reloads::Epochs>,
         error_tx: broadcast::Sender<String>,
         /// The editor channel a plugin's `server.ws.send` lands on.
         ws_tx: broadcast::Sender<String>,
@@ -3634,7 +3675,7 @@ mod tests {
     }
 
     type HmrTestState = (
-        broadcast::Sender<()>,
+        Arc<crate::start_reloads::Epochs>,
         broadcast::Sender<String>,
         Option<String>,
         Option<Arc<tokio::sync::Notify>>,
@@ -3655,7 +3696,7 @@ mod tests {
             gate: Option<Arc<tokio::sync::Notify>>,
             replay: Option<String>,
         ) -> Self {
-            let (reload_tx, _) = broadcast::channel(16);
+            let reloads = Arc::new(crate::start_reloads::Epochs::new(None));
             let (error_tx, _) = broadcast::channel(16);
             let (ws_tx, _) = broadcast::channel(16);
             let to_plugins = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -3674,10 +3715,11 @@ mod tests {
                         "/@oj-start/hmr",
                         axum::routing::get(
                             |ws: WebSocketUpgrade,
+                             uri: axum::http::Uri,
                              State((tx, error_tx, replay, gate, ws_tx, sink)): State<
                                 HmrTestState,
                             >| async move {
-                                let rx = tx.subscribe();
+                                let epoch = tx.page(uri.query());
                                 let errors = error_tx.subscribe();
                                 let events = PageEvents {
                                     frames: ws_tx.subscribe(),
@@ -3689,7 +3731,7 @@ mod tests {
                                     }
                                     start_hmr_socket(
                                         socket,
-                                        rx,
+                                        epoch,
                                         errors,
                                         replay,
                                         None,
@@ -3701,7 +3743,7 @@ mod tests {
                         ),
                     )
                     .with_state((
-                        reload_tx.clone(),
+                        Arc::clone(&reloads),
                         error_tx.clone(),
                         replay,
                         gate,
@@ -3715,7 +3757,7 @@ mod tests {
             });
             Self {
                 url,
-                reload_tx,
+                reloads,
                 error_tx,
                 ws_tx,
                 to_plugins,
@@ -3725,7 +3767,7 @@ mod tests {
 
         async fn wait_for_no_subscribers(&self) {
             tokio::time::timeout(std::time::Duration::from_secs(2), async {
-                while self.reload_tx.receiver_count() != 0 {
+                while self.reloads.receivers() != 0 {
                     tokio::time::sleep(std::time::Duration::from_millis(1)).await;
                 }
             })
@@ -3774,7 +3816,7 @@ mod tests {
         let later = r#"{"type":"error","err":{"message":"second"}}"#.to_string();
         server.error_tx.send(later.clone()).unwrap();
         assert_eq!(next_text(&mut client).await, later);
-        server.reload_tx.send(()).unwrap();
+        server.reloads.bump();
         assert_eq!(next_text(&mut client).await, "reload");
     }
 
@@ -3832,12 +3874,15 @@ mod tests {
         oj_server::write_start_assets(&dir).unwrap();
         let js = std::fs::read_to_string(dir.join("live-reload.js")).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
-        let on = render_live_reload(&js, true, "/app");
-        let off = render_live_reload(&js, false, "");
+        let on = render_live_reload(&js, true, "/app", Some("1f-3".into()));
+        let off = render_live_reload(&js, false, "", None);
         assert!(on.contains("const enableOverlay = true;"), "{on}");
         // The dev urls' prefix under `base`, filled in as a string.
         assert!(on.contains("const base = \"/app\";"), "{on}");
         assert!(off.contains("const base = \"\";"), "{off}");
+        // The document's stamp, from the script's url.
+        assert!(on.contains("const stamp = \"1f-3\";"), "{on}");
+        assert!(off.contains("const stamp = null;"), "{off}");
         assert!(!on.contains("__OJ_DEV_BASE__"));
         assert!(off.contains("const enableOverlay = false;"), "{off}");
         assert!(!off.contains("__HMR_ENABLE_OVERLAY__"));
@@ -3886,7 +3931,7 @@ mod tests {
         let server = HmrTestServer::start().await;
         for _ in 0..5 {
             let (mut client, _) = connect_async(&server.url).await.unwrap();
-            assert_eq!(server.reload_tx.receiver_count(), 1);
+            assert_eq!(server.reloads.receivers(), 1);
             client.close(None).await.unwrap();
             server.wait_for_no_subscribers().await;
             let response = tokio::time::timeout(std::time::Duration::from_secs(2), client.next())
@@ -3911,7 +3956,7 @@ mod tests {
         for attempt in 0..64 {
             let (mut client, _) = connect_async(&server.url).await.unwrap();
             client.close(Some(close.clone())).await.unwrap();
-            assert_eq!(server.reload_tx.send(()).unwrap(), 1);
+            assert!(server.reloads.bump());
             // Let the I/O driver observe the close frame before releasing the handler.
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
             gate.notify_one();
@@ -3936,42 +3981,60 @@ mod tests {
         let server = HmrTestServer::start().await;
         for _ in 0..5 {
             let (client, _) = connect_async(&server.url).await.unwrap();
-            assert_eq!(server.reload_tx.receiver_count(), 1);
+            assert_eq!(server.reloads.receivers(), 1);
             drop(client);
             server.wait_for_no_subscribers().await;
         }
     }
 
     #[tokio::test]
-    async fn start_hmr_reloads_lagged_clients_instead_of_dropping_them() {
+    async fn start_hmr_reloads_a_busy_page_once_for_many_changes() {
         let gate = Arc::new(tokio::sync::Notify::new());
         let server = HmrTestServer::start_with_gate(Some(gate.clone())).await;
         let (mut client, _) = connect_async(&server.url).await.unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while server.reload_tx.receiver_count() != 1 {
+            while server.reloads.receivers() != 1 {
                 tokio::time::sleep(std::time::Duration::from_millis(1)).await;
             }
         })
         .await
         .expect("client subscription never registered");
-        // The handler is gated, so overflowing the 16-slot broadcast makes its
-        // first recv return Lagged. A missed ping is still a pending reload.
+        // The handler is held while the changes go out: a count, not a queue,
+        // so none is lost and the page reloads once onto the newest.
         for _ in 0..32 {
-            assert_eq!(server.reload_tx.send(()).unwrap(), 1);
+            assert!(server.reloads.bump());
         }
         gate.notify_one();
-        let first = tokio::time::timeout(std::time::Duration::from_secs(2), client.next())
-            .await
-            .expect("lagged client received nothing")
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            first,
-            ClientMessage::Text("reload".into()),
-            "a lagged client must be reloaded, not dropped"
-        );
+        assert_eq!(next_text(&mut client).await, "reload");
+        let more = tokio::time::timeout(std::time::Duration::from_millis(200), client.next()).await;
+        assert!(more.is_err(), "the page reloaded more than once: {more:?}");
         client.close(None).await.unwrap();
         server.wait_for_no_subscribers().await;
+    }
+
+    /// A page still loading when a change went out had no socket to take it:
+    /// its document's stamp says it is behind, and it reloads on connect. A
+    /// page rendered after the change stays.
+    #[tokio::test]
+    async fn start_hmr_reloads_a_page_that_connects_behind() {
+        let server = HmrTestServer::start().await;
+        let rendered = server.reloads.stamp();
+        server.reloads.bump();
+        let (mut behind, _) = connect_async(format!("{}?g={rendered}", server.url))
+            .await
+            .unwrap();
+        assert_eq!(next_text(&mut behind).await, "reload");
+        let current = server.reloads.stamp();
+        let (mut fresh, _) = connect_async(format!("{}?g={current}", server.url))
+            .await
+            .unwrap();
+        let quiet = tokio::time::timeout(std::time::Duration::from_millis(200), fresh.next()).await;
+        assert!(
+            quiet.is_err(),
+            "a current page reloaded on connect: {quiet:?}"
+        );
+        server.reloads.bump();
+        assert_eq!(next_text(&mut fresh).await, "reload");
     }
 
     #[tokio::test]
@@ -3993,7 +4056,7 @@ mod tests {
             .unwrap();
         assert_eq!(pong, ClientMessage::Pong(vec![1, 2, 3].into()));
         for _ in 0..2 {
-            assert_eq!(server.reload_tx.send(()).unwrap(), 1);
+            assert!(server.reloads.bump());
             let reload = tokio::time::timeout(std::time::Duration::from_secs(2), client.next())
                 .await
                 .unwrap()
@@ -4564,12 +4627,12 @@ mod tests {
             b.body(axum::body::Body::from("<html></html>")).unwrap()
         };
         // Under the dev `base`, as Vite's urls are.
-        let tag = reload_client("/app");
+        let tag = reload_client("/app", "1f-3");
         assert!(
-            tag.contains("src=\"/app/@oj-start/live-reload.js\""),
+            tag.contains("src=\"/app/@oj-start/live-reload.js?g=1f-3\""),
             "{tag}"
         );
-        let inject = |r| body_of(inject_reload_client(r, "/app"));
+        let inject = |r| body_of(inject_reload_client(r, "/app", "1f-3"));
         assert!(inject(resp("text/html", None)).contains(&tag));
         assert!(!inject(resp("text/html", Some("gzip"))).contains(&tag));
         assert!(inject(resp("text/html", Some("identity"))).contains(&tag));
