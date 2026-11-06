@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-11-06
+
 ### Fixed
 
 - In TanStack Start dev, a server render no longer fails with "require is not defined" when it imports a dependency like turndown, whose `module` build calls `require` (a build meant for a bundler) while its `main` is CommonJS. oj loads a dependency's `module` entry on the server, where Vite loads the file its module runner resolves for an external: `main` only, the external conditions, `resolve.dedupe`. When the `module` build calls a `require` no scope of it declares, directly or through esbuild's `__require` shim, oj now loads that same file. This holds whether the app or another dependency imports it, and for a package subdirectory. An aliased import keeps its alias, as Vite never externalizes one.
