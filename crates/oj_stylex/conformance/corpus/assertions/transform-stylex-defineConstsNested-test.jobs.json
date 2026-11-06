@@ -1,0 +1,457 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/transform-stylex-defineConstsNested-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs and upstream's own expected values — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "assertions/defineConstsNested-basic-nested-consts-with-ori-001-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const tokens = stylex.unstable_defineConstsNested({\n          spacing: {\n            sm: '4px',\n            md: '8px',\n            lg: '16px',\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConstsNested", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const tokens = {\n  spacing: {\n    sm: \"4px\",\n    md: \"8px\",\n    lg: \"16px\"\n  }\n};",
+        "site": {
+          "file": "transform-stylex-defineConstsNested-test.js",
+          "test": "basic nested consts with original values preserved",
+          "line": 52
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConstsNested-basic-nested-consts-with-ori-002-rules",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const tokens = stylex.unstable_defineConstsNested({\n          spacing: {\n            sm: '4px',\n            md: '8px',\n            lg: '16px',\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConstsNested", "assert-rules"],
+      "assert": {
+        "kind": "rules",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata.stylex",
+        "expected": [
+          [
+            "x1o7hcty",
+            {
+              "constKey": "x1o7hcty",
+              "constVal": "4px",
+              "ltr": "",
+              "rtl": null
+            },
+            0
+          ],
+          [
+            "x1a2meh5",
+            {
+              "constKey": "x1a2meh5",
+              "constVal": "8px",
+              "ltr": "",
+              "rtl": null
+            },
+            0
+          ],
+          [
+            "xsuxlvu",
+            {
+              "constKey": "xsuxlvu",
+              "constVal": "16px",
+              "ltr": "",
+              "rtl": null
+            },
+            0
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineConstsNested-test.js",
+          "test": "basic nested consts with original values preserved",
+          "line": 62
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConstsNested-deeply-nested-constants-3-le-003-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const tokens = stylex.unstable_defineConstsNested({\n          colors: {\n            slate: {\n              100: '#f1f5f9',\n              800: '#1e293b',\n            },\n            brand: {\n              primary: '#3b82f6',\n            },\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConstsNested", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const tokens = {\n  colors: {\n    slate: {\n      \"100\": \"#f1f5f9\",\n      \"800\": \"#1e293b\"\n    },\n    brand: {\n      primary: \"#3b82f6\"\n    }\n  }\n};",
+        "site": {
+          "file": "transform-stylex-defineConstsNested-test.js",
+          "test": "deeply nested constants (3 levels)",
+          "line": 114
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConstsNested-deeply-nested-constants-3-le-004-rules",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const tokens = stylex.unstable_defineConstsNested({\n          colors: {\n            slate: {\n              100: '#f1f5f9',\n              800: '#1e293b',\n            },\n            brand: {\n              primary: '#3b82f6',\n            },\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConstsNested", "assert-rules"],
+      "assert": {
+        "kind": "rules",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata.stylex",
+        "expected": [
+          [
+            "x1ea6pwh",
+            {
+              "constKey": "x1ea6pwh",
+              "constVal": "#f1f5f9",
+              "ltr": "",
+              "rtl": null
+            },
+            0
+          ],
+          [
+            "x1y7aacf",
+            {
+              "constKey": "x1y7aacf",
+              "constVal": "#1e293b",
+              "ltr": "",
+              "rtl": null
+            },
+            0
+          ],
+          [
+            "x1hjk04k",
+            {
+              "constKey": "x1hjk04k",
+              "constVal": "#3b82f6",
+              "ltr": "",
+              "rtl": null
+            },
+            0
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineConstsNested-test.js",
+          "test": "deeply nested constants (3 levels)",
+          "line": 128
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConstsNested-j-malt-pr-1303-use-case-thre-005-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const tokens = stylex.unstable_defineConstsNested({\n          button: {\n            primary: {\n              background: {\n                default: '#00FF00',\n                hovered: '#0000FF',\n              },\n              borderRadius: {\n                default: '8px',\n              },\n            },\n            secondary: {\n              background: {\n                default: '#CCCCCC',\n              },\n            },\n          },\n          input: {\n            fill: {\n              default: '#FFFFFF',\n            },\n            border: {\n              default: '#000000',\n            },\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConstsNested", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const tokens = {\n  button: {\n    primary: {\n      background: {\n        default: \"#00FF00\",\n        hovered: \"#0000FF\"\n      },\n      borderRadius: {\n        default: \"8px\"\n      }\n    },\n    secondary: {\n      background: {\n        default: \"#CCCCCC\"\n      }\n    }\n  },\n  input: {\n    fill: {\n      default: \"#FFFFFF\"\n    },\n    border: {\n      default: \"#000000\"\n    }\n  }\n};",
+        "site": {
+          "file": "transform-stylex-defineConstsNested-test.js",
+          "test": "j-malt PR #1303 use case: three-tiered tokens with state namespaces",
+          "line": 195
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConstsNested-j-malt-pr-1303-use-case-thre-006-rules",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const tokens = stylex.unstable_defineConstsNested({\n          button: {\n            primary: {\n              background: {\n                default: '#00FF00',\n                hovered: '#0000FF',\n              },\n              borderRadius: {\n                default: '8px',\n              },\n            },\n            secondary: {\n              background: {\n                default: '#CCCCCC',\n              },\n            },\n          },\n          input: {\n            fill: {\n              default: '#FFFFFF',\n            },\n            border: {\n              default: '#000000',\n            },\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConstsNested", "assert-rules"],
+      "assert": {
+        "kind": "rules",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata.stylex",
+        "expected": [
+          [
+            "x1lcj7dl",
+            {
+              "constKey": "x1lcj7dl",
+              "constVal": "#00FF00",
+              "ltr": "",
+              "rtl": null
+            },
+            0
+          ],
+          [
+            "x6sbfcu",
+            {
+              "constKey": "x6sbfcu",
+              "constVal": "#0000FF",
+              "ltr": "",
+              "rtl": null
+            },
+            0
+          ],
+          [
+            "x1jssn4v",
+            {
+              "constKey": "x1jssn4v",
+              "constVal": "8px",
+              "ltr": "",
+              "rtl": null
+            },
+            0
+          ],
+          [
+            "x16qravu",
+            {
+              "constKey": "x16qravu",
+              "constVal": "#CCCCCC",
+              "ltr": "",
+              "rtl": null
+            },
+            0
+          ],
+          [
+            "x1faoohz",
+            {
+              "constKey": "x1faoohz",
+              "constVal": "#FFFFFF",
+              "ltr": "",
+              "rtl": null
+            },
+            0
+          ],
+          [
+            "x195aq7b",
+            {
+              "constKey": "x195aq7b",
+              "constVal": "#000000",
+              "ltr": "",
+              "rtl": null
+            },
+            0
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineConstsNested-test.js",
+          "test": "j-malt PR #1303 use case: three-tiered tokens with state namespaces",
+          "line": 224
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConstsNested-handles-number-values-007-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const tokens = stylex.unstable_defineConstsNested({\n          breakpoints: {\n            mobile: 480,\n            tablet: 768,\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConstsNested", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const tokens = {\n  breakpoints: {\n    mobile: 480,\n    tablet: 768\n  }\n};",
+        "site": {
+          "file": "transform-stylex-defineConstsNested-test.js",
+          "test": "handles number values",
+          "line": 301
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConstsNested-handles-number-values-008-rules",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const tokens = stylex.unstable_defineConstsNested({\n          breakpoints: {\n            mobile: 480,\n            tablet: 768,\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConstsNested", "assert-rules"],
+      "assert": {
+        "kind": "rules",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata.stylex",
+        "expected": [
+          [
+            "xeaemq9",
+            {
+              "constKey": "xeaemq9",
+              "constVal": 480,
+              "ltr": "",
+              "rtl": null
+            },
+            0
+          ],
+          [
+            "x1egukyl",
+            {
+              "constKey": "x1egukyl",
+              "constVal": 768,
+              "ltr": "",
+              "rtl": null
+            },
+            0
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineConstsNested-test.js",
+          "test": "handles number values",
+          "line": 310
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConstsNested-works-with-named-import-009-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import { unstable_defineConstsNested } from '@stylexjs/stylex';\n        export const tokens = unstable_defineConstsNested({\n          radii: {\n            sm: '0.25rem',\n            xl: '1rem',\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConstsNested", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import { unstable_defineConstsNested } from '@stylexjs/stylex';\nexport const tokens = {\n  radii: {\n    sm: \"0.25rem\",\n    xl: \"1rem\"\n  }\n};",
+        "site": {
+          "file": "transform-stylex-defineConstsNested-test.js",
+          "test": "works with named import",
+          "line": 347
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConstsNested-mixed-string-and-number-valu-010-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const tokens = stylex.unstable_defineConstsNested({\n          theme: {\n            spacing: 8,\n            unit: 'px',\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConstsNested", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const tokens = {\n  theme: {\n    spacing: 8,\n    unit: \"px\"\n  }\n};",
+        "site": {
+          "file": "transform-stylex-defineConstsNested-test.js",
+          "test": "mixed string and number values",
+          "line": 369
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConstsNested-throws-must-be-a-named-expor-011-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const tokens = stylex.unstable_defineConstsNested({\n          spacing: { sm: '4px' },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConstsNested", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "any",
+        "site": {
+          "file": "transform-stylex-defineConstsNested-test.js",
+          "test": "throws: must be a named export",
+          "line": 382
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConstsNested-throws-must-have-exactly-1-a-012-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const tokens = stylex.unstable_defineConstsNested({}, {});\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConstsNested", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "any",
+        "site": {
+          "file": "transform-stylex-defineConstsNested-test.js",
+          "test": "throws: must have exactly 1 argument",
+          "line": 393
+        }
+      }
+    }
+  ]
+}

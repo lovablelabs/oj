@@ -180,7 +180,8 @@ try {
   await scenario("close settles", {}, (ev) => {
     // A buildEnd from startup's client build may precede; the stop is what follows close-start.
     const stop = ev.slice(ev.indexOf("close-start:alive"));
-    const want = ["close-start:alive", "close-done", "buildEnd", "closeBundle"];
+    // closeBundle once per environment (client, ssr), as Vite's server.close.
+    const want = ["close-start:alive", "close-done", "buildEnd", "closeBundle", "closeBundle"];
     expect(JSON.stringify(stop) === JSON.stringify(want), `the stop ran ${want.join(", ")}: got ${ev.join(", ")}`);
   });
   await scenario("close hangs", { FAKE_CLOSE_HANGS: "1" }, (ev) => {

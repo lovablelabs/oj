@@ -10,8 +10,9 @@ use lightningcss::css_modules::{self, CssModuleExport, CssModuleExports, CssModu
 use regex::Regex;
 
 use crate::compile::{compile_css_depth, Mode};
+use crate::generic_names::GenericNames;
 use crate::path::{normalize, strip_query};
-use crate::resolve::{CssModulesOptions, CssResolve};
+use crate::resolve::CssResolve;
 use crate::sass::{compile_sass, is_sass};
 
 pub fn is_css_module(url: &str) -> bool {
@@ -97,51 +98,264 @@ fn compiled(src: &str) -> Option<Regex> {
         .clone()
 }
 
-/// `generateScopedName` as a lightningcss pattern. postcss-modules tokens map
-/// over (`[hash:base64:5]` -> `[hash]`, `[contenthash]` -> `[content-hash]`);
-/// `[path]`, `[folder]` and `[ext]` have no equivalent and are dropped.
-pub(crate) fn scoped_name_pattern(modules: &CssModulesOptions) -> css_modules::Pattern {
-    const DEFAULT: &str = "[name]_[local]_[hash]";
-    let default = || css_modules::Pattern::parse(DEFAULT).expect("static pattern");
-    let Some(raw) = modules
-        .generate_scoped_name
-        .as_deref()
-        .filter(|s| !s.is_empty())
-    else {
-        return default();
-    };
-    let translated = translate_scoped_name(raw);
-    let parsed = if translated.contains("[local]") {
-        css_modules::Pattern::parse(&translated).map_err(|e| format!("{e:?}"))
-    } else {
-        Err("no [local] placeholder".to_string())
-    };
-    parsed.unwrap_or_else(|e| {
-        eprintln!("oj: css.modules.generateScopedName {raw:?} is not a supported pattern ({e}); using {DEFAULT}");
-        default()
-    })
+/// What lightningcss appends to each scoped local, until
+/// [`ScopedNames::rename`] gives it the name Vite would.
+const DEFAULT_NAME_MARK: &str = "__oj_scoped__";
+
+/// The lightningcss pattern for a module's locals: each one marked, to be
+/// named by [`ScopedNames`].
+pub(crate) fn scoped_name_pattern() -> css_modules::Pattern {
+    css_modules::Pattern::parse(&format!("[local]{DEFAULT_NAME_MARK}")).expect("static pattern")
 }
 
-fn translate_scoped_name(raw: &str) -> String {
-    let mut out = String::new();
-    let mut rest = raw;
-    while let Some(start) = rest.find('[') {
-        out.push_str(&rest[..start]);
-        let Some(end) = rest[start..].find(']') else {
-            rest = &rest[start..];
-            break;
-        };
-        let token = rest[start + 1..start + end].to_ascii_lowercase();
-        if token.starts_with("contenthash") || token.starts_with("content-hash") {
-            out.push_str("[content-hash]");
-        } else if token.starts_with("hash") {
-            out.push_str("[hash]");
-        } else if token == "name" || token == "local" {
-            out.push_str(&format!("[{token}]"));
+/// The names Vite gives a CSS module's locals: postcss-modules'
+/// generateScopedNameDefault, or generic-names for a string
+/// `generateScopedName` ([`GenericNames`]).
+pub(crate) enum ScopedNames<'a> {
+    /// `_${name}_${hash}_${line}`, the hash being string-hash over
+    /// `hashPrefix + css` in base 36 (5 characters), the line that of the
+    /// first `.${name}` in `css`. `css` is what Vite hands PostCSS: the sheet
+    /// after the "pre" plugins and the preprocessor, before `@import`s inline.
+    Default {
+        css: &'a str,
+        hash: String,
+    },
+    Pattern(GenericNames),
+}
+
+impl<'a> ScopedNames<'a> {
+    /// `url` names the module (root-relative or absolute); `css` is the sheet
+    /// the default names hash.
+    pub(crate) fn new(css: &'a str, url: &str, resolve: &CssResolve<'_>) -> Self {
+        let modules = resolve.modules;
+        let hash_prefix = modules.hash_prefix.as_deref();
+        match modules
+            .generate_scoped_name
+            .as_deref()
+            .filter(|s| !s.is_empty())
+        {
+            Some(pattern) => {
+                let root = resolve.root.unwrap_or(Path::new("/"));
+                let context = modules.context.as_deref().unwrap_or(root);
+                let path = strip_query(url);
+                // A dev url outside the root names the file after `/@fs`.
+                let file = match path.strip_prefix("/@fs") {
+                    Some(abs) if abs.starts_with('/') => PathBuf::from(abs),
+                    _ => match Path::new(path) {
+                        p if p.is_absolute() && p.is_file() => p.to_path_buf(),
+                        _ => root.join(path.trim_start_matches('/')),
+                    },
+                };
+                Self::Pattern(GenericNames::new(pattern, &file, context, hash_prefix))
+            }
+            None => {
+                let digest = string_hash(&format!("{}{css}", hash_prefix.unwrap_or("")));
+                let mut hash = base36(digest);
+                hash.truncate(5);
+                Self::Default { css, hash }
+            }
         }
-        rest = &rest[start + end + 1..];
     }
-    out.push_str(rest);
+
+    pub(crate) fn name(&self, local: &str) -> String {
+        match self {
+            Self::Default { css, hash } => {
+                // `css.substr(0, i).split(/[\r\n]/).length`: a missing name
+                // (i = -1) takes nothing, so line 1; `\r\n` counts twice.
+                let line = css.find(&format!(".{local}")).map_or(1, |i| {
+                    css[..i]
+                        .chars()
+                        .filter(|c| matches!(c, '\r' | '\n'))
+                        .count()
+                        + 1
+                });
+                format!("_{local}_{hash}_{line}")
+            }
+            Self::Pattern(names) => names.name(local),
+        }
+    }
+
+    /// A class map value (scoped names, space-separated) with its marked
+    /// locals renamed.
+    pub(crate) fn rename_value(&self, value: &str) -> String {
+        value
+            .split(' ')
+            .map(|part| match part.strip_suffix(DEFAULT_NAME_MARK) {
+                Some(local) => self.name(local),
+                None => part.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Every marked local in the printed sheet renamed. A local stays escaped
+    /// as lightningcss printed it. Only what postcss-modules scopes is
+    /// renamed (a class, an id, a `@keyframes` name and an animation's
+    /// reference to one); another custom ident lightningcss marked
+    /// (`view-transition-name`, `@counter-style`) stays as written.
+    pub(crate) fn rename(&self, text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        let mut before = 0;
+        while let Some(pos) = rest.find(DEFAULT_NAME_MARK) {
+            let head = &rest[..pos];
+            let start = ident_start(head);
+            let token = &head[start..];
+            out.push_str(&head[..start]);
+            let local = css_unescape(token);
+            let context = &text[..before + start];
+            before += pos + DEFAULT_NAME_MARK.len();
+            if scope_of(context).is_none() {
+                out.push_str(token);
+                rest = &rest[pos + DEFAULT_NAME_MARK.len()..];
+                continue;
+            }
+            match self {
+                // The token keeps its escapes; only the parts around it are
+                // new.
+                Self::Default { .. } => {
+                    let named = self.name(&local);
+                    out.push('_');
+                    out.push_str(token);
+                    out.push_str(&named[1 + local.len()..]);
+                }
+                // generic-names leaves only identifier characters.
+                Self::Pattern(names) => out.push_str(&names.name(&local)),
+            }
+            rest = &rest[pos + DEFAULT_NAME_MARK.len()..];
+        }
+        out.push_str(rest);
+        out
+    }
+}
+
+/// The locals the printed (marked) sheet declares as a class, an id or a
+/// `@keyframes` name: what postcss-modules exports.
+pub(crate) fn declared_locals(text: &str) -> std::collections::HashSet<String> {
+    let mut found = std::collections::HashSet::new();
+    let mut at = 0;
+    while let Some(pos) = text[at..].find(DEFAULT_NAME_MARK) {
+        let end = at + pos;
+        let start = ident_start(&text[..end]);
+        if matches!(scope_of(&text[..start]), Some(Scope::Declared)) {
+            found.insert(css_unescape(&text[start..end]));
+        }
+        at = end + DEFAULT_NAME_MARK.len();
+    }
+    found
+}
+
+#[derive(Debug, PartialEq)]
+enum Scope {
+    /// A class, an id or a `@keyframes` name.
+    Declared,
+    /// An `animation` or `animation-name` reference.
+    Reference,
+}
+
+/// How postcss-modules treats an ident printed after `before`: scoped as a
+/// declaration or a reference, or (None) left global.
+fn scope_of(before: &str) -> Option<Scope> {
+    if before.ends_with('.') || before.ends_with('#') {
+        return Some(Scope::Declared);
+    }
+    let trimmed = before.trim_end();
+    if trimmed.ends_with("@keyframes") || trimmed.ends_with("-keyframes") {
+        return Some(Scope::Declared);
+    }
+    let decl = &before[before.rfind([';', '{']).map_or(0, |i| i + 1)..];
+    let property = decl.split(':').next().unwrap_or("").trim();
+    let unprefixed = ["-webkit-", "-moz-", "-o-", "-ms-"]
+        .iter()
+        .find_map(|p| property.strip_prefix(p))
+        .unwrap_or(property);
+    (decl.contains(':') && matches!(unprefixed, "animation" | "animation-name"))
+        .then_some(Scope::Reference)
+}
+
+/// string-hash 1.1.3: djb2 over UTF-16 code units from the end, `hash * 33 ^
+/// c` wrapping to 32 bits as JS's `^` does, read as unsigned.
+pub(crate) fn string_hash(s: &str) -> u32 {
+    let units: Vec<u16> = s.encode_utf16().collect();
+    let mut hash: i32 = 5381;
+    for &unit in units.iter().rev() {
+        hash = hash.wrapping_mul(33) ^ i32::from(unit);
+    }
+    hash as u32
+}
+
+/// `n.toString(36)`.
+fn base36(mut n: u32) -> String {
+    const DIGITS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    let mut out = Vec::new();
+    loop {
+        out.push(DIGITS[(n % 36) as usize]);
+        n /= 36;
+        if n == 0 {
+            break;
+        }
+    }
+    out.reverse();
+    String::from_utf8(out).expect("ascii digits")
+}
+
+/// Where the CSS identifier ending `head` starts: name characters, non-ASCII
+/// ones and backslash escapes (`\:`, and hex ones like `\31 ` with the space
+/// that ends them).
+fn ident_start(head: &str) -> usize {
+    let chars: Vec<(usize, char)> = head.char_indices().collect();
+    let mut i = chars.len();
+    while i > 0 {
+        let c = chars[i - 1].1;
+        let name_char = c.is_ascii_alphanumeric() || c == '_' || c == '-' || !c.is_ascii();
+        if name_char {
+            i -= 1;
+            continue;
+        }
+        if i >= 2 && chars[i - 2].1 == '\\' {
+            i -= 2;
+            continue;
+        }
+        if c == ' ' {
+            // `\` + 1-6 hex digits + the space.
+            let mut j = i - 1;
+            while j > 0 && i - 1 - j < 6 && chars[j - 1].1.is_ascii_hexdigit() {
+                j -= 1;
+            }
+            if j < i - 1 && j > 0 && chars[j - 1].1 == '\\' {
+                i = j - 1;
+                continue;
+            }
+        }
+        break;
+    }
+    chars.get(i).map_or(head.len(), |(at, _)| *at)
+}
+
+/// A CSS identifier's escapes undone: `\XX ` hex code points and `\c`.
+fn css_unescape(token: &str) -> String {
+    let mut out = String::with_capacity(token.len());
+    let mut chars = token.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        let mut hex = String::new();
+        while hex.len() < 6 && chars.peek().is_some_and(char::is_ascii_hexdigit) {
+            hex.push(chars.next().unwrap());
+        }
+        if hex.is_empty() {
+            if let Some(next) = chars.next() {
+                out.push(next);
+            }
+            continue;
+        }
+        if chars.peek().is_some_and(|c| c.is_ascii_whitespace()) {
+            chars.next();
+        }
+        out.extend(u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32));
+    }
     out
 }
 
@@ -340,7 +554,8 @@ fn dependency_exports(
         Some(rel) => format!("/{}", rel.display()),
         None => dep.to_string_lossy().into_owned(),
     };
-    let out = compile_css_depth(&dep_url, &source, Mode::default(), resolve, depth + 1).ok()?;
+    let out =
+        compile_css_depth(&dep_url, &source, None, Mode::default(), resolve, depth + 1).ok()?;
     Some(out.exports?.into_iter().collect())
 }
 
@@ -372,6 +587,52 @@ mod tests {
         assert_eq!(name, "button");
         assert_ne!(scoped, "button", "class must be scoped: {scoped}");
         assert!(out.css.contains(scoped.as_str()), "{}", out.css);
+    }
+
+    // The build scopes a CSS module first when plugins run between the two
+    // steps (Vite's "normal" slot); with nothing in between, the two steps
+    // ship what the one-step compile does, and the same class map.
+    #[test]
+    fn scoping_then_compiling_matches_the_one_step_compile() {
+        let url = "/src/Counter.module.css";
+        let plain = ".button { padding: 1rem; display: flex; }\n.button:hover { opacity: 0.9; }\n:global(.app) .label { color: rebeccapurple; user-select: none; }\n";
+        let composing = ".button { padding: 1rem; }\n.other { composes: button; color: red; }\n";
+        for minify in [true, false] {
+            let cfg = CssResolveConfig {
+                minify,
+                ..Default::default()
+            };
+            for src in [plain, composing] {
+                let one = compile_css_with(url, src, &cfg.as_ref()).unwrap();
+                let scoped = scope_css_module(url, src, src, &cfg.as_ref()).unwrap();
+                assert!(!scoped.css.contains(".button"), "scoped: {}", scoped.css);
+                assert_eq!(scoped.exports, one.exports, "minify {minify}: {src}");
+                let two = compile_scoped_css_with(url, &scoped.css, &cfg.as_ref()).unwrap();
+                assert_eq!(two.exports, None, "the scoped compile makes no class map");
+                if src == plain {
+                    assert_eq!(two.css, one.css, "minify {minify}");
+                }
+            }
+        }
+    }
+
+    /// The dev server scopes a module, hands the sheet to its "normal"
+    /// plugins, then compiles it with urls rebased: the names are still
+    /// Vite's (recorded from Vite 8.3.5's dev server), in the map and the sheet.
+    #[test]
+    fn dev_scoping_then_compiling_keeps_vites_names() {
+        let url = "/src/Counter.module.css";
+        let src = ".button { color: red; }\n";
+        let cfg = CssResolveConfig::default();
+        let scoped = scope_css_module(url, src, src, &cfg.as_ref()).unwrap();
+        assert_eq!(
+            scoped.exports,
+            Some(vec![("button".to_string(), "_button_hwshl_1".to_string())])
+        );
+        let out = crate::compile_scoped_css_dev(url, &scoped.css, false, &cfg.as_ref()).unwrap();
+        assert_eq!(out.exports, None, "the scoped compile makes no class map");
+        assert!(out.css.contains("._button_hwshl_1"), "{}", out.css);
+        assert!(!out.css.contains(".button"), "{}", out.css);
     }
 
     fn with_modules(modules: CssModulesOptions) -> CssResolveConfig {
@@ -449,7 +710,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out.exports.unwrap()[0].1, "app-Btn-module-button");
-        // An unsupported pattern falls back to the default instead of failing.
+        // generic-names takes any text: no `[local]` names every class the
+        // same, `[nope]` included, as in Vite.
         let cfg = with_modules(CssModulesOptions {
             generate_scoped_name: Some("[nope]".into()),
             ..Default::default()
@@ -460,7 +722,7 @@ mod tests {
             &cfg.as_ref(),
         )
         .unwrap();
-        assert!(out.exports.unwrap()[0].1.starts_with("Btn-module_button_"));
+        assert_eq!(out.exports.unwrap()[0].1, "-nope-");
     }
 
     #[test]
@@ -559,54 +821,243 @@ mod tests {
         );
     }
 
+    // Vite's names for these sheets (postcss-modules' generateScopedNameDefault,
+    // recorded from a Vite 8.3.5 build): `_${local}_${hash}_${line}`, the hash
+    // over the sheet, the line of the first `.${local}` in it, so an id or a
+    // keyframes name is line 1 and `\r\n` counts as two lines.
     #[test]
-    fn css_modules_scoped_name_matches_ssr_loader() {
-        // The retired node SSR loader (its JS cssModuleExports mirror)
-        // recomputes these names in JS so server rendering agrees with the
-        // class map the client is served; ssr-loader-css-modules.test.mjs pins
-        // the same literals. If this assertion changes (lightningcss upgrade,
-        // pattern change), the loader must be updated to match.
-        let out = compile_css("/src/Counter.module.css", ".button { color: red; }", false).unwrap();
-        let exports = out.exports.expect("module exports");
+    fn default_scoped_names_are_vites() {
+        let names = |url: &str, src: &str| {
+            compile_css(url, src, false)
+                .unwrap()
+                .exports
+                .expect("module exports")
+        };
+        let pairs = |list: &[(&str, &str)]| {
+            let mut v: Vec<(String, String)> = list
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            v.sort();
+            v
+        };
         assert_eq!(
-            exports,
-            vec![(
-                "button".to_string(),
-                "Counter-module_button_EjW_Uq".to_string()
-            )]
+            names("/src/Counter.module.css", ".button { color: red; }\n"),
+            pairs(&[("button", "_button_hwshl_1")])
+        );
+        assert_eq!(
+            names(
+                "/src/multi.module.css",
+                ".a { color: red; }\n\n.b { color: blue; }\n.c { composes: a; }\n#main { color: green; }\n@keyframes spin { to { opacity: 1 } }\n.d { animation: spin 1s; }\n",
+            ),
+            pairs(&[
+                ("a", "_a_hn2ce_1"),
+                ("b", "_b_hn2ce_3"),
+                ("c", "_c_hn2ce_4 _a_hn2ce_1"),
+                ("main", "_main_hn2ce_1"),
+                ("d", "_d_hn2ce_7"),
+                ("spin", "_spin_hn2ce_1"),
+            ])
+        );
+        assert_eq!(
+            names(
+                "/src/crlf.module.css",
+                ".x {\r\n  color: red;\r\n}\r\n.y { color: blue; }\r\n",
+            ),
+            pairs(&[("x", "_x_1kb7v_1"), ("y", "_y_1kb7v_7")])
+        );
+        assert_eq!(
+            names(
+                "/src/prefix.module.css",
+                ".btn-primary { color: red; }\n.btn { color: blue; }\n",
+            ),
+            pairs(&[
+                ("btn", "_btn_n9bj6_1"),
+                ("btn-primary", "_btn-primary_n9bj6_1")
+            ])
+        );
+        assert_eq!(
+            names(
+                "/src/uni.module.css",
+                ".h\u{e9}llo { color: red; }\n.ok { color: blue; }\n",
+            ),
+            pairs(&[("h\u{e9}llo", "_h\u{e9}llo_1vvgd_1"), ("ok", "_ok_1vvgd_2")])
         );
     }
 
     #[test]
-    fn scoped_class_names_follow_the_name_local_hash_pattern() {
-        // The scoped name shows up in devtools, in snapshots and in the exports
-        // map, so its shape is part of the contract.
-        let out = compile_css("/src/Counter.module.css", ".button { color: red }", false).unwrap();
-        let (local, scoped) = out.exports.expect("exports").into_iter().next().unwrap();
-        assert_eq!(local, "button");
-        // `[name]` is the file stem with its dots flattened.
-        let prefix = "Counter-module_button_";
+    fn default_scoped_names_rename_the_sheet_too() {
+        let out = compile_css(
+            "/src/multi.module.css",
+            ".a { color: red; }\n\n.b { color: blue; }\n.c { composes: a; }\n#main { color: green; }\n@keyframes spin { to { opacity: 1 } }\n.d { animation: spin 1s; }\n",
+            true,
+        )
+        .unwrap();
+        for name in [
+            "._a_hn2ce_1",
+            "._b_hn2ce_3",
+            "#_main_hn2ce_1",
+            "@keyframes _spin_hn2ce_1",
+            "1s _spin_hn2ce_1",
+        ] {
+            assert!(out.css.contains(name), "{name} in {}", out.css);
+        }
+        assert!(!out.css.contains("__oj_scoped__"), "{}", out.css);
+        // An escaped local keeps its escape around the new name.
+        let out = compile_css(
+            "/src/e.module.css",
+            ".a\\:b { color: red; }\n.\\31 x { color: blue; }\n",
+            false,
+        )
+        .unwrap();
+        let exports = out.exports.unwrap();
+        let get = |k: &str| {
+            exports
+                .iter()
+                .find(|(n, _)| n == k)
+                .map(|(_, v)| v.clone())
+                .unwrap()
+        };
+        assert!(get("a:b").starts_with("_a:b_"), "{exports:?}");
         assert!(
-            scoped.starts_with(prefix),
-            "expected [name]_[local]_[hash], got {scoped}"
+            out.css
+                .contains(&format!(".{}", get("a:b").replace(':', "\\:"))),
+            "{}",
+            out.css
         );
-        let hash = &scoped[prefix.len()..];
-        assert!(!hash.is_empty(), "no hash in {scoped}");
+        // A hex escape (a leading digit) and its closing space stay whole.
         assert!(
-            hash.chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
-            "hash is not a plain token: {scoped}"
+            get("1x").starts_with("_1x_") && get("1x").ends_with("_1"),
+            "{exports:?}"
         );
-        // The hash is derived from the path, not the contents: editing a
-        // stylesheet must not rename its classes, or every edit would invalidate
-        // the markup that already references them.
-        let after_edit = compile_css("/src/Counter.module.css", ".button { color: blue }", false)
-            .unwrap()
-            .exports
-            .expect("exports")
-            .remove(0)
-            .1;
-        assert_eq!(scoped, after_edit, "an edit must not rename a class");
+        let tail = get("1x")["_1x".len()..].to_string();
+        assert!(out.css.contains(&format!("._\\31 x{tail}")), "{}", out.css);
+    }
+
+    // `css.modules.hashPrefix` salts the hash, as postcss-modules'.
+    #[test]
+    fn hash_prefix_salts_the_default_names() {
+        let cfg = with_modules(CssModulesOptions {
+            hash_prefix: Some("salt".into()),
+            ..Default::default()
+        });
+        let out = compile_css_with(
+            "/src/Counter.module.css",
+            ".button { color: red; }\n",
+            &cfg.as_ref(),
+        )
+        .unwrap();
+        assert_eq!(
+            out.exports.unwrap(),
+            vec![("button".to_string(), "_button_8ywyu_1".to_string())]
+        );
+    }
+
+    /// A pattern's `[hash]` covers the file's path from postcss-modules'
+    /// context, `process.cwd()`: Vite 8.3.5 names `.btn` in
+    /// `app/src/a.module.css` `btn__vjDgO` run from `app`, `btn__3BinS` run
+    /// from its parent. The file still resolves from the app root.
+    #[test]
+    fn pattern_names_hash_the_path_from_the_working_directory() {
+        let name = |context: Option<&str>| {
+            let cfg = CssResolveConfig {
+                root: "/w/app".into(),
+                modules: CssModulesOptions {
+                    generate_scoped_name: Some("[local]__[hash:base64:5]".into()),
+                    context: context.map(Into::into),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            compile_css_with("/src/a.module.css", ".btn { color: red; }\n", &cfg.as_ref())
+                .unwrap()
+                .exports
+                .unwrap()
+        };
+        let btn = |v: &str| vec![("btn".to_string(), v.to_string())];
+        assert_eq!(name(Some("/w/app")), btn("btn__vjDgO"));
+        assert_eq!(name(None), btn("btn__vjDgO"), "no context: the app root");
+        assert_eq!(name(Some("/w")), btn("btn__3BinS"));
+    }
+
+    /// A module outside the root (a monorepo's shared package) is named from
+    /// its own path in dev, where its url is `/@fs/<file>`, as in the build:
+    /// Vite 8.3.5 names `.btn` in `mono/shared/b.module.css`, run from
+    /// `mono/app`, `_-shared-b-module__btn--6zfUj` in both.
+    #[test]
+    fn pattern_names_of_a_module_outside_the_root_follow_its_file() {
+        let cfg = CssResolveConfig {
+            root: "/x/mono/app".into(),
+            modules: CssModulesOptions {
+                generate_scoped_name: Some("[path][name]__[local]--[hash:base64:5]".into()),
+                context: Some("/x/mono/app".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let name = |url: &str| {
+            compile_css_with(url, ".btn { color: red; }\n", &cfg.as_ref())
+                .unwrap()
+                .exports
+                .unwrap()
+        };
+        let btn = vec![(
+            "btn".to_string(),
+            "_-shared-b-module__btn--6zfUj".to_string(),
+        )];
+        assert_eq!(name("/@fs/x/mono/shared/b.module.css"), btn, "dev");
+    }
+
+    /// postcss-modules scopes classes, ids, `@keyframes` and animation
+    /// references, and leaves grid lines, `view-transition-name`,
+    /// `@counter-style` and container names global (a grid line name used to
+    /// fail the compile). The sheet and the map are what Vite 8.3.5 builds.
+    #[test]
+    fn only_what_postcss_modules_scopes_is_scoped() {
+        let src = ".grid { display: grid; grid-template-columns: [a] 1fr [b]; grid-template-areas: \"head\"; }\n\
+.y { grid-area: head; grid-column: a / b; }\n\
+.hero { view-transition-name: hero; }\n\
+@counter-style thumbs { system: cyclic; symbols: \"👍\"; suffix: \" \"; }\n\
+.list { list-style: thumbs; }\n\
+.card { container-name: card; container-type: inline-size; }\n\
+@container card (min-width: 1px) { .y { color: red; } }\n\
+@keyframes spin { to { opacity: 1; } }\n\
+.s { animation: spin 1s; }\n";
+        let cfg = CssResolveConfig {
+            minify: true,
+            ..Default::default()
+        };
+        let out = compile_css_with("/src/g.module.css", src, &cfg.as_ref()).unwrap();
+        assert_eq!(
+            out.css.trim_end(),
+            "._grid_1skpg_1{grid-template-columns:[a]1fr[b];grid-template-areas:\"head\";display:grid}._y_1skpg_2{grid-area:head/a/head/b}._hero_1skpg_3{view-transition-name:hero}@counter-style thumbs{system:cyclic;symbols:\"👍\";suffix:\" \"}._list_1skpg_5{list-style:thumbs}._card_1skpg_6{container:card/inline-size}@container card (width>=1px){._y_1skpg_2{color:red}}@keyframes _spin_1skpg_1{to{opacity:1}}._s_1skpg_9{animation:1s _spin_1skpg_1}"
+        );
+        let mut keys: Vec<String> = out.exports.unwrap().into_iter().map(|(k, _)| k).collect();
+        keys.sort();
+        assert_eq!(keys, ["card", "grid", "hero", "list", "s", "spin", "y"]);
+        // Scoped in two steps (dev and the build's normal slot), the same.
+        let scoped = scope_css_module("/src/g.module.css", src, src, &cfg.as_ref()).unwrap();
+        assert!(
+            scoped.css.contains("view-transition-name: hero"),
+            "{}",
+            scoped.css
+        );
+        assert!(
+            scoped.css.contains("animation: 1s _spin_1skpg_1"),
+            "{}",
+            scoped.css
+        );
+    }
+
+    // string-hash 1.1.3, in JS: `(hash * 33) ^ str.charCodeAt(--i)` from
+    // 5381, `>>> 0`.
+    #[test]
+    fn string_hash_matches_the_js_package() {
+        assert_eq!(string_hash(""), 5381);
+        assert_eq!(string_hash("a"), 177604);
+        // Wraps past 32 bits and reads UTF-16 code units.
+        assert_eq!(string_hash("hello world"), 2616892229);
+        assert_eq!(string_hash("\u{1F600}"), 5191800);
     }
 
     #[test]
@@ -659,11 +1110,5 @@ mod tests {
                 ("fooBar".into(), "b".into())
             ]
         );
-    }
-
-    #[test]
-    fn scoped_name_keeps_an_unterminated_bracket() {
-        assert_eq!(translate_scoped_name("[local]_[hash"), "[local]_[hash");
-        assert_eq!(translate_scoped_name("x-[path][local]"), "x-[local]");
     }
 }

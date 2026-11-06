@@ -80,7 +80,7 @@ struct Lexer<'a, 'r> {
 impl<'a> Lexer<'a, '_> {
     fn rewrite(&mut self, lit: &mut StringLiteral<'a>) -> String {
         rewrite_literal(self.allocator, lit, self.rewriter);
-        lit.value.to_string()
+        crate::lit_str(lit.value).to_string()
     }
 
     fn record_accept(&mut self, kind: AcceptKind, first_arg: Option<&mut Argument<'a>>) {
@@ -89,14 +89,14 @@ impl<'a> Lexer<'a, '_> {
             // acceptExports is a PARTIAL accept (Vite's acceptedHmrExports), not
             // a self-accept: an importer using an unlisted export propagates past it.
             (AcceptKind::Exports, Some(Argument::StringLiteral(lit))) => {
-                let name = lit.value.to_string();
+                let name = crate::lit_str(lit.value).to_string();
                 self.accepted_exports().push(name);
             }
             (AcceptKind::Exports, Some(Argument::ArrayExpression(arr))) => {
                 let names = self.accepted_exports();
                 for el in arr.elements.iter() {
                     if let ArrayExpressionElement::StringLiteral(lit) = el {
-                        names.push(lit.value.to_string());
+                        names.push(crate::lit_str(lit.value).to_string());
                     }
                 }
             }

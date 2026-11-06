@@ -1,0 +1,41 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/transform-polyfills-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs only — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "upstream/polyfills-lineclamp-001",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { lineClamp: 3 } });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["polyfills", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/polyfills-pointerevents-002",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({\n          a: { pointerEvents: 'auto' },\n          b: { pointerEvents: 'box-none' },\n          c: { pointerEvents: 'box-only' },\n          d: { pointerEvents: 'none' }\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["polyfills", "create", "upstream-skipped"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/polyfills-scrollbarwidth-003",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { scrollbarWidth: 'none' } });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["polyfills", "create", "upstream-skipped"],
+      "expect": "ok"
+    }
+  ]
+}

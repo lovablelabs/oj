@@ -1,0 +1,1829 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/transform-stylex-createTheme-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs and upstream's own expected values — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "assertions/createTheme-theme-object-001-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n        export const theme = stylex.createTheme(vars, {\n  color: {\n    default: 'green',\n    '@media (prefers-color-scheme: dark)': 'lightgreen',\n    '@media print': 'transparent',\n  },\n  otherColor: {\n    default: 'antiquewhite',\n    '@media (prefers-color-scheme: dark)': {\n      default: 'floralwhite',\n      '@supports (color: oklab(0 0 0))': 'oklab(0.7 -0.3 -0.4)',\n    }\n  },\n  radius: '6px'\n});\n      \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\nexport const theme = {\n  xop34xu: \"x10yrbfs xop34xu\",\n  $$css: true\n};",
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "theme object",
+          "line": 112
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-theme-object-002-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n        export const theme = stylex.createTheme(vars, {\n  color: {\n    default: 'green',\n    '@media (prefers-color-scheme: dark)': 'lightgreen',\n    '@media print': 'transparent',\n  },\n  otherColor: {\n    default: 'antiquewhite',\n    '@media (prefers-color-scheme: dark)': {\n      default: 'floralwhite',\n      '@supports (color: oklab(0 0 0))': 'oklab(0.7 -0.3 -0.4)',\n    }\n  },\n  radius: '6px'\n});\n      \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--xwx8imx:blue;--xaaua2w:grey;--xbbre8:10;}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "xop34xu-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){:root, .xop34xu{--xwx8imx:lightblue;--xaaua2w:rgba(0, 0, 0, 0.8);}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "xop34xu-bdddrq",
+            {
+              "ltr": "@media print{:root, .xop34xu{--xwx8imx:white;}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "x10yrbfs",
+            {
+              "ltr": ".x10yrbfs, .x10yrbfs:root{--xwx8imx:green;--xaaua2w:antiquewhite;--xbbre8:6px;}",
+              "rtl": null
+            },
+            0.5
+          ],
+          [
+            "x10yrbfs-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){.x10yrbfs, .x10yrbfs:root{--xwx8imx:lightgreen;--xaaua2w:floralwhite;}}",
+              "rtl": null
+            },
+            0.6000000000000001
+          ],
+          [
+            "x10yrbfs-1e6ryz3",
+            {
+              "ltr": "@supports (color: oklab(0 0 0)){@media (prefers-color-scheme: dark){.x10yrbfs, .x10yrbfs:root{--xaaua2w:oklab(0.7 -0.3 -0.4);}}}",
+              "rtl": null
+            },
+            0.7
+          ],
+          [
+            "x10yrbfs-bdddrq",
+            {
+              "ltr": "@media print{.x10yrbfs, .x10yrbfs:root{--xwx8imx:transparent;}}",
+              "rtl": null
+            },
+            0.6000000000000001
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "theme object",
+          "line": 125
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-theme-object-haste-003-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n        export const theme = stylex.createTheme(vars, {\n  color: {\n    default: 'green',\n    '@media (prefers-color-scheme: dark)': 'lightgreen',\n    '@media print': 'transparent',\n  },\n  otherColor: {\n    default: 'antiquewhite',\n    '@media (prefers-color-scheme: dark)': {\n      default: 'floralwhite',\n      '@supports (color: oklab(0 0 0))': 'oklab(0.7 -0.3 -0.4)',\n    }\n  },\n  radius: '6px'\n});\n      \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\nexport const theme = {\n  xop34xu: \"x10yrbfs xop34xu\",\n  $$css: true\n};",
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "theme object (haste)",
+          "line": 201
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-theme-object-haste-004-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n        export const theme = stylex.createTheme(vars, {\n  color: {\n    default: 'green',\n    '@media (prefers-color-scheme: dark)': 'lightgreen',\n    '@media print': 'transparent',\n  },\n  otherColor: {\n    default: 'antiquewhite',\n    '@media (prefers-color-scheme: dark)': {\n      default: 'floralwhite',\n      '@supports (color: oklab(0 0 0))': 'oklab(0.7 -0.3 -0.4)',\n    }\n  },\n  radius: '6px'\n});\n      \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--xwx8imx:blue;--xaaua2w:grey;--xbbre8:10;}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "xop34xu-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){:root, .xop34xu{--xwx8imx:lightblue;--xaaua2w:rgba(0, 0, 0, 0.8);}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "xop34xu-bdddrq",
+            {
+              "ltr": "@media print{:root, .xop34xu{--xwx8imx:white;}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "x10yrbfs",
+            {
+              "ltr": ".x10yrbfs, .x10yrbfs:root{--xwx8imx:green;--xaaua2w:antiquewhite;--xbbre8:6px;}",
+              "rtl": null
+            },
+            0.5
+          ],
+          [
+            "x10yrbfs-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){.x10yrbfs, .x10yrbfs:root{--xwx8imx:lightgreen;--xaaua2w:floralwhite;}}",
+              "rtl": null
+            },
+            0.6000000000000001
+          ],
+          [
+            "x10yrbfs-1e6ryz3",
+            {
+              "ltr": "@supports (color: oklab(0 0 0)){@media (prefers-color-scheme: dark){.x10yrbfs, .x10yrbfs:root{--xaaua2w:oklab(0.7 -0.3 -0.4);}}}",
+              "rtl": null
+            },
+            0.7
+          ],
+          [
+            "x10yrbfs-bdddrq",
+            {
+              "ltr": "@media print{.x10yrbfs, .x10yrbfs:root{--xwx8imx:transparent;}}",
+              "rtl": null
+            },
+            0.6000000000000001
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "theme object (haste)",
+          "line": 214
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-theme-object-deep-in-file-tr-005-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xt4ziaz)\",\n  otherColor: \"var(--x1e3it8h)\",\n  radius: \"var(--x1onrunl)\",\n  __varGroupHash__: \"x1xohuxq\"\n};\n    \n        export const theme = stylex.createTheme(vars, {\n  color: {\n    default: 'green',\n    '@media (prefers-color-scheme: dark)': 'lightgreen',\n    '@media print': 'transparent',\n  },\n  otherColor: {\n    default: 'antiquewhite',\n    '@media (prefers-color-scheme: dark)': {\n      default: 'floralwhite',\n      '@supports (color: oklab(0 0 0))': 'oklab(0.7 -0.3 -0.4)',\n    }\n  },\n  radius: '6px'\n});\n      \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xt4ziaz)\",\n  otherColor: \"var(--x1e3it8h)\",\n  radius: \"var(--x1onrunl)\",\n  __varGroupHash__: \"x1xohuxq\"\n};\nexport const theme = {\n  x1xohuxq: \"x1qn30me x1xohuxq\",\n  $$css: true\n};",
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "theme object deep in file tree",
+          "line": 289
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-theme-object-deep-in-file-tr-006-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xt4ziaz)\",\n  otherColor: \"var(--x1e3it8h)\",\n  radius: \"var(--x1onrunl)\",\n  __varGroupHash__: \"x1xohuxq\"\n};\n    \n        export const theme = stylex.createTheme(vars, {\n  color: {\n    default: 'green',\n    '@media (prefers-color-scheme: dark)': 'lightgreen',\n    '@media print': 'transparent',\n  },\n  otherColor: {\n    default: 'antiquewhite',\n    '@media (prefers-color-scheme: dark)': {\n      default: 'floralwhite',\n      '@supports (color: oklab(0 0 0))': 'oklab(0.7 -0.3 -0.4)',\n    }\n  },\n  radius: '6px'\n});\n      \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x1xohuxq",
+            {
+              "ltr": ":root, .x1xohuxq{--xt4ziaz:blue;--x1e3it8h:grey;--x1onrunl:10;}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "x1xohuxq-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){:root, .x1xohuxq{--xt4ziaz:lightblue;--x1e3it8h:rgba(0, 0, 0, 0.8);}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "x1xohuxq-bdddrq",
+            {
+              "ltr": "@media print{:root, .x1xohuxq{--xt4ziaz:white;}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "x1qn30me",
+            {
+              "ltr": ".x1qn30me, .x1qn30me:root{--xt4ziaz:green;--x1e3it8h:antiquewhite;--x1onrunl:6px;}",
+              "rtl": null
+            },
+            0.5
+          ],
+          [
+            "x1qn30me-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){.x1qn30me, .x1qn30me:root{--xt4ziaz:lightgreen;--x1e3it8h:floralwhite;}}",
+              "rtl": null
+            },
+            0.6000000000000001
+          ],
+          [
+            "x1qn30me-1e6ryz3",
+            {
+              "ltr": "@supports (color: oklab(0 0 0)){@media (prefers-color-scheme: dark){.x1qn30me, .x1qn30me:root{--x1e3it8h:oklab(0.7 -0.3 -0.4);}}}",
+              "rtl": null
+            },
+            0.7
+          ],
+          [
+            "x1qn30me-bdddrq",
+            {
+              "ltr": "@media print{.x1qn30me, .x1qn30me:root{--xt4ziaz:transparent;}}",
+              "rtl": null
+            },
+            0.6000000000000001
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "theme object deep in file tree",
+          "line": 302
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-literal-tokens-theme-object-007-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  \"--color\": \"var(--color)\",\n  \"--otherColor\": \"var(--otherColor)\",\n  \"--radius\": \"var(--radius)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n        export const theme = stylex.createTheme(vars, {\n          '--color': 'green',\n          '--otherColor': 'purple',\n          '--radius': 6\n        });\n      \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  \"--color\": \"var(--color)\",\n  \"--otherColor\": \"var(--otherColor)\",\n  \"--radius\": \"var(--radius)\",\n  __varGroupHash__: \"xop34xu\"\n};\nexport const theme = {\n  xop34xu: \"x1l2ihi1 xop34xu\",\n  $$css: true\n};",
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "literal tokens theme object",
+          "line": 380
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-literal-tokens-theme-object-008-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  \"--color\": \"var(--color)\",\n  \"--otherColor\": \"var(--otherColor)\",\n  \"--radius\": \"var(--radius)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n        export const theme = stylex.createTheme(vars, {\n          '--color': 'green',\n          '--otherColor': 'purple',\n          '--radius': 6\n        });\n      \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--color:blue;--otherColor:grey;--radius:10;}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "xop34xu-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){:root, .xop34xu{--color:lightblue;--otherColor:rgba(0, 0, 0, 0.8);}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "xop34xu-bdddrq",
+            {
+              "ltr": "@media print{:root, .xop34xu{--color:white;}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "x1l2ihi1",
+            {
+              "ltr": ".x1l2ihi1, .x1l2ihi1:root{--color:green;--otherColor:purple;--radius:6;}",
+              "rtl": null
+            },
+            0.5
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "literal tokens theme object",
+          "line": 393
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-local-variable-theme-object-009-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n        const themeObj = {\n  color: {\n    default: 'green',\n    '@media (prefers-color-scheme: dark)': 'lightgreen',\n    '@media print': 'transparent',\n  },\n  otherColor: {\n    default: 'antiquewhite',\n    '@media (prefers-color-scheme: dark)': {\n      default: 'floralwhite',\n      '@supports (color: oklab(0 0 0))': 'oklab(0.7 -0.3 -0.4)',\n    }\n  },\n  radius: '6px'\n};\n        export const theme = stylex.createTheme(vars, themeObj);\n      \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\nconst themeObj = {\n  color: {\n    default: 'green',\n    '@media (prefers-color-scheme: dark)': 'lightgreen',\n    '@media print': 'transparent'\n  },\n  otherColor: {\n    default: 'antiquewhite',\n    '@media (prefers-color-scheme: dark)': {\n      default: 'floralwhite',\n      '@supports (color: oklab(0 0 0))': 'oklab(0.7 -0.3 -0.4)'\n    }\n  },\n  radius: '6px'\n};\nexport const theme = {\n  xop34xu: \"x10yrbfs xop34xu\",\n  $$css: true\n};",
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "local variable theme object",
+          "line": 439
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-local-variable-theme-object-010-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n        const themeObj = {\n  color: {\n    default: 'green',\n    '@media (prefers-color-scheme: dark)': 'lightgreen',\n    '@media print': 'transparent',\n  },\n  otherColor: {\n    default: 'antiquewhite',\n    '@media (prefers-color-scheme: dark)': {\n      default: 'floralwhite',\n      '@supports (color: oklab(0 0 0))': 'oklab(0.7 -0.3 -0.4)',\n    }\n  },\n  radius: '6px'\n};\n        export const theme = stylex.createTheme(vars, themeObj);\n      \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--xwx8imx:blue;--xaaua2w:grey;--xbbre8:10;}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "xop34xu-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){:root, .xop34xu{--xwx8imx:lightblue;--xaaua2w:rgba(0, 0, 0, 0.8);}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "xop34xu-bdddrq",
+            {
+              "ltr": "@media print{:root, .xop34xu{--xwx8imx:white;}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "x10yrbfs",
+            {
+              "ltr": ".x10yrbfs, .x10yrbfs:root{--xwx8imx:green;--xaaua2w:antiquewhite;--xbbre8:6px;}",
+              "rtl": null
+            },
+            0.5
+          ],
+          [
+            "x10yrbfs-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){.x10yrbfs, .x10yrbfs:root{--xwx8imx:lightgreen;--xaaua2w:floralwhite;}}",
+              "rtl": null
+            },
+            0.6000000000000001
+          ],
+          [
+            "x10yrbfs-1e6ryz3",
+            {
+              "ltr": "@supports (color: oklab(0 0 0)){@media (prefers-color-scheme: dark){.x10yrbfs, .x10yrbfs:root{--xaaua2w:oklab(0.7 -0.3 -0.4);}}}",
+              "rtl": null
+            },
+            0.7
+          ],
+          [
+            "x10yrbfs-bdddrq",
+            {
+              "ltr": "@media print{.x10yrbfs, .x10yrbfs:root{--xwx8imx:transparent;}}",
+              "rtl": null
+            },
+            0.6000000000000001
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "local variable theme object",
+          "line": 467
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-local-variables-used-in-them-011-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n        const RADIUS = 10;\n        export const theme = stylex.createTheme(vars, {\n          radius: RADIUS\n        });\n      \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\nconst RADIUS = 10;\nexport const theme = {\n  xop34xu: \"x1s6ff5p xop34xu\",\n  $$css: true\n};",
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "local variables used in theme objects",
+          "line": 539
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-local-variables-used-in-them-012-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n        const RADIUS = 10;\n        export const theme = stylex.createTheme(vars, {\n          radius: RADIUS\n        });\n      \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--xwx8imx:blue;--xaaua2w:grey;--xbbre8:10;}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "xop34xu-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){:root, .xop34xu{--xwx8imx:lightblue;--xaaua2w:rgba(0, 0, 0, 0.8);}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "xop34xu-bdddrq",
+            {
+              "ltr": "@media print{:root, .xop34xu{--xwx8imx:white;}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "x1s6ff5p",
+            {
+              "ltr": ".x1s6ff5p, .x1s6ff5p:root{--xbbre8:10;}",
+              "rtl": null
+            },
+            0.5
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "local variables used in theme objects",
+          "line": 553
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-template-literals-used-in-th-013-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n        const name = 'light';\n        export const theme = stylex.createTheme(vars, {\n          color: `${name}green`\n        });\n      \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\nconst name = 'light';\nexport const theme = {\n  xop34xu: \"xp8mj21 xop34xu\",\n  $$css: true\n};",
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "template literals used in theme objects",
+          "line": 690
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-template-literals-used-in-th-014-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n        const name = 'light';\n        export const theme = stylex.createTheme(vars, {\n          color: `${name}green`\n        });\n      \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--xwx8imx:blue;--xaaua2w:grey;--xbbre8:10;}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "xop34xu-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){:root, .xop34xu{--xwx8imx:lightblue;--xaaua2w:rgba(0, 0, 0, 0.8);}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "xop34xu-bdddrq",
+            {
+              "ltr": "@media print{:root, .xop34xu{--xwx8imx:white;}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "xp8mj21",
+            {
+              "ltr": ".xp8mj21, .xp8mj21:root{--xwx8imx:lightgreen;}",
+              "rtl": null
+            },
+            0.5
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "template literals used in theme objects",
+          "line": 704
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-expressions-used-in-theme-ob-015-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n        const RADIUS = 10;\n        export const theme = stylex.createTheme(vars, {\n          radius: RADIUS * 2\n        });\n      \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\nconst RADIUS = 10;\nexport const theme = {\n  xop34xu: \"x1et03wi xop34xu\",\n  $$css: true\n};",
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "expressions used in theme objects",
+          "line": 752
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-expressions-used-in-theme-ob-016-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n        const RADIUS = 10;\n        export const theme = stylex.createTheme(vars, {\n          radius: RADIUS * 2\n        });\n      \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--xwx8imx:blue;--xaaua2w:grey;--xbbre8:10;}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "xop34xu-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){:root, .xop34xu{--xwx8imx:lightblue;--xaaua2w:rgba(0, 0, 0, 0.8);}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "xop34xu-bdddrq",
+            {
+              "ltr": "@media print{:root, .xop34xu{--xwx8imx:white;}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "x1et03wi",
+            {
+              "ltr": ".x1et03wi, .x1et03wi:root{--xbbre8:20;}",
+              "rtl": null
+            },
+            0.5
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "expressions used in theme objects",
+          "line": 766
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-stylex-types-used-in-theme-o-017-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n       const RADIUS = 10;\n        export const theme = stylex.createTheme(vars, {\n          color: stylex.types.color({\n            default: 'green',\n            '@media (prefers-color-scheme: dark)': 'lightgreen',\n            '@media print': 'transparent',\n          }),\n          otherColor: stylex.types.color({\n            default: 'antiquewhite',\n            '@media (prefers-color-scheme: dark)': 'floralwhite',\n          }),\n          radius: stylex.types.length({ default: RADIUS * 2 })\n        });\n      \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\nconst RADIUS = 10;\nexport const theme = {\n  xop34xu: \"x5gq8ml xop34xu\",\n  $$css: true\n};",
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "stylex.types used in theme object",
+          "line": 823
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-stylex-types-used-in-theme-o-018-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n       const RADIUS = 10;\n        export const theme = stylex.createTheme(vars, {\n          color: stylex.types.color({\n            default: 'green',\n            '@media (prefers-color-scheme: dark)': 'lightgreen',\n            '@media print': 'transparent',\n          }),\n          otherColor: stylex.types.color({\n            default: 'antiquewhite',\n            '@media (prefers-color-scheme: dark)': 'floralwhite',\n          }),\n          radius: stylex.types.length({ default: RADIUS * 2 })\n        });\n      \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--xwx8imx:blue;--xaaua2w:grey;--xbbre8:10;}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "xop34xu-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){:root, .xop34xu{--xwx8imx:lightblue;--xaaua2w:rgba(0, 0, 0, 0.8);}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "xop34xu-bdddrq",
+            {
+              "ltr": "@media print{:root, .xop34xu{--xwx8imx:white;}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "x5gq8ml",
+            {
+              "ltr": ".x5gq8ml, .x5gq8ml:root{--xwx8imx:green;--xaaua2w:antiquewhite;--xbbre8:20px;}",
+              "rtl": null
+            },
+            0.5
+          ],
+          [
+            "x5gq8ml-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){.x5gq8ml, .x5gq8ml:root{--xwx8imx:lightgreen;--xaaua2w:floralwhite;}}",
+              "rtl": null
+            },
+            0.6000000000000001
+          ],
+          [
+            "x5gq8ml-bdddrq",
+            {
+              "ltr": "@media print{.x5gq8ml, .x5gq8ml:root{--xwx8imx:transparent;}}",
+              "rtl": null
+            },
+            0.6000000000000001
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "stylex.types used in theme object",
+          "line": 837
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-multiple-theme-objects-same-019-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n        export const theme = stylex.createTheme(vars, {\n  color: {\n    default: 'green',\n    '@media (prefers-color-scheme: dark)': 'lightgreen',\n    '@media print': 'transparent',\n  },\n  otherColor: {\n    default: 'antiquewhite',\n    '@media (prefers-color-scheme: dark)': {\n      default: 'floralwhite',\n      '@supports (color: oklab(0 0 0))': 'oklab(0.7 -0.3 -0.4)',\n    }\n  },\n  radius: '6px'\n});\n        export const otherTheme = stylex.createTheme(vars, {\n          color: 'skyblue',\n          radius: '8px',\n        });\n      \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\nexport const theme = {\n  xop34xu: \"x10yrbfs xop34xu\",\n  $$css: true\n};\nexport const otherTheme = {\n  xop34xu: \"xw6msop xop34xu\",\n  $$css: true\n};",
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "multiple theme objects (same vars)",
+          "line": 902
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-multiple-theme-objects-same-020-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n        export const theme = stylex.createTheme(vars, {\n  color: {\n    default: 'green',\n    '@media (prefers-color-scheme: dark)': 'lightgreen',\n    '@media print': 'transparent',\n  },\n  otherColor: {\n    default: 'antiquewhite',\n    '@media (prefers-color-scheme: dark)': {\n      default: 'floralwhite',\n      '@supports (color: oklab(0 0 0))': 'oklab(0.7 -0.3 -0.4)',\n    }\n  },\n  radius: '6px'\n});\n        export const otherTheme = stylex.createTheme(vars, {\n          color: 'skyblue',\n          radius: '8px',\n        });\n      \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--xwx8imx:blue;--xaaua2w:grey;--xbbre8:10;}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "xop34xu-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){:root, .xop34xu{--xwx8imx:lightblue;--xaaua2w:rgba(0, 0, 0, 0.8);}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "xop34xu-bdddrq",
+            {
+              "ltr": "@media print{:root, .xop34xu{--xwx8imx:white;}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "x10yrbfs",
+            {
+              "ltr": ".x10yrbfs, .x10yrbfs:root{--xwx8imx:green;--xaaua2w:antiquewhite;--xbbre8:6px;}",
+              "rtl": null
+            },
+            0.5
+          ],
+          [
+            "x10yrbfs-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){.x10yrbfs, .x10yrbfs:root{--xwx8imx:lightgreen;--xaaua2w:floralwhite;}}",
+              "rtl": null
+            },
+            0.6000000000000001
+          ],
+          [
+            "x10yrbfs-1e6ryz3",
+            {
+              "ltr": "@supports (color: oklab(0 0 0)){@media (prefers-color-scheme: dark){.x10yrbfs, .x10yrbfs:root{--xaaua2w:oklab(0.7 -0.3 -0.4);}}}",
+              "rtl": null
+            },
+            0.7
+          ],
+          [
+            "x10yrbfs-bdddrq",
+            {
+              "ltr": "@media print{.x10yrbfs, .x10yrbfs:root{--xwx8imx:transparent;}}",
+              "rtl": null
+            },
+            0.6000000000000001
+          ],
+          [
+            "xw6msop",
+            {
+              "ltr": ".xw6msop, .xw6msop:root{--xwx8imx:skyblue;--xbbre8:8px;}",
+              "rtl": null
+            },
+            0.5
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "multiple theme objects (same vars)",
+          "line": 919
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-multiple-theme-objects-diffe-021-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n        export const theme = stylex.createTheme(vars, {\n  color: {\n    default: 'green',\n    '@media (prefers-color-scheme: dark)': 'lightgreen',\n    '@media print': 'transparent',\n  },\n  otherColor: {\n    default: 'antiquewhite',\n    '@media (prefers-color-scheme: dark)': {\n      default: 'floralwhite',\n      '@supports (color: oklab(0 0 0))': 'oklab(0.7 -0.3 -0.4)',\n    }\n  },\n  radius: '6px'\n});\n      \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\nexport const theme = {\n  xop34xu: \"x10yrbfs xop34xu\",\n  $$css: true\n};",
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "multiple theme objects (different vars)",
+          "line": 1005
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-multiple-theme-objects-diffe-022-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--x103gslp)\",\n  otherColor: \"var(--x1e7put6)\",\n  radius: \"var(--xm3n3tg)\",\n  __varGroupHash__: \"x1ngxneg\"\n};\n    \n        export const theme = stylex.createTheme(vars, {\n  color: {\n    default: 'green',\n    '@media (prefers-color-scheme: dark)': 'lightgreen',\n    '@media print': 'transparent',\n  },\n  otherColor: {\n    default: 'antiquewhite',\n    '@media (prefers-color-scheme: dark)': {\n      default: 'floralwhite',\n      '@supports (color: oklab(0 0 0))': 'oklab(0.7 -0.3 -0.4)',\n    }\n  },\n  radius: '6px'\n});\n      \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--x103gslp)\",\n  otherColor: \"var(--x1e7put6)\",\n  radius: \"var(--xm3n3tg)\",\n  __varGroupHash__: \"x1ngxneg\"\n};\nexport const theme = {\n  x1ngxneg: \"x1k4bs7r x1ngxneg\",\n  $$css: true\n};",
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "multiple theme objects (different vars)",
+          "line": 1019
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-multiple-theme-objects-diffe-023-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n        export const theme = stylex.createTheme(vars, {\n  color: {\n    default: 'green',\n    '@media (prefers-color-scheme: dark)': 'lightgreen',\n    '@media print': 'transparent',\n  },\n  otherColor: {\n    default: 'antiquewhite',\n    '@media (prefers-color-scheme: dark)': {\n      default: 'floralwhite',\n      '@supports (color: oklab(0 0 0))': 'oklab(0.7 -0.3 -0.4)',\n    }\n  },\n  radius: '6px'\n});\n      \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--xwx8imx:blue;--xaaua2w:grey;--xbbre8:10;}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "xop34xu-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){:root, .xop34xu{--xwx8imx:lightblue;--xaaua2w:rgba(0, 0, 0, 0.8);}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "xop34xu-bdddrq",
+            {
+              "ltr": "@media print{:root, .xop34xu{--xwx8imx:white;}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "x10yrbfs",
+            {
+              "ltr": ".x10yrbfs, .x10yrbfs:root{--xwx8imx:green;--xaaua2w:antiquewhite;--xbbre8:6px;}",
+              "rtl": null
+            },
+            0.5
+          ],
+          [
+            "x10yrbfs-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){.x10yrbfs, .x10yrbfs:root{--xwx8imx:lightgreen;--xaaua2w:floralwhite;}}",
+              "rtl": null
+            },
+            0.6000000000000001
+          ],
+          [
+            "x10yrbfs-1e6ryz3",
+            {
+              "ltr": "@supports (color: oklab(0 0 0)){@media (prefers-color-scheme: dark){.x10yrbfs, .x10yrbfs:root{--xaaua2w:oklab(0.7 -0.3 -0.4);}}}",
+              "rtl": null
+            },
+            0.7
+          ],
+          [
+            "x10yrbfs-bdddrq",
+            {
+              "ltr": "@media print{.x10yrbfs, .x10yrbfs:root{--xwx8imx:transparent;}}",
+              "rtl": null
+            },
+            0.6000000000000001
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "multiple theme objects (different vars)",
+          "line": 1033
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-multiple-theme-objects-diffe-024-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--x103gslp)\",\n  otherColor: \"var(--x1e7put6)\",\n  radius: \"var(--xm3n3tg)\",\n  __varGroupHash__: \"x1ngxneg\"\n};\n    \n        export const theme = stylex.createTheme(vars, {\n  color: {\n    default: 'green',\n    '@media (prefers-color-scheme: dark)': 'lightgreen',\n    '@media print': 'transparent',\n  },\n  otherColor: {\n    default: 'antiquewhite',\n    '@media (prefers-color-scheme: dark)': {\n      default: 'floralwhite',\n      '@supports (color: oklab(0 0 0))': 'oklab(0.7 -0.3 -0.4)',\n    }\n  },\n  radius: '6px'\n});\n      \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x1ngxneg",
+            {
+              "ltr": ":root, .x1ngxneg{--x103gslp:blue;--x1e7put6:grey;--xm3n3tg:10;}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "x1ngxneg-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){:root, .x1ngxneg{--x103gslp:lightblue;--x1e7put6:rgba(0, 0, 0, 0.8);}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "x1ngxneg-bdddrq",
+            {
+              "ltr": "@media print{:root, .x1ngxneg{--x103gslp:white;}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "x1k4bs7r",
+            {
+              "ltr": ".x1k4bs7r, .x1k4bs7r:root{--x103gslp:green;--x1e7put6:antiquewhite;--xm3n3tg:6px;}",
+              "rtl": null
+            },
+            0.5
+          ],
+          [
+            "x1k4bs7r-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){.x1k4bs7r, .x1k4bs7r:root{--x103gslp:lightgreen;--x1e7put6:floralwhite;}}",
+              "rtl": null
+            },
+            0.6000000000000001
+          ],
+          [
+            "x1k4bs7r-1e6ryz3",
+            {
+              "ltr": "@supports (color: oklab(0 0 0)){@media (prefers-color-scheme: dark){.x1k4bs7r, .x1k4bs7r:root{--x1e7put6:oklab(0.7 -0.3 -0.4);}}}",
+              "rtl": null
+            },
+            0.7
+          ],
+          [
+            "x1k4bs7r-bdddrq",
+            {
+              "ltr": "@media print{.x1k4bs7r, .x1k4bs7r:root{--x103gslp:transparent;}}",
+              "rtl": null
+            },
+            0.6000000000000001
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "multiple theme objects (different vars)",
+          "line": 1096
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-themes-are-indifferent-to-or-025-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n        export const theme = stylex.createTheme(vars, {\n  color: {\n    default: 'green',\n    '@media (prefers-color-scheme: dark)': 'lightgreen',\n    '@media print': 'transparent',\n  },\n  otherColor: {\n    default: 'antiquewhite',\n    '@media (prefers-color-scheme: dark)': {\n      default: 'floralwhite',\n      '@supports (color: oklab(0 0 0))': 'oklab(0.7 -0.3 -0.4)',\n    }\n  },\n  radius: '6px'\n});\n      \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toEqual",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\nexport const theme = {\n  xop34xu: \"x10yrbfs xop34xu\",\n  $$css: true\n};",
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "themes are indifferent to order of keys",
+          "line": 1182
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-themes-are-indifferent-to-or-026-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n        export const theme = stylex.createTheme(vars, {\n  color: {\n    default: 'green',\n    '@media (prefers-color-scheme: dark)': 'lightgreen',\n    '@media print': 'transparent',\n  },\n  otherColor: {\n    default: 'antiquewhite',\n    '@media (prefers-color-scheme: dark)': {\n      default: 'floralwhite',\n      '@supports (color: oklab(0 0 0))': 'oklab(0.7 -0.3 -0.4)',\n    }\n  },\n  radius: '6px'\n});\n      \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toEqual",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--xwx8imx:blue;--xaaua2w:grey;--xbbre8:10;}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "xop34xu-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){:root, .xop34xu{--xwx8imx:lightblue;--xaaua2w:rgba(0, 0, 0, 0.8);}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "xop34xu-bdddrq",
+            {
+              "ltr": "@media print{:root, .xop34xu{--xwx8imx:white;}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "x10yrbfs",
+            {
+              "ltr": ".x10yrbfs, .x10yrbfs:root{--xwx8imx:green;--xaaua2w:antiquewhite;--xbbre8:6px;}",
+              "rtl": null
+            },
+            0.5
+          ],
+          [
+            "x10yrbfs-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){.x10yrbfs, .x10yrbfs:root{--xwx8imx:lightgreen;--xaaua2w:floralwhite;}}",
+              "rtl": null
+            },
+            0.6000000000000001
+          ],
+          [
+            "x10yrbfs-1e6ryz3",
+            {
+              "ltr": "@supports (color: oklab(0 0 0)){@media (prefers-color-scheme: dark){.x10yrbfs, .x10yrbfs:root{--xaaua2w:oklab(0.7 -0.3 -0.4);}}}",
+              "rtl": null
+            },
+            0.7
+          ],
+          [
+            "x10yrbfs-bdddrq",
+            {
+              "ltr": "@media print{.x10yrbfs, .x10yrbfs:root{--xwx8imx:transparent;}}",
+              "rtl": null
+            },
+            0.6000000000000001
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "themes are indifferent to order of keys",
+          "line": 1183
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-adds-debug-data-027-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "html/js/components/Foo.react.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n          export const theme = stylex.createTheme(vars, {\n            color: 'orange'\n          });\n        \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "debug": true
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\nexport const theme = {\n  xop34xu: \"xowvtgn xop34xu\",\n  $$css: true\n};",
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "adds debug data",
+          "line": 1203
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-adds-debug-data-028-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "html/js/components/Foo.react.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n          export const theme = stylex.createTheme(vars, {\n            color: 'orange'\n          });\n        \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "debug": true
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--xwx8imx:blue;--xaaua2w:grey;--xbbre8:10;}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "xop34xu-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){:root, .xop34xu{--xwx8imx:lightblue;--xaaua2w:rgba(0, 0, 0, 0.8);}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "xop34xu-bdddrq",
+            {
+              "ltr": "@media print{:root, .xop34xu{--xwx8imx:white;}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "xowvtgn",
+            {
+              "ltr": ".xowvtgn, .xowvtgn:root{--xwx8imx:orange;}",
+              "rtl": null
+            },
+            0.5
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "adds debug data",
+          "line": 1216
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-adds-debug-data-for-npm-pack-029-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "js/node_modules/npm-package/dist/components/Foo.react.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n          export const theme = stylex.createTheme(vars, {\n            color: 'orange'\n          });\n        \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "debug": true
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\nexport const theme = {\n  xop34xu: \"xowvtgn xop34xu\",\n  $$css: true\n};",
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "adds debug data for npm packages",
+          "line": 1271
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-adds-debug-data-for-npm-pack-030-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "js/node_modules/npm-package/dist/components/Foo.react.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n          export const theme = stylex.createTheme(vars, {\n            color: 'orange'\n          });\n        \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "debug": true
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--xwx8imx:blue;--xaaua2w:grey;--xbbre8:10;}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "xop34xu-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){:root, .xop34xu{--xwx8imx:lightblue;--xaaua2w:rgba(0, 0, 0, 0.8);}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "xop34xu-bdddrq",
+            {
+              "ltr": "@media print{:root, .xop34xu{--xwx8imx:white;}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "xowvtgn",
+            {
+              "ltr": ".xowvtgn, .xowvtgn:root{--xwx8imx:orange;}",
+              "rtl": null
+            },
+            0.5
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "adds debug data for npm packages",
+          "line": 1284
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-adds-debug-data-haste-031-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "html/js/components/Foo.react.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n          export const theme = stylex.createTheme(vars, {\n            color: 'orange'\n          });\n        \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "debug": true
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\nexport const theme = {\n  xop34xu: \"xowvtgn xop34xu\",\n  $$css: true\n};",
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "adds debug data (haste)",
+          "line": 1340
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-adds-debug-data-haste-032-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "html/js/components/Foo.react.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n          export const theme = stylex.createTheme(vars, {\n            color: 'orange'\n          });\n        \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "debug": true
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--xwx8imx:blue;--xaaua2w:grey;--xbbre8:10;}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "xop34xu-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){:root, .xop34xu{--xwx8imx:lightblue;--xaaua2w:rgba(0, 0, 0, 0.8);}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "xop34xu-bdddrq",
+            {
+              "ltr": "@media print{:root, .xop34xu{--xwx8imx:white;}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "xowvtgn",
+            {
+              "ltr": ".xowvtgn, .xowvtgn:root{--xwx8imx:orange;}",
+              "rtl": null
+            },
+            0.5
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "adds debug data (haste)",
+          "line": 1353
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-adds-debug-data-for-npm-pack-033-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "node_modules/npm-package/dist/components/Foo.react.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n          export const theme = stylex.createTheme(vars, {\n            color: 'orange'\n          });\n        \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "debug": true
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\nexport const theme = {\n  xop34xu: \"xowvtgn xop34xu\",\n  $$css: true\n};",
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "adds debug data for npm packages (haste)",
+          "line": 1409
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-adds-debug-data-for-npm-pack-034-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "node_modules/npm-package/dist/components/Foo.react.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n          export const theme = stylex.createTheme(vars, {\n            color: 'orange'\n          });\n        \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "debug": true
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--xwx8imx:blue;--xaaua2w:grey;--xbbre8:10;}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "xop34xu-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){:root, .xop34xu{--xwx8imx:lightblue;--xaaua2w:rgba(0, 0, 0, 0.8);}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "xop34xu-bdddrq",
+            {
+              "ltr": "@media print{:root, .xop34xu{--xwx8imx:white;}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "xowvtgn",
+            {
+              "ltr": ".xowvtgn, .xowvtgn:root{--xwx8imx:orange;}",
+              "rtl": null
+            },
+            0.5
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "adds debug data for npm packages (haste)",
+          "line": 1422
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-adds-dev-data-035-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "html/js/components/Foo.react.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n          export const theme = stylex.createTheme(vars, {\n            color: 'orange'\n          });\n        \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "dev": true
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\nexport const theme = {\n  Foo__theme: \"Foo__theme\",\n  xop34xu: \"xowvtgn xop34xu\",\n  $$css: true\n};",
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "adds dev data",
+          "line": 1479
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-adds-dev-data-036-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "html/js/components/Foo.react.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n          export const theme = stylex.createTheme(vars, {\n            color: 'orange'\n          });\n        \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "dev": true
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--xwx8imx:blue;--xaaua2w:grey;--xbbre8:10;}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "xop34xu-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){:root, .xop34xu{--xwx8imx:lightblue;--xaaua2w:rgba(0, 0, 0, 0.8);}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "xop34xu-bdddrq",
+            {
+              "ltr": "@media print{:root, .xop34xu{--xwx8imx:white;}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "xowvtgn",
+            {
+              "ltr": ".xowvtgn, .xowvtgn:root{--xwx8imx:orange;}",
+              "rtl": null
+            },
+            0.5
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "adds dev data",
+          "line": 1493
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-adds-style-injection-037-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "html/js/components/Foo.react.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n          export const theme = stylex.createTheme(vars, {\n            color: 'orange'\n          });\n        \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n_inject2({\n  ltr: \".xowvtgn, .xowvtgn:root{--xwx8imx:orange;}\",\n  priority: 0.5\n});\nexport const theme = {\n  xop34xu: \"xowvtgn xop34xu\",\n  $$css: true\n};",
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "adds style injection",
+          "line": 1550
+        }
+      }
+    },
+    {
+      "id": "assertions/createTheme-adds-style-injection-038-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "html/js/components/Foo.react.js",
+      "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n          export const theme = stylex.createTheme(vars, {\n            color: 'orange'\n          });\n        \n  ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["createTheme", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xop34xu",
+            {
+              "ltr": ":root, .xop34xu{--xwx8imx:blue;--xaaua2w:grey;--xbbre8:10;}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "xop34xu-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){:root, .xop34xu{--xwx8imx:lightblue;--xaaua2w:rgba(0, 0, 0, 0.8);}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "xop34xu-bdddrq",
+            {
+              "ltr": "@media print{:root, .xop34xu{--xwx8imx:white;}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "xowvtgn",
+            {
+              "ltr": ".xowvtgn, .xowvtgn:root{--xwx8imx:orange;}",
+              "rtl": null
+            },
+            0.5
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-createTheme-test.js",
+          "test": "adds style injection",
+          "line": 1569
+        }
+      }
+    }
+  ]
+}

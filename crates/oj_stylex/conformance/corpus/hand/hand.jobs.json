@@ -1,0 +1,145 @@
+{
+  "header": {
+    "corpus": "hand",
+    "description": "Hand-written starter jobs for the pilot StyleX subset. Ground truth is @stylexjs/babel-plugin 0.19.0 run live; every job verified against the oracle before commit.",
+    "oracle": "@stylexjs/babel-plugin@0.19.0",
+    "written": "2026-08-27",
+    "notes": "The cross-file jobs use corpus/hand/fixtures/default/src/tokens.stylex.ts, materialized on disk because the plugin resolves imported .stylex files via fs.existsSync (values are never read; const hashes are derived from the canonical file name)."
+  },
+  "jobs": [
+    {
+      "id": "hand/create-basic-001",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({\n  root: { color: 'blue', fontSize: '14px', marginInlineStart: '8px' },\n});\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["create"]
+    },
+    {
+      "id": "hand/pseudo-hover-002",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({\n  root: { color: { default: 'blue', ':hover': 'red' } },\n});\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["create", "pseudo"]
+    },
+    {
+      "id": "hand/media-nested-003",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({\n  root: { color: { default: 'blue', '@media (min-width: 600px)': { default: 'green', ':hover': 'red' } } },\n});\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["create", "media", "pseudo"]
+    },
+    {
+      "id": "hand/null-value-004",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({\n  root: { color: null, margin: 0 },\n});\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["create", "null-value"]
+    },
+    {
+      "id": "hand/multi-namespace-005",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({\n  one: { color: 'blue' },\n  two: { color: 'red', fontSize: '14px' },\n  three: { display: 'flex' },\n});\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["create", "namespaces"]
+    },
+    {
+      "id": "hand/content-string-006",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({\n  root: { content: 'hello', color: 'red' },\n});\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["create", "content"]
+    },
+    {
+      "id": "hand/fallback-array-007",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({\n  root: { position: ['sticky', 'fixed'] },\n});\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["create", "fallback-array"]
+    },
+    {
+      "id": "hand/define-consts-008",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/tokens.stylex.ts",
+      "sourceFile": "corpus/hand/fixtures/default/src/tokens.stylex.ts",
+      "options": {
+        "unstable_moduleResolution": { "type": "commonJS", "rootDir": "<ROOT>" }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["defineConsts"]
+    },
+    {
+      "id": "hand/cross-file-const-009",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/consumer.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { breakpoints, spacing } from './tokens.stylex';\nexport const styles = stylex.create({\n  root: { color: { default: 'red', [breakpoints.md]: 'blue' }, padding: spacing.gutter },\n});\n",
+      "options": {
+        "unstable_moduleResolution": { "type": "commonJS", "rootDir": "<ROOT>" }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["create", "defineConsts", "cross-file"]
+    },
+    {
+      "id": "hand/keyframes-010",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nconst fade = stylex.keyframes({ from: { opacity: 0 }, to: { opacity: 1 } });\nexport const styles = stylex.create({\n  root: { animationName: fade, animationDuration: '500ms' },\n});\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["keyframes"]
+    },
+    {
+      "id": "hand/error-nonstatic-011",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { getColor } from './helpers';\nexport const styles = stylex.create({\n  root: { color: getColor() },\n});\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["create", "error", "non-static"]
+    },
+    {
+      "id": "hand/error-spread-012",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nconst more = { extra: { color: 'green' } };\nexport const styles = stylex.create({\n  root: { color: 'red' },\n  ...more,\n});\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["create", "error", "spread"]
+    },
+    {
+      "id": "hand/ftw-collapse-013",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({\n  root: { color: stylex.firstThatWorks('var(--a)', 'red', 'var(--b)', 'blue') },\n});\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["create", "firstThatWorks"]
+    }
+  ]
+}

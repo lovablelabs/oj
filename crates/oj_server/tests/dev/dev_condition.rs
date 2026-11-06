@@ -74,12 +74,7 @@ async fn dev_resolves_the_development_export_and_wraps_cjs_dynamic_imports() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn pre_bundle_picks_the_same_development_export() {
-    // The optimizer bundles with rolldown; a dev build has no vendored copy,
-    // so the app gets the fixture's.
-    crate::require_fixture!("rolldown", "@rolldown");
     let app = app();
-    app.link_fixture("rolldown");
-    app.link_fixture("@rolldown");
     app.write(&[(
         "oj.config.json",
         r#"{"optimizeDeps":{"include":["cond-dep"]}}"#,

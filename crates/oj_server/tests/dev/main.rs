@@ -8,26 +8,39 @@
 //! integration test so build.rs's exported-symbols link flag applies to the
 //! napi addons a plugin host loads.
 
+mod alias_order;
 mod assets;
 mod browser;
 mod browser_errors;
 mod build_config_flag;
+mod config_env;
+mod config_evaluations;
 mod config_flag;
 mod config_function;
 mod config_proxy;
 mod config_temp_file;
 mod config_wrapper;
+mod css_asset_hmr;
 mod css_import_inline;
+mod css_importer_invalidation;
+mod css_inline_hmr;
+mod css_modules_vite_names;
+mod css_outside_root_deps;
+mod css_plugin_slots;
+mod css_postcss_langs;
 mod css_preprocessor_options;
 mod css_url_inline;
 mod dep_plugin_load;
+mod dev_base;
 mod dev_condition;
 mod dev_cors_host;
+mod dev_html_native;
 mod dev_mode;
 mod dev_process_env;
 mod dunder_paths;
 mod dynamic_import;
 mod fs_allow_node_modules;
+mod glob_alias;
 mod hmr_client_behaviors;
 mod hmr_dep_update;
 mod hmr_disabled;
@@ -35,38 +48,65 @@ mod hmr_gate;
 mod hmr_hot_accept;
 mod hmr_protocol;
 mod host_binding;
+mod hot_update_burst;
 mod html_entry;
 mod html_env;
 mod html_proxy;
+mod json_import_attributes;
 mod jsx_import_source;
 mod lazy_flag;
+mod leave_out_config;
 mod lingui_macro_shim;
 mod listen;
 mod new_url_asset;
+mod optimize_alias;
+mod optimize_late_react_dep;
 mod optimize_linked;
+mod optimize_plan;
+mod optimize_reload;
+mod optimize_rerun_reload;
 mod plugin_close_hooks;
 mod plugin_ctx_chain;
+mod plugin_ctx_resolve_env;
+mod plugin_environments;
 mod plugin_error_surfaced;
+mod plugin_filter_globs;
 mod plugin_middleware;
 mod plugin_module_graph;
 mod plugin_object_hooks;
 mod plugin_parse;
+mod plugin_react_native;
 mod plugin_skip;
+mod plugin_watch_change;
 mod plugin_ws;
 mod plugin_ws_execute;
 mod postcss_config_discovery;
+mod postcss_from_vite;
+#[cfg(unix)]
+mod pre_resolve_id;
 mod preprocessors;
 mod query_assets;
+mod redirect_passthrough;
+mod refresh_harness;
+mod resolve_created_files;
+mod restart_check;
+mod ssr_externalize;
+mod stylex;
 mod svelte;
 mod svgr;
 mod tailwind_js_import;
+mod tailwind_postcss_imports;
+mod tailwind_sheet_stale;
+mod tailwind_v4_persistent;
 mod unresolved_bare;
+mod vite_esm_entry;
 mod vite_hmr_socket;
 mod warm_transform_virtual;
 mod wasm;
 mod watch_reads;
 mod watcher;
 mod worker_modes;
+mod worker_urls;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -139,7 +179,10 @@ impl App {
             enable_cache: false,
             no_cache: false,
             lazy: false,
+            typecheck: false,
             mode: None,
+            // The test's own runtime.
+            rolldown: tokio::runtime::Handle::current(),
         }
     }
 
@@ -179,47 +222,54 @@ pub struct Server {
     root: PathBuf,
 }
 
-/// Restarts asked for so far, by any server in this process.
-pub(crate) static RESTARTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// Restarts asked for so far, by any server in this process: the asking
+/// app's root and the reason.
+pub(crate) static RESTARTS: Mutex<Vec<(PathBuf, String)>> = Mutex::new(Vec::new());
 
-/// Whether a restart belongs to the app at `root`: a watcher restart names
-/// the file that changed ("<file> changed"), relative to the cwd or absolute.
-fn restart_is_under(reason: &str, root: &Path) -> bool {
-    let Some(file) = reason.strip_suffix(" changed") else {
-        return false;
-    };
-    let file = std::env::current_dir().unwrap().join(file);
-    let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    file.starts_with(root) || file.starts_with(&canonical)
+fn same_dir(a: &Path, b: &Path) -> bool {
+    let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    a == b || canonical(a) == canonical(b)
 }
 
-/// Takes out the recorded restarts `keep` claims, leaving the rest.
-fn take_restarts_where(keep: impl Fn(&str) -> bool) -> Vec<String> {
+/// The reasons of the restarts the app at `root` asked for so far, taken
+/// out: for a test that expects one. Any other server's restart stays for
+/// its own test, and its own drop.
+pub fn take_restarts_for(root: &Path) -> Vec<String> {
     let mut all = RESTARTS.lock().unwrap();
     let (ours, rest) = std::mem::take(&mut *all)
         .into_iter()
-        .partition(|r: &String| keep(r));
+        .partition(|(at, _)| same_dir(at, root));
     *all = rest;
-    ours
+    ours.into_iter().map(|(_, reason)| reason).collect()
 }
 
-/// The restarts asked for so far over a file under `root`, taken out: for a
-/// test that expects one. Any other server's restart stays for its own drop
-/// to fail on.
-pub fn take_restarts_for(root: &Path) -> Vec<String> {
-    take_restarts_where(|r| restart_is_under(r, root))
+/// The "server restart failed" diagnostics so far whose message names
+/// `needle` (an app's root, or a marker its config throws).
+pub fn restart_failures(needle: &str) -> Vec<String> {
+    static FAILED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static CAPTURE: std::sync::Once = std::sync::Once::new();
+    CAPTURE.call_once(|| {
+        oj_diag::add_output(std::sync::Arc::new(|event: &oj_diag::Event| {
+            if event.message.starts_with("server restart failed") {
+                FAILED.lock().unwrap().push(event.message.clone());
+            }
+        }));
+    });
+    FAILED
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|m| m.contains(needle))
+        .cloned()
+        .collect()
 }
 
-/// No test expects a restart, so one over this app's files fails the test
-/// as its server drops (a panic on the asking thread would never reach a
-/// test). A restart naming no file (a plugin's `server.restart()`) can't be
-/// told apart, so it fails whichever server drops next.
+/// A restart this app asked for that its test never claimed fails the test as
+/// its server drops (a panic on the asking thread would never reach a test).
 impl Drop for Server {
     fn drop(&mut self) {
         self.built.close_watcher();
-        let root = self.root.clone();
-        let restarts =
-            take_restarts_where(|r| restart_is_under(r, &root) || !r.ends_with(" changed"));
+        let restarts = take_restarts_for(&self.root);
         if !restarts.is_empty() && !std::thread::panicking() {
             panic!("a dev server asked for a restart: {restarts:?}");
         }
@@ -229,8 +279,11 @@ impl Drop for Server {
 /// A restart would exec the test binary over every running test: record it
 /// and park the asking thread (the watcher, or a plugin's server.restart()
 /// task), as the exec would have stopped it.
-fn restart_in_test(reason: &str) -> ! {
-    RESTARTS.lock().unwrap().push(reason.to_string());
+fn restart_in_test(root: &Path, reason: &str) -> ! {
+    RESTARTS
+        .lock()
+        .unwrap()
+        .push((root.to_path_buf(), reason.to_string()));
     loop {
         std::thread::park();
     }
@@ -289,3 +342,24 @@ impl Server {
 }
 
 pub const INDEX_HTML: &str = r#"<!doctype html><html><head><title>t</title></head><body><script type="module" src="/src/main.js"></script></body></html>"#;
+
+/// Waits until the dev server's eager crawl has walked `root`'s graph (the
+/// snapshot it writes once done). False when OJ_CACHE_DIR puts the cache
+/// outside the app, where concurrent tests share one snapshot.
+pub async fn crawled(root: &Path) -> bool {
+    let cache = oj_cache::cache_root(root);
+    if !cache.starts_with(root) {
+        eprintln!("skipping the crawl wait: OJ_CACHE_DIR shares the graph snapshot");
+        return false;
+    }
+    let snapshot = cache.join("graph-snapshot.json");
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !snapshot.exists() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the eager crawl never finished"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    true
+}

@@ -18,6 +18,7 @@ mod config_flag_build;
 mod config_function_build;
 mod css_code_split_build;
 mod css_import_inline_build;
+mod css_plugin_served;
 mod css_plugin_transform;
 mod css_preprocessor_options_build;
 mod css_rebase;
@@ -27,14 +28,19 @@ mod dynamic_import_build;
 mod emit_chunk;
 mod emit_chunk_buildstart;
 mod emit_html_chunk;
+mod entry_names_build;
 mod generate_bundle_fidelity;
 mod html_attribute_quotes;
 mod html_entries_build;
 mod html_entry_build;
 mod html_env_build;
+mod inlined_entries_build;
 mod jsx_import_source_build;
+mod load_error_build;
 mod manifest;
 mod manual_chunks_build;
+mod mixed_raw_query;
+mod module_graph_build;
 mod modulepreload;
 mod multi_html_input;
 mod new_url_asset_build;
@@ -44,13 +50,17 @@ mod plugin_error_surfaced_build;
 mod plugin_hook_gating_build;
 mod plugin_load_jsx;
 mod plugin_object_hooks_build;
+mod plugin_sourcemap_build;
 mod postcss_config_discovery_build;
 mod preload_relative_base_build;
 mod preprocessors_build;
 mod rolldown_options;
+mod root_absolute_imports_build;
 mod ssr_options;
+mod stylex_build;
 mod svelte_build;
 mod svgr_build;
+mod transform_index_html_order;
 mod vite_build_manifest_in_bundle;
 mod vite_config_build;
 mod vite_css_post_shim;
@@ -151,7 +161,13 @@ pub(super) fn write_files(root: &Path, files: &[(&str, &str)]) {
 
 /// `oj build <root>` (production mode unless given) with default CLI flags.
 pub(super) async fn build_app(root: &Path) -> anyhow::Result<()> {
-    build(root.to_path_buf(), None, CliOptions::default()).await
+    build(
+        root.to_path_buf(),
+        None,
+        &tokio::runtime::Handle::current(),
+        CliOptions::default(),
+    )
+    .await
 }
 
 /// Every file under `dir`, relative path to contents (lossy UTF-8), sorted.
@@ -191,4 +207,20 @@ pub(super) fn js_under(dir: &Path) -> String {
         .map(|(_, code)| code)
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// A build's in-process host chdirs the whole test process into the app root,
+/// so a test deleting its root afterwards leaves every concurrent test on a
+/// deleted cwd (engine loads then fail with NotFound). [`scratch`] cleans
+/// before use instead.
+#[test]
+fn no_check_deletes_its_app_root() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/build/plugin_api_tests");
+    for entry in fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        let code = fs::read_to_string(&path).unwrap();
+        for bad in ["remove_dir_all(&root)", "remove_dir_all(root)"] {
+            assert!(!code.contains(bad), "{} calls {bad}", path.display());
+        }
+    }
 }

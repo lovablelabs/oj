@@ -2,8 +2,9 @@
 
 // The route generator's configuration surface. `@tanstack/router-generator`
 // reads tsr.config.json and merges it as { ...file, ...inline }, so every key
-// the adapter passes inline is a key the app cannot set. These pin which keys
-// the adapter still decides and which it leaves to the app.
+// the adapter passes inline is a key the app cannot set. Start passes its
+// routes directory and route tree inline (from tanstackStart's `srcDirectory`
+// and `router`), so tsr.config.json never moves them; oj passes the same two.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -36,9 +37,9 @@ function app(label, { tsrConfig } = {}) {
   return dir;
 }
 
-const generate = (dir) =>
+const generate = (dir, env = {}) =>
   execFileSync(process.execPath, [asset("start/generate.mjs")], {
-    env: { ...process.env, OJ_APP_ROOT: dir },
+    env: { ...process.env, OJ_APP_ROOT: dir, ...env },
     stdio: ["ignore", "pipe", "pipe"],
   });
 
@@ -52,23 +53,34 @@ maybe("the route tree lands at the default path when the app configures nothing"
   }
 });
 
-maybe("tsr.config.json decides where the route tree is written", () => {
-  const dir = app("configured", {
-    tsrConfig: {
-      routesDirectory: "./src/routes",
-      generatedRouteTree: "./src/routes/routeTree.gen.ts",
-    },
+maybe("tsr.config.json does not move the route tree, as under Start", () => {
+  const dir = app("tsr-config", {
+    tsrConfig: { generatedRouteTree: "./src/routes/routeTree.gen.ts" },
   });
   try {
     generate(dir);
+    assert.ok(existsSync(join(dir, "src", "routeTree.gen.ts")), "no tree at Start's default path");
     assert.ok(
-      existsSync(join(dir, "src", "routes", "routeTree.gen.ts")),
-      "the tree was not written where tsr.config.json asked for it",
+      !existsSync(join(dir, "src", "routes", "routeTree.gen.ts")),
+      "tsr.config.json moved the tree, which Start never lets it do",
     );
-    assert.ok(
-      !existsSync(join(dir, "src", "routeTree.gen.ts")),
-      "the tree was also written at the default path, so the app got two of them",
-    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+maybe("the paths oj passes for Start decide where the routes and the tree are", () => {
+  const dir = app("start-paths", {
+    tsrConfig: { generatedRouteTree: "./src/elsewhere.gen.ts" },
+  });
+  try {
+    generate(dir, {
+      OJ_ROUTES_DIRECTORY: join(dir, "src", "routes"),
+      OJ_GENERATED_ROUTE_TREE: join(dir, "src", "routes.gen.ts"),
+    });
+    assert.ok(existsSync(join(dir, "src", "routes.gen.ts")), "the tree is not where Start puts it");
+    assert.ok(!existsSync(join(dir, "src", "routeTree.gen.ts")), "a second tree at the default path");
+    assert.ok(!existsSync(join(dir, "src", "elsewhere.gen.ts")), "tsr.config.json's path was used");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

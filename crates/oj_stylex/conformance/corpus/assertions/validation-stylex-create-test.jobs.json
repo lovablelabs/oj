@@ -1,0 +1,2293 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/validation-stylex-create-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs and upstream's own expected values — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "assertions/validation-create-invalid-use-not-bound-001-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          stylex.create({});\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "create() calls must be bound to a bare variable.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid use: not bound",
+          "line": 58
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-argument-none-002-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const styles = stylex.create();\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "create() should have 1 argument.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid argument: none",
+          "line": 67
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-argument-too-many-003-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const styles = stylex.create({}, {});\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "create() should have 1 argument.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid argument: too many",
+          "line": 76
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-argument-non-static-004-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const styles = stylex.create(genStyles());\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "create() can only accept an object.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid argument: non-static",
+          "line": 85
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-valid-argument-object-005-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const styles = stylex.create({});\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "valid argument: object",
+          "line": 94
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-key-non-static-006-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const styles = stylex.create({\n            [root]: {\n              backgroundColor: 'red',\n            }\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Only static values are allowed inside of a create() call.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid key: non-static",
+          "line": 106
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-rule-non-object-007-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            namespace: false,\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A StyleX namespace must be an object.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid rule: non-object",
+          "line": 121
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-rule-spread-008-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const shared = { foo: { color: 'red' } };\n          const styles = stylex.create({\n            ...shared,\n            bar: { color: 'blue' }\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Object spreads are not allowed in create() calls.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid rule: spread",
+          "line": 132
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-valid-rule-object-009-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          const styles = stylex.create({\n            namespace: {},\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "valid rule: object",
+          "line": 145
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-dynamic-rule-default-010-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            dynamic: (props = {}) => ({\n              color: props.color,\n            }),\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Only named parameters are allowed in Dynamic Style functions. Destructuring, spreading or default values are not allowed.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid dynamic rule: default object value",
+          "line": 155
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-dynamic-rule-default-011-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            dynamic: (color = 'red') => ({\n              color,\n            }),\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Only named parameters are allowed in Dynamic Style functions. Destructuring, spreading or default values are not allowed.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid dynamic rule: default string value",
+          "line": 168
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-dynamic-rule-destruc-012-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            dynamic: ({ color }) => ({\n              color,\n            }),\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Only named parameters are allowed in Dynamic Style functions. Destructuring, spreading or default values are not allowed.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid dynamic rule: destructuring ",
+          "line": 181
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-dynamic-rule-rest-pa-013-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            dynamic: (...rest) => ({\n              color: rest[0],\n            }),\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Only named parameters are allowed in Dynamic Style functions. Destructuring, spreading or default values are not allowed.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid dynamic rule: rest param ",
+          "line": 194
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-valid-dynamic-rule-014-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            dynamic: (backgroundColor) => ({\n              backgroundColor,\n            }),\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "valid dynamic rule",
+          "line": 207
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-property-non-static-015-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              [backgroundColor]: 'red',\n            }\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrowErrorMatchingInlineSnapshot",
+        "match": "exact",
+        "expected": "unknown file: Referenced constant is not defined.\n  3 |           const styles = stylex.create({\n  4 |             root: {\n> 5 |               [backgroundColor]: 'red',\n    |                ^^^^^^^^^^^^^^^\n  6 |             }\n  7 |           });\n  8 |         ",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid property: non-static value",
+          "line": 224
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-boolean-016-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            default: {\n              color: true,\n            },\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: boolean",
+          "line": 248
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-non-static-017-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                backgroundColor: backgroundColor,\n              }\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrowErrorMatchingInlineSnapshot",
+        "match": "exact",
+        "expected": "unknown file: Referenced constant is not defined.\n  3 |             const styles = stylex.create({\n  4 |               root: {\n> 5 |                 backgroundColor: backgroundColor,\n    |                                  ^^^^^^^^^^^^^^^\n  6 |               }\n  7 |             });\n  8 |           ",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: non-static",
+          "line": 261
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-non-static-018-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                backgroundColor: generateBg(),\n              }\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrowErrorMatchingInlineSnapshot",
+        "match": "exact",
+        "expected": "unknown file: Referenced constant is not defined.\n  3 |             const styles = stylex.create({\n  4 |               root: {\n> 5 |                 backgroundColor: generateBg(),\n    |                                  ^^^^^^^^^^\n  6 |               }\n  7 |             });\n  8 |           ",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: non-static",
+          "line": 281
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-non-static-019-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            import {generateBg} from './other-file';\n            const styles = stylex.create({\n              root: {\n                backgroundColor: generateBg(),\n              }\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrowErrorMatchingInlineSnapshot",
+        "match": "exact",
+        "expected": "unknown file: Could not resolve the path to the imported file.\nPlease ensure that the theme file has a .stylex.js or .stylex.ts extension and follows the\nrules for defining variables:\n\nhttps://stylexjs.com/docs/learn/theming/defining-variables/#rules-when-defining-variables\n\n  1 |\n  2 |             import * as stylex from '@stylexjs/stylex';\n> 3 |             import {generateBg} from './other-file';\n    |                     ^^^^^^^^^^\n  4 |             const styles = stylex.create({\n  5 |               root: {\n  6 |                 backgroundColor: generateBg(),",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: non-static",
+          "line": 301
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-non-static-020-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            import generateBg from './other-file';\n            const styles = stylex.create({\n              root: {\n                backgroundColor: generateBg(),\n              }\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrowErrorMatchingInlineSnapshot",
+        "match": "exact",
+        "expected": "unknown file: There was an error when attempting to evaluate the imported file.\nPlease ensure that the imported file is self-contained and does not rely on dynamic behavior.\n\n  1 |\n  2 |             import * as stylex from '@stylexjs/stylex';\n> 3 |             import generateBg from './other-file';\n    |                    ^^^^^^^^^^\n  4 |             const styles = stylex.create({\n  5 |               root: {\n  6 |                 backgroundColor: generateBg(),",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: non-static",
+          "line": 327
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-empty-object-021-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              color: {},\n            },\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: empty object",
+          "line": 353
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-array-of-objec-022-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              transitionDuration: [[], {}],\n            },\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrowErrorMatchingInlineSnapshot",
+        "match": "exact",
+        "expected": "unknown file: A style array value can only contain strings or numbers.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: array of objects",
+          "line": 366
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-valid-value-number-023-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              padding: 5,\n            }\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "valid value: number",
+          "line": 381
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-valid-value-string-024-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              backgroundColor: 'red',\n            }\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "valid value: string",
+          "line": 394
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-valid-value-array-of-numbers-025-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              transitionDuration: [500],\n            },\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "valid value: array of numbers",
+          "line": 407
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-valid-value-array-of-strings-026-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              transitionDuration: ['0.5s'],\n            },\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "valid value: array of strings",
+          "line": 420
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-valid-value-single-expr-func-027-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const generateBg = () => 'red';\n          export const styles = stylex.create({\n            root: {\n              backgroundColor: generateBg(),\n            }\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "valid value: single-expr function call",
+          "line": 433
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-valid-value-single-expr-func-028-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const fns = {\n              generateBg: () => 'red',\n            };\n            export const styles = stylex.create({\n              root: {\n                backgroundColor: fns.generateBg(),\n              }\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "valid value: single-expr function call in object",
+          "line": 448
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-valid-value-local-variable-029-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const bg = '#eee';\n          const styles = stylex.create({\n            root: {\n              backgroundColor: bg,\n            }\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "valid value: local variable",
+          "line": 493
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-valid-value-pure-complex-exp-030-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const borderRadius = 2;\n          const styles = stylex.create({\n            root: {\n              borderRadius: borderRadius * 2,\n            }\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "valid value: pure complex expression",
+          "line": 507
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-valid-value-template-literal-031-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const borderSize = 2;\n          const styles = stylex.create({\n            root: {\n              borderRadius: `${borderSize * 2}px`,\n            }\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "valid value: template literal expressions",
+          "line": 521
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-object-value-contain-032-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                'color': {\n                  '::before': 'blue'\n                },\n              },\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Invalid pseudo or at-rule.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid object value: contains disallowed key",
+          "line": 538
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-object-value-contain-033-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                'color': {\n                  '&:hover': 'blue'\n                },\n              },\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Invalid pseudo or at-rule.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid object value: contains disallowed key",
+          "line": 551
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-object-value-contain-034-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                'color': {\n                  '@media not ((not (min-width: 400px))': 'blue'\n                },\n              },\n            });\n          ",
+      "options": {
+        "enableMediaQueryOrder": true
+      },
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Invalid media query syntax.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid object value: contains disallowed key",
+          "line": 564
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-object-value-contain-035-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                'color': {\n                  '(min-width:320px)': 'blue'\n                },\n              },\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Invalid pseudo or at-rule.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid object value: contains disallowed key",
+          "line": 580
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-valid-object-value-key-is-de-036-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                color: {\n                  default: 'red'\n                }\n              },\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "valid object value: key is \"default\"",
+          "line": 595
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-valid-object-value-key-start-037-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                color: {\n                  ':hover': 'green'\n                }\n              },\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "valid object value: key starts with \":\"",
+          "line": 610
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-valid-object-value-multiple-038-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                color: {\n                  default: 'red',\n                  ':hover': 'green'\n                }\n              },\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "valid object value: multiple valid keys",
+          "line": 625
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-css-variable-unclose-039-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                color: 'var(--foo'\n              }\n            });\n          ",
+      "options": {
+        "definedStylexCSSVariables": {
+          "foo": 1
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Rule contains an unclosed function",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid CSS variable: unclosed function",
+          "line": 659
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-unclosed-doubl-040-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                fontFamily: '\"Helvetica Neue'\n              }\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Rule contains an unclosed string",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: unclosed double-quoted string",
+          "line": 675
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-unclosed-singl-041-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                fontFamily: \"'Helvetica Neue\"\n              }\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Rule contains an unclosed string",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: unclosed single-quoted string",
+          "line": 688
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-unclosed-strin-042-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                fontFamily: '\"Helvetica Neue, sans-serif'\n              }\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Rule contains an unclosed string",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: unclosed string in multi-value property",
+          "line": 701
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-stray-apostrop-043-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                fontFamily: \"'SF Pro Text', 'SF Pro Icons', Helvetica Neue', 'Helvetica', sans-serif\",\n              }\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Rule contains an unclosed string",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: stray apostrophe in font-family list",
+          "line": 714
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-valid-value-properly-closed-044-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                fontFamily: '\"Helvetica Neue\", sans-serif',\n              }\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "valid value: properly closed strings do not throw",
+          "line": 727
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-valid-value-properly-closed-045-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                fontFamily: \"'Helvetica Neue', sans-serif\",\n              }\n            });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "valid value: properly closed single-quoted string",
+          "line": 740
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-css-variable-unprefi-046-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                color: 'var(foo'\n              }\n            });\n          ",
+      "options": {
+        "definedStylexCSSVariables": {
+          "foo": 1
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "any",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid CSS variable: unprefixed custom property",
+          "line": 754
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-valid-css-variable-defined-c-047-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({\n              root: {\n                backgroundColor: 'var(--foo)',\n                color: 'var(--bar)'\n              }\n            });\n          ",
+      "options": {
+        "definedStylexCSSVariables": {
+          "foo": 1,
+          "bar": 1
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "valid CSS variable: defined custom properties",
+          "line": 771
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-valid-css-variable-undefined-048-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              color: 'var(--bar)'\n            }\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "valid CSS variable: undefined custom properties",
+          "line": 797
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-valid-css-variable-undefined-049-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              color: 'var(--bar)'\n            }\n          });\n        ",
+      "options": {
+        "definedStylexCSSVariables": null
+      },
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "valid CSS variable: undefined custom properties",
+          "line": 800
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-valid-css-variable-undefined-050-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              color: 'var(--bar)'\n            }\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "valid CSS variable: undefined custom properties",
+          "line": 803
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-valid-css-variable-undefined-051-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              color: 'var(--bar)'\n            }\n          });\n        ",
+      "options": {
+        "definedStylexCSSVariables": {
+          "foo": 1
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "valid CSS variable: undefined custom properties",
+          "line": 806
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-legacy-pseudo-classes-must-s-052-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              ':hover': {},\n            },\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "[legacy] pseudo-classes must start with \":\" character",
+          "line": 811
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-property-053-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { animation: \"anim 1s\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Unknown property key",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid property: \" \"",
+          "line": 854
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-property-054-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { background: \"red\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Unknown property key",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid property: \" \"",
+          "line": 854
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-property-055-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { border: \"1px solid red\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Unknown property key",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid property: \" \"",
+          "line": 854
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-property-056-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { borderBlock: \"1px solid red\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Unknown property key",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid property: \" \"",
+          "line": 854
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-property-057-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { borderBlockEnd: \"1px solid red\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Unknown property key",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid property: \" \"",
+          "line": 854
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-property-058-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { borderBlockStart: \"1px solid red\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Unknown property key",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid property: \" \"",
+          "line": 854
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-property-059-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { borderBottom: \"1px solid red\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Unknown property key",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid property: \" \"",
+          "line": 854
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-property-060-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { borderImage: \"url(./img.jpg) 30 space\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Unknown property key",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid property: \" \"",
+          "line": 854
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-property-061-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { borderInline: \"1px solid red\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Unknown property key",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid property: \" \"",
+          "line": 854
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-property-062-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { borderInlineEnd: \"1px solid red\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Unknown property key",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid property: \" \"",
+          "line": 854
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-property-063-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { borderInlineStart: \"1px solid red\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Unknown property key",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid property: \" \"",
+          "line": 854
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-property-064-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { borderLeft: \"1px solid red\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Unknown property key",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid property: \" \"",
+          "line": 854
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-property-065-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { borderRight: \"1px solid red\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Unknown property key",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid property: \" \"",
+          "line": 854
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-property-066-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { borderTop: \"1px solid red\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Unknown property key",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid property: \" \"",
+          "line": 854
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-property-067-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { flexFlow: \"row wrap\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Unknown property key",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid property: \" \"",
+          "line": 854
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-property-068-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { font: \"16px/16 Arial\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Unknown property key",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid property: \" \"",
+          "line": 854
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-property-069-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { listStyle: \"square inside\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Unknown property key",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid property: \" \"",
+          "line": 854
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-property-070-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { textDecoration: \"1px solid underline\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Unknown property key",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid property: \" \"",
+          "line": 854
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-property-071-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transition: \"opacity 1s\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Unknown property key",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid property: \" \"",
+          "line": 854
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-072-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { display: \"block !important\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-073-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { backgroundPosition: \"top left\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-074-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { borderColor: \"red blue\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-075-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { borderRadius: \"1px 2px\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-076-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { borderStyle: \"solid dashed\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-077-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { borderWidth: \"1px 2px\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-078-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { inset: \"1px 2px\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-079-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { insetBlock: \"1px 2px\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-080-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { insetInline: \"1px 2px\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-081-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { flex: \"1 1 0\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-082-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { grid: \"1 1 0\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-083-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { margin: \"1px 2px\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-084-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { marginBlock: \"1px 2px\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-085-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { marginInline: \"1px 2px\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-086-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { outline: \"1px solid red\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-087-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { overflow: \"hidden visible\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-088-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { padding: \"1px 2px\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-089-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { paddingBlock: \"1px 2px\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-090-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { paddingInline: \"1px 2px\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-091-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"all\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-092-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"bottom\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-093-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"end\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-094-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"height\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-095-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"inset\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-096-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"inset-block\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-097-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"inset-inline\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-098-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"inset-block-end\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-099-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"inset-block-start\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-100-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"inset-inline-end\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-101-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"inset-inline-start\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-102-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"margin\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-103-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"left\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-104-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"padding\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-105-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"right\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-106-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"start\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-107-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"top\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-invalid-value-for-108-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from '@stylexjs/stylex';\n            const styles = stylex.create({ x: { transitionProperty: \"width\" } });\n          ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws", "upstream-skipped"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "A style value can only contain an array, string or number.",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "invalid value: \" \" for \" \"",
+          "line": 918
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-does-not-throw-by-default-fo-109-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              border: '1px solid red',\n            },\n          });\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "does not throw by default for disallowed properties (silent mode)",
+          "line": 934
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-throws-error-when-propertyva-110-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              border: '1px solid red',\n            },\n          });\n        ",
+      "options": {
+        "propertyValidationMode": "throw"
+      },
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "border is not supported",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "throws error when propertyValidationMode is \"throw\"",
+          "line": 952
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-does-not-throw-when-property-111-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              border: '1px solid red',\n            },\n          });\n        ",
+      "options": {
+        "propertyValidationMode": "warn"
+      },
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "does not throw when propertyValidationMode is \"warn\"",
+          "line": 972
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-does-not-throw-when-property-112-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              border: '1px solid red',\n            },\n          });\n        ",
+      "options": {
+        "propertyValidationMode": "silent"
+      },
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "does not throw when propertyValidationMode is \"silent\"",
+          "line": 998
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-works-with-background-proper-113-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              background: 'red',\n            },\n          });\n        ",
+      "options": {
+        "propertyValidationMode": "silent"
+      },
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "works with background property",
+          "line": 1019
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-create-works-with-animation-propert-114-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            root: {\n              animation: 'spin 1s',\n            },\n          });\n        ",
+      "options": {
+        "propertyValidationMode": "silent"
+      },
+      "mode": "prod",
+      "tags": ["validation-create", "validation", "create", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-create-test.js",
+          "test": "works with animation property",
+          "line": 1035
+        }
+      }
+    }
+  ]
+}

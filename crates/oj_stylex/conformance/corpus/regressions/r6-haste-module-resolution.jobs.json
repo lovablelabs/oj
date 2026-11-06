@@ -1,0 +1,1090 @@
+{
+  "header": {
+    "corpus": "regressions/r6-haste-module-resolution",
+    "description": "unstable_moduleResolution.type 'haste': basename-only theme names on the definition side, addFileExtension over the raw specifier on the import side, rootDir silently dropped. Probed against @stylexjs/babel-plugin 0.19.0; every note names the exact hash input string.",
+    "oracle": "@stylexjs/babel-plugin@0.19.0",
+    "generated": "2026-08-28"
+  },
+  "jobs": [
+    {
+      "id": "haste/def-root",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ foo: 'red', bar: '10px' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "fileName=\"tokens.stylex.js\"; --x1lbo1ib=hash(\"tokens.stylex.js//vars.foo\"), --x1li60ln=...bar, group class xsg933n=hash(\"tokens.stylex.js//vars\")"
+    },
+    {
+      "id": "haste/def-nested-dir",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "a/b/c/tokens.stylex.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ foo: 'red', bar: '10px' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "basename only: byte-identical to haste/def-root"
+    },
+    {
+      "id": "haste/def-ts",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ foo: 'red', bar: '10px' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "fileName=\"tokens.stylex.ts\""
+    },
+    {
+      "id": "haste/def-no-ext",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ foo: 'red', bar: '10px' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "fileName=\"tokens.stylex\""
+    },
+    {
+      "id": "haste/def-dotfile",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": ".stylex.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ foo: 'red', bar: '10px' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "fileName=\".stylex.js\""
+    },
+    {
+      "id": "haste/def-dotted-name",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "my.tokens.stylex.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ foo: 'red', bar: '10px' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "fileName=\"my.tokens.stylex.js\""
+    },
+    {
+      "id": "haste/def-const-file",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.const.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const cs = stylex.defineConsts({ foo: 'red' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "constKey xsj8dd0=hash(\"tokens.stylex.const.js//cs.foo\")"
+    },
+    {
+      "id": "haste/def-vars-in-const-file",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.const.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ foo: 'red', bar: '10px' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "both gates true; fileName=\"tokens.stylex.const.js\""
+    },
+    {
+      "id": "haste/def-cjs-root",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ foo: 'red', bar: '10px' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "commonJS control: fileName=\"conformance-fixture-up:tokens.stylex.js\" -> --x1wly2bu/--xp5gxmy, class x15582sb"
+    },
+    {
+      "id": "haste/def-cjs-nested-dir",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "a/b/c/tokens.stylex.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ foo: 'red', bar: '10px' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "commonJS control: path IS part of the name, unlike haste"
+    },
+    {
+      "id": "haste/def-nontheme",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ foo: 'red', bar: '10px' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["haste"],
+      "note": "not a theme file -> fileNameForHashing null -> \"Unable to generate hash for defineVars()\""
+    },
+    {
+      "id": "haste/def-no-resolution",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ foo: 'red', bar: '10px' });\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["haste"],
+      "note": "no unstable_moduleResolution -> null -> same error"
+    },
+    {
+      "id": "haste/def-uppercase-ext",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.JS",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ foo: 'red', bar: '10px' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["haste"],
+      "note": "suffix match is case sensitive"
+    },
+    {
+      "id": "haste/imp-bare-with-ext",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'tokens.stylex.js';\nexport const styles = stylex.create({ root: { color: vars.foo, [vars.bar]: 1 } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "themeNameRef=\"tokens.stylex.js\"; matches haste/def-root (--x1li60ln)"
+    },
+    {
+      "id": "haste/imp-bare-no-ext",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'tokens.stylex';\nexport const styles = stylex.create({ root: { color: vars.foo, [vars.bar]: 1 } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "source ext \".js\" appended -> \"tokens.stylex.js\"; same as imp-bare-with-ext"
+    },
+    {
+      "id": "haste/imp-deep-importer",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "a/b/c/MyComponent.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'tokens.stylex.js';\nexport const styles = stylex.create({ root: { color: vars.foo, [vars.bar]: 1 } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "importer directory is irrelevant; identical to imp-bare-with-ext"
+    },
+    {
+      "id": "haste/imp-dot-slash",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from './tokens.stylex.js';\nexport const styles = stylex.create({ root: { color: vars.foo, [vars.bar]: 1 } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "DIVERGENCE TRAP: themeNameRef=\"./tokens.stylex.js\" (--x1lcaplt) does NOT match def basename"
+    },
+    {
+      "id": "haste/imp-parent-dir",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "a/MyComponent.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '../tokens.stylex.js';\nexport const styles = stylex.create({ root: { color: vars.foo, [vars.bar]: 1 } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "themeNameRef=\"../tokens.stylex.js\" verbatim (--x1dlcjlx)"
+    },
+    {
+      "id": "haste/imp-subdir",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'sub/tokens.stylex.js';\nexport const styles = stylex.create({ root: { color: vars.foo, [vars.bar]: 1 } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "themeNameRef=\"sub/tokens.stylex.js\" (--x7919qi); no basename on the import side"
+    },
+    {
+      "id": "haste/imp-absolute",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '/html/js/tokens.stylex.js';\nexport const styles = stylex.create({ root: { color: vars.foo, [vars.bar]: 1 } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "themeNameRef=\"/html/js/tokens.stylex.js\" (--x1a5koyj)"
+    },
+    {
+      "id": "haste/imp-backslash",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'sub\\\\tokens.stylex.js';\nexport const styles = stylex.create({ root: { color: vars.foo, [vars.bar]: 1 } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "no path normalization: themeNameRef=\"sub\\\\tokens.stylex.js\" (--x1oil9va)"
+    },
+    {
+      "id": "haste/imp-package-spec",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@stylexjs/open-props/lib/colors.stylex';\nexport const styles = stylex.create({ root: { color: vars.foo, [vars.bar]: 1 } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "bare package specifier used verbatim + \".js\" (--x11kif4r); nothing is resolved"
+    },
+    {
+      "id": "haste/imp-src-tsx",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.tsx",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'tokens.stylex';\nexport const styles = stylex.create({ root: { color: vars.foo, [vars.bar]: 1 } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "source extension drives the appended ext -> \"tokens.stylex.tsx\" (--x1ykveyb)"
+    },
+    {
+      "id": "haste/imp-src-ts",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'tokens.stylex';\nexport const styles = stylex.create({ root: { color: vars.foo, [vars.bar]: 1 } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "\"tokens.stylex.ts\" (--x1ebhwif) == haste/def-ts"
+    },
+    {
+      "id": "haste/imp-src-jsx",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.jsx",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'tokens.stylex';\nexport const styles = stylex.create({ root: { color: vars.foo, [vars.bar]: 1 } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "\"tokens.stylex.jsx\" (--x1pk0x2h)"
+    },
+    {
+      "id": "haste/imp-src-mjs",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.mjs",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'tokens.stylex';\nexport const styles = stylex.create({ root: { color: vars.foo, [vars.bar]: 1 } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "\"tokens.stylex.mjs\" (--x1ard0tz)"
+    },
+    {
+      "id": "haste/imp-src-cjs",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.cjs",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'tokens.stylex';\nexport const styles = stylex.create({ root: { color: vars.foo, [vars.bar]: 1 } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "\"tokens.stylex.cjs\" (--x1jlqola)"
+    },
+    {
+      "id": "haste/imp-src-unknown-ext",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.flow",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'tokens.stylex';\nexport const styles = stylex.create({ root: { color: vars.foo, [vars.bar]: 1 } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "path.extname(source) is appended even when it is not a code ext -> \"tokens.stylex.flow\" (--xlwxe9h)"
+    },
+    {
+      "id": "haste/imp-src-no-ext",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'tokens.stylex';\nexport const styles = stylex.create({ root: { color: vars.foo, [vars.bar]: 1 } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "path.extname(\"MyComponent\")==\"\" -> \"tokens.stylex\" (--x1kih2tx) == haste/def-no-ext"
+    },
+    {
+      "id": "haste/imp-src-multi-dot",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.react.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'tokens.stylex';\nexport const styles = stylex.create({ root: { color: vars.foo, [vars.bar]: 1 } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "path.extname takes the LAST dot -> \".js\""
+    },
+    {
+      "id": "haste/imp-spec-ts-src-js",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'tokens.stylex.ts';\nexport const styles = stylex.create({ root: { color: vars.foo, [vars.bar]: 1 } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "specifier already ends in a code ext -> untouched (\"tokens.stylex.ts\")"
+    },
+    {
+      "id": "haste/imp-const-spec",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { cs } from 'tokens.stylex.const';\nexport const styles = stylex.create({ root: { color: cs.foo } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": ".stylex.const gate; themeNameRef=\"tokens.stylex.const.js\" -> matches haste/def-const-file"
+    },
+    {
+      "id": "haste/imp-transformed",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'tokens.transformed';\nexport const styles = stylex.create({ root: { color: vars.foo, [vars.bar]: 1 } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "\".transformed\" is a third accepted suffix; addFileExtension still applies -> \"tokens.transformed.js\" (--xjc53tw)"
+    },
+    {
+      "id": "haste/imp-two-specs-one-module",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'tokens.stylex.js';\nimport { vars as v2 } from 'tokens.stylex';\nexport const styles = stylex.create({ root: { color: vars.foo, backgroundColor: v2.foo } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "both specifiers canonicalize to \"tokens.stylex.js\""
+    },
+    {
+      "id": "haste/imp-non-theme-spec",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'tokens.foo.js';\nexport const styles = stylex.create({ root: { color: vars.foo, [vars.bar]: 1 } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["haste"],
+      "note": "suffix gate fails -> importPathResolver false -> \"Could not resolve the path to the imported file.\""
+    },
+    {
+      "id": "haste/imp-json-spec",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'tokens.stylex.json';\nexport const styles = stylex.create({ root: { color: vars.foo, [vars.bar]: 1 } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["haste"],
+      "note": "\".stylex.json\" is not a matched suffix"
+    },
+    {
+      "id": "haste/imp-trailing-slash",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'tokens.stylex.js/';\nexport const styles = stylex.create({ root: { color: vars.foo, [vars.bar]: 1 } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["haste"],
+      "note": "suffix gate fails"
+    },
+    {
+      "id": "haste/imp-uppercase-spec",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'Tokens.Stylex.js';\nexport const styles = stylex.create({ root: { color: vars.foo, [vars.bar]: 1 } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["haste"],
+      "note": "case sensitive"
+    },
+    {
+      "id": "haste/imp-no-resolution",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'tokens.stylex.js';\nexport const styles = stylex.create({ root: { color: vars.foo, [vars.bar]: 1 } });\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["haste"],
+      "note": "no unstable_moduleResolution -> default branch returns false"
+    },
+    {
+      "id": "haste/imp-cjs-bare-unresolvable",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'tokens.stylex.js';\nexport const styles = stylex.create({ root: { color: vars.foo, [vars.bar]: 1 } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["haste"],
+      "note": "commonJS control: a bare specifier must resolve on disk; haste never touches the fs"
+    },
+    {
+      "id": "haste/imp-cjs-real-file",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { MyTheme } from './otherFile.stylex';\nexport const styles = stylex.create({ root: { color: MyTheme.foreground } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "commonJS control: \"conformance-fixture-up:otherFile.stylex.ts\""
+    },
+    {
+      "id": "haste/imp-haste-same-file",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { MyTheme } from 'otherFile.stylex';\nexport const styles = stylex.create({ root: { color: MyTheme.foreground } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "haste on the SAME import: \"otherFile.stylex.js\" (note .js, not the real .ts on disk) -> different var than imp-cjs-real-file"
+    },
+    {
+      "id": "haste/rootdir-ignored-def",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ foo: 'red', bar: '10px' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "rootDir is dropped by the option validator; byte-identical to haste/def-root"
+    },
+    {
+      "id": "haste/rootdir-ignored-def-nested",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "a/b/c/tokens.stylex.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ foo: 'red', bar: '10px' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "byte-identical to haste/def-root"
+    },
+    {
+      "id": "haste/rootdir-ignored-imp",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'tokens.stylex.js';\nexport const styles = stylex.create({ root: { color: vars.foo, [vars.bar]: 1 } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "byte-identical to haste/imp-bare-with-ext"
+    },
+    {
+      "id": "haste/unknown-key-dropped",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ foo: 'red', bar: '10px' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste",
+          "bogus": 1
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "the validator copies only shape keys; unknown keys are silently dropped, NOT an error"
+    },
+    {
+      "id": "haste/tfe-def",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.vars.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ foo: 'red', bar: '10px' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste",
+          "themeFileExtension": ".vars"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "gate only; fileName is still the basename \"tokens.vars.js\""
+    },
+    {
+      "id": "haste/tfe-imp",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'tokens.vars.js';\nexport const styles = stylex.create({ root: { color: vars.foo, [vars.bar]: 1 } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste",
+          "themeFileExtension": ".vars"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "matches tfe-def (--xirsl2t)"
+    },
+    {
+      "id": "haste/tfe-def-wrong-ext",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.vars.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ foo: 'red', bar: '10px' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["haste"],
+      "note": "default \".stylex\" gate rejects it"
+    },
+    {
+      "id": "haste/tfe-const-derived",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.vars.const.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const cs = stylex.defineConsts({ foo: 'red' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste",
+          "themeFileExtension": ".vars"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "consts suffix is `${themeFileExtension}.const`"
+    },
+    {
+      "id": "haste/tfe-null",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ foo: 'red', bar: '10px' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste",
+          "themeFileExtension": null
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "?? default -> \".stylex\"; identical to haste/def-root"
+    },
+    {
+      "id": "haste/tfe-empty-string",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ foo: 'red', bar: '10px' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste",
+          "themeFileExtension": ""
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "\"\" is NOT nullish: every file becomes a theme file; name unchanged so output == haste/def-root"
+    },
+    {
+      "id": "haste/tfe-empty-string-nontheme",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "plain.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ foo: 'red', bar: '10px' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste",
+          "themeFileExtension": ""
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "with tfe \"\" a plain .js file compiles: fileName=\"plain.js\" (--xsnv6gn/--x1j42abm)"
+    },
+    {
+      "id": "haste/tfe-empty-string-imp",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'plain';\nexport const styles = stylex.create({ root: { color: vars.foo, [vars.bar]: 1 } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste",
+          "themeFileExtension": ""
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "every specifier passes the gate; \"plain\" -> \"plain.js\"; matches tfe-empty-string-nontheme"
+    },
+    {
+      "id": "haste/tfe-dotless",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokensstylex.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ foo: 'red', bar: '10px' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste",
+          "themeFileExtension": "stylex"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "the suffix is used literally, no dot is implied"
+    },
+    {
+      "id": "haste/tfe-non-string",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ foo: 'red', bar: '10px' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste",
+          "themeFileExtension": 5
+        }
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["haste"],
+      "note": "validator logs to console.error and falls back to null (does NOT throw); the define* call then fails with \"Unable to generate hash\""
+    },
+    {
+      "id": "haste/bad-type-case",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ foo: 'red', bar: '10px' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "Haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["haste"],
+      "note": "\"Haste\" matches no branch -> console.error + null"
+    },
+    {
+      "id": "haste/bad-type-string",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ foo: 'red', bar: '10px' });\n",
+      "options": {
+        "unstable_moduleResolution": "haste"
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["haste"],
+      "note": "non-object -> console.error + null"
+    },
+    {
+      "id": "haste/aliases-ignored",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from '@t/tokens.stylex.js';\nexport const styles = stylex.create({ root: { color: vars.foo, [vars.bar]: 1 } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "aliases": {
+          "@t/*": ["<ROOT>/*"]
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "haste never consults aliases: themeNameRef=\"@t/tokens.stylex.js\" (--x6vmmya)"
+    },
+    {
+      "id": "haste/class-name-prefix",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ foo: 'red', bar: '10px' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "classNamePrefix": "zz"
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "prefix applies to the same hash: --zz1lbo1ib/--zz1li60ln"
+    },
+    {
+      "id": "haste/debug-var-names",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ foo: 'red', bar: '10px' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "debug": true,
+        "enableDebugClassNames": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "--foo-x1lbo1ib/--bar-x1li60ln"
+    },
+    {
+      "id": "haste/debug-css-in-package",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "html/js/components/Foo.react.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ foo: { color: 'red' } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "debug": true,
+        "enableDebugClassNames": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "$$css takes the package.json branch, NOT the haste basename branch; identical to commonJS"
+    },
+    {
+      "id": "haste/debug-css-in-package-cjs",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "html/js/components/Foo.react.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ foo: { color: 'red' } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        },
+        "debug": true,
+        "enableDebugClassNames": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "control for debug-css-in-package"
+    },
+    {
+      "id": "haste/dev-mode-def",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ foo: 'red', bar: '10px' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "dev": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "dev changes nothing about haste naming"
+    },
+    {
+      "id": "haste/dev-mode-imp",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'tokens.stylex.js';\nexport const styles = stylex.create({ root: { color: vars.foo, [vars.bar]: 1 } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "dev": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "dev changes nothing about haste naming"
+    },
+    {
+      "id": "haste/collision-a",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "x/y/A.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'tokens.stylex.js';\nexport const styles = stylex.create({ root: { color: vars.foo, [vars.bar]: 1 } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "haste flat namespace: A.js and B.js in unrelated dirs produce the SAME var names"
+    },
+    {
+      "id": "haste/collision-b",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "p/q/r/B.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'tokens.stylex.js';\nexport const styles = stylex.create({ root: { color: vars.foo, [vars.bar]: 1 } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "byte-identical to collision-a"
+    },
+    {
+      "id": "haste/define-marker",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "marks.stylex.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const mk = stylex.defineMarker();\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "defineMarker also goes through fileNameForHashing"
+    },
+    {
+      "id": "haste/nested-vars-def",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "nested.stylex.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ a: { default: 'red', b: 'blue' } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "defineVarsNested feeds the same basename fileName"
+    },
+    {
+      "id": "haste/nested-vars-imp",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyComponent.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'nested.stylex.js';\nexport const styles = stylex.create({ root: { color: vars.a.b } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "cross-file nested access under haste"
+    },
+    {
+      "id": "haste/createTheme-cross-file",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "MyTheme.js",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { vars } from 'tokens.stylex.js';\nexport const theme = stylex.createTheme(vars, { foo: 'blue' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["haste"],
+      "note": "createTheme has no haste-specific code; it inherits the imported var-group hash"
+    }
+  ]
+}

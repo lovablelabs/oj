@@ -38,13 +38,16 @@ pub(crate) fn rewrite_module_specifiers<'a>(
     let mut bindings = BindingsBuilder::default();
     for stmt in program.body.iter_mut() {
         let names = imported_names(stmt);
+        if rewriter.is_some() {
+            drop_import_attributes(stmt);
+        }
         let Some(lit) = static_source(stmt) else {
             continue;
         };
         if let Some(rewriter) = rewriter.as_deref_mut() {
             rewrite_literal(allocator, lit, rewriter);
         }
-        let spec = lit.value.to_string();
+        let spec = crate::lit_str(lit.value).to_string();
         bindings.extend(&spec, names);
         imports.push(spec);
     }
@@ -72,7 +75,7 @@ pub(crate) fn rewrite_literal<'a>(
     lit: &mut StringLiteral<'a>,
     rewriter: &mut ImportRewriter,
 ) {
-    if let Some(new_spec) = rewriter(lit.value.as_str()) {
+    if let Some(new_spec) = rewriter(crate::lit_str(lit.value)) {
         lit.value = allocator.alloc_str(&new_spec).into();
         lit.raw = None;
     }
@@ -100,6 +103,20 @@ fn imported_names(stmt: &Statement) -> Vec<String> {
             .collect(),
         Statement::ExportAllDeclaration(_) => vec!["*".to_string()],
         _ => Vec::new(),
+    }
+}
+
+/// Vite's importAnalysis drops a static import's attributes
+/// (`with { type: "json" }`) from the code it serves: the module it answers
+/// is JavaScript whatever the file (a JSON file's is `export default {...}`),
+/// and a browser holding the attribute would reject it as no JSON module.
+/// A dynamic import keeps its options, as in Vite.
+fn drop_import_attributes(stmt: &mut Statement) {
+    match stmt {
+        Statement::ImportDeclaration(decl) => decl.with_clause = None,
+        Statement::ExportFromDeclaration(decl) => decl.with_clause = None,
+        Statement::ExportAllDeclaration(decl) => decl.with_clause = None,
+        _ => {}
     }
 }
 
@@ -142,7 +159,7 @@ impl<'a> VisitMut<'a> for DynamicImportRewriter<'a, '_> {
     fn visit_import_expression(&mut self, it: &mut ImportExpression<'a>) {
         if let Expression::StringLiteral(lit) = &mut it.source {
             rewrite_literal(self.allocator, lit, self.rewriter);
-            self.dynamic.push(lit.value.to_string());
+            self.dynamic.push(crate::lit_str(lit.value).to_string());
         }
         walk_mut::walk_import_expression(self, it);
     }
@@ -226,6 +243,49 @@ export const used: A extends B ? number : number = c + d;
             out.code
         );
         assert!(out.imports.iter().any(|i| i.contains("real")));
+    }
+
+    /// Vite's importAnalysis removes a static import's or re-export's
+    /// attributes from the code it serves (`str().remove(end + 1, expEnd)`
+    /// when es-module-lexer reports one); a dynamic import keeps its
+    /// options. Without a rewriter (no dev serve) the code keeps them all.
+    #[test]
+    fn a_served_static_import_drops_its_attributes() {
+        let src = r#"import data from "./data.json" with { type: "json" };
+export { default as more } from "./more.json" with { type: "json" };
+export * from "./all.json" with { type: "json" };
+const later = import("./later.json", { with: { type: "json" } });
+console.log(data, later);
+"#;
+        let mut rewrite = |spec: &str| -> Option<String> { Some(format!("/src/{}", &spec[2..])) };
+        let out = compile_module(
+            Path::new("main.js"),
+            src,
+            &CompileOptions::prod(),
+            Some(&mut rewrite),
+        )
+        .unwrap();
+        for spec in ["/src/data.json", "/src/more.json", "/src/all.json"] {
+            let line = out
+                .code
+                .lines()
+                .find(|l| l.contains(&format!("\"{spec}\"")) && !l.contains("import("))
+                .unwrap_or_else(|| panic!("{spec}:\n{}", out.code));
+            assert!(!line.contains("with"), "{line}");
+        }
+        assert!(
+            out.code.contains("type: \"json\""),
+            "the dynamic import keeps its options:\n{}",
+            out.code
+        );
+        let kept =
+            compile_module(Path::new("main.js"), src, &CompileOptions::prod(), None).unwrap();
+        assert_eq!(
+            kept.code.matches("with {").count() + kept.code.matches("with:").count(),
+            4,
+            "{}",
+            kept.code
+        );
     }
 
     #[test]

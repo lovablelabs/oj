@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join as pathJoin, relative as pathRelative, resolve as pathResolve, sep } from "node:path";
 
 import { importPkg } from "./resolve-pkg.mjs";
@@ -56,13 +56,16 @@ async function main() {
   ]);
 
   // getConfig merges as { ...tsr.config.json, ...inline }, so anything passed
-  // inline cannot be configured by the app. Only `target` is genuinely ours to
-  // decide; the rest are the generator's own documented settings, and an app that
-  // keeps its route tree somewhere other than src/routeTree.gen.ts has to be able
-  // to say so. Pass them as defaults under the file rather than overrides above it.
+  // inline cannot be configured by the app. Start passes its routes directory
+  // and route tree inline (start-plugin-core's parseStartConfig, from
+  // tanstackStart's `srcDirectory` and `router`), so tsr.config.json never sets
+  // them under Start; oj passes the same two (OJ_ROUTES_DIRECTORY,
+  // OJ_GENERATED_ROUTE_TREE). The rest are defaults under the file.
+  const START_PATHS = {
+    routesDirectory: process.env.OJ_ROUTES_DIRECTORY || pathResolve(root, "src/routes"),
+    generatedRouteTree: process.env.OJ_GENERATED_ROUTE_TREE || pathResolve(root, "src/routeTree.gen.ts"),
+  };
   const OJ_DEFAULTS = {
-    routesDirectory: "./src/routes",
-    generatedRouteTree: "./src/routeTree.gen.ts",
     autoCodeSplitting: false,
     routeFileIgnorePattern: "\\.(test|spec|stories|bench)\\.|\\.d\\.ts$",
   };
@@ -74,9 +77,8 @@ async function main() {
     }
   })();
 
-  // The tree the app configured (tsr.config.json) or oj's default; the footer's
-  // import is written relative to wherever that file lives.
-  const GENERATED_ROUTE_TREE = configured.generatedRouteTree ?? OJ_DEFAULTS.generatedRouteTree;
+  // The footer's import is written relative to wherever the tree lives.
+  const GENERATED_ROUTE_TREE = START_PATHS.generatedRouteTree;
 
   // The framework's own Vite plugin appends a `declare module` block naming the
   // router entry and, when there is one, the start entry (start-plugin-core's
@@ -146,6 +148,7 @@ async function main() {
   const config = getConfig(
     {
       ...Object.fromEntries(Object.entries(OJ_DEFAULTS).filter(([k]) => !(k in configured))),
+      ...START_PATHS,
       target: "react",
       // The declare-module footer the framework's plugin writes; an app that sets
       // routeTreeFileFooter itself keeps its own.
@@ -153,7 +156,30 @@ async function main() {
     },
     root,
   );
-  await new Generator({ config, root }).run();
+  const generator = new Generator({ config, root });
+  await generator.run();
+  // The client's tree, as Start's `tanstack-start:route-tree-client-plugin`
+  // loads it for the client environment: server-only subtrees pruned, no
+  // types, header or footer. The client bundles load it in place of the
+  // generated tree.
+  if (process.env.OJ_CLIENT_ROUTE_TREE) {
+    const crawlingResult = await generator.getCrawlingResult();
+    if (crawlingResult) {
+      const prunedAcc = pruneServerOnlySubtrees(crawlingResult);
+      const acc = { ...crawlingResult.acc, ...prunedAcc };
+      const { routeTreeContent } = generator.buildRouteTree({
+        ...crawlingResult,
+        acc,
+        config: {
+          disableTypes: true,
+          enableRouteTreeFormatting: false,
+          routeTreeFileHeader: [],
+          routeTreeFileFooter: [],
+        },
+      });
+      writeFileSync(process.env.OJ_CLIENT_ROUTE_TREE, routeTreeContent);
+    }
+  }
   for (const k of Object.keys(origConsole)) console[k] = origConsole[k];
 
   if (skipped.length) {
@@ -163,6 +189,30 @@ async function main() {
   } else {
     process.stderr.write(`${OJ}${_ojTTY ? "" : ":"} route tree generated\n`);
   }
+}
+
+// start-plugin-core's pruneServerOnlySubtrees (not in its exports map), as is:
+// a route whose only option is `server`, with no child left, leaves the tree.
+function pruneServerOnlySubtrees({ rootRouteNode, acc }) {
+  const routeNodes = [];
+  const routeTree = prune({ ...rootRouteNode, children: acc.routeTree }, routeNodes)?.children || [];
+  routeNodes.pop();
+  return { routeTree, routeNodes };
+}
+function prune(node, collectedRouteNodes) {
+  const newChildren = [];
+  let allChildrenServerOnly = true;
+  for (const child of node.children || []) {
+    const newChild = prune(child, collectedRouteNodes);
+    if (newChild) {
+      newChildren.push(newChild);
+      allChildrenServerOnly = false;
+    }
+  }
+  if (node.createFileRouteProps?.has("server") && node.createFileRouteProps.size === 1 && allChildrenServerOnly)
+    return null;
+  collectedRouteNodes.push(node);
+  return { ...node, children: newChildren };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();

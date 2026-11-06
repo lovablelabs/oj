@@ -27,6 +27,8 @@ pub async fn ssr_dev(
     entry: String,
     port: Option<u16>,
     host: Option<String>,
+    typecheck: bool,
+    rolldown: tokio::runtime::Handle,
 ) -> anyhow::Result<()> {
     // Before boot: a signal while plugins are still spawning must still sweep.
     let host_slot = std::sync::Arc::new(std::sync::OnceLock::new());
@@ -39,7 +41,9 @@ pub async fn ssr_dev(
         enable_cache: false,
         no_cache: false,
         lazy: false,
+        typecheck,
         mode: None,
+        rolldown,
     }
     .build_app()
     .await?;
@@ -106,7 +110,13 @@ pub async fn ssr_dev(
         port
     );
     println!("  {}", oj_server::link(&url, &oj_server::cell(&url)));
-    oj_server::tls::serve_router(listener, app, built.https.as_ref()).await?;
+    // Outermost, around this server's own routes too.
+    let app = oj_server::otel::traced(
+        app,
+        oj_server::tls::url_scheme(built.https.as_ref()),
+        built.base.as_deref(),
+    );
+    built.serve(listener, app).await?;
     Ok(())
 }
 

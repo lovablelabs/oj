@@ -69,3 +69,49 @@ async fn workspace_root_postcss_config_runs_on_sass_output_in_build() {
         "sass compiled in build:\n{built}"
     );
 }
+
+/// The build half of the dev `a_postcss_config_runs_on_vites_postcss` check:
+/// with only vite in the app's node_modules (a strict layout), the PostCSS
+/// config runs on vite's own postcss, as Vite's css.ts does.
+#[tokio::test]
+async fn postcss_runs_on_vites_own_postcss_in_build() {
+    let Some(vite) = super::fixture("vite") else {
+        assert!(
+            std::env::var_os("OJ_REQUIRE_FIXTURES").is_none(),
+            "OJ_REQUIRE_FIXTURES is set but vite is not installed"
+        );
+        eprintln!("skipping: fixture vite not installed");
+        return;
+    };
+    let root = scratch("postcss-from-vite");
+    write_files(
+        &root,
+        &[
+            ("package.json", r#"{"name":"postcss-from-vite","version":"1.0.0"}"#),
+            (
+                "postcss.config.mjs",
+                "export default { plugins: [{ postcssPlugin: \"oj-marker\", Once(root) { root.append(\".from-postcss { color: green; }\"); } }] };\n",
+            ),
+            ("src/app.css", ".app { color: red; }\n"),
+            ("src/main.js", "import \"./app.css\";\n"),
+            (
+                "index.html",
+                r#"<!doctype html><html><head><title>t</title></head><body><script type="module" src="/src/main.js"></script></body></html>"#,
+            ),
+        ],
+    );
+    std::fs::create_dir_all(root.join("node_modules")).unwrap();
+    std::os::unix::fs::symlink(&vite, root.join("node_modules/vite")).unwrap();
+    build_app(&root).await.expect("the app builds");
+
+    let built = files_under(&root.join("dist/assets"))
+        .into_iter()
+        .filter(|(p, _)| p.ends_with(".css"))
+        .map(|(_, c)| c)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        built.contains(".from-postcss"),
+        "the config ran on vite's postcss in build:\n{built}"
+    );
+}

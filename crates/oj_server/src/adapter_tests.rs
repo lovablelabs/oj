@@ -101,14 +101,15 @@ fn the_ssr_module_endpoint_only_reads_the_project_and_its_dependencies() {
     for ok in [
         root.join("src/App.tsx"),
         root.join("node_modules/react/index.js"),
-        base.join("linked/node_modules/dep/index.js"),
         base.join("allowed/shared.ts"),
     ] {
         assert!(module_read_allowed(&root, &allow, &ok), "{ok:?} denied");
     }
 
     // Everything else, however it is spelled.
+    // A `node_modules` path outside them is not a dependency of the project.
     for denied in [
+        base.join("linked/node_modules/dep/index.js"),
         outside.join("secrets/id_rsa"),
         root.join("../elsewhere/secrets/id_rsa"),
         root.join("src/../../elsewhere/secrets/id_rsa"),
@@ -338,6 +339,24 @@ fn worker_beats_inline_in_asset_kind_classification() {
     );
     assert_eq!(query_asset_kind(Some("inline")), Some("inline"));
     assert_eq!(query_asset_kind(Some("worker")), Some("worker"));
+}
+
+/// Vite's rawRE takes `raw` anywhere in the query, and vite:asset reads it
+/// before `url` or `inline`; a worker query belongs to vite:worker first.
+#[test]
+fn raw_anywhere_in_the_query_classifies_as_raw() {
+    for q in [
+        "raw",
+        "v=1&raw",
+        "raw&v=1",
+        "raw&url",
+        "url&raw",
+        "inline&raw",
+    ] {
+        assert_eq!(query_asset_kind(Some(q)), Some("raw"), "{q}");
+    }
+    assert_eq!(query_asset_kind(Some("v=1&raw=1")), None);
+    assert_eq!(query_asset_kind(Some("worker&raw")), Some("worker"));
 }
 
 #[test]

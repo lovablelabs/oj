@@ -1,0 +1,1109 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/transform-stylex-defineVarsNested-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs and upstream's own expected values — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "assertions/defineVarsNested-basic-nested-tokens-001-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const tokens = stylex.unstable_defineVarsNested({\n          button: {\n            background: 'red',\n            color: 'blue',\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const tokens = {\n  button: {\n    background: \"var(--x16caxfb)\",\n    color: \"var(--xi1hctn)\"\n  },\n  __varGroupHash__: \"x1edtgoo\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "basic nested tokens",
+          "line": 53
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-basic-nested-tokens-002-rules",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const tokens = stylex.unstable_defineVarsNested({\n          button: {\n            background: 'red',\n            color: 'blue',\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "assert-rules"],
+      "assert": {
+        "kind": "rules",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata.stylex",
+        "expected": [
+          [
+            "x1edtgoo",
+            {
+              "ltr": ":root, .x1edtgoo{--x16caxfb:red;--xi1hctn:blue;}",
+              "rtl": null
+            },
+            0.1
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "basic nested tokens",
+          "line": 63
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-deeply-nested-tokens-3-level-003-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const tokens = stylex.unstable_defineVarsNested({\n          button: {\n            primary: {\n              background: '#00FF00',\n            },\n            secondary: {\n              background: '#CCCCCC',\n            },\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const tokens = {\n  button: {\n    primary: {\n      background: \"var(--xekzafr)\"\n    },\n    secondary: {\n      background: \"var(--x8n1mhe)\"\n    }\n  },\n  __varGroupHash__: \"x1edtgoo\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "deeply nested tokens (3 levels)",
+          "line": 92
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-deeply-nested-tokens-3-level-004-rules",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const tokens = stylex.unstable_defineVarsNested({\n          button: {\n            primary: {\n              background: '#00FF00',\n            },\n            secondary: {\n              background: '#CCCCCC',\n            },\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "assert-rules"],
+      "assert": {
+        "kind": "rules",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata.stylex",
+        "expected": [
+          [
+            "x1edtgoo",
+            {
+              "ltr": ":root, .x1edtgoo{--xekzafr:#00FF00;--x8n1mhe:#CCCCCC;}",
+              "rtl": null
+            },
+            0.1
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "deeply nested tokens (3 levels)",
+          "line": 106
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-conditional-media-values-ins-005-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const tokens = stylex.unstable_defineVarsNested({\n          button: {\n            color: {\n              default: 'blue',\n              '@media (prefers-color-scheme: dark)': 'lightblue',\n            },\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const tokens = {\n  button: {\n    color: \"var(--xi1hctn)\"\n  },\n  __varGroupHash__: \"x1edtgoo\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "conditional @media values inside nesting",
+          "line": 133
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-conditional-media-values-ins-006-rules",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const tokens = stylex.unstable_defineVarsNested({\n          button: {\n            color: {\n              default: 'blue',\n              '@media (prefers-color-scheme: dark)': 'lightblue',\n            },\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "assert-rules"],
+      "assert": {
+        "kind": "rules",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata.stylex",
+        "expected": [
+          [
+            "x1edtgoo",
+            {
+              "ltr": ":root, .x1edtgoo{--xi1hctn:blue;}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "x1edtgoo-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){:root, .x1edtgoo{--xi1hctn:lightblue;}}",
+              "rtl": null
+            },
+            0.2
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "conditional @media values inside nesting",
+          "line": 142
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-mixed-flat-and-nested-values-007-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const tokens = stylex.unstable_defineVarsNested({\n          flatValue: 'red',\n          nested: {\n            deep: 'blue',\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const tokens = {\n  flatValue: \"var(--x1h9v5ir)\",\n  nested: {\n    deep: \"var(--xz6lukc)\"\n  },\n  __varGroupHash__: \"x1edtgoo\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "mixed flat and nested values",
+          "line": 175
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-mixed-flat-and-nested-values-008-rules",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const tokens = stylex.unstable_defineVarsNested({\n          flatValue: 'red',\n          nested: {\n            deep: 'blue',\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "assert-rules"],
+      "assert": {
+        "kind": "rules",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata.stylex",
+        "expected": [
+          [
+            "x1edtgoo",
+            {
+              "ltr": ":root, .x1edtgoo{--x1h9v5ir:red;--xz6lukc:blue;}",
+              "rtl": null
+            },
+            0.1
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "mixed flat and nested values",
+          "line": 185
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-works-with-named-import-009-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import { unstable_defineVarsNested } from '@stylexjs/stylex';\n        export const tokens = unstable_defineVarsNested({\n          spacing: {\n            sm: '4px',\n            lg: '16px',\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import { unstable_defineVarsNested } from '@stylexjs/stylex';\nexport const tokens = {\n  spacing: {\n    sm: \"var(--x1o7hcty)\",\n    lg: \"var(--xsuxlvu)\"\n  },\n  __varGroupHash__: \"x1edtgoo\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "works with named import",
+          "line": 210
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-works-with-named-import-010-rules",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import { unstable_defineVarsNested } from '@stylexjs/stylex';\n        export const tokens = unstable_defineVarsNested({\n          spacing: {\n            sm: '4px',\n            lg: '16px',\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "assert-rules"],
+      "assert": {
+        "kind": "rules",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata.stylex",
+        "expected": [
+          [
+            "x1edtgoo",
+            {
+              "ltr": ":root, .x1edtgoo{--x1o7hcty:4px;--xsuxlvu:16px;}",
+              "rtl": null
+            },
+            0.1
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "works with named import",
+          "line": 220
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-works-with-renamed-named-imp-011-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import { unstable_defineVarsNested as defineNested } from '@stylexjs/stylex';\n        export const tokens = defineNested({\n          spacing: {\n            sm: '4px',\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import { unstable_defineVarsNested as defineNested } from '@stylexjs/stylex';\nexport const tokens = {\n  spacing: {\n    sm: \"var(--x1o7hcty)\"\n  },\n  __varGroupHash__: \"x1edtgoo\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "works with renamed named import",
+          "line": 244
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-deeply-nested-conditional-wi-012-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const tokens = stylex.unstable_defineVarsNested({\n          color: {\n            primary: {\n              default: 'blue',\n              '@media (prefers-color-scheme: dark)': {\n                default: 'lightblue',\n                '@supports (color: oklch(0 0 0))': 'oklch(0.7 -0.3 -0.4)',\n              },\n            },\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const tokens = {\n  color: {\n    primary: \"var(--xegmn9y)\"\n  },\n  __varGroupHash__: \"x1edtgoo\"\n};",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "deeply nested conditional with @supports",
+          "line": 285
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-deeply-nested-conditional-wi-013-rules",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const tokens = stylex.unstable_defineVarsNested({\n          color: {\n            primary: {\n              default: 'blue',\n              '@media (prefers-color-scheme: dark)': {\n                default: 'lightblue',\n                '@supports (color: oklch(0 0 0))': 'oklch(0.7 -0.3 -0.4)',\n              },\n            },\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "assert-rules"],
+      "assert": {
+        "kind": "rules",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata.stylex",
+        "expected": [
+          [
+            "x1edtgoo",
+            {
+              "ltr": ":root, .x1edtgoo{--xegmn9y:blue;}",
+              "rtl": null
+            },
+            0.1
+          ],
+          [
+            "x1edtgoo-1lveb7",
+            {
+              "ltr": "@media (prefers-color-scheme: dark){:root, .x1edtgoo{--xegmn9y:lightblue;}}",
+              "rtl": null
+            },
+            0.2
+          ],
+          [
+            "x1edtgoo-7iokyd",
+            {
+              "ltr": "@supports (color: oklch(0 0 0)){@media (prefers-color-scheme: dark){:root, .x1edtgoo{--xegmn9y:oklch(0.7 -0.3 -0.4);}}}",
+              "rtl": null
+            },
+            0.3
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "deeply nested conditional with @supports",
+          "line": 294
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-throws-must-be-a-named-expor-014-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const tokens = stylex.unstable_defineVarsNested({\n          button: { bg: 'red' },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "any",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "throws: must be a named export",
+          "line": 326
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-throws-must-have-exactly-1-a-015-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const tokens = stylex.unstable_defineVarsNested({}, {});\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "any",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "throws: must have exactly 1 argument",
+          "line": 337
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-throws-must-have-an-argument-016-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const tokens = stylex.unstable_defineVarsNested();\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "any",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "throws: must have an argument",
+          "line": 346
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-works-with-stylex-unstable-c-017-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const DARK = '@media (prefers-color-scheme: dark)';\n        export const tokens = stylex.unstable_defineVarsNested({\n          button: {\n            primary: {\n              background: {\n                default: stylex.unstable_conditional({ default: '#2563eb', [DARK]: '#3b82f6' }),\n                hovered: stylex.unstable_conditional({ default: '#1d4ed8', [DARK]: '#2563eb' }),\n              },\n            },\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toContain",
+        "match": "substring",
+        "expected": "button",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "works with stylex.unstable_conditional for @media values",
+          "line": 371
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-works-with-stylex-unstable-c-018-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const DARK = '@media (prefers-color-scheme: dark)';\n        export const tokens = stylex.unstable_defineVarsNested({\n          button: {\n            primary: {\n              background: {\n                default: stylex.unstable_conditional({ default: '#2563eb', [DARK]: '#3b82f6' }),\n                hovered: stylex.unstable_conditional({ default: '#1d4ed8', [DARK]: '#2563eb' }),\n              },\n            },\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toContain",
+        "match": "substring",
+        "expected": "primary",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "works with stylex.unstable_conditional for @media values",
+          "line": 372
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-works-with-stylex-unstable-c-019-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const DARK = '@media (prefers-color-scheme: dark)';\n        export const tokens = stylex.unstable_defineVarsNested({\n          button: {\n            primary: {\n              background: {\n                default: stylex.unstable_conditional({ default: '#2563eb', [DARK]: '#3b82f6' }),\n                hovered: stylex.unstable_conditional({ default: '#1d4ed8', [DARK]: '#2563eb' }),\n              },\n            },\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toContain",
+        "match": "substring",
+        "expected": "background",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "works with stylex.unstable_conditional for @media values",
+          "line": 373
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-works-with-stylex-unstable-c-020-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const DARK = '@media (prefers-color-scheme: dark)';\n        export const tokens = stylex.unstable_defineVarsNested({\n          button: {\n            primary: {\n              background: {\n                default: stylex.unstable_conditional({ default: '#2563eb', [DARK]: '#3b82f6' }),\n                hovered: stylex.unstable_conditional({ default: '#1d4ed8', [DARK]: '#2563eb' }),\n              },\n            },\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toContain",
+        "match": "substring",
+        "expected": "default",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "works with stylex.unstable_conditional for @media values",
+          "line": 374
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-works-with-stylex-unstable-c-021-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const DARK = '@media (prefers-color-scheme: dark)';\n        export const tokens = stylex.unstable_defineVarsNested({\n          button: {\n            primary: {\n              background: {\n                default: stylex.unstable_conditional({ default: '#2563eb', [DARK]: '#3b82f6' }),\n                hovered: stylex.unstable_conditional({ default: '#1d4ed8', [DARK]: '#2563eb' }),\n              },\n            },\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toContain",
+        "match": "substring",
+        "expected": "hovered",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "works with stylex.unstable_conditional for @media values",
+          "line": 375
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-works-with-stylex-unstable-c-022-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const DARK = '@media (prefers-color-scheme: dark)';\n        export const tokens = stylex.unstable_defineVarsNested({\n          button: {\n            primary: {\n              background: {\n                default: stylex.unstable_conditional({ default: '#2563eb', [DARK]: '#3b82f6' }),\n                hovered: stylex.unstable_conditional({ default: '#1d4ed8', [DARK]: '#2563eb' }),\n              },\n            },\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toContain",
+        "match": "substring",
+        "expected": "var(--",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "works with stylex.unstable_conditional for @media values",
+          "line": 376
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-works-with-named-import-of-u-023-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import { unstable_defineVarsNested, unstable_conditional as cond } from '@stylexjs/stylex';\n        const DARK = '@media (prefers-color-scheme: dark)';\n        export const tokens = unstable_defineVarsNested({\n          color: {\n            accent: cond({ default: '#2563eb', [DARK]: '#60a5fa' }),\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toContain",
+        "match": "substring",
+        "expected": "var(--",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "works with named import of unstable_conditional",
+          "line": 395
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-works-with-named-import-of-u-024-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import { unstable_defineVarsNested, unstable_conditional as cond } from '@stylexjs/stylex';\n        const DARK = '@media (prefers-color-scheme: dark)';\n        export const tokens = unstable_defineVarsNested({\n          color: {\n            accent: cond({ default: '#2563eb', [DARK]: '#60a5fa' }),\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toContain",
+        "match": "substring",
+        "expected": "color",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "works with named import of unstable_conditional",
+          "line": 396
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-works-with-named-import-of-u-025-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import { unstable_defineVarsNested, unstable_conditional as cond } from '@stylexjs/stylex';\n        const DARK = '@media (prefers-color-scheme: dark)';\n        export const tokens = unstable_defineVarsNested({\n          color: {\n            accent: cond({ default: '#2563eb', [DARK]: '#60a5fa' }),\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toContain",
+        "match": "substring",
+        "expected": "accent",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "works with named import of unstable_conditional",
+          "line": 397
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-unstable-conditional-is-back-026-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const tokens = stylex.unstable_defineVarsNested({\n          color: {\n            accent: { default: 'blue', '@media (prefers-color-scheme: dark)': 'dark' },\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toContain",
+        "match": "substring",
+        "expected": "var(--",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "unstable_conditional is backward compatible — heuristic still works without it",
+          "line": 410
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-unstable-conditional-works-i-027-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const DARK = '@media (prefers-color-scheme: dark)';\n        export const tokens = stylex.defineVars({\n          accent: stylex.unstable_conditional({ default: 'blue', [DARK]: 'lightblue' }),\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "defineVars", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toContain",
+        "match": "substring",
+        "expected": "var(--",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "unstable_conditional works in flat defineVars too",
+          "line": 422
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-cross-file-nested-token-acce-028-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "stylex/packages/component.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { tokens } from 'tokens.stylex';\n        export const styles = stylex.create({\n          card: {\n            backgroundColor: tokens.button.primary.background,\n            color: tokens.button.primary.color,\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toContain",
+        "match": "substring",
+        "expected": "$$css",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "cross-file: nested token access in stylex.create",
+          "line": 478
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-cross-file-nested-token-acce-029-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "stylex/packages/component.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { tokens } from 'tokens.stylex';\n        export const styles = stylex.create({\n          card: {\n            backgroundColor: tokens.button.primary.background,\n            color: tokens.button.primary.color,\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toContain",
+        "match": "notSubstring",
+        "expected": "tokens.button",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "cross-file: nested token access in stylex.create",
+          "line": 479
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-cross-file-deeply-nested-tok-030-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "stylex/packages/component.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { tokens } from 'tokens.stylex';\n        export const styles = stylex.create({\n          card: {\n            backgroundColor: tokens.design.color.surface.primary,\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toContain",
+        "match": "substring",
+        "expected": "$$css",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "cross-file: deeply nested token access (3+ levels)",
+          "line": 516
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-cross-file-deeply-nested-tok-031-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "stylex/packages/component.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { tokens } from 'tokens.stylex';\n        export const styles = stylex.create({\n          card: {\n            backgroundColor: tokens.design.color.surface.primary,\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toContain",
+        "match": "notSubstring",
+        "expected": "tokens.design",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "cross-file: deeply nested token access (3+ levels)",
+          "line": 517
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-cross-file-mixed-flat-and-ne-032-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "stylex/packages/component.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { tokens } from 'tokens.stylex';\n        export const styles = stylex.create({\n          card: {\n            color: tokens.accent,\n            backgroundColor: tokens.button.bg,\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toContain",
+        "match": "substring",
+        "expected": "$$css",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "cross-file: mixed flat and nested access",
+          "line": 552
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-cross-file-mixed-flat-and-ne-033-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "stylex/packages/component.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { tokens } from 'tokens.stylex';\n        export const styles = stylex.create({\n          card: {\n            color: tokens.accent,\n            backgroundColor: tokens.button.bg,\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toContain",
+        "match": "notSubstring",
+        "expected": "tokens.accent",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "cross-file: mixed flat and nested access",
+          "line": 553
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-cross-file-mixed-flat-and-ne-034-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "stylex/packages/component.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { tokens } from 'tokens.stylex';\n        export const styles = stylex.create({\n          card: {\n            color: tokens.accent,\n            backgroundColor: tokens.button.bg,\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toContain",
+        "match": "notSubstring",
+        "expected": "tokens.button",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "cross-file: mixed flat and nested access",
+          "line": 554
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-cross-file-nested-tokens-use-035-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "stylex/packages/theme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { tokens } from 'tokens.stylex';\n        export const darkTheme = stylex.createTheme(tokens, {\n          'color.primary': 'lightblue',\n          'color.secondary': 'darkgrey',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "createTheme", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toContain",
+        "match": "substring",
+        "expected": "$$css",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "cross-file: nested tokens used in createTheme (flat key format)",
+          "line": 590
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-cross-package-nested-token-a-036-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "src/components/Card.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { tokens } from '@design-system/tokens/src/tokens.stylex';\n        export const styles = stylex.create({\n          card: {\n            color: tokens.color.accent,\n            backgroundColor: tokens.color.surface,\n            padding: tokens.spacing.md,\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toContain",
+        "match": "substring",
+        "expected": "$$css",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "cross-package: nested token access from node_modules in stylex.create",
+          "line": 671
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-cross-package-nested-token-a-037-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "src/components/Card.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { tokens } from '@design-system/tokens/src/tokens.stylex';\n        export const styles = stylex.create({\n          card: {\n            color: tokens.color.accent,\n            backgroundColor: tokens.color.surface,\n            padding: tokens.spacing.md,\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toContain",
+        "match": "notSubstring",
+        "expected": "tokens.color",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "cross-package: nested token access from node_modules in stylex.create",
+          "line": 672
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-cross-package-nested-token-a-038-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "src/components/Card.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { tokens } from '@design-system/tokens/src/tokens.stylex';\n        export const styles = stylex.create({\n          card: {\n            color: tokens.color.accent,\n            backgroundColor: tokens.color.surface,\n            padding: tokens.spacing.md,\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toContain",
+        "match": "notSubstring",
+        "expected": "tokens.spacing",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "cross-package: nested token access from node_modules in stylex.create",
+          "line": 673
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-cross-package-deeply-nested-039-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "src/components/Card.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { tokens } from '@design-system/tokens/src/tokens.stylex';\n        export const styles = stylex.create({\n          card: {\n            backgroundColor: tokens.design.color.surface.primary,\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toContain",
+        "match": "substring",
+        "expected": "$$css",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "cross-package: deeply nested token access (3+ levels) from node_modules",
+          "line": 739
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-cross-package-deeply-nested-040-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "src/components/Card.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { tokens } from '@design-system/tokens/src/tokens.stylex';\n        export const styles = stylex.create({\n          card: {\n            backgroundColor: tokens.design.color.surface.primary,\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toContain",
+        "match": "notSubstring",
+        "expected": "tokens.design",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "cross-package: deeply nested token access (3+ levels) from node_modules",
+          "line": 740
+        }
+      }
+    },
+    {
+      "id": "assertions/defineVarsNested-cross-package-createthemenes-041-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "src/themes/dark.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { tokens } from '@design-system/tokens/src/tokens.stylex';\n        export const darkTheme = stylex.createTheme(tokens, {\n          'color.accent': 'lightblue',\n          'color.bg': '#111',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineVarsNested", "createTheme", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toContain",
+        "match": "substring",
+        "expected": "$$css",
+        "site": {
+          "file": "transform-stylex-defineVarsNested-test.js",
+          "test": "cross-package: createThemeNested overriding tokens from node_modules",
+          "line": 791
+        }
+      }
+    }
+  ]
+}

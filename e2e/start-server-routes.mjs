@@ -21,9 +21,7 @@ const oj = path.join(repo, "target", "debug", "oj");
 const DEV_PORT = Number(process.env.OJ_E2E_PORT || 3094);
 const PROD_PORT = DEV_PORT + 1;
 
-const installed =
-  fs.existsSync(path.join(app, "node_modules", "@tanstack", "react-start")) &&
-  fs.existsSync(path.join(app, "node_modules", "rolldown"));
+const installed = fs.existsSync(path.join(app, "node_modules", "@tanstack", "react-start"));
 if (!installed) {
   console.log("SKIP start server routes: fixture deps not installed");
   process.exit(0);

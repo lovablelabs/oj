@@ -1,0 +1,650 @@
+[
+ {
+  "name": "mined positionTry-001",
+  "styles": {
+   "$obj": [
+    [
+     "positionAnchor",
+     "--anchor"
+    ],
+    [
+     "top",
+     "0"
+    ],
+    [
+     "left",
+     "0"
+    ],
+    [
+     "width",
+     "100px"
+    ],
+    [
+     "height",
+     "100px"
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "name": "--xhs37kq",
+   "ltr": "@position-try --xhs37kq {height:height;height:100px;left:left;left:0;position-anchor:position-anchor;position-anchor:--anchor;top:top;top:0;width:width;width:100px;}",
+   "rtl": "@position-try --xhs37kq {height:100px;left:0;position-anchor:--anchor;top:0;width:100px;}",
+   "priority": 0
+  }
+ },
+ {
+  "name": "empty object",
+  "styles": {
+   "$obj": []
+  },
+  "options": {},
+  "expected": {
+   "name": "--xph554m",
+   "ltr": "@position-try --xph554m {}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "numbers get suffixes",
+  "styles": {
+   "$obj": [
+    [
+     "width",
+     100
+    ],
+    [
+     "top",
+     0
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "name": "--x1cy0vnv",
+   "ltr": "@position-try --x1cy0vnv {top:top;top:0;width:width;width:100px;}",
+   "rtl": "@position-try --x1cy0vnv {top:0;width:100px;}",
+   "priority": 0
+  }
+ },
+ {
+  "name": "null value dropped",
+  "styles": {
+   "$obj": [
+    [
+     "top",
+     null
+    ],
+    [
+     "width",
+     "1px"
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "name": "--x1mqvdqh",
+   "ltr": "@position-try --x1mqvdqh {width:width;width:1px;}",
+   "rtl": "@position-try --x1mqvdqh {width:1px;}",
+   "priority": 0
+  }
+ },
+ {
+  "name": "bool value dropped",
+  "styles": {
+   "$obj": [
+    [
+     "top",
+     true
+    ],
+    [
+     "width",
+     "1px"
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "name": "--x1mqvdqh",
+   "ltr": "@position-try --x1mqvdqh {width:width;width:1px;}",
+   "rtl": "@position-try --x1mqvdqh {width:1px;}",
+   "priority": 0
+  }
+ },
+ {
+  "name": "undefined value dropped",
+  "styles": {
+   "$obj": [
+    [
+     "top",
+     {
+      "$undefined": true
+     }
+    ],
+    [
+     "width",
+     "1px"
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "name": "--x1mqvdqh",
+   "ltr": "@position-try --x1mqvdqh {width:width;width:1px;}",
+   "rtl": "@position-try --x1mqvdqh {width:1px;}",
+   "priority": 0
+  }
+ },
+ {
+  "name": "array value dropped",
+  "styles": {
+   "$obj": [
+    [
+     "top",
+     [
+      "1px",
+      "2px"
+     ]
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "name": "--xph554m",
+   "ltr": "@position-try --xph554m {}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "object value dropped",
+  "styles": {
+   "$obj": [
+    [
+     "top",
+     {
+      "$obj": [
+       [
+        "default",
+        "1px"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "name": "--xph554m",
+   "ltr": "@position-try --xph554m {}",
+   "rtl": null,
+   "priority": 0
+  }
+ },
+ {
+  "name": "margin shorthand passthrough",
+  "styles": {
+   "$obj": [
+    [
+     "margin",
+     "4px 2px"
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "name": "--x6oxrug",
+   "ltr": "@position-try --x6oxrug {margin:margin;margin:4px 2px;}",
+   "rtl": "@position-try --x6oxrug {margin:4px 2px;}",
+   "priority": 0
+  }
+ },
+ {
+  "name": "inset shorthand number",
+  "styles": {
+   "$obj": [
+    [
+     "inset",
+     4
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "name": "--x1fwdtsu",
+   "ltr": "@position-try --x1fwdtsu {inset:inset;inset:4px;}",
+   "rtl": "@position-try --x1fwdtsu {inset:4px;}",
+   "priority": 0
+  }
+ },
+ {
+  "name": "logical inset key",
+  "styles": {
+   "$obj": [
+    [
+     "insetInlineStart",
+     "4px"
+    ],
+    [
+     "insetInlineEnd",
+     "8px"
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "name": "--xqz86u7",
+   "ltr": "@position-try --xqz86u7 {inset-inline-end:inset-inline-end;inset-inline-end:8px;inset-inline-start:inset-inline-start;inset-inline-start:4px;}",
+   "rtl": "@position-try --xqz86u7 {inset-inline-end:8px;inset-inline-start:4px;}",
+   "priority": 0
+  }
+ },
+ {
+  "name": "block size keys",
+  "styles": {
+   "$obj": [
+    [
+     "blockSize",
+     "1px"
+    ],
+    [
+     "inlineSize",
+     2
+    ],
+    [
+     "minBlockSize",
+     "3%"
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "name": "--xdo1axx",
+   "ltr": "@position-try --xdo1axx {height:height;height:1px;min-height:min-height;min-height:3%;width:width;width:2px;}",
+   "rtl": "@position-try --xdo1axx {height:1px;min-height:3%;width:2px;}",
+   "priority": 0
+  }
+ },
+ {
+  "name": "self alignment",
+  "styles": {
+   "$obj": [
+    [
+     "alignSelf",
+     "center"
+    ],
+    [
+     "justifySelf",
+     "end"
+    ],
+    [
+     "placeSelf",
+     "start"
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "name": "--xlw3t07",
+   "ltr": "@position-try --xlw3t07 {align-self:align-self;align-self:center;justify-self:justify-self;justify-self:end;place-self:place-self;place-self:start;}",
+   "rtl": "@position-try --xlw3t07 {align-self:center;justify-self:end;place-self:start;}",
+   "priority": 0
+  }
+ },
+ {
+  "name": "anchor name",
+  "styles": {
+   "$obj": [
+    [
+     "anchorName",
+     "--a"
+    ],
+    [
+     "positionArea",
+     "top left"
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "name": "--xie1k4o",
+   "ltr": "@position-try --xie1k4o {anchor-name:anchor-name;anchor-name:--a;position-area:position-area;position-area:top left;}",
+   "rtl": "@position-try --xie1k4o {anchor-name:--a;position-area:top left;}",
+   "priority": 0
+  }
+ },
+ {
+  "name": "key sort is deterministic",
+  "styles": {
+   "$obj": [
+    [
+     "width",
+     "1px"
+    ],
+    [
+     "height",
+     "2px"
+    ],
+    [
+     "top",
+     "3px"
+    ],
+    [
+     "bottom",
+     "4px"
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "name": "--x10c7eil",
+   "ltr": "@position-try --x10c7eil {bottom:bottom;bottom:4px;height:height;height:2px;top:top;top:3px;width:width;width:1px;}",
+   "rtl": "@position-try --x10c7eil {bottom:4px;height:2px;top:3px;width:1px;}",
+   "priority": 0
+  }
+ },
+ {
+  "name": "duplicate via number and string",
+  "styles": {
+   "$obj": [
+    [
+     "top",
+     0
+    ],
+    [
+     "marginTop",
+     "0"
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "name": "--x1mt6x3c",
+   "ltr": "@position-try --x1mt6x3c {margin-top:margin-top;margin-top:0;top:top;top:0;}",
+   "rtl": "@position-try --x1mt6x3c {margin-top:0;top:0;}",
+   "priority": 0
+  }
+ },
+ {
+  "name": "calc whitespace",
+  "styles": {
+   "$obj": [
+    [
+     "top",
+     "calc( 100% - 8px )"
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "name": "--x1e37luc",
+   "ltr": "@position-try --x1e37luc {top:top;top:calc(100% - 8px);}",
+   "rtl": "@position-try --x1e37luc {top:calc(100% - 8px);}",
+   "priority": 0
+  }
+ },
+ {
+  "name": "leading zero trimmed",
+  "styles": {
+   "$obj": [
+    [
+     "top",
+     "0.5px"
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "name": "--xr852u6",
+   "ltr": "@position-try --xr852u6 {top:top;top:.5px;}",
+   "rtl": "@position-try --xr852u6 {top:.5px;}",
+   "priority": 0
+  }
+ },
+ {
+  "name": "zero with unit",
+  "styles": {
+   "$obj": [
+    [
+     "top",
+     "0px"
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "name": "--xui0vff",
+   "ltr": "@position-try --xui0vff {top:top;top:0;}",
+   "rtl": "@position-try --xui0vff {top:0;}",
+   "priority": 0
+  }
+ },
+ {
+  "name": "negative number",
+  "styles": {
+   "$obj": [
+    [
+     "top",
+     -4
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "name": "--x13xc58c",
+   "ltr": "@position-try --x13xc58c {top:top;top:-4px;}",
+   "rtl": "@position-try --x13xc58c {top:-4px;}",
+   "priority": 0
+  }
+ },
+ {
+  "name": "large number",
+  "styles": {
+   "$obj": [
+    [
+     "width",
+     1e+21
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "name": "--xhez8dv",
+   "ltr": "@position-try --xhez8dv {width:width;width:1.0000000000000001e+21px;}",
+   "rtl": "@position-try --xhez8dv {width:1.0000000000000001e+21px;}",
+   "priority": 0
+  }
+ },
+ {
+  "name": "prefix option",
+  "styles": {
+   "$obj": [
+    [
+     "top",
+     "1px"
+    ]
+   ]
+  },
+  "options": {
+   "classNamePrefix": "pfx"
+  },
+  "expected": {
+   "name": "--pfxb1ao5r",
+   "ltr": "@position-try --pfxb1ao5r {top:top;top:1px;}",
+   "rtl": "@position-try --pfxb1ao5r {top:1px;}",
+   "priority": 0
+  }
+ },
+ {
+  "name": "dev has no effect",
+  "styles": {
+   "$obj": [
+    [
+     "top",
+     "1px"
+    ]
+   ]
+  },
+  "options": {
+   "dev": true
+  },
+  "expected": {
+   "name": "--xb1ao5r",
+   "ltr": "@position-try --xb1ao5r {top:top;top:1px;}",
+   "rtl": "@position-try --xb1ao5r {top:1px;}",
+   "priority": 0
+  }
+ },
+ {
+  "name": "invalid property",
+  "styles": {
+   "$obj": [
+    [
+     "color",
+     "red"
+    ]
+   ]
+  },
+  "options": {},
+  "expectedError": {
+   "message": "Invalid property in `positionTry()` call. It may only contain, positionAnchor, positionArea, inset properties (top, left, insetInline etc.), margin properties, size properties (height, inlineSize, etc.), and self-alignment properties (alignSelf, justifySelf, placeSelf)",
+   "code": "PositionTryInvalidProperty",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "dashed valid property rejected",
+  "styles": {
+   "$obj": [
+    [
+     "position-anchor",
+     "--x"
+    ]
+   ]
+  },
+  "options": {},
+  "expectedError": {
+   "message": "Invalid property in `positionTry()` call. It may only contain, positionAnchor, positionArea, inset properties (top, left, insetInline etc.), margin properties, size properties (height, inlineSize, etc.), and self-alignment properties (alignSelf, justifySelf, placeSelf)",
+   "code": "PositionTryInvalidProperty",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "numeric key rejected",
+  "styles": {
+   "$obj": [
+    [
+     "0",
+     "1px"
+    ]
+   ]
+  },
+  "options": {},
+  "expectedError": {
+   "message": "Invalid property in `positionTry()` call. It may only contain, positionAnchor, positionArea, inset properties (top, left, insetInline etc.), margin properties, size properties (height, inlineSize, etc.), and self-alignment properties (alignSelf, justifySelf, placeSelf)",
+   "code": "PositionTryInvalidProperty",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "marginStart alias rejected",
+  "styles": {
+   "$obj": [
+    [
+     "marginStart",
+     "1px"
+    ]
+   ]
+  },
+  "options": {},
+  "expectedError": {
+   "message": "Invalid property in `positionTry()` call. It may only contain, positionAnchor, positionArea, inset properties (top, left, insetInline etc.), margin properties, size properties (height, inlineSize, etc.), and self-alignment properties (alignSelf, justifySelf, placeSelf)",
+   "code": "PositionTryInvalidProperty",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "non-object arg",
+  "styles": "x",
+  "options": {},
+  "expectedError": {
+   "message": "positionTry() can only accept an object.",
+   "code": "NonStyleObject",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "array arg",
+  "styles": [
+   "x"
+  ],
+  "options": {},
+  "expectedError": {
+   "message": "positionTry() can only accept an object.",
+   "code": "NonStyleObject",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "null arg",
+  "styles": null,
+  "options": {},
+  "expectedError": {
+   "message": "positionTry() can only accept an object.",
+   "code": "NonStyleObject",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "unclosed function value",
+  "styles": {
+   "$obj": [
+    [
+     "top",
+     "calc(1px"
+    ]
+   ]
+  },
+  "options": {},
+  "expectedError": {
+   "message": "Rule contains an unclosed function",
+   "code": "UnclosedFunction",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "unclosed string value",
+  "styles": {
+   "$obj": [
+    [
+     "anchorName",
+     "\"abc"
+    ]
+   ]
+  },
+  "options": {},
+  "expectedError": {
+   "message": "Rule contains an unclosed string",
+   "code": "UnclosedString",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "empty value crash",
+  "styles": {
+   "$obj": [
+    [
+     "top",
+     " "
+    ]
+   ]
+  },
+  "options": {},
+  "expectedError": {
+   "message": "Cannot read properties of undefined (reading 'type')",
+   "code": "EmptyValue",
+   "messageExact": false
+  }
+ }
+]

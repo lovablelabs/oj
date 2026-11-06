@@ -17,6 +17,8 @@ pub struct CssResolve<'a> {
     pub targets: &'a [String],
     /// `build.cssMinify` (dev never minifies).
     pub minify: bool,
+    /// A production build: package `exports` resolve under `production`.
+    pub production: bool,
     pub modules: &'a CssModulesOptions,
     /// `css.lightningcss`, applied by a minifying (build) compile.
     pub lightning: &'a LightningOptions,
@@ -36,6 +38,8 @@ static DEFAULT_MODULES: CssModulesOptions = CssModulesOptions {
     generate_scoped_name: None,
     global_scope: false,
     global_module_paths: Vec::new(),
+    hash_prefix: None,
+    context: None,
 };
 
 impl Default for CssResolve<'_> {
@@ -46,6 +50,7 @@ impl Default for CssResolve<'_> {
             alias: &[],
             targets: &[],
             minify: false,
+            production: false,
             modules: &DEFAULT_MODULES,
             lightning: &DEFAULT_LIGHTNING,
         }
@@ -57,12 +62,18 @@ impl Default for CssResolve<'_> {
 pub struct CssModulesOptions {
     /// `camelCase`, `camelCaseOnly`, `dashes` or `dashesOnly`.
     pub locals_convention: Option<String>,
-    /// Default `[name]_[local]_[hash]`.
+    /// None: postcss-modules' default names, as Vite gives them.
     pub generate_scoped_name: Option<String>,
     /// `scopeBehaviour: "global"`.
     pub global_scope: bool,
     /// Regex sources; a matching module file compiles unscoped.
     pub global_module_paths: Vec<String>,
+    /// `hashPrefix`, salting the default names' hash.
+    pub hash_prefix: Option<String>,
+    /// The directory a `generateScopedName` pattern's names hash the file's
+    /// path from: postcss-modules hands generic-names `process.cwd()`, where
+    /// Vite was started. None: the app root.
+    pub context: Option<PathBuf>,
 }
 
 /// Owned `CssResolve` for holders that outlive a borrow.
@@ -73,6 +84,7 @@ pub struct CssResolveConfig {
     pub alias: Vec<(String, String)>,
     pub targets: Vec<String>,
     pub minify: bool,
+    pub production: bool,
     pub modules: CssModulesOptions,
     pub lightning: LightningOptions,
 }
@@ -88,6 +100,7 @@ impl CssResolveConfig {
             alias: &self.alias,
             targets: &self.targets,
             minify: self.minify,
+            production: self.production,
             modules: &self.modules,
             lightning: &self.lightning,
         }
@@ -102,6 +115,7 @@ impl From<CssResolve<'_>> for CssResolveConfig {
             alias: r.alias.to_vec(),
             targets: r.targets.to_vec(),
             minify: r.minify,
+            production: r.production,
             modules: r.modules.clone(),
             lightning: r.lightning.clone(),
         }
@@ -110,26 +124,20 @@ impl From<CssResolve<'_>> for CssResolveConfig {
 
 impl CssResolve<'_> {
     /// The specifier after `resolve.alias`, matched like @rollup/plugin-alias:
-    /// the whole specifier or a `find/` prefix. Yields an absolute path for a
+    /// the whole specifier or a `find/` prefix, a RegExp find as it tests. Yields an absolute path for a
     /// path alias, a bare specifier for a package alias.
     pub fn alias_spec(&self, spec: &str) -> Option<String> {
         self.alias.iter().find_map(|(find, replacement)| {
             if find.is_empty() {
                 return None;
             }
-            let rest = if spec == find {
-                ""
-            } else {
-                spec.strip_prefix(find.as_str())
-                    .filter(|rest| rest.starts_with('/'))?
-            };
-            let target = match (replacement.starts_with('.'), self.root) {
-                (true, Some(root)) => normalize(&root.join(replacement))
+            let aliased = oj_resolver::alias::rewrite(find, replacement, spec)?;
+            Some(match (aliased.starts_with('.'), self.root) {
+                (true, Some(root)) => normalize(&root.join(&aliased))
                     .to_string_lossy()
                     .into_owned(),
-                _ => replacement.clone(),
-            };
-            Some(format!("{target}{rest}"))
+                _ => aliased,
+            })
         })
     }
 
@@ -204,6 +212,21 @@ mod tests {
         assert_eq!(
             r.alias_spec("react/x.css").as_deref(),
             Some("preact/compat/x.css")
+        );
+        // A RegExp find tests and replaces as JavaScript.
+        let regex = vec![(
+            oj_resolver::alias::regex_find("^~(.*)$", ""),
+            "./styles/$1".to_string(),
+        )];
+        let re = CssResolve {
+            root: Some(Path::new("/proj")),
+            public_dir: None,
+            alias: &regex,
+            ..CssResolve::default()
+        };
+        assert_eq!(
+            re.alias_spec("~theme.css").as_deref(),
+            Some("/proj/styles/theme.css")
         );
         assert!(r.alias_path("react/x.css").is_none());
         assert_eq!(

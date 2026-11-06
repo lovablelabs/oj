@@ -1,0 +1,651 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/validation-stylex-defineVars-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs and upstream's own expected values — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "assertions/validation-defineVars-invalid-export-not-bound-001-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.defineVars({});\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineVars", "validation", "defineVars", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "The return value of defineVars() must be bound to a named export.",
+        "site": {
+          "file": "validation-stylex-defineVars-test.js",
+          "test": "invalid export: not bound",
+          "line": 37
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineVars-invalid-export-not-bound-002-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          stylex.defineVars({});\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineVars", "validation", "defineVars", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "defineVars() calls must be bound to a bare variable.",
+        "site": {
+          "file": "validation-stylex-defineVars-test.js",
+          "test": "invalid export: not bound",
+          "line": 44
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineVars-invalid-argument-none-003-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars();\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineVars", "validation", "defineVars", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "defineVars() should have 1 argument.",
+        "site": {
+          "file": "validation-stylex-defineVars-test.js",
+          "test": "invalid argument: none",
+          "line": 53
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineVars-invalid-argument-too-many-004-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({}, {});\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineVars", "validation", "defineVars", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "defineVars() should have 1 argument.",
+        "site": {
+          "file": "validation-stylex-defineVars-test.js",
+          "test": "invalid argument: too many",
+          "line": 62
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineVars-invalid-argument-number-005-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars(1);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineVars", "validation", "defineVars", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "defineVars() can only accept an object.",
+        "site": {
+          "file": "validation-stylex-defineVars-test.js",
+          "test": "invalid argument: number",
+          "line": 71
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineVars-invalid-argument-string-006-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars('1');\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineVars", "validation", "defineVars", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "defineVars() can only accept an object.",
+        "site": {
+          "file": "validation-stylex-defineVars-test.js",
+          "test": "invalid argument: string",
+          "line": 80
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineVars-invalid-argument-non-static-007-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars(genStyles());\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineVars", "validation", "defineVars", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Only static values are allowed inside of a defineVars() call.",
+        "site": {
+          "file": "validation-stylex-defineVars-test.js",
+          "test": "invalid argument: non-static",
+          "line": 89
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineVars-valid-argument-object-008-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({});\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineVars", "validation", "defineVars", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-defineVars-test.js",
+          "test": "valid argument: object",
+          "line": 98
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineVars-valid-export-separate-const-009-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const vars = stylex.defineVars({});\n          export { vars };\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineVars", "validation", "defineVars", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-defineVars-test.js",
+          "test": "valid export: separate const and export statement",
+          "line": 107
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineVars-invalid-export-re-export-fro-010-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const vars = stylex.defineVars({});\n          export { vars } from './other.stylex.js';\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineVars", "validation", "defineVars", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "The return value of defineVars() must be bound to a named export.",
+        "site": {
+          "file": "validation-stylex-defineVars-test.js",
+          "test": "invalid export: re-export from another file does not count",
+          "line": 117
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineVars-invalid-export-renamed-re-ex-011-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const vars = stylex.defineVars({});\n          export { vars as otherVars } from './other.stylex.js';\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineVars", "validation", "defineVars", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "The return value of defineVars() must be bound to a named export.",
+        "site": {
+          "file": "validation-stylex-defineVars-test.js",
+          "test": "invalid export: renamed re-export from another file does not count",
+          "line": 127
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineVars-invalid-export-default-expor-012-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const vars = stylex.defineVars({});\n          export default vars;\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineVars", "validation", "defineVars", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "The return value of defineVars() must be bound to a named export.",
+        "site": {
+          "file": "validation-stylex-defineVars-test.js",
+          "test": "invalid export: default export does not count",
+          "line": 137
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineVars-invalid-export-renamed-expor-013-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const vars = stylex.defineVars({});\n          export { vars as themeVars };\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineVars", "validation", "defineVars", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "The return value of defineVars() must be bound to a named export.",
+        "site": {
+          "file": "validation-stylex-defineVars-test.js",
+          "test": "invalid export: renamed export with as syntax",
+          "line": 147
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineVars-invalid-key-non-static-014-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({\n            [labelColor]: 'red',\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineVars", "validation", "defineVars", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Only static values are allowed inside of a defineVars() call.",
+        "site": {
+          "file": "validation-stylex-defineVars-test.js",
+          "test": "invalid key: non-static",
+          "line": 159
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineVars-invalid-value-non-static-015-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({\n            labelColor: labelColor,\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineVars", "validation", "defineVars", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Only static values are allowed inside of a defineVars() call.",
+        "site": {
+          "file": "validation-stylex-defineVars-test.js",
+          "test": "invalid value: non-static",
+          "line": 172
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineVars-invalid-value-non-static-016-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({\n            labelColor: labelColor(),\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineVars", "validation", "defineVars", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Only static values are allowed inside of a defineVars() call.",
+        "site": {
+          "file": "validation-stylex-defineVars-test.js",
+          "test": "invalid value: non-static",
+          "line": 181
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineVars-valid-value-number-017-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({\n            cornerRadius: 5,\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineVars", "validation", "defineVars", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-defineVars-test.js",
+          "test": "valid value: number",
+          "line": 192
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineVars-valid-value-string-018-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({\n            labelColor: 'red',\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineVars", "validation", "defineVars", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-defineVars-test.js",
+          "test": "valid value: string",
+          "line": 203
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineVars-valid-value-keyframes-019-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({\n            fadeIn: stylex.keyframes({\n              '0%': { opacity: 0 },\n              '100%': { opacity: 1}\n            }),\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineVars", "validation", "defineVars", "keyframes", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-defineVars-test.js",
+          "test": "valid value: keyframes",
+          "line": 214
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineVars-valid-value-same-group-funct-020-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const colors = stylex.defineVars({\n            text: 'black',\n            textMuted: () => `color-mix(${colors.text}, transparent 50%)`,\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineVars", "validation", "defineVars", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-defineVars-test.js",
+          "test": "valid value: same-group function reference",
+          "line": 228
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineVars-invalid-function-value-param-021-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const colors = stylex.defineVars({\n            text: 'black',\n            textMuted: (value) => value,\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineVars", "validation", "defineVars", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Function values in defineVars() must be zero-argument and return a static value supported by defineVars().",
+        "site": {
+          "file": "validation-stylex-defineVars-test.js",
+          "test": "invalid function value: parameterized",
+          "line": 240
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineVars-invalid-function-value-non-s-022-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const colors = stylex.defineVars({\n            text: 'black',\n            textMuted: () => getColor(colors.text),\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineVars", "validation", "defineVars", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Only static values are allowed inside of a defineVars() call.",
+        "site": {
+          "file": "validation-stylex-defineVars-test.js",
+          "test": "invalid function value: non-static body",
+          "line": 252
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineVars-valid-function-value-returns-023-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const colors = stylex.defineVars({\n            text: 'black',\n            textMuted: () => stylex.types.color('red'),\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineVars", "validation", "defineVars", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-defineVars-test.js",
+          "test": "valid function value: returns stylex.types",
+          "line": 264
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineVars-valid-function-value-returns-024-noThrow",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const colors = stylex.defineVars({\n            textMuted: () => ({\n              default: 'red',\n              '@media (prefers-color-scheme: dark)': 'blue',\n            }),\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineVars", "validation", "defineVars", "assert-noThrow"],
+      "assert": {
+        "kind": "noThrow",
+        "matcher": "toThrow",
+        "match": "none",
+        "site": {
+          "file": "validation-stylex-defineVars-test.js",
+          "test": "valid function value: returns object",
+          "line": 276
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineVars-invalid-same-group-reference-025-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const colors = stylex.defineVars({\n            text: 'black',\n            textMuted: () => colors.missing,\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineVars", "validation", "defineVars", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Unknown same-group reference \"missing\" found while resolving \"textMuted\" in defineVars().",
+        "site": {
+          "file": "validation-stylex-defineVars-test.js",
+          "test": "invalid same-group reference: unknown key",
+          "line": 290
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineVars-invalid-same-group-reference-026-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const colors = stylex.defineVars({\n            text: 'black',\n            textMuted: () => colors.textMuted,\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineVars", "validation", "defineVars", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Cyclic same-group references in defineVars() are not allowed: textMuted -> textMuted.",
+        "site": {
+          "file": "validation-stylex-defineVars-test.js",
+          "test": "invalid same-group reference: direct cycle",
+          "line": 302
+        }
+      }
+    },
+    {
+      "id": "assertions/validation-defineVars-invalid-same-group-reference-027-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const colors = stylex.defineVars({\n            a: () => colors.b,\n            b: () => colors.c,\n            c: () => colors.a,\n          });\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["validation-defineVars", "validation", "defineVars", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "substring",
+        "expected": "Cyclic same-group references in defineVars() are not allowed: a -> b -> c -> a.",
+        "site": {
+          "file": "validation-stylex-defineVars-test.js",
+          "test": "invalid same-group reference: indirect cycle",
+          "line": 314
+        }
+      }
+    }
+  ]
+}

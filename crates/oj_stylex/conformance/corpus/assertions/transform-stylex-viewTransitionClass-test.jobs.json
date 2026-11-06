@@ -1,0 +1,243 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/transform-stylex-viewTransitionClass-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs and upstream's own expected values — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "assertions/viewTransitionClass-basic-object-001-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const cls = stylex.viewTransitionClass({\n          group: {\n            transitionProperty: 'none',\n          },\n          imagePair: {\n            borderRadius: 16,\n          },\n          old: {\n            animationDuration: '0.5s',\n          },\n          new: {\n            animationTimingFunction: 'ease-out',\n          },\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["viewTransitionClass", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const cls = \"xchu1hv\";",
+        "site": {
+          "file": "transform-stylex-viewTransitionClass-test.js",
+          "test": "basic object",
+          "line": 48
+        }
+      }
+    },
+    {
+      "id": "assertions/viewTransitionClass-basic-object-002-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const cls = stylex.viewTransitionClass({\n          group: {\n            transitionProperty: 'none',\n          },\n          imagePair: {\n            borderRadius: 16,\n          },\n          old: {\n            animationDuration: '0.5s',\n          },\n          new: {\n            animationTimingFunction: 'ease-out',\n          },\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["viewTransitionClass", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xchu1hv",
+            {
+              "ltr": "::view-transition-group(*.xchu1hv){transition-property:none;}::view-transition-image-pair(*.xchu1hv){border-radius:16px;}::view-transition-old(*.xchu1hv){animation-duration:.5s;}::view-transition-new(*.xchu1hv){animation-timing-function:ease-out;}",
+              "rtl": null
+            },
+            1
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-viewTransitionClass-test.js",
+          "test": "basic object",
+          "line": 53
+        }
+      }
+    },
+    {
+      "id": "assertions/viewTransitionClass-local-variables-used-in-view-003-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const animationDuration = '1s';\n        const cls = stylex.viewTransitionClass({\n          old: { animationDuration },\n          new: { animationDuration },\n          group: { animationDuration },\n          imagePair: { animationDuration },\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["viewTransitionClass", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nconst animationDuration = '1s';\nconst cls = \"xtngzpi\";",
+        "site": {
+          "file": "transform-stylex-viewTransitionClass-test.js",
+          "test": "local variables used in view transition class",
+          "line": 80
+        }
+      }
+    },
+    {
+      "id": "assertions/viewTransitionClass-local-variables-used-in-view-004-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const animationDuration = '1s';\n        const cls = stylex.viewTransitionClass({\n          old: { animationDuration },\n          new: { animationDuration },\n          group: { animationDuration },\n          imagePair: { animationDuration },\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["viewTransitionClass", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xtngzpi",
+            {
+              "ltr": "::view-transition-old(*.xtngzpi){animation-duration:1s;}::view-transition-new(*.xtngzpi){animation-duration:1s;}::view-transition-group(*.xtngzpi){animation-duration:1s;}::view-transition-image-pair(*.xtngzpi){animation-duration:1s;}",
+              "rtl": null
+            },
+            1
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-viewTransitionClass-test.js",
+          "test": "local variables used in view transition class",
+          "line": 85
+        }
+      }
+    },
+    {
+      "id": "assertions/viewTransitionClass-using-keyframes-005-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const fadeIn = stylex.keyframes({\n          from: {opacity: 0},\n          to: {opacity: 1},\n        });\n        const fadeOut = stylex.keyframes({\n          from: {opacity: 1},\n          to: {opacity: 0},\n        });\n        const cls = stylex.viewTransitionClass({\n          old: {\n            animationName: fadeOut,\n            animationDuration: '1s',\n          },\n          new: {\n            animationName: fadeIn,\n            animationDuration: '1s',\n          },\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["viewTransitionClass", "keyframes", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nconst fadeIn = \"x18re5ia-B\";\nconst fadeOut = \"x1jn504y-B\";\nconst cls = \"xfh0f9i\";",
+        "site": {
+          "file": "transform-stylex-viewTransitionClass-test.js",
+          "test": "using keyframes",
+          "line": 123
+        }
+      }
+    },
+    {
+      "id": "assertions/viewTransitionClass-using-keyframes-006-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const fadeIn = stylex.keyframes({\n          from: {opacity: 0},\n          to: {opacity: 1},\n        });\n        const fadeOut = stylex.keyframes({\n          from: {opacity: 1},\n          to: {opacity: 0},\n        });\n        const cls = stylex.viewTransitionClass({\n          old: {\n            animationName: fadeOut,\n            animationDuration: '1s',\n          },\n          new: {\n            animationName: fadeIn,\n            animationDuration: '1s',\n          },\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["viewTransitionClass", "keyframes", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x18re5ia-B",
+            {
+              "ltr": "@keyframes x18re5ia-B{from{opacity:0;}to{opacity:1;}}",
+              "rtl": null
+            },
+            0
+          ],
+          [
+            "x1jn504y-B",
+            {
+              "ltr": "@keyframes x1jn504y-B{from{opacity:1;}to{opacity:0;}}",
+              "rtl": null
+            },
+            0
+          ],
+          [
+            "xfh0f9i",
+            {
+              "ltr": "::view-transition-old(*.xfh0f9i){animation-name:x1jn504y-B;animation-duration:1s;}::view-transition-new(*.xfh0f9i){animation-name:x18re5ia-B;animation-duration:1s;}",
+              "rtl": null
+            },
+            1
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-viewTransitionClass-test.js",
+          "test": "using keyframes",
+          "line": 129
+        }
+      }
+    },
+    {
+      "id": "assertions/viewTransitionClass-using-inline-keyframes-007-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const cls = stylex.viewTransitionClass({\n          old: {\n            animationName: stylex.keyframes({\n              from: {opacity: 1},\n              to: {opacity: 0},\n            }),\n            animationDuration: '1s',\n          },\n          new: {\n            animationName: stylex.keyframes({\n              from: {opacity: 0},\n              to: {opacity: 1},\n            }),\n            animationDuration: '1s',\n          },\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["viewTransitionClass", "keyframes", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nconst cls = \"xfh0f9i\";",
+        "site": {
+          "file": "transform-stylex-viewTransitionClass-test.js",
+          "test": "using inline keyframes",
+          "line": 181
+        }
+      }
+    },
+    {
+      "id": "assertions/viewTransitionClass-using-inline-keyframes-008-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const cls = stylex.viewTransitionClass({\n          old: {\n            animationName: stylex.keyframes({\n              from: {opacity: 1},\n              to: {opacity: 0},\n            }),\n            animationDuration: '1s',\n          },\n          new: {\n            animationName: stylex.keyframes({\n              from: {opacity: 0},\n              to: {opacity: 1},\n            }),\n            animationDuration: '1s',\n          },\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["viewTransitionClass", "keyframes", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x1jn504y-B",
+            {
+              "ltr": "@keyframes x1jn504y-B{from{opacity:1;}to{opacity:0;}}",
+              "rtl": null
+            },
+            0
+          ],
+          [
+            "x18re5ia-B",
+            {
+              "ltr": "@keyframes x18re5ia-B{from{opacity:0;}to{opacity:1;}}",
+              "rtl": null
+            },
+            0
+          ],
+          [
+            "xfh0f9i",
+            {
+              "ltr": "::view-transition-old(*.xfh0f9i){animation-name:x1jn504y-B;animation-duration:1s;}::view-transition-new(*.xfh0f9i){animation-name:x18re5ia-B;animation-duration:1s;}",
+              "rtl": null
+            },
+            1
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-viewTransitionClass-test.js",
+          "test": "using inline keyframes",
+          "line": 185
+        }
+      }
+    }
+  ]
+}

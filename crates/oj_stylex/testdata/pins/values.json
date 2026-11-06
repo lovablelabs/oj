@@ -1,0 +1,2452 @@
+[
+ {
+  "property": "width",
+  "input": {
+   "kind": "number",
+   "value": "5"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1ftt334",
+   "value": "5px"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "number",
+   "value": "0"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xnalus7",
+   "value": "0"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "number",
+   "value": "-10"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xk696tn",
+   "value": "-10px"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "number",
+   "value": "0.5"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x197jcof",
+   "value": ".5px"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "number",
+   "value": "1.5"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xbdjdey",
+   "value": "1.5px"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "number",
+   "value": "0.12345"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1db7n8u",
+   "value": ".1235px"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "number",
+   "value": "1e-7"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xnalus7",
+   "value": "0"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "number",
+   "value": "123456789"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1gm1p2f",
+   "value": "123456789px"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "number",
+   "value": "1e21"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xnpd0iy",
+   "value": "1.0000000000000001e+21px"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "number",
+   "value": "-0.5"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1ez927y",
+   "value": "-0.5px"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "number",
+   "value": "-0"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xnalus7",
+   "value": "0"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "number",
+   "value": "100.0001"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1nwqpw8",
+   "value": "100.0001px"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "number",
+   "value": "0.00005"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1tqa3pk",
+   "value": ".0001px"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "number",
+   "value": "-0.00005"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xnalus7",
+   "value": "0"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "number",
+   "value": "33.333333"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1wkmiy7",
+   "value": "33.3333px"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "number",
+   "value": "3.14159265"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1gjc3hq",
+   "value": "3.1416px"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "number",
+   "value": "0.30000000000000004"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1gxzdvw",
+   "value": ".3px"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "number",
+   "value": "32.85"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1lbvpwr",
+   "value": "32.85px"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "number",
+   "value": "1.0000001"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1i1rx1s",
+   "value": "1px"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "number",
+   "value": "NaN"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1c9rq88",
+   "value": "NaNpx"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "number",
+   "value": "Infinity"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1fssspx",
+   "value": "Infinitypx"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "number",
+   "value": "-Infinity"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x18m5bhg",
+   "value": "-Infinitypx"
+  }
+ },
+ {
+  "property": "opacity",
+  "input": {
+   "kind": "number",
+   "value": "0.5"
+  },
+  "expect": {
+   "decl_prop": "opacity",
+   "class_name": "xbyyjgo",
+   "value": ".5"
+  }
+ },
+ {
+  "property": "opacity",
+  "input": {
+   "kind": "number",
+   "value": "1"
+  },
+  "expect": {
+   "decl_prop": "opacity",
+   "class_name": "x1hc1fzr",
+   "value": "1"
+  }
+ },
+ {
+  "property": "opacity",
+  "input": {
+   "kind": "number",
+   "value": "0.25"
+  },
+  "expect": {
+   "decl_prop": "opacity",
+   "class_name": "xvpkmg4",
+   "value": ".25"
+  }
+ },
+ {
+  "property": "opacity",
+  "input": {
+   "kind": "number",
+   "value": "0.99995"
+  },
+  "expect": {
+   "decl_prop": "opacity",
+   "class_name": "x1hc1fzr",
+   "value": "1"
+  }
+ },
+ {
+  "property": "zIndex",
+  "input": {
+   "kind": "number",
+   "value": "10"
+  },
+  "expect": {
+   "decl_prop": "z-index",
+   "class_name": "x1n327nk",
+   "value": "10"
+  }
+ },
+ {
+  "property": "zIndex",
+  "input": {
+   "kind": "number",
+   "value": "-5"
+  },
+  "expect": {
+   "decl_prop": "z-index",
+   "class_name": "x10y7iiu",
+   "value": "-5"
+  }
+ },
+ {
+  "property": "lineHeight",
+  "input": {
+   "kind": "number",
+   "value": "1.5"
+  },
+  "expect": {
+   "decl_prop": "line-height",
+   "class_name": "x1evy7pa",
+   "value": "1.5"
+  }
+ },
+ {
+  "property": "flexGrow",
+  "input": {
+   "kind": "number",
+   "value": "2"
+  },
+  "expect": {
+   "decl_prop": "flex-grow",
+   "class_name": "xgyuaek",
+   "value": "2"
+  }
+ },
+ {
+  "property": "fontWeight",
+  "input": {
+   "kind": "number",
+   "value": "700"
+  },
+  "expect": {
+   "decl_prop": "font-weight",
+   "class_name": "x1xlr1w8",
+   "value": "700"
+  }
+ },
+ {
+  "property": "aspectRatio",
+  "input": {
+   "kind": "number",
+   "value": "1.5"
+  },
+  "expect": {
+   "decl_prop": "aspect-ratio",
+   "class_name": "x1pknmkc",
+   "value": "1.5"
+  }
+ },
+ {
+  "property": "tabSize",
+  "input": {
+   "kind": "number",
+   "value": "4"
+  },
+  "expect": {
+   "decl_prop": "tab-size",
+   "class_name": "x1k5ss6i",
+   "value": "4"
+  }
+ },
+ {
+  "property": "WebkitLineClamp",
+  "input": {
+   "kind": "number",
+   "value": "3"
+  },
+  "expect": {
+   "decl_prop": "-webkit-line-clamp",
+   "class_name": "x1gzmk7r",
+   "value": "3"
+  }
+ },
+ {
+  "property": "rotate",
+  "input": {
+   "kind": "number",
+   "value": "45"
+  },
+  "expect": {
+   "decl_prop": "rotate",
+   "class_name": "xg96fpv",
+   "value": "45"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "number",
+   "value": "500"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x1wsgiic",
+   "value": ".5s"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "number",
+   "value": "0"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x1mq3mr6",
+   "value": "0s"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "number",
+   "value": "5"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x10of9mk",
+   "value": "5ms"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "number",
+   "value": "10"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "xpvlhck",
+   "value": ".01s"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "number",
+   "value": "1234.5678"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "xv8l0f9",
+   "value": "1.2345678s"
+  }
+ },
+ {
+  "property": "animationDelay",
+  "input": {
+   "kind": "number",
+   "value": "100"
+  },
+  "expect": {
+   "decl_prop": "animation-delay",
+   "class_name": "x1k0bccz",
+   "value": ".1s"
+  }
+ },
+ {
+  "property": "animationDuration",
+  "input": {
+   "kind": "number",
+   "value": "2000"
+  },
+  "expect": {
+   "decl_prop": "animation-duration",
+   "class_name": "x1c74tu6",
+   "value": "2s"
+  }
+ },
+ {
+  "property": "transitionDelay",
+  "input": {
+   "kind": "number",
+   "value": "50"
+  },
+  "expect": {
+   "decl_prop": "transition-delay",
+   "class_name": "x5zdck6",
+   "value": ".05s"
+  }
+ },
+ {
+  "property": "voiceDuration",
+  "input": {
+   "kind": "number",
+   "value": "300"
+  },
+  "expect": {
+   "decl_prop": "voice-duration",
+   "class_name": "x1ht3fux",
+   "value": ".3s"
+  }
+ },
+ {
+  "property": "transition-duration",
+  "input": {
+   "kind": "number",
+   "value": "500"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "xfqn8mu",
+   "value": "500px"
+  }
+ },
+ {
+  "property": "--customVar",
+  "input": {
+   "kind": "number",
+   "value": "5"
+  },
+  "expect": {
+   "decl_prop": "--customVar",
+   "class_name": "x11wvb5p",
+   "value": "5"
+  }
+ },
+ {
+  "property": "--customVar",
+  "input": {
+   "kind": "number",
+   "value": "0.5"
+  },
+  "expect": {
+   "decl_prop": "--customVar",
+   "class_name": "xupfre5",
+   "value": ".5"
+  }
+ },
+ {
+  "property": "--customVar",
+  "input": {
+   "kind": "number",
+   "value": "0"
+  },
+  "expect": {
+   "decl_prop": "--customVar",
+   "class_name": "xsqvab5",
+   "value": "0"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "number",
+   "value": "5"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xg70hk6",
+   "value": "\"5px\""
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "500ms"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x1wsgiic",
+   "value": ".5s"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "120ms"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "xgdialr",
+   "value": ".12s"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "2s"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x1j20mh9",
+   "value": "2s"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "0.5s"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x1wsgiic",
+   "value": ".5s"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "9ms"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "xmpwtm1",
+   "value": "9ms"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "10ms"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "xpvlhck",
+   "value": ".01s"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "-500ms"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "xkqx3lh",
+   "value": "-500ms"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "1500ms"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x1rkc77x",
+   "value": "1.5s"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "0ms"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x1mq3mr6",
+   "value": "0s"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "0.0ms"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x58a6wx",
+   "value": "0ms"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "1e1ms"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "xpvlhck",
+   "value": ".01s"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "1e4ms"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x11ixlcm",
+   "value": "10s"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "10.5ms"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "xjgcwcf",
+   "value": ".0105s"
+  }
+ },
+ {
+  "property": "transitionDuration",
+  "input": {
+   "kind": "string",
+   "value": "500MS"
+  },
+  "expect": {
+   "decl_prop": "transition-duration",
+   "class_name": "x1eis3q4",
+   "value": "500MS"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "500ms"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1f9tovc",
+   "value": ".5s"
+  }
+ },
+ {
+  "property": "animationDelay",
+  "input": {
+   "kind": "string",
+   "value": "99.5ms"
+  },
+  "expect": {
+   "decl_prop": "animation-delay",
+   "class_name": "xke4abu",
+   "value": ".0995s"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0px"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xnalus7",
+   "value": "0"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0em"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xnalus7",
+   "value": "0"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0rem"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xnalus7",
+   "value": "0"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0%"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xwjmw90",
+   "value": "0%"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0deg"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x18sme3d",
+   "value": "0deg"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0rad"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x18sme3d",
+   "value": "0deg"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0grad"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x18sme3d",
+   "value": "0deg"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0turn"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x18sme3d",
+   "value": "0deg"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0s"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1elh2ey",
+   "value": "0s"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0fr"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1i1ov2x",
+   "value": "0fr"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xnalus7",
+   "value": "0"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0.0px"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1lx9cm8",
+   "value": "0px"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "-0px"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1lx9cm8",
+   "value": "0px"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0ch"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xnalus7",
+   "value": "0"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0vh"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xnalus7",
+   "value": "0"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0EM"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xnalus7",
+   "value": "0"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0087.5px"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1z134u8",
+   "value": "0087.5px"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "0px 10px"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x1ghk45w",
+   "value": "0 10px"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "0px 0px"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x1p5p0e6",
+   "value": "0 0"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "max(0px, 1px) 0px"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x13yt33a",
+   "value": "max(0px,1px) 0"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "0px calc(0px)"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x1077w7x",
+   "value": "0 calc(0px)"
+  }
+ },
+ {
+  "property": "--x",
+  "input": {
+   "kind": "string",
+   "value": "0px"
+  },
+  "expect": {
+   "decl_prop": "--x",
+   "class_name": "x1mbo91n",
+   "value": "0px"
+  }
+ },
+ {
+  "property": "--x",
+  "input": {
+   "kind": "string",
+   "value": " 0px  10px "
+  },
+  "expect": {
+   "decl_prop": "--x",
+   "class_name": "xcsju3f",
+   "value": "0px 10px"
+  }
+ },
+ {
+  "property": "--x",
+  "input": {
+   "kind": "string",
+   "value": "var(--y)"
+  },
+  "expect": {
+   "decl_prop": "--x",
+   "class_name": "x1m9cm1m",
+   "value": "var(--y)"
+  }
+ },
+ {
+  "property": "--x",
+  "input": {
+   "kind": "string",
+   "value": "500ms"
+  },
+  "expect": {
+   "decl_prop": "--x",
+   "class_name": "xu0rel1",
+   "value": ".5s"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0.5em"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xoden9",
+   "value": ".5em"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": ".5em"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xoden9",
+   "value": ".5em"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0.50em"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xoden9",
+   "value": ".5em"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "00.5em"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xoden9",
+   "value": ".5em"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "-0.5em"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x7fynsf",
+   "value": "-0.5em"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0.5%"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1o5qwtd",
+   "value": ".5%"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": ".5.5px"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1fty3or",
+   "value": ".5.5px"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "0.00005px"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x53dihm",
+   "value": ".00005px"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "1e-7px"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1avk19u",
+   "value": "1e-7px"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "5e-1px"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x197jcof",
+   "value": ".5px"
+  }
+ },
+ {
+  "property": "opacity",
+  "input": {
+   "kind": "string",
+   "value": "0.5"
+  },
+  "expect": {
+   "decl_prop": "opacity",
+   "class_name": "xbyyjgo",
+   "value": ".5"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "5"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1fsp86l",
+   "value": "5"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "Infinityms"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1tu2yw9",
+   "value": "Infinityms"
+  }
+ },
+ {
+  "property": "fontFamily",
+  "input": {
+   "kind": "string",
+   "value": "\"Helvetica Neue\", Arial"
+  },
+  "expect": {
+   "decl_prop": "font-family",
+   "class_name": "x1fvwpp9",
+   "value": "\"Helvetica Neue\",Arial"
+  }
+ },
+ {
+  "property": "fontFamily",
+  "input": {
+   "kind": "string",
+   "value": "'Helvetica'"
+  },
+  "expect": {
+   "decl_prop": "font-family",
+   "class_name": "x1ms4ej",
+   "value": "'Helvetica'"
+  }
+ },
+ {
+  "property": "fontFamily",
+  "input": {
+   "kind": "string",
+   "value": "Arial , sans-serif"
+  },
+  "expect": {
+   "decl_prop": "font-family",
+   "class_name": "xmy0v6l",
+   "value": "Arial,sans-serif"
+  }
+ },
+ {
+  "property": "fontFamily",
+  "input": {
+   "kind": "string",
+   "value": "\"say \\\"hi\\\"\""
+  },
+  "expect": {
+   "decl_prop": "font-family",
+   "class_name": "x1vodl9m",
+   "value": "\"say \\\"hi\\\"\""
+  }
+ },
+ {
+  "property": "gridTemplateAreas",
+  "input": {
+   "kind": "string",
+   "value": "\"a a\" \"b b\""
+  },
+  "expect": {
+   "decl_prop": "grid-template-areas",
+   "class_name": "x9duad9",
+   "value": "\"a a\" \"b b\""
+  }
+ },
+ {
+  "property": "fontFeatureSettings",
+  "input": {
+   "kind": "string",
+   "value": "''"
+  },
+  "expect": {
+   "decl_prop": "font-feature-settings",
+   "class_name": "x11yi58u",
+   "value": "\"\""
+  }
+ },
+ {
+  "property": "fontFeatureSettings",
+  "input": {
+   "kind": "string",
+   "value": "\"\""
+  },
+  "expect": {
+   "decl_prop": "font-feature-settings",
+   "class_name": "x11yi58u",
+   "value": "\"\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "hello"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1r2f195",
+   "value": "\"hello\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"hello\""
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1r2f195",
+   "value": "\"hello\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "'hello'"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x8y07jk",
+   "value": "'hello'"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "open-quote"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1xzztf6",
+   "value": "open-quote"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "normal"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1o4zpdg",
+   "value": "normal"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "none"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1o3gexw",
+   "value": "none"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "inherit"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x109j4m6",
+   "value": "inherit"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "counter(chapter)"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xafd6e1",
+   "value": "counter(chapter)"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "counters(item, \".\")"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1bdy6ei",
+   "value": "counters(item, \".\")"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "attr(href)"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x9ekvfq",
+   "value": "attr(href)"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "url(foo.png)"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xyszrdc",
+   "value": "url(foo.png)"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "var(--x)"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x1mk9o7m",
+   "value": "var(--x)"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "linear-gradient(red, blue)"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xsbkaat",
+   "value": "linear-gradient(red, blue)"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "image-set(\"a.png\" 1x)"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xlpun3x",
+   "value": "image-set(\"a.png\" 1x)"
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"hello\" \"world\""
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xpdn1px",
+   "value": "\"hello\" \"world\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "don't"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xenrxls",
+   "value": "\"don't\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "  spaced  "
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xosmn87",
+   "value": "\"spaced\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": ""
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "x14axycx",
+   "value": "\"\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "open-quote close-quote"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xyvj2jg",
+   "value": "\"open-quote close-quote\""
+  }
+ },
+ {
+  "property": "content",
+  "input": {
+   "kind": "string",
+   "value": "\"abc"
+  },
+  "expect": {
+   "decl_prop": "content",
+   "class_name": "xg73sis",
+   "value": "\"\"abc\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "—"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x15fb7mr",
+   "value": "\"—\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "\"-\""
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "xdwqo54",
+   "value": "\"-\""
+  }
+ },
+ {
+  "property": "hyphenateCharacter",
+  "input": {
+   "kind": "string",
+   "value": "x"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x1fjtg1q",
+   "value": "\"x\""
+  }
+ },
+ {
+  "property": "hyphenate-character",
+  "input": {
+   "kind": "string",
+   "value": "y"
+  },
+  "expect": {
+   "decl_prop": "hyphenate-character",
+   "class_name": "x40cgsf",
+   "value": "\"y\""
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "  1px   2px  "
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x1yzxyms",
+   "value": "1px 2px"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "1px\t2px"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x1yzxyms",
+   "value": "1px 2px"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "1px\n2px"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x1yzxyms",
+   "value": "1px 2px"
+  }
+ },
+ {
+  "property": "boxShadow",
+  "input": {
+   "kind": "string",
+   "value": "0 0 0 1px rgba(0, 0, 0, 0.5)"
+  },
+  "expect": {
+   "decl_prop": "box-shadow",
+   "class_name": "x12a3brx",
+   "value": "0 0 0 1px rgba(0,0,0,.5)"
+  }
+ },
+ {
+  "property": "boxShadow",
+  "input": {
+   "kind": "string",
+   "value": "inset 0 0 1px 2px red"
+  },
+  "expect": {
+   "decl_prop": "box-shadow",
+   "class_name": "x146ih79",
+   "value": "inset 0 0 1px 2px red"
+  }
+ },
+ {
+  "property": "textShadow",
+  "input": {
+   "kind": "string",
+   "value": "1px 1px 2px black, 0 0 1em blue"
+  },
+  "expect": {
+   "decl_prop": "text-shadow",
+   "class_name": "x8x7t1y",
+   "value": "1px 1px 2px black,0 0 1em blue"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "1px !important"
+  },
+  "expect": {
+   "decl_prop": "margin",
+   "class_name": "x1o9bdb5",
+   "value": "1px!important"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "1px  !important"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1r97y75",
+   "value": "1px!important"
+  }
+ },
+ {
+  "property": "color",
+  "input": {
+   "kind": "string",
+   "value": "red!important"
+  },
+  "expect": {
+   "decl_prop": "color",
+   "class_name": "xzw3067",
+   "value": "red!important"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "!important 1px"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1ghskiq",
+   "value": "!important 1px"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "a !important b"
+  },
+  "expect_error": {
+   "kind": "other",
+   "message": "Cannot read properties of undefined (reading 'type')"
+  }
+ },
+ {
+  "property": "margin",
+  "input": {
+   "kind": "string",
+   "value": "1px !important 2px"
+  },
+  "expect_error": {
+   "kind": "other",
+   "message": "Cannot read properties of undefined (reading 'type')"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "1px !important  2px 3px"
+  },
+  "expect_error": {
+   "kind": "other",
+   "message": "Cannot read properties of undefined (reading 'type')"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "calc(1px) !important 2px"
+  },
+  "expect_error": {
+   "kind": "other",
+   "message": "Cannot read properties of undefined (reading 'type')"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "1px !important !important"
+  },
+  "expect_error": {
+   "kind": "other",
+   "message": "Cannot read properties of undefined (reading 'type')"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "translateX( 10px )"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "xhco33r",
+   "value": "translateX(10px)"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "translateX(0px) translateY(0px)"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "x1z09mvf",
+   "value": "translateX(0px) translateY(0)"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "translateX(0px)translateY(0px)"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "x22e6n3",
+   "value": "translateX(0px)translateY(0)"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "translateX(0px) translateY(0px) translateZ(0px)"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "x1x2b8gf",
+   "value": "translateX(0px) translateY(0) translateZ(0px)"
+  }
+ },
+ {
+  "property": "transform",
+  "input": {
+   "kind": "string",
+   "value": "translate( 0px , 0px )"
+  },
+  "expect": {
+   "decl_prop": "transform",
+   "class_name": "xbhepay",
+   "value": "translate(0px,0px)"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "calc( 100% - 10px )"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xbie4d3",
+   "value": "calc(100% - 10px)"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "calc(100%/3)"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xwsl80",
+   "value": "calc(100%/3)"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "calc(100% / 3)"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x101p15g",
+   "value": "calc(100% / 3)"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "calc(100%*3)"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x11h6s6j",
+   "value": "calc(100%*3)"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "calc(1px * 2)"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1pyb3xo",
+   "value": "calc(1px * 2)"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "calc(min(0px, 1px) + 0px)"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1dep3rv",
+   "value": "calc(min(0px,1px) + 0px)"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "calc(1px/* c */ + 2px)"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1drd5mh",
+   "value": "calc(1px/* c */ + 2px)"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "foo()"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1b7xzrr",
+   "value": "foo()"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "foo( )"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1b7xzrr",
+   "value": "foo()"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "url( ./a.png )"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x13wsojy",
+   "value": "url(./a.png)"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "url(data:image/png;base64,iVBOR)"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "xbwsf78",
+   "value": "url(data:image/png;base64,iVBOR)"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "url(\"a b.png\")"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x9jimg7",
+   "value": "url(\"a b.png\")"
+  }
+ },
+ {
+  "property": "backgroundImage",
+  "input": {
+   "kind": "string",
+   "value": "url( )"
+  },
+  "expect": {
+   "decl_prop": "background-image",
+   "class_name": "x12fx53u",
+   "value": "url()"
+  }
+ },
+ {
+  "property": "color",
+  "input": {
+   "kind": "string",
+   "value": "var( --primary , red )"
+  },
+  "expect": {
+   "decl_prop": "color",
+   "class_name": "xvfvh4t",
+   "value": "var(--primary,red)"
+  }
+ },
+ {
+  "property": "color",
+  "input": {
+   "kind": "string",
+   "value": "rgb(255 0 0 / 0.5)"
+  },
+  "expect": {
+   "decl_prop": "color",
+   "class_name": "xeg7tmb",
+   "value": "rgb(255 0 0 / .5)"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "var(--w, 10px)"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1uu64l8",
+   "value": "var(--w,10px)"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "var(--w,calc( 1px + 2px ))"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x15ew4zm",
+   "value": "var(--w,calc(1px + 2px))"
+  }
+ },
+ {
+  "property": "gridTemplateColumns",
+  "input": {
+   "kind": "string",
+   "value": "repeat(3, 1fr)"
+  },
+  "expect": {
+   "decl_prop": "grid-template-columns",
+   "class_name": "x1wlfl8j",
+   "value": "repeat(3,1fr)"
+  }
+ },
+ {
+  "property": "borderRadius",
+  "input": {
+   "kind": "string",
+   "value": "calc(10px) 2px / 3px"
+  },
+  "expect": {
+   "decl_prop": "border-radius",
+   "class_name": "xm3927p",
+   "value": "calc(10px) 2px  / 3px"
+  }
+ },
+ {
+  "property": "borderRadius",
+  "input": {
+   "kind": "string",
+   "value": "10px 20px / 30px"
+  },
+  "expect": {
+   "decl_prop": "border-radius",
+   "class_name": "x111hche",
+   "value": "10px 20px / 30px"
+  }
+ },
+ {
+  "property": "aspectRatio",
+  "input": {
+   "kind": "string",
+   "value": "16/9"
+  },
+  "expect": {
+   "decl_prop": "aspect-ratio",
+   "class_name": "x186iv6y",
+   "value": "16 / 9"
+  }
+ },
+ {
+  "property": "aspectRatio",
+  "input": {
+   "kind": "string",
+   "value": "16 / 9"
+  },
+  "expect": {
+   "decl_prop": "aspect-ratio",
+   "class_name": "x186iv6y",
+   "value": "16 / 9"
+  }
+ },
+ {
+  "property": "gridRow",
+  "input": {
+   "kind": "string",
+   "value": "1 / 2"
+  },
+  "expect": {
+   "decl_prop": "grid-row",
+   "class_name": "x1faf5l8",
+   "value": "1 / 2"
+  }
+ },
+ {
+  "property": "transitionProperty",
+  "input": {
+   "kind": "string",
+   "value": "marginTop"
+  },
+  "expect": {
+   "decl_prop": "transition-property",
+   "class_name": "x1cfch2b",
+   "value": "margin-top"
+  }
+ },
+ {
+  "property": "transitionProperty",
+  "input": {
+   "kind": "string",
+   "value": "marginTop, opacity"
+  },
+  "expect": {
+   "decl_prop": "transition-property",
+   "class_name": "xgdv8g2",
+   "value": "margin-top,opacity"
+  }
+ },
+ {
+  "property": "transitionProperty",
+  "input": {
+   "kind": "string",
+   "value": "borderTopLeftRadius"
+  },
+  "expect": {
+   "decl_prop": "transition-property",
+   "class_name": "xrp0eps",
+   "value": "border-top-left-radius"
+  }
+ },
+ {
+  "property": "transitionProperty",
+  "input": {
+   "kind": "string",
+   "value": "--customProp"
+  },
+  "expect": {
+   "decl_prop": "transition-property",
+   "class_name": "xfibxn9",
+   "value": "--customProp"
+  }
+ },
+ {
+  "property": "transitionProperty",
+  "input": {
+   "kind": "string",
+   "value": "opacity"
+  },
+  "expect": {
+   "decl_prop": "transition-property",
+   "class_name": "x19991ni",
+   "value": "opacity"
+  }
+ },
+ {
+  "property": "willChange",
+  "input": {
+   "kind": "string",
+   "value": "transform, WebkitFilter"
+  },
+  "expect": {
+   "decl_prop": "will-change",
+   "class_name": "x1se3jcc",
+   "value": "transform,-webkit-filter"
+  }
+ },
+ {
+  "property": "willChange",
+  "input": {
+   "kind": "string",
+   "value": "--customProp, marginTop"
+  },
+  "expect": {
+   "decl_prop": "will-change",
+   "class_name": "x1brpdhh",
+   "value": "--customProp,margin-top"
+  }
+ },
+ {
+  "property": "willChange",
+  "input": {
+   "kind": "string",
+   "value": "auto"
+  },
+  "expect": {
+   "decl_prop": "will-change",
+   "class_name": "x1dwv3re",
+   "value": "auto"
+  }
+ },
+ {
+  "property": "unicodeRange",
+  "input": {
+   "kind": "string",
+   "value": "U+0025-00FF"
+  },
+  "expect": {
+   "decl_prop": "unicode-range",
+   "class_name": "xpl8ijj",
+   "value": "U+0025-00FF"
+  }
+ },
+ {
+  "property": "unicodeRange",
+  "input": {
+   "kind": "string",
+   "value": "u+4??"
+  },
+  "expect": {
+   "decl_prop": "unicode-range",
+   "class_name": "x1i95oaw",
+   "value": "u+4??"
+  }
+ },
+ {
+  "property": "unicodeRange",
+  "input": {
+   "kind": "string",
+   "value": "U+0-7F"
+  },
+  "expect": {
+   "decl_prop": "unicode-range",
+   "class_name": "xio8rf",
+   "value": "U+0-7F"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "u+2?"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xlwa3zf",
+   "value": "u+2?"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "U+abc"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xja8ga",
+   "value": "U+abc"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "/* c */ 10px"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "x1k0lda5",
+   "value": "/* c */ 10px"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "10px /* c */"
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xqc8kgt",
+   "value": "10px /* c */"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "calc("
+  },
+  "expect_error": {
+   "kind": "unclosed-function",
+   "message": "Rule contains an unclosed function"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "calc(100%"
+  },
+  "expect_error": {
+   "kind": "unclosed-function",
+   "message": "Rule contains an unclosed function"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "\"abc"
+  },
+  "expect_error": {
+   "kind": "unclosed-string",
+   "message": "Rule contains an unclosed string"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "'abc"
+  },
+  "expect_error": {
+   "kind": "unclosed-string",
+   "message": "Rule contains an unclosed string"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "url(foo"
+  },
+  "expect_error": {
+   "kind": "unclosed-function",
+   "message": "Rule contains an unclosed function"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": "attr(data-w"
+  },
+  "expect_error": {
+   "kind": "unclosed-function",
+   "message": "Rule contains an unclosed function"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": ""
+  },
+  "expect_error": {
+   "kind": "other",
+   "message": "Cannot read properties of undefined (reading 'type')"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "string",
+   "value": " "
+  },
+  "expect_error": {
+   "kind": "other",
+   "message": "Cannot read properties of undefined (reading 'type')"
+  }
+ },
+ {
+  "property": "width",
+  "input": {
+   "kind": "array",
+   "values": [
+    {
+     "kind": "string",
+     "value": "1px"
+    },
+    {
+     "kind": "string",
+     "value": "2px"
+    }
+   ]
+  },
+  "expect": {
+   "decl_prop": "width",
+   "class_name": "xbniy16",
+   "decl_body": "width:1px;width:2px"
+  }
+ },
+ {
+  "property": "position",
+  "input": {
+   "kind": "array",
+   "values": [
+    {
+     "kind": "string",
+     "value": "sticky"
+    },
+    {
+     "kind": "string",
+     "value": "fixed"
+    }
+   ]
+  },
+  "expect": {
+   "decl_prop": "position",
+   "class_name": "x1ruww2u",
+   "decl_body": "position:sticky;position:fixed"
+  }
+ },
+ {
+  "property": "opacity",
+  "input": {
+   "kind": "array",
+   "values": [
+    {
+     "kind": "string",
+     "value": "0.5"
+    },
+    {
+     "kind": "string",
+     "value": "1"
+    }
+   ]
+  },
+  "expect": {
+   "decl_prop": "opacity",
+   "class_name": "x12qu3lw",
+   "decl_body": "opacity:.5;opacity:1"
+  }
+ }
+]

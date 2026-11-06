@@ -7,8 +7,6 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::watch;
 
-const OPTIMIZE_JS: &str = include_str!("assets/optimize-deps.mjs");
-
 /// The `optimizeDeps` knobs that apply to DIRECTLY-SERVED deps (ones the
 /// optimizer did not pre-bundle): `exclude` routes a dep through plugin
 /// hooks like Vite, and `needsInterop` forces the CJS interop rewrite even
@@ -58,9 +56,10 @@ pub struct DepMeta {
     /// Importer rewrite target `/@oj-deps/<file>?v=<version>`; the version query
     /// is what lets the response be served immutable (Vite's ensureVersionQuery).
     pub url: String,
-    /// Content hash of the bundled entry (Vite's fileHash): a re-optimization
-    /// whose previously served entries all hash the same commits without a
-    /// reload. Empty for a provisional (registered, not yet bundled) entry.
+    /// Vite's fileHash: the served file and its entry chunk's imports (a
+    /// named-export facade's bundle's), not its code. A re-optimization whose
+    /// previously served entries all hash the same commits without a reload.
+    /// Empty for a provisional (registered, not yet bundled) entry.
     pub file_hash: String,
 }
 
@@ -69,22 +68,11 @@ fn url_version(url: &str) -> &str {
     url.rsplit_once("?v=").map(|(_, v)| v).unwrap_or("")
 }
 
-/// The sidecar's entry naming for a bare dep (its `optimize()` mirrors this):
-/// the future bundle file is known at registration, like Vite's
-/// `getOptimizedDepPath`, so the import rewrites to it before any bundling.
+/// The bundle file a bare dep is going to have: known at registration, like
+/// Vite's `getOptimizedDepPath`, so the import rewrites to it before any
+/// bundling.
 fn flatten_dep_file(dep: &str) -> String {
-    let name: String = dep
-        .trim_start_matches('@')
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    format!("{name}.mjs")
+    format!("{}.mjs", crate::prebundle::entry_name(dep))
 }
 
 pub type DepMap = HashMap<String, DepMeta>;
@@ -92,8 +80,9 @@ pub type DepMap = HashMap<String, DepMeta>;
 pub struct OptimizedDeps {
     rx: watch::Receiver<Option<Arc<DepMap>>>,
     dir: PathBuf,
-    /// Short prebundle hash: changes with the lockfile or optimizer config so
-    /// stale immutable entries never share a URL. Empty when disabled.
+    /// The session's base version: the persisted one on a warm boot, else
+    /// the prebundle hash salted with the session, so stale immutable entries
+    /// never share a URL. Empty when disabled.
     version: String,
     rerun: Option<Arc<RerunState>>,
     link_memo: LinkMemo,
@@ -112,6 +101,9 @@ type OnCommit = Box<dyn Fn(&[String]) + Send + Sync>;
 struct RerunState {
     /// Base prebundle hash, the seed of every browser version.
     hash: String,
+    /// Vite's sessionTimestamp: salts every version this optimizer mints, so
+    /// no two sessions serve one immutable URL.
+    session: String,
     tx: watch::Sender<Option<Arc<DepMap>>>,
     /// Every serve-time-discovered dep with its provisional meta (the version
     /// its URLs were first served under); persists across reruns.
@@ -126,14 +118,16 @@ struct RerunState {
     /// phantom optimized URL. Vite instead resets `discovered` and retries on
     /// the next request, which can loop a persistently failing dep.
     failed: std::sync::Mutex<std::collections::HashSet<String>>,
-    /// Set when the initial pre-bundle could not run at all (no rolldown via
-    /// vite, vendored, or installed): registration declines everything, so
-    /// every dep keeps the per-file path a bundler-less app always had,
-    /// instead of phantom optimized URLs and a failed rerun per batch.
+    /// Set when the initial pre-bundle failed outright: registration declines
+    /// everything, so every dep keeps the per-file path, instead of phantom
+    /// optimized URLs and a failed rerun per batch.
     dead: std::sync::atomic::AtomicBool,
     exclude: Vec<String>,
     discovery: bool,
     on_commit: std::sync::OnceLock<OnCommit>,
+    /// The dev server's static-import crawl, done once it flips true; the
+    /// initial commit holds for it (see [`hold_for_crawl_end`]).
+    crawl_end: std::sync::OnceLock<watch::Receiver<bool>>,
 }
 
 /// What the dep route should do once `await_dep` settles.
@@ -144,17 +138,33 @@ pub enum DepServe {
     Outdated,
 }
 
-/// A discovery's URL version: the base key plus the (sorted) discovered set,
-/// so chunks that change can never be served under a URL a page already holds
-/// (Vite's getDiscoveredBrowserHash).
-fn browser_hash<'a>(hash: &str, discovered: impl Iterator<Item = &'a String>) -> String {
+/// A discovery's URL version: the base key, this optimizer's session, and the
+/// (sorted) discovered set, so chunks that change can never be served under a
+/// URL a page already holds (Vite's getDiscoveredBrowserHash). The session is
+/// Vite's sessionTimestamp: URLs are `immutable`, and a later session (a
+/// restart, a cleared cache) may bundle other bytes under the same set.
+fn browser_hash<'a>(
+    hash: &str,
+    session: &str,
+    discovered: impl Iterator<Item = &'a String>,
+) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(hash.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(session.as_bytes());
     for dep in discovered {
         hasher.update(b"\0");
         hasher.update(dep.as_bytes());
     }
     hasher.finalize().to_hex()[..8].to_string()
+}
+
+/// Vite's sessionTimestamp, taken once per optimizer.
+fn session_timestamp() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos().to_string())
+        .unwrap_or_default()
 }
 
 /// Vite's `moduleListContains`: an exclude entry names the dep or a parent path.
@@ -341,6 +351,12 @@ impl OptimizedDeps {
         }
     }
 
+    /// Whether the first dependency scan is still running: no planned or
+    /// committed map yet (Vite's pending `scanProcessing`).
+    pub fn scan_pending(&self) -> bool {
+        self.rerun.is_some() && self.rx.borrow().is_none()
+    }
+
     pub fn disabled() -> Self {
         let (_tx, rx) = watch::channel(Some(Arc::new(DepMap::new())));
         OptimizedDeps {
@@ -369,6 +385,14 @@ impl OptimizedDeps {
         }
     }
 
+    /// The dev server's crawl signal (true once every static import of the
+    /// entries compiled). Without one the initial commit never holds.
+    pub fn set_crawl_end(&self, crawl_done: watch::Receiver<bool>) {
+        if let Some(r) = &self.rerun {
+            let _ = r.crawl_end.set(crawl_done);
+        }
+    }
+
     /// Cheap pre-gate for the serve-time rewrite: whether `dep` could register
     /// at all, checked before the resolve and CJS-sniff work a registration
     /// needs.
@@ -379,6 +403,45 @@ impl OptimizedDeps {
                 && !module_list_contains(&r.exclude, dep)
                 && !r.failed.lock().unwrap().contains(dep)
         })
+    }
+
+    /// Each pre-bundled entry's file name with the URL importers name it by
+    /// right now (its version moves with every rerun); chunks are absent.
+    pub fn entry_urls(&self) -> HashMap<String, String> {
+        self.rx
+            .borrow()
+            .as_ref()
+            .map(|map| {
+                map.values()
+                    .filter(|meta| !url_version(&meta.url).is_empty())
+                    .map(|meta| (meta.file.clone(), meta.url.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The live map's entry whose bundle is `file`.
+    pub fn entry_by_file(&self, file: &str) -> Option<DepMeta> {
+        let map = self.rx.borrow();
+        map.as_ref()?
+            .values()
+            .find(|meta| meta.file == file)
+            .cloned()
+    }
+
+    /// The URL importers name the pre-bundle `file` by: a committed or planned
+    /// entry, else one registered since and not bundled yet (Vite's
+    /// isOptimizedDepFile covers a bundle before it is written).
+    pub fn url_by_file(&self, file: &str) -> Option<String> {
+        if let Some(meta) = self.entry_by_file(file) {
+            return Some(meta.url);
+        }
+        let r = self.rerun.as_ref()?;
+        let discovered = r.discovered.lock().unwrap();
+        discovered
+            .values()
+            .find(|m| m.file == file)
+            .map(|m| m.url.clone())
     }
 
     /// The live map's entry for `dep`, including a provisional one registered
@@ -420,7 +483,7 @@ impl OptimizedDeps {
             );
             // Hashing the set it joins (sorted, so registration order is
             // moot): Vite's getDiscoveredBrowserHash over known + missing.
-            let version = browser_hash(&r.hash, discovered.keys());
+            let version = browser_hash(&r.hash, &r.session, discovered.keys());
             let meta = DepMeta {
                 url: dep_url(&file, &version),
                 file,
@@ -499,16 +562,18 @@ impl OptimizedDeps {
         }
     }
 
-    /// `host`: the app's plugin host, which runs the scan when there is one.
+    /// `host`: the app's plugin host, which runs the scan when there is one;
+    /// `rolldown`: the runtime the scan and bundles run on.
     pub fn prepare(
         root: &Path,
         version: &str,
         input: OptimizeInput,
         host: Option<Arc<crate::plugins::PluginHost>>,
+        rolldown: &tokio::runtime::Handle,
     ) -> Self {
         let dir = oj_cache::cache_root(root).join("deps");
         let hash = lockfile_hash(root, version, &input);
-        let short = hash[..8].to_string();
+        let session = session_timestamp();
         let (tx, rx) = watch::channel(None);
 
         // optimizeDeps.force: ignore any cached pre-bundle and always rebuild.
@@ -524,11 +589,19 @@ impl OptimizedDeps {
                     .collect();
                 (seeded, m.browser_hash.clone())
             }
-            None => (std::collections::BTreeMap::new(), short.clone()),
+            // Vite's initDepsOptimizerMetadata: a cold session's base
+            // version is salted too, since a source edit can change the dep
+            // set (and the bytes) without changing the hash.
+            None => (
+                std::collections::BTreeMap::new(),
+                browser_hash(&hash, &session, std::iter::empty()),
+            ),
         };
+        let base_version = initial_version.clone();
         let (wake, mut wake_rx) = tokio::sync::mpsc::unbounded_channel();
         let rerun = Arc::new(RerunState {
             hash: hash.clone(),
+            session,
             tx,
             discovered: std::sync::Mutex::new(initial_discovered),
             pending: std::sync::Mutex::new(std::collections::HashSet::new()),
@@ -539,49 +612,95 @@ impl OptimizedDeps {
             exclude: input.exclude.clone(),
             discovery: effective_auto_discover(input.no_discovery),
             on_commit: std::sync::OnceLock::new(),
+            crawl_end: std::sync::OnceLock::new(),
         });
         {
             let rerun = Arc::clone(&rerun);
             let root = root.to_path_buf();
             let dir = dir.clone();
+            let base_version = base_version.clone();
             let cached_map = cached.map(|m| m.map);
+            let rolldown = rolldown.clone();
             tokio::spawn(async move {
                 match cached_map {
                     Some(map) => {
                         let _ = rerun.tx.send(Some(Arc::new(map)));
                     }
                     None => {
-                        let map = match run_optimizer(
+                        // Vite's scanProcessing: source modules compile once the
+                        // scan knows the deps, against the planned metadata,
+                        // while the bundle runs; each dep's own requests wait
+                        // for the commit (pending).
+                        let planned: std::sync::Mutex<Option<DepMap>> = Default::default();
+                        let publish = |map: DepMap| {
+                            *planned.lock().unwrap() = Some(map.clone());
+                            publish_plan(&rerun, map);
+                        };
+                        let mut bundled = run_optimizer(
                             &root,
                             &dir,
                             &input,
-                            host.as_deref(),
+                            host.as_ref(),
+                            &rolldown,
                             &Default::default(),
-                            &hash[..8],
+                            &base_version,
                             false,
+                            Some(&publish),
                         )
-                        .await
-                        {
-                            Some(map) => {
-                                // A failed run writes NO manifest: an empty
-                                // one would warm-boot the next session into
-                                // the same dead optimizer with discovery on.
-                                write_manifest(&dir, &hash, &hash[..8], [].iter(), &map);
-                                map
+                        .await;
+                        let mut planned = planned.lock().unwrap().take();
+                        let mut missed = std::collections::BTreeSet::new();
+                        if let (Some(_), Some(plan)) = (&bundled, &mut planned) {
+                            if input.hold_until_crawl_end != Some(false) {
+                                hold_for_crawl_end(&rerun).await;
+                                let late = scanner_missed(&rerun, plan);
+                                if !late.is_empty() {
+                                    let names = late.keys().cloned().collect();
+                                    // A failed rebundle commits the first one; the
+                                    // queued rerun retries the missed deps.
+                                    if let Some(map) = run_optimizer(
+                                        &root,
+                                        &dir,
+                                        &input,
+                                        host.as_ref(),
+                                        &rolldown,
+                                        &names,
+                                        &base_version,
+                                        true,
+                                        None,
+                                    )
+                                    .await
+                                    {
+                                        bundled = Some(map);
+                                        plan.extend(late);
+                                        missed = names;
+                                    }
+                                }
                             }
-                            None => {
-                                // No pre-bundle at all (no rolldown via vite,
-                                // vendored, or installed, or the run failed):
-                                // discovery off, deps serve per-file as a
-                                // bundler-less app always did.
-                                rerun.dead.store(true, std::sync::atomic::Ordering::Release);
-                                eprintln!(
-                                    "oj: dep pre-bundling unavailable; serving dependencies per-file"
-                                );
-                                DepMap::new()
-                            }
-                        };
-                        let _ = rerun.tx.send(Some(Arc::new(map)));
+                        }
+                        if bundled.is_none() {
+                            // No pre-bundle at all (the run failed):
+                            // discovery off, deps serve per-file.
+                            rerun.dead.store(true, std::sync::atomic::Ordering::Release);
+                            eprintln!(
+                                "oj: dep pre-bundling unavailable; serving dependencies per-file"
+                            );
+                        }
+                        let ok = bundled.is_some();
+                        commit_initial(
+                            &rerun,
+                            bundled.unwrap_or_default(),
+                            planned,
+                            |map, version| {
+                                // A failed run writes NO manifest: an empty one
+                                // would warm-boot the next session into the
+                                // same dead optimizer with discovery on.
+                                if ok {
+                                    write_manifest(&dir, &hash, version, missed.iter(), map);
+                                }
+                            },
+                        );
+                        tokio::task::spawn_blocking(crate::rolldown_runtime::release_freed_heap);
                     }
                 }
                 // Vite's debouncedProcessing: every registration slides the
@@ -590,18 +709,122 @@ impl OptimizedDeps {
                 // flight ever, Vite's enqueuedRerun).
                 while wake_rx.recv().await.is_some() {
                     debounce_wakes(&mut wake_rx, DEBOUNCE).await;
-                    rerun_once(&rerun, &root, &dir, &hash, &input, host.as_deref()).await;
+                    rerun_once(&rerun, &root, &dir, &hash, &input, host.as_ref(), &rolldown).await;
                 }
             });
         }
         OptimizedDeps {
             rx,
             dir,
-            version: short,
+            version: base_version,
             rerun: Some(rerun),
             link_memo: LinkMemo::default(),
         }
     }
+}
+
+/// The initial pre-bundle's commit. Deps a compile discovered meanwhile keep
+/// their provisional entries for the rerun that bundles them. A plan the
+/// bundle disagrees with (another file, another interop, a dep more or less,
+/// or no bundle at all) compiled modules against the wrong metadata: every
+/// URL moves to a new version, so no compile key (persistent cache included)
+/// still matches a module compiled against the plan, and the page reloads,
+/// Vite's "optimized dependencies changed". Vite's committed browserHash is
+/// unsalted; this one keeps the session salt, so a later session's
+/// contradicted plan never lands on this URL either. `persist` gets the bundled entries and
+/// their version before the commit releases any held request, as Vite's
+/// commit writes the metadata before resolving the processing promise.
+fn commit_initial(
+    rerun: &RerunState,
+    mut map: DepMap,
+    planned: Option<DepMap>,
+    persist: impl FnOnce(&DepMap, &str),
+) {
+    let changed = planned.as_ref().is_some_and(|plan| !same_plan(plan, &map));
+    let version = if changed {
+        let version = browser_hash(
+            &format!("{}+committed", rerun.hash),
+            &rerun.session,
+            map.keys(),
+        );
+        for meta in map.values_mut() {
+            meta.url = dep_url(&meta.file, &version);
+        }
+        *rerun.browser_version.write().unwrap() = version.clone();
+        version
+    } else {
+        // Every entry keeps the URL it was served under: the base version,
+        // or a missed dep's registration version.
+        if let Some(plan) = &planned {
+            for (dep, meta) in map.iter_mut() {
+                if let Some(p) = plan.get(dep) {
+                    meta.url = p.url.clone();
+                }
+            }
+        }
+        rerun.browser_version.read().unwrap().clone()
+    };
+    persist(&map, &version);
+    {
+        let mut pending = rerun.pending.lock().unwrap();
+        if let Some(plan) = &planned {
+            for dep in plan.keys() {
+                pending.remove(dep);
+            }
+        }
+        let discovered = rerun.discovered.lock().unwrap();
+        for dep in pending.iter() {
+            if let Some(meta) = discovered.get(dep) {
+                map.entry(dep.clone()).or_insert_with(|| meta.clone());
+            }
+        }
+    }
+    let _ = rerun.tx.send(Some(Arc::new(map)));
+    if changed {
+        if let Some(cb) = rerun.on_commit.get() {
+            cb(&[]);
+        }
+    }
+}
+
+/// Vite's scanProcessing resolving: the scan's plan becomes the live map, so
+/// source compiles (which wait for a map) proceed against it, while every
+/// planned dep turns pending and its own requests wait for the commit.
+fn publish_plan(rerun: &RerunState, map: DepMap) {
+    rerun.pending.lock().unwrap().extend(map.keys().cloned());
+    let _ = rerun.tx.send(Some(Arc::new(map)));
+}
+
+/// Vite's holdUntilCrawlEnd: the initial pre-bundle stays uncommitted (its
+/// deps' requests held) until the static-import crawl ends, so the deps it
+/// discovers can still join it. Unbounded, as Vite's wait for requests idle.
+async fn hold_for_crawl_end(rerun: &RerunState) {
+    if let Some(rx) = rerun.crawl_end.get() {
+        let _ = rx.clone().wait_for(|done| *done).await;
+    }
+}
+
+/// Vite's scannerMissedDeps at crawl end: deps a compile registered that the
+/// scan's plan does not name, with the provisional meta they were served
+/// under. The initial pre-bundle is redone with them rather than committed
+/// and rerun.
+fn scanner_missed(rerun: &RerunState, plan: &DepMap) -> DepMap {
+    let pending = rerun.pending.lock().unwrap();
+    let discovered = rerun.discovered.lock().unwrap();
+    pending
+        .iter()
+        .filter(|dep| !plan.contains_key(*dep))
+        .filter_map(|dep| discovered.get(dep).map(|m| (dep.clone(), m.clone())))
+        .collect()
+}
+
+/// Whether a planned map names the same entries the bundle committed.
+fn same_plan(plan: &DepMap, map: &DepMap) -> bool {
+    plan.len() == map.len()
+        && plan.iter().all(|(dep, p)| {
+            map.get(dep)
+                .is_some_and(|m| m.file == p.file && m.needs_interop == p.needs_interop)
+        })
 }
 
 /// Vite's debounceMs.
@@ -638,7 +861,8 @@ async fn rerun_once(
     dir: &Path,
     hash: &str,
     input: &OptimizeInput,
-    host: Option<&crate::plugins::PluginHost>,
+    host: Option<&Arc<crate::plugins::PluginHost>>,
+    rolldown: &tokio::runtime::Handle,
 ) {
     let provisional = rerun.discovered.lock().unwrap().clone();
     let pending: Vec<String> = rerun.pending.lock().unwrap().iter().cloned().collect();
@@ -646,8 +870,11 @@ async fn rerun_once(
         return;
     }
     let names: std::collections::BTreeSet<String> = provisional.keys().cloned().collect();
-    let candidate = browser_hash(hash, names.iter());
-    let Some(new_map) = run_optimizer(root, dir, input, host, &names, &candidate, true).await
+    let candidate = browser_hash(hash, &rerun.session, names.iter());
+    let Some(new_map) = run_optimizer(
+        root, dir, input, host, rolldown, &names, &candidate, true, None,
+    )
+    .await
     else {
         // Park the batch as failed (importers recompile onto the per-file
         // path) instead of Vite's reset-and-retry, which can reload-loop a
@@ -837,20 +1064,11 @@ fn effective_auto_discover(no_discovery: Option<bool>) -> bool {
     !no_discovery.unwrap_or(false)
 }
 
-/// The rolldown vendored next to the binary, for apps whose own Vite brings
-/// no bundler; `None` when this build vendors none or the vendor is unusable.
-fn vendored_rolldown() -> Option<(&'static str, &'static str)> {
-    match oj_cache::start_bundle::vendored_rolldown() {
-        oj_cache::start_bundle::VendoredRolldown::Resolved { path, version } => {
-            Some((path.as_str(), version.as_str()))
-        }
-        _ => None,
-    }
-}
-
 #[derive(Default, Clone)]
 pub struct OptimizeInput {
     pub no_discovery: Option<bool>,
+    /// `optimizeDeps.holdUntilCrawlEnd`; unset is Vite's default, true.
+    pub hold_until_crawl_end: Option<bool>,
     pub include: Vec<String>,
     pub exclude: Vec<String>,
     pub entries: Vec<String>,
@@ -886,6 +1104,10 @@ pub struct OptimizeInput {
     /// `optimizeDeps.needsInterop`: force `needsInterop: true` whatever the
     /// bundle's export shape (Vite's needsInterop()).
     pub needs_interop: Vec<String>,
+    /// How the app's Vite applies tsconfig `paths`: the scan follows it.
+    pub tsconfig_paths: oj_resolver::TsconfigPaths,
+    /// Vite's top-level `tsconfig` option.
+    pub tsconfig_file: Option<std::path::PathBuf>,
 }
 
 /// Prebundle mainFields: the resolved config's list with Vite's `pkg.main`
@@ -958,6 +1180,9 @@ fn hash_tagged_lists(hasher: &mut blake3::Hasher, lists: &[(&[u8], &Vec<String>)
     }
 }
 
+/// Bumped when the pre-bundle's output changes for the same inputs.
+const PREBUNDLE_FORMAT: &str = "\0prebundle:3";
+
 fn lockfile_hash(root: &Path, version: &str, input: &OptimizeInput) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(version.as_bytes());
@@ -986,6 +1211,7 @@ fn lockfile_hash(root: &Path, version: &str, input: &OptimizeInput) -> String {
     );
     hasher.update(b"\0bo=");
     hasher.update(input.build_out_dir.as_bytes());
+    hasher.update(format!("\0tp={:?}:{:?}", input.tsconfig_paths, input.tsconfig_file).as_bytes());
     for (find, replacement) in &input.alias {
         hasher.update(b"\0a");
         hasher.update(find.as_bytes());
@@ -999,12 +1225,9 @@ fn lockfile_hash(root: &Path, version: &str, input: &OptimizeInput) -> String {
         )
         .as_bytes(),
     );
-    // The vendor's version can change without an oj version bump only in
-    // development, so it keys the prebundle; its path must not (relocating
-    // the binary would invalidate every app's cache for nothing).
-    if let Some((_, version)) = vendored_rolldown() {
-        hasher.update(format!("\0vendor:{version}").as_bytes());
-    }
+    // The pre-bundle's own shape: a change to how oj bundles deps must not
+    // reuse the files an older oj wrote under the same lockfile.
+    hasher.update(PREBUNDLE_FORMAT.as_bytes());
     if let Some(opts) = &input.bundler_options {
         hasher.update(b"\0o");
         hasher.update(opts.to_string().as_bytes());
@@ -1127,119 +1350,77 @@ fn load_manifest(dir: &Path, hash: &str) -> Option<Manifest> {
     })
 }
 
-/// `discovered`: serve-time-found deps bundled alongside the configured set
-/// (as implicit includes, which never warn). `browser_version` is the `?v=`
-/// the emitted URLs carry, and `keep_existing` leaves the previous bundle's
+/// One optimizer run: the scan (through the plugins when there is a host),
+/// then the bundle into `dir`. `discovered` are deps the dev server found
+/// that the bundle must take too; `browser_version` is the version the
+/// emitted URLs carry, and `keep_existing` leaves the previous bundle's
 /// files in place so a page that predates the rerun keeps loading until the
-/// reload lands.
+/// reload lands. `on_plan` (the initial run only) gets the metadata the
+/// bundle is planned to commit as soon as the scan knows it.
 #[allow(clippy::too_many_arguments)]
 async fn run_optimizer(
     root: &Path,
     dir: &Path,
     input: &OptimizeInput,
-    host: Option<&crate::plugins::PluginHost>,
+    host: Option<&Arc<crate::plugins::PluginHost>>,
+    rolldown: &tokio::runtime::Handle,
     discovered: &std::collections::BTreeSet<String>,
     browser_version: &str,
     keep_existing: bool,
+    on_plan: Option<&(dyn Fn(DepMap) + Sync)>,
 ) -> Option<DepMap> {
-    let cache = oj_cache::cache_root(root);
-    std::fs::create_dir_all(&cache).ok()?;
-    // Atomic rename: an engine could import the script while a concurrent oj
-    // process rewrites it.
-    crate::plugins::ensure_asset(&cache, "optimize-deps.mjs", OPTIMIZE_JS).ok()?;
-    let script = cache.join("optimize-deps.mjs");
     // react/jsx-dev-runtime is always prebundled (oj injects the dev JSX
     // runtime), but as oj's own implicit include: unlike the user's list it
     // must not warn when the app has no React.
-    let alias: Vec<[&str; 2]> = input
-        .alias
-        .iter()
-        .map(|(f, r)| [f.as_str(), r.as_str()])
-        .collect();
-    let auto_discover = effective_auto_discover(input.no_discovery);
-    // Config as JSON engine-call argument, metadata as the return value: argv
-    // has an OS length limit and stdout broke when a dep printed on require.
-    let mut cfg = serde_json::json!({
-        "root": root.to_string_lossy(),
-        "outDir": dir.to_string_lossy(),
-        "entries": input.entries,
-        "buildInputs": input.build_inputs,
-        "buildOutDir": input.build_out_dir,
-        "include": input.include,
-        "implicitInclude": std::iter::once("react/jsx-dev-runtime".to_string())
-            .chain(discovered.iter().cloned())
-            .collect::<Vec<_>>(),
-        "keepExisting": keep_existing,
-        "exclude": input.exclude,
-        "dedupe": input.dedupe,
-        "alias": alias,
-        "needsInterop": input.needs_interop,
-        "autoDiscover": auto_discover,
-        "nodeEnv": input.node_env,
-        "esbuildOptions": input.bundler_options,
-        "rolldownOptions": input.rolldown_options,
-        "vendoredRolldown": vendored_rolldown().map(|(path, _)| path),
-        "resolve": {
-            "conditions": input.conditions,
-            "mainFields": input.main_fields,
-            "extensions": input.extensions,
-            "preserveSymlinks": input.preserve_symlinks,
-        },
-    });
-    // Not gated on discovery: with noDiscovery the scan still resolves the
-    // include list, and Vite's container resolves manual includes through
-    // plugins either way.
-    if let Some(host) = host {
-        cfg["scanned"] = scan_through_plugins(host, &cfg).await;
+    let implicit =
+        std::iter::once("react/jsx-dev-runtime".to_string()).chain(discovered.iter().cloned());
+    let prebundle = Arc::new(crate::prebundle::Prebundle::new(
+        root,
+        dir,
+        input,
+        implicit,
+        keep_existing,
+        rolldown,
+    ));
+    let scanned = prebundle.scan(host).await;
+    if let Some(plan) = on_plan {
+        let provisional = prebundle.provisional(&prebundle.plan(&scanned, false));
+        plan(dep_map(provisional, browser_version));
     }
-    let job_root = root.to_path_buf();
-    let job_script = script.clone();
-    // spawn_blocking: the engine job blocks its thread for the whole
-    // pre-bundle (see run_engine_job), which must not park a runtime worker.
     // Unbounded, as Vite's optimizer run is: a large dep set bundles as long
-    // as it needs (the job wait logs progress); only job death fails it.
-    let result = tokio::task::spawn_blocking(move || {
-        crate::plugins::run_engine_job(&job_root, &job_script, "optimize", cfg, None)
-    })
-    .await
-    .ok()?;
-    let v = match result {
-        Ok(v) => v,
+    // as it needs.
+    match prebundle.bundle(&prebundle.plan(&scanned, true)).await {
+        Ok(built) => Some(dep_map(built, browser_version)),
         Err(e) => {
             eprintln!("oj: optimizer failed: {e}");
             oj_diag::emit(oj_diag::Event::new(
                 oj_diag::Kind::OptimizeError,
                 format!("optimizer failed: {e}"),
             ));
-            return None;
-        }
-    };
-    let metadata = v.get("metadata")?;
-    parse_metadata(metadata, browser_version)
-}
-
-/// The scan run in the plugin host (see `optimizeScan` in plugin-host.mjs).
-/// Null keeps the scan in the optimizer job: a host that failed, which is
-/// logged and costs only plugin-aware resolution.
-async fn scan_through_plugins(
-    host: &crate::plugins::PluginHost,
-    cfg: &serde_json::Value,
-) -> serde_json::Value {
-    match host.optimize_scan(&cfg.to_string()).await {
-        Ok(Some(json)) => serde_json::from_str(&json).unwrap_or(serde_json::Value::Null),
-        Ok(None) => serde_json::Value::Null,
-        Err(e) => {
-            eprintln!("oj: dependency scan through plugins failed ({e}); scanning without them");
-            oj_diag::emit(
-                oj_diag::Event::new(
-                    oj_diag::Kind::OptimizeError,
-                    format!("dependency scan through plugins failed: {e}"),
-                )
-                .warn(),
-            );
-            serde_json::Value::Null
+            None
         }
     }
+}
+
+/// A run's per-dep results as the map the dev server serves from, every URL
+/// under `version` (the first eight characters, as in a manifest).
+fn dep_map(
+    built: std::collections::BTreeMap<String, crate::prebundle::Prebuilt>,
+    version: &str,
+) -> DepMap {
+    let version = version.get(..8).unwrap_or(version);
+    built
+        .into_iter()
+        .map(|(dep, b)| {
+            let meta = DepMeta {
+                url: dep_url(&b.file, version),
+                file: b.file,
+                needs_interop: b.needs_interop,
+                file_hash: b.file_hash,
+            };
+            (dep, meta)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1565,6 +1746,7 @@ mod tests {
         let (wake, _wake_rx) = tokio::sync::mpsc::unbounded_channel();
         let rerun = Arc::new(RerunState {
             hash: "testhash".into(),
+            session: session_timestamp(),
             tx,
             discovered: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             pending: std::sync::Mutex::new(std::collections::HashSet::new()),
@@ -1575,6 +1757,7 @@ mod tests {
             exclude,
             discovery,
             on_commit: std::sync::OnceLock::new(),
+            crawl_end: std::sync::OnceLock::new(),
         });
         OptimizedDeps {
             rx,
@@ -1618,6 +1801,50 @@ mod tests {
         assert_eq!(live.url, meta.url);
         let again = deps.register_missing("@scope/pkg", true).unwrap();
         assert_eq!(again.url, meta.url, "re-registration is idempotent");
+    }
+
+    #[test]
+    fn entry_urls_name_each_entry_by_its_own_version() {
+        // Vite's resolve versions an optimized file with that dep's own
+        // browserHash (optimizedDepInfoFromFile), not one global version: a
+        // dep discovered after boot carries its discovered set's version.
+        let deps = test_deps(true, vec![]);
+        let meta = deps.register_missing("date-fns/locale", false).unwrap();
+        let urls = deps.entry_urls();
+        assert_eq!(urls.get(&meta.file), Some(&meta.url));
+        assert_ne!(url_version(&meta.url), deps.version(), "{}", meta.url);
+
+        // An entry without a version query (an unversioned meta) is no
+        // preload target: importers name it bare, as the href already is.
+        let mut map = DepMap::new();
+        map.insert(
+            "bare".into(),
+            DepMeta {
+                file: "bare.mjs".into(),
+                needs_interop: false,
+                url: "/@oj-deps/bare.mjs".into(),
+                file_hash: String::new(),
+            },
+        );
+        let _ = deps.rerun.as_ref().unwrap().tx.send(Some(Arc::new(map)));
+        assert!(deps.entry_urls().is_empty());
+    }
+
+    #[test]
+    fn a_later_session_never_reuses_a_discovered_url() {
+        // Same hash, same discovered set, a new optimizer (a restart, or a
+        // boot after the cache was cleared): its bundle may differ, and the
+        // first session's URL is cached immutable, so the URL must differ.
+        let first = test_deps(true, vec![]);
+        let url = first
+            .register_missing("date-fns/locale", false)
+            .unwrap()
+            .url;
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        let second = test_deps(true, vec![]);
+        let again = second.register_missing("date-fns/locale", false).unwrap();
+        assert!(again.url.starts_with("/@oj-deps/date-fns_locale.mjs?v="));
+        assert_ne!(again.url, url);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1685,14 +1912,23 @@ mod tests {
         let set = |deps: &[&str]| -> std::collections::BTreeSet<String> {
             deps.iter().map(|d| d.to_string()).collect()
         };
-        let base = browser_hash("hash", set(&[]).iter());
-        let one = browser_hash("hash", set(&["lodash"]).iter());
-        let two = browser_hash("hash", set(&["lodash", "dayjs"]).iter());
+        let base = browser_hash("hash", "s1", set(&[]).iter());
+        let one = browser_hash("hash", "s1", set(&["lodash"]).iter());
+        let two = browser_hash("hash", "s1", set(&["lodash", "dayjs"]).iter());
         assert_eq!(base.len(), 8);
         assert_ne!(base, one, "a discovered dep bumps the version");
         assert_ne!(one, two);
         // The set is sorted: registration order cannot change the hash.
-        assert_eq!(two, browser_hash("hash", set(&["dayjs", "lodash"]).iter()));
+        assert_eq!(
+            two,
+            browser_hash("hash", "s1", set(&["dayjs", "lodash"]).iter())
+        );
+        // Vite's sessionTimestamp: another session never mints the same URL.
+        assert_ne!(base, browser_hash("hash", "s2", set(&[]).iter()));
+        assert_ne!(
+            two,
+            browser_hash("hash", "s2", set(&["lodash", "dayjs"]).iter())
+        );
     }
 
     #[test]
@@ -1963,5 +2199,300 @@ mod tests {
         assert_ne!(h(&base), h(&links));
         assert_eq!(h(&base), h(&base.clone()));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn meta(file: &str, needs_interop: bool) -> DepMeta {
+        DepMeta {
+            file: file.into(),
+            needs_interop,
+            url: dep_url(file, "00000000"),
+            file_hash: String::new(),
+        }
+    }
+
+    // The bundle confirming the plan commits quietly: the planned deps stop
+    // pending, a dep a compile discovered meanwhile keeps its provisional
+    // entry for its rerun, and nothing reloads.
+    #[test]
+    fn a_confirmed_plan_commits_without_a_reload_and_keeps_discoveries() {
+        let deps = test_deps(true, vec![]);
+        let r = deps.rerun.as_ref().unwrap();
+        let reloads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = Arc::clone(&reloads);
+        let _ = r.on_commit.set(Box::new(move |_| {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+        let plan: DepMap = [("react".to_string(), meta("react.mjs", true))].into();
+        r.pending.lock().unwrap().insert("react".into());
+        r.pending.lock().unwrap().insert("late".into());
+        r.discovered
+            .lock()
+            .unwrap()
+            .insert("late".into(), meta("late.mjs", false));
+
+        let mut bundled = plan.clone();
+        bundled.get_mut("react").unwrap().file_hash = "abc".into();
+        commit_initial(r, bundled, Some(plan), |_, _| {});
+
+        assert_eq!(reloads.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let pending = r.pending.lock().unwrap().clone();
+        assert!(
+            !pending.contains("react"),
+            "the planned dep no longer waits"
+        );
+        assert!(
+            pending.contains("late"),
+            "the discovered dep still waits for its rerun"
+        );
+        let map = deps
+            .meta_now("late")
+            .expect("the discovery survived the commit");
+        assert_eq!(map.file, "late.mjs");
+        assert_eq!(deps.meta_now("react").unwrap().file_hash, "abc");
+        assert_eq!(
+            deps.browser_version(),
+            "00000000",
+            "a confirmed plan keeps the version its URLs were served under"
+        );
+    }
+
+    // A bundle that disagrees with the plan (interop, file, a dep more or
+    // less, or no bundle at all) reloads: modules compiled against the plan
+    // carry the wrong rewrites.
+    #[test]
+    fn a_plan_the_bundle_contradicts_reloads() {
+        let plan: DepMap = [
+            ("react".to_string(), meta("react.mjs", true)),
+            ("zod".to_string(), meta("zod.mjs", false)),
+        ]
+        .into();
+        let mut interop = plan.clone();
+        interop.get_mut("zod").unwrap().needs_interop = true;
+        let mut file = plan.clone();
+        file.get_mut("react").unwrap().file = "react__oj_named.mjs".into();
+        let mut fewer = plan.clone();
+        fewer.remove("zod");
+        let mut more = plan.clone();
+        more.insert("dayjs".into(), meta("dayjs.mjs", true));
+        for (label, bundled) in [
+            ("interop", interop),
+            ("file", file),
+            ("fewer", fewer),
+            ("more", more),
+            ("none", DepMap::new()),
+        ] {
+            let deps = test_deps(true, vec![]);
+            let r = deps.rerun.as_ref().unwrap();
+            let reloads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let seen = Arc::clone(&reloads);
+            let _ = r.on_commit.set(Box::new(move |_| {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }));
+            r.pending.lock().unwrap().extend(plan.keys().cloned());
+            commit_initial(r, bundled, Some(plan.clone()), |_, _| {});
+            assert_eq!(
+                reloads.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "{label} reloads"
+            );
+            assert!(
+                r.pending.lock().unwrap().is_empty(),
+                "{label} releases the waits"
+            );
+            let version = deps.browser_version();
+            assert_ne!(version, "00000000", "{label} moves to a new version");
+            let map = r.tx.borrow().clone().unwrap();
+            assert!(
+                map.values()
+                    .all(|m| m.url.ends_with(&format!("?v={version}"))),
+                "{label} restamps every URL"
+            );
+        }
+    }
+
+    // Vite's holdUntilCrawlEnd + scannerMissedDeps: a dep the crawl found that
+    // the scan's plan lacks joins the initial pre-bundle. Folded into the
+    // plan, a bundle that confirms both commits with no reload, every entry
+    // keeps the URL it was served under (the missed dep its registration
+    // version), and nothing is left pending for a rerun.
+
+    #[test]
+    fn a_dep_the_scanner_missed_joins_the_initial_commit_quietly() {
+        let deps = test_deps(true, vec![]);
+        let r = deps.rerun.as_ref().unwrap();
+        let reloads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = Arc::clone(&reloads);
+        let _ = r.on_commit.set(Box::new(move |_| {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+        let mut plan: DepMap = [("react".to_string(), meta("react.mjs", true))].into();
+        r.tx.send(Some(Arc::new(plan.clone()))).unwrap();
+        r.pending.lock().unwrap().insert("react".into());
+        let late = deps.register_missing("late", false).expect("registers");
+        assert_ne!(url_version(&late.url), "00000000");
+
+        let missed = scanner_missed(r, &plan);
+        assert_eq!(missed.keys().collect::<Vec<_>>(), ["late"]);
+        plan.extend(missed);
+        let mut bundled: DepMap = [
+            ("react".to_string(), meta("react.mjs", true)),
+            ("late".to_string(), meta("late.mjs", false)),
+        ]
+        .into();
+        for m in bundled.values_mut() {
+            m.file_hash = "h".into();
+        }
+        commit_initial(r, bundled, Some(plan), |_, _| {});
+
+        assert_eq!(reloads.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(
+            r.pending.lock().unwrap().is_empty(),
+            "nothing left for a rerun"
+        );
+        assert_eq!(deps.meta_now("late").unwrap().url, late.url);
+        assert_eq!(
+            deps.meta_now("react").unwrap().url,
+            dep_url("react.mjs", "00000000")
+        );
+        assert_eq!(deps.meta_now("late").unwrap().file_hash, "h");
+    }
+
+    // Vite's `scanProcessing`: pending until the scan's planned map is out,
+    // settled from then on, and never pending with no optimizer.
+    #[test]
+    fn the_scan_is_pending_until_its_plan_is_published() {
+        let deps = test_deps(true, vec![]);
+        let r = deps.rerun.as_ref().unwrap();
+        r.tx.send(None).unwrap();
+        assert!(deps.scan_pending());
+        let plan: DepMap = [("react".to_string(), meta("react.mjs", true))].into();
+        r.tx.send(Some(Arc::new(plan))).unwrap();
+        assert!(!deps.scan_pending());
+        assert!(!OptimizedDeps::disabled().scan_pending());
+    }
+
+    // Vite's optimizedDepsPlugin.load: a request held on a dep's processing
+    // whose browserHash the commit changed is an outdated request (504, the
+    // page is reloading); one the commit confirmed serves.
+    #[tokio::test]
+    async fn a_request_held_across_the_initial_commit_is_outdated_only_on_a_mismatch() {
+        for (confirmed, outdated) in [(true, false), (false, true)] {
+            let deps = test_deps(true, vec![]);
+            let r = deps.rerun.as_ref().unwrap();
+            let plan: DepMap = [("zod".to_string(), meta("zod.mjs", false))].into();
+            r.tx.send(Some(Arc::new(plan.clone()))).unwrap();
+            r.pending.lock().unwrap().insert("zod".into());
+            let held = {
+                let rx = deps.rx.clone();
+                let rerun = deps.rerun.clone();
+                tokio::spawn(async move {
+                    let deps = OptimizedDeps {
+                        rx,
+                        dir: PathBuf::new(),
+                        version: "00000000".into(),
+                        rerun,
+                        link_memo: LinkMemo::default(),
+                    };
+                    matches!(
+                        deps.await_dep("zod.mjs", Some("00000000")).await,
+                        DepServe::Outdated
+                    )
+                })
+            };
+            tokio::task::yield_now().await;
+            assert!(!held.is_finished(), "a pending dep's request waits");
+            let mut bundled = plan.clone();
+            bundled.get_mut("zod").unwrap().needs_interop = !confirmed;
+            commit_initial(r, bundled, Some(plan), |_, _| {});
+            assert_eq!(held.await.unwrap(), outdated, "confirmed: {confirmed}");
+        }
+    }
+
+    // The hold ends with the crawl, never before it; with no crawl signal
+    // (no dev server) there is nothing to hold for.
+    #[tokio::test]
+    async fn the_initial_commit_holds_until_the_crawl_ends() {
+        let deps = test_deps(true, vec![]);
+        let r = Arc::clone(deps.rerun.as_ref().unwrap());
+        hold_for_crawl_end(&r).await;
+
+        let (crawl_tx, crawl_rx) = watch::channel(false);
+        deps.set_crawl_end(crawl_rx);
+        let hold = {
+            let r = Arc::clone(&r);
+            tokio::spawn(async move { hold_for_crawl_end(&r).await })
+        };
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!hold.is_finished(), "held while the crawl runs");
+        crawl_tx.send(true).unwrap();
+        hold.await.unwrap();
+    }
+
+    // Vite's scanProcessing: before the scan, a compile waits for a map; the
+    // published plan releases it, while the planned dep's own request still
+    // waits for the bundle's commit.
+    #[tokio::test]
+    async fn the_plan_releases_compiles_but_not_dep_requests() {
+        let (tx, rx) = watch::channel(None);
+        let (wake, _wake_rx) = tokio::sync::mpsc::unbounded_channel();
+        let rerun = Arc::new(RerunState {
+            hash: "testhash".into(),
+            session: session_timestamp(),
+            tx,
+            discovered: Default::default(),
+            pending: Default::default(),
+            wake,
+            browser_version: std::sync::RwLock::new("00000000".into()),
+            failed: Default::default(),
+            dead: Default::default(),
+            exclude: vec![],
+            discovery: true,
+            on_commit: std::sync::OnceLock::new(),
+            crawl_end: std::sync::OnceLock::new(),
+        });
+        let deps = Arc::new(OptimizedDeps {
+            rx,
+            dir: PathBuf::new(),
+            version: "00000000".into(),
+            rerun: Some(Arc::clone(&rerun)),
+            link_memo: LinkMemo::default(),
+        });
+        let compile = {
+            let deps = Arc::clone(&deps);
+            tokio::spawn(async move { deps.ready().await })
+        };
+        tokio::task::yield_now().await;
+        assert!(!compile.is_finished(), "a compile waits for the scan");
+
+        let plan: DepMap = [("zod".to_string(), meta("zod.mjs", false))].into();
+        publish_plan(&rerun, plan.clone());
+        let map = compile.await.unwrap();
+        assert_eq!(
+            map.get("zod").map(|m| m.url.as_str()),
+            Some("/@oj-deps/zod.mjs?v=00000000")
+        );
+
+        let request = {
+            let deps = Arc::clone(&deps);
+            tokio::spawn(async move { deps.await_dep("zod.mjs", Some("00000000")).await })
+        };
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !request.is_finished(),
+            "the dep's request waits for the bundle"
+        );
+        // The manifest lands before the commit releases the request.
+        commit_initial(&rerun, plan.clone(), Some(plan), |map, _| {
+            assert!(map.contains_key("zod"));
+            assert!(
+                rerun.pending.lock().unwrap().contains("zod"),
+                "persisted while the dep's requests are still held"
+            );
+        });
+        assert!(matches!(request.await.unwrap(), DepServe::Ready));
     }
 }

@@ -21,9 +21,86 @@ pub struct CachedExtract {
     pub deps: Vec<PathBuf>,
 }
 
+/// The env vars a config evaluation read, as the extractor recorded them.
+/// Vite evaluates the config on every start, so a value it read then is an
+/// input like any file the config imported.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct EnvReads {
+    /// Every var the config or a plugin read (`process.env.X`, `"X" in
+    /// process.env`), present then or not.
+    pub names: Vec<String>,
+    /// The resolved `envPrefix`: Vite's loadEnv takes every process var that
+    /// starts with one into `config.env`.
+    pub prefixes: Vec<String>,
+    /// The config or a plugin listed the env (`{ ...process.env }`,
+    /// `loadEnv(mode, dir, "")`): any var may have gone into the config.
+    pub enumerated: bool,
+}
+
+/// Session bookkeeping a shell rewrites from one prompt to the next. A config
+/// that copies the whole env takes these too, and keying on them would miss
+/// the cache on every launch from another directory or shell.
+const SHELL_SESSION_VARS: [&str; 8] = [
+    "_",
+    "OLDPWD",
+    "PWD",
+    "SHLVL",
+    "TERM_SESSION_ID",
+    "ITERM_SESSION_ID",
+    "WINDOWID",
+    "SECURITYSESSIONID",
+];
+
+impl EnvReads {
+    /// The values of what the evaluation read, in `env`.
+    fn digest(&self, env: &oj_env::Env) -> String {
+        let session = |k: &str| SHELL_SESSION_VARS.contains(&k);
+        let mut hasher = blake3::Hasher::new();
+        // Copying the env reads every var by name too, its session ones included.
+        for name in self
+            .names
+            .iter()
+            .filter(|n| !(self.enumerated && session(n)))
+        {
+            hasher.update(b"\0n");
+            hasher.update(name.as_bytes());
+            match env.var(name) {
+                Some(v) => {
+                    hasher.update(&[1]);
+                    hasher.update(v.as_bytes());
+                }
+                None => {
+                    hasher.update(&[0]);
+                }
+            }
+        }
+        let listed = |k: &str| {
+            self.enumerated
+                || self
+                    .prefixes
+                    .iter()
+                    .any(|p| !p.is_empty() && k.starts_with(p))
+        };
+        for (k, v) in env.vars().filter(|(k, _)| listed(k) && !session(k)) {
+            hasher.update(b"\0l");
+            hasher.update(k.as_bytes());
+            hasher.update(&[0]);
+            hasher.update(v.as_bytes());
+        }
+        hasher.finalize().to_hex().to_string()
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct EnvStamp {
+    reads: EnvReads,
+    digest: String,
+}
+
 #[derive(Serialize, Deserialize)]
 struct Entry {
     env_epoch: String,
+    env: EnvStamp,
     files: Vec<FileStamp>,
     output: String,
     stderr: String,
@@ -58,6 +135,17 @@ impl ConfigExtractStore {
     }
 
     pub fn lookup(&self, config: &Path, command: &str, mode: &str) -> Option<CachedExtract> {
+        self.lookup_in(oj_env::get(), config, command, mode)
+    }
+
+    /// [`Self::lookup`] with the process env given as `env`.
+    pub fn lookup_in(
+        &self,
+        env: &oj_env::Env,
+        config: &Path,
+        command: &str,
+        mode: &str,
+    ) -> Option<CachedExtract> {
         let path = self.entry_path(config, command, mode);
         if !path.exists() {
             return None;
@@ -75,7 +163,7 @@ impl ConfigExtractStore {
             }
         };
         let entry: Entry = integrity::parse_json_or_remove(&path, &payload)?;
-        if !self.is_fresh(&entry) {
+        if !self.is_fresh(env, &entry) {
             return None;
         }
         Some(CachedExtract {
@@ -85,12 +173,14 @@ impl ConfigExtractStore {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn store(
         &self,
         config: &Path,
         command: &str,
         mode: &str,
         deps: &[PathBuf],
+        env_reads: &EnvReads,
         output: &str,
         stderr: &str,
     ) {
@@ -102,8 +192,15 @@ impl ConfigExtractStore {
         files.extend(deps.iter().cloned());
         files.sort();
         files.dedup();
+        let mut reads = env_reads.clone();
+        reads.names.sort();
+        reads.names.dedup();
         let entry = Entry {
             env_epoch: env_epoch(&self.root),
+            env: EnvStamp {
+                digest: reads.digest(oj_env::get()),
+                reads,
+            },
             files: files.iter().map(|p| FileStamp::of(p)).collect(),
             output: output.to_string(),
             stderr: stderr.to_string(),
@@ -113,10 +210,12 @@ impl ConfigExtractStore {
             integrity::write_self_verified(&path, &serde_json::to_vec(&entry).unwrap_or_default());
     }
 
-    /// An entry holds while the env epoch matches and every stamped file
-    /// (config plus its imports) still has the recorded digest.
-    fn is_fresh(&self, entry: &Entry) -> bool {
-        entry.env_epoch == env_epoch(&self.root)
+    /// An entry holds while the env epoch matches, the env vars the config
+    /// read hold the values they had, and every stamped file (config plus its
+    /// imports) still has the recorded digest.
+    fn is_fresh(&self, env: &oj_env::Env, entry: &Entry) -> bool {
+        entry.env_epoch == env_epoch_in(env, &self.root)
+            && entry.env.reads.digest(env) == entry.env.digest
             && entry
                 .files
                 .iter()
@@ -216,6 +315,7 @@ mod tests {
             "serve",
             "development",
             std::slice::from_ref(&dep),
+            &EnvReads::default(),
             r#"{"base":"/"}"#,
             "warn\n",
         );
@@ -232,7 +332,15 @@ mod tests {
         let config = root.join("vite.config.ts");
         fs::write(&config, "a").unwrap();
         let store = ConfigExtractStore::new(&root, "s1");
-        store.store(&config, "serve", "development", &[], "{}", "");
+        store.store(
+            &config,
+            "serve",
+            "development",
+            &[],
+            &EnvReads::default(),
+            "{}",
+            "",
+        );
         assert!(store.lookup(&config, "serve", "development").is_some());
         fs::write(&config, "b").unwrap();
         assert!(store.lookup(&config, "serve", "development").is_none());
@@ -244,11 +352,27 @@ mod tests {
         let config = root.join("vite.config.ts");
         fs::write(&config, "a").unwrap();
         let store = ConfigExtractStore::new(&root, "s1");
-        store.store(&config, "serve", "development", &[], "{}", "");
+        store.store(
+            &config,
+            "serve",
+            "development",
+            &[],
+            &EnvReads::default(),
+            "{}",
+            "",
+        );
         assert!(store.lookup(&config, "serve", "development").is_some());
         fs::write(root.join("pnpm-lock.yaml"), "lock").unwrap();
         assert!(store.lookup(&config, "serve", "development").is_none());
-        store.store(&config, "serve", "development", &[], "{}", "");
+        store.store(
+            &config,
+            "serve",
+            "development",
+            &[],
+            &EnvReads::default(),
+            "{}",
+            "",
+        );
         assert!(store.lookup(&config, "serve", "development").is_some());
         fs::write(root.join(".env.local"), "VITE_X=1").unwrap();
         assert!(store.lookup(&config, "serve", "development").is_none());
@@ -284,12 +408,28 @@ mod tests {
         let config = root.join("vite.config.ts");
         fs::write(&config, "a").unwrap();
         let store = ConfigExtractStore::new(&root, "s1");
-        store.store(&config, "serve", "development", &[], "{}", "");
+        store.store(
+            &config,
+            "serve",
+            "development",
+            &[],
+            &EnvReads::default(),
+            "{}",
+            "",
+        );
         assert!(store.lookup(&config, "serve", "development").is_some());
         // Absent -> present.
         fs::write(root.join("wrangler.jsonc"), r#"{ "name": "app" }"#).unwrap();
         assert!(store.lookup(&config, "serve", "development").is_none());
-        store.store(&config, "serve", "development", &[], "{}", "");
+        store.store(
+            &config,
+            "serve",
+            "development",
+            &[],
+            &EnvReads::default(),
+            "{}",
+            "",
+        );
         assert!(store.lookup(&config, "serve", "development").is_some());
         // Content change (the broken-wrangler-then-fixed shape).
         fs::write(
@@ -298,11 +438,27 @@ mod tests {
         )
         .unwrap();
         assert!(store.lookup(&config, "serve", "development").is_none());
-        store.store(&config, "serve", "development", &[], "{}", "");
+        store.store(
+            &config,
+            "serve",
+            "development",
+            &[],
+            &EnvReads::default(),
+            "{}",
+            "",
+        );
         // Present -> absent.
         fs::remove_file(root.join("wrangler.jsonc")).unwrap();
         assert!(store.lookup(&config, "serve", "development").is_none());
-        store.store(&config, "serve", "development", &[], "{}", "");
+        store.store(
+            &config,
+            "serve",
+            "development",
+            &[],
+            &EnvReads::default(),
+            "{}",
+            "",
+        );
         // The .toml spelling counts too.
         fs::write(root.join("wrangler.toml"), "name = \"app\"").unwrap();
         assert!(store.lookup(&config, "serve", "development").is_none());
@@ -321,6 +477,7 @@ mod tests {
             "serve",
             "development",
             std::slice::from_ref(&dep),
+            &EnvReads::default(),
             "{}",
             "",
         );
@@ -335,7 +492,15 @@ mod tests {
         let config = root.join("vite.config.ts");
         fs::write(&config, "a").unwrap();
         let store = ConfigExtractStore::new(&root, "s1");
-        store.store(&config, "serve", "development", &[], "{}", "");
+        store.store(
+            &config,
+            "serve",
+            "development",
+            &[],
+            &EnvReads::default(),
+            "{}",
+            "",
+        );
         let path = store.entry_path(&config, "serve", "development");
         fs::write(&path, b"{ not json").unwrap();
         assert!(store.lookup(&config, "serve", "development").is_none());
@@ -348,7 +513,15 @@ mod tests {
         let config = root.join("vite.config.ts");
         fs::write(&config, "a").unwrap();
         let store = ConfigExtractStore::new(&root, "s1");
-        store.store(&config, "serve", "development", &[], "{}", "");
+        store.store(
+            &config,
+            "serve",
+            "development",
+            &[],
+            &EnvReads::default(),
+            "{}",
+            "",
+        );
         assert!(ConfigExtractStore::new(&root, "s2")
             .lookup(&config, "serve", "development")
             .is_none());
@@ -362,7 +535,15 @@ mod tests {
         let config = root.join("vite.config.ts");
         fs::write(&config, "a").unwrap();
         let store = ConfigExtractStore::new(&root, "s1");
-        store.store(&config, "serve", "development", &[], r#"{"base":"/x"}"#, "");
+        store.store(
+            &config,
+            "serve",
+            "development",
+            &[],
+            &EnvReads::default(),
+            r#"{"base":"/x"}"#,
+            "",
+        );
         let path = store.entry_path(&config, "serve", "development");
 
         // Same-size, single-byte flip inside the payload.
@@ -377,8 +558,87 @@ mod tests {
         );
         assert!(!path.exists(), "corrupt entry must be removed");
 
-        store.store(&config, "serve", "development", &[], r#"{"base":"/x"}"#, "");
+        store.store(
+            &config,
+            "serve",
+            "development",
+            &[],
+            &EnvReads::default(),
+            r#"{"base":"/x"}"#,
+            "",
+        );
         let hit = store.lookup(&config, "serve", "development").unwrap();
         assert_eq!(hit.output, r#"{"base":"/x"}"#);
+    }
+
+    /// The process env with `vars` set over it.
+    fn env_with(vars: &[(&str, &str)]) -> oj_env::Env {
+        let mut all: Vec<(String, String)> = oj_env::get()
+            .vars()
+            .filter(|(k, _)| !vars.iter().any(|(n, _)| n == k))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        all.extend(vars.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+        oj_env::Env::from_vars(all)
+    }
+
+    fn stored_with(label: &str, reads: EnvReads) -> (ConfigExtractStore, PathBuf) {
+        let root = temp_root(label);
+        let config = root.join("vite.config.ts");
+        fs::write(&config, "a").unwrap();
+        let store = ConfigExtractStore::new(&root, "s1");
+        store.store(&config, "serve", "development", &[], &reads, "{}", "");
+        (store, config)
+    }
+
+    // Vite evaluates the config on every start, so a var it read is an input:
+    // another value, or the var appearing, is a miss; vars it never read are
+    // not.
+    #[test]
+    fn a_var_the_config_read_keys_the_entry() {
+        let reads = EnvReads {
+            names: vec!["OJ_TEST_EXTRACT_API_URL".into()],
+            ..Default::default()
+        };
+        let (store, config) = stored_with("env-read", reads);
+        let hit = |env: &oj_env::Env| store.lookup_in(env, &config, "serve", "development");
+        assert!(hit(&env_with(&[])).is_some());
+        assert!(
+            hit(&env_with(&[("OJ_TEST_EXTRACT_API_URL", "https://b")])).is_none(),
+            "a var the config read appeared"
+        );
+        assert!(
+            hit(&env_with(&[("OJ_TEST_EXTRACT_UNREAD", "1")])).is_some(),
+            "a var the config never read does not key the entry"
+        );
+    }
+
+    // Vite's loadEnv takes every var under `envPrefix` into `config.env`.
+    #[test]
+    fn a_var_under_the_resolved_env_prefix_keys_the_entry() {
+        let reads = EnvReads {
+            prefixes: vec!["OJ_TEST_PUBLIC_".into()],
+            ..Default::default()
+        };
+        let (store, config) = stored_with("env-prefix", reads);
+        let hit = |env: &oj_env::Env| store.lookup_in(env, &config, "serve", "development");
+        assert!(hit(&env_with(&[])).is_some());
+        assert!(hit(&env_with(&[("OJ_TEST_PUBLIC_KEY", "k")])).is_none());
+        assert!(hit(&env_with(&[("OJ_TEST_PRIVATE_KEY", "k")])).is_some());
+    }
+
+    // A config that copied the whole env (`loadEnv(mode, dir, "")`) keys on
+    // every var but the shell's own session bookkeeping.
+    #[test]
+    fn an_enumerated_env_keys_every_var_but_the_shell_session() {
+        let reads = EnvReads {
+            enumerated: true,
+            ..Default::default()
+        };
+        let (store, config) = stored_with("env-enum", reads);
+        let hit = |env: &oj_env::Env| store.lookup_in(env, &config, "serve", "development");
+        assert!(hit(&env_with(&[])).is_some());
+        assert!(hit(&env_with(&[("OJ_TEST_ANY", "1")])).is_none());
+        assert!(hit(&env_with(&[("OLDPWD", "/elsewhere"), ("SHLVL", "9")])).is_some());
     }
 }

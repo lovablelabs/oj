@@ -189,7 +189,7 @@ fn strip_types(path: &Path, source: &str) -> Result<String, ConfigError> {
     let allocator = Allocator::default();
     let source_type = SourceType::from_path(path).unwrap_or_else(|_| SourceType::ts());
     let parsed = Parser::new(&allocator, source, source_type).parse();
-    if parsed.panicked {
+    if parsed.fatal_error {
         return Err(ConfigError::Parse(
             path.to_path_buf(),
             "syntax error".into(),
@@ -411,11 +411,13 @@ mod tests {
             ]
         );
 
+        // Vite 8 ignores an environment's own alias: every environment
+        // resolves with the top-level list.
         assert_eq!(
             resolve_alias(&cfg, "ssr"),
             vec![
                 ("@".to_string(), "/src".to_string()),
-                ("old".to_string(), "/ssr-legacy".to_string())
+                ("old".to_string(), "/legacy".to_string())
             ]
         );
         assert_eq!(

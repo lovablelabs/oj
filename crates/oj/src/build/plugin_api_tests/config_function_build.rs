@@ -39,7 +39,7 @@ async fn function_oj_config_sees_build_and_production() {
         .unwrap()
         .flatten()
         .map(|e| e.file_name().to_string_lossy().into_owned())
-        .find(|f| f.starts_with("main-"))
+        .find(|f| f.starts_with("index-"))
         .expect("main chunk emitted");
     let code = fs::read_to_string(assets.join(main)).unwrap();
     assert!(

@@ -10,8 +10,8 @@
 //! module. Compared to the node loader:
 //! - TS/JSX stripping, `define`/`import.meta.env`, `import.meta.glob` and the
 //!   plugin transform chain come from the same Rust pipeline the SSR runner
-//!   uses (`SsrBridge::transform_module`), replacing rolldown `transformSync`
-//!   + `glob-transform.mjs` + the FIFO plugin bridge.
+//!   uses (`SsrBridge::transform_module`), replacing the node loader's
+//!   rolldown `transformSync`, glob transform and FIFO plugin bridge.
 //! - CSS-module class names come from the Rust side (`oj_css`), replacing the
 //!   loader's SipHash mirror.
 //! - CJS facades, directory-entry recovery and extension probing inside
@@ -137,9 +137,6 @@ fn pkg_name_of_path(path: &str) -> Option<String> {
     Some(first.to_string())
 }
 
-/// Base64url without padding (Node's `Buffer.toString("base64url")`), the
-/// server-function id encoding shared with gen-resolver.mjs and the client
-/// bundle.
 /// Decodes the bootstrap's standard base64 (Node `Buffer.toString("base64")`,
 /// padded); oj owns both ends, so malformed input decodes to empty.
 fn base64_decode(s: &str) -> Vec<u8> {
@@ -147,305 +144,6 @@ fn base64_decode(s: &str) -> Vec<u8> {
     base64::engine::general_purpose::STANDARD
         .decode(s)
         .unwrap_or_default()
-}
-
-fn base64url(bytes: &[u8]) -> String {
-    use base64::Engine;
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
-}
-
-/// The server-side `createServerFn` rewrite the node loader applied
-/// (loader-util.mjs `rewriteServerFns`): every
-/// `const NAME = createServerFn(...).handler(` grows a sibling
-/// `NAME_createServerFn_handler = createServerRpc(meta, ...)` export and the
-/// handler's first argument, without adding lines (stack traces keep their
-/// positions).
-///
-/// The `.handler(` must belong to the SAME expression as the
-/// `createServerFn` call: the chain is followed with a bracket-depth scan
-/// (strings, template literals, comments and regex literals skipped) instead
-/// of a lazy `.*?`, which used to span across statements and anchor a
-/// split-statement factory (`const factory = createServerFn(...); export
-/// const doIt = factory.handler(...)`) to the WRONG variable. That split
-/// shape is left untouched: TanStack's own compiler resolves it by following
-/// variable bindings in the AST, which a textual rewrite cannot do safely.
-pub(crate) fn rewrite_server_fns(code: &str, rel: &str) -> String {
-    if !code.contains("createServerFn") {
-        return code.to_string();
-    }
-    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let re = RE.get_or_init(|| {
-        regex::Regex::new(
-            r"(?:^|[\n;])[ \t]*((?:export\s+)?const\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*createServerFn)\b",
-        )
-        .expect("server-fn rewrite regex")
-    });
-    // (byte offset, text to insert there), collected per anchored chain.
-    let mut edits: Vec<(usize, String)> = Vec::new();
-    for caps in re.captures_iter(code) {
-        let decl = caps.get(1).expect("decl group");
-        let name = &caps[2];
-        let Some(handler_args_at) = scan_chain_to_handler(code, decl.end()) else {
-            continue; // no same-expression .handler( — leave the statement alone
-        };
-        let id = base64url(format!("{rel}#{name}").as_bytes());
-        let meta = format!("{{ id: {id:?}, name: {name:?}, filename: {rel:?} }}");
-        edits.push((
-            decl.start(),
-            format!(
-                "export const {name}_createServerFn_handler = createServerRpc({meta}, (opts) => {name}.__executeServer(opts)); "
-            ),
-        ));
-        edits.push((handler_args_at, format!("{name}_createServerFn_handler, ")));
-    }
-    if edits.is_empty() {
-        return code.to_string();
-    }
-    edits.sort_by_key(|(at, _)| *at);
-    let mut out =
-        String::from("import { createServerRpc } from \"@tanstack/react-start/server-rpc\"; ");
-    let mut last = 0;
-    for (at, text) in edits {
-        out.push_str(&code[last..at]);
-        out.push_str(&text);
-        last = at;
-    }
-    out.push_str(&code[last..]);
-    out
-}
-
-/// Follows a `createServerFn` method chain from `from` (the byte right after
-/// the identifier) to the `.handler(` of the same expression, returning the
-/// offset just past its opening paren. The chain grammar is strict — a call's
-/// balanced arguments, then `.name` and the next call — so the scan ends
-/// (returning `None`) at anything else: a `;`, a new statement on the next
-/// line, an unexpected token. Bracket depth is tracked with strings, template
-/// literals, comments and regex literals skipped, so a `)` inside a validator
-/// string can not end the argument list early.
-fn scan_chain_to_handler(code: &str, from: usize) -> Option<usize> {
-    let bytes = code.as_bytes();
-    let mut i = from;
-    loop {
-        // The chain's next call: balanced `( ... )`.
-        i = skip_ws_and_comments(bytes, i)?;
-        if bytes[i] != b'(' {
-            return None;
-        }
-        i = skip_balanced_parens(bytes, i)?;
-        // After the call only `.name` continues the chain.
-        i = skip_ws_and_comments(bytes, i)?;
-        if bytes[i] != b'.' {
-            return None;
-        }
-        i = skip_ws_and_comments(bytes, i + 1)?;
-        let name_start = i;
-        while i < bytes.len()
-            && (bytes[i] == b'$' || bytes[i] == b'_' || bytes[i].is_ascii_alphanumeric())
-        {
-            i += 1;
-        }
-        if i == name_start {
-            return None;
-        }
-        let method = &code[name_start..i];
-        i = skip_ws_and_comments(bytes, i)?;
-        if bytes[i] != b'(' {
-            return None;
-        }
-        if method == "handler" {
-            return Some(i + 1);
-        }
-        // A non-handler link (.validator, .middleware, …): consume its call
-        // on the next loop turn.
-    }
-}
-
-fn skip_ws_and_comments(bytes: &[u8], mut i: usize) -> Option<usize> {
-    loop {
-        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'/' {
-            while i < bytes.len() && bytes[i] != b'\n' {
-                i += 1;
-            }
-            continue;
-        }
-        if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-            i += 2;
-            while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-                i += 1;
-            }
-            if i + 1 >= bytes.len() {
-                return None;
-            }
-            i += 2;
-            continue;
-        }
-        return if i < bytes.len() { Some(i) } else { None };
-    }
-}
-
-/// From an opening `(` at `open`, returns the index just past its matching
-/// `)`. Tracks every bracket kind, skips strings, template literals (with
-/// nested `${}` code), comments and regex literals (the `/`-after-operator
-/// heuristic), and gives up (`None`) on EOF or mismatched brackets.
-fn skip_balanced_parens(bytes: &[u8], open: usize) -> Option<usize> {
-    debug_assert_eq!(bytes[open], b'(');
-    // Bracket stack; b'T' marks a template-literal `${` substitution, b'`'
-    // template text itself.
-    let mut stack: Vec<u8> = vec![b'('];
-    // The previous significant code byte, for the regex-vs-division call.
-    let mut prev: Option<u8> = Some(b'(');
-    let mut i = open + 1;
-    while i < bytes.len() {
-        if stack.last() == Some(&b'`') {
-            match bytes[i] {
-                b'\\' => i += 2,
-                b'`' => {
-                    stack.pop();
-                    i += 1;
-                }
-                b'$' if bytes.get(i + 1) == Some(&b'{') => {
-                    stack.push(b'T');
-                    prev = Some(b'{');
-                    i += 2;
-                }
-                _ => i += 1,
-            }
-            continue;
-        }
-        let c = bytes[i];
-        match c {
-            b'\'' | b'"' => {
-                i = skip_string(bytes, i)?;
-                prev = Some(b'"');
-            }
-            b'`' => {
-                stack.push(b'`');
-                i += 1;
-            }
-            b'/' if bytes.get(i + 1) == Some(&b'/') => {
-                while i < bytes.len() && bytes[i] != b'\n' {
-                    i += 1;
-                }
-            }
-            b'/' if bytes.get(i + 1) == Some(&b'*') => {
-                i += 2;
-                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-                    i += 1;
-                }
-                if i + 1 >= bytes.len() {
-                    return None;
-                }
-                i += 2;
-            }
-            b'/' if regex_can_follow(prev) => {
-                i = skip_regex_literal(bytes, i)?;
-                prev = Some(b'/');
-            }
-            b'(' | b'[' | b'{' => {
-                stack.push(c);
-                prev = Some(c);
-                i += 1;
-            }
-            b')' | b']' => {
-                let want = if c == b')' { b'(' } else { b'[' };
-                if stack.pop() != Some(want) {
-                    return None;
-                }
-                if stack.is_empty() {
-                    return Some(i + 1);
-                }
-                prev = Some(c);
-                i += 1;
-            }
-            b'}' => {
-                match stack.pop() {
-                    Some(b'{') | Some(b'T') => {}
-                    _ => return None,
-                }
-                prev = Some(c);
-                i += 1;
-            }
-            _ => {
-                if !c.is_ascii_whitespace() {
-                    prev = Some(c);
-                }
-                i += 1;
-            }
-        }
-    }
-    None
-}
-
-/// Whether a `/` after this significant byte starts a regex literal rather
-/// than a division: after an operator, an opener or a separator it can only
-/// be a regex (`.validator((s) => /x\(/.test(s))`), after a value it is a
-/// division. Keyword-preceded regexes (`return /x/`) read as
-/// identifier-preceded here and mis-classify as division — acceptable inside
-/// call arguments, where a bare `return` at bracket depth is already rare.
-fn regex_can_follow(prev: Option<u8>) -> bool {
-    match prev {
-        None => true,
-        Some(c) => matches!(
-            c,
-            b'(' | b'['
-                | b'{'
-                | b','
-                | b';'
-                | b':'
-                | b'!'
-                | b'&'
-                | b'|'
-                | b'?'
-                | b'='
-                | b'+'
-                | b'-'
-                | b'*'
-                | b'%'
-                | b'<'
-                | b'>'
-                | b'~'
-                | b'^'
-        ),
-    }
-}
-
-fn skip_string(bytes: &[u8], start: usize) -> Option<usize> {
-    let quote = bytes[start];
-    let mut i = start + 1;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' => i += 2,
-            c if c == quote => return Some(i + 1),
-            b'\n' => return Some(i + 1), // unterminated: fail soft at the line end
-            _ => i += 1,
-        }
-    }
-    None
-}
-
-fn skip_regex_literal(bytes: &[u8], start: usize) -> Option<usize> {
-    let mut i = start + 1;
-    let mut in_class = false;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' => i += 2,
-            b'[' => {
-                in_class = true;
-                i += 1;
-            }
-            b']' if in_class => {
-                in_class = false;
-                i += 1;
-            }
-            b'/' if !in_class => return Some(i + 1),
-            b'\n' => return None, // not a regex after all
-            _ => i += 1,
-        }
-    }
-    None
 }
 
 fn ext_of(path: &str) -> &str {
@@ -456,12 +154,9 @@ fn ext_of(path: &str) -> &str {
     }
 }
 
-/// Whether a resolved dependency file may stay external to an SSR bundle:
-/// Vite's canExternalizeFile, which hands Node only JavaScript (a stylesheet,
-/// JSON or raw TypeScript bundles through the plugins instead).
-pub(crate) fn can_externalize_file(path: &str) -> bool {
-    matches!(ext_of(path), "" | "js" | "mjs" | "cjs")
-}
+/// Whether a resolved dependency file may stay external to an SSR bundle
+/// (a stylesheet, JSON or raw TypeScript bundles through the plugins instead).
+pub(crate) use oj_server::can_externalize_file;
 
 /// A source file the runtime cannot load natively from node_modules: Node and
 /// byonm refuse to strip types there, and nothing executes raw JSX.
@@ -502,6 +197,8 @@ pub(crate) struct CjsCache {
     pkg_is_module: Mutex<std::collections::HashMap<PathBuf, bool>>,
     /// file → (mtime at sniff time, is-CJS verdict).
     verdicts: Mutex<std::collections::HashMap<PathBuf, (std::time::SystemTime, bool)>>,
+    /// file → (mtime at scan time, calls an undeclared `require`).
+    requires: Mutex<std::collections::HashMap<PathBuf, (std::time::SystemTime, bool)>>,
 }
 
 impl CjsCache {
@@ -572,6 +269,122 @@ impl CjsCache {
     }
 }
 
+impl CjsCache {
+    /// Whether `path` is an ES module that calls a `require` it never
+    /// declares: a bundler-only build no ESM runtime can evaluate (turndown's
+    /// `module` entry requires its Node DOM parser on first use), cached per
+    /// path + mtime.
+    fn esm_calls_require(&self, path: &str) -> bool {
+        if !(path.ends_with(".js") || path.ends_with(".mjs")) || self.is_cjs_file(path) {
+            return false;
+        }
+        let file = Path::new(path);
+        let mtime = std::fs::metadata(file).ok().and_then(|m| m.modified().ok());
+        if let Some(mtime) = mtime {
+            if let Some((seen, verdict)) = self.requires.lock().unwrap().get(file) {
+                if *seen == mtime {
+                    return *verdict;
+                }
+            }
+        }
+        let verdict = std::fs::read_to_string(file)
+            .map(|src| calls_undeclared_require(&src))
+            .unwrap_or(false);
+        if let Some(mtime) = mtime {
+            self.requires
+                .lock()
+                .unwrap()
+                .insert(file.to_path_buf(), (mtime, verdict));
+        }
+        verdict
+    }
+}
+
+/// Whether module code calls a `require` no scope of its own declares (a
+/// `createRequire` result or a wrapper's parameter is declared): directly,
+/// through a member (`require.resolve(id)`, esbuild's `__require` shim
+/// calling `require.apply`) or as `(0, require)(id)`. A call guarded by
+/// `typeof require` counts too: Node's entry, which it then gets, is Vite's
+/// pick anyway.
+fn calls_undeclared_require(src: &str) -> bool {
+    use oxc_ast::ast::{CallExpression, Expression};
+    use oxc_ast_visit::{walk, Visit};
+
+    struct Scan<'s> {
+        scoping: &'s oxc_semantic::Scoping,
+        calls: bool,
+    }
+    impl Scan<'_> {
+        fn global_require(&self, expr: &Expression) -> bool {
+            match expr.without_parentheses() {
+                Expression::Identifier(id) => {
+                    id.name == "require"
+                        && id
+                            .reference_id
+                            .get()
+                            .is_some_and(|r| self.scoping.get_reference(r).symbol_id().is_none())
+                }
+                Expression::SequenceExpression(seq) => seq
+                    .expressions
+                    .last()
+                    .is_some_and(|e| self.global_require(e)),
+                _ => false,
+            }
+        }
+    }
+    impl<'a> Visit<'a> for Scan<'_> {
+        fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
+            let callee = it.callee.without_parentheses();
+            let object = match callee {
+                Expression::StaticMemberExpression(m) => Some(&m.object),
+                Expression::ComputedMemberExpression(m) => Some(&m.object),
+                _ => None,
+            };
+            if self.global_require(callee) || object.is_some_and(|o| self.global_require(o)) {
+                self.calls = true;
+            }
+            walk::walk_call_expression(self, it);
+        }
+    }
+
+    static WORD: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let word = WORD.get_or_init(|| regex::Regex::new(r"\brequire\b").expect("require regex"));
+    if !word.is_match(src) {
+        return false;
+    }
+    let allocator = oxc_allocator::Allocator::default();
+    let parsed = oxc_parser::Parser::new(&allocator, src, oxc_span::SourceType::mjs()).parse();
+    if !parsed.diagnostics.is_empty() {
+        return false;
+    }
+    let semantic = oxc_semantic::SemanticBuilder::new()
+        .build(&parsed.program)
+        .semantic;
+    let mut scan = Scan {
+        scoping: semantic.scoping(),
+        calls: false,
+    };
+    scan.visit_program(&parsed.program);
+    scan.calls
+}
+
+/// The package a bare specifier names (`@scope/name` or `name`), or None for
+/// a relative, absolute, `#` or builtin one.
+fn bare_package(spec: &str) -> Option<&str> {
+    if spec.starts_with('.') || spec.starts_with('/') || spec.starts_with('#') {
+        return None;
+    }
+    if oj_server::is_node_builtin(spec) || spec.contains(':') {
+        return None;
+    }
+    let segments = if spec.starts_with('@') { 2 } else { 1 };
+    let end = spec
+        .match_indices('/')
+        .nth(segments - 1)
+        .map_or(spec.len(), |(i, _)| i);
+    Some(&spec[..end])
+}
+
 fn has_esm_syntax(src: &str) -> bool {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let re = RE.get_or_init(|| {
@@ -634,9 +447,10 @@ fn classify_id(abs: &str, intent: Option<&'static str>, svg_react: bool) -> Stri
     if oj_server::is_style_ext(&ext) {
         return format!("{abs}?ojasset=css");
     }
-    // wasm is asset-classified like the loader (URL export only).
+    // wasm is asset-classified like the loader (URL export only). A plain
+    // import is `asset`: served like `?url`, but its id has no query.
     if oj_server::is_importable_asset_ext(&ext) || ext == "wasm" {
-        return format!("{abs}?ojasset=url");
+        return format!("{abs}?ojasset=asset");
     }
     abs.to_string()
 }
@@ -656,12 +470,35 @@ fn split_intent(spec: &str) -> (String, Option<&'static str>, bool) {
         // inlines when the environment is bundled), so `&url` wins whenever it
         // appears -- the build's precedence is the reverse (inline first).
         "worker" | "worker&inline" => "worker",
-        "worker&url" | "worker&inline&url" => "worker-url",
+        "worker&url" | "worker&inline&url" => match worker_type_of(spec) {
+            "classic" => "worker-url:classic",
+            "ignore" => "worker-url:ignore",
+            _ => "worker-url",
+        },
         "sharedworker" | "sharedworker&inline" => "sharedworker",
-        "sharedworker&url" | "sharedworker&inline&url" => "sharedworker-url",
+        "sharedworker&url" | "sharedworker&inline&url" => match worker_type_of(spec) {
+            "classic" => "sharedworker-url:classic",
+            "ignore" => "sharedworker-url:ignore",
+            _ => "sharedworker-url",
+        },
         _ => return (spec.to_string(), None, false),
     };
     (clean, Some(tag), false)
+}
+
+/// The worker type oj's rewrite of `new Worker(new URL(...), opts)` carries
+/// (`worker_type=`, see oj_compiler's glob/meta_glob), else `module`: what an
+/// import of `./w.ts?worker` always is in Vite's dev.
+fn worker_type_of(spec: &str) -> &'static str {
+    let query = spec.split_once('?').map_or("", |(_, q)| q);
+    match query
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("worker_type="))
+    {
+        Some("classic") => "classic",
+        Some("ignore") => "ignore",
+        _ => "module",
+    }
 }
 
 /// The Start framework-seam aliases (the retired node loader's ALIASES map):
@@ -813,13 +650,7 @@ impl StartHost {
                     return;
                 };
                 if let Err(e) = host.build_start().await {
-                    let name = e
-                        .split_once("[plugin:")
-                        .and_then(|(_, rest)| rest.split_once(']'))
-                        .map(|(name, _)| name.to_string())
-                        .unwrap_or_else(|| "unknown".into());
-                    let msg = e.lines().next().unwrap_or(&e).to_string();
-                    eprintln!("oj: plugin \"{name}\" buildStart failed (skipped): {msg}");
+                    eprintln!("{}", crate::start_bundle::host::build_start_skipped(&e));
                 }
             })
             .await;
@@ -917,6 +748,11 @@ impl StartHost {
                 if let Ok(StartResolution::Dependency(p)) =
                     self.bridge.resolve_start(&importer_id, spec).await
                 {
+                    if let Some(node) =
+                        self.vite_external_instead(&importer_id, spec, &p.to_string_lossy())
+                    {
+                        return Ok(Some(node));
+                    }
                     if let Ok(u) = url::Url::from_file_path(&p) {
                         return Ok(Some(HostResolved::External(u.to_string())));
                     }
@@ -940,9 +776,17 @@ impl StartHost {
 
         let (clean, intent, svg_react) = split_intent(spec);
 
-        // A /-prefixed id resolves against the project root (Vite's asSrc),
-        // then against publicDir; a real absolute fs path falls through.
+        // Vite resolves an import once, as written: every resolveId hook sees
+        // its query (`x.css?url`), and the intent is the answer's own query.
+        // A /-prefixed id first goes to the `pre` hooks, then resolves against
+        // the project root (Vite's asSrc) and publicDir; a real absolute fs
+        // path falls through.
         if clean.starts_with('/') {
+            if clean != spec {
+                if let Some(hit) = self.bridge.resolve_start_pre(&importer_id, spec).await? {
+                    return self.resolved(hit, spec, &importer_id);
+                }
+            }
             let rel = clean.trim_start_matches('/');
             let public_hit = || {
                 self.public_dir
@@ -955,25 +799,66 @@ impl StartHost {
             }
         }
 
-        match self.bridge.resolve_start(&importer_id, &clean).await {
-            Ok(StartResolution::Module(id)) => {
-                if Path::new(&id).is_absolute() {
-                    let tagged = classify_id(&id, intent, svg_react);
-                    // A CommonJS file (a linked `file:` dependency, a .cjs
-                    // module) is Node's to load: byonm gives it require
-                    // semantics and lexed named exports, like the node
-                    // loader's fall-through did.
-                    if tagged == id && self.cjs.is_cjs_file(&id) {
-                        if let Ok(u) = url::Url::from_file_path(&id) {
-                            return Ok(Some(HostResolved::External(u.to_string())));
-                        }
+        let resolution = self
+            .bridge
+            .resolve_start(&importer_id, spec)
+            .await
+            .map_err(|e| format!("{e} (imported from {importer_id})"))?;
+        self.resolved(resolution, spec, &importer_id)
+    }
+
+    /// The file Vite's module runner would load for the bare `spec`, in
+    /// place of the ESM build `file` the resolver picked, when that build
+    /// calls an undeclared `require`. Vite loads every external as fetchModule
+    /// resolves it (tryNodeResolve: mainFields ["main"], the external
+    /// conditions), so turndown runs as its CommonJS `main` there; the
+    /// `module` entry oj prefers for externals throws "require is not
+    /// defined" on import. None (the picked file stands) for an aliased
+    /// import, which Vite never externalizes, or another package's file.
+    fn vite_external_instead(
+        &self,
+        importer: &str,
+        spec: &str,
+        file: &str,
+    ) -> Option<HostResolved> {
+        let package = bare_package(spec)?;
+        if pkg_name_of_path(file).as_deref() != Some(package) || !self.cjs.esm_calls_require(file) {
+            return None;
+        }
+        let vite = self.bridge.resolve_external(importer, spec)?;
+        let url = url::Url::from_file_path(&vite).ok()?;
+        Some(HostResolved::External(url.to_string()))
+    }
+
+    /// The host's answer for `spec`, resolved to `resolution`: the intent and
+    /// svg `?react` read off the resolved id's own query, which a plugin may
+    /// have rewritten (Vite's import analysis uses the id it got).
+    fn resolved(
+        &self,
+        resolution: StartResolution,
+        spec: &str,
+        importer_id: &str,
+    ) -> Result<Option<HostResolved>, String> {
+        let importer_id = importer_id.to_string();
+        match resolution {
+            StartResolution::Module(id) if Path::new(&id).is_absolute() => {
+                let (file, intent, svg_react) = split_intent(&id);
+                let tagged = classify_id(&file, intent, svg_react);
+                // A CommonJS file (a linked `file:` dependency, a .cjs
+                // module) is Node's to load: byonm gives it require
+                // semantics and lexed named exports, like the node
+                // loader's fall-through did.
+                if tagged == file && file == id && self.cjs.is_cjs_file(&file) {
+                    if let Ok(u) = url::Url::from_file_path(&file) {
+                        return Ok(Some(HostResolved::External(u.to_string())));
                     }
-                    return Ok(Some(self.module_url(&tagged, importer_id)));
                 }
-                Ok(Some(self.module_url(&id, importer_id)))
+                Ok(Some(self.module_url(&tagged, importer_id)))
             }
-            Ok(StartResolution::Dependency(p)) => {
-                let abs = p.to_string_lossy().into_owned();
+            // A plugin's module id, used as is.
+            StartResolution::Module(id) => Ok(Some(self.module_url(&id, importer_id))),
+            StartResolution::Dependency(p) => {
+                let (abs, intent, svg_react) = split_intent(&p.to_string_lossy());
                 let ext = ext_of(&abs).to_ascii_lowercase();
                 if svg_react
                     || intent.is_some()
@@ -995,27 +880,36 @@ impl StartHost {
                 if self.claims_dependency(&abs) {
                     return Ok(Some(self.module_url(&abs, importer_id)));
                 }
+                if let Some(node) = self.vite_external_instead(&importer_id, spec, &abs) {
+                    return Ok(Some(node));
+                }
                 // Hand the engine the exact file the Vite-style resolver
                 // picked (mainFields, extension probing, exports conditions,
                 // legacy directory entries); byonm loads it with Node
                 // semantics (CJS translation included).
-                match url::Url::from_file_path(&p) {
+                match url::Url::from_file_path(&abs) {
                     Ok(u) => Ok(Some(HostResolved::External(u.to_string()))),
-                    Err(_) => Ok(Some(HostResolved::External(clean))),
+                    Err(_) => Ok(Some(HostResolved::External(abs))),
                 }
             }
-            Ok(StartResolution::Bare(spec)) => {
+            StartResolution::Bare(bare) => {
+                // Unresolved, the name is Node's without the intent query;
+                // a plugin's own answer (a remote URL) stands as it is.
+                let bare = if bare == spec {
+                    split_intent(spec).0
+                } else {
+                    bare
+                };
                 // A scheme Node's loader would reject (an un-aliased
                 // `cloudflare:*`) becomes an empty module instead of taking
                 // the server down; `node:` and bare npm names stay external.
-                if let Ok(u) = url::Url::parse(&spec) {
+                if let Ok(u) = url::Url::parse(&bare) {
                     if u.scheme().len() > 1 && u.scheme() != "node" {
-                        return Ok(Some(HostResolved::Url(self.stub_specifier(&spec))));
+                        return Ok(Some(HostResolved::Url(self.stub_specifier(&bare))));
                     }
                 }
-                Ok(Some(HostResolved::External(spec)))
+                Ok(Some(HostResolved::External(bare)))
             }
-            Err(e) => Err(format!("{e} (imported from {importer_id})")),
         }
     }
 
@@ -1125,14 +1019,42 @@ impl StartHost {
             let code = loaded.unwrap_or_else(|| {
                 format!(
                     "export default {};",
-                    json_str(&format!("/@oj-start/fs{clean}"))
+                    json_str(&format!(
+                        "{}/@oj-start/fs{clean}",
+                        self.bridge.start_url_base()
+                    ))
                 )
             });
             return Ok(js(code));
         }
 
         if let Some(kind) = query.as_deref().and_then(|q| q.strip_prefix("ojasset=")) {
-            return Ok(js(self.asset_module(&clean, kind).await?));
+            let code = self.asset_module(&clean, kind).await?;
+            return Ok(js(self.asset_transform(&clean, kind, code).await?));
+        }
+
+        // An asset under a query no intent names (vite-imagetools'
+        // `x.webp?w=768`): the load hooks Vite runs before vite:asset see the
+        // full id; unclaimed, it is the file's served URL, as vite:asset's.
+        if is_path
+            && query.is_some()
+            && oj_server::is_importable_asset_ext(&ext_of(&clean).to_ascii_lowercase())
+        {
+            let loaded = match self.bridge.plugin_host().await {
+                Some(host) if host.hook_wants_load(id) => {
+                    host.load_pre(id).await.map_err(|e| format!("{id}: {e}"))?
+                }
+                _ => None,
+            };
+            return match loaded {
+                Some(code) => self
+                    .bridge
+                    .transform_module(id, code, true, true)
+                    .await
+                    .map(js)
+                    .map_err(|e| e.to_string()),
+                None => Ok(js(self.asset_module(&clean, "url").await?)),
+            };
         }
 
         if !is_path {
@@ -1161,7 +1083,7 @@ impl StartHost {
                 Some(host) => host
                     .transform(&raw, &clean, "{}")
                     .await
-                    .map(|(code, _, _, _)| code)
+                    .map(|t| t.code)
                     .map_err(|e| e.to_string())?,
                 None => return Err(format!("no plugin compiles {clean}")),
             };
@@ -1182,7 +1104,16 @@ impl StartHost {
         // Vite runs load before the fs read, but only plugins whose filter can
         // claim the id are consulted; the gate skips the per-module isolate RPC
         // for everything else (the whole server graph on the first render).
+        // The full id first, as Vite's load sees it: a plugin's load may key
+        // on its own query (`?tsr-split=...`); then the file.
         let plugin_loaded = match self.bridge.plugin_host().await {
+            Some(host) if query.is_some() && host.hook_wants_load(id) => {
+                match host.load(id).await.ok().flatten() {
+                    Some(code) => Some(code),
+                    None if host.hook_wants_load(&clean) => host.load(&clean).await.ok().flatten(),
+                    None => None,
+                }
+            }
             Some(host) if host.hook_wants_load(&clean) => host.load(&clean).await.ok().flatten(),
             Some(_) => {
                 if oj_server::plugins::hook_gate_debug() {
@@ -1214,26 +1145,63 @@ impl StartHost {
                 .strip_prefix(&format!("{}/", self.root.to_string_lossy()))
                 .unwrap_or(&clean)
                 .to_string();
-            rewrite_server_fns(&raw, &rel)
+            let raw = oj_compiler::env_fns::rewrite_env_fns(
+                &raw,
+                &clean,
+                oj_compiler::env_fns::Env::Server,
+            )
+            .map_err(|e| format!("{clean}: {e}"))?
+            .unwrap_or(raw);
+            oj_compiler::server_fns::rewrite_server(&raw, &rel).unwrap_or(raw)
         } else {
             raw
         };
+        // The plugins see the id with its query, as Vite's transforms do: a
+        // route's `?tsr-split=component` is what TanStack's code splitter
+        // compiles into the split-off component, from the route file's code.
         let code = self
             .bridge
-            .transform_module(&clean, raw, from_plugin, true)
+            .transform_module(id, raw, from_plugin, true)
             .await
             .map_err(|e| e.to_string())?;
         Ok(js(code))
     }
 
-    /// A file's URL on the dev pipeline, as Vite's `fileToUrl` in dev. Vite
-    /// additionally tags worker URLs `?worker_file&type=module` for its own
-    /// serving pipeline; oj's pipeline serves the compiled module without the
-    /// marker (verified in-browser by e2e/start-ssr-worker-url.mjs).
+    /// A file's URL on the dev pipeline, as Vite's `fileToUrl` in dev.
     fn dev_url(&self, path: &str) -> String {
+        let base = self.bridge.start_url_base();
         match Path::new(path).strip_prefix(&self.root) {
-            Ok(rel) => format!("/{}", rel.to_string_lossy()),
-            Err(_) => format!("/@fs{path}"),
+            Ok(rel) => format!("{base}/{}", rel.to_string_lossy()),
+            Err(_) => format!("{base}/@fs{path}"),
+        }
+    }
+
+    /// The SSR environment's plugin transforms over an asset's module, under
+    /// Vite's id for it (`/abs/x.css?url`): vite:asset's JS goes through the
+    /// whole chain, as any module. A stylesheet's `?inline` and a CSS import
+    /// ran their own slots already.
+    async fn asset_transform(
+        &self,
+        path: &str,
+        kind: &str,
+        code: String,
+    ) -> Result<String, String> {
+        let style = oj_server::is_style_ext(&ext_of(path).to_ascii_lowercase());
+        if !matches!(kind, "raw" | "url" | "asset") && !(kind == "inline" && !style) {
+            return Ok(code);
+        }
+        // A plain asset import's id is the file's, as Vite's.
+        let id = match kind {
+            "asset" => path.to_string(),
+            _ => format!("{path}?{kind}"),
+        };
+        match self.bridge.plugin_host().await {
+            Some(host) if host.hook_wants_transform(&id, &code) => host
+                .transform(&code, &id, "{}")
+                .await
+                .map(|t| t.code)
+                .map_err(|e| format!("plugin transform error for {id}:\n{e}")),
+            _ => Ok(code),
         }
     }
 
@@ -1268,12 +1236,16 @@ impl StartHost {
                     .await
                     .map_err(|e| e.to_string())
             }
-            // Vite's unbundled worker load: the worker file's dev URL, bare
-            // for `&url`, else wrapped in a constructor. It is the URL the
-            // client pipeline serves the compiled worker at (root-relative,
-            // `/@fs` outside the root), so a rendered value hydrates as is.
-            "worker-url" | "sharedworker-url" => {
-                Ok(format!("export default {};", json_str(&self.dev_url(path))))
+            // Vite's unbundled worker load: the worker file's dev URL with
+            // `worker_file&type=<type>` (its type `module`, or the one the
+            // `new Worker` options gave), bare for `&url`, else wrapped in a
+            // constructor. It is the URL the client pipeline serves the
+            // compiled worker at, its env prelude included, so a rendered
+            // value hydrates as is.
+            k if k.starts_with("worker-url") || k.starts_with("sharedworker-url") => {
+                let worker_type = k.split_once(':').map_or("module", |(_, t)| t);
+                let url = format!("{}?worker_file&type={worker_type}", self.dev_url(path));
+                Ok(format!("export default {};", json_str(&url)))
             }
             "worker" | "sharedworker" => {
                 let ctor = if kind == "sharedworker" {
@@ -1281,15 +1253,19 @@ impl StartHost {
                 } else {
                     "Worker"
                 };
+                let url = format!("{}?worker_file&type=module", self.dev_url(path));
                 Ok(format!(
                     "export default function WorkerWrapper(options) {{ return new {ctor}({}, {{ type: \"module\", name: options?.name }}); }}",
-                    json_str(&self.dev_url(path))
+                    json_str(&url)
                 ))
             }
             // "url" and anything unrecognized: the served-URL module.
             _ => Ok(format!(
                 "export default {};",
-                json_str(&format!("/@oj-start/fs{path}"))
+                json_str(&format!(
+                    "{}/@oj-start/fs{path}",
+                    self.bridge.start_url_base()
+                ))
             )),
         }
     }
@@ -1495,6 +1471,20 @@ impl StartEngine {
         dropped > 0
     }
 
+    /// A watch batch's revalidation: drops every stale record, as
+    /// [`revalidate`](Self::revalidate) does, but reports only whether a
+    /// changed file of the batch was one the engine served (the caller
+    /// reloads the browser then). A record that went stale behind the
+    /// watcher's back is still re-imported.
+    pub async fn revalidate_for(&self, changed: &[PathBuf]) -> bool {
+        let (dropped, hit) = self.host.graph().invalidate_for(changed);
+        if dropped > 0 {
+            self.host.graph().bump(&self.entry_id);
+        }
+        self.maybe_respawn().await;
+        hit
+    }
+
     async fn maybe_respawn(&self) {
         if !self.host.graph().should_respawn() {
             return;
@@ -1514,166 +1504,14 @@ impl StartEngine {
     }
 }
 
-/// The engine the Start one-shot scripts (route-tree generation, the
-/// server-fn resolver, the client bundle, the production build) run on. The
-/// scripts import rolldown's napi binding and the app's plugins with plain
-/// byonm semantics, exactly as they did under node; the module host answers
-/// only [`STYLE_SCHEME`] ids. Each script exports `run(env)`; the env
-/// values that used to be spawn env travel as the argument.
-///
-/// Hosted only in processes that EXIT after their scripts (`oj build`, the
-/// `oj start-script` children of the dev server): rolldown's
-/// binding retains native memory per `build()` invocation that neither
-/// closing the bundler nor tearing the isolate down releases, so a long-lived
-/// process must never run these scripts on its own engine (measured ~650MB
-/// retained per client rebundle on an ~18k-module app).
+/// The engine Start's codegen scripts (route-tree generation) and the build's
+/// prerender run on: the app's packages load with plain byonm semantics, as
+/// under node. Each script exports `run(env)`; the env values that used to be
+/// spawn env travel as the argument.
 pub struct ScriptEngine {
     engine: JsEngine,
     /// The env shadow ran on the isolate (once, before the first script).
     env_shadowed: tokio::sync::OnceCell<()>,
-    /// The app's `css` config from the running script's env (`OJ_START_CSS`).
-    css: Arc<Mutex<Option<oj_config::CssConfig>>>,
-}
-
-/// `import("oj-style:///?file=/abs/x.module.scss")` from a Start script: the
-/// style file compiled by oj's CSS pipeline (preprocessor, then CSS-module
-/// scoping), as `{ code, css }`, the module's JS and its sheet. The bundles
-/// take stylesheets and class names from here so they match what the dev
-/// server's SSR renders and serves.
-pub const STYLE_SCHEME: &str = "oj-style:";
-/// Prefixes a `start-script --serve` reply on stdout (`ok` or `err <msg>`);
-/// every other stdout line is the script's own output.
-pub const SCRIPT_REPLY: &str = "\u{1e}oj-start-script:";
-const CSS_ENV: &str = "OJ_START_CSS";
-
-fn serve_script_host(
-    root: PathBuf,
-    css: Arc<Mutex<Option<oj_config::CssConfig>>>,
-    mut requests: oj_js::HostRequests,
-) {
-    let engines = Arc::new(ScriptEngines::default());
-    tokio::spawn(async move {
-        while let Some(request) = requests.recv().await {
-            match request {
-                // Everything else keeps byonm resolution; a STYLE_SCHEME id is
-                // an absolute URL the loader passes to load as is.
-                oj_js::HostRequest::Resolve { reply, .. } => {
-                    let _ = reply.send(Ok(None));
-                }
-                oj_js::HostRequest::Load { specifier, reply } => {
-                    if !specifier.starts_with(STYLE_SCHEME) {
-                        let _ = reply.send(Ok(None));
-                        continue;
-                    }
-                    let (root, engines) = (root.clone(), Arc::clone(&engines));
-                    let css = css.lock().unwrap().clone();
-                    tokio::spawn(async move {
-                        let module = script_style_module(&root, &specifier, css, &engines).await;
-                        let _ = reply.send(module.map(Some));
-                    });
-                }
-            }
-        }
-    });
-}
-
-/// The CSS engines a script's style files need, booted on first use.
-#[derive(Default)]
-struct ScriptEngines {
-    preprocess: tokio::sync::OnceCell<Arc<oj_server::css_engine::CssEngine>>,
-    tailwind: tokio::sync::OnceCell<Arc<oj_server::css_engine::CssEngine>>,
-}
-
-async fn script_style_module(
-    root: &Path,
-    specifier: &str,
-    css: Option<oj_config::CssConfig>,
-    engines: &ScriptEngines,
-) -> Result<HostModule, String> {
-    let (preprocess, tailwind) = (&engines.preprocess, &engines.tailwind);
-    let url = url::Url::parse(specifier).map_err(|e| format!("{specifier}: {e}"))?;
-    let file = url
-        .query_pairs()
-        .find(|(k, _)| k == "file")
-        .map(|(_, v)| PathBuf::from(v.as_ref()))
-        .ok_or_else(|| format!("{specifier}: no file"))?;
-    let param = |key: &str| {
-        url.query_pairs()
-            .find(|(k, _)| k == key)
-            .map(|(_, v)| v.into_owned())
-    };
-    // `minify=<css>&targets=<json>`: a finished sheet the build minifies
-    // (Vite's minifyCSS under `build.cssMinify` and `css.lightningcss`),
-    // named by `file`.
-    if let Some(minified_source) = param("minify") {
-        let targets: Vec<String> = param("targets")
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default();
-        let lightning = css
-            .as_ref()
-            .and_then(|c| c.lightningcss.as_ref())
-            .map(oj_css::LightningOptions::from_json)
-            .unwrap_or_default();
-        let css = oj_css::minify_css(
-            &file.to_string_lossy(),
-            &minified_source,
-            &targets,
-            &lightning,
-        )?;
-        return Ok(HostModule {
-            code: format!("export const css = {};\n", json_str(&css)),
-            module_type: HostModuleType::JavaScript,
-        });
-    }
-    let dev_inline = param("inline").as_deref() == Some("dev");
-    let source = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
-    let engine = if oj_server::needs_preprocess_engine(&file) {
-        let engine = preprocess
-            .get_or_try_init(|| oj_server::css_engine::CssEngine::preprocess(root, None))
-            .await
-            .map_err(|e| e.to_string())?;
-        Some(Arc::clone(engine))
-    } else {
-        None
-    };
-    let modules = oj_server::css_modules_options(&oj_config::OjConfig {
-        css: css.clone(),
-        ..Default::default()
-    });
-    let inputs = oj_server::StyleInputs {
-        root,
-        css: css.as_ref(),
-        resolve: oj_css::CssResolve {
-            root: Some(root),
-            modules: &modules,
-            ..oj_css::CssResolve::default()
-        },
-    };
-    if dev_inline {
-        let tailwind = async || {
-            tailwind
-                .get_or_try_init(|| oj_server::css_engine::CssEngine::tailwind(root, None))
-                .await
-                .cloned()
-                .map_err(|e| e.to_string())
-        };
-        let code =
-            oj_server::start_dev_inline_style(&inputs, &file, source, engine.as_deref(), tailwind)
-                .await?;
-        return Ok(HostModule {
-            code: format!("export const code = {};\n", json_str(&code)),
-            module_type: HostModuleType::JavaScript,
-        });
-    }
-    let module = oj_server::compile_style_file(&inputs, &file, source, engine.as_deref()).await?;
-    Ok(HostModule {
-        code: format!(
-            "export const code = {};\nexport const css = {};\n",
-            json_str(&module.code),
-            json_str(&module.css)
-        ),
-        module_type: HostModuleType::JavaScript,
-    })
 }
 
 /// Shadows `process.env` with a private copy on the script isolate before any
@@ -1695,14 +1533,9 @@ impl ScriptEngine {
     pub fn new(root: &Path) -> anyhow::Result<ScriptEngine> {
         let mut config = EngineConfig::new(root);
         config.code_cache_dir = Some(oj_server::engine_code_cache_dir(root));
-        let css = Arc::new(Mutex::new(None));
-        let (link, requests) = ModuleHost::channel();
-        serve_script_host(root.to_path_buf(), Arc::clone(&css), requests);
         Ok(ScriptEngine {
-            engine: JsEngine::spawn(config, Some(link), None)
-                .map_err(|e| anyhow::anyhow!("{e}"))?,
+            engine: JsEngine::spawn(config, None, None).map_err(|e| anyhow::anyhow!("{e}"))?,
             env_shadowed: tokio::sync::OnceCell::new(),
-            css,
         })
     }
 
@@ -1717,34 +1550,6 @@ impl ScriptEngine {
             .await
             .map(|_| ())
             .map_err(|e| anyhow::anyhow!("{what} failed: {e}"))
-    }
-
-    /// `start-script --serve`: one run per stdin line (its env JSON), each
-    /// answered on stdout by a [`SCRIPT_REPLY`] line, on this one engine.
-    /// Stdin closing (the dev server exiting or exec'ing a restart) ends the
-    /// session: the script's `close()` runs, then the process exits.
-    pub async fn serve(&self, script: &Path) -> anyhow::Result<()> {
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
-        let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
-        let mut stdout = tokio::io::stdout();
-        while let Some(line) = lines.next_line().await? {
-            let reply = match serde_json::from_str::<Vec<(String, String)>>(&line) {
-                Ok(env) => match self.call(script, &env).await {
-                    Ok(_) => "ok".to_string(),
-                    Err(e) => format!("err {}", e.to_string().replace('\n', " ")),
-                },
-                Err(e) => format!("err bad request: {e}"),
-            };
-            stdout
-                .write_all(format!("{SCRIPT_REPLY}{reply}\n").as_bytes())
-                .await?;
-            stdout.flush().await?;
-        }
-        let _ = self
-            .engine
-            .call(script.to_string_lossy().into_owned(), "close", vec![], None)
-            .await;
-        Ok(())
     }
 
     async fn call(
@@ -1763,9 +1568,6 @@ impl ScriptEngine {
                     .map(|_| ())
             })
             .await?;
-        if let Some((_, raw)) = env.iter().find(|(k, _)| k == CSS_ENV) {
-            *self.css.lock().unwrap() = serde_json::from_str(raw).ok();
-        }
         let env_obj: serde_json::Map<String, serde_json::Value> = env
             .iter()
             .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
@@ -1793,115 +1595,6 @@ fn spawn_engine(root: &Path, host: &Arc<StartHost>) -> Result<JsEngine, oj_js::E
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn server_fn_rewrite_matches_the_node_loader() {
-        let code = "import { createServerFn } from \"@tanstack/react-start\";\nexport const getGreeting = createServerFn({ method: \"GET\" }).handler(async () => \"hi\");\n";
-        let out = rewrite_server_fns(code, "src/server/data.ts");
-        assert!(out
-            .starts_with("import { createServerRpc } from \"@tanstack/react-start/server-rpc\"; "));
-        let id = base64url(b"src/server/data.ts#getGreeting");
-        assert!(
-            out.contains(&format!(
-                "export const getGreeting_createServerFn_handler = createServerRpc({{ id: \"{id}\", name: \"getGreeting\", filename: \"src/server/data.ts\" }}, (opts) => getGreeting.__executeServer(opts)); "
-            )),
-            "{out}"
-        );
-        assert!(out.contains(".handler(getGreeting_createServerFn_handler, async () => \"hi\")"));
-        // Line-preserving: the rewrite adds no lines.
-        assert_eq!(code.lines().count(), out.lines().count());
-
-        // Untouched code passes through byte-identical.
-        let plain = "export const x = 1;\n";
-        assert_eq!(rewrite_server_fns(plain, "src/x.ts"), plain);
-    }
-
-    // The mis-rewrite the lazy regex allowed: a factory assigned in one
-    // statement and consumed by `.handler(...)` in another must not anchor
-    // the rewrite to the factory. TanStack's compiler resolves this shape by
-    // following variable bindings in the AST; the textual rewrite leaves it
-    // byte-identical instead of guessing.
-    #[test]
-    fn split_statement_factories_are_left_untouched() {
-        let split = "import { createServerFn } from \"@tanstack/react-start\";\nconst factory = createServerFn({ method: \"POST\" });\nexport const doIt = factory.handler(async () => 1);\n";
-        assert_eq!(rewrite_server_fns(split, "src/split.ts"), split);
-
-        // Same, single line with a `;` between the statements.
-        let inline = "const factory = createServerFn({ method: \"POST\" }); export const doIt = factory.handler(async () => 1);\n";
-        assert_eq!(rewrite_server_fns(inline, "src/split.ts"), inline);
-
-        // A factory NEXT TO a chained server fn: the factory stays untouched,
-        // the chained one still rewrites under its own name.
-        let mixed = "const factory = createServerFn({ method: \"POST\" });\nexport const real = createServerFn({ method: \"GET\" }).handler(async () => 2);\nexport const viaFactory = factory.handler(async () => 3);\n";
-        let out = rewrite_server_fns(mixed, "src/mixed.ts");
-        assert!(out.contains("export const real_createServerFn_handler = createServerRpc("));
-        assert!(out.contains(".handler(real_createServerFn_handler, async () => 2)"));
-        assert!(!out.contains("factory_createServerFn_handler"), "{out}");
-        assert!(
-            out.contains(".handler(async () => 3)"),
-            "the factory's handler call keeps its own arguments: {out}"
-        );
-    }
-
-    // Two adjacent server fns each anchor to their own declaration.
-    #[test]
-    fn adjacent_server_fns_rewrite_independently() {
-        let code = "export const a = createServerFn({ method: \"GET\" }).handler(async () => 1);\nexport const b = createServerFn({ method: \"POST\" }).handler(async () => 2);\n";
-        let out = rewrite_server_fns(code, "src/two.ts");
-        for name in ["a", "b"] {
-            let id = base64url(format!("src/two.ts#{name}").as_bytes());
-            assert!(
-                out.contains(&format!(
-                    "export const {name}_createServerFn_handler = createServerRpc({{ id: \"{id}\""
-                )),
-                "{out}"
-            );
-        }
-        assert!(out.contains(".handler(a_createServerFn_handler, async () => 1)"));
-        assert!(out.contains(".handler(b_createServerFn_handler, async () => 2)"));
-        assert_eq!(code.lines().count(), out.lines().count());
-    }
-
-    // A multi-line .validator()/.middleware() chain is one expression: the
-    // scan follows it across lines, comments and tricky argument content
-    // (strings and regex literals holding unbalanced brackets).
-    #[test]
-    fn multiline_chains_keep_rewriting() {
-        let code = r#"export const getUser = createServerFn({
-  method: "GET",
-})
-  .middleware([authMiddleware]) // trailing comment
-  .validator((s) => {
-    if (!/^[(]/.test(s.name) && s.label !== ")((") return s;
-    throw new Error(`bad ${s.name}; (unbalanced`);
-  })
-  .handler(async ({ data }) => data);
-"#;
-        let out = rewrite_server_fns(code, "src/user.ts");
-        assert!(
-            out.contains("export const getUser_createServerFn_handler = createServerRpc("),
-            "{out}"
-        );
-        assert!(
-            out.contains(".handler(getUser_createServerFn_handler, async ({ data }) => data)"),
-            "{out}"
-        );
-        assert_eq!(code.lines().count(), out.lines().count());
-    }
-
-    // ASI variant of the split factory: no semicolon, the next statement
-    // starts on its own line. The chain scan must not walk into it.
-    #[test]
-    fn asi_split_factories_are_left_untouched() {
-        let code = "const factory = createServerFn({ method: \"POST\" })\nexport const doIt = factory.handler(async () => 1)\n";
-        assert_eq!(rewrite_server_fns(code, "src/asi.ts"), code);
-    }
-
-    #[test]
-    fn base64url_matches_node_buffer() {
-        assert_eq!(base64url(b"src/a.ts#fn"), "c3JjL2EudHMjZm4");
-        assert_eq!(base64url(&[0xff, 0xef, 0x01]), "_-8B");
-    }
 
     #[test]
     fn intent_queries_split_like_the_loader() {
@@ -1943,6 +1636,18 @@ mod tests {
             ("./w.ts?worker&inline", "worker"),
             ("./w.ts?sharedworker", "sharedworker"),
             ("./w.ts?sharedworker&url", "sharedworker-url"),
+            // oj's rewrite of `new Worker(new URL(...), opts)` carries the type.
+            ("./w.ts?worker&url&worker_type=module", "worker-url"),
+            (
+                "./w.ts?worker&url&worker_type=classic",
+                "worker-url:classic",
+            ),
+            (
+                "./w.ts?sharedworker&url&worker_type=ignore",
+                "sharedworker-url:ignore",
+            ),
+            // A user `type=` is not the worker's type.
+            ("./w.ts?worker&url&type=classic", "worker-url"),
         ] {
             assert_eq!(
                 split_intent(spec),
@@ -2011,7 +1716,7 @@ mod tests {
         );
         assert_eq!(
             classify_id("/a/hero.png", None, false),
-            "/a/hero.png?ojasset=url"
+            "/a/hero.png?ojasset=asset"
         );
         assert_eq!(
             classify_id("/a/n.txt", Some("raw"), false),
@@ -2022,7 +1727,7 @@ mod tests {
         assert_eq!(classify_id("/a/x.tsx", None, false), "/a/x.tsx");
         assert_eq!(
             classify_id("/a/m.wasm", None, false),
-            "/a/m.wasm?ojasset=url"
+            "/a/m.wasm?ojasset=asset"
         );
     }
 
@@ -2096,6 +1801,107 @@ mod tests {
             !cache.is_cjs_file(&file.to_string_lossy()),
             "an mtime move re-reads the file"
         );
+    }
+
+    #[test]
+    fn a_module_build_needs_a_bundler_when_it_calls_an_undeclared_require() {
+        // turndown's `module` build, and a call at the top level.
+        assert!(calls_undeclared_require(
+            "function f() {\n  var d = require('domino');\n  return d;\n}\nexport default f();\n"
+        ));
+        assert!(calls_undeclared_require(
+            "const x = require('./x.cjs');\nexport { x };\n"
+        ));
+        // A guarded call still needs one; Node's entry is Vite's pick anyway.
+        assert!(calls_undeclared_require(
+            "export const d = typeof require === 'function' ? require('d') : null;\n"
+        ));
+        // Its own require: createRequire, a parameter, a function.
+        assert!(!calls_undeclared_require(
+            "import { createRequire } from 'node:module';\nconst require = createRequire(import.meta.url);\nexport const x = require('./x.cjs');\n"
+        ));
+        assert!(!calls_undeclared_require(
+            "export function load(require) { return require('x'); }\n"
+        ));
+        assert!(!calls_undeclared_require(
+            "function require(id) { return id; }\nexport const x = require('x');\n"
+        ));
+        // A declaration in one scope leaves another's call undeclared: a
+        // wrapper's `require` parameter beside a top-level call.
+        assert!(calls_undeclared_require(
+            "function wrap(exports, require) { return require('a'); }\nconst d = require('d');\nexport { d, wrap };\n"
+        ));
+        // esbuild's shim, through `require.apply`; a member call; a sequence.
+        assert!(calls_undeclared_require(
+            "var __require = (x => typeof require !== 'undefined' ? require : x)(function (x) {\n  if (typeof require !== 'undefined') return require.apply(this, arguments);\n  throw Error('Dynamic require of \"' + x + '\" is not supported');\n});\nvar d = __require('d');\nexport { d };\n"
+        ));
+        assert!(calls_undeclared_require(
+            "export const p = require.resolve('x');\n"
+        ));
+        assert!(calls_undeclared_require(
+            "export const x = (0, require)('x');\n"
+        ));
+        assert!(calls_undeclared_require(
+            "export const x = require?.('x');\n"
+        ));
+        // No call: a mention, a member, a property, a string.
+        assert!(!calls_undeclared_require("export const x = 1;\n"));
+        assert!(!calls_undeclared_require(
+            "export const required = true;\nexport function f() { return required; }\n"
+        ));
+        assert!(!calls_undeclared_require(
+            "export const r = typeof require;\nexport const y = module.require('y');\nexport const s = 'require(x)';\nexport const o = { require: 1 };\n"
+        ));
+        // Unparseable code is left as it was.
+        assert!(!calls_undeclared_require("export const = require('x'"));
+    }
+
+    #[test]
+    fn a_bare_specifier_names_its_package() {
+        assert_eq!(bare_package("turndown"), Some("turndown"));
+        assert_eq!(bare_package("turndown/lib/x.js"), Some("turndown"));
+        assert_eq!(bare_package("@scope/pkg"), Some("@scope/pkg"));
+        assert_eq!(bare_package("@scope/pkg/sub"), Some("@scope/pkg"));
+        for spec in [
+            "./x",
+            "../x",
+            "/abs/x",
+            "#lib/x",
+            "node:fs",
+            "fs",
+            "virtual:x",
+        ] {
+            assert_eq!(bare_package(spec), None, "{spec}");
+        }
+    }
+
+    #[test]
+    fn only_an_es_module_is_scanned_for_require() {
+        let dir = std::env::temp_dir().join(format!("oj-esmreq-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("package.json"), "{}").unwrap();
+        let cache = CjsCache::default();
+        let esm = dir.join("index.es.js");
+        std::fs::write(&esm, "var d = require('d');\nexport default d;\n").unwrap();
+        let cjs = dir.join("index.cjs.js");
+        std::fs::write(&cjs, "module.exports = require('d');\n").unwrap();
+        let mjs = dir.join("index.mjs");
+        std::fs::write(&mjs, "export const d = require('d');\n").unwrap();
+        assert!(cache.esm_calls_require(&esm.to_string_lossy()));
+        assert!(cache.esm_calls_require(&mjs.to_string_lossy()));
+        assert!(
+            !cache.esm_calls_require(&cjs.to_string_lossy()),
+            "CommonJS has require"
+        );
+        assert!(!cache.esm_calls_require("/whatever/x.cjs"));
+        // Keyed on the mtime: a reinstalled build is scanned again.
+        std::fs::write(&esm, "export default 1;\n").unwrap();
+        let f = std::fs::OpenOptions::new().append(true).open(&esm).unwrap();
+        f.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
+            .unwrap();
+        assert!(!cache.esm_calls_require(&esm.to_string_lossy()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // The framework seam, from the consumer's side: start-server-core imports
@@ -2328,100 +2134,6 @@ mod tests {
             fn_base_before,
             "the TSS defaults must not alter oj's real env"
         );
-    }
-
-    /// The Start bundles' style files come from oj's CSS pipeline: the
-    /// preprocessor, then the scoped names SSR renders, under the app's
-    /// `css` config from the script env.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn script_engine_serves_style_files_from_the_css_pipeline() {
-        let dir = std::env::temp_dir().join(format!("oj-scriptcss-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        let dir = dir.canonicalize().unwrap();
-        let card = dir.join("src/card.module.css");
-        std::fs::write(&card, ".card { color: red; }\n").unwrap();
-        let panel = dir.join("src/panel.module.scss");
-        std::fs::write(&panel, "$c: red;\n.panel { &-title { color: $c; } }\n").unwrap();
-        let script = dir.join("probe.mjs");
-        std::fs::write(
-            &script,
-            r#"export async function run(env) {
-  const load = (file) => import("oj-style:///?" + new URLSearchParams({ file }));
-  const card = await load(env.CARD);
-  if (card.code !== env.CARD_CODE) throw new Error("class map: " + card.code);
-  if (!card.css.includes("." + env.CARD_CLASS)) throw new Error("sheet: " + card.css);
-  const panel = await load(env.PANEL);
-  if (!panel.code.includes('"panel-title"')) throw new Error("scss class map: " + panel.code);
-  if (panel.css.includes("$c") || panel.css.includes("&")) throw new Error("scss sheet: " + panel.css);
-  const min = await import("oj-style:///?" + new URLSearchParams({ file: env.CARD, minify: ".a {\n  color: #ff0000;\n}\n.gone { color: blue }\n", targets: "[]" }));
-  if (min.css !== env.MINIFIED) throw new Error("minify: " + min.css);
-  return null;
-}
-"#,
-        )
-        .unwrap();
-        // What SSR renders for the card under the default config.
-        let modules = oj_css::CssModulesOptions::default();
-        let inputs = oj_server::StyleInputs {
-            root: &dir,
-            css: None,
-            resolve: oj_css::CssResolve {
-                root: Some(&dir),
-                modules: &modules,
-                ..oj_css::CssResolve::default()
-            },
-        };
-        let ssr =
-            oj_server::compile_style_file(&inputs, &card, ".card { color: red; }\n".into(), None)
-                .await
-                .unwrap();
-        let start = ssr.code.find("export const card = \"").unwrap() + 21;
-        let ssr_class = ssr.code[start..].split('"').next().unwrap().to_string();
-        let var = |k: &str, v: &str| (k.to_string(), v.to_string());
-        let files = [
-            var("CARD", &card.to_string_lossy()),
-            var("PANEL", &panel.to_string_lossy()),
-        ];
-        ScriptEngine::new(&dir)
-            .unwrap()
-            .run_async(
-                &script,
-                &[
-                    files.to_vec(),
-                    vec![
-                        var("CARD_CODE", &ssr.code),
-                        var("CARD_CLASS", &ssr_class),
-                        var("MINIFIED", ".a{color:red}.gone{color:#00f}"),
-                    ],
-                ]
-                .concat(),
-                "default css",
-            )
-            .await
-            .expect("default options compile as SSR does");
-        // css.lightningcss reaches the build minify (unusedSymbols drops .gone).
-        let configured = r#"{"modules":{"generateScopedName":"[local]-scoped"},"lightningcss":{"unusedSymbols":["gone"]}}"#;
-        let code =
-            "export const card = \"card-scoped\";\nexport default {\"card\":\"card-scoped\"};\n";
-        ScriptEngine::new(&dir)
-            .unwrap()
-            .run_async(
-                &script,
-                &[
-                    files.to_vec(),
-                    vec![
-                        var("CARD_CODE", code),
-                        var("CARD_CLASS", "card-scoped"),
-                        var("MINIFIED", ".a{color:red}"),
-                        var(CSS_ENV, configured),
-                    ],
-                ]
-                .concat(),
-                "configured css",
-            )
-            .await
-            .expect("css config from the script env applies");
     }
 
     #[test]

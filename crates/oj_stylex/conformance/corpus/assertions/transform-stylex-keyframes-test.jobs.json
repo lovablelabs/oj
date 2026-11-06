@@ -1,0 +1,327 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/transform-stylex-keyframes-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs and upstream's own expected values — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "assertions/keyframes-keyframes-object-001-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const name = stylex.keyframes({\n          from: {\n            color: 'red',\n          },\n          to: {\n            color: 'blue',\n          }\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["keyframes", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const name = \"x2up61p-B\";",
+        "site": {
+          "file": "transform-stylex-keyframes-test.js",
+          "test": "keyframes object",
+          "line": 42
+        }
+      }
+    },
+    {
+      "id": "assertions/keyframes-keyframes-object-002-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const name = stylex.keyframes({\n          from: {\n            color: 'red',\n          },\n          to: {\n            color: 'blue',\n          }\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["keyframes", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x2up61p-B",
+            {
+              "ltr": "@keyframes x2up61p-B{from{color:red;}to{color:blue;}}",
+              "rtl": null
+            },
+            0
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-keyframes-test.js",
+          "test": "keyframes object",
+          "line": 47
+        }
+      }
+    },
+    {
+      "id": "assertions/keyframes-local-variables-used-in-keyf-003-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const COLOR = 'red';\n        export const name = stylex.keyframes({\n          from: {\n            color: COLOR,\n          },\n          to: {\n            color: 'blue',\n          }\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["keyframes", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nconst COLOR = 'red';\nexport const name = \"x2up61p-B\";",
+        "site": {
+          "file": "transform-stylex-keyframes-test.js",
+          "test": "local variables used in keyframes object",
+          "line": 77
+        }
+      }
+    },
+    {
+      "id": "assertions/keyframes-local-variables-used-in-keyf-004-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const COLOR = 'red';\n        export const name = stylex.keyframes({\n          from: {\n            color: COLOR,\n          },\n          to: {\n            color: 'blue',\n          }\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["keyframes", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x2up61p-B",
+            {
+              "ltr": "@keyframes x2up61p-B{from{color:red;}to{color:blue;}}",
+              "rtl": null
+            },
+            0
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-keyframes-test.js",
+          "test": "local variables used in keyframes object",
+          "line": 83
+        }
+      }
+    },
+    {
+      "id": "assertions/keyframes-template-literals-used-in-ke-005-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const COLOR = 'red';\n        const name = stylex.keyframes({\n          from: {\n            color: COLOR,\n          },\n          to: {\n            color: 'blue',\n          }\n        });\n        export const styles = stylex.create({\n          root: {\n            animationName: `${name}`,\n          }\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["keyframes", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nconst COLOR = 'red';\nconst name = \"x2up61p-B\";\nexport const styles = {\n  root: {\n    kKVMdj: \"xx2qnu0\",\n    $$css: true\n  }\n};",
+        "site": {
+          "file": "transform-stylex-keyframes-test.js",
+          "test": "template literals used in keyframes object",
+          "line": 118
+        }
+      }
+    },
+    {
+      "id": "assertions/keyframes-template-literals-used-in-ke-006-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const COLOR = 'red';\n        const name = stylex.keyframes({\n          from: {\n            color: COLOR,\n          },\n          to: {\n            color: 'blue',\n          }\n        });\n        export const styles = stylex.create({\n          root: {\n            animationName: `${name}`,\n          }\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["keyframes", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x2up61p-B",
+            {
+              "ltr": "@keyframes x2up61p-B{from{color:red;}to{color:blue;}}",
+              "rtl": null
+            },
+            0
+          ],
+          [
+            "xx2qnu0",
+            {
+              "ltr": ".xx2qnu0{animation-name:x2up61p-B}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-keyframes-test.js",
+          "test": "template literals used in keyframes object",
+          "line": 130
+        }
+      }
+    },
+    {
+      "id": "assertions/keyframes-keyframes-object-used-inline-007-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({\n          root: {\n            animationName: stylex.keyframes({\n              from: {\n                color: 'red',\n              },\n              to: {\n                color: 'blue',\n              },\n            }),\n          },\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["keyframes", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const styles = {\n  root: {\n    kKVMdj: \"xx2qnu0\",\n    $$css: true\n  }\n};",
+        "site": {
+          "file": "transform-stylex-keyframes-test.js",
+          "test": "keyframes object used inline",
+          "line": 171
+        }
+      }
+    },
+    {
+      "id": "assertions/keyframes-keyframes-object-used-inline-008-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({\n          root: {\n            animationName: stylex.keyframes({\n              from: {\n                color: 'red',\n              },\n              to: {\n                color: 'blue',\n              },\n            }),\n          },\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["keyframes", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x2up61p-B",
+            {
+              "ltr": "@keyframes x2up61p-B{from{color:red;}to{color:blue;}}",
+              "rtl": null
+            },
+            0
+          ],
+          [
+            "xx2qnu0",
+            {
+              "ltr": ".xx2qnu0{animation-name:x2up61p-B}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-keyframes-test.js",
+          "test": "keyframes object used inline",
+          "line": 181
+        }
+      }
+    },
+    {
+      "id": "assertions/keyframes-keyframes-object-009-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const name = stylex.keyframes({\n          from: {\n            color: 'red',\n          },\n          to: {\n            color: 'blue',\n          }\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["keyframes", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const name = \"x2up61p-B\";",
+        "site": {
+          "file": "transform-stylex-keyframes-test.js",
+          "test": "keyframes object",
+          "line": 218
+        }
+      }
+    },
+    {
+      "id": "assertions/keyframes-keyframes-object-010-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const name = stylex.keyframes({\n          from: {\n            color: 'red',\n          },\n          to: {\n            color: 'blue',\n          }\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["keyframes", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x2up61p-B",
+            {
+              "ltr": "@keyframes x2up61p-B{from{color:red;}to{color:blue;}}",
+              "rtl": null
+            },
+            0
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-keyframes-test.js",
+          "test": "keyframes object",
+          "line": 223
+        }
+      }
+    },
+    {
+      "id": "assertions/keyframes-legacy-keyframes-object-rtl-011-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const name = stylex.keyframes({\n          from: {\n            insetBlockStart: 0,\n          },\n          to: {\n            insetBlockStart: 100,\n          }\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["keyframes", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const name = \"x1o0a6zm-B\";",
+        "site": {
+          "file": "transform-stylex-keyframes-test.js",
+          "test": "[legacy] keyframes object RTL polyfills",
+          "line": 252
+        }
+      }
+    },
+    {
+      "id": "assertions/keyframes-legacy-keyframes-object-rtl-012-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const name = stylex.keyframes({\n          from: {\n            insetBlockStart: 0,\n          },\n          to: {\n            insetBlockStart: 100,\n          }\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["keyframes", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x1o0a6zm-B",
+            {
+              "ltr": "@keyframes x1o0a6zm-B{from{top:0;}to{top:100px;}}",
+              "rtl": null
+            },
+            0
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-keyframes-test.js",
+          "test": "[legacy] keyframes object RTL polyfills",
+          "line": 257
+        }
+      }
+    }
+  ]
+}

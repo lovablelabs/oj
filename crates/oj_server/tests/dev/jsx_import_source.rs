@@ -56,9 +56,18 @@ async fn configured_import_source_drives_dev_jsx_and_pragma_wins() {
     fake_runtime(&app, "@fake/solid");
     let server = app.serve().await;
 
+    // The runtime is pre-bundled like any dep, so the import is either the
+    // package path or its optimized file.
+    let imports = |code: &str, pkg: &str| {
+        code.contains(&format!("{pkg}/jsx-dev-runtime"))
+            || code.contains(&format!(
+                "/@oj-deps/{}_jsx-dev-runtime.mjs",
+                pkg.trim_start_matches('@').replace('/', "_")
+            ))
+    };
     let app_js = server.text("/src/App.jsx").await;
     assert!(
-        app_js.contains("@fake/emotion/jsx-dev-runtime"),
+        imports(&app_js, "@fake/emotion"),
         "dev App.jsx does not import the configured source:\n{app_js}"
     );
     assert!(
@@ -69,7 +78,7 @@ async fn configured_import_source_drives_dev_jsx_and_pragma_wins() {
     );
     let pragma_js = server.text("/src/Pragma.jsx").await;
     assert!(
-        pragma_js.contains("@fake/solid/jsx-dev-runtime"),
+        imports(&pragma_js, "@fake/solid"),
         "dev pragma did not win:\n{pragma_js}"
     );
 }

@@ -1,8 +1,6 @@
 use std::path::Path;
 
-use oxc_resolver::{
-    AliasValue, ResolveOptions, TsconfigDiscovery, TsconfigOptions, TsconfigReferences,
-};
+use oxc_resolver::{ResolveOptions, TsconfigDiscovery, TsconfigOptions, TsconfigReferences};
 
 use crate::defaults::{
     default_extension_alias, default_extensions, default_main_fields, default_server_main_fields,
@@ -20,6 +18,23 @@ pub struct ResolveSettings {
     /// Resolving for SSR: the default mainFields drop `browser`, and the
     /// package.json `browser` object only applies when mainFields name it.
     pub server: bool,
+    /// How the app's Vite applies tsconfig `paths`.
+    pub tsconfig_paths: crate::TsconfigPaths,
+    /// Vite's top-level `tsconfig` option: the one file its own resolver
+    /// reads, in place of each importer's.
+    pub tsconfig_file: Option<std::path::PathBuf>,
+}
+
+/// The tsconfig Vite's own resolver uses (`resolve.tsconfigPaths`): the one
+/// Vite's `tsconfig` option names, else each importer's own.
+pub(crate) fn native_tsconfig(settings: &ResolveSettings) -> TsconfigDiscovery {
+    match &settings.tsconfig_file {
+        Some(file) => TsconfigDiscovery::Manual(TsconfigOptions {
+            config_file: file.clone(),
+            references: TsconfigReferences::Auto,
+        }),
+        None => TsconfigDiscovery::Auto,
+    }
 }
 
 /// The oxc options for `settings` under `root`.
@@ -46,7 +61,8 @@ pub(crate) fn resolve_options(root: &Path, settings: &ResolveSettings) -> Resolv
         main_fields,
         alias_fields,
         condition_names: settings.conditions.clone(),
-        alias: aliases(root, &settings.alias),
+        // `OjResolver` applies `resolve.alias` itself, ahead of tsconfig
+        // `paths`, where oxc would try the `paths` first.
         extension_alias: default_extension_alias(),
         // oxc's exports-in-directory support runs after mainFields and index,
         // the last-resort half of Vite's behavior; `exports::directory_entry`
@@ -63,9 +79,9 @@ pub(crate) fn resolve_options(root: &Path, settings: &ResolveSettings) -> Resolv
     }
 }
 
-/// `(find, replacement)` pairs as oxc aliases; a `.`-led replacement is
-/// root-relative.
-fn aliases(root: &Path, alias: &[(String, String)]) -> Vec<(String, Vec<AliasValue>)> {
+/// `(find, replacement)` pairs in the written order; a `.`-led replacement
+/// is root-relative.
+pub(crate) fn aliases(root: &Path, alias: &[(String, String)]) -> Vec<(String, String)> {
     alias
         .iter()
         .map(|(find, replacement)| {
@@ -74,7 +90,7 @@ fn aliases(root: &Path, alias: &[(String, String)]) -> Vec<(String, Vec<AliasVal
             } else {
                 replacement.clone()
             };
-            (find.clone(), vec![AliasValue::Path(target)])
+            (find.clone(), target)
         })
         .collect()
 }

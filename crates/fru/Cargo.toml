@@ -1,0 +1,21 @@
+[package]
+name = "fru"
+version.workspace = true
+edition = "2024"
+license.workspace = true
+repository.workspace = true
+description = "Standalone StyleX compiler CLI (the `oj stylex` command set)"
+include = ["src/**", "Cargo.toml", "LICENSE", "README.md"]
+
+[[bin]]
+name = "fru"
+path = "src/main.rs"
+
+[dependencies]
+oj_stylex.workspace = true
+oj_env.workspace = true
+clap.workspace = true
+mimalloc = "0.1"
+
+[dev-dependencies]
+serde_json.workspace = true

@@ -10,27 +10,35 @@
 // loads a warm cache and never builds in-process.
 //
 // Byte-level cache compatibility is the contract: the app's OWN Vite resolves
-// the config with the SAME arguments the plugin host uses (buildEnvironments
-// in plugin-host.mjs), and Vite's own optimizer runs through a real
-// DevEnvironment — the metadata's lockfileHash/configHash are computed by the
-// same code that later validates them in the host, so no hash is imitated.
+// the config in the mode the plugin host resolves it in (the environments it
+// builds come from that resolve), and Vite's own optimizer runs through a
+// real DevEnvironment — the metadata's lockfileHash/configHash are computed
+// by the same code that later validates them in the host, so no hash is
+// imitated.
 //
-// Known gap, on purpose: this covers the BOOT-TIME pass. A mid-session
-// re-optimization (a lockfile edit while serving, a discovery-mode
-// environment finding new deps) still runs inside the host; intercepting
-// every such path would mean owning Vite's optimizer scheduling.
+// The boot-time pass includes what the dev server's setup hands an
+// environment's optimizer (a plugin's configureServer registering the
+// polyfills its runtime injects): the host collects those registrations and
+// runs this script again with them (OJ_PRESEED_REGISTER), which registers
+// them on the same optimizer here and commits what Vite's rerun would.
+//
+// Known gap, on purpose: a mid-session re-optimization (a lockfile edit while
+// serving, a discovery-mode environment finding new deps) still runs inside
+// the host; intercepting every such path would mean owning Vite's optimizer
+// scheduling.
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   dropSnapshotEnvironments,
   foldIncludeSnapshot,
+  includeSnapshotIds,
   priorDepIds,
+  priorDepSources,
   writeIncludeSnapshot,
 } from "./discovered-deps.mjs";
-import { asNode } from "./vite-config-node.mjs";
+import { appViteEntry, asNode } from "./vite-config-node.mjs";
 
 const _ojTTY = process.stderr.isTTY && !process.env.NO_COLOR;
 const OJ = _ojTTY ? "\x1b[48;2;255;255;255m\x1b[1;38;2;42;51;212m oj \x1b[0m" : "oj:";
@@ -50,19 +58,17 @@ export async function run(env = null) {
 
 async function main() {
   const root = process.env.OJ_APP_ROOT ?? process.cwd();
-  // The exact mode string the plugin host passes to vite.resolveConfig in
-  // buildEnvironments (the spawn payload's environment.mode): the resolved
-  // config feeds Vite's configHash, so any divergence seeds a cache the
-  // in-host optimizer would reject as stale.
-  const mode = process.env.OJ_ENV_MODE || "dev";
+  // The mode the plugin host resolves the config in (the dev server's
+  // `--mode`): the resolved config feeds Vite's configHash, so any
+  // divergence seeds a cache the in-host optimizer would reject as stale.
+  const mode = process.env.OJ_ENV_MODE || "development";
   // Matches the spawner's kill bound (preseed.rs PRESEED_KILL): give up on a
   // metadata file that never lands before the parent reclaims this child.
   const timeoutMs = 300 * 1000;
 
   let vite;
   try {
-    const require = createRequire(join(root, "package.json"));
-    vite = await import(pathToFileURL(require.resolve("vite")).href);
+    vite = await import(pathToFileURL(appViteEntry(root)).href);
   } catch (e) {
     warn(`deps pre-optimization: could not load the app's vite: ${e?.message ?? e}`);
     return report([], false);
@@ -72,13 +78,32 @@ async function main() {
     return report([], false);
   }
 
+  // The setup's registrations, by environment: `[[id, resolved], ..]`.
+  const registered = process.env.OJ_PRESEED_REGISTER ? JSON.parse(process.env.OJ_PRESEED_REGISTER) : null;
   const rc = await asNode(() =>
-    vite.resolveConfig({ root, configFile: undefined, mode }, "serve", "development", "development"),
+    vite.resolveConfig(
+      // The setup pass runs while the dev server boots: its optimizer's
+      // progress is not news (logLevel is no input of Vite's configHash).
+      { root, configFile: undefined, mode, ...(registered ? { logLevel: "warn" } : {}) },
+      "serve",
+      "development",
+      "development",
+    ),
   );
   // Snapshot BEFORE folding: the host folds the same file, and this child's
-  // own optimize rewrites the metadata the snapshot was derived from.
+  // own optimize rewrites the metadata the snapshot was derived from. The
+  // setup pass folds the boot pass's snapshot unchanged, the one the host
+  // folded: the same configHash.
   const snapshotPath = process.env.OJ_PRESEED_INCLUDE;
-  if (snapshotPath) writeIncludeSnapshot(snapshotPath, priorDepIds(rc), rc.root);
+  // The previous session's deps that only an importer resolves, registered
+  // on this pass's optimizer instead of replayed by name.
+  let viaImporter = {};
+  if (snapshotPath && !registered) {
+    const byEnv = includeSnapshotIds(snapshotPath, priorDepIds(rc), rc.root);
+    const { replay, dropped } = await replayableIds(vite, rc, byEnv);
+    writeIncludeSnapshot(snapshotPath, replay, rc.root);
+    viaImporter = importerOnlyDeps(rc, dropped);
+  }
   const folded = foldIncludeSnapshot(rc, snapshotPath);
 
   // One environment's pass: construct, init, wait for the committed metadata.
@@ -110,6 +135,21 @@ async function main() {
         }
       }
       if (!existsSync(metadataPath)) throw new Error("the optimizer produced no metadata");
+      const deps = registered?.[name] ?? [];
+      // As the host's plugins registered them: Vite reruns the optimizer
+      // with the new deps and commits, as it would have in the host.
+      if (deps.length && !(await commitRegistrations(de, metadataPath, deps))) {
+        throw new Error("the optimizer did not commit the registered deps");
+      }
+      // As the host's session would find them, through their importer: a
+      // discovery optimizer registers the import with the file it resolved
+      // to. Best effort; the session still finds any that do not commit.
+      const found = registered ? [] : (viaImporter[name] ?? []);
+      if (found.length && !de.depsOptimizer.options?.noDiscovery) {
+        if (!(await commitRegistrations(de, metadataPath, found))) {
+          warn(`deps pre-optimization (${name}): the previous session's imported deps did not commit`);
+        }
+      }
       return { name, metadataPath };
     } finally {
       // Only after the commit: depsOptimizer.close() CANCELS an in-flight
@@ -121,6 +161,24 @@ async function main() {
     }
   }
 
+  // Registers `deps` (`[[id, resolved], ..]`) on the environment's optimizer
+  // and waits for the rerun to commit them all. Whether it did.
+  async function commitRegistrations(de, metadataPath, deps) {
+    const infos = deps.map(([id, resolved]) => de.depsOptimizer.registerMissingImport(id, resolved));
+    await Promise.all(infos.map((info) => info?.processing));
+    const committed = () => {
+      try {
+        const optimized = JSON.parse(readFileSync(metadataPath, "utf8")).optimized ?? {};
+        return deps.every(([id]) => optimized[id]);
+      } catch {
+        return false;
+      }
+    };
+    const deadline = Date.now() + timeoutMs;
+    while (!committed() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+    return committed();
+  }
+
   const seeded = [];
   let failed = false;
   for (const [name, envOpts] of Object.entries(rc.environments ?? {})) {
@@ -129,6 +187,7 @@ async function main() {
     // consumers can run an in-host pass.
     const consumer = envOpts?.consumer ?? (name === "client" ? "client" : "server");
     if (consumer === "client") continue;
+    if (registered && !registered[name]?.length) continue;
     let entry;
     try {
       entry = await seedEnvironment(name);
@@ -178,6 +237,89 @@ async function main() {
   }
   report(seeded, failed);
   if (failed) throw new Error("deps pre-optimization incomplete");
+}
+
+// The ids of `byEnv` (`{ env: [id, ..] }`) an optimizeDeps.include entry can
+// name without a warning. Vite resolves an include id from the root, with no
+// importer (optimizer createOptimizeDepsIncludeResolver over
+// createBackCompatIdResolver), then warns "Failed to resolve dependency" when
+// that fails and "Cannot optimize dependency" when the entry is not
+// optimizable. A dep the session found through a workspace package's import
+// resolves only from that importer (a strict install puts it under the
+// package's node_modules), so its bare id stays out of the replay: the scan or
+// the session reaches it through the import, as Vite does. Nested `a > b` ids
+// pass through unchecked.
+async function replayableIds(vite, rc, byEnv) {
+  const replay = {};
+  const dropped = {};
+  await Promise.all(
+    Object.entries(byEnv).map(async ([name, ids]) => {
+      const optimizeDeps = rc.environments?.[name]?.optimizeDeps;
+      if (!optimizeDeps) {
+        replay[name] = ids;
+        return;
+      }
+      let environment;
+      try {
+        const options = { asSrc: false, scan: true, packageCache: new Map() };
+        let resolve;
+        if (name === "client" || name === "ssr") {
+          const compat = rc.createResolver(options);
+          resolve = (id) => compat(id, undefined, false, name === "ssr");
+        } else {
+          environment = new vite.DevEnvironment(name, rc, { hot: false });
+          const idResolver = vite.createIdResolver(rc, options);
+          resolve = (id) => idResolver(environment, id, undefined);
+        }
+        const replayable = async (id) => {
+          if (id.includes(">")) return true;
+          try {
+            const entry = await resolve(id);
+            return !!entry && isOptimizable(entry, optimizeDeps);
+          } catch {
+            // Vite's resolver throws where an exports map refuses the id.
+            return false;
+          }
+        };
+        // One id first: the resolver builds its plugin container on first
+        // use, and concurrent first calls would each build their own.
+        const kept = ids.length ? [await replayable(ids[0])] : [];
+        kept.push(...(await Promise.all(ids.slice(1).map(replayable))));
+        replay[name] = ids.filter((_, i) => kept[i]);
+        dropped[name] = ids.filter((_, i) => !kept[i]);
+      } catch {
+        replay[name] = ids;
+      } finally {
+        // Never initialized: only its optimizer holds anything to close
+        // (DevEnvironment.close() reads the plugin container init creates).
+        try {
+          await environment?.depsOptimizer?.close();
+        } catch {}
+      }
+    }),
+  );
+  return { replay, dropped };
+}
+
+// Of the `dropped` ids, the previous session's deps whose entry file is still
+// there and optimizable: `{ env: [[id, file], ..] }`, as registerMissingImport
+// takes them.
+function importerOnlyDeps(rc, dropped) {
+  const sources = priorDepSources(rc);
+  const out = {};
+  for (const [name, ids] of Object.entries(dropped)) {
+    const optimizeDeps = rc.environments?.[name]?.optimizeDeps;
+    const found = ids
+      .map((id) => [id, sources[name]?.[id]])
+      .filter(([, file]) => file && existsSync(file) && isOptimizable(file, optimizeDeps));
+    if (found.length) out[name] = found;
+  }
+  return out;
+}
+
+// Vite's isOptimizable (optimizer/index.ts).
+function isOptimizable(id, optimizeDeps) {
+  return /\.[cm]?[jt]s$/.test(id) || (optimizeDeps.extensions?.some((ext) => id.endsWith(ext)) ?? false);
 }
 
 // What was seeded, for the parent's warm/cold stamp — at the path the parent

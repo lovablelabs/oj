@@ -15,7 +15,7 @@ const CONFIG: &str = r#"export default ({ command, mode }) => ({
 });
 "#;
 
-/// The `main-*.js` chunk under `<out_dir>/assets`, after checking the page
+/// The `index-*.js` chunk under `<out_dir>/assets`, after checking the page
 /// and the chunk's `.map` (build.sourcemap) were written.
 fn built_main(root: &Path, out_dir: &str) -> String {
     let out = root.join(out_dir);
@@ -31,7 +31,7 @@ fn built_main(root: &Path, out_dir: &str) -> String {
         .collect();
     let js = names
         .iter()
-        .find(|f| f.starts_with("main-") && f.ends_with(".js"))
+        .find(|f| f.starts_with("index-") && f.ends_with(".js"))
         .unwrap_or_else(|| panic!("{out_dir}: main chunk emitted: {names:?}"));
     assert!(
         assets.join(format!("{js}.map")).exists(),
@@ -70,9 +70,14 @@ async fn function_vite_config_is_evaluated_as_build_for_each_mode() {
     );
     let quoted = |word: &str| regex::Regex::new(&format!(r#"[`"]{word}[`"]"#)).unwrap();
 
-    build(root.clone(), None, CliOptions::default())
-        .await
-        .expect("the default-mode build succeeds");
+    build(
+        root.clone(),
+        None,
+        &tokio::runtime::Handle::current(),
+        CliOptions::default(),
+    )
+    .await
+    .expect("the default-mode build succeeds");
     assert!(
         !root.join("out-serve").exists(),
         "the config was evaluated as serve"
@@ -92,9 +97,14 @@ async fn function_vite_config_is_evaluated_as_build_for_each_mode() {
     );
 
     let _ = fs::remove_dir_all(root.join(".oj-cache"));
-    build(root.clone(), Some("staging"), CliOptions::default())
-        .await
-        .expect("the --mode staging build succeeds");
+    build(
+        root.clone(),
+        Some("staging"),
+        &tokio::runtime::Handle::current(),
+        CliOptions::default(),
+    )
+    .await
+    .expect("the --mode staging build succeeds");
     let staging = built_main(&root, "out-staging");
     assert!(
         quoted("staging").is_match(&staging),

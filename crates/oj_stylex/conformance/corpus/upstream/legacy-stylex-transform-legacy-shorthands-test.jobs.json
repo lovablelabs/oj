@@ -1,0 +1,668 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/legacy/stylex-transform-legacy-shorthands-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs only — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "upstream/legacy-legacy-shorthands-padding-with-longhand-proper-001",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              padding: 5,\n              paddingEnd: 10,\n            },\n\n            bar: {\n              padding: 2,\n              paddingStart: 10,\n            },\n          });\n          stylex(styles.foo, styles.bar);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-padding-with-null-longhand-p-002",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              padding: 5,\n              paddingEnd: 10,\n            },\n\n            bar: {\n              padding: 2,\n              paddingStart: null,\n            },\n          });\n          stylex(styles.foo, styles.bar);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-bordercolor-basic-shorthand-003",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              borderColor: 'red blue green yellow'\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-borderwidth-basic-shorthand-004",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              borderWidth: '1px 2px 3px 4px'\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-padding-basic-shorthand-005",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            foo: {\n              padding: 5\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-margin-basic-shorthand-006",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              margin: '10px 20px 30px 40px'\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-paddinginline-basic-shorthan-007",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            foo: {\n              paddingInline: 5\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-paddinginline-basic-multival-008",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            foo: {\n              paddingInline: \"5px 10px\"\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-padding-with-longhand-proper-009",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              padding: 5,\n              paddingInlineEnd: 10,\n            },\n\n            bar: {\n              padding: 2,\n              paddingInlineStart: 10,\n            },\n          });\n          stylex(styles.foo, styles.bar);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-padding-with-longhand-direct-010",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              padding: 5,\n              paddingInlineEnd: 10,\n            },\n\n            bar: {\n              padding: 2,\n              paddingInlineStart: 10,\n              paddingLeft: 22\n            },\n          });\n          stylex(styles.foo, styles.bar)\n          export const string = stylex(styles.foo, styles.bar, xstyle);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "debug": true,
+        "enableDebugClassNames": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-padding-with-null-longhand-p-011",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              padding: 5,\n              paddingInlineEnd: 10,\n            },\n\n            bar: {\n              padding: 2,\n              paddingInlineStart: null,\n            },\n          });\n          stylex(styles.foo, styles.bar);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-margininline-basic-shorthand-012",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            foo: {\n              marginInline: 5\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-margininline-basic-multivalu-013",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            foo: {\n              marginInline: \"5px 10px\"\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-marginblock-basic-multivalue-014",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            foo: {\n              marginBlock: \"5px 10px\"\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-margin-with-longhand-propert-015",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              margin: 5,\n              marginInlineEnd: 10,\n            },\n\n            bar: {\n              margin: 2,\n              marginInlineStart: 10,\n            },\n          });\n          stylex(styles.foo, styles.bar);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-margin-with-null-longhand-pr-016",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              margin: 5,\n              marginInlineEnd: 10,\n            },\n\n            bar: {\n              margin: 2,\n              marginInlineStart: null,\n            },\n          });\n          stylex(styles.foo, styles.bar);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-border-basic-shorthand-017",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              border: '1px solid red'\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-borderinlinecolor-basic-shor-018",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              borderInlineColor: 'red'\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-borderinlinewidth-basic-shor-019",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              borderInlineWidth: 1\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-inset-basic-shorthand-020",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              inset: 10\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-inset-multivalue-shorthand-021",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              inset: '10px 20px 30px 40px'\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-insetinline-basic-shorthand-022",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              insetInline: 10\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-insetinline-multivalue-short-023",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              insetInline: '10px 20px'\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-insetblock-basic-shorthand-024",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              insetBlock: 10\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-insetblock-multivalue-shorth-025",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              insetBlock: '10px 20px'\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-liststyle-basic-shorthand-026",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            none: {\n              listStyle: 'none'\n            },\n            square: {\n              listStyle: 'square'\n            },\n            inside: {\n              listStyle: 'inside'\n            },\n            custom1: {\n              listStyle: '\"--\"'\n            },\n            custom2: {\n              listStyle: \"'=='\"\n            }\n          });\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "debug": true,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-liststyle-multi-value-shorth-027",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            one: {\n              listStyle: 'none inside'\n            },\n            two: {\n              listStyle: 'none square'\n            },\n            three: {\n              listStyle: 'simp-chinese-informal linear-gradient(90deg, white 100%)'\n            },\n            four: {\n              listStyle: 'outside \"+\" linear-gradient(90deg, white 100%)'\n            },\n          });\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "debug": true,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-liststyle-with-longhand-coll-028",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            one: {\n              listStyle: 'none inside',\n              listStyleType: 'square'\n            },\n            two: {\n              listStyle: 'none georgian',\n              listStylePosition: 'outside'\n            },\n            three: {\n              listStyle: 'simp-chinese-informal linear-gradient(90deg, white 100%)',\n              listStylePosition: 'outside',\n              listStyleType: 'square',\n            },\n            four: {\n              listStyle: 'inside \"--\" linear-gradient(90deg, white 100%)',\n              listStylePosition: 'outside',\n              listStyleType: 'square',\n            },\n          });\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "debug": true,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-liststyle-invalid-values-029",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            none: {\n              listStyle: 'none inherit'\n            },\n          });\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "propertyValidationMode": "throw"
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-liststyle-invalid-values-030",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            none: {\n              listStyle: 'none var(--image)'\n            },\n          });\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "propertyValidationMode": "throw"
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-padding-with-longhand-proper-031",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              padding: 5,\n              paddingEnd: 10,\n            },\n\n            bar: {\n              padding: 2,\n              paddingStart: 10,\n            },\n          });\n          stylex(styles.foo, styles.bar);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-padding-with-null-longhand-p-032",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              padding: 5,\n              paddingEnd: 10,\n            },\n\n            bar: {\n              padding: 2,\n              paddingStart: null,\n            },\n          });\n          stylex(styles.foo, styles.bar);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-bordercolor-basic-shorthand-033",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              borderColor: 'red blue green yellow'\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-borderwidth-basic-shorthand-034",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              borderWidth: '1px 2px 3px 4px'\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-padding-basic-shorthand-035",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            foo: {\n              padding: 5\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-margin-basic-shorthand-036",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              margin: '10px 20px 30px 40px'\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-paddinginline-basic-shorthan-037",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            foo: {\n              paddingInline: 5\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-padding-with-longhand-proper-038",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              padding: 5,\n              paddingInlineEnd: 10,\n            },\n\n            bar: {\n              padding: 2,\n              paddingInlineStart: 10,\n            },\n          });\n          stylex(styles.foo, styles.bar);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-paddingblock-basic-multivalu-039",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            foo: {\n              paddingBlock: \"5px 10px\"\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-padding-with-null-longhand-p-040",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              padding: 5,\n              paddingInlineEnd: 10,\n            },\n\n            bar: {\n              padding: 2,\n              paddingInlineStart: null,\n            },\n          });\n          stylex(styles.foo, styles.bar);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-margininline-basic-shorthand-041",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            foo: {\n              marginInline: 5\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-margin-with-longhand-propert-042",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              margin: 5,\n              marginInlineEnd: 10,\n            },\n\n            bar: {\n              margin: 2,\n              marginInlineStart: 10,\n            },\n          });\n          stylex(styles.foo, styles.bar);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-margin-with-null-longhand-pr-043",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              margin: 5,\n              marginInlineEnd: 10,\n            },\n\n            bar: {\n              margin: 2,\n              marginInlineStart: null,\n            },\n          });\n          stylex(styles.foo, styles.bar);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-border-basic-shorthand-044",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              border: '1px solid red'\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-borderinlinecolor-basic-shor-045",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              borderInlineColor: 'red'\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/legacy-legacy-shorthands-borderinlinewidth-basic-shor-046",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              borderInlineWidth: 1\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create"],
+      "expect": "ok"
+    }
+  ]
+}

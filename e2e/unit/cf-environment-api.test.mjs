@@ -535,13 +535,10 @@ test("create retries failed resolutions, delete prunes, legacy hooks and hook er
     assert.equal(seen.workerSends[2].type, "error");
     assert.ok(seen.workerSends[2].err.message.includes("hook exploded"), "the error payload carries the message");
 
-    // Legacy handleHotUpdate: dispatched for the client environment on updates
-    // only, as in Vite.
-    assert.ok(
-      seen.legacy.some((f) => f.endsWith("errfile.ts")),
-      "legacy hook ran for the update",
-    );
-    assert.ok(!seen.legacy.some((f) => f.endsWith("new.ts")), "legacy hook is not called for create events");
+    // The client environment is the dev server's own: its hooks (the legacy
+    // handleHotUpdate among them) run in its pass, once per environment as in
+    // Vite, never again here.
+    assert.ok(!seen.legacy.length, "the client environment's hooks ran a second time");
   } finally {
     host.close();
     fx.cleanup();

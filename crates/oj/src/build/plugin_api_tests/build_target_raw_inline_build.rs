@@ -28,7 +28,7 @@ async fn build_entry(root: &Path) -> String {
         .unwrap()
         .flatten()
         .map(|e| e.file_name().to_string_lossy().into_owned())
-        .find(|f| f.starts_with("main-") && f.ends_with(".js"))
+        .find(|f| f.starts_with("index-") && f.ends_with(".js"))
         .expect("main chunk emitted");
     fs::read_to_string(assets.join(main)).unwrap()
 }

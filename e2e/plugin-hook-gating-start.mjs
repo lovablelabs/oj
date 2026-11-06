@@ -37,11 +37,10 @@ let failed = false;
 let child;
 try {
   let stderr = "";
-  child = spawn(OJ, ["dev", ".", "--port", String(PORT)], {
+  child = spawn(OJ, ["dev", ".", "--port", String(PORT), "--debug=hook-gate"], {
     cwd: app,
     stdio: ["ignore", "ignore", "pipe"],
     detached: true,
-    env: { ...process.env, OJ_DEBUG_HOOK_GATE: "1" },
   });
   child.stderr.on("data", (d) => (stderr += d.toString()));
   const t0 = Date.now();

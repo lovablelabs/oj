@@ -140,14 +140,35 @@ pub(crate) fn hmr_socket(
 /// Host-driven invalidateModule/restart. Invalidation drops compiled output and,
 /// for an app file, propagates HMR like an edit; a virtual id only loses its cache (Vite parity).
 pub(crate) async fn handle_plugin_server_event(state: &Arc<ServerState>, ev: &serde_json::Value) {
+    // Another environment's graph (Vite: ssr's own moduleGraph) never reaches
+    // the browser's: oj's SSR compiles are not cached (each request runs the
+    // pipeline), so its invalidation has nothing of the client's to drop.
+    let environment = ev.get("environment").and_then(|e| e.as_str());
+    if environment.is_some_and(|e| e != "client") {
+        return;
+    }
     match ev.get("action").and_then(|a| a.as_str()) {
         Some("restart") => {
             println!("oj: plugin requested server.restart()");
-            restart_process("plugin requested server.restart()");
+            state.restarter.request("plugin requested server.restart()");
+        }
+        // A plugin's `server.watcher.add`: chokidar watches the file.
+        Some("watch") => {
+            for file in ev
+                .get("files")
+                .and_then(|f| f.as_array())
+                .into_iter()
+                .flatten()
+            {
+                if let Some(file) = file.as_str() {
+                    crate::watch::ensure_watched_file(state, Path::new(file));
+                }
+            }
         }
         Some("invalidateAll") => {
             state.mtime_keys.lock().unwrap().clear();
             state.memory.lock().unwrap().clear();
+            state.css_post.lock().unwrap().clear();
             let _ = state
                 .reload_tx
                 .send(full_reload_frame("plugin invalidateAll", None, None));
@@ -165,8 +186,10 @@ pub(crate) async fn handle_plugin_server_event(state: &Arc<ServerState>, ev: &se
             } else {
                 return;
             };
-            state.mtime_keys.lock().unwrap().remove(&url);
-            state.memory.lock().unwrap().remove(&url);
+            for url in url_variants(&url) {
+                state.mtime_keys.lock().unwrap().remove(&url);
+                state.memory.lock().unwrap().remove(&url);
+            }
             if path.is_file() && state.graph.lock().unwrap().contains(Path::new(&url)) {
                 for message in decide(state, &[path.to_path_buf()], &Default::default()).await {
                     let _ = state.reload_tx.send(message);
@@ -204,7 +227,9 @@ pub(crate) fn handle_client_message(state: &Arc<ServerState>, text: &str) {
             {
                 let mut keys = state.mtime_keys.lock().unwrap();
                 for d in &dirty {
-                    keys.remove(&d.display().to_string());
+                    for url in url_variants(&d.display().to_string()) {
+                        keys.remove(&url);
+                    }
                 }
             }
             match targets {
@@ -292,8 +317,8 @@ pub(crate) fn strip_hmr_timestamp(url: &str) -> String {
     }
 }
 
-/// Append the HMR timestamp to a served module url. Only JS-served modules (compilable,
-/// JSON, style wrappers) are stamped per Vite's importAnalysis; asset and oj-internal urls never.
+/// Append the HMR timestamp to a served module url, as Vite's importAnalysis does for
+/// a dep with a `lastHMRTimestamp`: JS-served modules and asset URL modules, never oj-internal urls.
 pub(crate) fn stamp_import_url(url: &str, timestamp: u64) -> String {
     if timestamp == 0 || url.starts_with("/@") || !url.starts_with('/') {
         return url.to_string();
@@ -303,7 +328,7 @@ pub(crate) fn stamp_import_url(url: &str, timestamp: u64) -> String {
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("");
-    if !COMPILABLE.contains(&ext) && ext != "json" && !is_style_ext(ext) {
+    if !COMPILABLE.contains(&ext) && ext != "json" && !is_style_ext(ext) && !is_asset_ext(ext) {
         return url.to_string();
     }
     if query.split('&').any(|kv| kv.starts_with("t=")) {
@@ -323,6 +348,7 @@ pub(crate) fn hot_glue(
     query: Option<&str>,
     is_boundary: bool,
     ctx_predefined: bool,
+    paths: &OjPublicPaths,
 ) -> String {
     if !is_boundary {
         return String::new();
@@ -338,15 +364,20 @@ pub(crate) fn hot_glue(
         String::new()
     } else {
         format!(
-            "import {{ createHotContext as __oj_createHotContext }} from \"/@oj/client.js\";\nimport.meta.hot ??= __oj_createHotContext({id:?});\n"
+            "import {{ createHotContext as __oj_createHotContext }} from {client:?};\nimport.meta.hot ??= __oj_createHotContext({id:?});\n",
+            client = paths.client,
         )
     };
+    let runtime = &paths.refresh_runtime;
+    // The preamble check is Vite's refresh wrapper's: only `$RefreshReg$`,
+    // which every preamble sets (oj's, Start's, plugin-react's documented one).
     format!(
         r#"
-{ctx}import * as RefreshRuntime from "/@oj/refresh-runtime.js";
+{ctx}import * as RefreshRuntime from {runtime:?};
+const inWebWorker = typeof WorkerGlobalScope !== "undefined" && self instanceof WorkerGlobalScope;
 import * as __oj_currentExports from {self_specifier:?};
-if (import.meta.hot) {{
-  if (!window.__oj_refresh_installed__) {{
+if (import.meta.hot && !inWebWorker) {{
+  if (!window.$RefreshReg$) {{
     throw new Error("oj: Fast Refresh preamble missing; was index.html served by oj?");
   }}
   const currentExports = __oj_currentExports;
@@ -478,9 +509,10 @@ pub(crate) fn full_reload_frame(
     frame.to_string()
 }
 
-pub(crate) fn svelte_hot_glue(url: &str) -> String {
+pub(crate) fn svelte_hot_glue(url: &str, paths: &OjPublicPaths) -> String {
     format!(
-        "\nimport {{ createHotContext as __oj_createHotContext }} from \"/@oj/client.js\";\nimport.meta.hot = __oj_createHotContext({url:?});\n"
+        "\nimport {{ createHotContext as __oj_createHotContext }} from {client:?};\nimport.meta.hot = __oj_createHotContext({url:?});\n",
+        client = paths.client,
     )
 }
 
@@ -814,18 +846,27 @@ pub(crate) async fn decide(
         }
     }
 
-    for path in &paths {
-        // Vite's default watch ignores: `**/node_modules/**` and `**/.git/**`
-        // at any depth (a nested package's node_modules included).
-        if !gate_relevant(path) || path.components().any(|c| c.as_os_str() == ".git") {
-            continue;
-        }
-        let mut flow = match &state.plugins {
+    // Vite's default watch ignores: `**/node_modules/**` and `**/.git/**`
+    // at any depth (a nested package's node_modules included).
+    paths.retain(|path| gate_relevant(path) && !path.components().any(|c| c.as_os_str() == ".git"));
+    // Each file's hotUpdate runs concurrently, as Vite's watcher handles each
+    // event on its own: a hook that debounces a burst by awaiting a timer and
+    // checking for a newer call sees that newer call. The outcomes are then
+    // applied in path order.
+    let hooked = futures_util::future::join_all(paths.iter().map(|path| async move {
+        let (mut messages, mut updates) = (Vec::new(), Vec::new());
+        let flow = match &state.plugins {
             Some(host) => {
                 run_plugin_hooks(state, host, path, created, &mut messages, &mut updates).await
             }
             None => Flow::Next,
         };
+        (flow, messages, updates)
+    }))
+    .await;
+    for (path, (mut flow, hook_messages, hook_updates)) in paths.iter().zip(hooked) {
+        messages.extend(hook_messages);
+        updates.extend(hook_updates);
         if let Flow::Next = flow {
             flow = decide_file(state, path, &plugin_watched, &mut updates);
         }
@@ -861,6 +902,38 @@ async fn plugin_watched_files(state: &ServerState) -> std::collections::HashSet<
         .collect()
 }
 
+/// Vite resolves through rolldown's native `vite_resolve` plugin, whose
+/// `watchChange` clears its resolver cache on a create or delete and keeps it
+/// on an update. oj's resolvers cache lookups too, misses included, and drop
+/// them on the same events, from the watcher itself, ahead of HMR
+/// (`server.hmr: false`, a held editor gate and a full-reload flush never
+/// reach [`decide`]). Without it an alias import of a created file
+/// (`@/lib/x`) stays a bare package to the SSR runtime until the importer is
+/// edited again. The events are the ones plugins' `watchChange` gets.
+pub(crate) fn drop_resolver_misses(
+    state: &ServerState,
+    paths: &[PathBuf],
+    created: &std::collections::HashSet<PathBuf>,
+) {
+    // A tsconfig or jsconfig edit changes the `paths` Vite's own resolver
+    // reads (vite-tsconfig-paths hears it through the host's watcher).
+    // Any JSON file: a tsconfig reached through `extends` or a custom
+    // `configNames` entry has any name.
+    let tsconfig = |p: &PathBuf| p.extension().is_some_and(|e| e == "json");
+    if paths
+        .iter()
+        .any(|p| tsconfig(p) || change_type(state, p, created) != "update")
+    {
+        state.resolver.clear_cache();
+        state.require_resolver.clear_cache();
+        state.ssr_resolver.clear_cache();
+        state.ssr_external_resolver.clear_cache();
+        if let Some(host) = &state.plugins {
+            host.clear_environment_resolvers();
+        }
+    }
+}
+
 /// A created file may be one a module failed to import: re-process those importers
 /// (Vite's `_hasResolveFailedErrorModules`); notify can't tell create from modify, so exists-but-not-in-graph counts as new.
 fn retry_failed_resolves(state: &ServerState, paths: &mut Vec<PathBuf>) {
@@ -875,10 +948,6 @@ fn retry_failed_resolves(state: &ServerState, paths: &mut Vec<PathBuf>) {
     if !new_file {
         return;
     }
-    // The resolver caches misses too: without this a created `./dir/index.ts`
-    // or extension-probed file stays "not found" for the importer's retry.
-    state.resolver.clear_cache();
-    state.ssr_resolver.clear_cache();
     let failed: Vec<String> = state.resolve_failed.lock().unwrap().drain().collect();
     for url in failed {
         paths.push(state.root.join(url.trim_start_matches('/')));
@@ -893,11 +962,6 @@ fn glob_importers_hit(state: &ServerState, paths: &[PathBuf]) -> Vec<String> {
         return Vec::new();
     }
     let graph = state.graph.lock().unwrap();
-    // `*` stops at `/`, as the directory walk expanding the glob does.
-    let opts = glob::MatchOptions {
-        require_literal_separator: true,
-        ..Default::default()
-    };
     let mut hit: Vec<String> = Vec::new();
     for p in paths {
         let known = graph.contains(Path::new(&url_of(&state.root, p)));
@@ -905,8 +969,8 @@ fn glob_importers_hit(state: &ServerState, paths: &[PathBuf]) -> Vec<String> {
             continue;
         }
         for (importer, patterns) in globs.iter() {
-            if patterns.iter().any(|pat| pat.matches_path_with(p, opts)) && !hit.contains(importer)
-            {
+            let file = p.to_string_lossy().replace('\\', "/");
+            if patterns.iter().any(|m| m.is_match(&file)) && !hit.contains(importer) {
                 hit.push(importer.clone());
             }
         }
@@ -938,34 +1002,40 @@ fn change_type(
     }
 }
 
-/// The ssr environment's plugin instances (Vite dispatches hotUpdate and
-/// watchChange to every environment) when that host is up.
-async fn ssr_host_for_hooks(
+/// The environments' containers a hook goes to, client first (Vite's
+/// order): each container whose own plugins have it. A Start client bundle's
+/// container is the client environment's, whose hooks the dev host's own
+/// container already runs (its plugins are a subset of the same instances).
+fn hook_hosts(
     state: &ServerState,
-    file: &str,
-    change_type: &str,
-) -> Option<Arc<PluginHost>> {
-    let ssr = state.plugins_ssr.get().and_then(|h| h.clone())?;
-    if !(state.plugins_watch_change || state.plugins_hot_update) {
-        return Some(ssr);
+    wants: fn(&PluginHost) -> bool,
+) -> Vec<(&'static str, &Arc<PluginHost>)> {
+    let ssr = state.plugins_ssr.as_ref().map(|h| ("ssr", h));
+    state
+        .plugins
+        .as_ref()
+        .map(|h| ("client", h))
+        .into_iter()
+        .chain(ssr)
+        .filter(|(_, h)| wants(h))
+        .collect()
+}
+
+/// The `modules` argument of the ssr environment's `hotUpdate`: its own
+/// graph's module for the file (Vite hands each environment its own).
+fn ssr_hot_update_modules_json(state: &ServerState, path: &Path) -> String {
+    if !state.ssr_modules.lock().unwrap().contains(path) {
+        return "[]".to_string();
     }
-    // Pre-init fast-skip: each hook toward a still-initializing lazy host
-    // would await a full per-call init window on this serial path (a wedged
-    // init froze every save's HMR). Queue a watchChange catch-up instead,
-    // replayed at host init; the re-check after queuing closes the race
-    // where init lands between the decision and the push.
-    if !ssr.is_initialized() {
-        note_ssr_watch_skip(&state.ssr_watch, file, change_type);
-        if ssr.is_initialized() {
-            replay_ssr_watch_backlog(&ssr, &state.ssr_watch).await;
-        }
-        return None;
-    }
-    // Initialized: replay queued catch-up events FIRST, under the
-    // queue's order lock, so a stale queued watchChange never
-    // lands after this newer live event for the same file.
-    replay_ssr_watch_backlog(&ssr, &state.ssr_watch).await;
-    Some(ssr)
+    let file = path.display().to_string();
+    serde_json::json!([{
+        "url": url_of(&state.root, path),
+        "id": file,
+        "file": file,
+        "isSelfAccepting": false,
+        "importers": [],
+    }])
+    .to_string()
 }
 
 /// The `modules` argument of `hotUpdate` for a path, as JSON.
@@ -988,7 +1058,85 @@ fn hot_update_modules_json(state: &ServerState, path: &Path) -> String {
     }
 }
 
-/// Dispatch `watchChange` and `hotUpdate` for a path to the client and ssr plugin hosts.
+/// Vite's chokidar telling the dev server watcher's listeners of a settled
+/// batch (`add`, `change`, `unlink`, each then `all`), ahead of the reload,
+/// `watchChange` and HMR, as its listeners hear an event in the tick it
+/// lands. Its default `ignored` leaves `.git` and `node_modules` out.
+pub(crate) async fn run_watcher_events(
+    state: &ServerState,
+    paths: &[PathBuf],
+    created: &std::collections::HashSet<PathBuf>,
+) {
+    let Some(host) = &state.plugins else {
+        return;
+    };
+    let changes: Vec<(String, &str)> = paths
+        .iter()
+        .filter(|path| gate_relevant(path) && !path.components().any(|c| c.as_os_str() == ".git"))
+        .map(|path| {
+            (
+                path.display().to_string(),
+                watcher_event_type(path, created),
+            )
+        })
+        .collect();
+    if changes.is_empty() {
+        return;
+    }
+    if let Err(e) = host.watcher_events(&changes).await {
+        eprintln!("oj: the plugin host's watcher listeners failed: {e}");
+    }
+}
+
+/// chokidar's event for a settled change: `unlink` when gone, `add` when it
+/// appeared in the batch, else `change` (as `create` / `delete` / `update`).
+fn watcher_event_type(path: &Path, created: &std::collections::HashSet<PathBuf>) -> &'static str {
+    if !path.exists() {
+        "delete"
+    } else if created.contains(path) {
+        "create"
+    } else {
+        "update"
+    }
+}
+
+/// Vite's `pluginContainer.watchChange` for each environment, on every
+/// watched change: its watcher awaits it before invalidating the module graph
+/// and before HMR, which `server.hmr: false` skips and the editor gate holds,
+/// so it runs here once per change and never from `decide`.
+pub(crate) async fn run_watch_change(
+    state: &ServerState,
+    paths: &[PathBuf],
+    created: &std::collections::HashSet<PathBuf>,
+) {
+    let hosts = hook_hosts(state, PluginHost::wants_watch_change);
+    if hosts.is_empty() {
+        return;
+    }
+    let hosts = &hosts;
+    // Concurrent across files, as Vite's watcher handles each event on its own.
+    let changes = paths
+        .iter()
+        .filter(|path| gate_relevant(path) && !path.components().any(|c| c.as_os_str() == ".git"))
+        .map(|path| async move {
+            let file = path.display().to_string();
+            let change_type = change_type(state, path, created);
+            for (env, host) in hosts {
+                if let Err(e) = host.watch_change(&file, change_type).await {
+                    let hook = if *env == "client" {
+                        "watchChange".to_string()
+                    } else {
+                        format!("watchChange ({env})")
+                    };
+                    eprintln!("oj: {hook} failed for {file}: {e}");
+                    emit_hook_failure(&hook, &file, &e);
+                }
+            }
+        });
+    futures_util::future::join_all(changes).await;
+}
+
+/// Dispatch `hotUpdate` for a path to the client and ssr environments.
 async fn run_plugin_hooks(
     state: &ServerState,
     host: &PluginHost,
@@ -997,41 +1145,39 @@ async fn run_plugin_hooks(
     messages: &mut Vec<String>,
     updates: &mut Vec<serde_json::Value>,
 ) -> Flow {
-    let file = path.display().to_string();
-    let change_type = change_type(state, path, created);
-    let ssr_host = ssr_host_for_hooks(state, &file, change_type).await;
-    if state.plugins_watch_change {
-        if let Err(e) = host.watch_change(&file, change_type).await {
-            eprintln!("oj: watchChange failed for {file}: {e}");
-            emit_hook_failure("watchChange", &file, &e);
-        }
-        if let Some(ssr) = &ssr_host {
-            if let Err(e) = ssr.watch_change(&file, change_type).await {
-                eprintln!("oj: watchChange (ssr) failed for {file}: {e}");
-                emit_hook_failure("watchChange (ssr)", &file, &e);
-            }
-        }
-    }
-    if !state.plugins_hot_update {
+    let ssr_host = state.plugins_ssr.as_ref().filter(|h| h.wants_hot_update());
+    if !host.wants_hot_update() && ssr_host.is_none() {
         return Flow::Next;
     }
+    let file = path.display().to_string();
+    let change_type = change_type(state, path, created);
     let ts = now_millis() as u64;
     let modules_json = hot_update_modules_json(state, path);
-    if let Some(ssr) = &ssr_host {
+    // The client's hooks first, then the ssr environment's, as Vite's
+    // handleHMRUpdate runs the client environment before the others.
+    let client = if host.wants_hot_update() {
+        host.handle_hot_update(&file, ts, change_type, &modules_json)
+            .await
+    } else {
+        Ok(None)
+    };
+    if let Some(ssr) = ssr_host {
         // Its result steers no client update (the ssr environment has
         // no browser); only a throwing hook is worth reporting.
         if let Err(e) = ssr
-            .handle_hot_update(&file, ts, change_type, &modules_json)
+            .handle_hot_update(
+                &file,
+                ts,
+                change_type,
+                &ssr_hot_update_modules_json(state, path),
+            )
             .await
         {
             eprintln!("oj: hotUpdate (ssr) failed for {file}: {e}");
             emit_hook_failure("hotUpdate (ssr)", &file, &e);
         }
     }
-    match host
-        .handle_hot_update(&file, ts, change_type, &modules_json)
-        .await
-    {
+    match client {
         // Vite (hmr.ts): a throwing hotUpdate is logged, sent as an
         // error payload, and no update is dispatched for that file.
         Err(e) => {
@@ -1117,14 +1263,8 @@ fn decide_file(
         let url = url_of(&state.root, path);
         // A stylesheet nothing imports is loaded by a `<link>`: swap the link
         // rather than dispatching a JS update it has no handler for.
-        let link_loaded = {
-            let g = state.graph.lock().unwrap();
-            match g.node(Path::new(&url)) {
-                None => true,
-                Some(n) => n.importers.is_empty(),
-            }
-        };
-        if link_loaded {
+        // Nor imports its `?inline` module (a node of its own).
+        if link_loaded(state, &url) {
             println!("oj: change {url} -> css-update");
             updates.push(update_entry("css-update", &url, now_millis() as u64));
             return Flow::Done;
@@ -1141,13 +1281,38 @@ fn decide_file(
             Some(path),
         ));
     }
-    if !(COMPILABLE.contains(&ext) || is_style_ext(ext) || ext == "json") {
+    let url = url_of(&state.root, path);
+    // Any other file updates only as a stylesheet's dep: a PostCSS plugin's
+    // `dependency` sits in Vite's graph whatever its extension.
+    let css_dep = || {
+        state
+            .graph
+            .lock()
+            .unwrap()
+            .node(Path::new(&url))
+            .is_some_and(|n| {
+                n.importers
+                    .iter()
+                    .any(|p| is_style_url(&p.to_string_lossy()))
+            })
+    };
+    // An imported asset is a URL module: its importers re-import it under a new
+    // `?t=` and get a url its `<img>` refetches, as in Vite.
+    if !(COMPILABLE.contains(&ext)
+        || is_style_ext(ext)
+        || ext == "json"
+        || is_asset_ext(ext)
+        || css_dep())
+    {
         return Flow::Done;
     }
-
-    let url = url_of(&state.root, path);
-    if !state.graph.lock().unwrap().contains(Path::new(&url)) {
-        return Flow::Done;
+    let inline = is_style_ext(ext).then(|| format!("{url}?inline"));
+    {
+        let g = state.graph.lock().unwrap();
+        let inline_known = inline.as_ref().is_some_and(|i| g.contains(Path::new(i)));
+        if !g.contains(Path::new(&url)) && !inline_known {
+            return Flow::Done;
+        }
     }
     match graph_update_targets(state, &url, is_style_ext(ext)) {
         Ok(targets) => {
@@ -1156,21 +1321,35 @@ fn decide_file(
             let timestamp = now_millis() as u64;
             // Stamp the invalidated chain so re-fetched importers point at new versions
             // of unchanged deps; drop their mtime fast-path keys so they recompile with the stamps.
-            let dirty = state
-                .graph
-                .lock()
-                .unwrap()
-                .stamp_update(Path::new(&url), timestamp);
+            let dirty = {
+                let mut g = state.graph.lock().unwrap();
+                let mut dirty = g.stamp_update(Path::new(&url), timestamp);
+                if let Some(inline) = inline.as_ref().filter(|i| g.contains(Path::new(i))) {
+                    dirty.extend(g.stamp_update(Path::new(inline), timestamp));
+                }
+                dirty
+            };
             {
                 let mut keys = state.mtime_keys.lock().unwrap();
                 for d in &dirty {
-                    keys.remove(&d.display().to_string());
+                    for url in url_variants(&d.display().to_string()) {
+                        keys.remove(&url);
+                    }
                 }
             }
             if targets.is_empty() {
                 println!("oj: change {url} -> no update (nothing loaded imports it)");
             }
-            updates.extend(targets.iter().map(|t| update_entry_for(t, timestamp, None)));
+            // A dep of a `<link>`-loaded sheet (its `url()` asset, an
+            // `@import`) swaps the link, as Vite's css-analysis updates it.
+            updates.extend(targets.iter().map(|t| {
+                let sheet = t.boundary.display().to_string();
+                if is_style_url(&sheet) && sheet != url && link_loaded(state, &sheet) {
+                    update_entry("css-update", &sheet, timestamp)
+                } else {
+                    update_entry_for(t, timestamp, None)
+                }
+            }));
             Flow::Done
         }
         Err(reason) => {
@@ -1180,6 +1359,17 @@ fn decide_file(
     }
 }
 
+/// Whether a stylesheet is loaded by a `<link>`: nothing imports it, nor its
+/// `?inline` module (a node of its own). Vite's `?direct` node for it updates
+/// with `css-update`, which swaps the link.
+fn link_loaded(state: &ServerState, url: &str) -> bool {
+    let inline = format!("{url}?inline");
+    let g = state.graph.lock().unwrap();
+    [url, inline.as_str()]
+        .iter()
+        .all(|u| g.node(Path::new(u)).is_none_or(|n| n.importers.is_empty()))
+}
+
 /// A changed stylesheet may also be inlined into OTHER sheets (@import, sass @use):
 /// each importer must hot-swap too; oj keeps one node per path, so css importers are seeded explicitly.
 fn graph_update_targets(
@@ -1187,9 +1377,23 @@ fn graph_update_targets(
     url: &str,
     is_style: bool,
 ) -> Result<Vec<oj_graph::UpdateTarget>, String> {
-    let mut targets = state.graph.lock().unwrap().update_targets(Path::new(url))?;
     if !is_style {
-        return Ok(targets);
+        return state.graph.lock().unwrap().update_targets(Path::new(url));
+    }
+    // The sheet's own node (an import's `<style>`) and its `?inline` module,
+    // which never self-accepts: an edit reaches whatever imports its text.
+    let mut targets = Vec::new();
+    for node in [url.to_string(), format!("{url}?inline")] {
+        let known = state.graph.lock().unwrap().contains(Path::new(&node));
+        if known {
+            targets.extend(
+                state
+                    .graph
+                    .lock()
+                    .unwrap()
+                    .update_targets(Path::new(&node))?,
+            );
+        }
     }
     let css_importers: Vec<PathBuf> = {
         let g = state.graph.lock().unwrap();

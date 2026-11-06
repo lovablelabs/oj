@@ -6,7 +6,13 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
 import fs, { writeFileSync, readFileSync, existsSync, unlinkSync } from "node:fs";
 import { format } from "node:util";
-import { asNode } from "./vite-config-node.mjs";
+import { asNode, esmEntry, startRouterGenerator } from "./vite-config-node.mjs";
+import {
+  OJ_NATIVE_PLUGIN_NAMES,
+  OJ_UNSUPPORTED_PLUGIN_NAMES,
+  flattenPlugins,
+  isReimplemented,
+} from "./native-plugins.mjs";
 
 // The slice of Vite's mergeConfigRecursively these assets need (twin copies:
 // one in vite-extract.mjs, one in plugin-host.mjs — keep them byte-identical):
@@ -114,7 +120,7 @@ function installOutputCapture(chunks) {
 function isolateProcessForExtraction() {
   try {
     Object.defineProperty(process, "env", {
-      value: { ...process.env },
+      value: recordingEnv({ ...process.env }),
       configurable: true,
       writable: true,
     });
@@ -122,6 +128,88 @@ function isolateProcessForExtraction() {
   try {
     process.cwd = () => appRoot;
   } catch {}
+}
+
+// The env vars the config evaluation read. Vite evaluates the config on
+// every start, so a config that reads `process.env.API_URL` (directly, in a
+// plugin, or through `loadEnv(mode, dir, "")`) gets that start's value; the
+// Rust extraction cache stamps each value read (`__envReads`), and the whole
+// env when the config listed it (`__envEnumerated`). Reads from Vite's own
+// toolchain and from oj's scripts alone are left out: Vite's loadEnv copies
+// the whole env on every resolve, and what it keeps is the `envPrefix` vars
+// (`__envPrefixes`), stamped by prefix. A read counts when any frame of its
+// stack belongs to other code (the config, a plugin), so `loadEnv` called by
+// the config counts and `loadEnv` called by resolveConfig does not.
+const observedEnvReads = new Set();
+let observedEnvEnumerated = false;
+const OJ_SCRIPT_DIR = (() => {
+  try {
+    return dirname(fileURLToPath(import.meta.url));
+  } catch {
+    return null;
+  }
+})();
+const TOOLCHAIN_FILE =
+  /[\\/]node_modules[\\/](?:vite|rolldown|esbuild|@rolldown[\\/][^\\/]+|@esbuild[\\/][^\\/]+)[\\/]/;
+
+/** The file of every frame on the caller's stack, or null when V8 will not say. */
+function stackFiles() {
+  const prepare = Error.prepareStackTrace;
+  const limit = Error.stackTraceLimit;
+  try {
+    Error.stackTraceLimit = 64;
+    Error.prepareStackTrace = (_, sites) => sites.map((site) => site.getFileName?.() ?? "");
+    const files = new Error().stack;
+    return Array.isArray(files) ? files : null;
+  } catch {
+    return null;
+  } finally {
+    Error.prepareStackTrace = prepare;
+    Error.stackTraceLimit = limit;
+  }
+}
+
+/** Whether code other than Vite's toolchain and oj's scripts asked. */
+function readByConfigCode() {
+  const files = stackFiles();
+  // Unknown: count it. A read too many costs a cache miss, one too few a stale config.
+  if (!files) return true;
+  return files.some((file) => {
+    if (!file || /^(?:node|ext|internal|deno):/.test(file)) return false;
+    let path = file;
+    if (path.startsWith("file:")) {
+      try {
+        path = fileURLToPath(path);
+      } catch {}
+    }
+    if (OJ_SCRIPT_DIR && dirname(path) === OJ_SCRIPT_DIR) return false;
+    return !TOOLCHAIN_FILE.test(path);
+  });
+}
+
+function recordingEnv(env) {
+  const note = (key) => {
+    if (typeof key !== "string" || observedEnvReads.has(key)) return;
+    if (readByConfigCode()) observedEnvReads.add(key);
+  };
+  return new Proxy(env, {
+    get(target, key, receiver) {
+      note(key);
+      return Reflect.get(target, key, receiver);
+    },
+    has(target, key) {
+      note(key);
+      return Reflect.has(target, key);
+    },
+    getOwnPropertyDescriptor(target, key) {
+      note(key);
+      return Reflect.getOwnPropertyDescriptor(target, key);
+    },
+    ownKeys(target) {
+      if (!observedEnvEnumerated && readByConfigCode()) observedEnvEnumerated = true;
+      return Reflect.ownKeys(target);
+    },
+  });
 }
 
 // Vite's defaultNodeEnv follows the COMMAND, never the mode (node.js
@@ -167,7 +255,7 @@ const unsetOjNodeEnvForResolve = () => {
 // being worse than no cache entry.
 const observedConfigReads = new Set();
 let observedReadsTruncated = false;
-const OBSERVED_READS_MAX = Number(process.env.OJ_OBSERVED_READS_MAX) || 512;
+const OBSERVED_READS_MAX = 512;
 let recorderInstalled = false;
 function installConfigReadRecorder() {
   if (recorderInstalled) return;
@@ -244,6 +332,35 @@ function resolvePkg(spec) {
     } catch {}
   }
   return null;
+}
+
+// TanStack Start puts the route tree and reads the routes where
+// tanstackStart({ srcDirectory, router }) says (src/routeTree.gen.ts and
+// src/routes by default): start-plugin-core's parseStartConfig resolves both
+// and passes them to the router generator inline, over tsr.config.json. The
+// generator its router plugin runs from configResolved has them, so the run
+// the app's resolveConfig makes is recorded here.
+let startRouterPaths = null;
+
+// Wraps the router generator Start's router plugin imports (resolved the way
+// Start's own packages resolve it, so it is the same module instance) to
+// record the first run's paths. Returns the undo.
+async function recordStartRouterPaths() {
+  startRouterPaths = null;
+  const generator = await startRouterGenerator(appRoot);
+  const proto = generator?.prototype;
+  const run = proto?.run;
+  if (typeof run !== "function") return () => {};
+  proto.run = function (...args) {
+    const c = this?.config;
+    if (!startRouterPaths && typeof c?.routesDirectory === "string" && typeof c?.generatedRouteTree === "string") {
+      startRouterPaths = { routesDirectory: c.routesDirectory, generatedRouteTree: c.generatedRouteTree };
+    }
+    return run.apply(this, args);
+  };
+  return () => {
+    proto.run = run;
+  };
 }
 
 const absDeps = (deps) => (deps ?? []).filter((d) => typeof d === "string").map((d) => resolve(appRoot, d));
@@ -628,12 +745,15 @@ function snapshotPlainData(v, seen = new WeakMap()) {
   return out;
 }
 
+// Why Vite's own resolveConfig of the config threw, when it did.
+let resolveFailure = null;
 async function loadConfig() {
   let viteErr = null;
   // An error raised while vite's own loader RAN the config file (as opposed
   // to vite itself being unusable, which lands in viteErr).
   let loadErr = null;
-  const vitePath = resolvePkg("vite");
+  const resolvedVite = resolvePkg("vite");
+  const vitePath = resolvedVite && esmEntry(resolvedVite, "vite");
   if (vitePath) {
     try {
       const vite = await import(pathToFileURL(vitePath).href);
@@ -653,7 +773,7 @@ async function loadConfig() {
           // The configEnv Vite computes before the file loads: mode from the
           // inline config only, isSsrBuild from the inline config only (see
           // the emit below for the isSsrBuild rule).
-          const configEnv = { command, mode, isSsrBuild: false };
+          const configEnv = { mode, command, isSsrBuild: false, isPreview: false };
           loaded = (await asNode(() => vite.loadConfigFromFile(configEnv, configPath, appRoot))) ?? null;
         } catch (e) {
           loadErr = e;
@@ -733,6 +853,9 @@ async function loadConfig() {
             };
           }
         } catch (e) {
+          // What fails Vite's createServer (its resolveConfig throws): the
+          // dev server's restart checks it before replacing a running server.
+          resolveFailure = e;
           if (detect && detect.started()) {
             // resolveConfig threw AFTER plugin config hooks began running on
             // these instances (a throwing configResolved, a mid-run hook
@@ -841,18 +964,6 @@ function relativeImportDeps(entry) {
   return [...seen];
 }
 
-function aliasKeyFromRegex(source) {
-  let s = source;
-  if (s.startsWith("^")) s = s.slice(1);
-  if (s.endsWith("$")) s = s.slice(0, -1);
-  s = s.replace(/\\?\/?\((?:\.\*|\.\+)\??\)\??$/, "");
-  s = s.replace(/\\(.)/g, "$1");
-  return s.replace(/\/$/, "");
-}
-function aliasDirFromReplacement(replacement) {
-  return replacement.replace(/[\\/]\$\d+$/, "").replace(/[\\/]index\.[a-z]+$/i, "");
-}
-
 const VITE_CLIENT_ALIAS = /^\^\\\/\?@vite\\\/(env|client)$/;
 
 function extractAlias(alias) {
@@ -867,12 +978,10 @@ function extractAlias(alias) {
       // Vite adds these two for its own client (config.ts clientAlias); oj serves
       // /@vite/client and /@vite/env itself, so they are not user aliases to warn about.
       if (VITE_CLIENT_ALIAS.test(find.source)) continue;
-      const key = aliasKeyFromRegex(find.source);
-      if (!key || /[.*+?()[\]{}|^$]/.test(key)) {
-        warn(`resolve.alias regex ${find} not convertible to a path alias; skipped`);
-        continue;
-      }
-      if (out[key] == null) out[key] = aliasDirFromReplacement(replacement);
+      // A RegExp find travels as oj_resolver::alias::regex_find encodes it,
+      // and matches and replaces as Vite's alias plugin applies it.
+      const key = `\u0000regex:${find.flags}:${find.source}`;
+      if (out[key] == null) out[key] = replacement;
     }
   }
   return out;
@@ -899,6 +1008,21 @@ function extractProxy(proxy) {
       if (typeof v.ws === "boolean") entry.ws = v.ws;
       if (typeof v.secure === "boolean") entry.secure = v.secure;
       if (typeof v.rewriteWsOrigin === "boolean") entry.rewriteWsOrigin = v.rewriteWsOrigin;
+      // http-proxy's opt-in redirect and cookie handling, which the built-in
+      // proxy applies too.
+      for (const key of ["followRedirects", "autoRewrite", "xfwd"]) {
+        if (typeof v[key] === "boolean") entry[key] = v[key];
+      }
+      for (const key of ["hostRewrite", "protocolRewrite"]) {
+        if (typeof v[key] === "string") entry[key] = v[key];
+      }
+      for (const key of ["cookieDomainRewrite", "cookiePathRewrite"]) {
+        if (typeof v[key] === "string" || v[key] === false) entry[key] = v[key];
+        else if (v[key] && typeof v[key] === "object") {
+          const map = stringMap(v[key]);
+          if (map) entry[key] = map;
+        }
+      }
       // A FUNCTION `rewrite` cannot cross this JSON config bridge, but it is no
       // longer dropped: when a plugin host runs it hosts the single
       // `server.proxy` from the app's real (un-serialized) config, where the
@@ -944,6 +1068,8 @@ function extractOptimizeDeps(od, rawOd) {
   if (typeof od.noDiscovery === "boolean" && typeof rawOd?.noDiscovery === "boolean") {
     out.noDiscovery = od.noDiscovery;
   }
+  // Resolved to Vite's default (true) when unset, which is oj's default too.
+  if (typeof od.holdUntilCrawlEnd === "boolean") out.holdUntilCrawlEnd = od.holdUntilCrawlEnd;
   for (const key of ["esbuildOptions", "rolldownOptions"]) {
     if (od[key] && typeof od[key] === "object") out[key] = markFunctions(od[key]);
   }
@@ -1078,6 +1204,13 @@ function extractSsr(ssr, ssrEnvironment) {
   if (ne === true || (Array.isArray(ne) && ne.length)) out.noExternal = ne;
   if (ex === true || (Array.isArray(ex) && ex.length)) out.external = ex;
   if (typeof ssr.target === "string") out.target = ssr.target;
+  // The ssr environment's resolve.builtins (createIsBuiltin's input): strings,
+  // and RegExps as their source and flags.
+  if (Array.isArray(envResolve?.builtins)) {
+    out.builtins = envResolve.builtins
+      .map((b) => (typeof b === "string" ? b : b instanceof RegExp ? { regex: b.source, flags: b.flags } : null))
+      .filter((b) => b !== null);
+  }
   const res = extractResolve(ssr.resolve);
   if (res) out.resolve = res;
   return Object.keys(out).length ? out : null;
@@ -1106,8 +1239,8 @@ const declaresRunnerEnvironment = (cfg) =>
   Object.values(cfg.environments ?? {}).some((e) => e && e.dev && typeof e.dev.createEnvironment === "function");
 
 // Plugins whose `config` hooks this out-of-band re-run must not execute: the
-// exact rule the Start loader applies when IT re-runs config hooks on fresh
-// instances (start/vite-plugin-bridge.mjs `ojReimplemented`) — the framework
+// exact rule a Start plugin host applies when IT re-runs config hooks on
+// fresh instances (native-plugins.mjs `isReimplemented`) — the framework
 // plugins oj reimplements natively never ran hooks under oj, and their config
 // hooks have side effects that fight oj's own lifecycle (the TanStack router
 // plugin's config hook starts its route generator) — plus the dev-tooling
@@ -1119,12 +1252,10 @@ const declaresRunnerEnvironment = (cfg) =>
 // the skipped set is oj-reimplemented framework plugins, whose runtimes oj
 // itself provides, and dev-only tooling, which declares no environments. The
 // Cloudflare plugins match neither rule, so their declaration is seen.
-const ojReimplemented = (name = "") =>
-  name.startsWith("vite:") || /^tanstack[-:]/.test(name) || name.startsWith("@tanstack/");
 const SIDE_EFFECTFUL_CONFIG_PLUGIN_NAMES = new Set(["vite-plugin-checker"]);
 const skipsConfigHook = (p) => {
   const name = (p && p.name) || "";
-  return ojReimplemented(name) || SIDE_EFFECTFUL_CONFIG_PLUGIN_NAMES.has(name);
+  return isReimplemented(name) || SIDE_EFFECTFUL_CONFIG_PLUGIN_NAMES.has(name);
 };
 
 // Vite's BasicMinimalPluginContext surface, enough for a config hook to speak.
@@ -1160,15 +1291,12 @@ async function detectSsrRunnerBacked(raw, configEnv, merge = mergeConfigLite) {
   // then by the config hook's own `order` (getSortedPluginsByHook), and call
   // each `handler.call(ctx, config, env)`, merging every return into the
   // running config so later hooks see earlier merges (runConfigHook).
-  let list = Array.isArray(raw.plugins) ? raw.plugins : [];
+  let list;
   try {
-    do {
-      list = (await Promise.all(list)).flat(Infinity);
-    } while (list.some((v) => v && typeof v.then === "function"));
+    list = await flattenPlugins(raw.plugins);
   } catch {
     return false;
   }
-  list = list.filter(Boolean);
   const applyConfig = { ...raw, mode: env.mode };
   list = list.filter((p) => {
     if (!p.apply) return true;
@@ -1425,8 +1553,9 @@ function extractCss(css) {
 // with the raw config file's export, not the resolved config: Vite's resolveConfig
 // fills every option with defaults (esbuild.jsxDev/charset/legalComments, worker,
 // ssr.resolve, cors.origin, optimizeDeps.esbuildOptions, terserOptions) and none of
-// those are configuration to warn about.
-function warnUnsupported(c) {
+// those are configuration to warn about. `worker` only reaches a build's
+// worker bundles, which only an SPA build (`spaBuild`) makes without it.
+function warnUnsupported(c, spaBuild = false) {
   if (!c || typeof c !== "object") return;
   if (c.build?.terserOptions) warn("build.terserOptions is not applied (oj minifies with oxc)");
   if (c.esbuild?.jsx === "preserve" || c.oxc?.jsx === "preserve") {
@@ -1436,7 +1565,7 @@ function warnUnsupported(c) {
     const rest = Object.keys(c.esbuild).filter((k) => !JSX_ESBUILD_KEYS.includes(k));
     if (rest.length) warn(`esbuild options ${rest.join(", ")} are not applied (jsx* are)`);
   }
-  if (c.worker) warn("worker config is not applied");
+  if (c.worker && spaBuild) warn("worker config is not applied");
   if (Array.isArray(c.optimizeDeps?.esbuildOptions?.plugins) && c.optimizeDeps.esbuildOptions.plugins.length) {
     warn("optimizeDeps.esbuildOptions.plugins are not applied (scalar esbuild options are)");
   }
@@ -1447,7 +1576,7 @@ function warnUnsupported(c) {
     warn("optimizeDeps.rollupOptions is not applied (use rolldownOptions or esbuildOptions)");
   }
   if (typeof c.build?.assetsInlineLimit === "function") {
-    warn("build.assetsInlineLimit is a function and cannot be applied; the 4096 byte default is used");
+    warn("build.assetsInlineLimit is a function: dev asks it, a build uses the 4096 byte default");
   }
   if (c.ssr?.resolve && typeof c.ssr.resolve === "object") {
     // ssr.resolve.conditions/externalConditions ARE applied (the preferred
@@ -1482,6 +1611,60 @@ export {
 /// broken config is not an empty config), `__deps`/`__depsTruncated` feed the
 /// extraction cache, and `__stderr` carries everything the run would have
 /// printed to stderr.
+// How many of the config's own plugins oj's plugin host would run: every one
+// outside oj's native and unsupported sets. `apply` is not applied, so this
+// can only over-count, which keeps a host. null when the list cannot be read.
+async function activePluginCount(raw) {
+  if (!raw) return null;
+  try {
+    return (await flattenPlugins(raw.plugins)).filter(
+      (p) => !OJ_NATIVE_PLUGIN_NAMES.has(p.name) && !OJ_UNSUPPORTED_PLUGIN_NAMES.has(p.name),
+    ).length;
+  } catch {
+    return null;
+  }
+}
+
+// The option values that cross to Rust: functions (cssInjectionTarget) and
+// other non-JSON values are dropped.
+function jsonOptions(value) {
+  try {
+    return JSON.parse(JSON.stringify(value, (_, v) => (typeof v === "function" ? undefined : v)));
+  } catch {
+    return {};
+  }
+}
+
+// The config's @stylexjs/unplugin, for oj's native StyleX: the options it was
+// given, or null when the config has none.
+async function stylexPlugin(raw) {
+  if (!raw) return null;
+  try {
+    const plugin = (await flattenPlugins(raw.plugins)).find((p) => p.name === "@stylexjs/unplugin");
+    if (!plugin) return null;
+    // oj's stand-in for the package (oj_js stand_ins) records them, imported
+    // or require()d, from node_modules/@stylexjs/unplugin.
+    const options = plugin.__ojStylexOptions;
+    if (!options) {
+      warn(
+        "@stylexjs/unplugin was loaded from outside node_modules/@stylexjs/unplugin, so oj cannot read " +
+          "its options and compiles StyleX with the defaults",
+      );
+      return { options: {} };
+    }
+    if (typeof options.cssInjectionTarget === "function") {
+      warn("@stylexjs/unplugin cssInjectionTarget is not applied: the StyleX sheet joins the build's entry stylesheet");
+    }
+    const babel = options.babelConfig;
+    if (babel && ((babel.plugins ?? []).length || (babel.presets ?? []).length)) {
+      warn("@stylexjs/unplugin babelConfig plugins and presets are not applied (oj compiles StyleX natively)");
+    }
+    return { options: jsonOptions(options) };
+  } catch {
+    return null;
+  }
+}
+
 export async function extract(input) {
   configPath = String(input.vite);
   appRoot = String(input.root);
@@ -1491,6 +1674,8 @@ export async function extract(input) {
   ojCacheDir = typeof input.cacheDir === "string" && input.cacheDir ? input.cacheDir : null;
   const chunks = [];
   installOutputCapture(chunks);
+  observedEnvReads.clear();
+  observedEnvEnumerated = false;
   isolateProcessForExtraction();
   process.env.VITE_CONFIG_NATIVE_IGNORE_WARNING ??= "true";
   defaultNodeEnv = command === "build" ? "production" : "development";
@@ -1506,9 +1691,16 @@ export async function extract(input) {
   observedReadsTruncated = false;
   try {
     installConfigReadRecorder();
-    const { config, raw, deps, runnerBacked, merge } = (await loadConfig()) ?? {};
+    const restoreGenerator = await recordStartRouterPaths();
+    let loaded;
+    try {
+      loaded = await loadConfig();
+    } finally {
+      restoreGenerator();
+    }
+    const { config, raw, deps, runnerBacked, merge } = loaded ?? {};
     const c = config ?? {};
-    warnUnsupported(raw ?? c);
+    warnUnsupported(raw ?? c, input.spaBuild === true);
     // Extraction is the single runner-backed detection authority (the plugin
     // host and every Rust consumer read what it publishes). On the resolveConfig
     // path the sentinel decided inside Vite's own hook run; otherwise the port
@@ -1553,6 +1745,20 @@ export async function extract(input) {
         if (Object.keys(resolveOut).length === 0) resolveOut = null;
       }
     }
+    // How the app applies tsconfig `paths`: vite-tsconfig-paths in the plugin
+    // list, Vite 8's own `resolve.tsconfigPaths`, or neither (no paths).
+    // Vite's top-level `tsconfig` option names the one file its own
+    // resolver reads. The plugin names are the ones Vite's own warning
+    // recognizes (resolveConfig).
+    const tsconfigPathsPlugin = (c.plugins ?? []).some(
+      (p) => p?.name === "vite-tsconfig-paths" || p?.name === "vite-plugin-tsconfig-paths",
+    );
+    resolveOut = {
+      ...(resolveOut ?? {}),
+      tsconfigPaths: c.resolve?.tsconfigPaths === true,
+      tsconfigPathsPlugin,
+      tsconfigFile: typeof c.tsconfig === "string" ? c.tsconfig : null,
+    };
     recordEnvFilesForMode(typeof c.mode === "string" ? c.mode : mode, typeof c.envDir === "string" ? c.envDir : null);
     return {
       __ok: true,
@@ -1564,9 +1770,17 @@ export async function extract(input) {
       // The recorder overflowed: __deps is incomplete, so the caller must
       // not cache this extraction under it (absent when the stamp is whole).
       ...(observedReadsTruncated ? { __depsTruncated: true } : {}),
+      // The env the evaluation read (see recordingEnv): the Rust cache stamps
+      // these values, so another value is a miss as Vite re-reads them.
+      __envReads: [...observedEnvReads].sort(),
+      __envEnumerated: observedEnvEnumerated,
+      __envPrefixes: (Array.isArray(c.envPrefix) ? c.envPrefix : [c.envPrefix ?? "VITE_"]).filter(
+        (p) => typeof p === "string",
+      ),
       base: typeof c.base === "string" ? c.base : null,
       publicDir: typeof c.publicDir === "string" ? c.publicDir : c.publicDir === false ? false : null,
       port: typeof c.server?.port === "number" ? c.server.port : null,
+      origin: typeof c.server?.origin === "string" ? c.server.origin : null,
       host: typeof c.server?.host === "string" ? c.server.host : null,
       hmr: c.server?.hmr === false ? false : null,
       fsAllow: Array.isArray(c.server?.fs?.allow) ? c.server.fs.allow.filter((x) => typeof x === "string") : null,
@@ -1582,6 +1796,16 @@ export async function extract(input) {
       proxy: extractProxy(c.server?.proxy),
       rollupOptions: markFunctions(c.build?.rolldownOptions ?? c.build?.rollupOptions ?? null),
       assetsInlineLimit: typeof c.build?.assetsInlineLimit === "number" ? c.build.assetsInlineLimit : null,
+      // The function itself stays in the plugin host, which dev asks per file.
+      assetsInlineLimitFn: typeof c.build?.assetsInlineLimit === "function" ? true : null,
+      // Each environment's own resolved value: a number, or "fn" for a function.
+      assetsInlineLimitEnvs: Object.fromEntries(
+        Object.entries(c.environments ?? {}).flatMap(([name, env]) => {
+          const limit = env?.build?.assetsInlineLimit;
+          if (typeof limit === "number") return [[name, limit]];
+          return typeof limit === "function" ? [[name, "fn"]] : [];
+        }),
+      ),
       dedupe: Array.isArray(c.resolve?.dedupe) ? c.resolve.dedupe.filter((x) => typeof x === "string") : null,
       optimizeDeps: extractOptimizeDeps(c.optimizeDeps, raw?.optimizeDeps),
       build: extractBuild(c.build),
@@ -1600,11 +1824,17 @@ export async function extract(input) {
       css: extractCss(c.css),
       envPrefix: extractEnvPrefix(c.envPrefix),
       envDir: typeof c.envDir === "string" ? c.envDir : null,
+      // Only when Start's generator ran: a plain app's output stays the one
+      // the Rust static reader's template holds (static_config_parity).
+      ...(startRouterPaths ? { startRouter: startRouterPaths } : {}),
       cors: extractCors(c.server?.cors),
       allowedHosts: extractAllowedHosts(c.server?.allowedHosts),
       preview: extractPreview(c.preview),
       appType: typeof c.appType === "string" ? c.appType : null,
       html: typeof c.html?.cspNonce === "string" ? { cspNonce: c.html.cspNonce } : null,
+      activePlugins: await activePluginCount(raw),
+      resolveError: resolveFailure ? String((resolveFailure && resolveFailure.message) || resolveFailure) : null,
+      stylex: await stylexPlugin(raw),
     };
   } catch (e) {
     emitStderr(`oj: could not extract vite.config values: ${(e && e.stack) || e}\n`);

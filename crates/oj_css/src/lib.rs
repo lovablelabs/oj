@@ -5,7 +5,9 @@
 //! rebasing), grass for Sass, and postcss-import style `@import` inlining,
 //! each resolving specifiers the way Vite does.
 
+mod chunk;
 mod compile;
+mod generic_names;
 mod imports;
 mod lightning;
 mod modules;
@@ -15,9 +17,11 @@ mod resolve;
 mod sass;
 mod targets;
 
+pub use chunk::{finalize_chunk_css, hoist_at_rules};
 pub use compile::{
     compile_css, compile_css_dev, compile_css_rebased, compile_css_rebased_with_map,
-    compile_css_with, minify_css, CssOutput,
+    compile_css_with, compile_css_with_scope_source, compile_scoped_css_dev,
+    compile_scoped_css_with, minify_css, scope_css_module, CssOutput,
 };
 pub use imports::{
     inline_imports, inline_imports_collecting, inline_imports_with, resolve_css_import,
@@ -33,3 +37,5 @@ pub use sass::{
     SassOptions,
 };
 pub use targets::browser_targets;
+#[cfg(not(target_arch = "wasm32"))]
+pub use {compile::process_for_browserslist, targets::browserslist_targets};

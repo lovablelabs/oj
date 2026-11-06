@@ -1,0 +1,87 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/transform-stylex-defineMarker-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs and upstream's own expected values — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "assertions/defineMarker-member-call-001-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const fooBar = stylex.defineMarker();\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineMarker", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const fooBar = {\n  x1jdyizh: \"x1jdyizh\",\n  $$css: true\n};",
+        "site": {
+          "file": "transform-stylex-defineMarker-test.js",
+          "test": "member call",
+          "line": 46
+        }
+      }
+    },
+    {
+      "id": "assertions/defineMarker-member-call-002-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const fooBar = stylex.defineMarker();\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineMarker", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [],
+        "site": {
+          "file": "transform-stylex-defineMarker-test.js",
+          "test": "member call",
+          "line": 53
+        }
+      }
+    },
+    {
+      "id": "assertions/defineMarker-named-import-call-003-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "vars.stylex.js",
+      "source": "\n        import { defineMarker } from '@stylexjs/stylex';\n        export const baz = defineMarker();\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineMarker", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import { defineMarker } from '@stylexjs/stylex';\nexport const baz = {\n  x1i61hkd: \"x1i61hkd\",\n  $$css: true\n};",
+        "site": {
+          "file": "transform-stylex-defineMarker-test.js",
+          "test": "named import call",
+          "line": 66
+        }
+      }
+    }
+  ]
+}

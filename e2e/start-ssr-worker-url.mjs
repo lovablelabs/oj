@@ -27,9 +27,7 @@ const fixture = path.join(here, "fixtures", "start-app");
 const oj = path.join(repo, "target", "debug", "oj");
 const PORT = Number(process.env.OJ_E2E_PORT || 3107);
 
-const installed =
-  fs.existsSync(path.join(fixture, "node_modules", "@tanstack", "react-start")) &&
-  fs.existsSync(path.join(fixture, "node_modules", "rolldown"));
+const installed = fs.existsSync(path.join(fixture, "node_modules", "@tanstack", "react-start"));
 if (!installed) {
   console.log("SKIP start ssr worker url: fixture deps not installed");
   process.exit(0);
@@ -107,6 +105,12 @@ write(
     "",
   ].join("\n"),
 );
+// A worker's own `new URL(..., import.meta.url)`: in a build the worker is
+// emitted under assets/, away from the file it names.
+write(
+  "src/lib/wk/asset-worker.ts",
+  'self.onmessage = () => fetch(new URL("../hero.png", import.meta.url)).then((r) => self.postMessage("wasset-" + r.status));\n',
+);
 write(
   "src/lib/wk/inline-worker.ts",
   'import { n } from "./helper";\nself.onmessage = () => self.postMessage(`inline-${n}`);\n',
@@ -132,7 +136,12 @@ about = about.replace(
     "function WorkerRun() {\n" +
     "  const [out, setOut] = useState<string[]>([]);\n" +
     "  useEffect(() => {\n" +
-    '    const ws = [new WorkerCtor(), new InlineCtor(), new Worker(wurl, { type: "module" })];\n' +
+    '    const ws = [new WorkerCtor(), new InlineCtor(), new Worker(wurl, { type: "module" }),\n' +
+    // Vite's worker-import-meta-url and asset-import-meta-url: relative to
+    // the module, not to the bundled chunk it lands in.
+    '      new Worker(new URL("../lib/wk/worker.ts", import.meta.url), { type: "module" }),\n' +
+    '      new Worker(new URL("../lib/wk/asset-worker.ts", import.meta.url), { type: "module" })];\n' +
+    '    fetch(new URL("../lib/hero.png", import.meta.url)).then((r) => setOut((o) => [...o, "asset-" + r.status].sort()));\n' +
     "    for (const w of ws) {\n" +
     "      w.onmessage = (e) => setOut((o) => [...o, String(e.data)].sort());\n" +
     "      w.postMessage(0);\n" +
@@ -226,9 +235,11 @@ async function served(cmd, args, opts, check) {
   }
 }
 
-// Load /about in Chromium and wait for all three workers to answer: the
-// ?worker constructor, the ?worker&inline one (a Blob URL in a build) and
-// `new Worker(?worker&url)`.
+// Load /about in Chromium and wait for all five workers to answer: the
+// ?worker constructor, the ?worker&inline one (a Blob URL in a build),
+// `new Worker(?worker&url)` and two `new Worker(new URL(..., import.meta.url))`,
+// one fetching its own `new URL(...)` asset; and for the page's
+// `new URL(..., import.meta.url)` asset to fetch.
 async function workersRunInBrowser(label) {
   let pw = null;
   try {
@@ -249,7 +260,7 @@ async function workersRunInBrowser(label) {
       hydrated === RESOLVED,
       `${label}: the hydrated page resolved differently: ${JSON.stringify(hydrated)} (errors: ${errors.join(" | ")})`,
     );
-    const want = "42,42,inline-41";
+    const want = "42,42,42,asset-200,inline-41,wasset-200";
     const got = await page
       .waitForFunction((w) => document.querySelector("#wkrun")?.textContent === w, want, { timeout: 20000 })
       .then(() => want)
@@ -263,7 +274,9 @@ async function workersRunInBrowser(label) {
       got === want,
       `${label}: workers answered ${JSON.stringify(got)}, want ${want}; page errors: ${errors.join(" | ")}`,
     );
-    console.log(`${label}: ?worker, ?worker&inline and ?worker&url all run in the browser`);
+    console.log(
+      `${label}: ?worker, ?worker&inline, ?worker&url and new URL(..., import.meta.url) all run in the browser`,
+    );
   } finally {
     await browser.close();
   }
@@ -272,9 +285,11 @@ async function workersRunInBrowser(label) {
 const rendered = async () => {
   const res = await fetch(`http://localhost:${PORT}/about`);
   const html = await res.text();
+  // Text content as the page shows it (React escapes `&` in it).
+  const text = (m) => m?.[1]?.replaceAll("&amp;", "&");
   return {
     status: res.status,
-    shown: html.match(/<p id="wk">([^<]*)<\/p>/)?.[1],
+    shown: text(html.match(/<p id="wk">([^<]*)<\/p>/)),
     rid: html.match(/<p id="rid">([^<]*)<\/p>/)?.[1],
     hero: html.match(/<p id="hero">([^<]*)<\/p>/)?.[1],
   };
@@ -293,13 +308,15 @@ try {
   await served(oj, ["dev", app, "--port", String(PORT)], {}, async (stderr) => {
     const { status, shown } = await rendered();
     must(status === 200, `dev /about returned ${status}\n${stderr().slice(-2000)}`);
-    must(
-      shown === "/src/lib/wk/worker.ts|functionfunction",
-      `dev SSR worker imports rendered ${JSON.stringify(shown)}`,
-    );
-    const worker = await fetch(`http://localhost:${PORT}/src/lib/wk/worker.ts`);
+    // Vite's dev worker URL: the file's, with `worker_file&type=module`.
+    const workerUrl = "/src/lib/wk/worker.ts?worker_file&type=module";
+    must(shown === `${workerUrl}|functionfunction`, `dev SSR worker imports rendered ${JSON.stringify(shown)}`);
+    const worker = await fetch(`http://localhost:${PORT}${workerUrl}`);
     must(worker.status === 200, `the worker URL the SSR render emitted returned ${worker.status}`);
-    must(!(await worker.text()).includes(": number"), "the worker URL serves uncompiled TypeScript");
+    const workerJs = await worker.text();
+    must(!workerJs.includes(": number"), "the worker URL serves uncompiled TypeScript");
+    // vite:worker's transform: a module worker imports the env module first.
+    must(workerJs.startsWith('import "/@vite/env"'), "the worker module lacks the env prelude");
     // The client bundle (which failed to load the query) carries the same URL,
     // so the rendered value hydrates unchanged.
     const cache = path.join(app, ".oj-cache");
@@ -308,7 +325,7 @@ try {
     let js = "";
     for (const f of index.files)
       if (f.name.endsWith(".js")) js += await (await fetch(`http://localhost:${PORT}/@oj-start/${f.name}`)).text();
-    must(js.includes('"/src/lib/wk/worker.ts"'), "the dev client bundle does not carry the worker URL");
+    must(js.includes(`"${workerUrl}"`), "the dev client bundle does not carry the worker URL");
     must(/new Worker\(/.test(js), "the dev client bundle has no ?worker constructor");
     clientResolvedLikeVite(js, "start-dev");
     const devPage = await rendered();
@@ -346,7 +363,13 @@ try {
     stdio: ["ignore", "ignore", "inherit"],
   });
   const assets = path.join(out, "client", "assets");
-  const workerFile = fs.readdirSync(assets).find((f) => /^worker-[\w-]+\.js$/.test(f));
+  // The app has two workers: lib/wk's (with the inlined helper) and the one
+  // that fetches an asset. Pick wk's by what it does, not by listing order,
+  // which follows the content hash in its name.
+  const workerFile = fs
+    .readdirSync(assets)
+    .filter((f) => /^worker-[\w-]+\.js$/.test(f))
+    .find((f) => !fs.readFileSync(path.join(assets, f), "utf8").includes("wasset-"));
   must(workerFile, `the build emitted no worker asset: ${fs.readdirSync(assets).join(", ")}`);
   const workerCode = fs.readFileSync(path.join(assets, workerFile), "utf8");
   // The helper's 41 is inlined (a minifier folds `41 + 1` to 42).
@@ -415,8 +438,11 @@ try {
     inlineSource.includes("inline-41") && !/\bimport\b/.test(inlineSource),
     `the inlined worker is not the bundled entry:\n${inlineSource}`,
   );
+  // The default worker.format is iife: a classic worker, which revokes its
+  // Blob URL through self.location (Vite's worker load).
   must(
-    clientJs.includes("URL.revokeObjectURL(import.meta.url)") && clientJs.includes("createObjectURL"),
+    clientJs.includes("(self.URL || self.webkitURL).revokeObjectURL(self.location.href);") &&
+      clientJs.includes("createObjectURL"),
     "the inline worker does not start from a Blob URL",
   );
   console.log("start build: ?worker&inline ships the bundled worker inline and starts it from a Blob URL");

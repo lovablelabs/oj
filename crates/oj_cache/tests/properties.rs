@@ -36,6 +36,7 @@ fn cached_module() -> impl Strategy<Value = CachedModule> {
                     .map(|(a, b)| (a.clone(), vec![b.clone()]))
                     .collect(),
                 hot: None,
+                stylex_rules: Vec::new(),
             },
         )
 }

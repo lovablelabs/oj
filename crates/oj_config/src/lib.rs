@@ -13,6 +13,7 @@ mod resolve;
 mod schema;
 mod server;
 mod ssr;
+mod start;
 
 pub use build::{
     assets_dir_path, build_assets_dir, build_chunk_size_warning_limit, build_css_minify,
@@ -31,10 +32,11 @@ pub use optimize::{
     optimize_deps_needs_interop,
 };
 pub use resolve::{
-    node_server_conditions, node_server_external_conditions, resolve_alias, resolve_conditions,
-    resolve_conditions_for, resolve_dedupe, resolve_extensions, resolve_main_fields,
-    resolve_preserve_symlinks, ssr_resolve_main_fields, user_external_conditions,
-    user_resolve_conditions,
+    environment_dedupe, environment_extensions, environment_main_fields,
+    environment_resolve_conditions, node_server_conditions, node_server_external_conditions,
+    reported_conditions, resolve_alias, resolve_conditions, resolve_conditions_for, resolve_dedupe,
+    resolve_extensions, resolve_main_fields, resolve_preserve_symlinks, ssr_external_conditions,
+    ssr_resolve_main_fields, top_level_alias, user_external_conditions, user_resolve_conditions,
 };
 pub use schema::*;
 pub use server::{
@@ -42,3 +44,4 @@ pub use server::{
     server_strict_port, server_warmup_files,
 };
 pub use ssr::{package_name_of, ssr_externals, ssr_runner_backed, SsrExternals};
+pub use start::{start_route_tree, start_routes_dir, StartRouterPaths};

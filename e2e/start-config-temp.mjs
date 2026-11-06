@@ -19,9 +19,7 @@ const oj = path.join(repo, "target", "debug", "oj");
 const PORT = Number(process.env.OJ_E2E_PORT || 3099);
 const ENTRY = `http://localhost:${PORT}/@oj-start/client-entry.js`;
 
-const installed =
-  fs.existsSync(path.join(app, "node_modules", "@tanstack", "react-start")) &&
-  fs.existsSync(path.join(app, "node_modules", "rolldown"));
+const installed = fs.existsSync(path.join(app, "node_modules", "@tanstack", "react-start"));
 if (!installed) {
   console.log("SKIP start config temp: fixture deps not installed");
   process.exit(0);

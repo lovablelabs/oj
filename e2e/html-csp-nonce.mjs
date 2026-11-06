@@ -73,7 +73,13 @@ function everyTagHasNonce(html, re) {
       );
     }
   } finally {
-    srv.kill();
+    // Wait for the exit: a server still shutting down writes into the app's
+    // cache while the cleanup below removes it.
+    if (srv.exitCode === null && srv.signalCode === null) {
+      const exited = new Promise((resolve) => srv.once("exit", resolve));
+      srv.kill();
+      await exited;
+    }
   }
 }
 

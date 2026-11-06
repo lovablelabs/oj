@@ -76,3 +76,94 @@ async fn plain_imports_are_inlined_with_urls_rebased() {
         "inlined imports still present:\n{css}"
     );
 }
+
+/// A Google Fonts import carries `;`s inside its url: it stays for the
+/// browser, whole and first, and the relative imports after it are inlined.
+/// `tailwind` adds a Tailwind marker under a PostCSS config, the sheet path
+/// that hands the app's PostCSS an already-inlined sheet as Vite's
+/// postcss-import does; an edit to an inlined file then reaches the sheet.
+async fn remote_font_then_relative_imports(tailwind: bool) {
+    let marker = if tailwind {
+        "@tailwind utilities;\n"
+    } else {
+        ""
+    };
+    let index = format!(
+        "@import url('https://fonts.test/css2?family=X:wght@400;500;700&display=swap');\n@import \"./styles/a.css\";\n@import \"./styles/b.css\";\n\n{marker}.app {{ margin: 0; }}\n"
+    );
+    let mut files = vec![
+        ("package.json", r#"{"name":"fonts-app","version":"1.0.0"}"#),
+        ("src/styles/a.css", ".from-a { color: red; }\n"),
+        ("src/styles/b.css", ".from-b { color: blue; }\n"),
+        ("src/index.css", index.as_str()),
+        (
+            "src/main.js",
+            "import \"./index.css\";\nwindow.__OK = true;\n",
+        ),
+        ("index.html", INDEX_HTML),
+    ];
+    if tailwind {
+        files.push((
+            "postcss.config.mjs",
+            "export default { plugins: [{ postcssPlugin: \"oj-marker\", Once(root) { root.append(\".from-postcss { color: green; }\"); } }] };\n",
+        ));
+    }
+    let app = App::new(&files);
+    if tailwind {
+        // The whole fixture install: postcss needs its own deps beside it.
+        let node_modules = crate::fixture("postcss")
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        std::os::unix::fs::symlink(node_modules, app.root.join("node_modules")).unwrap();
+    }
+    let server = app.serve().await;
+    let css = server.text("/src/index.css?direct").await;
+
+    let fonts = Regex::new(
+        r#"^\s*@import (url\()?["']https://fonts\.test/css2\?family=X:wght@400;500;700&display=swap["']\)?;"#,
+    )
+    .unwrap();
+    assert!(
+        fonts.is_match(&css),
+        "remote import kept whole and first:\n{css}"
+    );
+    for rule in [".from-a", ".from-b", ".app"] {
+        assert!(css.contains(rule), "{rule} served:\n{css}");
+    }
+    assert!(
+        !css.contains("./styles/"),
+        "relative imports left unresolved:\n{css}"
+    );
+    if !tailwind {
+        return;
+    }
+    assert!(css.contains(".from-postcss"), "app's postcss ran:\n{css}");
+
+    let _listening = server.listen().await;
+    app.write(&[("src/styles/a.css", ".from-a-edited { color: red; }\n")]);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !server
+        .text("/src/index.css?direct")
+        .await
+        .contains(".from-a-edited")
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "edit to an inlined file never reached the sheet"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn relative_imports_after_a_remote_font_import_are_inlined() {
+    remote_font_then_relative_imports(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tailwind_sheet_inlines_imports_before_postcss() {
+    crate::require_fixture!("postcss");
+    remote_font_then_relative_imports(true).await;
+}

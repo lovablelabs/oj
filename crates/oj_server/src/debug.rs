@@ -4,7 +4,7 @@ pub(crate) fn debug_mem() -> bool {
     oj_env::get().knobs.debug_mem
 }
 
-/// 404 unless OJ_DEBUG_MEM is set; 403 for anything carrying an `Origin`.
+/// 404 unless `--debug mem` is on; 403 for anything carrying an `Origin`.
 /// Probes send no Origin header; a hostile page's cross-origin fetch always
 /// does, and GC-hammering from a tab is the only remote vector here.
 fn debug_gate(headers: &axum::http::HeaderMap) -> Option<Response> {
@@ -17,7 +17,7 @@ fn debug_gate(headers: &axum::http::HeaderMap) -> Option<Response> {
     None
 }
 
-/// Deterministic resident-byte split (OJ_DEBUG_MEM=1): budgeted module cache
+/// Deterministic resident-byte split (`--debug mem`): budgeted module cache
 /// plus served-dep store, so soaks measure retention without RSS noise.
 pub(crate) async fn debug_mem_stats(
     headers: axum::http::HeaderMap,

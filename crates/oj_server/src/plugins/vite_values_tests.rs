@@ -49,6 +49,59 @@ fn only_the_first_death_report_per_generation_declares_the_host_gone() {
     assert!(!first_death_report(&mut revive, 4), "once");
 }
 
+// The extractor reports how the app applies tsconfig `paths`: the plugin,
+// Vite 8's `resolve.tsconfigPaths`, or neither.
+#[test]
+fn the_tsconfig_paths_mode_follows_the_extracted_config() {
+    let mode = |resolve: serde_json::Value| {
+        let mut config = oj_config::OjConfig::default();
+        merge_vite_values(
+            &mut config,
+            parse_vite_values(&serde_json::json!({ "resolve": resolve })),
+        );
+        crate::tsconfig_paths(&config)
+    };
+    use oj_resolver::TsconfigPaths::*;
+    let both = serde_json::json!({ "tsconfigPathsPlugin": true, "tsconfigPaths": true });
+    assert_eq!(mode(both), PluginNative);
+    let plugin = serde_json::json!({ "tsconfigPathsPlugin": true, "tsconfigPaths": false });
+    assert_eq!(mode(plugin), Plugin);
+    let native = serde_json::json!({ "tsconfigPathsPlugin": false, "tsconfigPaths": true });
+    assert_eq!(mode(native), Native);
+    let neither = serde_json::json!({ "tsconfigPathsPlugin": false, "tsconfigPaths": false });
+    assert_eq!(mode(neither), Neither);
+    assert_eq!(
+        crate::tsconfig_paths(&oj_config::OjConfig::default()),
+        Neither,
+        "no host: no plugin, as Vite with no config"
+    );
+}
+
+// The resolved config's alias list is the one Vite matches against: its
+// order (mergeAlias puts a plugin's entries first when either side is an
+// array) and values lead; a statically read entry it lacks follows.
+#[test]
+fn the_resolved_alias_list_leads_in_its_order() {
+    let mut config: oj_config::OjConfig = serde_json::from_str(
+        r#"{ "resolve": { "alias": [{ "find": "@", "replacement": "/src" }, { "find": "re", "replacement": "/re" }] } }"#,
+    )
+    .unwrap();
+    let alias: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(r#"{ "@/lib": "/lib2", "@": "/abs/src" }"#).unwrap();
+    merge_vite_values(
+        &mut config,
+        ViteValues {
+            alias: Some(alias),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        oj_config::top_level_alias(&config),
+        [("@/lib", "/lib2"), ("@", "/abs/src"), ("re", "/re")]
+            .map(|(f, r)| (f.to_string(), r.to_string()))
+    );
+}
+
 // An oj-side ssr key must not drop the extractor's verdict: per-key merge,
 // `runnerBacked` always adopted.
 #[test]
@@ -178,7 +231,7 @@ async fn spawn_live_host(tag: &str) -> (PathBuf, std::sync::Arc<PluginHost>) {
         "env": { "command": "serve", "mode": "development" },
     })
     .to_string();
-    let host = PluginHost::spawn_lazy(&root, &plugins, &config, None)
+    let host = PluginHost::spawn(&root, &plugins, &config, None)
         .await
         .expect("the embedded engine spawns");
     host.resolve_id("x", "").await.expect("a live host serves");
@@ -188,8 +241,36 @@ async fn spawn_live_host(tag: &str) -> (PathBuf, std::sync::Arc<PluginHost>) {
 /// Rewind respawn spacing after an induced death: these tests target revive
 /// semantics, not keeper timing.
 fn clear_respawn_spacing(host: &PluginHost) {
-    host.revive.lock().unwrap().last =
+    host.core.revive.lock().unwrap().last =
         Some(std::time::Instant::now() - PLUGIN_HOST_RESPAWN_SPACING);
+}
+
+// A hook rolldown calls runs on rolldown's runtime. A revive that hook
+// triggers keeps the host's own work (the respawned engine, its spawns) on the
+// runtime the host was spawned on.
+#[test]
+fn a_revive_inside_a_rolldown_build_keeps_the_hosts_runtime() {
+    let rolldown = crate::rolldown_runtime::build().unwrap();
+    let main = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let ran_on = main.block_on(async {
+        let (_root, host) = spawn_live_host("rolldown-revive").await;
+        let generation = host.core.revive.lock().unwrap().generation;
+        host.core.declare_gone("test wedge", generation);
+        clear_respawn_spacing(&host);
+        crate::rolldown_runtime::on_rolldown(rolldown.handle(), host.resolve_id("x", ""))
+            .await
+            .expect("the call revives the host");
+        assert_eq!(host.core.revive.lock().unwrap().generation, generation + 1);
+        let runtime = host.runtime().expect("spawned on a runtime").clone();
+        runtime
+            .spawn(async { std::thread::current().name().map(str::to_owned) })
+            .await
+            .unwrap()
+    });
+    assert_ne!(ran_on.as_deref(), Some("oj-rolldown"));
 }
 
 // A wedge is no longer terminal: the next call revives the host with a
@@ -197,15 +278,15 @@ fn clear_respawn_spacing(host: &PluginHost) {
 #[tokio::test]
 async fn a_gone_host_is_revived_by_the_next_call() {
     let (_root, host) = spawn_live_host("basic").await;
-    let generation = host.revive.lock().unwrap().generation;
-    host.declare_gone("test wedge", generation);
+    let generation = host.core.revive.lock().unwrap().generation;
+    host.core.declare_gone("test wedge", generation);
     clear_respawn_spacing(&host);
-    assert!(*host.host_gone.borrow(), "the death latched");
+    assert!(*host.core.host_gone.borrow(), "the death latched");
 
     host.resolve_id("x", "")
         .await
         .expect("the next call revives the host and serves");
-    let revive = host.revive.lock().unwrap();
+    let revive = host.core.revive.lock().unwrap();
     assert_eq!(
         revive.generation,
         generation + 1,
@@ -213,7 +294,351 @@ async fn a_gone_host_is_revived_by_the_next_call() {
     );
     assert_eq!(revive.attempts, 1, "one respawn consumed");
     drop(revive);
-    assert!(!*host.host_gone.borrow(), "the host is live again");
+    assert!(!*host.core.host_gone.borrow(), "the host is live again");
+}
+
+// A revived engine numbers its worker containers afresh: a handle from the
+// dead one answers nothing and closing it leaves the new container 1 alone.
+#[tokio::test]
+async fn a_worker_container_handle_dies_with_its_engine() {
+    let (_root, host) = spawn_live_host("worker-gen").await;
+    let old = host
+        .open_worker_container(&[])
+        .await
+        .expect("a worker container");
+    let generation = host.core.revive.lock().unwrap().generation;
+    host.core.declare_gone("test wedge", generation);
+    clear_respawn_spacing(&host);
+    host.resolve_id("x", "").await.expect("revived");
+
+    let new = host
+        .open_worker_container(&[])
+        .await
+        .expect("a worker container");
+    assert_eq!(
+        old.container, new.container,
+        "the revived engine reuses the id"
+    );
+    let err = old
+        .resolve_id("x", "")
+        .await
+        .expect_err("the old handle is stale");
+    assert!(err.contains("died with its plugin host's engine"), "{err}");
+    old.close_container()
+        .await
+        .expect("closing a stale handle is a no-op");
+    new.resolve_id("x", "")
+        .await
+        .expect("the new container is untouched by the stale close");
+    new.close_container().await.expect("closed");
+}
+
+// An environment container is part of the host: a revived engine reopens it
+// under the same id, on its plugins, and its gates refetch their filters.
+#[tokio::test]
+async fn a_revived_host_reopens_its_environment_containers() {
+    let root = std::env::temp_dir().join(format!("oj-revive-env-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let plugins = root.join("oj.plugins.mjs");
+    std::fs::write(
+        &plugins,
+        r#"export default [{
+  name: "ssr-md",
+  applyToEnvironment: (environment) => environment.name === "ssr",
+  transform: { filter: { id: /\.md$/ }, handler(code) { return code + " in " + this.environment.name; } },
+}];
+"#,
+    )
+    .unwrap();
+    let config = serde_json::json!({
+        "config": { "root": root.display().to_string() },
+        "env": { "command": "serve", "mode": "development" },
+    })
+    .to_string();
+    let host = PluginHost::spawn(&root, &plugins, &config, None)
+        .await
+        .expect("the embedded engine spawns");
+    let ssr = host
+        .open_environment_container("ssr", false, false)
+        .await
+        .expect("an ssr container");
+    let md = root.join("a.md").display().to_string();
+    let tsx = root.join("a.tsx").display().to_string();
+    let served = |t: HostTransform| t.code;
+    assert_eq!(
+        served(ssr.transform("# a", &md, "").await.unwrap()),
+        "# a in ssr"
+    );
+    assert_eq!(
+        served(host.transform("# a", &md, "").await.unwrap()),
+        "# a",
+        "the client runs no ssr-only plugin"
+    );
+
+    let generation = host.core.revive.lock().unwrap().generation;
+    host.core.declare_gone("test wedge", generation);
+    clear_respawn_spacing(&host);
+    assert_eq!(
+        served(ssr.transform("# b", &md, "").await.expect("revived")),
+        "# b in ssr",
+        "the revived engine reopened the container"
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while ssr.hook_wants_transform(&tsx, "export default 1") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the reopened container never fetched its plan again"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+// An engine that wedges while an environment container opens is declared
+// gone and comes back with it: the revived engine opens it from its seed,
+// and the open adopts that container rather than failing (and leaving it
+// orphaned there).
+#[tokio::test]
+async fn an_open_the_engine_dies_in_adopts_the_revived_container() {
+    let root = std::env::temp_dir().join(format!("oj-revive-open-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let flag = root.join("died-once");
+    let plugins = root.join("oj.plugins.mjs");
+    std::fs::write(
+        &plugins,
+        format!(
+            r#"import fs from "node:fs";
+export default [{{
+  name: "dies-once",
+  applyToEnvironment(environment) {{
+    if (environment.name === "ssr" && !fs.existsSync({flag:?})) {{
+      fs.writeFileSync({flag:?}, "");
+      const until = Date.now() + 5000;
+      while (Date.now() < until);
+    }}
+    return true;
+  }},
+  transform: {{ filter: {{ id: /\.md$/ }}, handler(code) {{ return code + " in " + this.environment.name; }} }},
+}}];
+"#
+        ),
+    )
+    .unwrap();
+    let config = serde_json::json!({
+        "config": { "root": root.display().to_string() },
+        "env": { "command": "serve", "mode": "development" },
+    })
+    .to_string();
+    let host = PluginHost::spawn_with_timeouts(
+        &root,
+        &plugins,
+        &config,
+        SpawnTimeouts {
+            probe: Some(std::time::Duration::from_millis(300)),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("the embedded engine spawns");
+    host.resolve_id("x", "").await.expect("a live host serves");
+    clear_respawn_spacing(&host);
+    let ssr = host
+        .open_environment_container("ssr", false, false)
+        .await
+        .expect("the open survives the engine's death");
+    let md = root.join("a.md").display().to_string();
+    assert_eq!(
+        ssr.transform("# a", &md, "").await.unwrap().code,
+        "# a in ssr"
+    );
+    assert_eq!(
+        host.core.environments.lock().unwrap().len(),
+        1,
+        "one container, the adopted one"
+    );
+}
+
+// Another caller can revive the engine between the open's failure and its
+// retry check: the revived engine reopened the container from its seed, and
+// the open adopts it instead of closing it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_open_adopts_a_container_another_caller_revived() {
+    let root = std::env::temp_dir().join(format!("oj-revive-race-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let flag = root.join("died-once");
+    let plugins = root.join("oj.plugins.mjs");
+    std::fs::write(
+        &plugins,
+        format!(
+            r#"import fs from "node:fs";
+export default [{{
+  name: "dies-once",
+  applyToEnvironment(environment) {{
+    if (environment.name === "ssr" && !fs.existsSync({flag:?})) {{
+      fs.writeFileSync({flag:?}, "");
+      const until = Date.now() + 5000;
+      while (Date.now() < until);
+    }}
+    return true;
+  }},
+  transform: {{ filter: {{ id: /\.md$/ }}, handler(code) {{ return code + " in " + this.environment.name; }} }},
+}}];
+"#
+        ),
+    )
+    .unwrap();
+    let config = serde_json::json!({
+        "config": { "root": root.display().to_string() },
+        "env": { "command": "serve", "mode": "development" },
+    })
+    .to_string();
+    let host = PluginHost::spawn_with_timeouts(
+        &root,
+        &plugins,
+        &config,
+        SpawnTimeouts {
+            probe: Some(std::time::Duration::from_millis(300)),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("the embedded engine spawns");
+    host.resolve_id("x", "").await.expect("a live host serves");
+    clear_respawn_spacing(&host);
+    // The other caller: revives the engine the moment it is declared gone.
+    let reviver = {
+        let host = std::sync::Arc::clone(&host);
+        let mut gone = host.host_gone_updates();
+        tokio::spawn(async move {
+            let _ = gone.wait_for(|g| *g).await;
+            let _ = host.resolve_id("x", "").await;
+        })
+    };
+    let ssr = host
+        .open_environment_container("ssr", false, false)
+        .await
+        .expect("the open adopts the revived container");
+    reviver.await.unwrap();
+    let md = root.join("a.md").display().to_string();
+    assert_eq!(
+        ssr.transform("# a", &md, "").await.unwrap().code,
+        "# a in ssr"
+    );
+}
+
+// A revive held back by the respawn spacing fails a call at once: an open the
+// engine dies in waits for the revive instead of spinning on retries, and
+// still adopts the revived container.
+#[tokio::test]
+async fn an_open_waits_out_a_held_back_revive_without_spinning() {
+    let root = std::env::temp_dir().join(format!("oj-revive-spacing-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let flag = root.join("wedged-once");
+    let plugins = root.join("oj.plugins.mjs");
+    std::fs::write(
+        &plugins,
+        format!(
+            r#"import fs from "node:fs";
+export default [{{
+  name: "wedges-once",
+  applyToEnvironment(environment) {{
+    if (environment.name === "ssr" && !fs.existsSync({flag:?})) {{
+      fs.writeFileSync({flag:?}, "");
+      const until = Date.now() + 1500;
+      while (Date.now() < until);
+    }}
+    return true;
+  }},
+}}];
+"#
+        ),
+    )
+    .unwrap();
+    let config = serde_json::json!({
+        "config": { "root": root.display().to_string() },
+        "env": { "command": "serve", "mode": "development" },
+    })
+    .to_string();
+    let host = PluginHost::spawn_with_timeouts(
+        &root,
+        &plugins,
+        &config,
+        SpawnTimeouts {
+            probe: Some(std::time::Duration::from_millis(200)),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("the embedded engine spawns");
+    host.resolve_id("x", "").await.expect("a live host serves");
+    // A revive just ran: the next is held back for the respawn spacing.
+    host.core.revive.lock().unwrap().last = Some(std::time::Instant::now());
+    // The open's loop runs on this thread (a current-thread runtime), so this
+    // thread's CPU is the wait's, whatever other tests run alongside.
+    let cpu = || {
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
+        ts.tv_sec as f64 + ts.tv_nsec as f64 / 1e9
+    };
+    let (cpu0, wall0) = (cpu(), std::time::Instant::now());
+    host.open_environment_container("ssr", false, false)
+        .await
+        .expect("the open adopts the container once the revive is allowed");
+    let (spent, waited) = (cpu() - cpu0, wall0.elapsed().as_secs_f64());
+    assert!(
+        waited >= 3.0,
+        "the spacing held the revive back ({waited:.1}s)"
+    );
+    assert!(
+        spent < waited / 2.0,
+        "{spent:.1}s of CPU over {waited:.1}s: the wait spun"
+    );
+}
+
+// A revived engine resets the gates to fail-open, then fetches the plan
+// again: the hooks are gated by their filters on the new generation too.
+#[tokio::test]
+async fn a_revived_host_gates_by_the_plugins_filters_again() {
+    let root = std::env::temp_dir().join(format!("oj-revive-plan-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let plugins = root.join("oj.plugins.mjs");
+    std::fs::write(
+        &plugins,
+        "export default [{ name: \"md\", transform: { filter: { id: /\\.md$/ }, handler(code) { return code; } } }];\n",
+    )
+    .unwrap();
+    let config = serde_json::json!({
+        "config": { "root": root.display().to_string() },
+        "env": { "command": "serve", "mode": "development" },
+    })
+    .to_string();
+    let host = PluginHost::spawn(&root, &plugins, &config, None)
+        .await
+        .expect("the embedded engine spawns");
+    host.build_hook_plan().await;
+    let tsx = root.join("a.tsx").display().to_string();
+    assert!(!host.hook_wants_transform(&tsx, "export default 1"));
+
+    let generation = host.core.revive.lock().unwrap().generation;
+    host.core.declare_gone("test wedge", generation);
+    clear_respawn_spacing(&host);
+    host.resolve_id("x", "").await.expect("revived");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while host.hook_wants_transform(&tsx, "export default 1") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the revived host never fetched its plan again"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(host.hook_wants_transform(&root.join("a.md").display().to_string(), "# a"));
 }
 
 // A death report about a replaced engine (an old call's transport belt
@@ -221,14 +646,15 @@ async fn a_gone_host_is_revived_by_the_next_call() {
 #[tokio::test]
 async fn a_stale_death_report_does_not_kill_a_revived_host() {
     let (_root, host) = spawn_live_host("stale").await;
-    let generation = host.revive.lock().unwrap().generation;
-    host.declare_gone("test wedge", generation);
+    let generation = host.core.revive.lock().unwrap().generation;
+    host.core.declare_gone("test wedge", generation);
     clear_respawn_spacing(&host);
     host.resolve_id("x", "").await.expect("revived");
 
-    host.declare_gone("stale report about the old engine", generation);
+    host.core
+        .declare_gone("stale report about the old engine", generation);
     assert!(
-        !*host.host_gone.borrow(),
+        !*host.core.host_gone.borrow(),
         "a stale-generation report is ignored"
     );
     host.resolve_id("x", "").await.expect("still serving");
@@ -242,7 +668,11 @@ async fn a_shutdown_host_is_never_revived() {
     host.host_gone_wait().await;
     let err = host.resolve_id("x", "").await.expect_err("stays dead");
     assert!(err.contains("plugin host exited"), "{err}");
-    assert_eq!(host.revive.lock().unwrap().attempts, 0, "no respawn burned");
+    assert_eq!(
+        host.core.revive.lock().unwrap().attempts,
+        0,
+        "no respawn burned"
+    );
 }
 
 // Keeper is best effort per addon: an unloadable path is skipped, the eval
@@ -336,14 +766,17 @@ return null;
         err.contains("memory limit") && err.contains("OJ_PLUGIN_MEMORY_MB"),
         "the failure names the cap and its knob: {err}"
     );
-    assert!(*host.host_gone.borrow(), "a blown heap retires the engine");
+    assert!(
+        *host.core.host_gone.borrow(),
+        "a blown heap retires the engine"
+    );
 
     clear_respawn_spacing(&host);
     host.load("after")
         .await
         .expect("the next call revives the host on a fresh heap");
     assert_eq!(
-        host.revive.lock().unwrap().attempts,
+        host.core.revive.lock().unwrap().attempts,
         1,
         "one respawn consumed"
     );
@@ -355,8 +788,8 @@ return null;
 async fn the_respawn_budget_is_finite_and_spaced() {
     let (_root, host) = spawn_live_host("budget").await;
     for round in 0..PLUGIN_HOST_RESPAWN_LIMIT {
-        let generation = host.revive.lock().unwrap().generation;
-        host.declare_gone("recurring test wedge", generation);
+        let generation = host.core.revive.lock().unwrap().generation;
+        host.core.declare_gone("recurring test wedge", generation);
         if round == 0 {
             clear_respawn_spacing(&host);
         }
@@ -365,16 +798,16 @@ async fn the_respawn_budget_is_finite_and_spaced() {
         if round > 0 {
             let err = host.resolve_id("x", "").await.expect_err("spacing rejects");
             assert!(err.contains("plugin host exited"), "{err}");
-            host.revive.lock().unwrap().last =
+            host.core.revive.lock().unwrap().last =
                 Some(std::time::Instant::now() - PLUGIN_HOST_RESPAWN_SPACING);
         }
         host.resolve_id("x", "")
             .await
             .expect("revives within budget");
     }
-    let generation = host.revive.lock().unwrap().generation;
-    host.declare_gone("one wedge too many", generation);
-    host.revive.lock().unwrap().last =
+    let generation = host.core.revive.lock().unwrap().generation;
+    host.core.declare_gone("one wedge too many", generation);
+    host.core.revive.lock().unwrap().last =
         Some(std::time::Instant::now() - PLUGIN_HOST_RESPAWN_SPACING);
     let err = host.resolve_id("x", "").await.expect_err("budget spent");
     assert!(err.contains("plugin host exited"), "{err}");
@@ -726,13 +1159,13 @@ return null;
         .await
         .expect("the next call revives the host and serves");
     assert_eq!(
-        host.revive.lock().unwrap().attempts,
+        host.core.revive.lock().unwrap().attempts,
         1,
         "one respawn consumed"
     );
     // A second death inside the respawn spacing fails fast without a window.
-    let generation = host.revive.lock().unwrap().generation;
-    host.declare_gone("second test wedge", generation);
+    let generation = host.core.revive.lock().unwrap().generation;
+    host.core.declare_gone("second test wedge", generation);
     let t1 = std::time::Instant::now();
     let err = host
         .load("again")
@@ -802,7 +1235,7 @@ return null;
         .await
         .expect("a concurrent call is untouched by the hang");
     assert!(
-        !*host.host_gone.borrow(),
+        !*host.core.host_gone.borrow(),
         "no wedge verdict for a parked loop"
     );
 
@@ -837,7 +1270,7 @@ async fn plugin_env_writes_and_cwd_stay_inside_the_host_shadow() {
         "env": { "command": "serve", "mode": "development" },
     })
     .to_string();
-    let host = PluginHost::spawn_lazy(&root, &plugins, &config, None)
+    let host = PluginHost::spawn(&root, &plugins, &config, None)
         .await
         .expect("the embedded engine spawns");
     let delta = host.env_delta().await;
@@ -899,7 +1332,7 @@ return null;
         "env": { "command": "serve", "mode": "development" },
     })
     .to_string();
-    let host = PluginHost::spawn_lazy(&root, &plugins, &config, None)
+    let host = PluginHost::spawn(&root, &plugins, &config, None)
         .await
         .expect("the embedded engine spawns");
     let (a, b, c, d) = tokio::join!(
@@ -946,7 +1379,7 @@ server.restart();
         "env": { "command": "serve", "mode": "development" },
     })
     .to_string();
-    let host = PluginHost::spawn_lazy(&root, &plugins, &config, None)
+    let host = PluginHost::spawn(&root, &plugins, &config, None)
         .await
         .expect("the embedded engine spawns");
     let (ws_tx, mut ws_rx) = tokio::sync::broadcast::channel(16);
@@ -1091,6 +1524,7 @@ fn merge_adopts_only_unset_fields() {
         public_dir: Some("shared/public".into()),
         port: Some(3010),
         host: Some("localhost".into()),
+        origin: Some("https://cdn.example".into()),
         hmr_disabled: false,
         fs_allow: None,
         fs_strict: None,
@@ -1100,6 +1534,8 @@ fn merge_adopts_only_unset_fields() {
         headers: None,
         rollup_options: None,
         assets_inline_limit: None,
+        assets_inline_limit_fn: false,
+        assets_inline_limit_envs: None,
         proxy: None,
         dedupe: None,
         optimize_deps: None,
@@ -1119,11 +1555,17 @@ fn merge_adopts_only_unset_fields() {
         preview: None,
         app_type: None,
         html: None,
+        active_plugins: None,
+        stylex: None,
+        start_router: None,
+        resolve_error: None,
     };
     merge_vite_values(&mut config, v);
     assert_eq!(config.base.as_deref(), Some("/vite-base/"));
     assert_eq!(config.public_dir, Some("shared/public".into()));
-    assert_eq!(config.server.unwrap().port, Some(3010));
+    let server = config.server.unwrap();
+    assert_eq!(server.port, Some(3010));
+    assert_eq!(server.origin.as_deref(), Some("https://cdn.example"));
 }
 
 #[test]
@@ -1138,6 +1580,7 @@ fn merge_never_overrides_config() {
         public_dir: Some("shared/public".into()),
         port: None,
         host: None,
+        origin: None,
         hmr_disabled: false,
         fs_allow: None,
         fs_strict: None,
@@ -1147,6 +1590,8 @@ fn merge_never_overrides_config() {
         headers: None,
         rollup_options: None,
         assets_inline_limit: None,
+        assets_inline_limit_fn: false,
+        assets_inline_limit_envs: None,
         proxy: None,
         dedupe: None,
         optimize_deps: None,
@@ -1166,6 +1611,10 @@ fn merge_never_overrides_config() {
         preview: None,
         app_type: None,
         html: None,
+        active_plugins: None,
+        stylex: None,
+        start_router: None,
+        resolve_error: None,
     };
     merge_vite_values(&mut config, v);
     assert_eq!(config.base.as_deref(), Some("/oj-base/"));
@@ -1186,6 +1635,7 @@ fn merge_fills_partial_server_and_optimizer_configuration() {
             "serverFlags": { "fsDeny": ["**/*.private"], "warmup": {
                 "clientFiles": ["other.ts"], "ssrFiles": ["server.ts"] } },
             "optimizeDeps": { "include": ["dep"], "exclude": ["other-dep"], "noDiscovery": true,
+                "holdUntilCrawlEnd": false,
                 "rolldownOptions": { "transform": { "define": { "FLAG": "true" }, "target": "es2015" } } }
         })),
     );
@@ -1201,6 +1651,7 @@ fn merge_fills_partial_server_and_optimizer_configuration() {
     assert_eq!(od.exclude.as_ref().unwrap(), &["own-dep"]);
     assert_eq!(od.include.as_ref().unwrap(), &["dep"]);
     assert_eq!(od.no_discovery, Some(true));
+    assert_eq!(od.hold_until_crawl_end, Some(false));
     let opts = oj_config::optimize_deps_bundler_options(&config).unwrap();
     assert_eq!(opts["define"]["FLAG"], "true");
     assert_eq!(opts["target"], "es2015");
@@ -1598,4 +2049,184 @@ fn merge_unions_watch_ignored() {
         unset.server.unwrap().watch.unwrap().ignored,
         Some(vec!["**/.wrangler/**".to_string()])
     );
+}
+
+// The engine started ahead of the payload (dev boot overlaps it with the
+// config extraction) becomes the host's first generation: the plugins it
+// loads serve, and a revive still boots a fresh engine the ordinary way.
+#[tokio::test]
+async fn a_prewarmed_engine_hosts_the_plugins_and_revives_normally() {
+    let root = std::env::temp_dir().join(format!("oj-prewarm-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let plugins = root.join("oj.plugins.mjs");
+    std::fs::write(
+        &plugins,
+        "export default [{ name: \"t\", resolveId(id) { if (id === \"virtual:x\") return \"\\0x\"; } }];\n",
+    )
+    .unwrap();
+    let config = serde_json::json!({
+        "config": { "root": root.display().to_string() },
+        "env": { "command": "serve", "mode": "development" },
+    })
+    .to_string();
+    // No vite under this root: the warm import fails quietly, as it must.
+    let warm = PluginHost::prewarm(&root, None).expect("the engine starts ahead");
+    let host = PluginHost::spawn_prewarmed(&root, &plugins, &config, warm)
+        .await
+        .expect("the host adopts the engine");
+    let resolved = host
+        .resolve_id("virtual:x", "")
+        .await
+        .expect("a live host serves");
+    assert!(
+        resolved
+            .as_deref()
+            .is_some_and(|r| r.ends_with('x') || r.contains("x\"")),
+        "the plugin loaded on the prewarmed engine resolves: {resolved:?}"
+    );
+
+    let generation = host.core.revive.lock().unwrap().generation;
+    host.core.declare_gone("test wedge", generation);
+    clear_respawn_spacing(&host);
+    host.resolve_id("virtual:x", "")
+        .await
+        .expect("a revive boots a fresh engine and serves");
+    assert_eq!(host.core.revive.lock().unwrap().generation, generation + 1);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// The app's vite, warmed ahead of the host, is the module the host's
+// loadViteConfig gets (evaluated once), and a timer it leaves running at
+// import does not hold the host's boot: nothing on the host's engine waits
+// for its event loop to go idle.
+#[tokio::test]
+async fn a_prewarmed_vite_is_shared_and_its_timers_never_hold_the_boot() {
+    let root = std::env::temp_dir().join(format!("oj-prewarm-vite-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let vite = root.join("node_modules/vite");
+    std::fs::create_dir_all(&vite).unwrap();
+    std::fs::write(
+        vite.join("package.json"),
+        r#"{"name":"vite","version":"8.0.0","type":"module","exports":{".":"./index.js"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        vite.join("index.js"),
+        r#"import { appendFileSync } from "node:fs";
+appendFileSync(new URL("./evals.log", import.meta.url), "x");
+setInterval(() => {}, 1000);
+export async function loadConfigFromFile() {
+  return { config: { plugins: [{ name: "t", resolveId(id) { if (id === "virtual:x") return "\0x"; } }] } };
+}
+"#,
+    )
+    .unwrap();
+    let plugins = root.join("vite.config.mjs");
+    std::fs::write(&plugins, "export default {};\n").unwrap();
+    let config = serde_json::json!({
+        "config": { "root": root.display().to_string() },
+        "env": { "command": "serve", "mode": "development" },
+        "pluginsFormat": "vite",
+    })
+    .to_string();
+    let evals = vite.join("evals.log");
+
+    let warm = PluginHost::prewarm(&root, None).expect("the engine starts ahead");
+    // The dev server adopts the engine after the config extraction, by when
+    // the warm import has run and its interval is live.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !evals.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the warm import never ran"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let host = PluginHost::spawn_prewarmed(&root, &plugins, &config, warm)
+        .await
+        .expect("the host adopts the engine");
+    let resolved = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        host.resolve_id("virtual:x", ""),
+    )
+    .await
+    .expect("the host boots while vite's interval runs")
+    .expect("a live host serves");
+    assert!(
+        resolved.as_deref().is_some_and(|r| r.ends_with('x')),
+        "the plugin from the warmed vite resolves: {resolved:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&evals).unwrap(),
+        "x",
+        "vite evaluates once"
+    );
+    host.shutdown();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// Vite's order: `vite`'s cli.js statically imports the chunk its index.js
+// re-exports, so vite evaluates at CLI start with the launching process's
+// NODE_ENV; resolveConfig sets the default only later, right before
+// loadConfigFromFile. The prewarmed host keeps that order: the config sees
+// the default, vite's import did not.
+#[tokio::test]
+async fn a_prewarmed_vite_evaluates_before_the_node_env_default_like_vite() {
+    let root = std::env::temp_dir().join(format!("oj-prewarm-order-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let vite = root.join("node_modules/vite");
+    std::fs::create_dir_all(&vite).unwrap();
+    std::fs::write(
+        vite.join("package.json"),
+        r#"{"name":"vite","version":"8.0.0","type":"module","exports":{".":"./index.js"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        vite.join("index.js"),
+        r#"import { appendFileSync } from "node:fs";
+const log = (line) => appendFileSync(new URL("./order.log", import.meta.url), line + "\n");
+log("import " + (process.env.NODE_ENV ?? "unset"));
+export async function loadConfigFromFile() {
+  log("config " + (process.env.NODE_ENV ?? "unset"));
+  return { config: { plugins: [] } };
+}
+"#,
+    )
+    .unwrap();
+    let plugins = root.join("vite.config.mjs");
+    std::fs::write(&plugins, "export default {};\n").unwrap();
+    let config = serde_json::json!({
+        "config": { "root": root.display().to_string() },
+        "env": { "command": "serve", "mode": "development" },
+        "pluginsFormat": "vite",
+    })
+    .to_string();
+    let order = vite.join("order.log");
+
+    let warm = PluginHost::prewarm(&root, None).expect("the engine starts ahead");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !order.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the warm import never ran"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let host = PluginHost::spawn_prewarmed(&root, &plugins, &config, warm)
+        .await
+        .expect("the host adopts the engine");
+    tokio::time::timeout(std::time::Duration::from_secs(20), host.plugin_names())
+        .await
+        .expect("the host boots");
+
+    let launched = std::env::var("NODE_ENV").ok();
+    let at_import = launched.clone().unwrap_or_else(|| "unset".into());
+    let at_config = launched.unwrap_or_else(|| "development".into());
+    assert_eq!(
+        std::fs::read_to_string(&order).unwrap(),
+        format!("import {at_import}\nconfig {at_config}\n"),
+    );
+    host.shutdown();
+    let _ = std::fs::remove_dir_all(&root);
 }

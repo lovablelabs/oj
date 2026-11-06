@@ -1,0 +1,175 @@
+{
+  "header": {
+    "corpus": "regressions/r4-theming-nested",
+    "description": "Codex round-4 findings 4-8 (theming/nested slice): createTheme at-rule collation on the hash path, defineVars keyed-object rule accumulation, nested CSSType brand containment, nested __proto__ [[Set]] drops, and callable conditional-leaf String coercion. Oracle is @stylexjs/babel-plugin 0.19.0 run live; r4-collation-unverified-hard-error is a documented rust-rejects-more divergence (expect ok upstream, loud UnsupportedApi in rust) and is excluded here because the differ has no divergence-pin lane — it is pinned in tests/theming.rs instead.",
+    "oracle": "@stylexjs/babel-plugin@0.19.0",
+    "written": "2026-08-28"
+  },
+  "jobs": [
+    {
+      "id": "regressions/r4-createtheme-unicorn-collation-001",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/tokens.stylex.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ color: 'red' });\nexport const theme = stylex.createTheme(vars, { color: { default: 'black', '@media (--🦄)': 'pink', '@media (--a)': 'blue' } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["createTheme", "collation", "r4-4"]
+    },
+    {
+      "id": "regressions/r4-createtheme-latin1-collation-002",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/tokens.stylex.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ color: 'red' });\nexport const theme = stylex.createTheme(vars, { color: { default: 'black', '@média (ö)': 'pink', '@media (o)': 'blue', '@media (ø)': 'x' } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["createTheme", "collation", "r4-4"]
+    },
+    {
+      "id": "regressions/r4-definevars-keyed-collision-003",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/tokens.stylex.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ '--x1f014xm': stylex.types.color('red'), color: 'blue' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["defineVars", "types", "r4-5"]
+    },
+    {
+      "id": "regressions/r4-definevars-numeric-atrule-004",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/tokens.stylex.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ a: { default: 'x' }, b: { default: 'y', '1': 'z' } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["defineVars", "enumeration", "r4-5"]
+    },
+    {
+      "id": "regressions/r4-nested-typed-conditional-005",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/tokens.stylex.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const tokens = stylex.unstable_defineVarsNested({ c: { default: 'blue', '@media print': stylex.types.color('red') } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["nested", "types", "r4-6"]
+    },
+    {
+      "id": "regressions/r4-nested-proto-scalar-006",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/tokens.stylex.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const tokens = stylex.unstable_defineVarsNested({ ['__proto__']: 'red', ok: 'blue' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["nested", "proto", "r4-7"]
+    },
+    {
+      "id": "regressions/r4-nested-proto-namespace-007",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/tokens.stylex.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const tokens = stylex.unstable_defineVarsNested({ ['__proto__']: { x: 'red' }, ok: 'blue' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["nested", "proto", "r4-7"]
+    },
+    {
+      "id": "regressions/r4-nested-callable-leaf-008",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/tokens.stylex.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const tokens = stylex.unstable_defineVarsNested({ c: { default: () => 'red', '@media print': 'blue' } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["nested", "callable", "r4-8"]
+    },
+    {
+      "id": "regressions/r4-nested-callable-types-member-009",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/tokens.stylex.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const tokens = stylex.unstable_defineVarsNested({ c: { default: stylex.types.color, '@media print': 'blue' } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["nested", "callable", "r4-8"]
+    },
+    {
+      "id": "regressions/r4-nested-callable-keyframes-member-010",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/tokens.stylex.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const tokens = stylex.unstable_defineVarsNested({ c: { default: stylex.keyframes, '@media print': 'blue' } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["nested", "callable", "r4-8"]
+    },
+    {
+      "id": "regressions/r4-nested-theme-callable-override-011",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/tokens.stylex.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const tokens = stylex.unstable_defineVarsNested({ c: 'blue' });\nexport const theme = stylex.unstable_createThemeNested(tokens, { c: { default: () => 'red', '@media print': 'x' } });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["nested", "callable", "createThemeNested", "r4-8"]
+    }
+  ]
+}

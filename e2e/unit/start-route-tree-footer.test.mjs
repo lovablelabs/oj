@@ -45,9 +45,9 @@ function app(label, { pkg } = {}) {
   return dir;
 }
 
-const generate = (dir) =>
+const generate = (dir, env = {}) =>
   execFileSync(process.execPath, [asset("start/generate.mjs")], {
-    env: { ...process.env, OJ_APP_ROOT: dir },
+    env: { ...process.env, OJ_APP_ROOT: dir, ...env },
     stdio: ["ignore", "pipe", "pipe"],
   });
 
@@ -133,6 +133,9 @@ async function upstreamFooter(dir, generatedRouteTree) {
   }).join("\n");
 }
 
+// A layout key naming the tree path oj passes, not a file.
+const TREE = "<generatedRouteTree>";
+
 const LAYOUTS = {
   "no start entry": {},
   "src/start.ts": { "src/start.ts": "" },
@@ -141,10 +144,11 @@ const LAYOUTS = {
   "src/start.mts": { "src/start.mts": "" },
   "a directory index is not an entry": { "src/start/index.ts": "" },
   "src/router.ts": { "src/start.ts": "", "src/router.ts": "export function getRouter() {}\n", "src/router.tsx": null },
+  // Start's `router.generatedRouteTree`, which oj passes as OJ_GENERATED_ROUTE_TREE.
   "a nested generatedRouteTree": {
     "src/start.ts": "",
     "src/app/.keep": "",
-    "tsr.config.json": JSON.stringify({ generatedRouteTree: "./src/app/routeTree.gen.ts" }),
+    [TREE]: "./src/app/routeTree.gen.ts",
   },
 };
 
@@ -154,14 +158,12 @@ for (const [name, files] of Object.entries(LAYOUTS)) {
     try {
       const all = { "src/router.tsx": "export function getRouter() {}\n", ...files };
       for (const [f, body] of Object.entries(all)) {
-        if (body === null) continue;
+        if (body === null || f === TREE) continue;
         mkdirSync(dirname(join(dir, f)), { recursive: true });
         writeFileSync(join(dir, f), body);
       }
-      const treePath = files["tsr.config.json"]
-        ? JSON.parse(files["tsr.config.json"]).generatedRouteTree
-        : "./src/routeTree.gen.ts";
-      generate(dir);
+      const treePath = files[TREE] ?? "./src/routeTree.gen.ts";
+      generate(dir, files[TREE] ? { OJ_GENERATED_ROUTE_TREE: join(dir, treePath) } : {});
       const tree = readFileSync(join(dir, treePath), "utf8");
       const want = await upstreamFooter(dir, treePath);
       assert.ok(tree.trimEnd().endsWith(want), `want tail:\n${want}\n\ngot tail:\n${tree.slice(-600)}`);

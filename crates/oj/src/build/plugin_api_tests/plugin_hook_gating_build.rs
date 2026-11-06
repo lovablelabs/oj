@@ -227,11 +227,12 @@ async fn a_genuinely_filtered_plan_still_crosses_for_its_matches() {
     );
 }
 
-/// A perl-class pattern (`\b`: ASCII in JS, Unicode in Rust) must fail its
-/// plugin OPEN: the transform plan goes unfiltered rather than rejecting the
-/// filter, so it runs for every module, while load gating keeps working.
+/// A perl-class pattern (`\b`: ASCII in JS, Unicode in Rust) gates exactly
+/// where JS matches: the host spells it ASCII, so a module whose `import`
+/// follows a non-ASCII letter still crosses (JS sees a boundary there, Rust's
+/// Unicode `\b` would not), and a module without the word is skipped.
 #[tokio::test]
-async fn a_perl_class_code_filter_fails_open() {
+async fn a_perl_class_code_filter_gates_like_js() {
     let root = scratch("hookgate-boundary");
     write_files(
         &root,
@@ -239,13 +240,14 @@ async fn a_perl_class_code_filter_fails_open() {
             ("package.json", r#"{"name":"hookgate3","version":"1.0.0"}"#),
             (
                 "src/entry.js",
-                "import { special } from \"./data.special.js\";\nimport { other } from \"./other.js\";\nconsole.log(special, other);\n",
+                "import { special } from \"./data.special.js\";\nimport { other } from \"./other.js\";\nimport { accent } from \"./accent.js\";\nconsole.log(special, other, accent);\n",
             ),
             (
                 "src/data.special.js",
                 "export const special = \"placeholder\";\n",
             ),
             ("src/other.js", "export const other = 1;\n"),
+            ("src/accent.js", "export const accent = \"\u{e9}import\";\n"),
             ("index.html", INDEX_HTML),
             (
                 "oj.plugins.mjs",
@@ -263,8 +265,9 @@ async fn a_perl_class_code_filter_fails_open() {
     name: "boundary-transform",
     transform: {
       filter: { code: /\bimport\b/ },
-      handler(code) {
-        return { code: code + '\nconsole.log("boundary-transform-crossed");', map: null };
+      handler(code, id) {
+        const name = id.split("/").pop();
+        return { code: code + `\nconsole.log("boundary-crossed:${name}");`, map: null };
       },
     },
   },
@@ -276,22 +279,22 @@ async fn a_perl_class_code_filter_fails_open() {
     build_app(&root)
         .await
         .expect("the boundary-filter app builds");
-    // The entry carries `import`, so a filter that failed closed (or a gate
-    // that skipped it) leaves the marker out.
     let assets = js_under(&root.join("dist/assets"));
     assert!(
-        assets.contains("boundary-transform-crossed") && assets.contains("strict-load-crossed"),
+        assets.contains("boundary-crossed:entry.js") && assets.contains("strict-load-crossed"),
         "the boundary transform and the filtered load both crossed:\n{assets}"
     );
-    let [_, load, transform] = gate_counts(&root);
-    assert_eq!(
-        transform, 0,
-        "a perl-class code filter pins transform unfiltered (no skips)"
+    assert!(
+        assets.contains("boundary-crossed:accent.js"),
+        "`import` after a non-ASCII letter matches JS's ASCII \\b:\n{assets}"
     );
     assert!(
-        load > 0,
-        "load gating still active alongside the pinned transform"
+        !assets.contains("boundary-crossed:other.js"),
+        "the host's own filter still declines a module without the word:\n{assets}"
     );
+    let [_, load, transform] = gate_counts(&root);
+    assert!(transform > 0, "the \\b code filter gates transform");
+    assert!(load > 0, "load gating active alongside it");
 }
 
 /// The one build of `root`'s gated-out RPC counts `[resolveId, load, transform]`.

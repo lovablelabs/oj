@@ -72,11 +72,11 @@ async fn explicit_html_inputs_build_without_a_root_index_html() {
         .keys()
         .collect();
     assert!(
-        keys.iter().any(|k| k.contains("pages/admin/admin.js")),
-        "manifest keys the admin entry by its source path: {keys:?}"
+        keys.iter().any(|k| *k == "pages/admin/index.html"),
+        "manifest keys the admin entry by its page, as Vite: {keys:?}"
     );
     assert!(
-        keys.iter().any(|k| k.contains("pages/app/app.js")),
-        "manifest keys the app entry by its source path: {keys:?}"
+        keys.iter().any(|k| *k == "pages/app/index.html"),
+        "manifest keys the app entry by its page, as Vite: {keys:?}"
     );
 }

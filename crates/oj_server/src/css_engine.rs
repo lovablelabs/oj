@@ -61,6 +61,43 @@ struct EngineSpec {
     postcss_config: Option<String>,
 }
 
+/// What a Tailwind/PostCSS compile read besides its own source: PostCSS
+/// `dependency` files and `dir-dependency` globs, and Tailwind v4's
+/// `onDependency` files. Other engines report none.
+#[derive(Debug, Default, PartialEq)]
+pub struct CssDeps {
+    pub files: Vec<PathBuf>,
+    /// `(dir, glob)`: the files under `dir` matching `glob`.
+    pub dirs: Vec<(PathBuf, String)>,
+}
+
+impl CssDeps {
+    fn of(value: &serde_json::Value) -> Self {
+        let paths = |key: &str| {
+            value[key]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str().map(PathBuf::from))
+                .collect::<Vec<_>>()
+        };
+        let dirs = value["dirDeps"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|d| {
+                let dir = d["dir"].as_str()?;
+                let glob = d["glob"].as_str().unwrap_or("**");
+                Some((PathBuf::from(dir), glob.to_string()))
+            })
+            .collect();
+        CssDeps {
+            files: paths("deps"),
+            dirs,
+        }
+    }
+}
+
 impl CssEngine {
     pub async fn tailwind(
         root: &Path,
@@ -234,7 +271,17 @@ impl CssEngine {
         options: serde_json::Value,
     ) -> Result<String, String> {
         let from = absolute_from(&self.base, from);
-        self.request(css, from, options, true).await
+        Ok(self.request(css, from, options, true).await?.0)
+    }
+
+    /// [`compile`](Self::compile) plus the files the compile read.
+    pub async fn compile_tracked(
+        &self,
+        css: &str,
+        from: &str,
+    ) -> Result<(String, CssDeps), String> {
+        let from = absolute_from(&self.base, from);
+        self.request(css, from, serde_json::Value::Null, true).await
     }
 
     /// Compiles from an absolute file path (build and Start host know the file,
@@ -246,8 +293,10 @@ impl CssEngine {
         options: serde_json::Value,
         dev: bool,
     ) -> Result<String, String> {
-        self.request(css, from.to_string_lossy().into_owned(), options, dev)
-            .await
+        Ok(self
+            .request(css, from.to_string_lossy().into_owned(), options, dev)
+            .await?
+            .0)
     }
 
     async fn request(
@@ -256,7 +305,7 @@ impl CssEngine {
         from: String,
         options: serde_json::Value,
         dev: bool,
-    ) -> Result<String, String> {
+    ) -> Result<(String, CssDeps), String> {
         let request = serde_json::json!({
             "base": self.base,
             "css": css,
@@ -275,7 +324,11 @@ impl CssEngine {
             )
         };
         match result {
-            Ok(serde_json::Value::String(css)) => Ok(css),
+            Ok(serde_json::Value::String(css)) => Ok((css, CssDeps::default())),
+            Ok(out) if out["css"].is_string() => {
+                let deps = CssDeps::of(&out);
+                Ok((out["css"].as_str().unwrap_or_default().to_string(), deps))
+            }
             Ok(other) => Err(format!(
                 "{} compile produced no output ({other})",
                 self.kind

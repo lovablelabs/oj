@@ -1,0 +1,227 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/transform-stylex-positionTry-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs and upstream's own expected values — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "assertions/positionTry-positiontry-object-001-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const name = stylex.positionTry({\n          positionAnchor: '--anchor',\n          top: '0',\n          left: '0',\n          width: '100px',\n          height: '100px'\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["positionTry", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const name = \"--xhs37kq\";",
+        "site": {
+          "file": "transform-stylex-positionTry-test.js",
+          "test": "positionTry object",
+          "line": 41
+        }
+      }
+    },
+    {
+      "id": "assertions/positionTry-positiontry-object-002-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const name = stylex.positionTry({\n          positionAnchor: '--anchor',\n          top: '0',\n          left: '0',\n          width: '100px',\n          height: '100px'\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["positionTry", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "--xhs37kq",
+            {
+              "ltr": "@position-try --xhs37kq {height:height;height:100px;left:left;left:0;position-anchor:position-anchor;position-anchor:--anchor;top:top;top:0;width:width;width:100px;}",
+              "rtl": "@position-try --xhs37kq {height:100px;left:0;position-anchor:--anchor;top:0;width:100px;}"
+            },
+            0
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-positionTry-test.js",
+          "test": "positionTry object",
+          "line": 46
+        }
+      }
+    },
+    {
+      "id": "assertions/positionTry-local-constants-used-in-posi-003-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const SIZE = '100px';\n        export const name = stylex.positionTry({\n          positionAnchor: '--anchor',\n          top: '0',\n          left: '0',\n          width: SIZE,\n          height: SIZE\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["positionTry", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nconst SIZE = '100px';\nexport const name = \"--xhs37kq\";",
+        "site": {
+          "file": "transform-stylex-positionTry-test.js",
+          "test": "local constants used in positionTry object",
+          "line": 75
+        }
+      }
+    },
+    {
+      "id": "assertions/positionTry-local-constants-used-in-posi-004-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const SIZE = '100px';\n        export const name = stylex.positionTry({\n          positionAnchor: '--anchor',\n          top: '0',\n          left: '0',\n          width: SIZE,\n          height: SIZE\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["positionTry", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "--xhs37kq",
+            {
+              "ltr": "@position-try --xhs37kq {height:height;height:100px;left:left;left:0;position-anchor:position-anchor;position-anchor:--anchor;top:top;top:0;width:width;width:100px;}",
+              "rtl": "@position-try --xhs37kq {height:100px;left:0;position-anchor:--anchor;top:0;width:100px;}"
+            },
+            0
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-positionTry-test.js",
+          "test": "local constants used in positionTry object",
+          "line": 81
+        }
+      }
+    },
+    {
+      "id": "assertions/positionTry-positiontry-value-used-withi-005-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const SIZE = '100px';\n        const name = stylex.positionTry({\n          top: '0',\n          left: '0',\n          width: SIZE,\n          height: SIZE\n        });\n        export const styles = stylex.create({\n          root: {\n            positionTryFallbacks: name,\n          }\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["positionTry", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nconst SIZE = '100px';\nconst name = \"--x1oyda6q\";\nexport const styles = {\n  root: {\n    k9M3vk: \"x4uh2cz\",\n    $$css: true\n  }\n};",
+        "site": {
+          "file": "transform-stylex-positionTry-test.js",
+          "test": "positionTry value used within create",
+          "line": 114
+        }
+      }
+    },
+    {
+      "id": "assertions/positionTry-positiontry-value-used-withi-006-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const SIZE = '100px';\n        const name = stylex.positionTry({\n          top: '0',\n          left: '0',\n          width: SIZE,\n          height: SIZE\n        });\n        export const styles = stylex.create({\n          root: {\n            positionTryFallbacks: name,\n          }\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["positionTry", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "--x1oyda6q",
+            {
+              "ltr": "@position-try --x1oyda6q {height:height;height:100px;left:left;left:0;top:top;top:0;width:width;width:100px;}",
+              "rtl": "@position-try --x1oyda6q {height:100px;left:0;top:0;width:100px;}"
+            },
+            0
+          ],
+          [
+            "x4uh2cz",
+            {
+              "ltr": ".x4uh2cz{position-try-fallbacks:--x1oyda6q}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-positionTry-test.js",
+          "test": "positionTry value used within create",
+          "line": 126
+        }
+      }
+    },
+    {
+      "id": "assertions/positionTry-positiontry-object-used-inli-007-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({\n          root: {\n            positionTryFallbacks: stylex.positionTry({\n              positionAnchor: '--anchor',\n              top: '0',\n              left: '0',\n              width: '100px',\n              height: '100px'\n            }),\n          },\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["positionTry", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const styles = {\n  root: {\n    k9M3vk: \"xlj2pck\",\n    $$css: true\n  }\n};",
+        "site": {
+          "file": "transform-stylex-positionTry-test.js",
+          "test": "positionTry object used inline",
+          "line": 166
+        }
+      }
+    },
+    {
+      "id": "assertions/positionTry-positiontry-object-used-inli-008-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({\n          root: {\n            positionTryFallbacks: stylex.positionTry({\n              positionAnchor: '--anchor',\n              top: '0',\n              left: '0',\n              width: '100px',\n              height: '100px'\n            }),\n          },\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["positionTry", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "--xhs37kq",
+            {
+              "ltr": "@position-try --xhs37kq {height:height;height:100px;left:left;left:0;position-anchor:position-anchor;position-anchor:--anchor;top:top;top:0;width:width;width:100px;}",
+              "rtl": "@position-try --xhs37kq {height:100px;left:0;position-anchor:--anchor;top:0;width:100px;}"
+            },
+            0
+          ],
+          [
+            "xlj2pck",
+            {
+              "ltr": ".xlj2pck{position-try-fallbacks:--xhs37kq}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-positionTry-test.js",
+          "test": "positionTry object used inline",
+          "line": 176
+        }
+      }
+    }
+  ]
+}

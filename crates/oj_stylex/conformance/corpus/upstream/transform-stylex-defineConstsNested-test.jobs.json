@@ -1,0 +1,131 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/transform-stylex-defineConstsNested-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs only — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "upstream/defineConstsNested-basic-nested-consts-with-ori-001",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const tokens = stylex.unstable_defineConstsNested({\n          spacing: {\n            sm: '4px',\n            md: '8px',\n            lg: '16px',\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConstsNested"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineConstsNested-deeply-nested-constants-3-le-002",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const tokens = stylex.unstable_defineConstsNested({\n          colors: {\n            slate: {\n              100: '#f1f5f9',\n              800: '#1e293b',\n            },\n            brand: {\n              primary: '#3b82f6',\n            },\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConstsNested"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineConstsNested-j-malt-pr-1303-use-case-thre-003",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const tokens = stylex.unstable_defineConstsNested({\n          button: {\n            primary: {\n              background: {\n                default: '#00FF00',\n                hovered: '#0000FF',\n              },\n              borderRadius: {\n                default: '8px',\n              },\n            },\n            secondary: {\n              background: {\n                default: '#CCCCCC',\n              },\n            },\n          },\n          input: {\n            fill: {\n              default: '#FFFFFF',\n            },\n            border: {\n              default: '#000000',\n            },\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConstsNested"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineConstsNested-handles-number-values-004",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const tokens = stylex.unstable_defineConstsNested({\n          breakpoints: {\n            mobile: 480,\n            tablet: 768,\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConstsNested"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineConstsNested-works-with-named-import-005",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import { unstable_defineConstsNested } from '@stylexjs/stylex';\n        export const tokens = unstable_defineConstsNested({\n          radii: {\n            sm: '0.25rem',\n            xl: '1rem',\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConstsNested"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineConstsNested-mixed-string-and-number-valu-006",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const tokens = stylex.unstable_defineConstsNested({\n          theme: {\n            spacing: 8,\n            unit: 'px',\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConstsNested"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/defineConstsNested-throws-must-be-a-named-expor-007",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const tokens = stylex.unstable_defineConstsNested({\n          spacing: { sm: '4px' },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConstsNested"],
+      "expect": "error"
+    },
+    {
+      "id": "upstream/defineConstsNested-throws-must-have-exactly-1-a-008",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tokens.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const tokens = stylex.unstable_defineConstsNested({}, {});\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConstsNested"],
+      "expect": "error"
+    }
+  ]
+}

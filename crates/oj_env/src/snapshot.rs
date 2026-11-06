@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
+use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use crate::Knobs;
@@ -13,13 +14,20 @@ use crate::Knobs;
 pub struct Env {
     vars: BTreeMap<OsString, OsString>,
     pub knobs: Knobs,
+    /// The directory oj was started in: Vite's `process.cwd()`, which a
+    /// plugin host later moves to the app root for the plugins' sake.
+    pub cwd: Option<PathBuf>,
 }
 
 impl Env {
     pub fn from_vars_os(vars: impl IntoIterator<Item = (OsString, OsString)>) -> Self {
         let vars: BTreeMap<OsString, OsString> = vars.into_iter().collect();
         let knobs = Knobs::parse(|key| vars.get(OsStr::new(key)).map(OsString::as_os_str));
-        Env { vars, knobs }
+        Env {
+            vars,
+            knobs,
+            cwd: None,
+        }
     }
 
     pub fn from_vars<K: Into<String>, V: Into<String>>(
@@ -61,7 +69,10 @@ static ENV: OnceLock<Env> = OnceLock::new();
 /// return that same snapshot, so it can never be replaced. `oj`'s `main` calls
 /// it once its own startup writes are done, before any thread starts.
 pub fn init() -> &'static Env {
-    ENV.get_or_init(|| Env::from_vars_os(std::env::vars_os()))
+    ENV.get_or_init(|| Env {
+        cwd: std::env::current_dir().ok(),
+        ..Env::from_vars_os(std::env::vars_os())
+    })
 }
 
 /// The process snapshot ([`init`] on first use).

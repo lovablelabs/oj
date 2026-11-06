@@ -44,7 +44,7 @@ async fn css_url_is_a_compiled_asset_and_inline_is_compiled_text() {
     let files: Vec<String> = files_under(&assets).into_iter().map(|(p, _)| p).collect();
     let main_file = files
         .iter()
-        .find(|f| f.starts_with("main-") && f.ends_with(".js"))
+        .find(|f| f.starts_with("index-") && f.ends_with(".js"))
         .unwrap_or_else(|| panic!("main chunk emitted: {files:?}"));
     let js = fs::read_to_string(assets.join(main_file)).unwrap();
     let css_file = files

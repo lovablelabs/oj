@@ -265,3 +265,44 @@ async fn a_style_attribute_runs_the_apps_postcss_plugins_first() {
         "{html}"
     );
 }
+
+/// An edit to the page's inline `<style>` reloads the page, as under Vite:
+/// the style's compile is a module of the page's file
+/// (`index.html?html-proxy&direct&index=0.css`, a direct CSS one), so the
+/// edit's modules are all non-JS and `updateModules` sends a full reload for
+/// the client's HTML change (`isClientHtmlChange`), never a `css-update` for
+/// the proxy, which nothing serves as a stylesheet. The page served next
+/// carries the new style.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_inline_style_edit_reloads_the_page() {
+    let page = |rule: &str| {
+        format!(
+            "<!doctype html><html><head><style>.{rule} {{ color: red; }}</style></head>\
+             <body><script type=\"module\" src=\"/src/main.js\"></script></body></html>"
+        )
+    };
+    let app = App::new(&[
+        ("package.json", r#"{"name":"style-edit","private":true}"#),
+        ("src/main.js", "window.__RAN = true;\n"),
+        ("index.html", &page("before-edit")),
+    ]);
+    let server = app.serve().await;
+    let listening = server.listen().await;
+    let (mut ws, _) = server.ws(listening.addr, "/__ws", None).await;
+    let html = server.text("/").await;
+    assert!(html.contains(".before-edit"), "{html}");
+    server.text("/src/main.js").await;
+
+    app.write(&[("index.html", &page("after-edit"))]);
+    let frame = crate::listen::frame_matching(&mut ws, "the page's reload", |f| {
+        f["type"] == "full-reload" || f["type"] == "update"
+    })
+    .await;
+    assert_eq!(frame["type"], "full-reload", "{frame}");
+    assert!(!frame.to_string().contains("html-proxy"), "{frame}");
+    let html = server.text("/").await;
+    assert!(
+        html.contains(".after-edit") && !html.contains(".before-edit"),
+        "{html}"
+    );
+}

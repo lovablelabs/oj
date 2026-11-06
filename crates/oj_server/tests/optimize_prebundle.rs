@@ -1,28 +1,19 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
-//! Pre-bundle through the REAL engine and the REAL rolldown the fixture's
-//! vite brings. An integration test so build.rs's exported-symbols link flag
-//! applies: rolldown is a napi addon that resolves napi_* against the running
-//! executable. Skips quietly when the fixture is not installed.
-
-use std::path::Path;
+//! The optimizer's lifecycle as the dev server drives it: the initial run
+//! (plan, then commit), the warm manifest, serve-time discovery and its
+//! reload-or-not commits, and the dead state a failed run leaves. The app
+//! installs no Vite and no bundler: oj pre-bundles with its own rolldown.
 
 use oj_server::optimize::{OptimizeInput, OptimizedDeps};
 
 #[tokio::test(flavor = "multi_thread")]
-async fn optimizer_prebundles_through_the_engine_with_real_rolldown() {
-    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let vite = repo.join("e2e/fixtures/start-app/node_modules/vite");
-    if !vite.exists() {
-        eprintln!("skipping: fixture vite not installed");
-        return;
-    }
+async fn the_optimizer_plans_commits_and_reruns() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     std::fs::create_dir_all(root.join("node_modules")).unwrap();
     std::fs::write(root.join("package.json"), r#"{"name":"fx"}"#).unwrap();
-    std::os::unix::fs::symlink(&vite, root.join("node_modules/vite")).unwrap();
     let dep = root.join("node_modules/plaincjs");
     std::fs::create_dir_all(&dep).unwrap();
     std::fs::write(
@@ -41,10 +32,28 @@ async fn optimizer_prebundles_through_the_engine_with_real_rolldown() {
         extensions: vec![".mjs".into(), ".js".into(), ".ts".into(), ".json".into()],
         ..Default::default()
     };
-    let deps = OptimizedDeps::prepare(root, "0.0.1", input(), None);
+    let deps = OptimizedDeps::prepare(
+        root,
+        "0.0.1",
+        input(),
+        None,
+        &tokio::runtime::Handle::current(),
+    );
+    // The scan's plan releases compiles first; the dep's own request waits
+    // for the bundle's commit.
     let map = deps.ready().await;
-    let meta = map.get("plaincjs").expect("the included dep is bundled");
+    let meta = map.get("plaincjs").expect("the included dep is planned");
     assert!(meta.needs_interop, "a plain-CJS bundle needs interop");
+    assert!(matches!(
+        deps.await_dep(&meta.file, None).await,
+        oj_server::optimize::DepServe::Ready
+    ));
+    let map = deps.ready().await;
+    let meta = &map["plaincjs"];
+    assert!(
+        !meta.file_hash.is_empty(),
+        "the commit carries the bundle's hash"
+    );
     assert!(
         meta.url.starts_with("/@oj-deps/") && meta.url.contains("?v="),
         "versioned optimized-dep URL, got {}",
@@ -55,9 +64,15 @@ async fn optimizer_prebundles_through_the_engine_with_real_rolldown() {
 
     // The manifest makes the next boot a warm cache (no second optimizer run
     // is observable here, but the warm load must agree with the first).
-    let warm = OptimizedDeps::prepare(root, "0.0.1", input(), None)
-        .ready()
-        .await;
+    let warm = OptimizedDeps::prepare(
+        root,
+        "0.0.1",
+        input(),
+        None,
+        &tokio::runtime::Handle::current(),
+    )
+    .ready()
+    .await;
     assert_eq!(
         warm.get("plaincjs").map(|m| &m.file),
         Some(&meta.file),
@@ -84,7 +99,13 @@ async fn optimizer_prebundles_through_the_engine_with_real_rolldown() {
     // An ESM dep bundles standalone: the committed plaincjs entry stays
     // byte-identical, so this commit must take the no-reload path.
     write_dep("latedep", "export const l = 1;\n", true);
-    let deps = OptimizedDeps::prepare(root, "0.0.1", input(), None);
+    let deps = OptimizedDeps::prepare(
+        root,
+        "0.0.1",
+        input(),
+        None,
+        &tokio::runtime::Handle::current(),
+    );
     let before = deps.ready().await;
     assert!(!before.contains_key("latedep"), "not scanned, not bundled");
     let v0 = deps.browser_version();
@@ -157,7 +178,13 @@ async fn optimizer_prebundles_through_the_engine_with_real_rolldown() {
     );
 
     // The next boot keeps the discovered deps and versions, no re-register.
-    let after = OptimizedDeps::prepare(root, "0.0.1", input(), None);
+    let after = OptimizedDeps::prepare(
+        root,
+        "0.0.1",
+        input(),
+        None,
+        &tokio::runtime::Handle::current(),
+    );
     let warm2 = after.ready().await;
     assert!(
         warm2.contains_key("latedep") && warm2.contains_key("latedep2"),
@@ -225,22 +252,43 @@ async fn optimizer_prebundles_through_the_engine_with_real_rolldown() {
     );
 }
 
-// An app with no rolldown anywhere (no vite 8, nothing vendored in this test
-// binary, nothing installed): the initial run fails, so discovery must turn
-// itself off. Registration declining is what keeps every bare import on the
-// per-file path instead of a phantom /@oj-deps URL that 404s, and no manifest
-// may be written, or the next boot would warm-load an empty map with
-// discovery back on against the same dead optimizer.
+// A pre-bundle that cannot be built (a dep that does not parse): the initial
+// run fails, so discovery must turn itself off. Registration declining is what
+// keeps every bare import on the per-file path instead of a phantom /@oj-deps
+// URL that 404s, and no manifest may be written, or the next boot would
+// warm-load an empty map with discovery back on against the same failure.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_failed_initial_run_turns_discovery_off() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    std::fs::create_dir_all(root.join("node_modules")).unwrap();
+    let broken = root.join("node_modules/broken");
+    std::fs::create_dir_all(&broken).unwrap();
     std::fs::write(root.join("package.json"), r#"{"name":"fx"}"#).unwrap();
-    let deps = OptimizedDeps::prepare(root, "0.0.1", OptimizeInput::default(), None);
+    std::fs::write(
+        broken.join("package.json"),
+        r#"{"name":"broken","version":"1.0.0","main":"index.js"}"#,
+    )
+    .unwrap();
+    std::fs::write(broken.join("index.js"), "export const = ;\n").unwrap();
+    let input = OptimizeInput {
+        include: vec!["broken".into()],
+        ..Default::default()
+    };
+    let deps = OptimizedDeps::prepare(
+        root,
+        "0.0.1",
+        input,
+        None,
+        &tokio::runtime::Handle::current(),
+    );
+    // The plan names the dep first; the failed commit replaces it.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while deps.may_register("lodash") || deps.ready().await.contains_key("broken") {
+        assert!(std::time::Instant::now() < deadline, "the run never failed");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
     let map = deps.ready().await;
-    assert!(map.is_empty(), "no bundler: an empty pre-bundle");
-    assert!(!deps.may_register("lodash"), "discovery is dead");
+    assert!(map.is_empty(), "nothing bundled: an empty map");
     assert!(
         deps.register_missing("lodash", false).is_none(),
         "no phantom optimized URL"

@@ -2,7 +2,9 @@
   "name": "oj-e2e",
   "private": true,
   "devDependencies": {
+    "picomatch": "^4.0.7",
     "playwright": "^1.62",
-    "postcss": "^8.5.27"
+    "postcss": "^8.5.27",
+    "tinyglobby": "^0.2.17"
   }
 }

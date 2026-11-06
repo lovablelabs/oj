@@ -117,21 +117,27 @@ fn expand(input: &str, vars: &BTreeMap<String, String>) -> String {
     out
 }
 
-/// `.env`, `.env.local`, `.env.[mode]`, `.env.[mode].local` in `dir`, later
-/// files winning, each expanded against `env` and the files before it.
+/// The env files a mode loads from `dir`, in load order: Vite's
+/// getEnvFilesForMode (`.env`, `.env.local`, `.env.[mode]`, `.env.[mode].local`).
+pub fn env_files(dir: &Path, mode: &str) -> [std::path::PathBuf; 4] {
+    [
+        dir.join(".env"),
+        dir.join(".env.local"),
+        dir.join(format!(".env.{mode}")),
+        dir.join(format!(".env.{mode}.local")),
+    ]
+}
+
+/// [`env_files`] in order, later files winning, each expanded against `env`
+/// and the files before it.
 pub fn load_with(env: &Env, dir: &Path, mode: &str) -> Vec<(String, String)> {
     let mut base: BTreeMap<String, String> = env
         .vars()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
     let mut merged: BTreeMap<String, String> = BTreeMap::new();
-    for name in [
-        ".env".to_string(),
-        ".env.local".to_string(),
-        format!(".env.{mode}"),
-        format!(".env.{mode}.local"),
-    ] {
-        let Ok(contents) = std::fs::read_to_string(dir.join(name)) else {
+    for file in env_files(dir, mode) {
+        let Ok(contents) = std::fs::read_to_string(file) else {
             continue;
         };
         for (k, v) in parse(&contents, &base) {

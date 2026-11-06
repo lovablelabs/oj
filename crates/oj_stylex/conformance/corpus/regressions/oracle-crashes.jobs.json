@@ -1,0 +1,19 @@
+{
+  "header": {
+    "corpus": "regressions",
+    "description": "Inputs where the ORACLE ITSELF fails ungracefully. Found by our differential fuzzer; preserved here because repros/ is gitignored and a regenerated seed is not a durable record. Each pins that we degrade better than upstream while still agreeing on the coarse outcome.",
+    "provenance": "fuzz.mjs --seed 9 --count 300, job s9-0001-dynamic"
+  },
+  "jobs": [
+    {
+      "id": "regressions/oracle-crash-empty-value-dynamic-001",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({\n  dyn: (w, h) => ({\n  color: w * 2,\n  rowGap: {\n    default: '',\n    \"@media screen and (max-width: 400px)\": w > 10 ? '2px' : '1px'\n  },\n  \"--dyn\": w * 2,\n  borderTopColor: '#ff0000'\n}),\n  plain: {\n    borderStartColor: {\n      default: 'red',\n      \"@media (prefers-color-scheme: dark)\": {\n        default: 'rgb(1, 2, 3)',\n        \":disabled\": 'currentColor'\n      }\n    },\n    width: 'calc(10+pi)',\n    \"::first-line\": {\n      flexShrink: 1\n    }\n  }\n});\nexport const probe = stylex.props(styles.dyn(10), styles.plain);\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["fuzz", "oracle-crash", "dynamic", "empty-value"]
+    }
+  ]
+}

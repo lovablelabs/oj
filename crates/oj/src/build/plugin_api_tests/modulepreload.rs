@@ -51,7 +51,7 @@ async fn static_import_chunks_are_preloaded_with_crossorigin() {
 
     let dist = root.join("dist");
     let html = fs::read_to_string(dist.join("index.html")).unwrap();
-    let links: Vec<String> = Regex::new(r#"<link rel="modulepreload" href="([^"]+)""#)
+    let links: Vec<String> = Regex::new(r#"<link rel="modulepreload" crossorigin href="([^"]+)""#)
         .unwrap()
         .captures_iter(&html)
         .map(|c| c[1].to_string())
@@ -66,11 +66,5 @@ async fn static_import_chunks_are_preloaded_with_crossorigin() {
     assert!(
         links.iter().any(|h| h.contains("vendor-")),
         "the vendor chunk is preloaded: {links:?}"
-    );
-    assert!(
-        Regex::new(r#"<link rel="modulepreload" href="[^"]+" crossorigin"#)
-            .unwrap()
-            .is_match(&html),
-        "modulepreload links carry crossorigin (Vite sets it):\n{html}"
     );
 }

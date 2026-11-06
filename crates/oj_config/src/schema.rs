@@ -48,6 +48,19 @@ pub struct OjConfig {
     /// Vite's `html` block (`cspNonce`).
     pub html: Option<HtmlConfig>,
     pub legacy: Option<LegacyConfig>,
+    /// How many of a vite.config's plugins the plugin host would run, from
+    /// extraction (not a config key). `Some(0)`: no host is needed.
+    #[serde(skip)]
+    pub vite_active_plugins: Option<usize>,
+    /// The config's `@stylexjs/unplugin`, from extraction (not a config key):
+    /// `{ options }`, the object its `stylex.vite(...)` call received.
+    #[serde(skip)]
+    pub vite_stylex: Option<serde_json::Value>,
+    /// The paths TanStack Start's router generator ran with when the app's
+    /// config resolved, from extraction (not a config key). See
+    /// `start_route_tree`.
+    #[serde(skip)]
+    pub vite_start_router: Option<crate::StartRouterPaths>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -134,6 +147,10 @@ pub struct PreprocessorEntry {
 #[serde(default, rename_all = "camelCase")]
 pub struct OptimizeDepsConfig {
     pub no_discovery: Option<bool>,
+    /// Vite's `optimizeDeps.holdUntilCrawlEnd` (default true): a cold boot's
+    /// first pre-bundle is held until the static-import crawl ends, so deps
+    /// the scanner missed join it instead of costing a rerun.
+    pub hold_until_crawl_end: Option<bool>,
     pub include: Option<Vec<String>>,
     pub exclude: Option<Vec<String>>,
     pub entries: Option<Vec<String>>,
@@ -171,6 +188,8 @@ pub struct PreviewConfig {
 pub struct ServerConfig {
     pub port: Option<u16>,
     pub host: Option<String>,
+    /// Vite's `server.origin`: what dev asset URLs start with, before the base.
+    pub origin: Option<String>,
     pub strict_port: Option<bool>,
     pub open: Option<bool>,
     pub cors: Option<CorsConfig>,
@@ -312,8 +331,19 @@ impl ProxyEntry {
             ProxyEntry::Options(o) => &o.target,
         }
     }
+    /// Vite: a string entry is shorthand for `{ target, changeOrigin: true }`.
     pub fn change_origin(&self) -> bool {
-        matches!(self, ProxyEntry::Options(o) if o.change_origin.unwrap_or(false))
+        match self {
+            ProxyEntry::Target(_) => true,
+            ProxyEntry::Options(o) => o.change_origin.unwrap_or(false),
+        }
+    }
+    /// The entry's options, `None` for the string shorthand.
+    pub fn options(&self) -> Option<&ProxyOptions> {
+        match self {
+            ProxyEntry::Options(o) => Some(o),
+            ProxyEntry::Target(_) => None,
+        }
     }
     pub fn ws(&self) -> bool {
         matches!(self, ProxyEntry::Options(o) if o.ws.unwrap_or(false))
@@ -353,6 +383,44 @@ pub struct ProxyOptions {
     pub rewrite_ws_origin: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rewrite: Option<ProxyRewrite>,
+    /// http-proxy's opt-in redirect and cookie handling (off by default, so a
+    /// redirect and its `Set-Cookie` headers reach the browser as written).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub follow_redirects: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_rewrite: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_rewrite: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol_rewrite: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cookie_domain_rewrite: Option<CookieRewrite>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cookie_path_rewrite: Option<CookieRewrite>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub xfwd: Option<bool>,
+}
+
+/// http-proxy's `cookieDomainRewrite` / `cookiePathRewrite`: `false` (off), a
+/// string (every value becomes it), or a map from old value to new, `"*"`
+/// matching any; an empty new value removes the attribute.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum CookieRewrite {
+    Off(bool),
+    All(String),
+    Map(std::collections::BTreeMap<String, String>),
+}
+
+impl CookieRewrite {
+    /// The map form http-proxy reads (`{ "*": s }` for a string), `None` off.
+    pub fn config(&self) -> Option<std::collections::BTreeMap<String, String>> {
+        match self {
+            CookieRewrite::Off(_) => None,
+            CookieRewrite::All(s) => Some([("*".to_string(), s.clone())].into()),
+            CookieRewrite::Map(m) => Some(m.clone()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -361,10 +429,87 @@ pub struct ProxyRewrite {
     pub to: String,
 }
 
+/// `resolve.alias` in the order it was written. Vite tries the entries in
+/// order and takes the first match (normalizeAlias keeps an object's key
+/// order), so `{ "@/lib/client": ..., "@": ... }` sends `@/lib/client` to its
+/// own entry, never through `@`. An object or Vite's `[{ find, replacement }]`
+/// array.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct AliasList(pub Vec<(String, String)>);
+
+impl AliasList {
+    pub fn get(&self, find: &str) -> Option<&String> {
+        self.0.iter().find(|(f, _)| f == find).map(|(_, r)| r)
+    }
+
+    /// Adds `find` at the end unless an entry has it already.
+    pub fn insert_if_absent(&mut self, find: String, replacement: String) {
+        if self.get(&find).is_none() {
+            self.0.push((find, replacement));
+        }
+    }
+
+    /// Adds an entry as written in a config, after Vite's
+    /// normalizeSingleAlias: a find and replacement that both end in `/`
+    /// lose it (`{ "@/": "/src/" }` is `{ "@": "/src" }`).
+    fn push_written(&mut self, find: String, replacement: String) {
+        match (find.strip_suffix('/'), replacement.strip_suffix('/')) {
+            (Some(f), Some(r)) => self.insert_if_absent(f.to_string(), r.to_string()),
+            _ => self.insert_if_absent(find, replacement),
+        }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &(String, String)> {
+        self.0.iter()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl<'de> Deserialize<'de> for AliasList {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = AliasList;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("an alias object or an array of { find, replacement }")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<AliasList, A::Error> {
+                let mut list = AliasList::default();
+                while let Some((find, replacement)) = map.next_entry::<String, String>()? {
+                    list.push_written(find, replacement);
+                }
+                Ok(list)
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<AliasList, A::Error> {
+                #[derive(Deserialize)]
+                struct Entry {
+                    find: String,
+                    replacement: String,
+                }
+                let mut list = AliasList::default();
+                while let Some(Entry { find, replacement }) = seq.next_element::<Entry>()? {
+                    list.push_written(find, replacement);
+                }
+                Ok(list)
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ResolveConfig {
-    pub alias: Option<BTreeMap<String, String>>,
+    pub alias: Option<AliasList>,
     pub dedupe: Option<Vec<String>>,
     pub extensions: Option<Vec<String>>,
     pub main_fields: Option<Vec<String>>,
@@ -373,6 +518,17 @@ pub struct ResolveConfig {
     /// with instead of the environment's conditions.
     pub external_conditions: Option<Vec<String>>,
     pub preserve_symlinks: Option<bool>,
+    /// Vite 8's `resolve.tsconfigPaths`: its own resolver applies tsconfig
+    /// `paths`.
+    pub tsconfig_paths: Option<bool>,
+    /// Whether vite-tsconfig-paths is among the resolved plugins, as the
+    /// plugin host reports it (None when no host ran).
+    #[serde(skip)]
+    pub tsconfig_paths_plugin: Option<bool>,
+    /// Vite's top-level `tsconfig` option, resolved: the one file its own
+    /// resolver reads.
+    #[serde(skip)]
+    pub tsconfig_file: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -409,6 +565,11 @@ pub struct BuildConfig {
     pub rollup_options: Option<serde_json::Value>,
     pub rolldown_options: Option<serde_json::Value>,
     pub assets_inline_limit: Option<u64>,
+    /// `build.assetsInlineLimit` is a function, which the plugin host keeps:
+    /// dev asks it per file (Vite's shouldInline).
+    pub assets_inline_limit_fn: Option<bool>,
+    /// Each environment's own `build.assetsInlineLimit` (`{ name: n | "fn" }`).
+    pub assets_inline_limit_envs: Option<serde_json::Value>,
     pub css_code_split: Option<bool>,
     pub copy_public_dir: Option<bool>,
     /// Vite's `build.assetsDir` (default `assets`): where hashed chunks and

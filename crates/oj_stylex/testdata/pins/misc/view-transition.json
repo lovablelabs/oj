@@ -1,0 +1,692 @@
+[
+ {
+  "name": "mined vtc-001",
+  "styles": {
+   "$obj": [
+    [
+     "group",
+     {
+      "$obj": [
+       [
+        "transitionProperty",
+        "none"
+       ]
+      ]
+     }
+    ],
+    [
+     "imagePair",
+     {
+      "$obj": [
+       [
+        "borderRadius",
+        16
+       ]
+      ]
+     }
+    ],
+    [
+     "old",
+     {
+      "$obj": [
+       [
+        "animationDuration",
+        "0.5s"
+       ]
+      ]
+     }
+    ],
+    [
+     "new",
+     {
+      "$obj": [
+       [
+        "animationTimingFunction",
+        "ease-out"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "className": "xchu1hv",
+   "ltr": "::view-transition-group(*.xchu1hv){transition-property:none;}::view-transition-image-pair(*.xchu1hv){border-radius:16px;}::view-transition-old(*.xchu1hv){animation-duration:.5s;}::view-transition-new(*.xchu1hv){animation-timing-function:ease-out;}",
+   "rtl": null,
+   "priority": 1
+  }
+ },
+ {
+  "name": "old/new order swap changes hash",
+  "styles": {
+   "$obj": [
+    [
+     "new",
+     {
+      "$obj": [
+       [
+        "animationTimingFunction",
+        "ease-out"
+       ]
+      ]
+     }
+    ],
+    [
+     "old",
+     {
+      "$obj": [
+       [
+        "animationDuration",
+        "0.5s"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "className": "x1ujng0t",
+   "ltr": "::view-transition-new(*.x1ujng0t){animation-timing-function:ease-out;}::view-transition-old(*.x1ujng0t){animation-duration:.5s;}",
+   "rtl": null,
+   "priority": 1
+  }
+ },
+ {
+  "name": "empty object",
+  "styles": {
+   "$obj": []
+  },
+  "options": {},
+  "expected": {
+   "className": "xph554m",
+   "ltr": "",
+   "rtl": null,
+   "priority": 1
+  }
+ },
+ {
+  "name": "empty group",
+  "styles": {
+   "$obj": [
+    [
+     "group",
+     {
+      "$obj": []
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "className": "x1od172d",
+   "ltr": "::view-transition-group(*.x1od172d){}",
+   "rtl": null,
+   "priority": 1
+  }
+ },
+ {
+  "name": "group only",
+  "styles": {
+   "$obj": [
+    [
+     "group",
+     {
+      "$obj": [
+       [
+        "transitionDuration",
+        "1s"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "className": "x18l3xqj",
+   "ltr": "::view-transition-group(*.x18l3xqj){transition-duration:1s;}",
+   "rtl": null,
+   "priority": 1
+  }
+ },
+ {
+  "name": "imagePair dashifies",
+  "styles": {
+   "$obj": [
+    [
+     "imagePair",
+     {
+      "$obj": [
+       [
+        "borderRadius",
+        "4px"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "className": "x1nlvu37",
+   "ltr": "::view-transition-image-pair(*.x1nlvu37){border-radius:4px;}",
+   "rtl": null,
+   "priority": 1
+  }
+ },
+ {
+  "name": "multiple decls keep insertion order",
+  "styles": {
+   "$obj": [
+    [
+     "old",
+     {
+      "$obj": [
+       [
+        "opacity",
+        0.5
+       ],
+       [
+        "animationDuration",
+        "1s"
+       ],
+       [
+        "transform",
+        "scale(2)"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "className": "xz09cdq",
+   "ltr": "::view-transition-old(*.xz09cdq){opacity:.5;animation-duration:1s;transform:scale(2);}",
+   "rtl": null,
+   "priority": 1
+  }
+ },
+ {
+  "name": "ms suffix quirk on dashed keys",
+  "styles": {
+   "$obj": [
+    [
+     "group",
+     {
+      "$obj": [
+       [
+        "transitionDuration",
+        500
+       ],
+       [
+        "lineHeight",
+        1.5
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "className": "x1t5xrs5",
+   "ltr": "::view-transition-group(*.x1t5xrs5){transition-duration:500px;line-height:1.5px;}",
+   "rtl": null,
+   "priority": 1
+  }
+ },
+ {
+  "name": "logical alias no ltr conversion",
+  "styles": {
+   "$obj": [
+    [
+     "group",
+     {
+      "$obj": [
+       [
+        "float",
+        "inline-start"
+       ],
+       [
+        "marginStart",
+        4
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "className": "x147erhu",
+   "ltr": "::view-transition-group(*.x147erhu){float:inline-start;margin-inline-start:4px;}",
+   "rtl": null,
+   "priority": 1
+  }
+ },
+ {
+  "name": "banned shorthand dropped silently",
+  "styles": {
+   "$obj": [
+    [
+     "group",
+     {
+      "$obj": [
+       [
+        "border",
+        "1px solid red"
+       ],
+       [
+        "opacity",
+        1
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "className": "xs0pn7x",
+   "ltr": "::view-transition-group(*.xs0pn7x){opacity:1;}",
+   "rtl": null,
+   "priority": 1
+  }
+ },
+ {
+  "name": "custom prop gets dashified",
+  "styles": {
+   "$obj": [
+    [
+     "group",
+     {
+      "$obj": [
+       [
+        "--customProp",
+        "red"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "className": "x15g99sn",
+   "ltr": "::view-transition-group(*.x15g99sn){--custom-prop:red;}",
+   "rtl": null,
+   "priority": 1
+  }
+ },
+ {
+  "name": "null and object values dropped",
+  "styles": {
+   "$obj": [
+    [
+     "group",
+     {
+      "$obj": [
+       [
+        "opacity",
+        null
+       ],
+       [
+        "transform",
+        {
+         "$obj": [
+          [
+           "x",
+           1
+          ]
+         ]
+        }
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "className": "x1od172d",
+   "ltr": "::view-transition-group(*.x1od172d){}",
+   "rtl": null,
+   "priority": 1
+  }
+ },
+ {
+  "name": "array value dropped",
+  "styles": {
+   "$obj": [
+    [
+     "group",
+     {
+      "$obj": [
+       [
+        "opacity",
+        [
+         0,
+         1
+        ]
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "className": "x1od172d",
+   "ltr": "::view-transition-group(*.x1od172d){}",
+   "rtl": null,
+   "priority": 1
+  }
+ },
+ {
+  "name": "string style char-splits",
+  "styles": {
+   "$obj": [
+    [
+     "group",
+     "ab"
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "className": "xw9mpwj",
+   "ltr": "::view-transition-group(*.xw9mpwj){0:a;1:b;}",
+   "rtl": null,
+   "priority": 1
+  }
+ },
+ {
+  "name": "number style empty block",
+  "styles": {
+   "$obj": [
+    [
+     "group",
+     5
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "className": "x1od172d",
+   "ltr": "::view-transition-group(*.x1od172d){}",
+   "rtl": null,
+   "priority": 1
+  }
+ },
+ {
+  "name": "bool style empty block",
+  "styles": {
+   "$obj": [
+    [
+     "group",
+     true
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "className": "x1od172d",
+   "ltr": "::view-transition-group(*.x1od172d){}",
+   "rtl": null,
+   "priority": 1
+  }
+ },
+ {
+  "name": "array style index entries",
+  "styles": {
+   "$obj": [
+    [
+     "group",
+     [
+      "x",
+      "y"
+     ]
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "className": "x12n4922",
+   "ltr": "::view-transition-group(*.x12n4922){0:x;1:y;}",
+   "rtl": null,
+   "priority": 1
+  }
+ },
+ {
+  "name": "content quoting",
+  "styles": {
+   "$obj": [
+    [
+     "old",
+     {
+      "$obj": [
+       [
+        "content",
+        "hello"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "className": "x1rgljc8",
+   "ltr": "::view-transition-old(*.x1rgljc8){content:\"hello\";}",
+   "rtl": null,
+   "priority": 1
+  }
+ },
+ {
+  "name": "prefix option",
+  "styles": {
+   "$obj": [
+    [
+     "group",
+     {
+      "$obj": [
+       [
+        "opacity",
+        1
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {
+   "classNamePrefix": "pfx"
+  },
+  "expected": {
+   "className": "pfxs0pn7x",
+   "ltr": "::view-transition-group(*.pfxs0pn7x){opacity:1;}",
+   "rtl": null,
+   "priority": 1
+  }
+ },
+ {
+  "name": "dev has no effect",
+  "styles": {
+   "$obj": [
+    [
+     "group",
+     {
+      "$obj": [
+       [
+        "opacity",
+        1
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {
+   "dev": true
+  },
+  "expected": {
+   "className": "xs0pn7x",
+   "ltr": "::view-transition-group(*.xs0pn7x){opacity:1;}",
+   "rtl": null,
+   "priority": 1
+  }
+ },
+ {
+  "name": "invalid key",
+  "styles": {
+   "$obj": [
+    [
+     "groups",
+     {
+      "$obj": []
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expectedError": {
+   "message": "Invalid property in `viewTransitionClass()` call. It may only contain group, imagePair, old, and new properties",
+   "code": "ViewTransitionClassInvalidProperty",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "non-object arg",
+  "styles": "x",
+  "options": {},
+  "expectedError": {
+   "message": "viewTransitionClass() can only accept an object.",
+   "code": "NonStyleObject",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "array arg",
+  "styles": [
+   {
+    "$obj": []
+   }
+  ],
+  "options": {},
+  "expectedError": {
+   "message": "viewTransitionClass() can only accept an object.",
+   "code": "NonStyleObject",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "null arg",
+  "styles": null,
+  "options": {},
+  "expectedError": {
+   "message": "viewTransitionClass() can only accept an object.",
+   "code": "NonStyleObject",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "null style crash",
+  "styles": {
+   "$obj": [
+    [
+     "group",
+     null
+    ]
+   ]
+  },
+  "options": {},
+  "expectedError": {
+   "message": "Cannot convert undefined or null to object",
+   "code": "UpstreamTypeError",
+   "messageExact": false
+  }
+ },
+ {
+  "name": "shorthand fallback throws",
+  "styles": {
+   "$obj": [
+    [
+     "group",
+     {
+      "$obj": [
+       [
+        "marginStart",
+        [
+         "1px",
+         "2px"
+        ]
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expectedError": {
+   "message": "Cannot use fallbacks for shorthands. Use the expansion instead.",
+   "code": "ShorthandFallback",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "unclosed function",
+  "styles": {
+   "$obj": [
+    [
+     "group",
+     {
+      "$obj": [
+       [
+        "color",
+        "rgb(1,"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expectedError": {
+   "message": "Rule contains an unclosed function",
+   "code": "UnclosedFunction",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "resolved keyframes name as value (mined vtc-003 shape)",
+  "styles": {
+   "$obj": [
+    [
+     "old",
+     {
+      "$obj": [
+       [
+        "animationName",
+        "x18re5ia-B"
+       ],
+       [
+        "animationDuration",
+        "1s"
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {},
+  "expected": {
+   "className": "x1rxglfj",
+   "ltr": "::view-transition-old(*.x1rxglfj){animation-name:x18re5ia-B;animation-duration:1s;}",
+   "rtl": null,
+   "priority": 1
+  }
+ }
+]

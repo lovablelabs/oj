@@ -1,14 +1,23 @@
 use super::*;
+use crate::css_engine::CssDeps;
 
 /// The compiled stylesheet as `text/css` (Vite's `?direct` / raw `<link>` request).
 pub(crate) async fn serve_css_direct(state: &Arc<ServerState>, file: &Path, url: &str) -> Response {
-    match ensure_module(state, file, url).await {
-        Ok((_, module)) => (
+    let url = format!("{url}?direct");
+    let css = match ensure_module(state, file, &url).await {
+        Ok((_, module)) => {
+            let id = format!("{}?direct", file.display());
+            css_post(state, file, &url, &id, module.code.clone()).await
+        }
+        Err(err) => Err(err),
+    };
+    match css {
+        Ok(css) => (
             [
                 (header::CONTENT_TYPE, "text/css"),
                 (header::CACHE_CONTROL, "no-cache"),
             ],
-            module.code.clone(),
+            css,
         )
             .into_response(),
         Err(err) => {
@@ -69,7 +78,50 @@ pub(crate) async fn compile_html_style(
     }
     let file = PathBuf::from(format!("{}.css", page_file.display()));
     let (_, module) = ensure_module_as(state, &file, &url, Some(code), Some(&transform_id)).await?;
-    Ok(module.code.clone())
+    css_post(state, &page_file, &url, &transform_id, module.code.clone()).await
+}
+
+/// A stylesheet's "post" plugins (enforce or order "post"), on what Vite's
+/// vite:css-post serves in dev: the CSS itself for a `?direct` request, the
+/// JS module for an import. The sheet's other slots ran in its compile.
+pub(crate) async fn css_post(
+    state: &ServerState,
+    file: &Path,
+    url: &str,
+    id: &str,
+    code: String,
+) -> Result<String, String> {
+    let input = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        code.hash(&mut h);
+        h.finish()
+    };
+    if let Some((_, out)) = state
+        .css_post
+        .lock()
+        .unwrap()
+        .get(id)
+        .filter(|(at, _)| *at == input)
+    {
+        return Ok(out.clone());
+    }
+    let is_dep = is_dep_module(url, file);
+    let t = plugin_transform_phase(state, file, id, code, is_dep, Some("post")).await?;
+    if !t.watch_files.is_empty() {
+        let mut watched = state.plugin_watched.lock().unwrap();
+        for p in &t.watch_files {
+            let p = PathBuf::from(p);
+            ensure_watched_file(state, &p);
+            watched.insert(p);
+        }
+    }
+    state
+        .css_post
+        .lock()
+        .unwrap()
+        .insert(id.to_string(), (input, t.code.clone()));
+    Ok(t.code)
 }
 
 pub(crate) async fn serve_css_wrapper(
@@ -77,7 +129,10 @@ pub(crate) async fn serve_css_wrapper(
     file: &Path,
     url: &str,
 ) -> Response {
-    let (_, module) = match ensure_module(state, file, url).await {
+    let (module, sheet) = match ensure_module(state, file, url).await.map(|(_, module)| {
+        let sheet = module.code.clone();
+        (module, sheet)
+    }) {
         Ok(pair) => pair,
         Err(err) => {
             send_error(state, &err);
@@ -99,14 +154,22 @@ pub(crate) async fn serve_css_wrapper(
         ""
     };
     let body = format!(
-        "import {{ createHotContext as __oj_hot, updateStyle as __oj_updateStyle, removeStyle as __oj_removeStyle }} from \"/@oj/client.js\";\n\
+        "import {{ createHotContext as __oj_hot, updateStyle as __oj_updateStyle, removeStyle as __oj_removeStyle }} from {client:?};\n\
          import.meta.hot = __oj_hot({url:?});\n\
          __oj_updateStyle({url:?}, {css});\n\
          {exports}\
          {accept}\
          import.meta.hot.prune(() => __oj_removeStyle({url:?}));\n",
-        css = serde_json::to_string(&module.code).unwrap(),
+        css = serde_json::to_string(&sheet).unwrap(),
+        client = state.oj_paths.client,
     );
+    let body = match css_post(state, file, url, &file.to_string_lossy(), body).await {
+        Ok(body) => body,
+        Err(err) => {
+            send_error(state, &err);
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("oj: {err}")).into_response();
+        }
+    };
     (
         [
             (header::CONTENT_TYPE, "text/javascript"),
@@ -176,7 +239,7 @@ pub(crate) async fn run_css_engine(
 }
 
 pub(crate) fn is_preprocessor(url: &str) -> bool {
-    sidecar::is_less(url) || sidecar::is_stylus(url)
+    sidecar::preprocess_lang(url).is_some()
 }
 
 /// A dependency module (dep/CJS-interop path): JS under node_modules, by url or
@@ -197,7 +260,10 @@ pub(crate) fn is_dep_module(url: &str, file: &Path) -> bool {
 /// Stylesheet extensions (public: the in-process Start module host classifies
 /// resolved paths with the same rule the dev server uses).
 pub fn is_style_ext(ext: &str) -> bool {
-    matches!(ext, "css" | "scss" | "sass" | "less" | "styl" | "stylus")
+    matches!(
+        ext,
+        "css" | "scss" | "sass" | "less" | "styl" | "stylus" | "pcss" | "postcss" | "sss"
+    )
 }
 
 pub(crate) fn is_style_url(url: &str) -> bool {
@@ -227,14 +293,195 @@ pub(crate) async fn run_svelte_engine(
     engine.compile(source, url).await
 }
 
+/// Tailwind sheets as last compiled, by url. Vite keeps a CSS module's
+/// transform in its module graph until a file it depends on changes; a
+/// Tailwind sheet depends on every source it scans, so any watched change
+/// moves the generation and the next request compiles again. Without it,
+/// every request compiled: the eager crawl and the page's own fetch on a
+/// cold load, and each reload after.
+#[derive(Default)]
+pub(crate) struct TailwindSheets {
+    generation: std::sync::atomic::AtomicU64,
+    sheets: Mutex<HashMap<String, Sheet>>,
+}
+
+struct Sheet {
+    source: u64,
+    generation: u64,
+    css: Arc<str>,
+}
+
+impl TailwindSheets {
+    /// A watched file changed.
+    pub(crate) fn invalidate(&self) {
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn get(&self, url: &str, source: u64) -> Option<Arc<str>> {
+        let generation = self.generation();
+        let sheets = self.sheets.lock().unwrap();
+        let sheet = sheets.get(url)?;
+        (sheet.source == source && sheet.generation == generation).then(|| Arc::clone(&sheet.css))
+    }
+
+    /// `generation` is the one read before the compile started: a change
+    /// landing mid-compile leaves the sheet stale, never fresh.
+    fn put(&self, url: &str, source: u64, generation: u64, css: Arc<str>) {
+        self.sheets.lock().unwrap().insert(
+            url.to_string(),
+            Sheet {
+                source,
+                generation,
+                css,
+            },
+        );
+    }
+}
+
+fn source_digest(source: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    source.hash(&mut h);
+    h.finish()
+}
+
+/// A Tailwind sheet compiled, with the files its `@import`s inlined. Under a
+/// PostCSS config, Vite's compileCSS runs postcss-import ahead of the app's
+/// plugins (Tailwind v3 resolves no `@import`); without one, Tailwind v4's
+/// compiler resolves them itself.
 pub(crate) async fn compile_tailwind(
+    state: &Arc<ServerState>,
+    file: &Path,
+    url: &str,
+    source: &str,
+) -> Result<(String, Vec<PathBuf>), String> {
+    // The sheet's own url, as the page links it and HMR updates it (not a
+    // `?direct` or `?inline` request's).
+    state
+        .tailwind_urls
+        .lock()
+        .unwrap()
+        .insert(sheet_url(url).to_string());
+    let mut imported = Vec::new();
+    let inlined;
+    let source = if state.has_postcss {
+        inlined = oj_css::inline_imports_collecting(
+            source,
+            file,
+            &state.css_resolve.as_ref(),
+            &mut imported,
+        )?;
+        inlined.as_str()
+    } else {
+        source
+    };
+    let css = compile_tailwind_sheet(state, url, source).await?;
+    Ok((css, imported))
+}
+
+async fn compile_tailwind_sheet(
     state: &Arc<ServerState>,
     url: &str,
     source: &str,
 ) -> Result<String, String> {
-    let css = run_css_engine(state, url, source).await?;
-    state.tailwind_urls.lock().unwrap().insert(url.to_string());
-    Ok(css)
+    let digest = source_digest(source);
+    let sheets = &state.tailwind_sheets;
+    if let Some(css) = sheets.get(url, digest) {
+        return Ok(css.to_string());
+    }
+    // One compile per sheet at a time: the crawl and the page ask together.
+    let lock = {
+        let mut locks = state.compile_locks.lock().unwrap();
+        Arc::clone(locks.entry(format!("tailwind:{url}")).or_default())
+    };
+    let _guard = lock.lock().await;
+    if let Some(css) = sheets.get(url, digest) {
+        return Ok(css.to_string());
+    }
+    let generation = sheets.generation();
+    let engine = lazy_engine(state, EngineKind::Tailwind).await?;
+    let (css, deps) = engine.compile_tracked(source, url).await?;
+    watch_css_deps(state, deps).await;
+    let css: Arc<str> = css.into();
+    sheets.put(url, digest, generation, Arc::clone(&css));
+    Ok(css.to_string())
+}
+
+/// Vite's compileCSS hands a sheet's PostCSS deps to the watcher
+/// (`addWatchFile`), so an edit to a scanned source outside the root still
+/// moves the sheet's generation. The root watch covers the rest. As with
+/// chokidar's `add`, a watch takes effect a moment after it is asked for.
+async fn watch_css_deps(state: &Arc<ServerState>, deps: CssDeps) {
+    let root = state.root.clone();
+    let files = tokio::task::spawn_blocking(move || outside_root_deps(&root, deps))
+        .await
+        .unwrap_or_default();
+    for file in files {
+        ensure_watched_file(state, &file);
+    }
+}
+
+/// The dep files outside `root`, one per directory (the watcher watches
+/// directories); the root watch covers the rest.
+fn outside_root_deps(root: &Path, deps: CssDeps) -> Vec<PathBuf> {
+    let mut dirs = std::collections::HashSet::new();
+    css_dep_files(deps, Some(root))
+        .into_iter()
+        .filter(|p| {
+            !p.starts_with(root) && !p.components().any(|c| c.as_os_str() == "node_modules")
+        })
+        .filter(|p| p.parent().is_some_and(|d| dirs.insert(d.to_path_buf())))
+        .collect()
+}
+
+/// A compile's deps as files, as Vite's compileCSS collects them: a
+/// `dir-dependency` expands as its globSync does, files under `dir` matching
+/// `glob` with no node_modules and no dotfiles. `prune` is a subtree left
+/// out (already watched).
+pub(crate) fn css_dep_files(deps: CssDeps, prune: Option<&Path>) -> Vec<PathBuf> {
+    let mut out = deps.files;
+    for (dir, glob) in deps.dirs {
+        if prune.is_some_and(|p| dir.starts_with(p)) {
+            continue;
+        }
+        let Ok(matcher) = globset::GlobBuilder::new(&glob)
+            .literal_separator(true)
+            .build()
+            .map(|g| g.compile_matcher())
+        else {
+            continue;
+        };
+        let mut stack = vec![dir.clone()];
+        while let Some(at) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&at) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                if name.to_string_lossy().starts_with('.') || name == "node_modules" {
+                    continue;
+                }
+                let path = entry.path();
+                if prune.is_some_and(|p| path == p) {
+                    continue;
+                }
+                if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                    stack.push(path);
+                } else if path
+                    .strip_prefix(&dir)
+                    .is_ok_and(|rel| matcher.is_match(rel))
+                {
+                    out.push(path);
+                }
+            }
+        }
+    }
+    out
 }
 
 pub(crate) enum EngineKind {
@@ -264,4 +511,102 @@ pub(crate) async fn lazy_engine(
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tailwind_sheet_tests {
+    use super::*;
+
+    #[test]
+    fn a_sheet_serves_until_its_source_or_a_watched_file_changes() {
+        let sheets = TailwindSheets::default();
+        let src = source_digest("@tailwind utilities;");
+        assert!(sheets.get("/src/index.css", src).is_none());
+
+        let generation = sheets.generation();
+        sheets.put("/src/index.css", src, generation, "a{}".into());
+        assert_eq!(sheets.get("/src/index.css", src).as_deref(), Some("a{}"));
+        assert!(sheets.get("/src/other.css", src).is_none());
+        assert!(sheets
+            .get("/src/index.css", source_digest("@tailwind base;"))
+            .is_none());
+
+        sheets.invalidate();
+        assert!(sheets.get("/src/index.css", src).is_none());
+    }
+
+    #[test]
+    fn outside_root_deps_expand_dir_globs_and_skip_the_root() {
+        let base = tempfile::tempdir().unwrap();
+        let base = base.path().canonicalize().unwrap();
+        let root = base.join("app");
+        let pkg = base.join("packages/ui");
+        for dir in [
+            root.join("src"),
+            pkg.join("src/deep"),
+            pkg.join("node_modules/x"),
+            pkg.join(".cache"),
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        for file in [
+            root.join("src/App.tsx"),
+            pkg.join("src/Button.tsx"),
+            pkg.join("src/deep/Card.tsx"),
+            pkg.join("src/notes.md"),
+            pkg.join("node_modules/x/y.tsx"),
+            pkg.join(".cache/z.tsx"),
+            base.join("theme.css"),
+        ] {
+            std::fs::write(file, "").unwrap();
+        }
+        let deps = CssDeps {
+            files: vec![base.join("theme.css"), root.join("src/App.tsx")],
+            dirs: vec![
+                (pkg.clone(), "**/*.{ts,tsx}".into()),
+                (base.clone(), "app/**/*.tsx".into()),
+                (root.join("src"), "**/*.tsx".into()),
+            ],
+        };
+        let mut got = outside_root_deps(&root, deps);
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                pkg.join("src/Button.tsx"),
+                pkg.join("src/deep/Card.tsx"),
+                base.join("theme.css"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_change_during_the_compile_leaves_its_sheet_stale() {
+        let sheets = TailwindSheets::default();
+        let src = source_digest("@tailwind utilities;");
+        let started = sheets.generation();
+        sheets.invalidate();
+        sheets.put("/src/index.css", src, started, "a{}".into());
+        assert!(sheets.get("/src/index.css", src).is_none());
+    }
+}
+
+#[cfg(test)]
+mod style_ext_tests {
+    use super::*;
+
+    // Vite's CSS_LANGS_RE: /\.(css|less|sass|scss|styl|stylus|pcss|postcss|sss)(?:$|\?)/.
+    #[test]
+    fn style_extensions_are_vites_css_langs() {
+        for ext in [
+            "css", "less", "sass", "scss", "styl", "stylus", "pcss", "postcss", "sss",
+        ] {
+            assert!(is_style_ext(ext), "{ext}");
+        }
+        for ext in ["js", "ts", "json", "svg", "html", "style", "ss"] {
+            assert!(!is_style_ext(ext), "{ext}");
+        }
+        assert!(is_style_url("/src/a.pcss?inline"));
+        assert!(is_style_url("/src/a.sss"));
+    }
 }

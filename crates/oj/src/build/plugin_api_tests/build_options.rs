@@ -42,7 +42,14 @@ fn app(name: &str, config_file: &str, config: &str) -> PathBuf {
 }
 
 async fn build_or_panic(root: &Path, cli: CliOptions) {
-    if let Err(err) = build(root.to_path_buf(), None, cli).await {
+    if let Err(err) = build(
+        root.to_path_buf(),
+        None,
+        &tokio::runtime::Handle::current(),
+        cli,
+    )
+    .await
+    {
         panic!("build of {} failed:\n{err:#}", root.display());
     }
 }
@@ -63,7 +70,7 @@ fn main_chunk(out_dir: &Path) -> (String, PathBuf) {
         .collect();
     let js = names
         .iter()
-        .find(|f| f.starts_with("main-") && f.ends_with(".js"))
+        .find(|f| f.starts_with("index-") && f.ends_with(".js"))
         .unwrap_or_else(|| panic!("main chunk emitted: {names:?}"));
     (
         fs::read_to_string(assets.join(js)).unwrap(),

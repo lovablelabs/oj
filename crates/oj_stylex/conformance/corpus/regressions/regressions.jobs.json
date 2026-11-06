@@ -1,0 +1,918 @@
+{
+  "header": {
+    "corpus": "regressions",
+    "description": "Minimized repros for divergences found and fixed during the wave-4 transform integration plus the codex round-3 (r3-* ids) and round-4 (r4-* ids) findings. Each compiled differently (or errored differently) before its fix; the oracle is @stylexjs/babel-plugin 0.19.0 run live. Fixture dependency trees live in fixtures/*/nm and are materialized to node_modules by run.sh.",
+    "oracle": "@stylexjs/babel-plugin@0.19.0",
+    "written": "2026-08-27"
+  },
+  "jobs": [
+    {
+      "id": "regressions/when-marker-proxy-toString-001",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { groupMarker } from './markers.stylex';\nexport const styles = stylex.create({\n  item: { opacity: { default: 0, [stylex.when.ancestor(':hover', groupMarker)]: 1 } },\n});\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["when", "marker", "cross-file"]
+    },
+    {
+      "id": "regressions/local-arrow-call-002",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nconst generateBg = () => 'red';\nconst px = (n, unit) => `${n}${unit}`;\nexport const styles = stylex.create({\n  root: { backgroundColor: generateBg(), width: px(4, 'px') },\n});\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["eval", "arrow-call"]
+    },
+    {
+      "id": "regressions/object-member-arrow-call-003",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nconst fns = { generateBg: () => 'red' };\nexport const styles = stylex.create({\n  root: { backgroundColor: fns.generateBg() },\n});\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["eval", "arrow-call"]
+    },
+    {
+      "id": "regressions/banned-shorthand-throw-mode-004",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ root: { borderTop: 'red' } });\n",
+      "options": {
+        "propertyValidationMode": "throw"
+      },
+      "mode": "dev",
+      "expect": "error",
+      "tags": ["options", "banned-shorthand"]
+    },
+    {
+      "id": "regressions/samefile-definevars-create-005",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/tokens.stylex.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({\n  accent: 'red',\n  gap: { default: '8px', '@media print': '4px' },\n});\nexport const styles = stylex.create({\n  root: { color: vars.accent, padding: vars.gap },\n});\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "expect": "ok",
+      "tags": ["defineVars", "same-file"]
+    },
+    {
+      "id": "regressions/samefile-theme-props-006",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/theme.stylex.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ accent: 'blue', spacing: '4px' });\nexport const dark = stylex.createTheme(vars, { accent: 'navy' });\nexport const probe = stylex.props(dark);\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "expect": "ok",
+      "tags": ["createTheme", "props", "same-file"]
+    },
+    {
+      "id": "regressions/dynamic-dce-007",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nconst styles = stylex.create({\n  dyn: (width) => ({ width, transitionDuration: width * 2, opacity: width > 10 ? 1 : 0.5 }),\n  other: { color: 'red', margin: null },\n});\nexport const probe = stylex.props(styles.dyn(10));\nexport const dyn = styles.dyn;\n",
+      "options": {},
+      "expect": "ok",
+      "tags": ["dynamic", "dce"]
+    },
+    {
+      "id": "regressions/positiontry-in-create-008",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({\n  anchored: {\n    positionTryFallbacks: stylex.positionTry({ top: 0, insetInlineStart: '10px' }),\n    positionAnchor: '--anchor',\n  },\n});\n",
+      "options": {},
+      "expect": "ok",
+      "tags": ["positionTry", "create-callable"]
+    },
+    {
+      "id": "regressions/definevars-fn-leaves-types-009",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/anim.stylex.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({\n  accent: stylex.types.color('rebeccapurple'),\n  fade: stylex.keyframes({ from: { opacity: 0 }, to: { opacity: 1 } }),\n  double: () => `calc(2 * 4px)`,\n  ref: () => vars.accent,\n});\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "expect": "ok",
+      "tags": ["defineVars", "types", "keyframes", "fn-leaf"]
+    },
+    {
+      "id": "regressions/samefile-nested-theme-010",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/nested.stylex.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const tokens = stylex.unstable_defineVarsNested({\n  button: { bg: 'red', label: { color: 'white' } },\n  gap: '8px',\n});\nexport const theme = stylex.unstable_createThemeNested(tokens, {\n  button: { bg: 'green' },\n});\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "expect": "ok",
+      "tags": ["defineVarsNested", "createThemeNested", "same-file"]
+    },
+    {
+      "id": "regressions/dynamic-nullish-fallback-011",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({\n  root: (color) => ({\n    color: color ?? null,\n    '::before': { width: 8 },\n    backgroundColor: { default: color, ':hover': 'red' },\n  }),\n});\n",
+      "options": {},
+      "expect": "ok",
+      "tags": ["dynamic", "nullish", "pseudo-element"]
+    },
+    {
+      "id": "regressions/crossfile-definevars-proxy-012",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/consumer.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { deftokens } from './deftokens.stylex';\nexport const styles = stylex.create({\n  root: { color: deftokens.accent, gap: deftokens.spacing.small },\n});\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "expect": "ok",
+      "tags": ["defineVars", "cross-file", "proxy"]
+    },
+    {
+      "id": "regressions/createtheme-null-vars-018",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/a.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const t = stylex.createTheme(null, { a: 'red' });\n",
+      "options": {},
+      "expect": "error",
+      "tags": ["phase-d-probe"]
+    },
+    {
+      "id": "regressions/dynamic-function-local-013",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/a.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport function make(w) {\n  const styles = stylex.create({ dyn: (h) => ({ height: h, width: 4 }) });\n  return stylex.props(styles.dyn(w));\n}\n",
+      "options": {},
+      "expect": "ok",
+      "tags": ["phase-d-probe"]
+    },
+    {
+      "id": "regressions/dynamic-test-mode-014",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/a.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ dyn: (w) => ({ width: w }), plain: { color: 'red' } });\n",
+      "options": {
+        "test": true
+      },
+      "expect": "ok",
+      "tags": ["phase-d-probe"]
+    },
+    {
+      "id": "regressions/positiontry-callable-skips-validation-015",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/a.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { positionTryFallbacks: stylex.positionTry({ color: 'red' }) } });\n",
+      "options": {},
+      "expect": "ok",
+      "tags": ["phase-d-probe"]
+    },
+    {
+      "id": "regressions/nested-theme-crossfile-proxy-016",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/consumer.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport { deftokens } from './deftokens.stylex';\nexport const theme = stylex.unstable_createThemeNested(deftokens, {});\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "expect": "ok",
+      "tags": ["phase-d-probe"]
+    },
+    {
+      "id": "regressions/dynamic-sequence-leaf-017",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/a.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ dyn: (w) => ({ width: (0, w) }) });\n",
+      "options": {},
+      "expect": "ok",
+      "tags": ["phase-d-probe"]
+    },
+    {
+      "id": "regressions/dynamic-expr-keeps-referenced-stylevar-019",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/a.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nconst a = stylex.create({ x: { color: 'red' } });\nexport const b = stylex.create({ dyn: (w) => ({ '--z': a.x.color + w }) });\n",
+      "options": {},
+      "expect": "ok",
+      "tags": ["phase-d-fix", "dynamic", "dce"]
+    },
+    {
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "options": {},
+      "mode": "prod",
+      "id": "regressions/r3-local-shadow-020",
+      "source": "import * as stylex from '@stylexjs/stylex';\nconst color = 'red';\nexport function f() {\n  const color = 'blue';\n  return stylex.create({a: {color}});\n}\n",
+      "expect": "ok",
+      "tags": ["r3-f1", "scope-shadow"]
+    },
+    {
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "options": {},
+      "mode": "prod",
+      "id": "regressions/r3-param-shadow-021",
+      "source": "import * as stylex from '@stylexjs/stylex';\nconst color = 'red';\nexport function f(color) {\n  return stylex.create({a: {color}});\n}\n",
+      "expect": "error",
+      "tags": ["r3-f1", "scope-shadow"]
+    },
+    {
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "options": {},
+      "mode": "prod",
+      "id": "regressions/r3-catch-shadow-022",
+      "source": "import * as stylex from '@stylexjs/stylex';\nconst color = 'red';\nexport function f() {\n  try { g(); } catch (color) {\n    return stylex.create({a: {color}});\n  }\n}\n",
+      "expect": "error",
+      "tags": ["r3-f1", "scope-shadow"]
+    },
+    {
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "options": {},
+      "mode": "prod",
+      "id": "regressions/r3-fndecl-shadow-023",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport function f() {\n  function color() {}\n  return stylex.create({a: {color}});\n}\n",
+      "expect": "error",
+      "tags": ["r3-f1", "scope-shadow"]
+    },
+    {
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "options": {},
+      "mode": "prod",
+      "id": "regressions/r3-unrelated-mutation-024",
+      "source": "import * as stylex from '@stylexjs/stylex';\nconst theme = {color: 'red'};\nexport function g(theme) {\n  theme.color = 'blue';\n}\nexport const s = stylex.create({a: {color: theme.color}});\n",
+      "expect": "ok",
+      "tags": ["r3-f1", "mutation"]
+    },
+    {
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "options": {},
+      "mode": "prod",
+      "id": "regressions/r3-shadowed-create-callee-025",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport function f(stylex) {\n  return stylex.create({a: {color: 'red'}});\n}\n",
+      "expect": "ok",
+      "tags": ["r3-f1", "callee"]
+    },
+    {
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "options": {},
+      "mode": "prod",
+      "id": "regressions/r3-object-identity-026",
+      "source": "import * as stylex from '@stylexjs/stylex';\nconst x = {};\nconst a = [x, x];\nexport const s = stylex.create({a: {color: x === x && a[0] !== a[1] ? 'red' : 'blue'}});\n",
+      "expect": "ok",
+      "tags": ["r3-f7", "identity"]
+    },
+    {
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "options": {},
+      "mode": "prod",
+      "id": "regressions/r3-coercion-branches-027",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({a: {color: [] == 0 && !(['2'] < ['10']) && ({}) != ({}) ? 'red' : 'blue'}});\n",
+      "expect": "ok",
+      "tags": ["r3-f7", "coercion"]
+    },
+    {
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "options": {},
+      "mode": "prod",
+      "id": "regressions/r3-parens-mutation-028",
+      "source": "import * as stylex from '@stylexjs/stylex';\nconst theme = {color: 'red'};\nObject.assign((theme), {color: 'blue'});\nexport const s = stylex.create({a: {color: theme.color}});\n",
+      "expect": "error",
+      "tags": ["r3-f8", "mutation"]
+    },
+    {
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "options": {},
+      "mode": "prod",
+      "id": "regressions/r3-math-nan-029",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({a: {opacity: Math.min(1, NaN, 2), width: Math.max(1, NaN, 2)}});\n",
+      "expect": "ok",
+      "tags": ["r3-f9", "math"]
+    },
+    {
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "options": {},
+      "mode": "prod",
+      "id": "regressions/r3-callee-matrix-030",
+      "source": "import * as stylex from '@stylexjs/stylex';\nconst t = {b: 1, a: 2};\nexport const s = stylex.create({a: {color: Array('red')[0], width: Math.trunc(1.9), content: Object.keys(t).sort().join('') + 'abc'.toUpperCase()}});\n",
+      "expect": "ok",
+      "tags": ["r3-f11", "callees"]
+    },
+    {
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "options": {},
+      "mode": "prod",
+      "id": "regressions/r3-number-trim-nel-031",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({a: {width: Number('\\u0085') ? 1 : 2}});\n",
+      "expect": "ok",
+      "tags": ["r3-m1", "number"]
+    },
+    {
+      "id": "regressions/r3-tsx-always-generic-call-001",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.js",
+      "source": "import stylex from '@stylexjs/stylex';\nconst f = 1, T = 2;\nexport const s = stylex.create({a: {width: +(f<T>(0))}});\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["parse", "tsx-always"]
+    },
+    {
+      "id": "regressions/r3-sx-import-after-hashbang-001",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "#!/usr/bin/env node\nimport {create} from '@stylexjs/stylex';\nexport function C(x) { return <div sx={x} />; }\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["sx", "prologue"]
+    },
+    {
+      "id": "regressions/r3-sx-import-after-directive-002",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "\"use client\";\nimport {create} from '@stylexjs/stylex';\nexport function C(x) { return <div sx={x} />; }\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["sx", "prologue"]
+    },
+    {
+      "id": "regressions/r3-pregate-unicode-specifier-001",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as sx from \"@\\u0073tylexjs/\\u0073tylex\";\nexport const styles = sx.create({root: {color: 'red'}});\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["pregate"]
+    },
+    {
+      "id": "regressions/r3-hoist-fn-body-001",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport function f() {\n  return stylex.create({a: {color: 'red'}});\n}\nexport const same = f() === f();\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["hoist"]
+    },
+    {
+      "id": "regressions/r3-hoist-loop-002",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const arr = [];\nfor (let i = 0; i < 2; i++) { arr.push(stylex.create({a: {color: 'red'}})); }\nexport const same = arr[0] === arr[1];\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["hoist"]
+    },
+    {
+      "id": "regressions/r3-hoist-arrow-003",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const f = () => stylex.create({a: {color: 'red'}});\nexport const same = f() === f();\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["hoist"]
+    },
+    {
+      "id": "regressions/r3-hoist-obj-method-004",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const api = { get() { return stylex.create({a: {color: 'red'}}); } };\nexport const same = api.get() === api.get();\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["hoist"]
+    },
+    {
+      "id": "regressions/r3-hoist-class-in-fn-005",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport function make() {\n  class C { styles = stylex.create({a: {color: 'red'}}); }\n  return new C();\n}\nexport const same = make().styles === make().styles;\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["hoist"]
+    },
+    {
+      "id": "regressions/r3-hoist-uid-collision-006",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nconst _styles = 1;\nexport function f() { return stylex.create({a: {color: 'red'}}); }\nexport function g() { return stylex.create({b: {color: 'blue'}}); }\nexport const same = f() === f();\nexport const cross = f() === g();\nexport const keep = _styles;\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["hoist", "uid"]
+    },
+    {
+      "id": "regressions/r3-hoist-local-collision-007",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport function f() { const _styles = 5; return [stylex.create({a: {color: 'red'}}), _styles]; }\nexport const same = f()[0] === f()[0];\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["hoist", "uid"]
+    },
+    {
+      "id": "regressions/r3-hoist-dynamic-fn-008",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport function f() {\n  return stylex.create({a: (w) => ({width: w})});\n}\nexport const same = f() === f();\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["hoist", "dynamic"]
+    },
+    {
+      "id": "regressions/r3-hoist-top-block-009",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nlet s;\nif (true) { s = stylex.create({a: {color: 'red'}}); }\nlet t;\nouter: { t = stylex.create({b: {color: 'blue'}}); }\nexport const out = [s, t];\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["hoist"]
+    },
+    {
+      "id": "regressions/r3-class-field-stays-inline-010",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nclass C {\n  styles = stylex.create({a: {color: 'red'}});\n  static sstyles = stylex.create({b: {color: 'blue'}});\n}\nexport const same = new C().styles === new C().styles;\nexport const stat = C.sstyles;\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["hoist", "inline"]
+    },
+    {
+      "id": "regressions/r3-treeshake-exact-import-001",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import type {Colors} from './markers.stylex';\nimport './setup';\nimport {groupMarker} from './markers.stylex';\nimport * as stylex from '@stylexjs/stylex';\nexport const s = stylex.create({item: {opacity: {default: 0, [stylex.when.ancestor(':hover', groupMarker)]: 1}}});\n",
+      "options": {
+        "treeshakeCompensation": true,
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["treeshake", "cross-file"]
+    },
+    {
+      "id": "regressions/r3-resolve-exports-exact-001",
+      "root": "corpus/regressions/fixtures/pkg",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport {colors} from 'design-tokens/theme.stylex';\nexport const s = stylex.create({a: {color: colors.primary}});\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["resolution", "exports"]
+    },
+    {
+      "id": "regressions/r3-resolve-exports-pattern-002",
+      "root": "corpus/regressions/fixtures/pkg",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport {colors} from 'design-tokens/pat/deep.stylex';\nexport const s = stylex.create({a: {color: colors.primary}});\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["resolution", "exports"]
+    },
+    {
+      "id": "regressions/r3-resolve-exports-conditions-003",
+      "root": "corpus/regressions/fixtures/pkg",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport {colors} from 'cond-tokens/theme.stylex';\nexport const s = stylex.create({a: {color: colors.primary}});\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["resolution", "exports"]
+    },
+    {
+      "id": "regressions/r3-resolve-no-exports-subpath-004",
+      "root": "corpus/regressions/fixtures/pkg",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport {colors} from 'plain-tokens/lib/theme.stylex';\nexport const s = stylex.create({a: {color: colors.primary}});\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["resolution"]
+    },
+    {
+      "id": "regressions/r3-resolve-legacy-main-005",
+      "root": "corpus/regressions/fixtures/pkg",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport {colors} from 'tokens.stylex';\nexport const s = stylex.create({a: {color: colors.primary}});\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["resolution", "main"]
+    },
+    {
+      "id": "regressions/r3-resolve-self-reference-006",
+      "root": "corpus/regressions/fixtures/pkg",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport {colors} from 'pkg-fixture/self.stylex';\nexport const s = stylex.create({a: {color: colors.primary}});\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["resolution", "self"]
+    },
+    {
+      "id": "regressions/r3-resolve-imports-star-final-007",
+      "root": "corpus/regressions/fixtures/pkg",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport {colors} from '#tok/deep.stylex';\nexport const s = stylex.create({a: {color: colors.primary}});\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["resolution", "imports"]
+    },
+    {
+      "id": "regressions/r3-resolve-imports-nonfinal-star-008",
+      "root": "corpus/regressions/fixtures/pkg",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport {colors} from '#hash/deep.stylex';\nexport const s = stylex.create({a: {color: colors.primary}});\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["resolution", "imports"]
+    },
+    {
+      "id": "regressions/r3-resolve-exports-miss-009",
+      "root": "corpus/regressions/fixtures/pkg",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport {colors} from 'design-tokens/other.stylex';\nexport const s = stylex.create({a: {color: colors.primary}});\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["resolution", "exports"]
+    },
+    {
+      "id": "regressions/r3-norootdir-theme-import-001",
+      "root": "corpus/regressions/fixtures/pkg",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport {colors} from 'design-tokens/theme.stylex';\nexport const s = stylex.create({a: {color: colors.primary}});\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["norootdir"]
+    },
+    {
+      "id": "regressions/r3-norootdir-definevars-002",
+      "root": "corpus/regressions/fixtures/pkg",
+      "filename": "src/tokens.stylex.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ accent: 'red' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["norootdir", "defineVars"]
+    },
+    {
+      "id": "regressions/r3-norootdir-definevars-debug-003",
+      "root": "corpus/regressions/fixtures/pkg",
+      "filename": "src/tokens.stylex.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const vars = stylex.defineVars({ accent: 'red' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        },
+        "debug": true,
+        "enableDebugClassNames": true
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["norootdir", "defineVars"]
+    },
+    {
+      "id": "regressions/r3-norootdir-createtheme-004",
+      "root": "corpus/regressions/fixtures/pkg",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport {colors} from 'design-tokens/theme.stylex';\nexport const theme = stylex.createTheme(colors, { primary: 'green' });\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["norootdir", "createTheme"]
+    },
+    {
+      "id": "regressions/r3-positiontry-no-args-001",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const p = stylex.positionTry();\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["positionTry", "validation"]
+    },
+    {
+      "id": "regressions/r3-positiontry-string-arg-002",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const p = stylex.positionTry('top');\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["positionTry", "validation"]
+    },
+    {
+      "id": "regressions/r3-positiontry-bad-prop-003",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const p = stylex.positionTry({color: 'red'});\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["positionTry", "validation"]
+    },
+    {
+      "id": "regressions/r3-positiontry-arr-arg-004",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const p = stylex.positionTry([{top: 0}]);\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["positionTry", "validation"]
+    },
+    {
+      "id": "regressions/r3-styleq-string-arg-001",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nconst x = ['ab'];\nexport const out = stylex.props(x);\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["styleq"]
+    },
+    {
+      "id": "regressions/r3-styleq-fontfamily-array-002",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nconst x = {fontFamily: ['Arial', 'sans-serif']};\nexport const out = stylex.props(x);\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["styleq", "convertObjectToAST"]
+    },
+    {
+      "id": "regressions/r3-attrs-final-sigma-003",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const out = stylex.attrs({'ΟΣ': 'v'});\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["attrs", "casing"]
+    },
+    {
+      "id": "regressions/r3-jsesc-string-escapes-004",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport const out = stylex.props({content: '\"a\\u2028b\\u2029c\\u0000d\\u000be\\ud83d\\ude00f\\u00e9\"'});\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["jsesc"]
+    },
+    {
+      "id": "regressions/r3-styleq-two-strings-005",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nconst pair = ['xy', 'ab'];\nexport const out = stylex.props(pair);\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["styleq"]
+    },
+    {
+      "id": "regressions/r3-styleq-empty-string-006",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nconst one = [''];\nexport const out = stylex.props(one);\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["styleq"]
+    },
+    {
+      "id": "regressions/r4-resolve-invalid-subpath-001",
+      "root": "corpus/regressions/fixtures/pkg",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport {colors} from 'sealed/tokens/../private.stylex';\nexport const s = stylex.create({a: {color: colors.primary}});\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["resolution", "exports", "invalid-segment"]
+    },
+    {
+      "id": "regressions/r4-resolve-encoded-dotdot-002",
+      "root": "corpus/regressions/fixtures/pkg",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport {colors} from 'sealed/tokens/%2e%2e/private.stylex';\nexport const s = stylex.create({a: {color: colors.primary}});\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["resolution", "exports", "invalid-segment"]
+    },
+    {
+      "id": "regressions/r4-resolve-encoded-sep-003",
+      "root": "corpus/regressions/fixtures/pkg",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport {colors} from 'sealed/tokens/a%2fb.stylex';\nexport const s = stylex.create({a: {color: colors.primary}});\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["resolution", "exports", "encoded-separator"]
+    },
+    {
+      "id": "regressions/r4-resolve-null-array-fallback-004",
+      "root": "corpus/regressions/fixtures/pkg",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport {colors} from 'sealed/arrnull.stylex';\nexport const s = stylex.create({a: {color: colors.primary}});\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["resolution", "exports", "target-array"]
+    },
+    {
+      "id": "regressions/r4-resolve-multistar-005",
+      "root": "corpus/regressions/fixtures/pkg",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport {colors} from 'sealed/multistar/deep.stylex';\nexport const s = stylex.create({a: {color: colors.primary}});\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["resolution", "exports", "pattern"]
+    },
+    {
+      "id": "regressions/r4-resolve-nested-cond-stop-006",
+      "root": "corpus/regressions/fixtures/pkg",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport {colors} from 'sealed/nested.stylex';\nexport const s = stylex.create({a: {color: colors.primary}});\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["resolution", "exports", "conditions"]
+    },
+    {
+      "id": "regressions/r4-resolve-malformed-pkg-007",
+      "root": "corpus/regressions/fixtures/pkg",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nimport {colors} from 'badjson/lib/x.stylex';\nexport const s = stylex.create({a: {color: colors.primary}});\n",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "commonJS",
+          "rootDir": "<ROOT>"
+        }
+      },
+      "mode": "prod",
+      "expect": "error",
+      "tags": ["resolution", "package-json"]
+    },
+    {
+      "id": "regressions/r4-dynamic-static-chunk-identity-001",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nconst styles = stylex.create({\n  a: w => ({ color: 'red', width: w }),\n  b: h => ({ color: 'blue', height: h }),\n});\nexport const same = styles.a(1)[0] === styles.a(2)[0];\nexport const distinct = styles.a(1)[0] !== styles.b(1)[0];\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["dynamic", "hoist", "identity"]
+    },
+    {
+      "id": "regressions/r4-local-create-props-runtime-merge-002",
+      "root": "corpus/regressions/fixtures/default",
+      "filename": "src/input.ts",
+      "source": "import * as stylex from '@stylexjs/stylex';\nexport function f() {\n  const styles = stylex.create({ a: { color: 'red' } });\n  return stylex.props(styles.a);\n}\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": ["create", "hoist", "props"]
+    }
+  ]
+}

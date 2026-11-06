@@ -2,7 +2,7 @@
 //
 // Dev-only stub for the `cloudflare:workers` runtime module. In the worker
 // build `cloudflare:*` stays external and workerd provides it (see
-// cf-build.mjs); in oj's Node SSR loader (server functions, prewarm renders)
+// crates/oj/src/start_bundle/cloudflare.rs); in oj's Node SSR loader (server functions, prewarm renders)
 // there is no workerd, so Node's default ESM loader would throw
 // ERR_UNSUPPORTED_ESM_URL_SCHEME on the `cloudflare:` scheme and crash the dev
 // server. This stub keeps the scheme resolvable: `env` is backed by the same

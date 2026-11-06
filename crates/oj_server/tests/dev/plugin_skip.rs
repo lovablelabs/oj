@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
-//! A config with no plugins oj needs (e.g. React-only, where oj does JSX in
-//! oxc) still keeps its plugin host, idle: Vite's dev HTML transform runs
-//! there for every page. Modules are served natively, with no hook calls.
+//! oj keeps no plugin host when the config has no plugins oj needs (e.g.
+//! React-only, where oj does JSX in oxc): the host boots to report zero
+//! active plugins, then is shut down, and the app, its pages included (Vite's
+//! dev HTML transform, natively), is served without one.
 
 use crate::App;
 
@@ -19,15 +20,19 @@ fn app(vite_config: &str) -> App {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn no_active_plugins_keeps_an_idle_host_and_serves_natively() {
+async fn no_active_plugins_drops_the_host_and_serves_natively() {
     let app = app("export default { plugins: [] };\n");
     let server = app.serve().await;
     assert!(
-        server.built.plugin_host.is_some(),
-        "a zero-plugin config keeps the host for the dev HTML transform"
+        server.built.plugin_host.is_none(),
+        "a zero-plugin config keeps no plugin host"
     );
     let home = server.text("/").await;
     assert!(home.contains("main.js"), "app not served:\n{home}");
+    assert!(
+        home.contains("<script type=\"module\" src=\"/@oj/client.js\"></script>"),
+        "the page went through the dev HTML transform:\n{home}"
+    );
     let main = server.text("/src/main.js").await;
     assert!(
         main.contains("dataset.ok"),

@@ -14,6 +14,15 @@ function cssUrls(): string[] {
   }
 }
 
+// The client entry's url under the dev `base`, written by the dev bundler.
+function clientEntry(): string {
+  try {
+    return JSON.parse(readFileSync(join(HERE, "client-entry.json"), "utf8"));
+  } catch {
+    return "/@oj-start/client-entry.js";
+  }
+}
+
 // The manifest contract changed across start-server-core versions, so this
 // serves the union. 1.168+ reads per-route `scripts`/`css` and emits the
 // client entry script tag from `scripts`; 1.167 and earlier read a top-level
@@ -24,14 +33,14 @@ function cssUrls(): string[] {
 export const tsrStartManifest = () => ({
   routes: {
     __root__: {
-      preloads: ["/@oj-start/client-entry.js"],
+      preloads: [clientEntry()],
       css: cssUrls(),
-      scripts: [{ attrs: { type: "module", async: true, src: "/@oj-start/client-entry.js" } }],
+      scripts: [{ attrs: { type: "module", async: true, src: clientEntry() } }],
       assets: cssUrls().map((href) => ({
         tag: "link",
         attrs: { rel: "stylesheet", href },
       })),
     },
   },
-  clientEntry: "/@oj-start/client-entry.js",
+  clientEntry: clientEntry(),
 });

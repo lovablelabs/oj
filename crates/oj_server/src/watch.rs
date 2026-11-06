@@ -50,37 +50,44 @@ pub(crate) fn is_config_dependency(path: &Path) -> bool {
     })
 }
 
-/// True for config / env files whose change requires a full server restart
-/// (they are read once at startup and cannot be hot-applied).
-pub(crate) fn is_restart_trigger(path: &Path) -> bool {
-    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-        return false;
-    };
-    if name == ".env" || name.starts_with(".env.") {
-        return true;
+/// The config and env files oj reads once at startup, so a change to one
+/// restarts the server: the mode's env files in `env_dir` (Vite's
+/// getEnvFilesForMode), every config flavor at the root, and `--config`.
+/// Only these paths: the same names elsewhere (a sibling package's `.env`, a
+/// nested `postcss.config.js`) are files like any other, as in Vite, whose
+/// restart check is `file === configFile` or one of the mode's env files.
+pub(crate) fn restart_files(
+    root: &Path,
+    env_dir: &Path,
+    mode: &str,
+    config_file: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = oj_env::env_files(env_dir, mode).into();
+    for base in [
+        "vite.config",
+        "oj.config",
+        "postcss.config",
+        "tailwind.config",
+    ] {
+        for ext in ["ts", "js", "mjs", "cjs", "mts", "cts", "json"] {
+            files.push(root.join(format!("{base}.{ext}")));
+        }
     }
-    let stem_ext = |bases: &[&str], exts: &[&str]| {
-        bases
-            .iter()
-            .any(|b| exts.iter().any(|e| name == format!("{b}.{e}")))
-    };
-    stem_ext(
-        &[
-            "vite.config",
-            "oj.config",
-            "postcss.config",
-            "tailwind.config",
-        ],
-        &["ts", "js", "mjs", "cjs", "mts", "cts", "json"],
-    )
+    files.extend(config_file.map(Path::to_path_buf));
+    // The watcher reports normalized paths; an `envDir: "../env"` must match.
+    files.iter().map(|f| normalize(f)).collect()
 }
 
-/// Tsconfig files whose change re-runs the tsconfig-aware transform; the name
-/// pattern covers `extends` bases like tsconfig.base.json (Vite parity).
+/// True when `path` is one of [`restart_files`].
+pub(crate) fn is_restart_trigger(files: &[PathBuf], path: &Path) -> bool {
+    files.iter().any(|f| f == path)
+}
+
+/// A change that clears the tsconfig caches and reloads the page: Vite's
+/// reloadOnTsconfigChange takes a file named `tsconfig.json` and no other
+/// (a `tsconfig.app.json` or an `extends` base reloads nothing).
 pub(crate) fn is_tsconfig_file(path: &Path) -> bool {
-    path.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
-        n == "tsconfig.json" || (n.starts_with("tsconfig.") && n.ends_with(".json"))
-    })
+    path.file_name().is_some_and(|n| n == "tsconfig.json")
 }
 
 /// Registry of spawned children, SIGKILLed and reaped before the restart
@@ -352,9 +359,144 @@ pub fn unregister_child(pid: u32) {
     child_groups::unregister(pid);
 }
 
-pub fn restart_process(reason: &str) -> ! {
+/// A dev server's restarts: what the next boot starts from (the app root,
+/// the CLI's `--config`, the dev mode, whether it is a Start app) and the
+/// restart being checked.
+pub struct Restarter {
+    pub(crate) root: PathBuf,
+    pub(crate) config_file: Option<PathBuf>,
+    pub(crate) mode: String,
+    pub(crate) start: bool,
+    /// A check is running; the newest reason asked for meanwhile.
+    pending: Mutex<(bool, Option<String>)>,
+    /// A check failed: the config on disk does not boot.
+    failed: std::sync::atomic::AtomicBool,
+}
+
+impl Restarter {
+    pub(crate) fn new(
+        root: PathBuf,
+        config_file: Option<PathBuf>,
+        mode: String,
+        start: bool,
+    ) -> Self {
+        Self {
+            root,
+            config_file,
+            mode,
+            start,
+            pending: Mutex::new((false, None)),
+            failed: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Restart for an input the config did not change (the start entry
+    /// appearing or disappearing), without the check: the config is the one
+    /// this server booted from, and a check's evaluation would run the
+    /// framework's plugins while this server's own still react to file
+    /// events, so a route generator holding the old entry could write its
+    /// tree over the check's. A config that failed its check, or one being
+    /// checked, is checked as any request is.
+    pub fn request_unchecked(self: &Arc<Self>, reason: &str) {
+        {
+            let mut pending = self.pending.lock().unwrap();
+            if pending.0 || self.failed.load(std::sync::atomic::Ordering::SeqCst) {
+                drop(pending);
+                return self.request(reason);
+            }
+            // No check starts after this one: the process is replaced.
+            pending.0 = true;
+        }
+        restart_process(&self.root, reason)
+    }
+
+    /// Restart the dev server, as Vite's `server.restart()` does: the new
+    /// server is checked first, off the caller's thread (a config evaluation
+    /// can take as long as it takes, and the running server keeps serving
+    /// meanwhile), and a failing one keeps the running server, logging why. A
+    /// request arriving during a check runs after it, with the newest reason.
+    pub fn request(self: &Arc<Self>, reason: &str) {
+        {
+            let mut pending = self.pending.lock().unwrap();
+            pending.1 = Some(reason.to_string());
+            if pending.0 {
+                return;
+            }
+            pending.0 = true;
+        }
+        let this = Arc::clone(self);
+        std::thread::spawn(move || loop {
+            let reason = {
+                let mut pending = this.pending.lock().unwrap();
+                match pending.1.take() {
+                    Some(reason) => reason,
+                    None => {
+                        pending.0 = false;
+                        return;
+                    }
+                }
+            };
+            match this.failure() {
+                // Vite's restart loops while requests are pending: one that
+                // came during this check is checked before the exec.
+                None if this.pending.lock().unwrap().1.is_some() => {}
+                Some(error) => {
+                    this.failed.store(true, std::sync::atomic::Ordering::SeqCst);
+                    eprintln!("{} {error}", oj_brand());
+                    eprintln!("{} server restart failed", oj_brand());
+                    oj_diag::emit(
+                        oj_diag::Event::new(
+                            oj_diag::Kind::Restart,
+                            format!("server restart failed: {error}"),
+                        )
+                        .warn(),
+                    );
+                }
+                None => restart_process(&this.root, &reason),
+            }
+        });
+    }
+
+    /// Why the dev server a restart would boot fails to start, as far as Vite's
+    /// createServer would: the vite.config does not load, or (outside Start, which
+    /// tolerates a framework config's hook failures per plugin) the app's Vite
+    /// cannot resolve it. The evaluation is fresh, as Vite's restartServer
+    /// resolves again, and the next boot's own (it is cached).
+    pub(crate) fn failure(&self) -> Option<String> {
+        let check = self;
+        let Some(crate::plugins::PluginSource::ViteConfig(vite)) =
+            crate::plugins::plugin_source(&check.root, check.config_file.as_deref())
+        else {
+            return None;
+        };
+        let values = crate::plugins::reextract_vite_values(
+            &check.root,
+            check.config_file.as_deref(),
+            "serve",
+            &check.mode,
+        );
+        match values {
+            None => Some(format!("failed to load config from {}", vite.display())),
+            Some((values, changed)) => {
+                // The next boot reads this evaluation from the cache, so it
+                // cannot tell the config changed: when it did, the deps
+                // pre-seed it keys must run again.
+                if changed {
+                    crate::preseed::forget_stamp(&check.root);
+                }
+                if check.start {
+                    None
+                } else {
+                    values.resolve_error
+                }
+            }
+        }
+    }
+}
+
+pub fn restart_process(root: &Path, reason: &str) -> ! {
     if let Some(hook) = RESTART_HOOK.get() {
-        hook(reason);
+        hook(root, reason);
     }
     eprintln!("{} {reason} — restarting dev server", oj_brand());
     oj_diag::emit(
@@ -368,6 +510,7 @@ pub fn restart_process(reason: &str) -> ! {
     if killed > 0 {
         eprintln!("oj: restart killed {killed} child process(es)");
     }
+    crate::otel::shutdown();
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("oj"));
     let args: Vec<String> = std::env::args().skip(1).collect();
     // The next boot gets the env oj was launched with, not whatever the live
@@ -378,6 +521,8 @@ pub fn restart_process(reason: &str) -> ! {
     // In-process plugin hosts chdir the process to their app root; restart from
     // the launch dir so relative CLI args (`oj dev ./web`) resolve correctly.
     let launch_dir = STARTUP_CWD.get().filter(|d| d.is_dir());
+    // The new image starts with an empty store: write what this one holds.
+    oj_js::code_cache::flush_at_exit();
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -402,12 +547,14 @@ pub fn restart_process(reason: &str) -> ! {
     }
 }
 
-static RESTART_HOOK: std::sync::OnceLock<fn(&str) -> !> = std::sync::OnceLock::new();
+static RESTART_HOOK: std::sync::OnceLock<fn(&Path, &str) -> !> = std::sync::OnceLock::new();
 
 /// Takes every restart in place of the exec, for a process hosting dev
 /// servers it must outlive (oj's integration tests): an exec there would
-/// replace the whole process. Set once; later calls are ignored.
-pub fn set_restart_hook(hook: fn(&str) -> !) {
+/// replace the whole process. The hook gets the restarting app's root, so a
+/// restart that names no file (a plugin's `server.restart()`) is still that
+/// app's. Set once; later calls are ignored.
+pub fn set_restart_hook(hook: fn(&Path, &str) -> !) {
     let _ = RESTART_HOOK.set(hook);
 }
 
@@ -422,13 +569,19 @@ pub fn capture_startup_cwd() {
     }
 }
 
-/// inotify reports every open, read and close as an Access event; none is a
-/// change, and chokidar's fs.watch never sees them. Dropped at the source:
-/// a file someone keeps reading (an editor, an indexer, a poller) otherwise
-/// floods the batch loops, whose settle window restarts on every event, so
-/// an edit landing in that stream is never handed off.
-pub(crate) fn is_access(ev: &notify::Event) -> bool {
-    matches!(ev.kind, notify::EventKind::Access(_))
+/// A watcher subscribed to changes only, as Zed's is. inotify reports every
+/// open and close of a watched path; none is a change, and chokidar's
+/// fs.watch never sees them. With the mask they never reach the queue (on the
+/// other backends notify filters them): a file someone keeps reading (an
+/// editor, an indexer, a poller) otherwise flooded the batch loops, whose
+/// settle window restarts on every event, so an edit landing in that stream
+/// was never handed off, and reads alone could overflow the queue.
+fn new_watcher<F: notify::EventHandler>(handler: F) -> notify::Result<notify::RecommendedWatcher> {
+    use notify::Watcher;
+    notify::RecommendedWatcher::new(
+        handler,
+        notify::Config::default().with_event_kinds(notify::EventKindMask::CORE),
+    )
 }
 
 /// The watcher thread's inbox: filesystem notifications, and directories to
@@ -482,7 +635,8 @@ impl WatchFeed {
     }
 }
 
-/// What every consumer of watcher events skips: `server.watch.ignored` plus
+/// What every consumer of watcher events skips: `server.watch.ignored`, any
+/// `test-results` directory (Vite's chokidar `ignored` default), plus
 /// the resolved cache dir, which Vite puts in chokidar's `ignored` -- the
 /// name-based skip in `is_unwatched_dir` misses an `OJ_CACHE_DIR` inside the
 /// root, whose writes would echo every compile back into the watcher -- plus
@@ -494,6 +648,7 @@ pub(crate) fn watch_excluded(
     path: &Path,
 ) -> bool {
     path.starts_with(cache_base)
+        || path.components().any(|c| c.as_os_str() == "test-results")
         || path
             .file_name()
             .and_then(|n| n.to_str())
@@ -531,13 +686,246 @@ pub(crate) fn ensure_watched_file(state: &ServerState, file: &Path) {
 /// Recorded only on success, so a directory that does not exist yet (a plugin
 /// watch file created later) is retried instead of skipped forever.
 fn watch_served_dir(
-    watcher: &mut notify::RecommendedWatcher,
+    watchers: &mut Watchers,
     watched: &mut std::collections::HashSet<PathBuf>,
     dir: PathBuf,
 ) {
-    use notify::{RecursiveMode, Watcher};
-    if !watched.contains(&dir) && watcher.watch(&dir, RecursiveMode::NonRecursive).is_ok() {
+    if !watched.contains(&dir)
+        && watchers
+            .watch(&dir, notify::RecursiveMode::NonRecursive)
+            .is_ok()
+    {
         watched.insert(dir);
+    }
+}
+
+type EventSink = Arc<dyn Fn(notify::Result<notify::Event>) + Send + Sync>;
+
+/// chokidar's fsevents handler caps its streams at 128.
+const MAX_OWN_STREAMS: usize = 128;
+
+/// chokidar's `consolidateThreshhold`: once this many streams sit under a
+/// directory's parent, the next one watches the parent.
+const CONSOLIDATE_AT: usize = 10;
+
+/// What [`Watchers`] needs of a notify watcher, so a test can stand in one
+/// that records its watches and fires events itself (Zed's `WatchBackend`).
+trait WatchBackend: Send {
+    fn watch(&mut self, path: &Path, mode: notify::RecursiveMode) -> notify::Result<()>;
+}
+
+impl<T: notify::Watcher + Send> WatchBackend for T {
+    fn watch(&mut self, path: &Path, mode: notify::RecursiveMode) -> notify::Result<()> {
+        notify::Watcher::watch(self, path, mode)
+    }
+}
+
+/// Starts a watcher reporting to the sink: on macOS, one FSEvents stream.
+type OpenBackend = Box<dyn Fn(EventSink) -> notify::Result<Box<dyn WatchBackend>> + Send>;
+
+fn open_backend(sink: EventSink) -> notify::Result<Box<dyn WatchBackend>> {
+    Ok(Box::new(new_watcher(move |ev| sink(ev))?))
+}
+
+/// The root watcher, plus FSEvents streams for directories watched after
+/// boot on macOS, placed as chokidar's fsevents handler places them
+/// ([`stream_for`]). Vite's chokidar opens a stream per watched path, so a
+/// new watch never touches the running streams; notify's FSEvents watcher
+/// restarts its one stream on every `watch`, over every path it holds,
+/// dropping the events that land meanwhile, so a served dir never goes to
+/// the root watcher. An inotify or Windows watch restarts nothing, so there
+/// the root watcher takes them all.
+struct Watchers {
+    root: Box<dyn WatchBackend>,
+    sink: EventSink,
+    open: OpenBackend,
+    /// Whether watches after boot get streams of their own (macOS).
+    streams: bool,
+    /// Real path; no stream consolidates onto it or above it.
+    app_root: PathBuf,
+    own: std::collections::HashMap<PathBuf, Stream>,
+    /// Past [`MAX_OWN_STREAMS`], one watcher for the rest, where chokidar
+    /// falls back to fs.watch: its restarts cost only these dirs' events.
+    overflow: Option<Box<dyn WatchBackend>>,
+}
+
+/// One FSEvents stream: recursive, as FSEvents streams are, with the
+/// directories it stands for and how each was watched. Only their events
+/// pass, as chokidar's listener filters a shared stream to its path.
+struct Stream {
+    _backend: Box<dyn WatchBackend>,
+    dirs: Arc<std::sync::Mutex<StreamDirs>>,
+}
+
+/// Where a watch of `dir` goes, chokidar's `setFSEventsListener`.
+#[derive(Debug, PartialEq)]
+enum StreamPlan {
+    /// A stream already covering it: FSEvents streams are recursive.
+    Join(PathBuf),
+    /// A new stream on this path: the dir's parent once
+    /// [`CONSOLIDATE_AT`] streams sit under it, else the dir itself.
+    Open(PathBuf),
+    /// Past [`MAX_OWN_STREAMS`]: the overflow watcher.
+    Overflow,
+}
+
+/// Never onto the app root or above it: a stream there carries the whole
+/// app's events (node_modules and build output included) through the
+/// filter, and its lost-events notice rescans the root.
+fn stream_for(streams: &[&Path], dir: &Path, app_root: &Path) -> StreamPlan {
+    let mut path = dir.to_path_buf();
+    if let Some(parent) = dir.parent().filter(|p| !app_root.starts_with(p)) {
+        if streams.iter().filter(|s| s.starts_with(parent)).count() >= CONSOLIDATE_AT {
+            path = parent.to_path_buf();
+        }
+    }
+    // The deepest is the one that took the dir first: a stream opened later
+    // over it is a consolidated parent.
+    if let Some(s) = streams
+        .iter()
+        .filter(|s| dir.starts_with(s))
+        .max_by_key(|s| s.components().count())
+    {
+        return StreamPlan::Join(s.to_path_buf());
+    }
+    if streams.len() >= MAX_OWN_STREAMS {
+        return StreamPlan::Overflow;
+    }
+    StreamPlan::Open(path)
+}
+
+/// A shared stream's watched dirs by real path, with each spelling a dir
+/// was watched as and how.
+type StreamDirs = std::collections::HashMap<PathBuf, Vec<(PathBuf, notify::RecursiveMode)>>;
+
+/// `dir` (real) watched on a stream as `spelled`: a new spelling is added,
+/// and a recursive watch widens a flat one, never the reverse.
+fn add_stream_dir(
+    dirs: &mut StreamDirs,
+    dir: PathBuf,
+    spelled: &Path,
+    mode: notify::RecursiveMode,
+) {
+    let spellings = dirs.entry(dir).or_default();
+    match spellings.iter_mut().find(|(s, _)| s == spelled) {
+        Some((_, m)) if mode == notify::RecursiveMode::Recursive => *m = mode,
+        Some(_) => {}
+        None => spellings.push((spelled.to_path_buf(), mode)),
+    }
+}
+
+/// `path`, as a stream on real paths reports it, under every spelling of a
+/// watched dir it belongs to: the dir itself, a direct child, or anything
+/// under a recursive one. chokidar's listeners each filter and rewrite a
+/// shared stream's events for their own watch the same way.
+fn watched_as(dirs: &StreamDirs, path: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for (real, spellings) in dirs {
+        let Ok(rest) = path.strip_prefix(real) else {
+            continue;
+        };
+        for (spelled, mode) in spellings {
+            if *mode == notify::RecursiveMode::NonRecursive && rest.components().count() > 1 {
+                continue;
+            }
+            let at = match rest.as_os_str().is_empty() {
+                true => spelled.clone(),
+                false => spelled.join(rest),
+            };
+            if !out.contains(&at) {
+                out.push(at);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// `ev` as a shared stream passes it: only its watched dirs' paths. A rescan
+/// passes whole, spelled as watched where it can be: FSEvents reports it at
+/// the stream's path, which a consolidated stream does not watch, and with
+/// no paths left it would rescan the whole root.
+fn stream_event(dirs: &StreamDirs, mut ev: notify::Event) -> Option<notify::Event> {
+    let rescan = ev.need_rescan();
+    ev.paths = std::mem::take(&mut ev.paths)
+        .into_iter()
+        .flat_map(|p| match watched_as(dirs, &p) {
+            spelled if spelled.is_empty() && rescan => vec![p],
+            spelled => spelled,
+        })
+        .collect();
+    (rescan || !ev.paths.is_empty()).then_some(ev)
+}
+
+impl Watchers {
+    fn new(sink: EventSink, app_root: &Path) -> notify::Result<Watchers> {
+        let streams = cfg!(target_os = "macos");
+        Watchers::with_backends(sink, Box::new(open_backend), streams, app_root)
+    }
+
+    fn with_backends(
+        sink: EventSink,
+        open: OpenBackend,
+        streams: bool,
+        app_root: &Path,
+    ) -> notify::Result<Watchers> {
+        Ok(Watchers {
+            root: open(Arc::clone(&sink))?,
+            sink,
+            open,
+            streams,
+            app_root: std::fs::canonicalize(app_root).unwrap_or_else(|_| app_root.to_path_buf()),
+            own: Default::default(),
+            overflow: None,
+        })
+    }
+
+    fn watch(&mut self, path: &Path, mode: notify::RecursiveMode) -> notify::Result<()> {
+        if !self.streams {
+            return self.root.watch(path, mode);
+        }
+        // Placed by real path, as chokidar places them: a stream does not
+        // follow a symlink under it, so a dir behind one never joins it.
+        let real = std::fs::canonicalize(path)
+            .map_err(|e| notify::Error::io(e).add_path(path.to_path_buf()))?;
+        let streams: Vec<&Path> = self.own.keys().map(PathBuf::as_path).collect();
+        let at = match stream_for(&streams, &real, &self.app_root) {
+            StreamPlan::Overflow => {
+                if self.overflow.is_none() {
+                    self.overflow = Some((self.open)(Arc::clone(&self.sink))?);
+                }
+                return self.overflow.as_mut().unwrap().watch(path, mode);
+            }
+            StreamPlan::Join(at) => {
+                add_stream_dir(&mut self.own[&at].dirs.lock().unwrap(), real, path, mode);
+                return Ok(());
+            }
+            StreamPlan::Open(at) => at,
+        };
+        let mut dirs = StreamDirs::new();
+        add_stream_dir(&mut dirs, real, path, mode);
+        let dirs = Arc::new(std::sync::Mutex::new(dirs));
+        let (sink, filter) = (Arc::clone(&self.sink), Arc::clone(&dirs));
+        let mut backend = (self.open)(Arc::new(
+            move |ev: notify::Result<notify::Event>| match ev {
+                Ok(ev) => {
+                    let ev = stream_event(&filter.lock().unwrap(), ev);
+                    if let Some(ev) = ev {
+                        sink(Ok(ev));
+                    }
+                }
+                Err(err) => sink(Err(err)),
+            },
+        ))?;
+        backend.watch(&at, notify::RecursiveMode::Recursive)?;
+        self.own.insert(
+            at,
+            Stream {
+                _backend: backend,
+                dirs,
+            },
+        );
+        Ok(())
     }
 }
 
@@ -556,11 +944,11 @@ fn is_unwatched_dir(name: &std::ffi::OsStr) -> bool {
 /// root, so Vite sees new children). Falls back to a recursive root watch
 /// only if nothing else could be watched.
 fn watch_root(
-    watcher: &mut notify::RecommendedWatcher,
+    watcher: &mut dyn WatchBackend,
     root: &Path,
     cache_base: &Path,
 ) -> notify::Result<()> {
-    use notify::{RecursiveMode, Watcher};
+    use notify::RecursiveMode;
     let root_watched = watcher.watch(root, RecursiveMode::NonRecursive).is_ok();
     let mut watched_any = root_watched;
     if let Ok(entries) = std::fs::read_dir(root) {
@@ -593,22 +981,21 @@ fn watch_root(
     }
 }
 
-/// A directory created at the top level after boot, caught by the root's
-/// non-recursive watch: watch it recursively and report the files it already
-/// holds as creates (chokidar emits `add` per existing file when a new dir
-/// appears), since writes landing between the mkdir and this watch were
-/// never seen. Returns those files. A dir RENAMED into the root (a staged
-/// tree moved into place) arrives as `Modify(Name)`, not `Create` -- chokidar
-/// raises `addDir` for both -- so renames are adopted too; rename-From paths
-/// and plain file renames fall through the `is_dir` check, and re-watching an
-/// already-watched dir is idempotent (notify keys watches by path).
-fn adopt_created_root_dirs(
-    watcher: &mut notify::RecommendedWatcher,
+/// The directories an event brought into existence (created, or moved into
+/// place) under the root, as chokidar raises `addDir` for both: a dir RENAMED
+/// in (a staged tree moved into place) arrives as `Modify(Name)`, not
+/// `Create`. Rename-From paths and plain file renames fall through the
+/// `is_dir` check. Never one Vite's chokidar ignores (`**/node_modules/**`,
+/// `**/.git/**`, the cache dir, `server.watch.ignored`), nor a top-level dir
+/// the root watch leaves out (`dist`, `.oj-cache`): a fresh install's
+/// `node_modules` is one event, and walking it would report every package
+/// file as a create.
+pub(crate) fn created_dirs(
+    ignored: &[glob::Pattern],
     root: &Path,
     cache_base: &Path,
     ev: &notify::Event,
 ) -> Vec<PathBuf> {
-    use notify::{RecursiveMode, Watcher};
     if !matches!(
         ev.kind,
         notify::EventKind::Create(_)
@@ -616,36 +1003,270 @@ fn adopt_created_root_dirs(
     ) {
         return Vec::new();
     }
+    ev.paths
+        .iter()
+        .filter(|path| watched_subtree(ignored, root, cache_base, path) && path.is_dir())
+        .cloned()
+        .collect()
+}
+
+/// A path under the root the root watch covers: not inside what Vite's
+/// chokidar ignores (`**/node_modules/**`, `**/.git/**`, the cache dir,
+/// `server.watch.ignored`) nor a top-level dir the root watch leaves out.
+fn watched_subtree(ignored: &[glob::Pattern], root: &Path, cache_base: &Path, path: &Path) -> bool {
+    let Ok(rel) = path.strip_prefix(root) else {
+        return false;
+    };
+    let mut parts = rel.components().map(|c| c.as_os_str());
+    !parts.clone().any(|c| c == "node_modules" || c == ".git")
+        && !parts.next().is_some_and(is_unwatched_dir)
+        && !watch_excluded(ignored, root, cache_base, path)
+}
+
+/// A directory created after boot: a top-level one, caught by the root's
+/// non-recursive watch, is watched recursively (re-watching is idempotent,
+/// notify keys watches by path); a deeper one is already under a recursive
+/// watch. Either way the files it already holds are reported as creates
+/// (chokidar emits `add` per file it finds in a new dir), since writes
+/// landing before the watch, or moved in with the dir, were never seen.
+/// Returns those files.
+fn adopt_created_dirs(
+    watchers: &mut Watchers,
+    ignored: &[glob::Pattern],
+    root: &Path,
+    cache_base: &Path,
+    ev: &notify::Event,
+) -> Vec<PathBuf> {
     let mut found = Vec::new();
-    for path in &ev.paths {
-        if path.parent() != Some(root)
-            || path == cache_base
-            || path.file_name().is_none_or(is_unwatched_dir)
-            || !path.is_dir()
+    for path in created_dirs(ignored, root, cache_base, ev) {
+        if path.parent() == Some(root)
+            && watchers
+                .watch(&path, notify::RecursiveMode::Recursive)
+                .is_err()
         {
             continue;
         }
-        if watcher.watch(path, RecursiveMode::Recursive).is_ok() {
-            scan_files(path, &mut found);
-        }
+        scan_files(&path, &mut found);
     }
     found
 }
 
-fn scan_files(dir: &Path, out: &mut Vec<PathBuf>) {
+/// The files under a new directory, minus what Vite's chokidar ignores at
+/// any depth (`node_modules`, `.git`). Symlinked directories are not entered:
+/// one pointing back up the tree would never end.
+pub(crate) fn scan_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    scan_tree(dir, out, &mut Vec::new());
+}
+
+/// `scan_files`, also collecting the directories it entered.
+fn scan_tree(dir: &Path, out: &mut Vec<PathBuf>, dirs: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
-            if !is_unwatched_dir(&entry.file_name()) {
-                scan_files(&path, out);
+        match entry.file_type() {
+            Ok(t) if t.is_dir() => {
+                if !matches!(entry.file_name().to_str(), Some("node_modules" | ".git")) {
+                    dirs.push(path.clone());
+                    scan_tree(&path, out, dirs);
+                }
             }
-        } else {
-            out.push(path);
+            Ok(t) if t.is_symlink() && path.is_dir() => {}
+            Ok(_) => out.push(path),
+            Err(_) => {}
         }
     }
+}
+
+/// Every file the root watch covers, as chokidar's initial scan records
+/// them: the root's own files and each watched top-level dir's (not the
+/// unwatched dirs, the cache dir, or what `scan_files` skips), spelled under
+/// the root's real path. Vite's chokidar calls a later event for one of
+/// these a change, never an add.
+pub fn watched_files(root: &Path) -> std::collections::HashSet<PathBuf> {
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let cache_base = {
+        let base = oj_cache::cache_base(&root);
+        std::fs::canonicalize(&base).unwrap_or(base)
+    };
+    let mut files = Vec::new();
+    scan_watched(&root, &cache_base, &mut files, &mut Vec::new());
+    files.into_iter().collect()
+}
+
+/// `watched_files` and the directories holding them, spelled under `root`
+/// as given.
+fn scan_watched(root: &Path, cache_base: &Path, files: &mut Vec<PathBuf>, dirs: &mut Vec<PathBuf>) {
+    for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if is_unwatched_dir(&entry.file_name()) || path == cache_base {
+            continue;
+        }
+        if path.is_dir() {
+            dirs.push(path.clone());
+            scan_tree(&path, files, dirs);
+        } else {
+            files.push(path);
+        }
+    }
+}
+
+/// The watcher's snapshot: each file and directory the root watch covers,
+/// with its stamp when last seen.
+pub(crate) type Snapshot = std::collections::HashMap<PathBuf, Stamp>;
+
+/// The boot snapshot, minus excluded paths, and minus anything stamped after
+/// the scan began: a file created while it ran has a Create queued that must
+/// still read as an add.
+pub(crate) fn boot_snapshot(ignored: &[glob::Pattern], root: &Path, cache_base: &Path) -> Snapshot {
+    let began = SystemTime::now();
+    let (mut files, mut dirs) = (Vec::new(), Vec::new());
+    scan_watched(root, cache_base, &mut files, &mut dirs);
+    files
+        .into_iter()
+        .chain(dirs)
+        .filter(|p| !watch_excluded(ignored, root, cache_base, p))
+        .filter_map(|p| Some((p.clone(), stamp(&p)?)))
+        .filter(|(_, s)| s.mtime < began)
+        .collect()
+}
+
+/// The subtrees a rescan event says the watcher lost track of, as Zed reads
+/// them: an inotify queue overflow carries no path and means the whole root;
+/// FSEvents' MustScanSubDirs names a subtree, at times an ancestor of the root
+/// (the whole root again). Never one the root watch leaves out.
+pub(crate) fn rescan_roots(
+    ignored: &[glob::Pattern],
+    root: &Path,
+    cache_base: &Path,
+    ev: &notify::Event,
+) -> Vec<PathBuf> {
+    if !ev.need_rescan() {
+        return Vec::new();
+    }
+    if ev.paths.is_empty() {
+        return vec![root.to_path_buf()];
+    }
+    ev.paths
+        .iter()
+        .filter_map(|p| {
+            if root.starts_with(p) {
+                Some(root.to_path_buf())
+            } else if watched_subtree(ignored, root, cache_base, p) {
+                Some(p.clone())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// A batch's rescans collapsed, as Zed does: one per subtree, none under
+/// another.
+pub(crate) fn collapse_rescans(mut roots: Vec<PathBuf>) -> Vec<PathBuf> {
+    roots.sort();
+    roots.dedup();
+    let mut kept: Vec<PathBuf> = Vec::new();
+    for r in roots {
+        if !kept.iter().any(|k| r.starts_with(k)) {
+            kept.retain(|k| !k.starts_with(&r));
+            kept.push(r);
+        }
+    }
+    kept
+}
+
+/// What a rescan of `roots` finds against the watcher's snapshot (`known`),
+/// as Zed's rescan diffs its entries: files on disk it never knew are adds,
+/// known paths gone from disk are removals, known files whose stamp moved
+/// are edits, and directories it never knew (or knew as another inode or
+/// birth) are new. Untouched files stay silent, or oj would push an HMR update for every
+/// module.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct Rescanned {
+    pub(crate) added: Vec<PathBuf>,
+    pub(crate) changed: Vec<PathBuf>,
+    pub(crate) removed: Vec<PathBuf>,
+    pub(crate) new_dirs: Vec<PathBuf>,
+}
+
+pub(crate) fn rescan_changes(
+    roots: &[PathBuf],
+    ignored: &[glob::Pattern],
+    root: &Path,
+    cache_base: &Path,
+    known: &Snapshot,
+) -> Rescanned {
+    let mut out = Rescanned::default();
+    let excluded = |p: &Path| watch_excluded(ignored, root, cache_base, p);
+    for r in roots {
+        let (mut files, mut dirs) = (Vec::new(), Vec::new());
+        if r == root {
+            scan_watched(root, cache_base, &mut files, &mut dirs);
+        } else {
+            dirs.push(r.clone());
+            scan_tree(r, &mut files, &mut dirs);
+        }
+        for d in dirs.into_iter().filter(|d| !excluded(d)) {
+            let Some(now) = stamp(&d) else { continue };
+            if !known.get(&d).is_some_and(|seen| seen.same_dir(&now)) {
+                out.new_dirs.push(d);
+            }
+        }
+        for f in files.into_iter().filter(|f| !excluded(f)) {
+            match known.get(&f) {
+                None => out.added.push(f),
+                Some(seen) if stamp(&f) != Some(*seen) => out.changed.push(f),
+                Some(_) => {}
+            }
+        }
+    }
+    out.removed = known
+        .keys()
+        .filter(|p| roots.iter().any(|r| p.starts_with(r)) && !p.exists())
+        .cloned()
+        .collect();
+    out.new_dirs = collapse_rescans(out.new_dirs);
+    for list in [&mut out.added, &mut out.changed, &mut out.removed] {
+        list.sort();
+    }
+    out
+}
+
+/// What a snapshot entry compares, as Zed's entries do: mtime, inode, and
+/// size, plus birth time where the filesystem keeps one, since a path
+/// deleted and recreated can get the freed inode back. A file renamed onto
+/// a path keeps its old mtime but brings its own inode; a metadata-only
+/// change (chmod, xattrs, a new hard link) moves none of them, as the live
+/// path ignores it too. A directory compares by inode and birth alone
+/// (`same_dir`): its mtime moves with every child.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Stamp {
+    pub(crate) mtime: SystemTime,
+    pub(crate) ino: u64,
+    pub(crate) len: u64,
+    pub(crate) born: Option<SystemTime>,
+}
+
+impl Stamp {
+    fn same_dir(&self, other: &Stamp) -> bool {
+        self.ino == other.ino && self.born == other.born
+    }
+}
+
+pub(crate) fn stamp(path: &Path) -> Option<Stamp> {
+    let meta = std::fs::metadata(path).ok()?;
+    #[cfg(unix)]
+    let ino = std::os::unix::fs::MetadataExt::ino(&meta);
+    #[cfg(not(unix))]
+    let ino = 0;
+    Some(Stamp {
+        mtime: meta.modified().unwrap_or(UNIX_EPOCH),
+        ino,
+        len: if meta.is_dir() { 0 } else { meta.len() },
+        born: meta.created().ok(),
+    })
 }
 
 /// One debounced set of changes.
@@ -655,15 +1276,21 @@ struct Batch {
     /// Paths the watcher saw come into existence: plugins get "create" for
     /// those, "update" for edits, "delete" for removals.
     created: std::collections::HashSet<PathBuf>,
+    /// Subtrees the watcher lost events under (`rescan_roots`), and why.
+    rescans: Vec<PathBuf>,
+    rescan_reason: Option<String>,
 }
 
 impl Batch {
-    fn add(&mut self, changes: &mut ContentChanges, ev: &notify::Event) {
+    /// True when `ev` changed any path.
+    fn add(&mut self, changes: &mut ContentChanges, ev: &notify::Event) -> bool {
         let changed = changes.changed_paths(ev);
         if matches!(ev.kind, notify::EventKind::Create(_)) {
             self.created.extend(changed.iter().cloned());
         }
+        let any = !changed.is_empty();
         self.paths.extend(changed);
+        any
     }
 }
 
@@ -680,39 +1307,66 @@ fn handle_batch(
 ) {
     // Config/.env can't be hot-applied (read once at startup): restart, as
     // Vite does, naming the file relative to the launch dir as Vite's
-    // "<file> changed, restarting server" does.
+    // "<file> changed, restarting server" does. Vite restarts from
+    // handleHMRUpdate, so not with `server.hmr: false`.
+    let restarts =
+        |p: &PathBuf| is_restart_trigger(&state.restart_files, p) || is_config_dependency(p);
     if let Some(file) = paths
         .iter()
-        .find(|p| is_restart_trigger(p) || is_config_dependency(p))
+        .filter(|_| state.hmr_enabled)
+        .find(|p| restarts(p))
     {
         let shown = STARTUP_CWD
             .get()
             .and_then(|cwd| pathdiff::diff_paths(file, cwd))
             .unwrap_or_else(|| file.clone());
-        restart_process(&format!("{} changed", shown.display()));
+        state
+            .restarter
+            .request(&format!("{} changed", shown.display()));
     }
     // Vite's reloadOnTsconfigChange: clear caches, full reload. The compile
     // key folds class-field semantics in, so stale persistent-cache entries
     // become unreachable once discovery is cleared.
-    if paths.iter().any(|p| is_tsconfig_file(p)) {
+    let tsconfig = paths.iter().any(|p| is_tsconfig_file(p));
+    if tsconfig {
         oj_compiler::tsconfig::clear_cache();
         state.mtime_keys.lock().unwrap().clear();
         state.memory.lock().unwrap().clear();
-        let _ = state
-            .reload_tx
-            .send(full_reload_frame("tsconfig change", None, None));
     }
-    if !state.hmr_enabled {
-        return;
+    // Vite's watcher, per change: plugin watchChange, then the module graph
+    // invalidation, then HMR, which `server.hmr: false` skips and the editor
+    // gate holds until its flush. The first two run either way. A Tailwind
+    // sheet is dropped at once, as it carries no plugin state; so are the
+    // resolvers' cached misses, which Vite's resolver never keeps.
+    if !paths.is_empty() {
+        state.tailwind_sheets.invalidate();
+        crate::hmr::drop_resolver_misses(state, paths, created);
     }
-    if let Some(gate) = &state.hmr_gate {
-        if gate.hold(state, paths, false) {
-            return;
-        }
-    }
+    // Vite's handleHMRUpdate ends at a restart trigger: no hot update hook
+    // and nothing to the browser for it (its watchChange still runs).
+    let hot: Vec<PathBuf> = paths.iter().filter(|p| !restarts(p)).cloned().collect();
+    let dispatch = state.hmr_enabled
+        && !hot.is_empty()
+        && !state
+            .hmr_gate
+            .as_ref()
+            .is_some_and(|gate| gate.hold(state, &hot, false));
     let (state, paths, created) = (Arc::clone(state), paths.to_vec(), created.clone());
     state.rt.clone().spawn(async move {
-        let messages = decide(&state, &paths, &created).await;
+        // The watcher's listeners hear the change first (a plugin reloading
+        // its tsconfig projects), then the page reloads for a tsconfig.
+        crate::hmr::run_watcher_events(&state, &paths, &created).await;
+        if tsconfig {
+            let _ = state
+                .reload_tx
+                .send(full_reload_frame("tsconfig change", None, None));
+        }
+        run_watch_change(&state, &paths, &created).await;
+        invalidate_changed(&state, &paths);
+        if !dispatch {
+            return;
+        }
+        let messages = decide(&state, &hot, &created).await;
         if messages.is_empty() {
             return;
         }
@@ -721,6 +1375,31 @@ fn handle_batch(
             let _ = state.reload_tx.send(message);
         }
     });
+}
+
+/// Vite's `moduleGraph.onFileChange` for each edited file: one still on disk
+/// and already in the graph (a first save by rename arrives as a create, a
+/// `change` to chokidar). A hard-invalidated module drops its mtime fast-path
+/// key, so its next request recomputes the cache key, which carries the new
+/// invalidation stamp.
+fn invalidate_changed(state: &ServerState, paths: &[PathBuf]) {
+    for path in paths {
+        if !path.exists() {
+            continue;
+        }
+        let url = url_of(&state.root, path);
+        let hard = state
+            .graph
+            .lock()
+            .unwrap()
+            .invalidate_on_change(Path::new(&url), |m| !is_style_url(&m.to_string_lossy()));
+        let mut keys = state.mtime_keys.lock().unwrap();
+        for module in hard {
+            for url in url_variants(&module.display().to_string()) {
+                keys.remove(&url);
+            }
+        }
+    }
 }
 
 pub(crate) fn spawn_watcher(
@@ -744,44 +1423,45 @@ pub(crate) fn spawn_watcher(
             state.root.clone(),
             cache_base.clone(),
         );
-        let mut watcher =
-            match notify::recommended_watcher(move |ev: notify::Result<notify::Event>| {
-                if let Ok(ev) = &ev {
-                    if is_access(ev) {
-                        return;
-                    }
-                    feed.publish(ev, &ignored, &root, &cache);
-                }
-                let _ = tx.send(WatchMsg::Fs(ev));
-            }) {
-                Ok(w) => w,
-                Err(err) => {
-                    eprintln!("oj: file watcher failed to start: {err}");
-                    return;
-                }
-            };
+        let sink: EventSink = Arc::new(move |ev: notify::Result<notify::Event>| {
+            if let Ok(ev) = &ev {
+                feed.publish(ev, &ignored, &root, &cache);
+            }
+            let _ = tx.send(WatchMsg::Fs(ev));
+        });
+        let mut watchers = match Watchers::new(sink, &state.root) {
+            Ok(watchers) => watchers,
+            Err(err) => {
+                eprintln!("oj: file watcher failed to start: {err}");
+                return;
+            }
+        };
         let mut served_dirs: std::collections::HashSet<PathBuf> = Default::default();
-        if let Err(err) = watch_root(&mut watcher, &state.root, &cache_base) {
+        if let Err(err) = watch_root(watchers.root.as_mut(), &state.root, &cache_base) {
             eprintln!("oj: cannot watch {}: {err}", state.root.display());
             return;
         }
         let _ = ready.send(true);
 
-        let debounce_ms: u64 = oj_env::get().knobs.hmr_debounce_ms.unwrap_or(10);
-        // FSEvents keeps a file's "created" flag on later events for a while, so
-        // a Create for a path seen before is an edit (chokidar: add once, change after).
-        let mut seen_paths: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+        let debounce_ms: u64 = 10;
+        // The paths the watcher knows, chokidar's watched set, with each
+        // one's stamp when last seen: the boot scan plus every path a batch
+        // named. A Create for a known path is an edit (chokidar: add once,
+        // change after; FSEvents keeps a file's "created" flag on later
+        // events for a while), and a rescan diffs against it, as Zed's does
+        // against its entries. Scanned after `ready`: events queue meanwhile.
+        let mut seen_paths = boot_snapshot(&state.watch_ignored, &state.root, &cache_base);
         let mut changes = ContentChanges::new();
         loop {
             let first = match rx.recv() {
                 Ok(WatchMsg::Fs(Ok(ev))) => ev,
                 Ok(WatchMsg::Fs(Err(_))) => continue,
                 Ok(WatchMsg::Dir(dir)) => {
-                    watch_served_dir(&mut watcher, &mut served_dirs, dir);
+                    watch_served_dir(&mut watchers, &mut served_dirs, dir);
                     continue;
                 }
                 Ok(WatchMsg::Close(ack)) => {
-                    drop(watcher);
+                    drop(watchers);
                     let _ = ack.send(());
                     return;
                 }
@@ -790,29 +1470,40 @@ pub(crate) fn spawn_watcher(
             let mut batch = Batch::default();
             ingest_event(
                 &state,
-                &mut watcher,
+                &mut watchers,
                 &cache_base,
                 &mut changes,
                 &mut batch,
                 &first,
             );
-            if batch.paths.is_empty() {
+            if batch.paths.is_empty() && batch.rescans.is_empty() {
                 continue;
             }
+            // Only a change the batch keeps restarts the quiet window: ignored
+            // writes arriving faster than it would otherwise hold it open.
+            let debounce = Duration::from_millis(debounce_ms);
+            let mut quiet_at = std::time::Instant::now() + debounce;
             loop {
-                match rx.recv_timeout(Duration::from_millis(debounce_ms)) {
-                    Ok(WatchMsg::Fs(Ok(ev))) => ingest_event(
-                        &state,
-                        &mut watcher,
-                        &cache_base,
-                        &mut changes,
-                        &mut batch,
-                        &ev,
-                    ),
+                let left = quiet_at.saturating_duration_since(std::time::Instant::now());
+                match rx.recv_timeout(left) {
+                    Ok(WatchMsg::Fs(Ok(ev))) => {
+                        if ingest_event(
+                            &state,
+                            &mut watchers,
+                            &cache_base,
+                            &mut changes,
+                            &mut batch,
+                            &ev,
+                        ) {
+                            quiet_at = std::time::Instant::now() + debounce;
+                        }
+                    }
                     Ok(WatchMsg::Fs(Err(_))) => {}
-                    Ok(WatchMsg::Dir(dir)) => watch_served_dir(&mut watcher, &mut served_dirs, dir),
+                    Ok(WatchMsg::Dir(dir)) => {
+                        watch_served_dir(&mut watchers, &mut served_dirs, dir)
+                    }
                     Ok(WatchMsg::Close(ack)) => {
-                        drop(watcher);
+                        drop(watchers);
                         let _ = ack.send(());
                         return;
                     }
@@ -820,33 +1511,55 @@ pub(crate) fn spawn_watcher(
                     Err(RecvTimeoutError::Disconnected) => return,
                 }
             }
-            let Batch { paths, mut created } = batch;
-            let paths: Vec<PathBuf> = paths
-                .into_iter()
-                .filter(|p| !watch_excluded(&state.watch_ignored, &state.root, &cache_base, p))
-                .collect();
-            if paths.is_empty() {
-                continue;
+            if !batch.rescans.is_empty() {
+                rescan(
+                    &state,
+                    &mut watchers,
+                    &cache_base,
+                    &mut changes,
+                    &mut batch,
+                    &seen_paths,
+                );
             }
-            created.retain(|p| !seen_paths.contains(p));
-            seen_paths.extend(paths.iter().cloned());
+            let Batch {
+                paths, mut created, ..
+            } = batch;
+            let paths: Vec<PathBuf> = paths.into_iter().collect();
+            created.retain(|p| !seen_paths.contains_key(p));
+            // chokidar reports `add` again for a path after its `unlink`, so a
+            // deleted path is unseen: recreated, it is a create, not an edit.
+            for p in &paths {
+                match stamp(p) {
+                    Some(at) => seen_paths.insert(p.clone(), at),
+                    None => seen_paths.remove(p),
+                };
+            }
             handle_batch(&state, &paths, &created);
         }
     });
 }
 
-/// One raw watcher event into the current batch: a created top-level dir is
-/// adopted first, and its existing files enter this same batch (and the feed,
+/// One raw watcher event into the current batch: a created dir is adopted
+/// first, and its existing files enter this same batch (and the feed,
 /// which only hears the notify callback) as a synthesized create.
 fn ingest_event(
     state: &ServerState,
-    watcher: &mut notify::RecommendedWatcher,
+    watchers: &mut Watchers,
     cache_base: &Path,
     changes: &mut ContentChanges,
     batch: &mut Batch,
     ev: &notify::Event,
-) {
-    let adopted = adopt_created_root_dirs(watcher, &state.root, cache_base, ev);
+) -> bool {
+    let rescans = rescan_roots(&state.watch_ignored, &state.root, cache_base, ev);
+    if !rescans.is_empty() {
+        batch.rescans.extend(rescans);
+        if let Some(info) = ev.info() {
+            batch.rescan_reason.get_or_insert_with(|| info.to_string());
+        }
+        return true;
+    }
+    let mut kept = false;
+    let adopted = adopt_created_dirs(watchers, &state.watch_ignored, &state.root, cache_base, ev);
     if !adopted.is_empty() {
         let mut synth =
             notify::Event::new(notify::EventKind::Create(notify::event::CreateKind::Any));
@@ -854,7 +1567,106 @@ fn ingest_event(
         state
             .watch_feed
             .publish(&synth, &state.watch_ignored, &state.root, cache_base);
-        batch.add(changes, &synth);
+        kept |= add_watched(state, cache_base, changes, batch, &synth);
     }
-    batch.add(changes, ev);
+    add_watched(state, cache_base, changes, batch, ev) || kept
 }
+
+/// The watcher lost events (an inotify queue overflow, FSEvents'
+/// MustScanSubDirs): as Zed does, scan the subtrees against the snapshot,
+/// re-arm the watches a directory born meanwhile never got, and hand what
+/// changed to the batch and the feed as synthesized events.
+///
+/// Only new directories are re-armed, never the whole tree: notify's `watch`
+/// walks on the thread that drains the queue, so re-walking a large tree
+/// holds the queue undrained for the whole walk, which is how an overflow
+/// raised the next one while the watch also subscribed to opens. Files a new
+/// directory gained between the scan and its watch are picked up by scanning
+/// it again after.
+fn rescan(
+    state: &ServerState,
+    watchers: &mut Watchers,
+    cache_base: &Path,
+    changes: &mut ContentChanges,
+    batch: &mut Batch,
+    known: &Snapshot,
+) {
+    let roots = collapse_rescans(std::mem::take(&mut batch.rescans));
+    let reason = batch.rescan_reason.take();
+    for r in &roots {
+        match &reason {
+            Some(why) => eprintln!(
+                "oj: file watcher lost events ({why}), rescanning {}",
+                r.display()
+            ),
+            None => eprintln!("oj: file watcher lost events, rescanning {}", r.display()),
+        }
+    }
+    let mut found = rescan_changes(&roots, &state.watch_ignored, &state.root, cache_base, known);
+    if cfg!(target_os = "linux") {
+        for d in &found.new_dirs {
+            if let Err(err) = watchers.watch(d, notify::RecursiveMode::Recursive) {
+                eprintln!("oj: cannot watch {}: {err}", d.display());
+            }
+            let mut late = Vec::new();
+            scan_files(d, &mut late);
+            found
+                .added
+                .extend(late.into_iter().filter(|f| !known.contains_key(f)));
+        }
+        found.added.sort();
+        found.added.dedup();
+    }
+    for (kind, paths) in [
+        (
+            notify::EventKind::Create(notify::event::CreateKind::Any),
+            found.added,
+        ),
+        (
+            notify::EventKind::Modify(notify::event::ModifyKind::Data(
+                notify::event::DataChange::Any,
+            )),
+            found.changed,
+        ),
+        (
+            notify::EventKind::Remove(notify::event::RemoveKind::Any),
+            found.removed,
+        ),
+    ] {
+        if paths.is_empty() {
+            continue;
+        }
+        let mut synth = notify::Event::new(kind);
+        synth.paths = paths;
+        state
+            .watch_feed
+            .publish(&synth, &state.watch_ignored, &state.root, cache_base);
+        add_watched(state, cache_base, changes, batch, &synth);
+    }
+}
+
+/// `ev` into the batch minus its excluded paths; true when it changed a
+/// path the batch keeps.
+fn add_watched(
+    state: &ServerState,
+    cache_base: &Path,
+    changes: &mut ContentChanges,
+    batch: &mut Batch,
+    ev: &notify::Event,
+) -> bool {
+    let excluded = |p: &PathBuf| watch_excluded(&state.watch_ignored, &state.root, cache_base, p);
+    if !ev.paths.iter().any(excluded) {
+        return batch.add(changes, ev);
+    }
+    let mut kept = ev.clone();
+    kept.paths.retain(|p| !excluded(p));
+    !kept.paths.is_empty() && batch.add(changes, &kept)
+}
+
+#[cfg(test)]
+#[path = "watch_restart_tests.rs"]
+mod restart_tests;
+
+#[cfg(test)]
+#[path = "watch_stream_tests.rs"]
+mod stream_tests;

@@ -8,7 +8,7 @@ pub(crate) async fn serve_path(
     let path = state
         .base
         .as_deref()
-        .and_then(|b| uri.path().strip_prefix(b.trim_end_matches('/')))
+        .and_then(|b| strip_base(uri.path(), b))
         .unwrap_or_else(|| uri.path());
     let decoded = urldecode(path.trim_start_matches('/'));
     let rel = if decoded.is_empty() {
@@ -17,8 +17,24 @@ pub(crate) async fn serve_path(
         decoded.as_str()
     };
 
-    if let Some(resp) = serve_internal_route(&state, &headers, &uri).await {
+    let internal = match (path.len() != uri.path().len(), uri.query()) {
+        (false, _) => None,
+        (true, Some(q)) => format!("{path}?{q}").parse::<Uri>().ok(),
+        (true, None) => path.parse::<Uri>().ok(),
+    };
+    if let Some(resp) =
+        serve_internal_route(&state, &headers, internal.as_ref().unwrap_or(&uri)).await
+    {
         return resp;
+    }
+    // A pre-bundle requested by its own path (`/@fs/…` or under the root) is
+    // the bundle's URL, which waits for the bundle like any dep request.
+    let named = match rel.strip_prefix("@fs") {
+        Some(abs) if abs.starts_with('/') => PathBuf::from(abs),
+        _ => state.root.join(rel),
+    };
+    if let Some(url) = optimized_url_of(&state, &named.to_string_lossy()) {
+        return Redirect::temporary(&url).into_response();
     }
     let file = match request_file(&state, &headers, &uri, rel).await {
         Ok(file) => file,
@@ -27,7 +43,7 @@ pub(crate) async fn serve_path(
     if path_is_denied(&file, &state.root, &state.fs_deny) {
         return (StatusCode::FORBIDDEN, "oj: path denied by server.fs.deny").into_response();
     }
-    serve_file(&state, &headers, &uri, &file).await
+    serve_file(&state, &headers, &uri, &file, rel).await
 }
 
 /// oj's own `/@...` routes (optimized deps, stubs, package bundles, virtual
@@ -37,7 +53,12 @@ async fn serve_internal_route(
     headers: &HeaderMap,
     uri: &Uri,
 ) -> Option<Response> {
+    // `base` is already stripped (base_middleware); the StyleX runtime's
+    // unprefixed fetch of its sheet passes through it as is.
     let path = uri.path();
+    if let Some(resp) = crate::stylex::serve_route(state, path) {
+        return Some(resp);
+    }
     if let Some(name) = path.strip_prefix("/@oj-deps/") {
         if name.contains('/') || name.contains("..") {
             return Some((StatusCode::FORBIDDEN, "oj: bad optimized dep path").into_response());
@@ -65,6 +86,15 @@ async fn serve_internal_route(
                     has_version_query(uri.query()),
                     state.optimized.link_entries(name, bytes),
                 ),
+                // Vite's optimizedDeps load: a versioned file that is gone
+                // (a rerun or another session replaced the bundle) is an
+                // outdated request the page reloads past; only an unversioned
+                // miss is a dep the optimizer never wrote.
+                Err(_) if req_version.is_some() => (
+                    StatusCode::GATEWAY_TIMEOUT,
+                    format!("oj: outdated optimized dep {name}"),
+                )
+                    .into_response(),
                 Err(_) => (
                     StatusCode::NOT_FOUND,
                     format!("oj: no optimized dep {name}"),
@@ -113,6 +143,21 @@ async fn serve_internal_route(
         if is_html_proxy(&spec) {
             return Some(serve_html_proxy(state, headers, &spec, &id_path).await);
         }
+        if let Some(source) = crate::stylex::virtual_module(state, &spec) {
+            // Compiled like any module: the runtime reads `import.meta.hot`.
+            let file = state.root.join("__oj_stylex_virtual.js");
+            return Some(
+                serve_compiled_from(
+                    state,
+                    &file,
+                    &id_path,
+                    None,
+                    headers,
+                    Some(source.to_string()),
+                )
+                .await,
+            );
+        }
         return Some(serve_plugin_id(state, &spec, &importer).await);
     }
     None
@@ -160,20 +205,31 @@ async fn serve_html_proxy(
     id: &str,
     url: &str,
 ) -> Response {
-    let Some(host) = &state.plugins else {
-        return (StatusCode::NOT_FOUND, "oj: no plugin host").into_response();
-    };
-    let id = match host.resolve_id(id, "").await {
-        Ok(Some(resolved)) => resolved,
-        Ok(None) => id.to_string(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-    };
-    let source = match host.load(&id).await {
-        Ok(Some(source)) => source,
-        Ok(None) => {
-            return (StatusCode::NOT_FOUND, format!("oj: no plugin loaded {id}")).into_response()
+    // A page the native transform served keeps its modules here.
+    let (id, source) = match state.html_proxy.load(id, &state.root) {
+        Some(source) => (id.to_string(), source),
+        None => {
+            let Some(host) = &state.plugins else {
+                return (
+                    StatusCode::NOT_FOUND,
+                    format!("oj: no matching HTML proxy module found from {id}"),
+                )
+                    .into_response();
+            };
+            let id = match host.resolve_id(id, "").await {
+                Ok(Some(resolved)) => resolved,
+                Ok(None) => id.to_string(),
+                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+            };
+            match host.load(&id).await {
+                Ok(Some(source)) => (id, source),
+                Ok(None) => {
+                    return (StatusCode::NOT_FOUND, format!("oj: no plugin loaded {id}"))
+                        .into_response()
+                }
+                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+            }
         }
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     };
     let (page, query) = id.split_once('?').unwrap_or((&id, ""));
     let page = page.trim_start_matches('\0').trim_start_matches('/');
@@ -256,6 +312,7 @@ async fn serve_file(
     headers: &HeaderMap,
     uri: &Uri,
     file: &Path,
+    rel: &str,
 ) -> Response {
     let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
     let query = uri.query();
@@ -274,11 +331,21 @@ async fn serve_file(
         .public_dir
         .as_deref()
         .is_some_and(|p| file.starts_with(p));
-    if let Some(kind) = query_asset_kind(query) {
-        return serve_asset_query(state, file, ext, kind, in_public).await;
+    // `?inline` on a file Vite's asset plugin does not load (not an asset or
+    // a stylesheet) is the plain module, as vite:asset's load filter has it.
+    let asset_query = query_asset_kind(query)
+        .filter(|kind| *kind != "inline" || is_style_ext(ext) || is_asset_path(file));
+    if let Some(kind) = asset_query {
+        // Vite's checkPublicFile: public when the request path names a file
+        // under the public dir, so `/public/logo.png` is not `/logo.png`.
+        let public_url = state
+            .public_dir
+            .as_deref()
+            .is_some_and(|p| in_public && p.join(rel) == file);
+        return serve_asset_query(state, file, ext, kind, query, public_url).await;
     }
     if is_style_ext(ext) && !in_public {
-        return serve_style(state, headers, file, query).await;
+        return vary_on_fetch_dest(serve_style(state, headers, file, query).await);
     }
     if in_public {
         return serve_static_file(file, ext).await;
@@ -291,6 +358,21 @@ async fn serve_file(
         let url = format!("{}?react", url_of(&state.root, file));
         return serve_compiled(state, file, &url, None, headers).await;
     }
+    if ext.eq_ignore_ascii_case("svg") || is_importable_asset_ext(ext) {
+        return vary_on_fetch_dest(serve_bare_asset(state, headers, file, ext, query).await);
+    }
+    serve_raw_file(state, file, ext).await
+}
+
+/// A bare asset url is the file for an `<img src>` and its URL module for an
+/// import the browser marks `Sec-Fetch-Dest: script`.
+async fn serve_bare_asset(
+    state: &Arc<ServerState>,
+    headers: &HeaderMap,
+    file: &Path,
+    ext: &str,
+    query: Option<&str>,
+) -> Response {
     // A plain `.svg` import goes through the compile path so a configured svgr can
     // componentize it; unmatched svgs fall back to a URL asset there.
     if ext.eq_ignore_ascii_case("svg") && !wants_raw_resource(headers) {
@@ -300,11 +382,15 @@ async fn serve_file(
         }
         // No plugin can componentize it: a module import of an svg (relative,
         // aliased or root-absolute) is its URL, like any other asset in Vite.
-        return js_module_response(asset_module(file, &url, "url").await);
+        return js_module_response(
+            asset_module(file, &url, "url", &state.asset_urls, "client").await,
+        );
     }
     if is_importable_asset_ext(ext) && wants_module_import(headers, query) {
         let url = url_of(&state.root, file);
-        return js_module_response(asset_module(file, &url, "url").await);
+        return js_module_response(
+            asset_module(file, &url, "url", &state.asset_urls, "client").await,
+        );
     }
     serve_raw_file(state, file, ext).await
 }
@@ -315,6 +401,7 @@ async fn serve_asset_query(
     file: &Path,
     ext: &str,
     kind: &str,
+    query: Option<&str>,
     in_public: bool,
 ) -> Response {
     // A public file's url is its path under the public dir (`/logo.svg`,
@@ -323,10 +410,14 @@ async fn serve_asset_query(
         Some(p) => format!("/{}", file.strip_prefix(p).unwrap_or(file).display()),
         None => url_of(&state.root, file),
     };
+    let url = match query {
+        Some(q) => format!("{url}?{q}"),
+        None => url,
+    };
     let js = if kind == "inline" && is_style_ext(ext) {
         inline_css_module(state, file, &url).await
     } else {
-        asset_module(file, &url, kind).await
+        asset_module(file, &url, kind, &state.asset_urls, "client").await
     };
     js_module_response(js)
 }
@@ -366,8 +457,8 @@ async fn serve_raw_file(state: &Arc<ServerState>, file: &Path, ext: &str) -> Res
                 return ([(header::CONTENT_TYPE, "text/css")], source).into_response();
             }
             let url = url_of(&state.root, file);
-            match compile_tailwind(state, &url, &source).await {
-                Ok(css) => (
+            match compile_tailwind(state, file, &url, &source).await {
+                Ok((css, _)) => (
                     [
                         (header::CONTENT_TYPE, "text/css"),
                         (header::CACHE_CONTROL, "no-cache"),
@@ -409,6 +500,16 @@ fn read_error(err: std::io::Error) -> Response {
         .into_response()
 }
 
+/// One url, two bodies picked by the request's `Sec-Fetch-Dest`: a cache must
+/// key on it or it hands a module import the image bytes (or the reverse).
+fn vary_on_fetch_dest(mut response: Response) -> Response {
+    response.headers_mut().append(
+        header::VARY,
+        header::HeaderValue::from_static("sec-fetch-dest"),
+    );
+    response
+}
+
 /// A no-cache JavaScript response.
 fn js_response(code: impl IntoResponse) -> Response {
     (
@@ -431,12 +532,6 @@ fn js_module_response(js: Result<String, String>) -> Response {
 /// Whether the query has the bare `flag` key (`?direct`, `?import`, `?react`).
 fn has_query_flag(query: Option<&str>, flag: &str) -> bool {
     query.is_some_and(|q| q.split('&').any(|kv| kv == flag))
-}
-
-pub(crate) fn inject_dev_scripts(html: String) -> String {
-    let tags = "<script type=\"module\" src=\"/@oj/refresh-preamble.js\"></script>\n\
-                <script type=\"module\" src=\"/@oj/client.js\"></script>";
-    insert_after_head(&html, tags)
 }
 
 pub(crate) async fn serve_compiled(
@@ -488,7 +583,7 @@ async fn serve_compiled_from(
     }
 
     let mut body = if module.kind == "svelte" {
-        format!("{}{}", svelte_hot_glue(url), module.code)
+        format!("{}{}", svelte_hot_glue(url, &state.oj_paths), module.code)
     } else {
         let ctx_predefined = module.hot.is_some();
         let mut body = if ctx_predefined {
@@ -500,7 +595,7 @@ async fn serve_compiled_from(
             };
             format!(
                 "{}{}",
-                svelte_hot_glue(&strip_hmr_timestamp(&full)),
+                svelte_hot_glue(&strip_hmr_timestamp(&full), &state.oj_paths),
                 module.code
             )
         } else {
@@ -511,10 +606,25 @@ async fn serve_compiled_from(
             query,
             module.is_boundary,
             ctx_predefined,
+            &state.oj_paths,
         ));
         body
     };
-    if let Some(map) = &module.map_json {
+    // A `?worker_file&type=<type>` module gets vite:worker's env prelude; its
+    // map moves down by the prelude's lines.
+    let prelude = worker_file_prelude(
+        url,
+        &crate::start_dev_url_base(state.base.as_deref().unwrap_or("/")),
+        &state.vite_env_js,
+    );
+    let map_json = match (&prelude, &module.map_json) {
+        (Some(p), Some(map)) => Some(shift_map_lines(map, p.matches('\n').count())),
+        _ => module.map_json.clone(),
+    };
+    if let Some(prelude) = prelude {
+        body.insert_str(0, &prelude);
+    }
+    if let Some(map) = &map_json {
         // Vite builds the data URL per send (genSourceMapUrl); caches retain
         // the raw JSON, 25% smaller than base64.
         body.push_str("\n//# sourceMappingURL=");
@@ -531,4 +641,15 @@ async fn serve_compiled_from(
         body,
     )
         .into_response()
+}
+
+/// A source map whose generated code moved down `lines` lines.
+pub(crate) fn shift_map_lines(map_json: &str, lines: usize) -> String {
+    let Ok(mut map) = serde_json::from_str::<serde_json::Value>(map_json) else {
+        return map_json.to_string();
+    };
+    if let Some(serde_json::Value::String(mappings)) = map.get_mut("mappings") {
+        mappings.insert_str(0, &";".repeat(lines));
+    }
+    map.to_string()
 }

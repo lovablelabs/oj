@@ -83,6 +83,9 @@ const MODULES = {
   ],
   badge: ["badge.module.less", `@c: rgb(7, 8, 9);\n.badge { color: @c; }\n`, "badge", /\.badge\s*\{/],
 };
+// The names Vite gives these classes (postcss-modules' default over the
+// preprocessed sheet, recorded from Vite 8.3.5 with sass and less).
+const VITE_NAMES = { card: "_card_k2p0w_1", panel: "_panel-title_1h7bj_1", badge: "_badge_lh6u3_1" };
 const PLAIN = ["theme.scss", `$t: rgb(10, 11, 12);\n.scss-plain { color: $t; }\n`];
 // Imported `?inline`: the compiled sheet as a string (Vite's css.ts), its
 // relative url() pointed at the served image.
@@ -126,6 +129,7 @@ function checkStyles(where, html, js, sheets) {
   for (const [mark, [file, , , unscoped]] of Object.entries(MODULES)) {
     const cls = renderedClass(html, mark);
     must(cls && cls.includes(mark), `${where}: ${file} rendered no scoped class: "${cls}"`);
+    must(cls === VITE_NAMES[mark], `${where}: ${file} is "${cls}", Vite names it "${VITE_NAMES[mark]}"`);
     must(
       js.some((c) => carries(c, cls)),
       `${where}: client bundle does not carry "${cls}" (${file})`,
@@ -228,7 +232,7 @@ try {
       `built /about returned ${res.status}:\n${page.slice(0, 800)}\n---\n${builtLog.slice(-1200)}`,
     );
     const buildClasses = checkStyles("build", page, builtJs, builtCss);
-    const inlined = checkInline("build", page, builtJs, (u) => /^\/assets\/hero-[0-9a-f]+\.png$/.test(u));
+    const inlined = checkInline("build", page, builtJs, (u) => /^\/assets\/hero-[A-Za-z0-9_-]{8}\.png$/.test(u));
     // Vite's build.cssMinify (on by default for both environments): emitted
     // sheets and inlined text are minified.
     must(!/\s{2}|\n/.test(inlined), `build: inline sheet not minified: ${JSON.stringify(inlined)}`);

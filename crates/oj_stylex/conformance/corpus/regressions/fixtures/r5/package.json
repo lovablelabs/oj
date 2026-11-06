@@ -1,0 +1,12 @@
+{
+  "name": "r5-fixture",
+  "imports": {
+    "#x*é": "./src/star/*.stylex.js",
+    "#é*": "./src/star/*.stylex.js",
+    "#q*": "./src/star/*.stylex.js?mode=theme",
+    "#bool.stylex": [
+      "bad-bool",
+      "./src/fallback.stylex.js"
+    ]
+  }
+}

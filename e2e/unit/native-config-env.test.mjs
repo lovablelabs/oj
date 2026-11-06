@@ -38,6 +38,7 @@ function envSeenByPlugins(extraEnv, prepare) {
            writeFileSync(${JSON.stringify(out)}, JSON.stringify({
              ignoreWarning: process.env.VITE_CONFIG_NATIVE_IGNORE_WARNING ?? null,
              userAgent: process.env.npm_config_user_agent ?? null,
+             arenaPurge: process.env.MIMALLOC_ARENA_PURGE_MULT ?? null,
            }));
          },
        }];\n`,
@@ -62,6 +63,14 @@ test("children inherit the native config-loader warning suppression", () => {
 test("a user-set suppression value is never overridden", () => {
   const seen = envSeenByPlugins({ VITE_CONFIG_NATIVE_IGNORE_WARNING: "0" });
   assert.equal(seen.ignoreWarning, "0", "an explicit value wins over the default");
+});
+
+// The npm rolldown binding's mimalloc keeps the memory rolldown's idle
+// threads freed unless told to purge it (rolldown#10985); main() asks it to,
+// and the addon, loaded in-process, reads the same environment.
+test("mimalloc purges freed arenas unless the user says otherwise", () => {
+  assert.equal(envSeenByPlugins({ MIMALLOC_ARENA_PURGE_MULT: undefined }).arenaPurge, "0");
+  assert.equal(envSeenByPlugins({ MIMALLOC_ARENA_PURGE_MULT: "10" }).arenaPurge, "10");
 });
 
 // Vite sorts its lockfile-format preference by npm_config_user_agent; every

@@ -185,6 +185,42 @@ async fn eval_path_and_call_work() {
 }
 
 #[tokio::test]
+async fn strings_cross_the_boundary_unchanged() {
+    let root = app_root();
+    std::fs::write(
+        root.path().join("job.mjs"),
+        r#"
+        export function echo(text) { return text; }
+        export function units(text) { return [typeof text, text.length]; }
+        export function loneSurrogate() { return "a\uD800b"; }
+        "#,
+    )
+    .unwrap();
+    let engine = engine(root.path());
+    let text = "\"quoted\"\n\\ \u{2028} é 🙂 \u{0} </script>";
+
+    let value = engine
+        .call("job.mjs", "echo", vec![serde_json::json!(text)], None)
+        .await
+        .unwrap();
+    assert_eq!(value, serde_json::json!(text));
+
+    let value = engine
+        .call("job.mjs", "units", vec![serde_json::json!(text)], None)
+        .await
+        .unwrap();
+    let utf16 = text.encode_utf16().count();
+    assert_eq!(value, serde_json::json!(["string", utf16]));
+
+    // Not representable in Rust: replaced, not dropped to null.
+    let value = engine
+        .call("job.mjs", "loneSurrogate", Vec::new(), None)
+        .await
+        .unwrap();
+    assert_eq!(value, serde_json::json!("a\u{FFFD}b"));
+}
+
+#[tokio::test]
 async fn js_errors_are_reported_not_fatal() {
     let root = app_root();
     let engine = engine(root.path());
@@ -822,6 +858,9 @@ async fn code_cache_persists_and_later_engines_still_run() {
     let value = engine.call("main.mjs", "run", vec![], None).await.unwrap();
     assert_eq!(value, serde_json::json!("hello cache"));
     drop(engine);
+    // A dropped engine's entries land on a writer thread; the exit flush
+    // waits for it.
+    oj_js::code_cache::flush_at_exit();
     let entries = std::fs::read_dir(&cache_dir)
         .expect("cache dir was created")
         .count();
@@ -836,6 +875,7 @@ async fn code_cache_persists_and_later_engines_still_run() {
     let value = engine.call("main.mjs", "run", vec![], None).await.unwrap();
     assert_eq!(value, serde_json::json!("hello cache"));
     drop(engine);
+    oj_js::code_cache::flush_at_exit();
     assert_eq!(std::fs::read_dir(&cache_dir).unwrap().count(), entries);
 
     // An edited source must not execute stale bytecode.

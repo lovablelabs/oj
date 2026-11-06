@@ -9,6 +9,7 @@ pub struct CssModulesSettings {
     pub generate_scoped_name: Option<String>,
     pub global_scope: bool,
     pub global_module_paths: Vec<String>,
+    pub hash_prefix: Option<String>,
 }
 
 pub fn css_modules(config: &OjConfig) -> CssModulesSettings {
@@ -38,6 +39,7 @@ pub fn css_modules(config: &OjConfig) -> CssModulesSettings {
                 _ => None,
             })
             .collect(),
+        hash_prefix: m.hash_prefix.clone(),
     }
 }
 

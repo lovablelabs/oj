@@ -1,0 +1,7 @@
+{
+  "name": "design-tokens",
+  "exports": {
+    "./theme.stylex": "./out/theme.stylex.js",
+    "./pat/*.stylex": "./out/pat-*.stylex.js"
+  }
+}

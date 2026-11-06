@@ -1,0 +1,1419 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/legacy/transform-legacy-polyfills-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs and upstream's own expected values — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-end-aka-insetin-001-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { end: 5 } });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xceh6e4",
+            {
+              "ltr": ".xceh6e4{inset-inline-end:5px}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] \"end\" (aka \"insetInlineEnd\")",
+          "line": 37
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-marginend-aka-m-002-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { marginEnd: 0 } });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x14z9mp",
+            {
+              "ltr": ".x14z9mp{margin-inline-end:0}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] \"marginEnd\" (aka \"marginInlineEnd\")",
+          "line": 58
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-marginhorizonta-003-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { marginHorizontal: 0 } });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xrxpjvj",
+            {
+              "ltr": ".xrxpjvj{margin-inline:0}",
+              "rtl": null
+            },
+            2000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] \"marginHorizontal\" (aka \"marginInline\")",
+          "line": 79
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-marginstart-aka-004-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { marginStart: 0 } });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x1lziwak",
+            {
+              "ltr": ".x1lziwak{margin-inline-start:0}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] \"marginStart\" (aka \"marginInlineStart\")",
+          "line": 100
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-marginvertical-005-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { marginVertical: 0 } });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x10im51j",
+            {
+              "ltr": ".x10im51j{margin-block:0}",
+              "rtl": null
+            },
+            2000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] \"marginVertical\" (aka \"marginBlock\")",
+          "line": 121
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-paddingend-aka-006-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { paddingEnd: 0 } });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xyri2b",
+            {
+              "ltr": ".xyri2b{padding-inline-end:0}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] \"paddingEnd\" (aka \"paddingInlineEnd\")",
+          "line": 142
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-paddinghorizont-007-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { paddingHorizontal: 0 } });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xnjsko4",
+            {
+              "ltr": ".xnjsko4{padding-inline:0}",
+              "rtl": null
+            },
+            2000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] \"paddingHorizontal\" (aka \"paddingInline\")",
+          "line": 163
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-paddingstart-ak-008-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { paddingStart: 0 } });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x1c1uobl",
+            {
+              "ltr": ".x1c1uobl{padding-inline-start:0}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] \"paddingStart\" (aka \"paddingInlineStart\")",
+          "line": 184
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-paddingvertical-009-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { paddingVertical: 0 } });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xt970qd",
+            {
+              "ltr": ".xt970qd{padding-block:0}",
+              "rtl": null
+            },
+            2000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] \"paddingVertical\" (aka \"paddingBlock\")",
+          "line": 205
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-start-aka-inset-010-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { start: 5 } });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x1fb7gu6",
+            {
+              "ltr": ".x1fb7gu6{inset-inline-start:5px}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] \"start\" (aka \"insetInlineStart\")",
+          "line": 226
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-value-end-aka-i-011-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { clear: 'end' } });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xodj72a",
+            {
+              "ltr": ".xodj72a{clear:right}",
+              "rtl": ".xodj72a{clear:left}"
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] value \"end\" (aka \"inlineEnd\") for \"clear\" property",
+          "line": 254
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-value-start-aka-012-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { clear: 'start' } });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x390i0x",
+            {
+              "ltr": ".x390i0x{clear:left}",
+              "rtl": ".x390i0x{clear:right}"
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] value \"start\" (aka \"inlineStart\") for \"clear\" property",
+          "line": 275
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-value-end-aka-i-013-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { float: 'end' } });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x1guec7k",
+            {
+              "ltr": ".x1guec7k{float:right}",
+              "rtl": ".x1guec7k{float:left}"
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] value \"end\" (aka \"inlineEnd\") for \"float\" property",
+          "line": 296
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-value-start-aka-014-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { float: 'start' } });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xrbpyxo",
+            {
+              "ltr": ".xrbpyxo{float:left}",
+              "rtl": ".xrbpyxo{float:right}"
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] value \"start\" (aka \"inlineStart\") for \"float\" property",
+          "line": 317
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-end-aka-insetin-015-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { end: 5 } });\n      ",
+      "options": {
+        "enableLogicalStylesPolyfill": true,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xceh6e4",
+            {
+              "ltr": ".xceh6e4{right:5px}",
+              "rtl": ".xceh6e4{left:5px}"
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] \"end\" (aka \"insetInlineEnd\")",
+          "line": 348
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-marginend-aka-m-016-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { marginEnd: 0 } });\n      ",
+      "options": {
+        "enableLogicalStylesPolyfill": true,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x14z9mp",
+            {
+              "ltr": ".x14z9mp{margin-right:0}",
+              "rtl": ".x14z9mp{margin-left:0}"
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] \"marginEnd\" (aka \"marginInlineEnd\")",
+          "line": 372
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-marginhorizonta-017-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { marginHorizontal: 0 } });\n      ",
+      "options": {
+        "enableLogicalStylesPolyfill": true,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x1lziwak",
+            {
+              "ltr": ".x1lziwak{margin-left:0}",
+              "rtl": ".x1lziwak{margin-right:0}"
+            },
+            3000
+          ],
+          [
+            "x14z9mp",
+            {
+              "ltr": ".x14z9mp{margin-right:0}",
+              "rtl": ".x14z9mp{margin-left:0}"
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] \"marginHorizontal\" (aka \"marginInline\")",
+          "line": 396
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-marginstart-aka-018-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { marginStart: 0 } });\n      ",
+      "options": {
+        "enableLogicalStylesPolyfill": true,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x1lziwak",
+            {
+              "ltr": ".x1lziwak{margin-left:0}",
+              "rtl": ".x1lziwak{margin-right:0}"
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] \"marginStart\" (aka \"marginInlineStart\")",
+          "line": 428
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-marginvertical-019-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { marginVertical: 0 } });\n      ",
+      "options": {
+        "enableLogicalStylesPolyfill": true,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xdj266r",
+            {
+              "ltr": ".xdj266r{margin-top:0}",
+              "rtl": null
+            },
+            4000
+          ],
+          [
+            "xat24cr",
+            {
+              "ltr": ".xat24cr{margin-bottom:0}",
+              "rtl": null
+            },
+            4000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] \"marginVertical\" (aka \"marginBlock\")",
+          "line": 452
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-paddingend-aka-020-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { paddingEnd: 0 } });\n      ",
+      "options": {
+        "enableLogicalStylesPolyfill": true,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xyri2b",
+            {
+              "ltr": ".xyri2b{padding-right:0}",
+              "rtl": ".xyri2b{padding-left:0}"
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] \"paddingEnd\" (aka \"paddingInlineEnd\")",
+          "line": 484
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-paddinghorizont-021-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { paddingHorizontal: 0 } });\n      ",
+      "options": {
+        "enableLogicalStylesPolyfill": true,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x1c1uobl",
+            {
+              "ltr": ".x1c1uobl{padding-left:0}",
+              "rtl": ".x1c1uobl{padding-right:0}"
+            },
+            3000
+          ],
+          [
+            "xyri2b",
+            {
+              "ltr": ".xyri2b{padding-right:0}",
+              "rtl": ".xyri2b{padding-left:0}"
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] \"paddingHorizontal\" (aka \"paddingInline\")",
+          "line": 508
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-paddingstart-ak-022-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { paddingStart: 0 } });\n      ",
+      "options": {
+        "enableLogicalStylesPolyfill": true,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x1c1uobl",
+            {
+              "ltr": ".x1c1uobl{padding-left:0}",
+              "rtl": ".x1c1uobl{padding-right:0}"
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] \"paddingStart\" (aka \"paddingInlineStart\")",
+          "line": 540
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-paddingvertical-023-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { paddingVertical: 0 } });\n      ",
+      "options": {
+        "enableLogicalStylesPolyfill": true,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xexx8yu",
+            {
+              "ltr": ".xexx8yu{padding-top:0}",
+              "rtl": null
+            },
+            4000
+          ],
+          [
+            "x18d9i69",
+            {
+              "ltr": ".x18d9i69{padding-bottom:0}",
+              "rtl": null
+            },
+            4000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] \"paddingVertical\" (aka \"paddingBlock\")",
+          "line": 564
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-start-aka-inset-024-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { start: 5 } });\n      ",
+      "options": {
+        "enableLogicalStylesPolyfill": true,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x1fb7gu6",
+            {
+              "ltr": ".x1fb7gu6{left:5px}",
+              "rtl": ".x1fb7gu6{right:5px}"
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] \"start\" (aka \"insetInlineStart\")",
+          "line": 596
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-value-end-aka-i-025-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { clear: 'end' } });\n      ",
+      "options": {
+        "enableLogicalStylesPolyfill": true,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x1wx8h15",
+            {
+              "ltr": ".x1wx8h15{clear:var(--stylex-logical-end)}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] value \"end\" (aka \"inlineEnd\") for \"clear\" property",
+          "line": 627
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-value-start-aka-026-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { clear: 'start' } });\n      ",
+      "options": {
+        "enableLogicalStylesPolyfill": true,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x1fhb4fj",
+            {
+              "ltr": ".x1fhb4fj{clear:var(--stylex-logical-start)}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] value \"start\" (aka \"inlineStart\") for \"clear\" property",
+          "line": 651
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-value-end-aka-i-027-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { float: 'end' } });\n      ",
+      "options": {
+        "enableLogicalStylesPolyfill": true,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xtrg13t",
+            {
+              "ltr": ".xtrg13t{float:var(--stylex-logical-end)}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] value \"end\" (aka \"inlineEnd\") for \"float\" property",
+          "line": 675
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-value-start-aka-028-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { float: 'start' } });\n      ",
+      "options": {
+        "enableLogicalStylesPolyfill": true,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xj87blo",
+            {
+              "ltr": ".xj87blo{float:var(--stylex-logical-start)}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] value \"start\" (aka \"inlineStart\") for \"float\" property",
+          "line": 699
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-end-aka-insetin-029-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { end: 5 } });\n      ",
+      "options": {
+        "enableLogicalStylesPolyfill": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xceh6e4",
+            {
+              "ltr": ".xceh6e4{inset-inline-end:5px}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] \"end\" (aka \"insetInlineEnd\")",
+          "line": 730
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-marginend-aka-m-030-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { marginEnd: 0 } });\n      ",
+      "options": {
+        "enableLogicalStylesPolyfill": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x14z9mp",
+            {
+              "ltr": ".x14z9mp{margin-inline-end:0}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] \"marginEnd\" (aka \"marginInlineEnd\")",
+          "line": 754
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-marginhorizonta-031-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { marginHorizontal: 0 } });\n      ",
+      "options": {
+        "enableLogicalStylesPolyfill": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x1lziwak",
+            {
+              "ltr": ".x1lziwak{margin-inline-start:0}",
+              "rtl": null
+            },
+            3000
+          ],
+          [
+            "x14z9mp",
+            {
+              "ltr": ".x14z9mp{margin-inline-end:0}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] \"marginHorizontal\" (aka \"marginInline\")",
+          "line": 778
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-marginstart-aka-032-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { marginStart: 0 } });\n      ",
+      "options": {
+        "enableLogicalStylesPolyfill": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x1lziwak",
+            {
+              "ltr": ".x1lziwak{margin-inline-start:0}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] \"marginStart\" (aka \"marginInlineStart\")",
+          "line": 810
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-marginvertical-033-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { marginVertical: 0 } });\n      ",
+      "options": {
+        "enableLogicalStylesPolyfill": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xdj266r",
+            {
+              "ltr": ".xdj266r{margin-top:0}",
+              "rtl": null
+            },
+            4000
+          ],
+          [
+            "xat24cr",
+            {
+              "ltr": ".xat24cr{margin-bottom:0}",
+              "rtl": null
+            },
+            4000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] \"marginVertical\" (aka \"marginBlock\")",
+          "line": 834
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-paddingend-aka-034-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { paddingEnd: 0 } });\n      ",
+      "options": {
+        "enableLogicalStylesPolyfill": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xyri2b",
+            {
+              "ltr": ".xyri2b{padding-inline-end:0}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] \"paddingEnd\" (aka \"paddingInlineEnd\")",
+          "line": 866
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-paddinghorizont-035-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { paddingHorizontal: 0 } });\n      ",
+      "options": {
+        "enableLogicalStylesPolyfill": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x1c1uobl",
+            {
+              "ltr": ".x1c1uobl{padding-inline-start:0}",
+              "rtl": null
+            },
+            3000
+          ],
+          [
+            "xyri2b",
+            {
+              "ltr": ".xyri2b{padding-inline-end:0}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] \"paddingHorizontal\" (aka \"paddingInline\")",
+          "line": 890
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-paddingstart-ak-036-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { paddingStart: 0 } });\n      ",
+      "options": {
+        "enableLogicalStylesPolyfill": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x1c1uobl",
+            {
+              "ltr": ".x1c1uobl{padding-inline-start:0}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] \"paddingStart\" (aka \"paddingInlineStart\")",
+          "line": 922
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-paddingvertical-037-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { paddingVertical: 0 } });\n      ",
+      "options": {
+        "enableLogicalStylesPolyfill": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xexx8yu",
+            {
+              "ltr": ".xexx8yu{padding-top:0}",
+              "rtl": null
+            },
+            4000
+          ],
+          [
+            "x18d9i69",
+            {
+              "ltr": ".x18d9i69{padding-bottom:0}",
+              "rtl": null
+            },
+            4000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] \"paddingVertical\" (aka \"paddingBlock\")",
+          "line": 946
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-start-aka-inset-038-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { start: 5 } });\n      ",
+      "options": {
+        "enableLogicalStylesPolyfill": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x1fb7gu6",
+            {
+              "ltr": ".x1fb7gu6{inset-inline-start:5px}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] \"start\" (aka \"insetInlineStart\")",
+          "line": 978
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-value-end-aka-i-039-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { clear: 'end' } });\n      ",
+      "options": {
+        "enableLogicalStylesPolyfill": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x1wx8h15",
+            {
+              "ltr": ".x1wx8h15{clear:var(--stylex-logical-end)}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] value \"end\" (aka \"inlineEnd\") for \"clear\" property",
+          "line": 1009
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-value-start-aka-040-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { clear: 'start' } });\n      ",
+      "options": {
+        "enableLogicalStylesPolyfill": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x1fhb4fj",
+            {
+              "ltr": ".x1fhb4fj{clear:var(--stylex-logical-start)}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] value \"start\" (aka \"inlineStart\") for \"clear\" property",
+          "line": 1033
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-value-end-aka-i-041-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { float: 'end' } });\n      ",
+      "options": {
+        "enableLogicalStylesPolyfill": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xtrg13t",
+            {
+              "ltr": ".xtrg13t{float:var(--stylex-logical-end)}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] value \"end\" (aka \"inlineEnd\") for \"float\" property",
+          "line": 1057
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-polyfills-non-standard-value-start-aka-042-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({ x: { float: 'start' } });\n      ",
+      "options": {
+        "enableLogicalStylesPolyfill": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-polyfills", "legacy", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xj87blo",
+            {
+              "ltr": ".xj87blo{float:var(--stylex-logical-start)}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "legacy/transform-legacy-polyfills-test.js",
+          "test": "[non-standard] value \"start\" (aka \"inlineStart\") for \"float\" property",
+          "line": 1081
+        }
+      }
+    }
+  ]
+}

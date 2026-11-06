@@ -42,7 +42,7 @@ async fn missing_config_flag_fails_the_build_naming_the_file() {
         config: Some(root.join(".config/nope.config.mjs")),
         ..Default::default()
     };
-    let err = build(root.clone(), None, cli)
+    let err = build(root.clone(), None, &tokio::runtime::Handle::current(), cli)
         .await
         .expect_err("a build with a missing --config must fail");
     let msg = format!("{err:#}");

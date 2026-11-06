@@ -25,16 +25,17 @@
 // self-sustaining. So the snapshot records the same lockfile hash Vite keys
 // its metadata by, and every reader applies Vite's own rule: ids from another
 // install state are dropped, costing one discovery session — exactly what
-// Vite pays after a dependency change. A merely removed dep under the SAME
-// install state still costs only Vite's "present in optimizeDeps.include"
-// warning and ages out at the next metadata-bearing boot.
+// Vite pays after a dependency change. The child also keeps out every id
+// Vite's include resolver cannot reach from the root (a removed dep, or one
+// only a workspace package's own node_modules holds), which Vite would
+// otherwise warn about as "present in optimizeDeps.include".
 // Expected shape: the boot after a discovery session re-optimizes ONCE
 // (in the child — the grown include changes configHash), then the set reaches
 // its fixed point and every later boot validates.
 
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 // Vite's lockfileFormats (optimizer/index.ts): the package managers' INSTALL
 // STATE files, not the repo lockfiles, so a manual install without a lockfile
@@ -106,6 +107,35 @@ export function viteLockfileHash(root) {
 // resolved back then may not resolve at all now.
 export function priorDepIds(rc) {
   const out = {};
+  for (const [name, optimized] of priorOptimized(rc)) {
+    // On-disk metadata carries every committed dep — including mid-session
+    // discoveries — under `optimized` (stringifyDepsOptimizerMetadata writes
+    // no `discovered` section). Capped deterministically: sorted, so the
+    // include set is stable across boots even past the cap.
+    const ids = Object.keys(optimized);
+    if (ids.length > 0) out[name] = ids.sort().slice(0, 500);
+  }
+  return out;
+}
+
+// The entry file each of those deps was optimized from, by environment
+// (`{ env: { id: path } }`): Vite records it as `src`, relative to the
+// environment's deps directory.
+export function priorDepSources(rc) {
+  const out = {};
+  for (const [name, optimized, dir] of priorOptimized(rc)) {
+    out[name] = {};
+    for (const [id, info] of Object.entries(optimized)) {
+      if (typeof info?.src === "string") out[name][id] = resolve(dir, info.src);
+    }
+  }
+  return out;
+}
+
+// [name, optimized, depsDir] for every environment whose metadata Vite would
+// still serve.
+function priorOptimized(rc) {
+  const out = [];
   const current = viteLockfileHash(rc.root);
   for (const name of Object.keys(rc.environments ?? {})) {
     const dir = join(rc.cacheDir, name === "client" ? "deps" : `deps_${name}`);
@@ -116,12 +146,7 @@ export function priorDepIds(rc) {
       continue;
     }
     if (metadata?.lockfileHash !== current) continue;
-    // On-disk metadata carries every committed dep — including mid-session
-    // discoveries — under `optimized` (stringifyDepsOptimizerMetadata writes
-    // no `discovered` section). Capped deterministically: sorted, so the
-    // include set is stable across boots even past the cap.
-    const ids = new Set(Object.keys(metadata?.optimized ?? {}));
-    if (ids.size > 0) out[name] = [...ids].sort().slice(0, 500);
+    out.push([name, metadata?.optimized ?? {}, dir]);
   }
   return out;
 }
@@ -160,11 +185,19 @@ function writeSnapshot(snapshotPath, snapshot) {
 // merged, so its ids cannot leak into the current one.
 export function writeIncludeSnapshot(snapshotPath, byEnv, root) {
   try {
-    const lockfile = viteLockfileHash(root);
-    const previous = readSnapshot(snapshotPath);
-    const kept = previous && previous.lockfile === lockfile ? previous.environments : {};
-    writeSnapshot(snapshotPath, { lockfile, environments: { ...kept, ...byEnv } });
+    writeSnapshot(snapshotPath, {
+      lockfile: viteLockfileHash(root),
+      environments: includeSnapshotIds(snapshotPath, byEnv, root),
+    });
   } catch {}
+}
+
+// The environments the snapshot would hold after writing `byEnv`: the
+// previous snapshot's entries under the same install state, `byEnv` over them.
+export function includeSnapshotIds(snapshotPath, byEnv, root) {
+  const previous = readSnapshot(snapshotPath);
+  const kept = previous && previous.lockfile === viteLockfileHash(root) ? previous.environments : {};
+  return { ...kept, ...byEnv };
 }
 
 // Folds the snapshot's ids into each environment's optimizeDeps.include and

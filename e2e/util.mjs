@@ -7,6 +7,10 @@ import fs from "node:fs";
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// The Cloudflare tests install these exact versions, so a workers-sdk
+// release cannot change what CI runs; bump them on purpose.
+export const CLOUDFLARE_DEPS = "@cloudflare/vite-plugin@1.64.0 wrangler@4.151.3";
+
 // Teardown rm for app dirs a killed server's cache writes can still land in
 // for a beat. The async rm, not rmSync: on ENOTEMPTY, sync rimraf clears the
 // children once and then only retries the bare rmdir, so a single straggler

@@ -6,8 +6,8 @@ use std::path::Path;
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    AssignmentExpression, AssignmentOperator, AssignmentTarget, CallExpression, Expression,
-    ObjectPropertyKind, PropertyKey, Statement,
+    Argument, AssignmentExpression, AssignmentOperator, AssignmentTarget, CallExpression,
+    Expression, ObjectExpression, ObjectPropertyKind, PropertyKey, Statement,
 };
 use oxc_ast_visit::{walk, Visit};
 use oxc_codegen::Codegen;
@@ -20,25 +20,43 @@ use oxc_transformer_plugins::{ReplaceGlobalDefines, ReplaceGlobalDefinesConfig};
 use crate::{CompileError, CompileOutput};
 
 /// A dependency file: ESM goes through the normal compile with `env`'s
-/// defines (so `process.env.NODE_ENV` is replaced), CJS is wrapped.
+/// defines (so `process.env.NODE_ENV` is replaced), CJS is wrapped. `stylex`
+/// compiles a dependency the StyleX plugin reaches (one kept out of the
+/// pre-bundle), in either module format.
 pub fn compile_dep(
     path: &Path,
     url: &str,
     source_text: &str,
     resolve: &mut dyn FnMut(&str) -> Option<String>,
     env: Option<std::sync::Arc<crate::ImportMetaEnv>>,
+    stylex: Option<&std::sync::Arc<oj_stylex::plugin::StylexPlugin>>,
 ) -> Result<CompileOutput, CompileError> {
     if has_module_syntax(path, source_text) {
         let opts = crate::CompileOptions {
             refresh: false,
             sourcemap: false,
             env,
+            stylex: stylex.cloned(),
             ..crate::CompileOptions::dev()
         };
-        crate::compile_module(path, source_text, &opts, Some(resolve))
-    } else {
-        wrap_cjs(path, url, source_text, resolve)
+        return crate::compile_module(path, source_text, &opts, Some(resolve));
     }
+    // Babel compiles `require` forms too; the wrap follows the compile.
+    let compiled = match stylex {
+        Some(plugin) if plugin.handles(&path.to_string_lossy(), source_text) => plugin
+            .transform_source(path, source_text)
+            .map_err(|message| CompileError::Transform {
+                path: path.to_path_buf(),
+                message,
+            })?,
+        _ => None,
+    };
+    let Some(compiled) = compiled else {
+        return wrap_cjs(path, url, source_text, resolve);
+    };
+    let mut out = wrap_cjs(path, url, &compiled.code, resolve)?;
+    out.stylex_rules = compiled.rules;
+    Ok(out)
 }
 
 pub fn has_module_syntax_pub(path: &Path, source_text: &str) -> bool {
@@ -84,7 +102,7 @@ fn dedup_in_order(items: Vec<String>) -> Vec<String> {
 fn has_module_syntax(_path: &Path, source_text: &str) -> bool {
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, source_text, SourceType::mjs()).parse();
-    if parsed.panicked {
+    if parsed.fatal_error {
         return false;
     }
     parsed.program.body.iter().any(|stmt| {
@@ -109,7 +127,7 @@ struct LoweredCjs {
 fn lower_and_analyze(path: &Path, source_text: &str) -> Result<LoweredCjs, CompileError> {
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, source_text, SourceType::cjs()).parse();
-    if parsed.panicked {
+    if parsed.fatal_error {
         let message = parsed
             .diagnostics
             .into_iter()
@@ -183,6 +201,7 @@ pub fn wrap_cjs(
         import_bindings: Vec::new(),
         is_refresh_boundary: false,
         hot_accept: None,
+        stylex_rules: Vec::new(),
     })
 }
 
@@ -294,7 +313,7 @@ fn require_specifier<'a>(call: &'a CallExpression) -> Option<&'a str> {
         return None;
     }
     match call.arguments[0].as_expression() {
-        Some(Expression::StringLiteral(s)) => Some(s.value.as_str()),
+        Some(Expression::StringLiteral(s)) => Some(crate::lit_str(s.value)),
         _ => None,
     }
 }
@@ -372,7 +391,7 @@ impl CjsAnalyzer {
                                 self.named_exports.push(id.name.to_string());
                             }
                             PropertyKey::StringLiteral(s) => {
-                                self.named_exports.push(s.value.to_string());
+                                self.named_exports.push(crate::lit_str(s.value).to_string());
                             }
                             _ => {}
                         }
@@ -380,6 +399,453 @@ impl CjsAnalyzer {
                 }
             }
             _ => {}
+        }
+    }
+}
+
+/// What a CommonJS module puts on `module.exports`, read without running it.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct CjsExportNames {
+    /// `exports.X =`, `module.exports.X =`, `Object.defineProperty(exports, "X")`
+    /// and the keys of a `module.exports = { ... }` literal.
+    pub names: Vec<String>,
+    /// Specifiers of `module.exports = require("x")` and `__exportStar(require("x"))`.
+    pub reexports: Vec<String>,
+}
+
+/// The names a CommonJS module exports when `process.env.NODE_ENV` is
+/// `node_env`, the way Node's cjs-module-lexer reads them plus NODE_ENV
+/// branch folding. None whenever the names could differ from the keys
+/// `require` returns: a source that does not parse, a `module.exports`
+/// assigned anything but an object literal or a `require()`, assigned twice or
+/// under a branch NODE_ENV does not decide, or mixed with `exports.X`; an
+/// `exports.X` only under such a branch (an `if`, `?:`, `&&`/`||`, `switch`,
+/// loop, `try`, logical assignment or optional chain), or inside a function
+/// that is not called on the spot, or in a scope that can `return` early; an
+/// `__esModule` marker (whose `default` a consumer unwraps); a `delete`; and
+/// `exports` handed to a call other than `Object.defineProperty` with a
+/// literal key and an enumerable descriptor (`Object.assign`, a `forEach`
+/// copy loop).
+pub fn cjs_export_names(source_text: &str, node_env: &str) -> Option<CjsExportNames> {
+    let allocator = Allocator::default();
+    let parsed = Parser::new(&allocator, source_text, SourceType::cjs()).parse();
+    if parsed.fatal_error {
+        return None;
+    }
+    let mut reader = ExportNameReader {
+        node_env,
+        out: CjsExportNames::default(),
+        opaque: false,
+        assignments: 0,
+        undecided: 0,
+        member_names: false,
+        branch_names: HashSet::new(),
+        sure_names: HashSet::new(),
+        scopes: vec![Scope {
+            inline: true,
+            ..Scope::default()
+        }],
+        inline: HashSet::new(),
+    };
+    reader.visit_program(&parsed.program);
+    let program = reader.scopes.pop().unwrap_or_default();
+    if reader.opaque
+        || (program.returns && program.exports)
+        || !reader.branch_names.is_subset(&reader.sure_names)
+        || reader.assignments > 1
+        || (reader.assignments == 1 && reader.member_names)
+        || reader.out.names.iter().any(|n| n == "__esModule")
+    {
+        return None;
+    }
+    let mut out = reader.out;
+    out.names = dedup_in_order(out.names);
+    out.reexports = dedup_in_order(out.reexports);
+    Some(out)
+}
+
+struct ExportNameReader<'e> {
+    node_env: &'e str,
+    out: CjsExportNames,
+    opaque: bool,
+    /// `module.exports =` assignments seen.
+    assignments: u32,
+    /// Branches entered whose test NODE_ENV does not decide.
+    undecided: u32,
+    /// A name came from `exports.X =` or `Object.defineProperty(exports, ..)`.
+    member_names: bool,
+    /// Names set only under an undecided branch, and those set regardless:
+    /// a branch's name is certain only when it is also set outside one.
+    branch_names: HashSet<String>,
+    sure_names: HashSet<String>,
+    /// The function bodies being read, innermost last; the program first.
+    scopes: Vec<Scope>,
+    /// Starts of function expressions called where they are defined.
+    inline: HashSet<u32>,
+}
+
+#[derive(Default)]
+struct Scope {
+    /// Called on the spot (an IIFE) or the program itself: its body runs.
+    inline: bool,
+    returns: bool,
+    exports: bool,
+}
+
+/// The function a call runs where it is defined: `(function () {})()`,
+/// `(() => {})()` and `(function () {}).call(this)`.
+fn inline_callee(callee: &Expression) -> Option<u32> {
+    let callee = match callee.without_parentheses() {
+        Expression::StaticMemberExpression(m)
+            if m.property.name == "call" || m.property.name == "apply" =>
+        {
+            m.object.without_parentheses()
+        }
+        other => other,
+    };
+    match callee {
+        Expression::FunctionExpression(f) => Some(f.span.start),
+        Expression::ArrowFunctionExpression(a) => Some(a.span.start),
+        _ => None,
+    }
+}
+
+/// A property descriptor literal with `enumerable: true`, so `Object.keys`
+/// (and `require`'s consumers) see the property.
+fn enumerable(descriptor: &ObjectExpression) -> bool {
+    descriptor.properties.iter().any(|prop| {
+        matches!(prop, ObjectPropertyKind::ObjectProperty(p)
+            if matches!(&p.key, PropertyKey::StaticIdentifier(id) if id.name == "enumerable")
+                && matches!(&p.value, Expression::BooleanLiteral(b) if b.value))
+    })
+}
+
+fn is_node_env(expr: &Expression) -> bool {
+    let Expression::StaticMemberExpression(env) = expr.without_parentheses() else {
+        return false;
+    };
+    let Expression::StaticMemberExpression(process) = &env.object else {
+        return false;
+    };
+    env.property.name == "NODE_ENV"
+        && process.property.name == "env"
+        && matches!(&process.object, Expression::Identifier(id) if id.name == "process")
+}
+
+impl ExportNameReader<'_> {
+    /// A branch test decided by NODE_ENV alone: comparisons of
+    /// `process.env.NODE_ENV` with a string, negated or combined.
+    fn fold(&self, test: &Expression) -> Option<bool> {
+        use oxc_syntax::operator::{BinaryOperator, LogicalOperator, UnaryOperator};
+        match test.without_parentheses() {
+            Expression::BinaryExpression(b) => {
+                let literal = |e: &Expression| match e.without_parentheses() {
+                    Expression::StringLiteral(s) => Some(crate::lit_str(s.value).to_string()),
+                    Expression::TemplateLiteral(t) if t.expressions.is_empty() => t
+                        .quasis
+                        .first()
+                        .and_then(|q| q.value.cooked)
+                        .map(|c| crate::lit_str(c).to_string()),
+                    _ => None,
+                };
+                let other = if is_node_env(&b.left) {
+                    literal(&b.right)?
+                } else if is_node_env(&b.right) {
+                    literal(&b.left)?
+                } else {
+                    return None;
+                };
+                let equal = other == self.node_env;
+                match b.operator {
+                    BinaryOperator::StrictEquality | BinaryOperator::Equality => Some(equal),
+                    BinaryOperator::StrictInequality | BinaryOperator::Inequality => Some(!equal),
+                    _ => None,
+                }
+            }
+            Expression::UnaryExpression(u) if u.operator == UnaryOperator::LogicalNot => {
+                self.fold(&u.argument).map(|v| !v)
+            }
+            Expression::LogicalExpression(l) => {
+                let (left, right) = (self.fold(&l.left), self.fold(&l.right));
+                match l.operator {
+                    LogicalOperator::And => match (left, right) {
+                        (Some(false), _) | (_, Some(false)) => Some(false),
+                        (Some(true), Some(true)) => Some(true),
+                        _ => None,
+                    },
+                    LogicalOperator::Or => match (left, right) {
+                        (Some(true), _) | (_, Some(true)) => Some(true),
+                        (Some(false), Some(false)) => Some(false),
+                        _ => None,
+                    },
+                    LogicalOperator::Coalesce => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn reexport(&mut self, value: &Expression) -> bool {
+        match value.without_parentheses() {
+            Expression::CallExpression(call) => match require_specifier(call) {
+                Some(spec) => {
+                    self.out.reexports.push(spec.to_string());
+                    true
+                }
+                None => false,
+            },
+            _ => false,
+        }
+    }
+
+    fn member_name(&mut self, name: String) {
+        self.exports_here();
+        // Only running it shows whether the branch adds the name.
+        if self.undecided > 0 {
+            self.branch_names.insert(name.clone());
+        } else {
+            self.sure_names.insert(name.clone());
+        }
+        self.member_names = true;
+        self.out.names.push(name);
+    }
+
+    /// The current scope sets exports: a function only defined, not run, may
+    /// never set them.
+    fn exports_here(&mut self) {
+        if self.scopes.iter().any(|scope| !scope.inline) {
+            self.opaque = true;
+        }
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.exports = true;
+        }
+    }
+
+    fn undecided<T>(&mut self, visit: impl FnOnce(&mut Self) -> T) -> T {
+        self.undecided += 1;
+        let out = visit(self);
+        self.undecided -= 1;
+        out
+    }
+
+    fn scope(&mut self, start: u32, visit: impl FnOnce(&mut Self)) {
+        self.scopes.push(Scope {
+            inline: self.inline.contains(&start),
+            ..Scope::default()
+        });
+        visit(self);
+        let scope = self.scopes.pop().unwrap_or_default();
+        // A return can skip the exports after it.
+        if scope.returns && scope.exports {
+            self.opaque = true;
+        }
+    }
+
+    fn module_exports_value(&mut self, value: &Expression) {
+        self.exports_here();
+        self.assignments += 1;
+        if self.undecided > 0 {
+            self.opaque = true;
+        }
+        if self.reexport(value) {
+            return;
+        }
+        let Expression::ObjectExpression(obj) = value.without_parentheses() else {
+            self.opaque = true;
+            return;
+        };
+        for prop in &obj.properties {
+            match prop {
+                ObjectPropertyKind::ObjectProperty(p) => match &p.key {
+                    PropertyKey::StaticIdentifier(id) => self.out.names.push(id.name.to_string()),
+                    PropertyKey::StringLiteral(s) => {
+                        self.out.names.push(crate::lit_str(s.value).to_string())
+                    }
+                    _ => self.opaque = true,
+                },
+                ObjectPropertyKind::SpreadProperty(spread) => {
+                    if !self.reexport(&spread.argument) {
+                        self.opaque = true;
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl<'a> Visit<'a> for ExportNameReader<'_> {
+    fn visit_if_statement(&mut self, it: &oxc_ast::ast::IfStatement<'a>) {
+        match self.fold(&it.test) {
+            Some(true) => self.visit_statement(&it.consequent),
+            Some(false) => {
+                if let Some(alt) = &it.alternate {
+                    self.visit_statement(alt);
+                }
+            }
+            None => self.undecided(|r| walk::walk_if_statement(r, it)),
+        }
+    }
+
+    fn visit_conditional_expression(&mut self, it: &oxc_ast::ast::ConditionalExpression<'a>) {
+        match self.fold(&it.test) {
+            Some(true) => self.visit_expression(&it.consequent),
+            Some(false) => self.visit_expression(&it.alternate),
+            None => self.undecided(|r| walk::walk_conditional_expression(r, it)),
+        }
+    }
+
+    fn visit_logical_expression(&mut self, it: &oxc_ast::ast::LogicalExpression<'a>) {
+        use oxc_syntax::operator::LogicalOperator;
+        let left = self.fold(&it.left);
+        let skip_right = matches!(
+            (left, it.operator),
+            (Some(false), LogicalOperator::And) | (Some(true), LogicalOperator::Or)
+        );
+        self.visit_expression(&it.left);
+        if !skip_right {
+            let undecided = left.is_none();
+            self.undecided += u32::from(undecided);
+            self.visit_expression(&it.right);
+            self.undecided -= u32::from(undecided);
+        }
+    }
+
+    fn visit_switch_statement(&mut self, it: &oxc_ast::ast::SwitchStatement<'a>) {
+        self.undecided(|r| walk::walk_switch_statement(r, it));
+    }
+
+    fn visit_try_statement(&mut self, it: &oxc_ast::ast::TryStatement<'a>) {
+        self.undecided(|r| walk::walk_try_statement(r, it));
+    }
+
+    fn visit_for_statement(&mut self, it: &oxc_ast::ast::ForStatement<'a>) {
+        self.undecided(|r| walk::walk_for_statement(r, it));
+    }
+
+    fn visit_for_in_statement(&mut self, it: &oxc_ast::ast::ForInStatement<'a>) {
+        self.undecided(|r| walk::walk_for_in_statement(r, it));
+    }
+
+    fn visit_for_of_statement(&mut self, it: &oxc_ast::ast::ForOfStatement<'a>) {
+        self.undecided(|r| walk::walk_for_of_statement(r, it));
+    }
+
+    fn visit_while_statement(&mut self, it: &oxc_ast::ast::WhileStatement<'a>) {
+        self.undecided(|r| walk::walk_while_statement(r, it));
+    }
+
+    fn visit_do_while_statement(&mut self, it: &oxc_ast::ast::DoWhileStatement<'a>) {
+        self.undecided(|r| walk::walk_do_while_statement(r, it));
+    }
+
+    fn visit_chain_expression(&mut self, it: &oxc_ast::ast::ChainExpression<'a>) {
+        self.undecided(|r| walk::walk_chain_expression(r, it));
+    }
+
+    fn visit_return_statement(&mut self, it: &oxc_ast::ast::ReturnStatement<'a>) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.returns = true;
+        }
+        walk::walk_return_statement(self, it);
+    }
+
+    fn visit_function(
+        &mut self,
+        it: &oxc_ast::ast::Function<'a>,
+        flags: oxc_syntax::scope::ScopeFlags,
+    ) {
+        self.scope(it.span.start, |r| walk::walk_function(r, it, flags));
+    }
+
+    fn visit_arrow_function_expression(&mut self, it: &oxc_ast::ast::ArrowFunctionExpression<'a>) {
+        self.scope(it.span.start, |r| {
+            walk::walk_arrow_function_expression(r, it)
+        });
+    }
+
+    fn visit_unary_expression(&mut self, it: &oxc_ast::ast::UnaryExpression<'a>) {
+        if it.operator == oxc_syntax::operator::UnaryOperator::Delete {
+            if let Some(member) = it.argument.as_member_expression() {
+                if is_exports_expression(member.object()) {
+                    self.opaque = true;
+                }
+            }
+        }
+        walk::walk_unary_expression(self, it);
+    }
+
+    fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
+        if let Some(start) = inline_callee(&it.callee) {
+            self.inline.insert(start);
+        }
+        let star = is_export_star_helper(&it.callee);
+        if star {
+            if let Some(Expression::CallExpression(inner)) =
+                it.arguments.first().and_then(|a| a.as_expression())
+            {
+                if let Some(spec) = require_specifier(inner) {
+                    self.out.reexports.push(spec.to_string());
+                }
+            }
+        }
+        let define = matches!(&it.callee, Expression::StaticMemberExpression(callee)
+            if callee.property.name == "defineProperty"
+                && matches!(&callee.object, Expression::Identifier(id) if id.name == "Object"));
+        for (index, arg) in it.arguments.iter().enumerate() {
+            if !arg.as_expression().is_some_and(is_exports_expression) {
+                continue;
+            }
+            // `__exportStar(require("x"), exports)` copies x's names, read above.
+            if star && index == 1 {
+                continue;
+            }
+            let args = it.arguments.as_slice();
+            match (define, index, args.get(1), args.get(2)) {
+                (
+                    true,
+                    0,
+                    Some(Argument::StringLiteral(key)),
+                    Some(Argument::ObjectExpression(descriptor)),
+                ) if enumerable(descriptor) => {
+                    self.member_name(crate::lit_str(key.value).to_string());
+                }
+                _ => self.opaque = true,
+            }
+        }
+        walk::walk_call_expression(self, it);
+    }
+
+    fn visit_assignment_expression(&mut self, it: &AssignmentExpression<'a>) {
+        if it.operator == AssignmentOperator::Assign {
+            match &it.left {
+                AssignmentTarget::StaticMemberExpression(member)
+                    if is_exports_expression(&member.object) =>
+                {
+                    self.member_name(member.property.name.to_string());
+                }
+                AssignmentTarget::ComputedMemberExpression(member)
+                    if is_exports_expression(&member.object) =>
+                {
+                    if let Expression::StringLiteral(s) = &member.expression {
+                        self.member_name(crate::lit_str(s.value).to_string());
+                    } else {
+                        self.opaque = true;
+                    }
+                }
+                AssignmentTarget::StaticMemberExpression(member)
+                    if member.property.name == "exports"
+                        && matches!(&member.object, Expression::Identifier(id) if id.name == "module") =>
+                {
+                    self.module_exports_value(&it.right);
+                }
+                _ => {}
+            }
+        }
+        // `a ||= b` runs b only sometimes.
+        if it.operator.is_logical() {
+            self.undecided(|r| walk::walk_assignment_expression(r, it));
+        } else {
+            walk::walk_assignment_expression(self, it);
         }
     }
 }
@@ -589,7 +1055,7 @@ exports.named = 1;
     fn esm_deps_bypass_the_cjs_wrapper() {
         let src = r#"export const x = 1;"#;
         let mut resolve = |_: &str| None;
-        let out = compile_dep(Path::new("m.js"), "/n/m.js", src, &mut resolve, None).unwrap();
+        let out = compile_dep(Path::new("m.js"), "/n/m.js", src, &mut resolve, None, None).unwrap();
         assert!(out.code.contains("export const x = 1"));
         assert!(!out.code.contains("__cjs_exports"));
     }
@@ -712,6 +1178,79 @@ exports.named = 1;
                 .contains(r#"const __dirname = "/node_modules/pkg/sub""#),
             "{}",
             out.code
+        );
+    }
+
+    #[test]
+    fn export_names_fold_node_env_and_follow_reexports() {
+        let entry = "if (process.env.NODE_ENV === `production`) {\n  module.exports = require('./a.prod.js');\n} else {\n  module.exports = require('./a.dev.js');\n}\n";
+        let read = cjs_export_names(entry, "production").unwrap();
+        assert_eq!(read.reexports, ["./a.prod.js"]);
+        assert!(read.names.is_empty());
+
+        let dev = "'production' !== process.env.NODE_ENV && (function () {\n  exports.a = 1;\n  Object.defineProperty(exports, 'b', { enumerable: true, get: function () { return 2; } });\n  __exportStar(require('./c'), exports);\n})();\n";
+        let read = cjs_export_names(dev, "development").unwrap();
+        assert_eq!(read.names, ["a", "b"]);
+        assert_eq!(read.reexports, ["./c"]);
+        assert!(cjs_export_names(dev, "production")
+            .unwrap()
+            .names
+            .is_empty());
+    }
+
+    /// Shapes whose `require` keys a static read would get wrong: missing
+    /// names (copy loops, Object.assign) or names `require` does not have.
+    #[test]
+    fn export_names_decline_what_only_running_shows() {
+        let declined = [
+            // A Babel `export *` copy loop.
+            "var _x = require('./x');\nObject.keys(_x).forEach(function (k) { Object.defineProperty(exports, k, { enumerable: true, get: function () { return _x[k]; } }); });\nexports.own = 1;\n",
+            "module.exports = require('./a');\nObject.assign(module.exports, { extra: 1 });\n",
+            "Object.defineProperties(exports, { a: { enumerable: true, value: 1 } });\n",
+            "Object.defineProperty(exports, 'hidden', { value: 1 });\n",
+            "Object.defineProperty(exports, '__esModule', { value: true });\nexports.default = { a: 1, b: 2 };\nexports.helper = 1;\n",
+            "exports.stale = 1;\nmodule.exports = { fresh: 1 };\n",
+            "module.exports = { a: 1 };\nmodule.exports = { b: 1 };\n",
+            "if (typeof window !== 'undefined') module.exports = require('./browser');\nelse module.exports = require('./node');\n",
+            "exports.a = 1;\nexports.b = 2;\ndelete exports.b;\n",
+            "var k = 'a';\nexports[k] = 1;\n",
+            // Names a branch only sometimes adds.
+            "if (typeof window !== 'undefined') exports.browserOnly = 1;\nexports.always = 1;\n",
+            "exports.a = 1;\nhasFeature() && Object.defineProperty(exports, 'b', { enumerable: true, value: 2 });\n",
+            "exports.a = typeof Symbol === 'function' ? (exports.b = 1) : 0;\n",
+            "try { exports.t = require('optional'); } catch (e) {}\nexports.a = 1;\n",
+            "switch (typeof window) { case 'undefined': exports.s = 1; break; default: exports.c = 1; }\n",
+            "for (var i = 0; i < n; i++) { exports.loop = 1; }\n",
+            "while (more()) { exports.w = 1; }\n",
+            "g.x ||= (exports.la = 1);\n",
+            "cb?.(exports.oc = 1);\n",
+            // A return can skip what follows it.
+            "if (typeof window === 'undefined') return;\nexports.browserOnly = 1;\n",
+            "(function () {\n  if (typeof window === 'undefined') return;\n  exports.b = 1;\n})();\n",
+            // A function that is defined, not run where it stands.
+            "function init() { exports.late = 1; }\nif (typeof window !== 'undefined') init();\nexports.a = 1;\n",
+        ];
+        for source in declined {
+            assert_eq!(cjs_export_names(source, "development"), None, "{source}");
+        }
+        // Folded to production, the early return runs before `devOnly`.
+        let dev_only = "if (process.env.NODE_ENV === 'production') return;\nexports.devOnly = 1;\n";
+        assert_eq!(cjs_export_names(dev_only, "production"), None);
+    }
+
+    /// What the stricter rules still read: a branch re-setting a name set
+    /// regardless (TypeScript's `exports.a = void 0`), returns in nested
+    /// helpers, and IIFEs however they are called.
+    #[test]
+    fn export_names_read_names_set_regardless_of_branches() {
+        let read = |source: &str| cjs_export_names(source, "development").map(|r| r.names);
+        assert_eq!(
+            read("exports.a = void 0;\nif (typeof x === 'function') { exports.a = x; } else { exports.a = y; }\n"),
+            Some(vec!["a".to_string()])
+        );
+        assert_eq!(
+            read("(function () {\n  function helper() { return 1; }\n  exports.a = helper;\n}).call(this);\n!(() => { exports.b = () => { return 2; }; })();\n"),
+            Some(vec!["a".to_string(), "b".to_string()])
         );
     }
 }

@@ -1,0 +1,1003 @@
+{
+  "header": {
+    "upstreamPath": "packages/style-value-parser/src/**/__tests__",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs only — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "mediaQueries": [
+    {
+      "value": "@media (max-width: 1440px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (max-width: 1024px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (max-width: 768px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (min-width: 1024.01px) and (max-width: 1440px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js", "at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 768.01px) and (max-width: 1024px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (max-height: 1024px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (max-height: 768px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (min-height: 768.01px) and (max-height: 1024px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (max-width: 458px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (min-width: 458.01px) and (max-width: 768px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (min-width: 768px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (min-width: 1024px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (min-width: 1440px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (min-width: 768px) and (max-width: 1023.99px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (min-width: 1024px) and (max-width: 1439.99px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (max-height: 1200px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (max-height: 900px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (max-height: 600px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (min-height: 900.01px) and (max-height: 1200px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (min-height: 600.01px) and (max-height: 900px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (min-height: 1200px) and (max-height: 1400px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (color)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js", "at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (monochrome)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js", "at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (color) and (not (monochrome))",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media only screen and (max-width: 600px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media only screen and (max-width: 400px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media screen, (max-width: 800px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (max-width: 500px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (screen) and (not (max-width: 500px)), (min-width: 500.01px) and (max-width: 800px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (min-width: 900px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (min-width: 500px) and (max-width: 899px) and (max-height: 300px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (min-width: 900px) and (not ((min-width: 500px) and (max-width: 899px) and (max-height: 300px)))",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media screen and (min-width: 900px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media print and (max-width: 500px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media screen and (min-width: 900px) and (not (print and (max-width: 500px)))",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (min-width: 600px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (max-width: 1440px) and (max-height: 900px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (min-width: 1024.01px) and (max-width: 1440px) and (max-height: 900px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (max-height: 700px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (max-height: 500px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (max-width: 1440px) and (min-height: 700.01px) and (max-height: 900px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (min-height: 500.01px) and (max-height: 700px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (max-width: 1440px) and (min-width: 900px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (max-width: 800px) and (min-width: 600px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (min-width: 900px) and (max-width: 1440px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (min-width: 600px) and (max-width: 800px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (max-width: 500px) and (min-width: 400px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (min-width: 400px) and (max-width: 500px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (max-width: 1040px) and (min-width: 600px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (min-width: 1040.01px) and (max-width: 1440px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (min-width: 600px) and (max-width: 1040px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (max-width: 1100px) and (min-width: 1000px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media ((min-width: 900px) and (max-width: 999.99px)) or ((min-width: 1100.01px) and (max-width: 1440px))",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (min-width: 1000px) and (max-width: 1100px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (max-width: 1050px) and (min-width: 1010px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media ((min-width: 1000px) and (max-width: 1009.99px)) or ((min-width: 1050.01px) and (max-width: 1100px))",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (min-width: 1010px) and (max-width: 1050px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (max-width: 90em) and (min-width: 60em)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (max-width: 70em) and (min-width: 65em)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media ((min-width: 60em) and (max-width: 64.99em)) or ((min-width: 70.01em) and (max-width: 90em))",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (min-width: 65em) and (max-width: 70em)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (max-width: 1200px) and (min-height: 50vh)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (max-width: 800px) and (min-height: 30vh)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (min-width: 800.01px) and (max-width: 1200px) and (min-height: 50vh)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (min-width: 768px) and (max-width: 1200px)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (min-width: 50em)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (min-width: 768px) and (max-width: 1200px) and (not (min-width: 50em))",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (min-width: 768px) and (max-width: 1200em)",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media (min-width: 768px) and (max-width: 1200em) and (not (min-width: 50em))",
+      "from": ["at-queries/__tests__/media-query-transform-test.js"]
+    },
+    {
+      "value": "@media screen",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media print",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media all",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media only screen",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media only print and (color)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media only screen and (max-width: 38em)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media not screen",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media not all and (monochrome)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (width: 100px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (max-width: 50em)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (orientation: landscape)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (update: fast)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (overflow-block: scroll)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (display-mode: fullscreen)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (scripting: enabled)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (hover: hover)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (any-hover: none)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (pointer: coarse)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (any-pointer: fine)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (light-level: dim)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (inverted-colors: inverted)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (prefers-reduced-motion: reduce)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (prefers-contrast: more)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (forced-colors: active)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (prefers-reduced-transparency: reduce)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: calc(300px + 5em))",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (max-height: calc(100vh - 50px))",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (aspect-ratio: 16 / 9)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (device-aspect-ratio: 16 / 9)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-resolution: 150dpi)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (max-resolution: 600dppx)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (color-gamut: srgb)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (display-mode: standalone)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (prefers-color-scheme: dark)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (scripting: none)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (update: slow)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (overflow-inline: none)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (display-mode: minimal-ui)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (hover: none)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (any-hover: hover)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (pointer: none)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (any-pointer: none)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (light-level: washed)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (inverted-colors: none)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (prefers-reduced-motion: no-preference)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (prefers-contrast: no-preference)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (forced-colors: none)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (prefers-reduced-transparency: no-preference)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (color-index)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (grid)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media screen and (min-width: 400px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-height: 600px) and (orientation: landscape)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media screen and (device-aspect-ratio: 16/9)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-aspect-ratio: 3/2) and (max-aspect-ratio: 16/9)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-resolution: 300dpi) and (max-resolution: 600dpi)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 768px) and (max-width: 991px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 1200px) and (orientation: landscape)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 992px) and (max-width: 1199px) and (pointer: fine)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 576px) and (max-width: 767px) and (hover: none)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (orientation: landscape) and (pointer: fine)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (prefers-reduced-motion: reduce) and (update: slow)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (orientation: landscape) and (update: fast)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (orientation: portrait), (orientation: landscape)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 500px) or (max-width: 600px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (width: 500px), (height: 400px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 576px), (orientation: portrait) and (max-width: 767px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 768px) and (max-width: 991px), (orientation: landscape)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 992px) and (max-width: 1199px), (pointer: fine) and (hover: hover)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 576px) and (max-width: 767px), (hover: none) and (any-pointer: coarse)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 576px), (orientation: portrait) and (max-width: 767px), (prefers-color-scheme: dark)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 768px) and (max-width: 991px), (orientation: landscape) and (update: fast), (prefers-reduced-motion: reduce)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 992px) and (max-width: 1199px), (pointer: fine) and (hover: hover), (any-pointer: coarse) and (any-hover: none)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 576px) and (max-width: 767px), (hover: none) and (any-pointer: coarse), (prefers-reduced-transparency: reduce) and (forced-colors: active)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (color) and (min-width: 400px), screen and (max-width: 700px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media not (not (not (min-width: 400px)))",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media not ((min-width: 500px) and (max-width: 600px) and (max-width: 400px))",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media not all and (monochrome) and (min-width: 600px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (max-width: 1440px) and (not (max-width: 1024px)) and (not (max-width: 768px)) and (not (max-width: 458px))",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 400px) and ((max-width: 700px) and (orientation: landscape))",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media ((min-width: 400px) and ((max-width: 700px) and (orientation: landscape)))",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (((min-width: 400px) and (max-width: 700px)) and ((orientation: landscape) and (hover: hover)))",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media screen and ((min-width: 500px) and ((max-width: 800px) and (color)))",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media not (not (min-width: 400px))",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media not (not (not (hover: hover)))",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media not ((min-width: 600px) and (max-width: 900px))",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media not (not (not (not (update: fast))))",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media not ((pointer: fine) and (hover: hover))",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (width > 400px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (width >= 400px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (400px < width)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (400px <= width)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (1000px <= width <= 700px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (400px <= width <= 700px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (400px < width <= 700px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (1000px >= width >= 700px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (1000px > width >= 700px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (1000px >= width > 700px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (1000px > width > 700px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 100px) and not (max-width: 200px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 100px) and (not (max-width: 200px))",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 200.01px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 100px) and (min-width: 200px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 200px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (max-width: 200px) and not (max-width: 300px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (not (max-width: 200px)) and (not (max-width: 300px))",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 300.01px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 100px) and not (max-width: 50px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 100px) and (not (max-width: 50px))",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 100px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 100px) and not (max-width: 100px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 100px) and (not (max-width: 100px))",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 100.01px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 100px) and not (max-width: 99.99px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 100px) and (not (max-width: 99.99px))",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 100px) and (max-width: 500px) and (not (min-width: 600px)) => always-false",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 100px) and (max-width: 500px) and (not (min-width: 600px))",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 100px) and (max-width: 500px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 100px) and (max-width: 500px) and (not (max-width: 200px)) => (min-width: 200.01px) and (max-width: 500px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 100px) and (max-width: 500px) and (not (max-width: 200px))",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 200.01px) and (max-width: 500px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 100px) and (max-width: 500px) and (not (max-width: 200px)) and (not (min-width: 400px)) => (min-width: 200.01px) and (max-width: 399.99px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 100px) and (max-width: 500px) and (not (max-width: 200px)) and (not (min-width: 400px))",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 200.01px) and (max-width: 399.99px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 100px) and (orientation: landscape) => should not simplify",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 100px) and (orientation: landscape)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: calc(100px + 2em)) and (max-width: 500px) => should not simplify",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: calc(100px + 2em)) and (max-width: 500px)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (-webkit-min-device-pixel-ratio: 2)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (-webkit-max-device-pixel-ratio: 1.5)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (color-index: 256)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-color-index: 256)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (max-color-index: 65536)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (resolution: 300dpi)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (resolution: 2dppx)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (resolution: 1.5dpcm)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (color-gamut: p3)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (color-gamut: rec2020)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (video-color-gamut: srgb)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (video-color-gamut: p3)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media (video-color-gamut: rec2020)",
+      "from": ["at-queries/__tests__/parse-media-query-test.js"]
+    },
+    {
+      "value": "@media",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media ",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media ()",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media not (min-width: )",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media (width:)",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width:)",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media (max-width: )",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media and",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: 700px and max-width: 767px)",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width:445px; max-width:768px)",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media (width > )",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media ( > 600px)",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media (600px > width) or",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media (width < )",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media (width <=)",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media (>= width)",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media (300px < width < )",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media (width :)",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media (: 600px)",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media (width: #$%)",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media (width: [])",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: var(--test))",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: var(--foo) and (max-width: 700px))",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media (min-width: var(foo) and (max-width: 700px))",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media (width @ 600px)",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media ((width: 600px) and)",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media and (min-width: 600px)",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media or (max-width: 1200px)",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media (color) and",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media (width: 600px",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media screen and (color",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media not (min-resolution: 300dpi",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media (orientation: portrait",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media ((min-width: 300px) and (max-width: 1000px",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media (hover: hover) and (pointer: fine",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media (width: calc(100% - 50px",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media (aspect-ratio: (16/9",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media screen and ((min-width: 640px",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    },
+    {
+      "value": "@media ((prefers-color-scheme: dark)",
+      "from": ["at-queries/__tests__/validation-media-query-test.js"]
+    }
+  ]
+}
