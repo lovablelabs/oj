@@ -1944,6 +1944,9 @@ impl DevServer {
         // Cloudflare plugin's, from configureServer) compile StyleX through it.
         let stylex = stylex::plugin_for(&root, &config, "serve").map_err(|e| anyhow::anyhow!(e))?;
         boot_phase("plugin host spawning");
+        // A realm the config already ran in without a run to take over is
+        // no host's: a fresh engine then.
+        let prewarm = prewarm.filter(|_| plugins::host_engine_reusable(&root, "serve", &dev_mode));
         let plugin_host = match &plugin_file {
             Some(file) => {
                 spawn_plugin_host(

@@ -3476,9 +3476,11 @@ pub(crate) fn apply_bundle_mutations(bundle: &mut Vec<rolldown_common::Output>, 
     }
 }
 
-/// The build's plugin host engine, for the first host the build spawns.
-static BUILD_PREWARM: std::sync::Mutex<Option<oj_server::plugins::HostPrewarm>> =
-    std::sync::Mutex::new(None);
+/// The build's plugin host engine, for the first host the build spawns, by
+/// app root (one process may build several apps: the tests do).
+static BUILD_PREWARM: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<PathBuf, oj_server::plugins::HostPrewarm>>,
+> = std::sync::LazyLock::new(Default::default);
 
 /// Starts the plugin host's engine for a vite.config app and offers it to the
 /// config's first evaluation.
@@ -3523,10 +3525,13 @@ async fn user_plugin_host(
     })
     .to_string();
     // A config whose plugins cannot load fails the build, as in Vite.
+    // A realm the config already ran in without a run to take over is no
+    // host's: a fresh engine then.
     let warm = BUILD_PREWARM
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .take();
+        .remove(root)
+        .filter(|_| oj_server::plugins::host_engine_reusable(root, "build", mode));
     let host = match warm {
         Some(warm) => PluginHost::spawn_prewarmed(root, &file, &config, warm).await,
         None => PluginHost::spawn(root, &file, &config, None).await,
@@ -3713,6 +3718,14 @@ pub async fn build(
     // runs on it and the build's host takes the run over (the config and its
     // hooks run once, as in Vite).
     let warm = start_host_engine(&root, cli.config.as_deref());
+    // The offer ends with the config read, an early return included.
+    struct Withdraw<'a>(&'a Path);
+    impl Drop for Withdraw<'_> {
+        fn drop(&mut self) {
+            oj_server::plugins::withdraw_host_engine(self.0);
+        }
+    }
+    let withdraw = Withdraw(&root);
 
     // Vite: `mode = inlineConfig.mode || config.mode || "production"`; when the
     // config file itself names a mode and the CLI did not, the config is loaded
@@ -3752,8 +3765,13 @@ pub async fn build(
         )
         .map_err(|e| anyhow::anyhow!(e))?;
     }
-    oj_server::plugins::withdraw_host_engine(&root);
-    *BUILD_PREWARM.lock().unwrap_or_else(|e| e.into_inner()) = warm;
+    drop(withdraw);
+    if let Some(warm) = warm {
+        BUILD_PREWARM
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(root.clone(), warm);
+    }
     apply_cli_options(&mut config, &cli);
     warn_unsupported_build_options(&config);
     let mode: &str = &mode_owned;

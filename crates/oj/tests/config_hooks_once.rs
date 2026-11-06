@@ -283,3 +283,89 @@ fn a_start_dev_start_resolves_the_config_once_as_in_vite() {
     drop(dev);
     assert_eq!(ours, theirs, "oj dev vs vite dev (Start)");
 }
+
+// Vite's loadEnv takes `NODE_ENV` from `.env` (VITE_USER_NODE_ENV) and its
+// resolveConfig sets it for the process: the plugins see that value, on the
+// host oj starts for a cold build as on Vite.
+#[test]
+fn a_builds_plugins_see_vites_node_env() {
+    let Some(app) = Spa::new("") else {
+        return;
+    };
+    std::fs::write(app.root.join(".env"), "NODE_ENV=development\n").unwrap();
+    std::fs::write(
+        app.root.join("vite.config.js"),
+        format!(
+            r#"import fs from "node:fs";
+const log = (line) => fs.appendFileSync({:?}, line + "\n");
+export default {{ plugins: [{{
+  name: "node-env",
+  configResolved(c) {{ log(`configResolved ${{process.env.NODE_ENV}} ${{c.isProduction}}`); }},
+  buildStart() {{ log(`buildStart ${{process.env.NODE_ENV}}`); }},
+}}] }};
+"#,
+            app.log.display().to_string()
+        ),
+    )
+    .unwrap();
+    let run = |cmd: &mut Command| {
+        let out = cmd.output().unwrap();
+        assert!(
+            out.status.success(),
+            "{cmd:?}:\n{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    run(Command::new("node")
+        .arg(app.root.join("node_modules/vite/bin/vite.js"))
+        .arg("build")
+        .current_dir(&app.root)
+        .env_remove("NODE_ENV"));
+    let theirs = app.take();
+    assert_eq!(
+        theirs.get("configResolved development false"),
+        Some(&1),
+        "vite: {theirs:?}"
+    );
+
+    app.reset();
+    run(Command::new(env!("CARGO_BIN_EXE_oj"))
+        .arg("build")
+        .arg(&app.root)
+        .current_dir(&app.root)
+        .env_remove("NODE_ENV"));
+    assert_eq!(app.take(), theirs, "oj build vs vite build");
+}
+
+// A config that names its own `mode`: Vite resolves once under it
+// (`mode = inline.mode || config.mode`); oj loads its own values under that
+// mode again, from the same evaluation.
+#[test]
+fn a_build_under_the_configs_own_mode_resolves_once_as_in_vite() {
+    let Some(app) = Spa::new(", mode: \"staging\"") else {
+        return;
+    };
+    let run = |cmd: &mut Command| {
+        let out = cmd.output().unwrap();
+        assert!(
+            out.status.success(),
+            "{cmd:?}:\n{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    run(Command::new("node")
+        .arg(app.root.join("node_modules/vite/bin/vite.js"))
+        .arg("build")
+        .current_dir(&app.root));
+    let theirs = app.take();
+    assert_eq!(theirs.get("file"), Some(&1), "vite: {theirs:?}");
+
+    app.reset();
+    run(Command::new(env!("CARGO_BIN_EXE_oj"))
+        .arg("build")
+        .arg(&app.root)
+        .current_dir(&app.root));
+    assert_eq!(app.take(), theirs, "oj build vs vite build");
+}

@@ -133,13 +133,19 @@ const initial = JSON.parse((ojEngineBoot ? ojEngineBoot.initialJson : process.ar
 //   swallowed; route them (console.log included — Deno's console does not go
 //   through process.stdout) to stderr, which was always the visible stream.
 if (ojEngineBoot) {
-  try {
-    Object.defineProperty(process, "env", {
-      value: { ...process.env },
-      configurable: true,
-      writable: true,
-    });
-  } catch {}
+  // A config run this host takes over (vite-extract.mjs `keepForHost`) left
+  // process.env its own private copy, with what the config and Vite wrote
+  // (NODE_ENV included): the host serves on that one, as Vite's one process
+  // does, and any module the config loaded holds the same object.
+  if (!globalThis.__ojConfigRun) {
+    try {
+      Object.defineProperty(process, "env", {
+        value: { ...process.env },
+        configurable: true,
+        writable: true,
+      });
+    } catch {}
+  }
   if (ojEngineBoot.cacheRoot) process.env.OJ_CACHE_ROOT = String(ojEngineBoot.cacheRoot);
   // process.cwd() THROWS NotFound when the process's directory was deleted
   // (another host chdir'd somewhere that vanished), so the boot path must
@@ -248,7 +254,11 @@ const unsetOjNodeEnvForResolve = () => {
 };
 // Snapshot after the host's own env tweaks (the NODE_ENV pre-set included) so
 // the config()-hook delta reports only plugin mutations, not bootstrap noise.
-const ssrEnvBase = { ...process.env };
+// A taken-over run's base is the env before the config ran (with the same
+// pre-set), so its writes count as the plugins' too.
+const ssrEnvBase = globalThis.__ojConfigRun?.envBefore
+  ? { ...globalThis.__ojConfigRun.envBefore, NODE_ENV: globalThis.__ojConfigRun.envBefore.NODE_ENV ?? defaultNodeEnv }
+  : { ...process.env };
 
 // resolve.alias from the app's own vite config (loaded below for its plugins).
 // oj applies aliases in its Rust resolver and does not forward them in the
@@ -1725,11 +1735,7 @@ try {
   let userConfig = null;
   if (initial.pluginsFormat === "vite") {
     adoptedRun = takeKeptRun();
-    if (adoptedRun) {
-      userConfigDependencies = adoptedRun.dependencies ?? [];
-      // What the config's hooks wrote to the env, as in Vite's one process.
-      Object.assign(process.env, adoptedRun.envDelta ?? {});
-    }
+    if (adoptedRun) userConfigDependencies = adoptedRun.dependencies ?? [];
     const cfg = adoptedRun ? adoptedRun.config : await loadViteConfig(pluginsPath);
     userConfig = cfg && typeof cfg === "object" ? cfg : null;
     userViteConfig = userConfig;
@@ -2316,7 +2322,10 @@ async function runConfigHook(
 async function runConfigResolved(list, resolved, container = main) {
   const resolvedContext = minimalContext({ watchMode: command === "serve" });
   await fillStartConfigContext(list, resolved, resolvedContext);
+  // Hooks a taken-over run already ran (Start's router generator).
+  const ran = container === main ? adoptedRun?.records?.configResolvedRan : null;
   for (const { p, fn } of hooksOf(list, "configResolved")) {
+    if (ran?.has(p)) continue;
     initStage(`configResolved:${p.name ?? "?"}`);
     try {
       await fn.call(resolvedContext, resolved);

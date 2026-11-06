@@ -189,6 +189,30 @@ pub fn withdraw_host_engine(root: &Path) {
         .remove(root);
 }
 
+/// Per root, what the extraction left on the offered engine: `Some` when the
+/// host may take the run over (for that command and mode), `None` when the
+/// config ran there without a run to take (it failed, or was cut off).
+type EngineRuns = std::collections::HashMap<PathBuf, Option<(String, String)>>;
+static ENGINE_RUN: std::sync::LazyLock<std::sync::Mutex<EngineRuns>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Whether the host engine offered for `root` may become its host for
+/// `command` and `mode`: untouched by the extraction, or holding a run for
+/// exactly those. A realm the config already ran in otherwise gets no host
+/// (its module state would see the config twice); the caller starts a fresh
+/// engine.
+pub fn host_engine_reusable(root: &Path, command: &str, mode: &str) -> bool {
+    match ENGINE_RUN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(root)
+    {
+        None => true,
+        Some(Some((c, m))) => c == command && m == mode,
+        Some(None) => false,
+    }
+}
+
 fn take_host_engine(root: &Path) -> Option<std::sync::Arc<oj_js::JsEngine>> {
     HOST_ENGINE
         .lock()
@@ -661,16 +685,32 @@ fn run_extraction(
         "spaBuild": spa_build,
         "cacheDir": cache.to_string_lossy(),
     });
+    // Vite's config hooks see the command line's values, whichever engine runs.
+    payload["cliInline"] = cli_inline(root).unwrap_or_else(|| serde_json::json!({}));
     let host = take_host_engine(root);
     if host.is_some() {
         payload["keep"] = true.into();
-        payload["cliInline"] = cli_inline(root).unwrap_or_else(|| serde_json::json!({}));
     }
     // The result is the call's return value: config code that prints cannot corrupt it.
     let ran = match &host {
         Some(engine) => run_on_engine(engine, &script, "extract", payload, timeout),
         None => run_engine_job(root, &script, "extract", payload, timeout),
     };
+    if host.is_some() {
+        // What the host engine now holds: a kept run for this command and
+        // mode, or a realm the config already ran in that no host may take.
+        let kept = ran.as_ref().ok().and_then(|json| {
+            let k = json.get("__kept")?;
+            Some((
+                k.get("command")?.as_str()?.to_string(),
+                k.get("mode")?.as_str()?.to_string(),
+            ))
+        });
+        ENGINE_RUN
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(root.to_path_buf(), kept);
+    }
     let json = match ran {
         Ok(json) => json,
         Err(oj_js::EngineError::Deadline) => {
@@ -703,6 +743,19 @@ fn run_extraction(
         o.remove("__kept");
     }
     store_extraction(&store, vite, command, mode_key, &json, &stderr);
+    // A default mode the config named itself resolved under that mode, as
+    // Vite resolves once (`mode = inline.mode || config.mode`): a reload
+    // under it reads this evaluation instead of running the config again.
+    if !mode_explicit {
+        if let Some(named) = json
+            .get("mode")
+            .and_then(|m| m.as_str())
+            .filter(|m| *m != mode)
+        {
+            let key = extraction_mode_key(root, named, true, spa_build);
+            store_extraction(&store, vite, command, &key, &json, &stderr);
+        }
+    }
     EXTRACTION_RAN_FRESH.store(true, std::sync::atomic::Ordering::Relaxed);
     crate::boot_phase("vite-extract cache miss (engine ran)");
     let mut output = json.clone();
@@ -1641,5 +1694,40 @@ mod exit_signal_tests {
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("the job returns once its child is killed");
         assert!(out.is_err(), "a killed job fails: {out:?}");
+    }
+}
+
+#[cfg(test)]
+mod host_engine_tests {
+    use super::*;
+
+    // An engine the extraction never ran on, or ran a kept run on for the
+    // host's command and mode, may become the host; one the config ran in
+    // without a run to take over may not.
+    #[test]
+    fn a_host_engine_is_reused_only_for_its_own_kept_run() {
+        let root = Path::new("/oj-test/host-engine-reuse");
+        assert!(
+            host_engine_reusable(root, "serve", "development"),
+            "untouched"
+        );
+        let set = |run: Option<(&str, &str)>| {
+            ENGINE_RUN.lock().unwrap().insert(
+                root.to_path_buf(),
+                run.map(|(c, m)| (c.to_string(), m.to_string())),
+            );
+        };
+        set(Some(("serve", "development")));
+        assert!(host_engine_reusable(root, "serve", "development"));
+        set(Some(("build", "staging")));
+        assert!(
+            !host_engine_reusable(root, "build", "production"),
+            "another mode"
+        );
+        set(None);
+        assert!(
+            !host_engine_reusable(root, "serve", "development"),
+            "a failed run"
+        );
     }
 }

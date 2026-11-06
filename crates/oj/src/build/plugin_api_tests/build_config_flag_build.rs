@@ -4,7 +4,9 @@
 //! The build half of the `oj build --config` check: the named config is used
 //! and the root vite.config is not; a `mode` the config file names is the
 //! default mode (Vite: `inlineConfig.mode || config.mode || "production"`)
-//! and the function config and `.env.<mode>` see it; `envPrefix` and
+//! and `.env.<mode>` sees it, while the function config, called before the
+//! file names one, sees `production` (Vite 8.3.5 writes `alt-out-production`
+//! for this config); `envPrefix` and
 //! `resolve.extensions` from vite.config reach the build; `--mode` still wins.
 
 use std::fs;
@@ -85,10 +87,10 @@ async fn config_flag_mode_env_prefix_and_extensions_reach_the_build() {
         "--config must not use the root vite.config"
     );
     assert!(
-        root.join("alt-out-staging").exists(),
-        "config-file `mode` is the default mode and the function config saw it"
+        root.join("alt-out-production").exists(),
+        "the function config saw the default mode, as in Vite"
     );
-    let js = assets(&root, "alt-out-staging");
+    let js = assets(&root, "alt-out-production");
     assert!(
         regex::Regex::new(r#"[`"]staging[`"]"#)
             .unwrap()

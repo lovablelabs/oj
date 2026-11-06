@@ -586,8 +586,9 @@ impl EditCase<'_> {
     fn edit(&self, app: &App) {
         // A watcher's `add` settles in the background, chokidar's as oj's.
         std::thread::sleep(Duration::from_millis(1000));
-        // Apart by more than a watcher settle window: each edit is its own
-        // change, as the test means it (a plugin reloads a project between).
+        // A second apart: each edit is its own change, as the test means it
+        // (a plugin reloads a project between). Under load the OS delivers
+        // writes a few hundred ms apart in one event batch.
         for (file, body) in self.edits {
             std::thread::sleep(Duration::from_millis(1000));
             app.write(&[(*file, *body)]);
