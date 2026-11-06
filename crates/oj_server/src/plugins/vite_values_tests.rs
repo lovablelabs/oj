@@ -49,6 +49,31 @@ fn only_the_first_death_report_per_generation_declares_the_host_gone() {
     assert!(!first_death_report(&mut revive, 4), "once");
 }
 
+// The resolved config's alias list is the one Vite matches against: its
+// order (mergeAlias puts a plugin's entries first when either side is an
+// array) and values lead; a statically read entry it lacks follows.
+#[test]
+fn the_resolved_alias_list_leads_in_its_order() {
+    let mut config: oj_config::OjConfig = serde_json::from_str(
+        r#"{ "resolve": { "alias": [{ "find": "@", "replacement": "/src" }, { "find": "re", "replacement": "/re" }] } }"#,
+    )
+    .unwrap();
+    let alias: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(r#"{ "@/lib": "/lib2", "@": "/abs/src" }"#).unwrap();
+    merge_vite_values(
+        &mut config,
+        ViteValues {
+            alias: Some(alias),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        oj_config::top_level_alias(&config),
+        [("@/lib", "/lib2"), ("@", "/abs/src"), ("re", "/re")]
+            .map(|(f, r)| (f.to_string(), r.to_string()))
+    );
+}
+
 // An oj-side ssr key must not drop the extractor's verdict: per-key merge,
 // `runnerBacked` always adopted.
 #[test]

@@ -140,8 +140,22 @@ impl OjResolver {
     /// The first `resolve.alias` entry's rewrite of `specifier`, in the
     /// written order. A find takes the whole specifier or a prefix up to a
     /// `/`, as Vite's alias plugin matches (`matches` in @rollup/plugin-alias).
+    ///
+    /// An entry skips a specifier that already is its replacement or lies
+    /// under it, as oxc's alias does: the plugin host applies the alias
+    /// before asking this resolver, so `{ process: "process/browser" }` would
+    /// otherwise turn its `process/browser` into `process/browser/browser`
+    /// (Vite's alias plugin resolves its rewrite with `skipSelf`).
     fn alias(&self, specifier: &str) -> Option<String> {
         self.aliases.iter().find_map(|(find, replacement)| {
+            let under = |base: &str| {
+                specifier
+                    .strip_prefix(base)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+            };
+            if under(replacement.trim_end_matches('/')) {
+                return None;
+            }
             if specifier == find {
                 return Some(replacement.clone());
             }
@@ -188,6 +202,15 @@ impl OjResolver {
         let Some(no_paths) = &self.no_paths else {
             return self.resolve_with(&self.inner, importer_dir, specifier);
         };
+        // A dependency's own imports never take the app's `paths`: oxc skips
+        // an importer inside node_modules, and vite-tsconfig-paths excludes
+        // `**/node_modules` by default.
+        if importer_dir
+            .components()
+            .any(|c| c.as_os_str() == "node_modules")
+        {
+            return self.resolve_with(&self.inner, importer_dir, specifier);
+        }
         let Some(tsconfig) = self.paths_config(importer_dir) else {
             return self.resolve_with(&self.inner, importer_dir, specifier);
         };
@@ -510,6 +533,77 @@ mod tests {
         assert!(require
             .resolve(&src, "@/integrations/supabase/client/x")
             .is_err());
+    }
+
+    // The plugin host applies the alias, then asks this resolver for the
+    // rewritten id: an entry whose replacement lies under its own find must
+    // not apply again (oxc's alias guard; Vite resolves with `skipSelf`).
+    #[test]
+    fn an_alias_skips_an_id_already_under_its_replacement() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let pkg = root.join("node_modules/process");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(
+            pkg.join("package.json"),
+            r#"{"name":"process","main":"index.js"}"#,
+        )
+        .unwrap();
+        std::fs::write(pkg.join("index.js"), "").unwrap();
+        std::fs::write(pkg.join("browser.js"), "").unwrap();
+        let resolver = OjResolver::with_options(
+            &root,
+            &["import".to_string()],
+            &[("process".to_string(), "process/browser".to_string())],
+            &[],
+        );
+        assert_eq!(
+            resolver.resolve(&root, "process").unwrap(),
+            pkg.join("browser.js")
+        );
+        assert_eq!(
+            resolver.resolve(&root, "process/browser").unwrap(),
+            pkg.join("browser.js"),
+            "the rewritten id resolves as is"
+        );
+    }
+
+    // A dependency's own imports never take the app's tsconfig `paths`
+    // (oxc skips node_modules importers; vite-tsconfig-paths excludes them).
+    #[test]
+    fn tsconfig_paths_skip_importers_inside_node_modules() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        for (file, body) in [
+            (
+                "tsconfig.json",
+                r#"{ "compilerOptions": { "paths": { "events": ["./src/events.ts"] } } }"#,
+            ),
+            ("src/events.ts", ""),
+            (
+                "node_modules/events/package.json",
+                r#"{"name":"events","main":"events.js"}"#,
+            ),
+            ("node_modules/events/events.js", ""),
+            ("node_modules/dep/index.js", ""),
+        ] {
+            let path = root.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, body).unwrap();
+        }
+        let resolver = OjResolver::new(&root);
+        assert_eq!(
+            resolver.resolve(&root.join("src"), "events").unwrap(),
+            root.join("src/events.ts"),
+            "the app's own import takes the paths"
+        );
+        assert_eq!(
+            resolver
+                .resolve(&root.join("node_modules/dep"), "events")
+                .unwrap(),
+            root.join("node_modules/events/events.js"),
+            "the dependency gets the package"
+        );
     }
 
     #[test]

@@ -268,6 +268,33 @@ async fn the_scan_takes_aliases_before_tsconfig_paths() {
     );
 }
 
+// vite-tsconfig-paths tries each matching pattern's targets until one
+// resolves: an exact key goes after `@/*`, and still answers when `@/*`
+// finds nothing; a second target answers when the first is missing.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_scan_tries_each_paths_target_until_one_exists() {
+    let app = App::new();
+    app.write(
+        "tsconfig.json",
+        r#"{ "compilerOptions": { "baseUrl": ".", "paths": { "@/config": ["./config/app.ts"], "@/*": ["./src/*", "./gen/*"] } } }"#,
+    )
+    .cjs("configdep", &[("index.js", "exports.c = 1;\n")])
+    .cjs("gendep", &[("index.js", "exports.g = 1;\n")])
+    .write("config/app.ts", "import { c } from \"configdep\";\nexport const config = c;\n")
+    .write("gen/api.ts", "import { g } from \"gendep\";\nexport const api = g;\n")
+    .write(
+        "entry.ts",
+        "import { config } from \"@/config\";\nimport { api } from \"@/api\";\nexport const out = config + api;\n",
+    );
+    let meta = app
+        .optimize(OptimizeInput {
+            entries: app.entry("entry.ts"),
+            ..Default::default()
+        })
+        .await;
+    assert_eq!(keys(&meta), ["configdep", "gendep"]);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_queried_specifier_is_never_prebundled() {
     let app = App::new();
