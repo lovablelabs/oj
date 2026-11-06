@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The embedded JavaScript engine is now Piu (github.com/lovablelabs/piu), a Deno fork running on JavaScriptCore instead of V8, consumed as the published `piu_*` crates. The vendored `oj_deno_napi`, `oj_deno_runtime`, `oj_deno_process` and `oj_deno_snapshots` forks are gone: the piu crates carry the same patches (napi finalizer registry, fs_events watcher scaling, the file watcher's notify fork and event mask, consume-only code caches, process spawn hook and own groups). Startup snapshots no longer exist, with their whole pipeline (`OJ_SNAPSHOT_ARCHIVE`, `tools/gen-snapshot-pin.sh`, the release snapshot-pin job and the flake's pinned bundles): Piu embeds the extension sources in the binary instead, which also removes the one non-reproducible build step. Building now needs a static JSCOnly WebKit (`JSC_VENDOR_BUILD_DIR` + `WEBKIT_SRC_DIR`); the nix package builds it from source.
 ### Fixed
 
 - vite-tsconfig-paths decides for itself, with the app's real options (`projects`, `root`, `loose`, `configNames`, `projectDiscovery`, an `importerFilter` or `skip` function, values the config computes). oj's plugin host runs the plugin ahead of oj's resolver wherever Vite runs it, and oj no longer applies its own copy of the plugin to what the plugin passed on: that reaches vite:resolve, which applies no `paths` (or Vite's own resolver's, with `resolve.tsconfigPaths` too). oj's copy read only literal options, so a computed `projects` list or a filter function let it map imports Vite fails.

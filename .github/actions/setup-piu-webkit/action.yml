@@ -1,0 +1,97 @@
+name: setup piu webkit
+description: >
+  Provide the static JSCOnly WebKit that piu_jsc (the engine's JavaScriptCore
+  backend) links against, and export JSC_VENDOR_BUILD_DIR / WEBKIT_SRC_DIR for
+  every later step. The build recipe (pinned WebKit revision, patch series,
+  build script) ships inside the published piu_jsc crate and is fetched from
+  crates.io unauthenticated, so no piu repo access or token is needed. The
+  WebKit source checkout and build are cached per (os, arch, piu_jsc version);
+  a cache hit takes seconds, a miss builds WebKit once (roughly an hour).
+
+inputs:
+  piu-jsc-version:
+    description: >
+      piu_jsc crate version supplying the WebKit pin, patches and build
+      script. Defaults to the piu_jsc entry in Cargo.lock, so a plain
+      `cargo update -p piu_jsc` bump is picked up without touching CI.
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: resolve piu_jsc version
+      id: ver
+      shell: bash
+      run: |
+        ver="${{ inputs.piu-jsc-version }}"
+        if [ -z "$ver" ]; then
+          ver="$(awk '/^name = "piu_jsc"$/ { getline; sub(/^version = "/, ""); sub(/"$/, ""); print; exit }' Cargo.lock)"
+        fi
+        test -n "$ver" || { echo "piu_jsc not found in Cargo.lock" >&2; exit 1; }
+        echo "version=$ver" >> "$GITHUB_OUTPUT"
+        echo "resolved piu_jsc $ver"
+
+    - name: webkit cache
+      id: wk
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          .piu-webkit/webkit-src
+          .piu-webkit/webkit-build
+        key: piu-webkit-${{ runner.os }}-${{ runner.arch }}-crate-${{ steps.ver.outputs.version }}
+
+    - name: build tools
+      if: steps.wk.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          cmake ninja-build ruby python3 build-essential libicu-dev
+        # WebKit needs GCC >= 12.2; some runner images (Ubuntu 22.04) still
+        # default to gcc 11. Install gcc-12 there and point the build at it.
+        if [ "$(gcc -dumpversion | cut -d. -f1)" -lt 12 ]; then
+          sudo apt-get install -y --no-install-recommends gcc-12 g++-12
+          echo "CC=gcc-12" >> "$GITHUB_ENV"
+          echo "CXX=g++-12" >> "$GITHUB_ENV"
+        fi
+
+    - name: fetch piu_jsc crate (webkit pin, patches, build script)
+      if: steps.wk.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        ver="${{ steps.ver.outputs.version }}"
+        rm -rf .piu-webkit/crate
+        mkdir -p .piu-webkit/crate
+        curl -fsSL --retry 3 \
+          "https://crates.io/api/v1/crates/piu_jsc/${ver}/download" \
+          -o .piu-webkit/piu_jsc.crate
+        tar -xzf .piu-webkit/piu_jsc.crate -C .piu-webkit/crate --strip-components 1
+        test -f .piu-webkit/crate/tools/build_webkit.sh
+
+    - name: fetch webkit source
+      if: steps.wk.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        rev="$(cat .piu-webkit/crate/tools/WEBKIT_REVISION)"
+        rm -rf .piu-webkit/webkit-src
+        git init -q .piu-webkit/webkit-src
+        cd .piu-webkit/webkit-src
+        git remote add origin https://github.com/WebKit/WebKit.git
+        git sparse-checkout set Source/JavaScriptCore Source/ThirdParty \
+          Source/WTF Source/bmalloc Source/cmake Tools/Scripts
+        git fetch -q --filter=blob:none --depth 1 origin "$rev"
+        git checkout -q FETCH_HEAD
+
+    - name: build webkit (JSCOnly static)
+      if: steps.wk.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        WEBKIT_SRC_DIR="$PWD/.piu-webkit/webkit-src" \
+        WEBKIT_BUILD_DIR="$PWD/.piu-webkit/webkit-build" \
+          bash .piu-webkit/crate/tools/build_webkit.sh
+
+    - name: export engine env
+      shell: bash
+      run: |
+        echo "JSC_VENDOR_BUILD_DIR=$PWD/.piu-webkit/webkit-build" >> "$GITHUB_ENV"
+        echo "WEBKIT_SRC_DIR=$PWD/.piu-webkit/webkit-src" >> "$GITHUB_ENV"

@@ -14,9 +14,9 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::SystemTime;
 
-use deno_package_json::PackageJsonCache;
-use deno_package_json::PackageJsonCacheResult;
-use deno_package_json::PackageJsonRc;
+use piu_package_json::PackageJsonCache;
+use piu_package_json::PackageJsonCacheResult;
+use piu_package_json::PackageJsonRc;
 
 /// What a file looked like when it was read. The mtime alone is not enough:
 /// npm extracts every file with the same fixed mtime, so a same-length
@@ -100,12 +100,8 @@ mod tests {
     use super::*;
 
     fn load(memo: &PackageJsonMemo, path: &Path) -> Option<PackageJsonRc> {
-        deno_package_json::PackageJson::load_from_path(
-            &sys_traits::impls::RealSys,
-            Some(memo),
-            path,
-        )
-        .unwrap()
+        piu_package_json::PackageJson::load_from_path(&sys_traits::impls::RealSys, Some(memo), path)
+            .unwrap()
     }
 
     #[test]

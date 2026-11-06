@@ -15,7 +15,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
 
-use deno_core::v8;
+use piu_core::v8;
 
 use crate::lock;
 

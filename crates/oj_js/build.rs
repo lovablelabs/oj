@@ -11,7 +11,7 @@ fn main() {
     // Test binaries load napi addons (see the ignored napi test), which
     // resolve napi_* symbols against the running executable. Keep all global
     // symbols exported from test executables; the oj binary itself exports
-    // exactly deno_napi's list via deno_napi::print_linker_flags in
+    // exactly deno_napi's list via piu_napi::print_linker_flags in
     // crates/oj/build.rs.
     #[cfg(target_os = "macos")]
     println!("cargo:rustc-link-arg-tests=-Wl,-export_dynamic");

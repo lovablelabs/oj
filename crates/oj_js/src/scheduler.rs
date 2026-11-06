@@ -23,8 +23,8 @@ use std::task::Poll;
 use std::task::Waker;
 use std::time::Duration;
 
-use deno_core::url::Url;
-use deno_core::v8;
+use piu_core::url::Url;
+use piu_core::v8;
 use tokio::sync::mpsc;
 use tokio::time::error::Elapsed;
 
@@ -92,7 +92,7 @@ enum Tick {
     Settled(usize, ParkedOutcome),
     /// The event loop failed (an uncaught error) with calls still pending:
     /// nothing can settle them anymore.
-    Broken(deno_core::error::CoreError),
+    Broken(piu_core::error::CoreError),
     /// The near-heap-limit callback fired during event-loop progress. The
     /// termination can land mid-microtask and leave every parked promise
     /// permanently unsettled — no Broken, no Settled — so the flag is a tick
@@ -317,7 +317,7 @@ impl Scheduler {
     /// An uncaught error broke the event loop (the process would die under
     /// Node): deliver promises that settled on the final turn, fail the rest
     /// with the error.
-    fn broken(&mut self, e: deno_core::error::CoreError) {
+    fn broken(&mut self, e: piu_core::error::CoreError) {
         let error = e.to_string();
         if self.calls.is_empty() {
             eprintln!("oj_js: uncaught error on the engine event loop: {error}");
@@ -388,7 +388,7 @@ impl Scheduler {
         worker.run_event_loop(false).await.map_err(js_err)?;
 
         let ns = worker.js_runtime.get_module_namespace(id).map_err(js_err)?;
-        deno_core::scope!(scope, &mut worker.js_runtime);
+        piu_core::scope!(scope, &mut worker.js_runtime);
         let ns = v8::Local::new(scope, ns);
         let key = v8::String::new(scope, "default").unwrap();
         let value = ns.get(scope, key.into());
@@ -414,7 +414,7 @@ impl Scheduler {
 
         let ns = worker.js_runtime.get_module_namespace(id).map_err(js_err)?;
         let (function, arg_globals) = {
-            deno_core::scope!(scope, &mut worker.js_runtime);
+            piu_core::scope!(scope, &mut worker.js_runtime);
             let ns = v8::Local::new(scope, ns);
             let key = v8::String::new(scope, export)
                 .ok_or_else(|| EngineError::Js(format!("invalid export name \"{export}\"")))?;
@@ -485,7 +485,7 @@ mod tests {
                 .js_runtime
                 .op_state()
                 .borrow()
-                .borrow::<deno_core::V8CrossThreadTaskSpawner>()
+                .borrow::<piu_core::V8CrossThreadTaskSpawner>()
                 .clone();
             let (_jobs_tx, mut jobs_rx) = mpsc::unbounded_channel::<Job>();
             let (done_tx, mut done_rx) = tokio::sync::oneshot::channel::<Option<usize>>();

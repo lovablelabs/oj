@@ -13,8 +13,8 @@
 //! `OpState`, so the pointer lives exactly as long as the isolate that can
 //! call it.
 
-use deno_core::v8;
-use deno_runtime::worker::MainWorker;
+use piu_core::v8;
+use piu_runtime::worker::MainWorker;
 use tokio::sync::mpsc;
 
 /// Synchronous host-side handler for `__oj_rpc` calls. Runs on the isolate
@@ -40,7 +40,7 @@ pub(crate) fn install(worker: &mut MainWorker, hooks: EngineHooks) {
     let ptr: *const EngineHooks = &*hooks;
     worker.js_runtime.op_state().borrow_mut().put(hooks);
 
-    deno_core::scope!(scope, &mut worker.js_runtime);
+    piu_core::scope!(scope, &mut worker.js_runtime);
     let external = v8::External::new(scope, ptr as *mut std::ffi::c_void);
     let context = scope.get_current_context();
     let global = context.global(scope);

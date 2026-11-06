@@ -6,9 +6,9 @@
 use std::time::Duration;
 use std::time::Instant;
 
-use deno_core::url::Url;
-use deno_runtime::code_cache::CodeCacheType;
 use oj_js::code_cache::FsCodeCache;
+use piu_core::url::Url;
+use piu_runtime::code_cache::CodeCacheType;
 
 const CHILD_DIR: &str = "OJ_TEST_CODE_CACHE_EXIT_DIR";
 

@@ -6,8 +6,8 @@
 //! in the build, serde_v8 serializes numbers as an internal struct, which V8
 //! sees as an object.
 
-use deno_core::v8;
-use deno_runtime::worker::MainWorker;
+use piu_core::v8;
+use piu_runtime::worker::MainWorker;
 
 use crate::EngineError;
 
@@ -16,7 +16,7 @@ pub(crate) fn js_err(e: impl std::fmt::Display) -> EngineError {
 }
 
 /// The result of a call's promise, as `call_with_args` settles it.
-pub(crate) type SettledResult = Result<v8::Global<v8::Value>, Box<deno_core::error::JsError>>;
+pub(crate) type SettledResult = Result<v8::Global<v8::Value>, Box<piu_core::error::JsError>>;
 
 pub(crate) fn settled_to_json(
     worker: &mut MainWorker,
@@ -24,7 +24,7 @@ pub(crate) fn settled_to_json(
 ) -> Result<serde_json::Value, EngineError> {
     match result {
         Ok(global) => {
-            deno_core::scope!(scope, &mut worker.js_runtime);
+            piu_core::scope!(scope, &mut worker.js_runtime);
             let local = v8::Local::new(scope, global);
             Ok(v8_to_json(scope, local))
         }

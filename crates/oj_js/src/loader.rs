@@ -10,32 +10,32 @@ use std::borrow::Cow;
 use std::path::Path;
 use std::sync::Arc;
 
-use deno_core::futures::FutureExt;
-use deno_core::url::Url;
-use deno_core::FastString;
-use deno_core::ModuleLoadResponse;
-use deno_core::ModuleLoader;
-use deno_core::ModuleSource;
-use deno_core::ModuleSourceCode;
-use deno_core::ModuleSpecifier;
-use deno_core::ModuleType;
-use deno_core::RequestedModuleType;
-use deno_core::ResolutionKind;
 use deno_error::JsErrorBox;
 use deno_media_type::MediaType;
-use deno_resolver::cjs::CjsTrackerRc;
-use deno_resolver::loader::DenoNpmModuleLoaderRc;
-use deno_resolver::loader::LoadedModuleSource;
-use deno_resolver::npm::DenoInNpmPackageChecker;
-use deno_resolver::npm::NpmResolver;
-use deno_runtime::code_cache::CodeCache;
-use deno_runtime::code_cache::CodeCacheType;
-use deno_runtime::deno_node::NodeRequireLoader;
-use deno_runtime::deno_permissions::PermissionsContainer;
-use node_resolver::errors::PackageJsonLoadError;
-use node_resolver::DenoIsBuiltInNodeModuleChecker;
-use node_resolver::NodeResolutionKind;
-use node_resolver::ResolutionMode;
+use piu_core::futures::FutureExt;
+use piu_core::url::Url;
+use piu_core::FastString;
+use piu_core::ModuleLoadResponse;
+use piu_core::ModuleLoader;
+use piu_core::ModuleSource;
+use piu_core::ModuleSourceCode;
+use piu_core::ModuleSpecifier;
+use piu_core::ModuleType;
+use piu_core::RequestedModuleType;
+use piu_core::ResolutionKind;
+use piu_node_resolver::errors::PackageJsonLoadError;
+use piu_node_resolver::DenoIsBuiltInNodeModuleChecker;
+use piu_node_resolver::NodeResolutionKind;
+use piu_node_resolver::ResolutionMode;
+use piu_resolver::cjs::CjsTrackerRc;
+use piu_resolver::loader::DenoNpmModuleLoaderRc;
+use piu_resolver::loader::LoadedModuleSource;
+use piu_resolver::npm::DenoInNpmPackageChecker;
+use piu_resolver::npm::NpmResolver;
+use piu_runtime::code_cache::CodeCache;
+use piu_runtime::code_cache::CodeCacheType;
+use piu_runtime::deno_node::NodeRequireLoader;
+use piu_runtime::deno_permissions::PermissionsContainer;
 
 use crate::code_cache::FsCodeCache;
 use crate::host::HostModuleType;
@@ -45,7 +45,7 @@ use crate::host::ModuleHost as HostLink;
 /// The engine runs against the real filesystem only.
 pub(crate) type Sys = sys_traits::impls::RealSys;
 
-pub(crate) type EngineNodeResolver = node_resolver::NodeResolverRc<
+pub(crate) type EngineNodeResolver = piu_node_resolver::NodeResolverRc<
     DenoInNpmPackageChecker,
     DenoIsBuiltInNodeModuleChecker,
     NpmResolver<Sys>,
@@ -146,8 +146,8 @@ impl ModuleLoader for EngineModuleLoader {
     fn load(
         &self,
         module_specifier: &ModuleSpecifier,
-        maybe_referrer: Option<&deno_core::ModuleLoadReferrer>,
-        options: deno_core::ModuleLoadOptions,
+        maybe_referrer: Option<&piu_core::ModuleLoadReferrer>,
+        options: piu_core::ModuleLoadOptions,
     ) -> ModuleLoadResponse {
         let specifier = module_specifier.clone();
         let host = self.host.clone();
@@ -219,10 +219,10 @@ impl ModuleLoader for EngineModuleLoader {
                         let data = cache
                             .get(&loaded.specifier, CodeCacheType::EsModule, hash)
                             .map(Cow::Owned);
-                        // No info on a consume-only miss: deno_core then
+                        // No info on a consume-only miss: the engine then
                         // never serializes a cache for it.
                         (data.is_some() || cache.produces())
-                            .then_some(deno_core::SourceCodeCacheInfo { hash, data })
+                            .then_some(piu_core::SourceCodeCacheInfo { hash, data })
                     }
                     _ => None,
                 };
@@ -269,14 +269,13 @@ impl ModuleLoader for EngineModuleLoader {
         &self,
         specifier: &ModuleSpecifier,
         source: &str,
-    ) -> Option<deno_core::SourceCodeCacheInfo> {
+    ) -> Option<piu_core::SourceCodeCacheInfo> {
         let cache = self.code_cache.as_ref()?;
         let hash = FsCodeCache::source_hash(source.as_bytes());
         let data = cache
             .get(specifier, CodeCacheType::EsModule, hash)
             .map(Cow::Owned);
-        (data.is_some() || cache.produces())
-            .then_some(deno_core::SourceCodeCacheInfo { data, hash })
+        (data.is_some() || cache.produces()).then_some(piu_core::SourceCodeCacheInfo { data, hash })
     }
 }
 
@@ -362,12 +361,12 @@ fn loaded_module_source_to_module_source_code(source: LoadedModuleSource) -> Mod
 
 fn as_deno_resolver_requested_module_type(
     value: &RequestedModuleType,
-) -> deno_resolver::loader::RequestedModuleType<'_> {
+) -> piu_resolver::loader::RequestedModuleType<'_> {
     match value {
-        RequestedModuleType::None => deno_resolver::loader::RequestedModuleType::None,
-        RequestedModuleType::Json => deno_resolver::loader::RequestedModuleType::Json,
-        RequestedModuleType::Text => deno_resolver::loader::RequestedModuleType::Text,
-        RequestedModuleType::Bytes => deno_resolver::loader::RequestedModuleType::Bytes,
-        RequestedModuleType::Other(text) => deno_resolver::loader::RequestedModuleType::Other(text),
+        RequestedModuleType::None => piu_resolver::loader::RequestedModuleType::None,
+        RequestedModuleType::Json => piu_resolver::loader::RequestedModuleType::Json,
+        RequestedModuleType::Text => piu_resolver::loader::RequestedModuleType::Text,
+        RequestedModuleType::Bytes => piu_resolver::loader::RequestedModuleType::Bytes,
+        RequestedModuleType::Other(text) => piu_resolver::loader::RequestedModuleType::Other(text),
     }
 }
