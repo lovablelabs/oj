@@ -2,17 +2,20 @@
 // Copyright (c) 2026 Raphael Amorim
 
 //! Which file a `resolve.alias`ed import serves, next to tsconfig `paths`,
-//! against Vite's dev server on the same app. Vite's alias plugin runs ahead
-//! of every resolver plugin and takes the first entry that matches, in the
-//! order the config wrote them (normalizeAlias keeps an object's key order),
-//! so `{ "@/integrations/supabase/client": backend, "@": src }` sends the
-//! client import to `backend`, and `@` written first takes it. tsconfig
-//! `paths` come after the aliases, and a `paths` target that is a declaration
-//! file is no answer (vite-tsconfig-paths passes on one).
+//! against Vite's dev server with vite-tsconfig-paths on the same app.
+//! Vite's alias plugin runs ahead of every resolver plugin and takes the
+//! first entry that matches, in the order the config wrote them
+//! (normalizeAlias keeps an object's key order), so
+//! `{ "@/integrations/supabase/client": backend, "@": src }` sends the client
+//! import to `backend`, and `@` written first takes it. The rewritten id goes
+//! on through tsconfig `paths`, so an alias to `@/lib` still lands.
+//! vite-tsconfig-paths tries `@/*` before an exact key (a pattern with no `*`
+//! has no prefix), and a `paths` answer that is a declaration file is none.
 //!
-//! oj's resolver tried tsconfig `paths` before the aliases and kept the
-//! aliases sorted, so `@` always came first: the import served the `.d.ts`
-//! the paths named, or `@`'s file, over the alias written for it.
+//! oj's resolver tried tsconfig `paths` before the aliases, the exact key
+//! first, and kept the aliases sorted, so `@` always came first: the import
+//! served the `.d.ts` the paths named, or `@`'s file, over the alias written
+//! for it.
 
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -34,6 +37,10 @@ const FILES: &[(&str, &str)] = &[
         "src/main.ts",
         "import { who } from \"@/integrations/supabase/client\";\nimport { helper } from \"@/lib/helper\";\ndocument.body.dataset.who = who + helper;\n",
     ),
+    (
+        "src/tilde.ts",
+        "import { helper } from \"~lib/helper\";\nexport const tilde = helper;\n",
+    ),
     ("src/lib/helper.ts", "export const helper = \"-helper\";\n"),
     (
         "src/integrations/supabase/client.ts",
@@ -50,25 +57,37 @@ const FILES: &[(&str, &str)] = &[
     ),
 ];
 
-const HEADER: &str = "import path from \"node:path\";\nconst dir = path.dirname(new URL(import.meta.url).pathname);\nconst src = (p) => path.resolve(dir, \"src\", p);\n";
+const HEADER: &str = "import path from \"node:path\";\nimport tsConfigPaths from \"vite-tsconfig-paths\";\nconst dir = path.dirname(new URL(import.meta.url).pathname);\nconst src = (p) => path.resolve(dir, \"src\", p);\n";
+
+fn config(alias: &str) -> String {
+    format!(
+        "{HEADER}export default {{ resolve: {{ alias: {alias} }}, plugins: [tsConfigPaths()] }};\n"
+    )
+}
 
 /// Each config: its name, its `resolve.alias`, and the file the client import
 /// serves (on Vite and on oj).
 const CONFIGS: &[(&str, &str, &str)] = &[
     (
         "specific-first",
-        r#"{ "@/integrations/supabase/client": src("appBackend.ts"), "@": src("") }"#,
+        r#"{ "@/integrations/supabase/client": src("appBackend.ts"), "~lib": "@/lib", "@": src("") }"#,
         "/src/appBackend.ts",
     ),
     (
         "at-first",
-        r#"{ "@": src(""), "@/integrations/supabase/client": src("appBackend.ts") }"#,
+        r#"{ "@": src(""), "~lib": "@/lib", "@/integrations/supabase/client": src("appBackend.ts") }"#,
         "/src/integrations/supabase/client.ts",
     ),
     (
         "array",
-        r#"[{ find: "@/integrations/supabase/client", replacement: src("appBackend.ts") }, { find: "@", replacement: src("") }]"#,
+        r#"[{ find: "@/integrations/supabase/client", replacement: src("appBackend.ts") }, { find: "~lib", replacement: "@/lib" }, { find: "@", replacement: src("") }]"#,
         "/src/appBackend.ts",
+    ),
+    // No alias for it: vite-tsconfig-paths tries `@/*` before the exact key.
+    (
+        "paths-only",
+        r#"{ "~lib": "@/lib" }"#,
+        "/src/integrations/supabase/client.ts",
     ),
 ];
 
@@ -111,13 +130,23 @@ impl ViteDev {
         ViteDev { child, port }
     }
 
-    fn get(&self, path: &str) -> String {
+    /// The status and body of `path`.
+    fn get(&self, path: &str) -> (u16, String) {
         let out = Command::new("curl")
-            .args(["-s", "-m", "60"])
+            .args(["-s", "-m", "60", "-w", "\n%{http_code}"])
             .arg(format!("http://127.0.0.1:{}{path}", self.port))
             .output()
             .unwrap();
-        String::from_utf8_lossy(&out.stdout).into_owned()
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        let (body, status) = text.rsplit_once('\n').unwrap_or(("", "0"));
+        (status.trim().parse().unwrap_or(0), body.to_string())
+    }
+
+    /// The imports of `path`, once Vite has served it.
+    fn imports(&self, path: &str) -> Vec<String> {
+        let (status, body) = self.get(path);
+        assert_eq!(status, 200, "vite dev {path}:\n{body}");
+        imports(&body)
     }
 }
 
@@ -130,54 +159,78 @@ impl Drop for ViteDev {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_aliased_import_serves_the_entry_vite_picks() {
-    crate::require_fixture!("vite");
+    crate::require_fixture!("vite", "vite-tsconfig-paths");
     let app = App::new(FILES);
     app.link_fixture("vite");
+    app.link_fixture("vite-tsconfig-paths");
     for (name, alias, want) in CONFIGS {
-        let config = format!("vite.{name}.config.js");
-        app.write(&[(
-            config.as_str(),
-            &format!("{HEADER}export default {{ resolve: {{ alias: {alias} }} }};\n"),
-        )]);
+        let config_file = format!("vite.{name}.config.js");
+        app.write(&[(config_file.as_str(), &config(alias))]);
 
-        let vite = ViteDev::start(&app.root, &config);
-        let theirs = imports(&vite.get("/src/main.ts"));
+        let vite = ViteDev::start(&app.root, &config_file);
+        let theirs = vite.imports("/src/main.ts");
+        let tilde = vite.imports("/src/tilde.ts");
         drop(vite);
         assert_eq!(
             theirs,
             [*want, "/src/lib/helper.ts"],
             "vite dev, {name}: the alias test's premise"
         );
+        assert_eq!(tilde, ["/src/lib/helper.ts"], "vite dev, {name}: ~lib");
 
         let mut dev = app.dev();
-        dev.config = Some(app.root.join(&config));
+        dev.config = Some(app.root.join(&config_file));
         let server = crate::serve(dev).await;
         let ours = imports(&server.text("/src/main.ts").await);
+        let our_tilde = imports(&server.text("/src/tilde.ts").await);
         drop(server);
         assert_eq!(ours, theirs, "oj dev vs vite dev, {name}");
+        assert_eq!(
+            our_tilde, tilde,
+            "oj dev vs vite dev, {name}: an alias to a paths name"
+        );
     }
 }
 
-// With no alias for it, the client import's `paths` target is a declaration
-// file, which is no answer: the import fails as Vite's does, rather than
-// serving the `.d.ts` as JavaScript. tsconfig `paths` alone still answer the
-// helper import (oj applies them without vite-tsconfig-paths, where Vite 8
-// needs the plugin or `resolve.tsconfigPaths`).
+// When the only `paths` answer is a declaration file, it is none: Vite fails
+// the import (vite-tsconfig-paths passes, vite:resolve finds nothing), and oj
+// fails it too rather than serving the `.d.ts` as JavaScript.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_paths_target_that_is_a_declaration_file_is_never_served() {
+    crate::require_fixture!("vite", "vite-tsconfig-paths");
     let app = App::new(FILES);
-    let server = app.serve().await;
-    let js = server.get("/src/main.ts").await.body;
+    app.link_fixture("vite");
+    app.link_fixture("vite-tsconfig-paths");
+    app.write(&[
+        (
+            "tsconfig.json",
+            r#"{ "compilerOptions": { "paths": { "@/integrations/supabase/client": ["./src/types/existingSupabaseClient.d.ts"], "@/lib/*": ["./src/lib/*"] } } }"#,
+        ),
+        ("vite.paths.config.js", &config("{}")),
+    ]);
+    let vite = ViteDev::start(&app.root, "vite.paths.config.js");
+    let (status, body) = vite.get("/src/main.ts");
+    drop(vite);
+    assert_eq!(status, 500, "vite dev fails the import: {body}");
+    assert!(body.contains("@/integrations/supabase/client"), "{body}");
+
+    let mut dev = app.dev();
+    dev.config = Some(app.root.join("vite.paths.config.js"));
+    let server = crate::serve(dev).await;
+    // oj leaves an import it cannot resolve as an `/@id/` URL where Vite's
+    // import analysis fails the importer; either way the import fails.
+    let main = server.text("/src/main.ts").await;
+    let client = imports(&main).into_iter().next().unwrap();
+    assert!(client.starts_with("/@id/"), "{main}");
+    let served = server.get(&client).await;
+    assert_eq!(served.status, 500, "{}", served.body);
     assert!(
-        !js.contains(".d.ts"),
-        "the declaration file was served for the import:\n{js}"
+        served
+            .body
+            .contains("Failed to resolve import \"@/integrations/supabase/client\""),
+        "{}",
+        served.body
     );
     let helper = server.text("/src/lib/helper.ts").await;
     assert!(helper.contains("-helper"), "{helper}");
-    app.write(&[(
-        "src/other.ts",
-        "import { helper } from \"@/lib/helper\";\nexport const x = helper;\n",
-    )]);
-    let other = server.text("/src/other.ts").await;
-    assert_eq!(imports(&other), ["/src/lib/helper.ts"], "{other}");
 }

@@ -411,11 +411,13 @@ mod tests {
             ]
         );
 
+        // Vite 8 ignores an environment's own alias: every environment
+        // resolves with the top-level list.
         assert_eq!(
             resolve_alias(&cfg, "ssr"),
             vec![
                 ("@".to_string(), "/src".to_string()),
-                ("old".to_string(), "/ssr-legacy".to_string())
+                ("old".to_string(), "/legacy".to_string())
             ]
         );
         assert_eq!(

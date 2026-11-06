@@ -5031,9 +5031,12 @@ mod tests {
             app.to_string_lossy().replace('\\', "/")
         ))
         .unwrap();
-        assert!(
-            configured_start_server_entry(&env_scoped, &root).is_some(),
-            "environments.ssr.resolve.alias counts"
+        // Start publishes the alias at the top level; Vite 8 ignores an
+        // environment's own resolve.alias.
+        assert_eq!(
+            configured_start_server_entry(&env_scoped, &root),
+            None,
+            "environments.ssr.resolve.alias does not count"
         );
     }
 

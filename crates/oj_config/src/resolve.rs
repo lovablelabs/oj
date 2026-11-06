@@ -285,23 +285,12 @@ pub fn resolve_preserve_symlinks(config: &OjConfig) -> bool {
         .unwrap_or(false)
 }
 
-/// Top-level `resolve.alias`, overlaid by the environment's string entries.
-pub fn resolve_alias(config: &OjConfig, env_name: &str) -> Vec<(String, String)> {
-    let mut merged = top_level_alias(config);
-    if let Some(env_alias) = env_resolve(config, env_name)
-        .and_then(|r| r.get("alias"))
-        .and_then(|a| a.as_object())
-    {
-        for (find, replacement) in env_alias {
-            if let Some(s) = replacement.as_str() {
-                match merged.iter_mut().find(|(f, _)| f == find) {
-                    Some(entry) => entry.1 = s.to_string(),
-                    None => merged.push((find.clone(), s.to_string())),
-                }
-            }
-        }
-    }
-    merged
+/// The `resolve.alias` an environment resolves with: the top-level list.
+/// Vite 8 gives every environment that list and ignores
+/// `environments.*.resolve.alias` (resolveEnvironmentResolveOptions
+/// overwrites it).
+pub fn resolve_alias(config: &OjConfig, _env_name: &str) -> Vec<(String, String)> {
+    top_level_alias(config)
 }
 
 #[cfg(test)]
@@ -315,7 +304,7 @@ mod tests {
 
     // Vite tries the alias entries in the written order (normalizeAlias keeps
     // an object's key order), from an object or a `{ find, replacement }`
-    // array; an environment's entry replaces the top-level one in place.
+    // array; an environment's own alias is ignored, as in Vite 8.
     #[test]
     fn aliases_keep_the_written_order() {
         let from = |json: &str| -> OjConfig { serde_json::from_str(json).unwrap() };
@@ -345,7 +334,7 @@ mod tests {
         );
         assert_eq!(
             crate::resolve_alias(&env, "ssr"),
-            pairs(&[("b", "/b"), ("a", "/ssr-a"), ("c", "/c")])
+            pairs(&[("b", "/b"), ("a", "/a")])
         );
         assert_eq!(
             crate::resolve_alias(&env, "client"),

@@ -17,7 +17,7 @@ oxc_transformer.workspace = true
 oxc_codegen.workspace = true
 rquickjs = { version = "0.14.0", features = ["loader"] }
 serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["preserve_order"] }
 oj_env.workspace = true
 thiserror.workspace = true
 regex = "1.11"
