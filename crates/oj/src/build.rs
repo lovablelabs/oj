@@ -295,6 +295,48 @@ struct WorkerBundleOpts {
     minify: bool,
     assets_dir: String,
     sourcemap: Option<SourceMapType>,
+    /// The app's plugin host, where each worker bundle opens its container
+    /// over `worker.plugins` (nested workers too).
+    host: Option<Arc<PluginHost>>,
+}
+
+/// A worker bundle's container over `worker.plugins`, closed once the bundle
+/// is done, or in the background when the load is dropped first.
+struct WorkerContainer(Option<Arc<PluginHost>>);
+
+impl WorkerContainer {
+    async fn open(opts: Option<&Arc<WorkerBundleOpts>>, chain: &[String]) -> anyhow::Result<Self> {
+        let Some(host) = opts.and_then(|o| o.host.as_ref()) else {
+            return Ok(Self(None));
+        };
+        let container = host
+            .open_worker_container(chain)
+            .await
+            .map_err(|e| anyhow::anyhow!("the worker plugin container: {e}"))?;
+        Ok(Self(Some(Arc::new(container))))
+    }
+
+    fn host(&self) -> Option<Arc<PluginHost>> {
+        self.0.clone()
+    }
+
+    async fn close(mut self) {
+        if let Some(c) = self.0.take() {
+            let _ = c.close_container().await;
+        }
+    }
+}
+
+impl Drop for WorkerContainer {
+    fn drop(&mut self) {
+        if let Some(c) = self.0.take() {
+            if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                rt.spawn(async move {
+                    let _ = c.close_container().await;
+                });
+            }
+        }
+    }
 }
 
 /// In-flight and finished `?worker` bundles by (entry, worker chain). Keyed by
@@ -1451,10 +1493,41 @@ fn worker_bundler_options(
     }
 }
 
+/// Vite's bundleWorkerEntry: the worker bundled with `worker.plugins` called
+/// afresh (their stylesheet hooks included), in a container closed with the
+/// bundle; `buildEnd` and `closeBundle` run as for any bundle.
+async fn bundle_worker_inline(
+    root: &Path,
+    file: &str,
+    opts: Option<&Arc<WorkerBundleOpts>>,
+    mut nested: OjCssPlugin,
+) -> anyhow::Result<String> {
+    let container = WorkerContainer::open(opts, &nested.worker_chain).await?;
+    nested.host = container.host();
+    let built = bundle_worker_inline_with(root, file, opts, nested, container.host()).await;
+    container.close().await;
+    built
+}
+
+/// [`bundle_worker_inline`] for a `?worker` entry emitted as its own chunks.
+async fn bundle_worker_entry(
+    ctx: &SharedLoadPluginContext,
+    root: &Path,
+    file: &str,
+    opts: Option<&Arc<WorkerBundleOpts>>,
+    mut nested: OjCssPlugin,
+) -> anyhow::Result<String> {
+    let container = WorkerContainer::open(opts, &nested.worker_chain).await?;
+    nested.host = container.host();
+    let built = bundle_worker_entry_with(ctx, root, file, opts, nested, container.host()).await;
+    container.close().await;
+    built
+}
+
 /// Bundle a worker entry to a single ESM string (dynamic imports inlined) for
 /// `?worker&inline`, so the worker ships inside the importing chunk as in Vite.
 /// `nested` is the plugin for that inner bundle, built by the caller.
-async fn bundle_worker_inline(
+async fn bundle_worker_inline_with(
     root: &Path,
     file: &str,
     opts: Option<&Arc<WorkerBundleOpts>>,
@@ -1469,13 +1542,16 @@ async fn bundle_worker_inline(
         .into_iter()
         .collect();
     if let Some(container) = &container {
-        plugins.push(Pluginable::new_shared(OjUserPlugin::new(
-            Arc::clone(container),
-            Arc::new(EmitState::new(root.to_path_buf())),
-            container.build_hook_plan().await,
-            opts.map(|o| bundle_graph::jsx_config(&o.config))
-                .unwrap_or_default(),
-        )));
+        plugins.push(Pluginable::new_shared(
+            OjUserPlugin::new(
+                Arc::clone(container),
+                Arc::new(EmitState::new(root.to_path_buf())),
+                container.build_hook_plan().await,
+                opts.map(|o| bundle_graph::jsx_config(&o.config))
+                    .unwrap_or_default(),
+            )
+            .with_build_end(),
+        ));
     }
     plugins.push(Pluginable::new_shared(nested));
     plugins.extend(opts.and_then(|o| tsconfig_paths_plugin(root, &o.config, "client", true)));
@@ -1487,10 +1563,11 @@ async fn bundle_worker_inline(
         })
         .build()
         .map_err(rolldown_failure!("inline worker init failed"))?;
-    let out = bundler
-        .generate()
-        .await
-        .map_err(rolldown_failure!("inline worker build failed for {file}"))?;
+    let out = bundler.generate().await;
+    // `bundle.close()` in Vite's `finally`: closeBundle.
+    let closed = bundler.close().await;
+    let out = out.map_err(rolldown_failure!("inline worker build failed for {file}"))?;
+    closed.map_err(rolldown_failure!("inline worker close failed for {file}"))?;
     let mut code = String::new();
     for asset in &out.assets {
         if let rolldown_common::Output::Chunk(chunk) = asset {
@@ -1506,7 +1583,7 @@ async fn bundle_worker_inline(
 /// reaches the worker, with its chunks split and named under `assetsDir`.
 /// Every output file is emitted into the importing bundle under its name;
 /// returns the entry's file reference.
-async fn bundle_worker_entry(
+async fn bundle_worker_entry_with(
     ctx: &SharedLoadPluginContext,
     root: &Path,
     file: &str,
@@ -1525,13 +1602,16 @@ async fn bundle_worker_entry(
         .into_iter()
         .collect();
     if let Some(container) = &container {
-        plugins.push(Pluginable::new_shared(OjUserPlugin::new(
-            Arc::clone(container),
-            Arc::new(EmitState::new(root.to_path_buf())),
-            container.build_hook_plan().await,
-            opts.map(|o| bundle_graph::jsx_config(&o.config))
-                .unwrap_or_default(),
-        )));
+        plugins.push(Pluginable::new_shared(
+            OjUserPlugin::new(
+                Arc::clone(container),
+                Arc::new(EmitState::new(root.to_path_buf())),
+                container.build_hook_plan().await,
+                opts.map(|o| bundle_graph::jsx_config(&o.config))
+                    .unwrap_or_default(),
+            )
+            .with_build_end(),
+        ));
     }
     plugins.push(Pluginable::new_shared(nested));
     plugins.extend(opts.and_then(|o| tsconfig_paths_plugin(root, &o.config, "client", true)));
@@ -1547,10 +1627,11 @@ async fn bundle_worker_entry(
         })
         .build()
         .map_err(rolldown_failure!("worker init failed"))?;
-    let out = bundler
-        .generate()
-        .await
-        .map_err(rolldown_failure!("worker build failed for {file}"))?;
+    let out = bundler.generate().await;
+    // `bundle.close()` in Vite's `finally`: closeBundle.
+    let closed = bundler.close().await;
+    let out = out.map_err(rolldown_failure!("worker build failed for {file}"))?;
+    closed.map_err(rolldown_failure!("worker close failed for {file}"))?;
     let emit = |file_name: String, source: rolldown_common::StrOrBytes| {
         ctx.emit_file(
             rolldown_common::EmittedAsset {
@@ -2169,9 +2250,10 @@ impl Plugin for OjCssPlugin {
                     inline_limit,
                     css_code_split: false,
                     // Vite builds a worker with `worker.plugins` alone: the app's
-                    // own plugins never see its modules or stylesheets.
+                    // own plugins never see its modules or stylesheets (the
+                    // bundle sets its own container here).
                     host: None,
-                    css_transform_enabled: Arc::clone(&css_transform_enabled),
+                    css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
                     css: css_cfg.clone(),
                     html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
                     worker: worker.clone(),
@@ -2184,34 +2266,23 @@ impl Plugin for OjCssPlugin {
                     url_sheets: None,
                     emit: None,
                 };
-                // Vite builds the worker with `worker.plugins` alone: a container
-                // of its own on the app's host, closed with the bundle.
-                let container = match &host {
-                    Some(h) => {
-                        Some(Arc::new(h.open_worker_container(&chain).await.map_err(
-                            |e| anyhow::anyhow!("the worker plugin container: {e}"),
-                        )?))
-                    }
-                    None => None,
-                };
-                let close = |container: Option<Arc<PluginHost>>| async move {
-                    if let Some(c) = container {
-                        let _ = c.close_container().await;
-                    }
-                };
                 if inline {
                     // `?worker&inline`: the worker's bundled code travels inside
                     // this chunk and starts from a Blob URL (data: URL fallback).
-                    let code = bundle_worker_inline(
-                        &root,
-                        file,
-                        worker.as_ref(),
-                        nested,
-                        container.clone(),
-                    )
-                    .await;
-                    close(container).await;
-                    let code = code?;
+                    // Bundled once per entry and chain, as Vite caches it.
+                    let cell = Arc::clone(
+                        worker_bundles
+                            .lock()
+                            .unwrap()
+                            .entry((format!("{file}\0inline"), Arc::clone(&worker_chain)))
+                            .or_default(),
+                    );
+                    let code = cell
+                        .get_or_try_init(|| {
+                            bundle_worker_inline(&root, file, worker.as_ref(), nested)
+                        })
+                        .await?
+                        .clone();
                     let literal = serde_json::Value::String(code).to_string();
                     return Ok(Some(rolldown_plugin::HookLoadOutput {
                         code: arcstr::ArcStr::from(format!(
@@ -2232,19 +2303,10 @@ impl Plugin for OjCssPlugin {
                 );
                 let reference = cell
                     .get_or_try_init(|| {
-                        bundle_worker_entry(
-                            &ctx,
-                            &root,
-                            file,
-                            worker.as_ref(),
-                            nested,
-                            container.clone(),
-                        )
+                        bundle_worker_entry(&ctx, &root, file, worker.as_ref(), nested)
                     })
-                    .await
-                    .cloned();
-                close(container).await;
-                let reference = reference?;
+                    .await?
+                    .clone();
                 let code = if url {
                     // `?worker&url` (also what `new Worker(new URL(...))` becomes):
                     // the chunk's URL as a string.
@@ -2434,6 +2496,18 @@ pub(crate) fn tsconfig_paths_plugin(
     env: &str,
     worker: bool,
 ) -> Option<SharedPluginable> {
+    tsconfig_paths_plugin_with(root, config, env, worker, None)
+}
+
+/// [`tsconfig_paths_plugin`] resolving packages under `conditions` (an
+/// environment of its own, a Cloudflare worker's) instead of `env`'s.
+pub(crate) fn tsconfig_paths_plugin_with(
+    root: &Path,
+    config: &oj_config::OjConfig,
+    env: &str,
+    worker: bool,
+    conditions: Option<Vec<String>>,
+) -> Option<SharedPluginable> {
     let mut mode = oj_server::tsconfig_paths(config);
     // Vite builds a worker with `worker.plugins` alone: the app's
     // vite-tsconfig-paths never sees it, `resolve.tsconfigPaths` still does.
@@ -2452,7 +2526,7 @@ pub(crate) fn tsconfig_paths_plugin(
     ) {
         return None;
     }
-    let resolver = build_resolver(root, config, env, mode)?;
+    let resolver = build_resolver_with(root, config, env, mode, conditions)?;
     Some(Pluginable::new_shared(
         crate::start_bundle::alias::TsconfigPathsPlugin::new(resolver, true),
     ))
@@ -2467,11 +2541,21 @@ fn build_resolver(
     env: &str,
     mode: oj_resolver::TsconfigPaths,
 ) -> Option<oj_resolver::OjResolver> {
+    build_resolver_with(root, config, env, mode, None)
+}
+
+fn build_resolver_with(
+    root: &Path,
+    config: &oj_config::OjConfig,
+    env: &str,
+    mode: oj_resolver::TsconfigPaths,
+    conditions: Option<Vec<String>>,
+) -> Option<oj_resolver::OjResolver> {
     let resolve = rolldown_resolve(root, config, env)?;
     Some(oj_resolver::OjResolver::with_settings(
         root,
         oj_resolver::ResolveSettings {
-            conditions: build_conditions(config, env),
+            conditions: conditions.unwrap_or_else(|| build_conditions(config, env)),
             alias: oj_config::top_level_alias(config),
             dedupe: oj_config::resolve_dedupe(config),
             extensions: resolve.extensions,
@@ -2675,9 +2759,17 @@ struct OjUserPlugin {
     skipped_transform: std::sync::atomic::AtomicU64,
     /// Lowers the code `this.getModuleInfo` reads.
     jsx: oj_compiler::JsxConfig,
+    /// Whether rolldown's buildEnd calls the plugins' (a bundle whose caller
+    /// does not run it itself).
+    build_end: bool,
 }
 
 impl OjUserPlugin {
+    fn with_build_end(mut self) -> Self {
+        self.build_end = true;
+        self
+    }
+
     fn new(
         host: Arc<PluginHost>,
         emit: Arc<EmitState>,
@@ -2696,6 +2788,7 @@ impl OjUserPlugin {
             skipped_resolve: Default::default(),
             skipped_load: Default::default(),
             skipped_transform: Default::default(),
+            build_end: false,
         }
     }
 }
@@ -2897,6 +2990,9 @@ impl Plugin for OjUserPlugin {
             | rolldown_plugin::HookUsage::WriteBundle
             | rolldown_plugin::HookUsage::RenderStart
             | rolldown_plugin::HookUsage::CloseBundle;
+        if self.build_end {
+            usage |= rolldown_plugin::HookUsage::BuildEnd;
+        }
         // When no user plugin has the hook at all, rolldown never needs to call
         // the Rust hook either.
         if self.gate.resolve_id.present {
@@ -2909,6 +3005,27 @@ impl Plugin for OjUserPlugin {
             usage |= rolldown_plugin::HookUsage::Transform;
         }
         usage
+    }
+
+    async fn build_end(
+        &self,
+        _ctx: &PluginContext,
+        args: Option<&rolldown_plugin::HookBuildEndArgs<'_>>,
+    ) -> rolldown_plugin::HookNoopReturn {
+        if !self.build_end {
+            return Ok(());
+        }
+        let error = args.map(|a| {
+            a.errors
+                .iter()
+                .map(|e| e.to_diagnostic().to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
+        self.host
+            .build_end(error.as_deref())
+            .await
+            .map_err(|e| anyhow::anyhow!("plugin buildEnd failed:\n{e}"))
     }
 
     async fn build_start(
@@ -3889,6 +4006,7 @@ pub async fn build(
             minify: client_minify,
             assets_dir: assets_dir.clone(),
             sourcemap: env_sourcemap(&config, "client", sourcemap),
+            host: plugin_host.clone(),
         })),
         worker_bundles: Default::default(),
         worker_chain: Default::default(),
@@ -6078,6 +6196,9 @@ async fn build_library(
     )
     .await?;
     install_build_resolvers(&plugin_host, root, config, "client");
+    // The plugins' config() hooks' `define` and env changes, as for any build.
+    let plugin_defines = plugin_config_defines(&plugin_host).await;
+    let env_delta = plugin_env_delta(&plugin_host).await;
     let emit = Arc::new(EmitState::new(root.to_path_buf()));
     let import_of = |p: &str| {
         if p.starts_with('.') {
@@ -6190,119 +6311,164 @@ async fn build_library(
     let stylex =
         oj_server::stylex::plugin_for(root, config, "build").map_err(|e| anyhow::anyhow!(e))?;
 
-    for fmt in &formats {
-        let format = match fmt.as_str() {
-            "es" | "esm" => OutputFormat::Esm,
-            "cjs" => OutputFormat::Cjs,
-            "umd" => OutputFormat::Umd,
-            _ => OutputFormat::Iife,
-        };
-        let ext = js_ext(fmt);
-        // `name.js` / `name.cjs` for es and cjs, `name.umd.js` / `name.iife.js`
-        // otherwise (Vite `resolveLibFilename`).
-        let name_pattern = base_name.clone().unwrap_or_else(|| "[name]".to_string());
-        let entry_file = if matches!(fmt.as_str(), "es" | "esm" | "cjs") {
-            format!("{name_pattern}.{ext}")
-        } else {
-            format!("{name_pattern}.{fmt}.{ext}")
-        };
-        // An ES library keeps its whitespace so `/* @__PURE__ */` annotations
-        // survive for the consumer's tree-shaking (Vite `codegen: false`).
-        let minify_opts = if minify && matches!(fmt.as_str(), "es" | "esm") {
-            RawMinifyOptions::Object(rolldown_common::RawMinifyOptionsDetailed {
-                mangle: Some(rolldown_common::RawMangleOptions::default()),
-                mangle_properties: None,
-                compress: Some(rolldown_common::RawCompressOptions::default()),
-                remove_whitespace: false,
-                ascii_only: false,
-            })
-        } else {
-            rolldown_minify(minify)
-        };
+    // Vite builds a library one rolldown build per format over the same
+    // plugins: buildStart, buildEnd, renderStart and generateBundle per
+    // format, closeBundle once at the end, failed or not.
+    let mut bundlers = Vec::new();
+    let built: anyhow::Result<()> = async {
+        for (i, fmt) in formats.iter().enumerate() {
+            let format = match fmt.as_str() {
+                "es" | "esm" => OutputFormat::Esm,
+                "cjs" => OutputFormat::Cjs,
+                "umd" => OutputFormat::Umd,
+                _ => OutputFormat::Iife,
+            };
+            let ext = js_ext(fmt);
+            // `name.js` / `name.cjs` for es and cjs, `name.umd.js` / `name.iife.js`
+            // otherwise (Vite `resolveLibFilename`).
+            let name_pattern = base_name.clone().unwrap_or_else(|| "[name]".to_string());
+            let entry_file = if matches!(fmt.as_str(), "es" | "esm" | "cjs") {
+                format!("{name_pattern}.{ext}")
+            } else {
+                format!("{name_pattern}.{fmt}.{ext}")
+            };
+            // An ES library keeps its whitespace so `/* @__PURE__ */` annotations
+            // survive for the consumer's tree-shaking (Vite `codegen: false`).
+            let minify_opts = if minify && matches!(fmt.as_str(), "es" | "esm") {
+                RawMinifyOptions::Object(rolldown_common::RawMinifyOptionsDetailed {
+                    mangle: Some(rolldown_common::RawMangleOptions::default()),
+                    mangle_properties: None,
+                    compress: Some(rolldown_common::RawCompressOptions::default()),
+                    remove_whitespace: false,
+                    ascii_only: false,
+                })
+            } else {
+                rolldown_minify(minify)
+            };
 
-        let mut plugins: Vec<SharedPluginable> = alias_plugin(root, config).into_iter().collect();
-        if let Some(plugin) = &stylex {
-            plugins.push(crate::stylex_plugin::transform(plugin));
-        }
-        if let Some(host) = &plugin_host {
-            plugins.push(Pluginable::new_shared(OjUserPlugin::new(
-                Arc::clone(host),
-                Arc::clone(&emit),
-                host.build_hook_plan().await,
-                bundle_graph::jsx_config(config),
-            )));
-        }
-        plugins.extend(tsconfig_paths_plugin(root, config, "client", false));
-        plugins.push(Pluginable::new_shared(OjCssPlugin {
-            collected: Arc::clone(&collected_css),
-            root: root.to_path_buf(),
-            has_postcss: oj_server::has_postcss_config(root),
-            // Vite inlines every asset of a library build.
-            inline_limit: u64::MAX,
-            client: true,
-            resolve: css_resolve_of(root, config, "client", is_production),
-            base: normalize_base(config.base.as_deref().unwrap_or("/")),
-            css_code_split: false,
-            host: None,
-            css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
-            css: config.css.clone(),
-            html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            worker: None,
-            worker_bundles: Default::default(),
-            worker_chain: Default::default(),
-            pages: Default::default(),
-            chunk_css_hashing: None,
-            url_sheets: None,
-            emit: None,
-        }));
-        let mut bundler = BundlerBuilder::default()
-            .with_plugins(plugins)
-            .with_options(BundlerOptions {
-                input: Some(
-                    entries
-                        .iter()
-                        .map(|(name, import)| InputItem {
-                            name: Some(name.clone()),
-                            import: import.clone(),
-                        })
-                        .collect(),
-                ),
-                cwd: Some(root.to_path_buf()),
-                dir: Some(out_dir.display().to_string()),
-                resolve: rolldown_resolve(root, config, "client"),
-                tsconfig: build_tsconfig(config),
-                format: Some(format),
-                name: lib.name.clone(),
-                preserve_entry_signatures: Some(rolldown_common::PreserveEntrySignatures::Strict),
-                entry_filenames: Some(entry_file.into()),
-                chunk_filenames: Some(format!("[name]-[hash].{ext}").into()),
-                asset_filenames: Some("[name].[ext]".to_string().into()),
-                code_splitting: matches!(fmt.as_str(), "umd" | "iife")
-                    .then_some(rolldown_common::CodeSplittingMode::Bool(false)),
-                minify: Some(minify_opts),
-                sourcemap: sourcemap_type(sourcemap),
-                transform: transform_options(config, is_production),
-                // Vite's define plugin adds no `process.env` defines for a library
-                // (rolldown's own browser-platform NODE_ENV default still applies,
-                // as under Vite); import.meta.env and the user's `define` do.
-                define: Some({
-                    let mut pairs = app_env.import_meta_env_defines(oj_env::get(), &[], "/", false);
-                    pairs.push(import_meta_hot_define());
-                    pairs.extend(oj_config::config_defines(config));
-                    pairs.extend(oj_config::environment_defines(config, "client"));
-                    pairs.into_iter().collect()
-                }),
-                ..Default::default()
-            })
-            .build()
-            .map_err(rolldown_failure!("rolldown init failed"))?;
+            let mut plugins: Vec<SharedPluginable> =
+                alias_plugin(root, config).into_iter().collect();
+            if let Some(plugin) = &stylex {
+                plugins.push(crate::stylex_plugin::transform(plugin));
+            }
+            if let Some(host) = &plugin_host {
+                let user = OjUserPlugin::new(
+                    Arc::clone(host),
+                    Arc::clone(&emit),
+                    host.build_hook_plan().await,
+                    bundle_graph::jsx_config(config),
+                );
+                if i > 0 {
+                    host.next_build()
+                        .await
+                        .map_err(|e| anyhow::anyhow!("plugin host: {e}"))?;
+                }
+                plugins.push(Pluginable::new_shared(user.with_build_end()));
+            }
+            plugins.extend(tsconfig_paths_plugin(root, config, "client", false));
+            plugins.push(Pluginable::new_shared(OjCssPlugin {
+                collected: Arc::clone(&collected_css),
+                root: root.to_path_buf(),
+                has_postcss: oj_server::has_postcss_config(root),
+                // Vite inlines every asset of a library build.
+                inline_limit: u64::MAX,
+                client: true,
+                resolve: css_resolve_of(root, config, "client", is_production),
+                base: normalize_base(config.base.as_deref().unwrap_or("/")),
+                css_code_split: false,
+                host: plugin_host.clone(),
+                css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
+                css: config.css.clone(),
+                html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
+                worker: None,
+                worker_bundles: Default::default(),
+                worker_chain: Default::default(),
+                pages: Default::default(),
+                chunk_css_hashing: None,
+                url_sheets: None,
+                emit: None,
+            }));
+            let mut bundler = BundlerBuilder::default()
+                .with_plugins(plugins)
+                .with_options(BundlerOptions {
+                    input: Some(
+                        entries
+                            .iter()
+                            .map(|(name, import)| InputItem {
+                                name: Some(name.clone()),
+                                import: import.clone(),
+                            })
+                            .collect(),
+                    ),
+                    cwd: Some(root.to_path_buf()),
+                    dir: Some(out_dir.display().to_string()),
+                    resolve: rolldown_resolve(root, config, "client"),
+                    tsconfig: build_tsconfig(config),
+                    format: Some(format),
+                    name: lib.name.clone(),
+                    preserve_entry_signatures: Some(
+                        rolldown_common::PreserveEntrySignatures::Strict,
+                    ),
+                    entry_filenames: Some(entry_file.into()),
+                    chunk_filenames: Some(format!("[name]-[hash].{ext}").into()),
+                    asset_filenames: Some("[name].[ext]".to_string().into()),
+                    code_splitting: matches!(fmt.as_str(), "umd" | "iife")
+                        .then_some(rolldown_common::CodeSplittingMode::Bool(false)),
+                    minify: Some(minify_opts),
+                    sourcemap: sourcemap_type(sourcemap),
+                    transform: transform_options(config, is_production),
+                    // Vite's define plugin adds no `process.env` defines for a library
+                    // (rolldown's own browser-platform NODE_ENV default still applies,
+                    // as under Vite); import.meta.env and the user's `define` do.
+                    define: Some({
+                        let mut pairs =
+                            app_env.import_meta_env_defines(oj_env::get(), &env_delta, "/", false);
+                        pairs.push(import_meta_hot_define());
+                        pairs.extend(oj_config::config_defines(config));
+                        pairs.extend(oj_config::environment_defines(config, "client"));
+                        pairs.extend(plugin_defines.iter().cloned());
+                        pairs.into_iter().collect()
+                    }),
+                    ..Default::default()
+                })
+                .build()
+                .map_err(rolldown_failure!("rolldown init failed"))?;
 
-        let output = on_rolldown(rolldown, bundler.write())
-            .await
-            .map_err(rolldown_failure!("lib build ({fmt}) failed"))?;
-        for asset in &output.assets {
-            if let rolldown_common::Output::Chunk(c) = asset {
-                emitted.push((c.filename.to_string(), c.code.len()));
+            let output = on_rolldown(rolldown, bundler.write()).await;
+            bundlers.push(bundler);
+            let output = output.map_err(rolldown_failure!("lib build ({fmt}) failed"))?;
+            for asset in &output.assets {
+                if let rolldown_common::Output::Chunk(c) = asset {
+                    emitted.push((c.filename.to_string(), c.code.len()));
+                }
+            }
+        }
+        Ok(())
+    }
+    .await;
+    // closeBundle (each bundler's; the host runs the plugins' once).
+    let mut closed = Ok(());
+    for mut bundler in bundlers {
+        let r = on_rolldown(rolldown, bundler.close()).await;
+        if closed.is_ok() {
+            closed = r;
+        }
+    }
+    built?;
+    closed.map_err(rolldown_failure!("lib build close failed"))?;
+    // CSS a plugin routed through the vite:css-post shim joins the library's
+    // stylesheet, replacing the sheet of a module oj compiled.
+    if let Some(host) = &plugin_host {
+        for (id, css) in host.get_plugin_css().await {
+            let src = if id.is_empty() {
+                root.join("__plugin_css__").display().to_string()
+            } else {
+                id.split(['?', '#']).next().unwrap_or(&id).to_string()
+            };
+            let mut collected = collected_css.lock().unwrap();
+            match collected.iter_mut().find(|(k, _)| *k == src) {
+                Some(entry) => entry.1 = css,
+                None => collected.push((src, css)),
             }
         }
     }
@@ -8292,6 +8458,56 @@ mod tests {
             .map(|e| fs::read_to_string(e.path()).unwrap())
             .collect();
         assert!(js.contains("x.ts") && !js.contains("unresolved"), "{js}");
+    }
+
+    /// A Cloudflare worker's `paths` step looks a package up as that
+    /// environment resolves (its conditions), as vite:resolve answers ahead
+    /// of rolldown's native `paths` for a key that names a package.
+    #[test]
+    fn a_workers_paths_step_resolves_packages_under_its_conditions() {
+        let root = scratch("build-worker-paths-conditions");
+        fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        for (file, body) in [
+            ("package.json", r#"{"type":"module"}"#),
+            (
+                "tsconfig.json",
+                r#"{ "compilerOptions": { "paths": { "pkg": ["./src/shim.ts"] } } }"#,
+            ),
+            ("src/main.ts", "import \"pkg\";\n"),
+            ("src/shim.ts", ""),
+            (
+                "node_modules/pkg/package.json",
+                r#"{"name":"pkg","exports":{"workerd":"./worker.js","default":"./node.js"}}"#,
+            ),
+            ("node_modules/pkg/worker.js", ""),
+            ("node_modules/pkg/node.js", ""),
+        ] {
+            let path = root.join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, body).unwrap();
+        }
+        let config = oj_config::OjConfig::default();
+        let importer = root.join("src/main.ts");
+        let answer = |conditions: Option<Vec<String>>| {
+            build_resolver_with(
+                &root,
+                &config,
+                "ssr",
+                oj_resolver::TsconfigPaths::Neither,
+                conditions,
+            )
+            .unwrap()
+            .tsconfig_answer(&importer, "pkg", true)
+        };
+        assert_eq!(
+            answer(Some(vec!["workerd".into(), "import".into()])),
+            oj_resolver::TsconfigAnswer::File(root.join("node_modules/pkg/worker.js"))
+        );
+        assert_eq!(
+            answer(None),
+            oj_resolver::TsconfigAnswer::File(root.join("node_modules/pkg/node.js"))
+        );
     }
 
     /// Vite's define plugin: a browser bundle gets `process.env` -> `{}` (so an

@@ -495,7 +495,7 @@ async fn the_plugins_own_options_decide_as_in_vite() {
     let app = App::new(OPTION_FILES);
     app.link_fixture("vite");
     app.link_fixture("vite-tsconfig-paths");
-    // Each config, and what Vite 8.3.6 with vite-tsconfig-paths 6.1.1 serves
+    // Each config, and what Vite 8.2.1 with vite-tsconfig-paths 6.1.1 serves
     // for /src/main.ts, /src/legacy/old.ts and /pkg/m.ts.
     let configs: &[(&str, &str, [&str; 3])] = &[
         (
@@ -547,78 +547,175 @@ async fn the_plugins_own_options_decide_as_in_vite() {
     }
 }
 
-// vite-tsconfig-paths reloads its projects on a watcher event for a
-// tsconfig: a `paths` key added while dev runs answers the next transform of
-// an importer, in Vite and in oj (whose host plugin hears the same event).
-#[tokio::test(flavor = "multi_thread")]
-async fn a_paths_key_added_while_dev_runs_answers_as_in_vite() {
-    crate::require_fixture!("vite", "vite-tsconfig-paths");
-    const BEFORE: &str = r#"{ "compilerOptions": { "paths": { "@/*": ["./src/*"] } } }"#;
-    const AFTER: &str =
-        r#"{ "compilerOptions": { "paths": { "@/*": ["./src/*"], "~lib/*": ["./lib/*"] } } }"#;
-    let files: &[(&str, &str)] = &[
-        ("index.html", "<script type=\"module\" src=\"/src/main.ts\"></script>"),
-        ("tsconfig.json", BEFORE),
-        ("lib/x.ts", "export const x = 1;\n"),
-        ("src/main.ts", "import { x } from \"~lib/x\";\nconsole.log(x);\n"),
-        (
-            "vite.config.js",
-            "import tsConfigPaths from \"vite-tsconfig-paths\";\nexport default { plugins: [tsConfigPaths()] };\n",
-        ),
-    ];
-    let served = |status: u16, body: &str| -> String {
+/// An edit while dev runs, in Vite and in oj: `files` laid out, dev served
+/// from `web` (relative to the app), `url` fetched before (`before`), then
+/// each of `edits` written 300ms apart; `url` must come to serve `after`.
+/// `<root>` in `url` and in served imports is the app's directory.
+struct EditCase<'a> {
+    files: &'a [(&'a str, &'a str)],
+    web: &'a str,
+    url: &'a str,
+    edits: &'a [(&'a str, &'a str)],
+    before: &'a str,
+    after: &'a str,
+}
+
+impl EditCase<'_> {
+    fn app(&self) -> App {
+        let app = App::new(self.files);
+        let modules = app.root.join(self.web).join("node_modules");
+        std::fs::create_dir_all(&modules).unwrap();
+        for pkg in ["vite", "vite-tsconfig-paths"] {
+            std::os::unix::fs::symlink(crate::fixture(pkg).unwrap(), modules.join(pkg)).unwrap();
+        }
+        app
+    }
+
+    fn served(&self, app: &App, status: u16, body: &str) -> String {
         if status == 200 {
-            imports(body).join(",")
+            imports(body)
+                .join(",")
+                .replace(&app.root.display().to_string(), "<root>")
         } else {
             format!("status {status}")
         }
-    };
-    let edit = |app: &App, n: usize| {
-        app.write(&[("tsconfig.json", AFTER)]);
-        std::thread::sleep(Duration::from_millis(300));
-        let main = format!("import {{ x }} from \"~lib/x\";\nconsole.log(x, {n});\n");
-        app.write(&[("src/main.ts", main.as_str())]);
-    };
-    let want = "/lib/x.ts";
+    }
 
-    let app = App::new(files);
-    app.link_fixture("vite");
-    app.link_fixture("vite-tsconfig-paths");
-    let vite = ViteDev::start(&app.root, "vite.config.js");
-    let (status, body) = vite.get("/src/main.ts");
-    assert_eq!(served(status, &body), "status 500", "vite before the edit");
-    edit(&app, 1);
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let theirs = loop {
-        let (status, body) = vite.get("/src/main.ts");
-        let got = served(status, &body);
-        if got == want || Instant::now() > deadline {
-            break got;
+    fn edit(&self, app: &App) {
+        // A watcher's `add` settles in the background, chokidar's as oj's.
+        std::thread::sleep(Duration::from_millis(1000));
+        for (file, body) in self.edits {
+            std::thread::sleep(Duration::from_millis(300));
+            app.write(&[(*file, *body)]);
         }
-        std::thread::sleep(Duration::from_millis(200));
-    };
-    drop(vite);
-    assert_eq!(theirs, want, "vite after the edit");
+    }
 
-    let app = App::new(files);
-    app.link_fixture("vite");
-    app.link_fixture("vite-tsconfig-paths");
-    let server = crate::serve(app.dev()).await;
-    let r = server.get("/src/main.ts").await;
-    assert_eq!(
-        served(r.status, &r.body),
-        "status 500",
-        "oj before the edit"
-    );
-    edit(&app, 1);
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let ours = loop {
-        let r = server.get("/src/main.ts").await;
-        let got = served(r.status, &r.body);
-        if got == want || Instant::now() > deadline {
-            break got;
+    fn url(&self, app: &App) -> String {
+        self.url.replace("<root>", &app.root.display().to_string())
+    }
+
+    async fn check(&self, label: &str) {
+        let app = self.app();
+        let vite = ViteDev::start(&app.root.join(self.web), "vite.config.js");
+        let url = self.url(&app);
+        let (status, body) = vite.get(&url);
+        assert_eq!(
+            self.served(&app, status, &body),
+            self.before,
+            "vite before, {label}"
+        );
+        self.edit(&app);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let theirs = loop {
+            let (status, body) = vite.get(&url);
+            let got = self.served(&app, status, &body);
+            if got == self.after || Instant::now() > deadline {
+                break got;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        };
+        drop(vite);
+        assert_eq!(theirs, self.after, "vite after, {label}");
+
+        let app = self.app();
+        let mut dev = app.dev();
+        dev.root = app.root.join(self.web);
+        let server = crate::serve(dev).await;
+        let url = self.url(&app);
+        let r = server.get(&url).await;
+        assert_eq!(
+            self.served(&app, r.status, &r.body),
+            self.before,
+            "oj before, {label}"
+        );
+        self.edit(&app);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let ours = loop {
+            let r = server.get(&url).await;
+            let got = self.served(&app, r.status, &r.body);
+            if got == self.after || Instant::now() > deadline {
+                break got;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        };
+        assert_eq!(ours, self.after, "oj after, {label}");
+    }
+}
+
+// vite-tsconfig-paths reloads its projects on a watcher event for a
+// tsconfig: a `paths` key added while dev runs answers the next transform of
+// an importer, in Vite and in oj (whose host plugin hears the same event),
+// also when another plugin adds a middleware (oj's middleware server runs).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_paths_key_added_while_dev_runs_answers_as_in_vite() {
+    crate::require_fixture!("vite", "vite-tsconfig-paths");
+    const AFTER: &str =
+        r#"{ "compilerOptions": { "paths": { "@/*": ["./src/*"], "~lib/*": ["./lib/*"] } } }"#;
+    for (label, config) in [
+        (
+            "the plugin alone",
+            "import tsConfigPaths from \"vite-tsconfig-paths\";\nexport default { plugins: [tsConfigPaths()] };\n",
+        ),
+        (
+            "with a middleware plugin",
+            "import tsConfigPaths from \"vite-tsconfig-paths\";\nexport default { plugins: [tsConfigPaths(), { name: \"mw\", configureServer(s) { s.middlewares.use((q, r, n) => n()); } }] };\n",
+        ),
+    ] {
+        EditCase {
+            files: &[
+                ("index.html", "<script type=\"module\" src=\"/src/main.ts\"></script>"),
+                ("tsconfig.json", r#"{ "compilerOptions": { "paths": { "@/*": ["./src/*"] } } }"#),
+                ("lib/x.ts", "export const x = 1;\n"),
+                ("src/main.ts", "import { x } from \"~lib/x\";\nconsole.log(x);\n"),
+                ("vite.config.js", config),
+            ],
+            web: ".",
+            url: "/src/main.ts",
+            edits: &[
+                ("tsconfig.json", AFTER),
+                ("src/main.ts", "import { x } from \"~lib/x\";\nconsole.log(x, 1);\n"),
+            ],
+            before: "status 500",
+            after: "/lib/x.ts",
         }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    };
-    assert_eq!(ours, want, "oj after the edit");
+        .check(label)
+        .await;
+    }
+}
+
+// vite-tsconfig-paths watches each project's tsconfig it loads
+// (`watcher.add`), one outside Vite's root too: a workspace package's
+// tsconfig edit remaps that package's imports, in Vite and in oj.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tsconfig_outside_the_root_the_plugin_watches_answers_as_in_vite() {
+    crate::require_fixture!("vite", "vite-tsconfig-paths");
+    const BEFORE: &str = r#"{ "compilerOptions": { "paths": { "~/*": ["./a/*"] } } }"#;
+    const AFTER: &str = r#"{ "compilerOptions": { "paths": { "~/*": ["./b/*"] } } }"#;
+    EditCase {
+        files: &[
+            ("pnpm-workspace.yaml", "packages: ['apps/*', 'packages/*']\n"),
+            ("package.json", r#"{"name":"ws","private":true}"#),
+            ("apps/web/package.json", r#"{"name":"web","type":"module"}"#),
+            ("apps/web/index.html", "<script type=\"module\" src=\"/src/main.ts\"></script>"),
+            ("apps/web/src/main.ts", "import { x } from \"../../../packages/ui/src/x.ts\";\nconsole.log(x);\n"),
+            (
+                "apps/web/vite.config.js",
+                "import tsConfigPaths from \"vite-tsconfig-paths\";\nexport default { plugins: [tsConfigPaths({ root: \"../..\" })] };\n",
+            ),
+            ("packages/ui/tsconfig.json", BEFORE),
+            ("packages/ui/a/btn.ts", "export const btn = \"a\";\n"),
+            ("packages/ui/b/btn.ts", "export const btn = \"b\";\n"),
+            ("packages/ui/src/x.ts", "import { btn } from \"~/btn\";\nexport const x = btn;\n"),
+        ],
+        web: "apps/web",
+        url: "/@fs<root>/packages/ui/src/x.ts",
+        edits: &[
+            ("packages/ui/tsconfig.json", AFTER),
+            ("packages/ui/src/x.ts", "import { btn } from \"~/btn\";\nexport const x = btn + 1;\n"),
+        ],
+        before: "/@fs<root>/packages/ui/a/btn.ts",
+        after: "/@fs<root>/packages/ui/b/btn.ts",
+    }
+    .check("a workspace package")
+    .await;
 }

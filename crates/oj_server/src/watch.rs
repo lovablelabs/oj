@@ -1326,13 +1326,11 @@ fn handle_batch(
     // Vite's reloadOnTsconfigChange: clear caches, full reload. The compile
     // key folds class-field semantics in, so stale persistent-cache entries
     // become unreachable once discovery is cleared.
-    if paths.iter().any(|p| is_tsconfig_file(p)) {
+    let tsconfig = paths.iter().any(|p| is_tsconfig_file(p));
+    if tsconfig {
         oj_compiler::tsconfig::clear_cache();
         state.mtime_keys.lock().unwrap().clear();
         state.memory.lock().unwrap().clear();
-        let _ = state
-            .reload_tx
-            .send(full_reload_frame("tsconfig change", None, None));
     }
     // Vite's watcher, per change: plugin watchChange, then the module graph
     // invalidation, then HMR, which `server.hmr: false` skips and the editor
@@ -1354,6 +1352,14 @@ fn handle_batch(
             .is_some_and(|gate| gate.hold(state, &hot, false));
     let (state, paths, created) = (Arc::clone(state), paths.to_vec(), created.clone());
     state.rt.clone().spawn(async move {
+        // The watcher's listeners hear the change first (a plugin reloading
+        // its tsconfig projects), then the page reloads for a tsconfig.
+        crate::hmr::run_watcher_events(&state, &paths, &created).await;
+        if tsconfig {
+            let _ = state
+                .reload_tx
+                .send(full_reload_frame("tsconfig change", None, None));
+        }
         run_watch_change(&state, &paths, &created).await;
         invalidate_changed(&state, &paths);
         if !dispatch {
