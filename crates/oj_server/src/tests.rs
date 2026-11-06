@@ -2965,3 +2965,107 @@ fn a_pages_module_entries_are_its_scripts_as_the_graph_names_them() {
         ["/src/main.js"]
     );
 }
+
+// Vite's module runner resolves an external with fetchModule's tryNodeResolve:
+// mainFields ["main"] (never `module`), the external conditions with `import`,
+// extensions .js/.cjs/.json, a subdirectory's package.json, and dedupe from
+// the root.
+#[test]
+fn the_ssr_external_resolver_picks_what_vites_module_runner_loads() {
+    let root = std::env::temp_dir().join(format!("oj-ssr-external-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let write = |path: &str, body: &str| {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    };
+    write("package.json", "{}");
+    write(
+        "node_modules/two-builds/package.json",
+        r#"{"name":"two-builds","main":"index.cjs.js","module":"index.es.js"}"#,
+    );
+    write("node_modules/two-builds/index.cjs.js", "");
+    write("node_modules/two-builds/index.es.js", "");
+    write(
+        "node_modules/conditional/package.json",
+        r#"{"name":"conditional","exports":{".":{"browser":"./browser.js","node":{"import":"./node.mjs","require":"./node.cjs"},"default":"./default.js"}}}"#,
+    );
+    for file in ["browser.js", "node.mjs", "node.cjs", "default.js"] {
+        write(&format!("node_modules/conditional/{file}"), "");
+    }
+    write("node_modules/deep/package.json", r#"{"name":"deep"}"#);
+    write(
+        "node_modules/deep/sub/package.json",
+        r#"{"main":"index.cjs.js","module":"index.es.js"}"#,
+    );
+    write("node_modules/deep/sub/index.cjs.js", "");
+    write("node_modules/deep/sub/index.es.js", "");
+    write("node_modules/deep/lib/x.cjs", "");
+    write(
+        "node_modules/host/node_modules/two-builds/package.json",
+        r#"{"name":"two-builds","main":"nested.js"}"#,
+    );
+    write("node_modules/host/node_modules/two-builds/nested.js", "");
+    write("node_modules/host/index.js", "");
+    let root = root.canonicalize().unwrap();
+    let pick = |config: &str, from: &str, spec: &str| -> PathBuf {
+        let config: oj_config::OjConfig = serde_json::from_str(config).unwrap();
+        ssr_external_resolver(&root, &config)
+            .resolve(&root.join(from), spec)
+            .unwrap()
+    };
+    let nm = root.join("node_modules");
+    assert_eq!(
+        pick("{}", "src", "two-builds"),
+        nm.join("two-builds/index.cjs.js")
+    );
+    assert_eq!(
+        pick("{}", "src", "conditional"),
+        nm.join("conditional/node.mjs")
+    );
+    assert_eq!(
+        pick("{}", "src", "deep/sub"),
+        nm.join("deep/sub/index.cjs.js")
+    );
+    assert_eq!(pick("{}", "src", "deep/lib/x"), nm.join("deep/lib/x.cjs"));
+    // From inside a dependency: its nested copy, unless deduped to the root's.
+    let host = "node_modules/host";
+    assert_eq!(
+        pick("{}", host, "two-builds"),
+        nm.join("host/node_modules/two-builds/nested.js")
+    );
+    assert_eq!(
+        pick(
+            r#"{"resolve":{"dedupe":["two-builds"]}}"#,
+            host,
+            "two-builds"
+        ),
+        nm.join("two-builds/index.cjs.js")
+    );
+    // Custom external conditions replace the defaults.
+    assert_eq!(
+        pick(
+            r#"{"resolve":{"externalConditions":["browser"]}}"#,
+            "src",
+            "conditional"
+        ),
+        nm.join("conditional/browser.js")
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// An aliased import is never external (Vite's createIsExternal checks
+// matchAlias first), so its spec is the alias's to answer.
+#[test]
+fn an_aliased_specifier_is_never_resolved_as_an_external() {
+    let aliases = vec![
+        ("turndown".to_string(), "/vendor/turndown.js".to_string()),
+        ("@lib/".to_string(), "/src/lib/".to_string()),
+    ];
+    for spec in ["turndown", "turndown/sub", "@lib/x"] {
+        assert!(ssr::aliased(&aliases, spec), "{spec}");
+    }
+    for spec in ["turndown-plugin", "dompurify"] {
+        assert!(!ssr::aliased(&aliases, spec), "{spec}");
+    }
+}
