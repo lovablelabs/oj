@@ -22,7 +22,7 @@ fn app() -> App {
         ),
         (
             "vite.config.mjs",
-            "export default { server: { hmr: false } };\n",
+            "export default { resolve: { tsconfigPaths: true }, server: { hmr: false } };\n",
         ),
         (
             "tsconfig.json",
