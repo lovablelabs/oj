@@ -10,11 +10,12 @@ mod defaults;
 mod exports;
 mod settings;
 mod spec;
+mod tsconfig_paths;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use oxc_resolver::{ResolveOptions, Resolver};
+use oxc_resolver::{ResolveOptions, Resolver, TsconfigDiscovery};
 
 pub use defaults::{
     default_extension_alias, default_extensions, default_main_fields, default_server_main_fields,
@@ -23,14 +24,26 @@ pub use defaults::{
 use exports::{directory_entry, DirectoryEntry};
 pub use settings::ResolveSettings;
 use spec::package_name;
+use tsconfig_paths::{Mapped, Projects};
+pub use tsconfig_paths::{PluginOptions, TsconfigPaths};
 
 pub struct OjResolver {
     /// oxc with tsconfig `paths`, without `resolve.alias` (applied first,
     /// by `resolve`).
     inner: Resolver,
-    /// `inner` without tsconfig `paths`, when a tsconfig is in play: what an
-    /// import whose `paths` target is a declaration file resolves with.
-    no_paths: Option<Resolver>,
+    /// `inner` without tsconfig `paths`: plain resolution, what `paths` in
+    /// the plugin's model fall back to.
+    no_paths: Resolver,
+    /// Parses the tsconfigs the plugin's model finds, references included.
+    tsconfigs: Resolver,
+    /// Vite 8's own resolver with `resolve.tsconfigPaths`: the tsconfig that
+    /// owns each importer (or the one Vite's `tsconfig` option names).
+    native: Resolver,
+    /// Vite's searchForWorkspaceRoot, where the plugin looks for tsconfigs.
+    workspace: PathBuf,
+    /// How the app's Vite applies tsconfig `paths`.
+    tsconfig_paths: TsconfigPaths,
+    projects: Projects,
     /// `resolve.alias` as `(find, replacement)`, in the written order. They
     /// go before tsconfig `paths`: Vite's alias plugin runs ahead of every
     /// resolver plugin.
@@ -83,16 +96,32 @@ impl OjResolver {
     pub fn with_settings(root: &Path, settings: ResolveSettings) -> Self {
         let options = settings::resolve_options(root, &settings);
         let inner = Resolver::new(options.clone());
-        let no_paths = options.tsconfig.is_some().then(|| {
-            inner.clone_with_options(ResolveOptions {
-                tsconfig: None,
-                ..options
-            })
+        let no_paths = inner.clone_with_options(ResolveOptions {
+            tsconfig: None,
+            ..options.clone()
+        });
+        let tsconfigs = inner.clone_with_options(ResolveOptions {
+            tsconfig: Some(TsconfigDiscovery::Auto),
+            ..options.clone()
+        });
+        let native = inner.clone_with_options(ResolveOptions {
+            tsconfig: Some(settings::native_tsconfig(&settings)),
+            ..options
         });
         Self {
             inner,
             no_paths,
+            tsconfigs,
+            native,
+            // The plugin's `root` is its workspace root too.
+            workspace: settings
+                .tsconfig_paths_plugin
+                .root
+                .clone()
+                .unwrap_or_else(|| workspace_root(root)),
             aliases: settings::aliases(root, &settings.alias),
+            tsconfig_paths: settings.tsconfig_paths,
+            projects: Projects::new(settings.tsconfig_paths_plugin.clone()),
             root: root.to_path_buf(),
             dedupe: settings.dedupe.into_iter().collect(),
         }
@@ -108,16 +137,27 @@ impl OjResolver {
                 *c = "require".to_string();
             }
         }
-        let no_paths = self.no_paths.as_ref().map(|_| {
-            self.inner.clone_with_options(ResolveOptions {
-                tsconfig: None,
-                ..options.clone()
-            })
+        let no_paths = self.inner.clone_with_options(ResolveOptions {
+            tsconfig: None,
+            ..options.clone()
+        });
+        let tsconfigs = self.tsconfigs.clone_with_options(ResolveOptions {
+            tsconfig: Some(TsconfigDiscovery::Auto),
+            ..options.clone()
+        });
+        let native = self.native.clone_with_options(ResolveOptions {
+            tsconfig: self.native.options().tsconfig.clone(),
+            ..options.clone()
         });
         Self {
             inner: self.inner.clone_with_options(options),
             no_paths,
+            tsconfigs,
+            native,
+            workspace: self.workspace.clone(),
             aliases: self.aliases.clone(),
+            tsconfig_paths: self.tsconfig_paths,
+            projects: self.projects.fresh(),
             root: self.root.clone(),
             dedupe: self.dedupe.clone(),
         }
@@ -136,6 +176,7 @@ impl OjResolver {
     /// a failed lookup stays unresolvable until this runs.
     pub fn clear_cache(&self) {
         self.inner.clear_cache();
+        self.projects.clear();
     }
 
     /// The first `resolve.alias` entry's rewrite of `specifier`, in the
@@ -162,17 +203,39 @@ impl OjResolver {
     }
 
     /// `specifier` from `importer_dir`. A `resolve.alias` entry rewrites it
-    /// first, as Vite's alias plugin runs ahead of tsconfig `paths`
-    /// (vite-tsconfig-paths, or `resolve.tsconfigPaths`); the rewritten id
-    /// then resolves with `paths` on, as the alias plugin hands it to the
-    /// rest of the pipeline (`this.resolve(updatedId, …, { skipSelf })`).
-    /// A `paths` target that is a declaration file is no answer, as
-    /// vite-tsconfig-paths passes on one (`resolvedToDeclarationFile`).
+    /// first, as Vite's alias plugin runs ahead of tsconfig `paths`; the
+    /// rewritten id then resolves with `paths` on, as the alias plugin hands
+    /// it to the rest of the pipeline (`this.resolve(updatedId, …, { skipSelf })`).
+    /// tsconfig `paths` apply as the app's Vite applies them
+    /// ([`TsconfigPaths`]). With no importer file, no project passes on the
+    /// import for the importer's extension or its `include`.
     pub fn resolve(&self, importer_dir: &Path, specifier: &str) -> Result<PathBuf, ResolveFailure> {
+        self.resolve_at(importer_dir, None, specifier)
+    }
+
+    /// [`Self::resolve`] from the importing file, which tsconfig `paths`
+    /// check the way Vite does (vite-tsconfig-paths: its extension, its
+    /// project's `include`; Vite's own resolver: the tsconfig that owns it).
+    pub fn resolve_from(
+        &self,
+        importer: &Path,
+        specifier: &str,
+    ) -> Result<PathBuf, ResolveFailure> {
+        let file = clean_importer(importer);
+        let dir = file.parent().unwrap_or(&self.root);
+        self.resolve_at(dir, Some(file), specifier)
+    }
+
+    fn resolve_at(
+        &self,
+        importer_dir: &Path,
+        importer: Option<&Path>,
+        specifier: &str,
+    ) -> Result<PathBuf, ResolveFailure> {
         let Some(aliased) = self.alias(specifier) else {
-            return self.resolve_unaliased(importer_dir, specifier);
+            return self.resolve_unaliased(importer_dir, importer, specifier);
         };
-        self.resolve_unaliased(importer_dir, &aliased)
+        self.resolve_unaliased(importer_dir, importer, &aliased)
             .map_err(|failure| ResolveFailure {
                 specifier: specifier.to_string(),
                 reason: format!("aliased to '{aliased}': {}", failure.reason),
@@ -180,83 +243,187 @@ impl OjResolver {
             })
     }
 
-    /// `specifier` past the alias step: tsconfig `paths` the way
-    /// vite-tsconfig-paths applies them, then the plain resolver.
-    ///
-    /// The plugin tries the patterns longest prefix first, where a pattern
-    /// with no `*` counts as no prefix at all (`getPrefixLength`), so `@/*`
-    /// goes before an exact `@/lib/client` key; oxc and tsc take the exact
-    /// key first. A pattern's targets go in order, the first that resolves
-    /// wins; then `baseUrl`. An answer that is a declaration file is no
-    /// answer (`resolvedToDeclarationFile`): the specifier goes on to the
-    /// plain resolver, as it goes on to vite:resolve.
+    /// `specifier` past the alias step, with tsconfig `paths` as the app's
+    /// Vite applies them ([`TsconfigPaths`]).
     fn resolve_unaliased(
         &self,
         importer_dir: &Path,
+        importer: Option<&Path>,
         specifier: &str,
     ) -> Result<PathBuf, ResolveFailure> {
-        let Some(no_paths) = &self.no_paths else {
-            return self.resolve_with(&self.inner, importer_dir, specifier);
-        };
-        // A dependency's own imports never take the app's `paths`: oxc skips
-        // an importer inside node_modules, and vite-tsconfig-paths excludes
-        // `**/node_modules` by default.
-        if importer_dir
-            .components()
-            .any(|c| c.as_os_str() == "node_modules")
+        // A root tsconfig that does not parse leaves the `paths` unknown:
+        // oxc's resolver fails with an error that names it, not a guess.
+        if self.inner.options().tsconfig.is_some()
+            && self.tsconfig_paths != TsconfigPaths::Off
+            && self
+                .inner
+                .resolve_tsconfig(self.root.join("tsconfig.json"))
+                .is_err()
         {
             return self.resolve_with(&self.inner, importer_dir, specifier);
         }
-        let Some(tsconfig) = self.paths_config(importer_dir) else {
-            return self.resolve_with(&self.inner, importer_dir, specifier);
-        };
-        let options = &tsconfig.compiler_options;
-        let candidates = options
-            .paths
-            .as_ref()
-            .map(|paths| paths_candidates(paths, specifier))
-            .unwrap_or_default();
-        if candidates.is_empty() {
-            return self.resolve_with(&self.inner, importer_dir, specifier);
-        }
-        let from_base_url = options.base_url.as_ref().map(|base| base.join(specifier));
-        let mapped = candidates
-            .iter()
-            .map(PathBuf::as_path)
-            .chain(from_base_url.as_deref())
-            .find_map(|candidate| {
-                self.resolve_with(no_paths, importer_dir, &candidate.to_string_lossy())
-                    .ok()
-            });
-        match mapped {
-            Some(declaration) if is_declaration_file(&declaration) => self
-                .resolve_with(no_paths, importer_dir, specifier)
-                .map_err(|failure| ResolveFailure {
-                    reason: format!(
-                        "{}; tsconfig paths map it to '{}', a declaration file, which has no code to run",
-                        failure.reason,
-                        declaration.display()
-                    ),
-                    ..failure
-                }),
-            Some(path) => Ok(path),
-            None => self.resolve_with(no_paths, importer_dir, specifier),
+        let plain = || self.resolve_with(&self.no_paths, importer_dir, specifier);
+        let native = || self.resolve_native(importer_dir, importer, specifier);
+        let mapped = || self.mapped(importer_dir, importer, specifier);
+        match self.tsconfig_paths {
+            TsconfigPaths::Off => plain(),
+            TsconfigPaths::Native => native(),
+            TsconfigPaths::Plugin => match mapped() {
+                Mapped::File(path) => Ok(path),
+                Mapped::Declaration(declaration) => {
+                    plain().map_err(|failure| declaration_failure(failure, &declaration))
+                }
+                Mapped::None => plain(),
+            },
+            // Vite's own resolver takes whatever the plugin passes on.
+            TsconfigPaths::PluginNative => match mapped() {
+                Mapped::File(path) => Ok(path),
+                _ => native(),
+            },
+            TsconfigPaths::Fallback => plain().or_else(|failure| match mapped() {
+                Mapped::File(path) => Ok(path),
+                Mapped::Declaration(declaration) => Err(declaration_failure(failure, &declaration)),
+                Mapped::None => Err(failure),
+            }),
         }
     }
 
-    /// The tsconfig whose `paths` apply to an importer in `importer_dir`: a
-    /// referenced project that holds it, else the root one.
-    fn paths_config(&self, importer_dir: &Path) -> Option<std::sync::Arc<oxc_resolver::TsConfig>> {
-        let file = self.root.join("tsconfig.json");
-        let root = self.inner.resolve_tsconfig(&file).ok()?;
-        let referenced = root.references_resolved.iter().find(|r| {
-            r.compiler_options.paths.is_some()
-                && r.path.parent().is_some_and(|dir| {
-                    let base = r.compiler_options.base_url.as_deref().unwrap_or(dir);
-                    importer_dir.starts_with(base)
-                })
-        });
-        Some(referenced.cloned().unwrap_or(root))
+    /// Vite's own resolver with `resolve.tsconfigPaths`: oxc with the
+    /// tsconfig that owns the importer (`resolve_file`), or the one Vite's
+    /// `tsconfig` option names.
+    fn resolve_native(
+        &self,
+        importer_dir: &Path,
+        importer: Option<&Path>,
+        specifier: &str,
+    ) -> Result<PathBuf, ResolveFailure> {
+        let auto = matches!(
+            self.native.options().tsconfig,
+            Some(TsconfigDiscovery::Auto)
+        );
+        if !auto || self.should_dedupe(specifier) {
+            return self.resolve_with(&self.native, importer_dir, specifier);
+        }
+        // With only a directory, a TypeScript file in it stands in.
+        let stand_in;
+        let file = match importer {
+            Some(file) => file,
+            None => {
+                stand_in = importer_dir.join("__oj_importer__.ts");
+                &stand_in
+            }
+        };
+        match self.native.resolve_file(file, specifier) {
+            Ok(resolution) => {
+                match directory_entry(&self.native, importer_dir, specifier, resolution.path()) {
+                    DirectoryEntry::Resolved(entry) => Ok(entry),
+                    DirectoryEntry::NotApplicable => Ok(resolution.full_path()),
+                    DirectoryEntry::Unresolvable(_) => {
+                        self.resolve_with(&self.native, importer_dir, specifier)
+                    }
+                }
+            }
+            Err(err) => Err(ResolveFailure {
+                specifier: specifier.to_string(),
+                importer: importer_dir.to_path_buf(),
+                reason: err.to_string(),
+                ignored: err.is_ignore(),
+            }),
+        }
+    }
+
+    /// What a bundler whose own resolver applies tsconfig `paths` natively
+    /// (rolldown: oxc's order, ahead of packages) should do instead, for the
+    /// app's [`TsconfigPaths`]. `native_after` is whether the bundler, like
+    /// `vite build`, lets that native resolution take the ids Vite's resolve
+    /// plugin leaves (a dev server never does). An id no `paths` pattern or
+    /// `baseUrl` could take stays the bundler's.
+    pub fn tsconfig_answer(
+        &self,
+        importer: &Path,
+        specifier: &str,
+        native_after: bool,
+    ) -> TsconfigAnswer {
+        let file = clean_importer(importer);
+        let dir = file.parent().unwrap_or(&self.root);
+        if matches!(
+            self.tsconfig_paths,
+            TsconfigPaths::Native | TsconfigPaths::Off
+        ) {
+            return TsconfigAnswer::Bundler;
+        }
+        let load = |f: &Path| self.tsconfigs.resolve_tsconfig(f).ok();
+        let projects = self.projects.projects_for(dir, &load, &self.workspace);
+        if !tsconfig_paths::could_map(&projects, specifier.split('?').next().unwrap_or(specifier)) {
+            return TsconfigAnswer::Bundler;
+        }
+        let plain = || self.resolve_with(&self.no_paths, dir, specifier).ok();
+        let leftover = if native_after {
+            TsconfigAnswer::Bundler
+        } else {
+            TsconfigAnswer::Unresolved
+        };
+        let mapped = self.mapped(dir, Some(file), specifier);
+        match (self.tsconfig_paths, mapped) {
+            (_, Mapped::File(path)) if self.tsconfig_paths != TsconfigPaths::Fallback => {
+                TsconfigAnswer::File(path)
+            }
+            // Vite's own resolver takes what the plugin passes on.
+            (TsconfigPaths::PluginNative, _) => TsconfigAnswer::Bundler,
+            // A build hands what plain resolution leaves to its native
+            // `paths`, as Vite's; a dev server has oj's fallback mapping.
+            (TsconfigPaths::Fallback, mapped) => match plain() {
+                Some(path) => TsconfigAnswer::File(path),
+                None if native_after => TsconfigAnswer::Bundler,
+                None => match mapped {
+                    Mapped::File(path) => TsconfigAnswer::File(path),
+                    _ => TsconfigAnswer::Unresolved,
+                },
+            },
+            _ => plain().map_or(leftover, TsconfigAnswer::File),
+        }
+    }
+
+    /// An `import.meta.glob` pattern through tsconfig `paths`, as Vite's
+    /// resolve plugin maps one with `resolve.tsconfigPaths` (after the
+    /// aliases): the `paths` or `baseUrl` of the tsconfig that owns
+    /// `importer` (or the one Vite's `tsconfig` option names), unchecked on
+    /// disk, the first target (`resolve_tsconfig_path_alias`). Else none:
+    /// vite-tsconfig-paths has no answer for a glob, which names no file.
+    pub fn glob_mapped(&self, importer: &Path, pattern: &str) -> Option<String> {
+        if !matches!(
+            self.tsconfig_paths,
+            TsconfigPaths::Native | TsconfigPaths::PluginNative
+        ) {
+            return None;
+        }
+        let importer = clean_importer(importer);
+        let tsconfig = self.native.find_tsconfig(importer).ok()??;
+        let first = tsconfig
+            .resolve_path_alias_or_base_url(pattern)
+            .into_iter()
+            .next()?;
+        Some(first.to_string_lossy().into_owned())
+    }
+
+    /// vite-tsconfig-paths' answer: each mapped path goes through the
+    /// aliases again, then plain resolution.
+    fn mapped(&self, importer_dir: &Path, importer: Option<&Path>, specifier: &str) -> Mapped {
+        let load = |file: &Path| self.tsconfigs.resolve_tsconfig(file).ok();
+        self.projects.map(
+            load,
+            &self.workspace,
+            importer_dir,
+            importer,
+            specifier,
+            |candidate| {
+                let candidate = self
+                    .alias(candidate)
+                    .unwrap_or_else(|| candidate.to_string());
+                self.resolve_with(&self.no_paths, importer_dir, &candidate)
+                    .ok()
+            },
+        )
     }
 
     fn resolve_with(
@@ -304,43 +471,86 @@ impl OjResolver {
     }
 }
 
-/// A `.d.ts` file, the declaration vite-tsconfig-paths passes on
-/// (`/\.d\.ts(\?|$)/`).
-fn is_declaration_file(path: &Path) -> bool {
-    path.to_string_lossy().ends_with(".d.ts")
+/// An importer id as a file path: its query and hash dropped.
+fn clean_importer(importer: &Path) -> &Path {
+    Path::new(
+        importer
+            .to_str()
+            .and_then(|p| p.split(['?', '#']).next())
+            .unwrap_or_default(),
+    )
 }
 
-/// The files tsconfig `paths` map `specifier` to, in vite-tsconfig-paths'
-/// order: patterns by the length before their `*` (none counts as 0), longest
-/// first and stable, then each pattern's targets with every `*` replaced by
-/// what the pattern's `*` matched.
-fn paths_candidates(
-    paths: &oxc_resolver::CompilerOptionsPathsMap,
-    specifier: &str,
-) -> Vec<PathBuf> {
-    if specifier.starts_with('.') || Path::new(specifier).is_absolute() {
-        return Vec::new();
+/// [`OjResolver::tsconfig_answer`]'s verdict for a bundler.
+#[derive(Debug, PartialEq, Eq)]
+pub enum TsconfigAnswer {
+    /// Resolve to this file.
+    File(PathBuf),
+    /// Leave the id to the bundler's own resolver.
+    Bundler,
+    /// Nothing answers the id, as in Vite.
+    Unresolved,
+}
+
+/// Vite's searchForWorkspaceRoot: the first workspace marker walking up
+/// (`pnpm-workspace.yaml`, `lerna.json`, a `package.json` with `workspaces`,
+/// a `deno.json(c)` with `workspace`), else the nearest ancestor with a
+/// `package.json`, else `root`. `.git` is no marker.
+pub fn workspace_root(root: &Path) -> PathBuf {
+    let mut pkg_root: Option<PathBuf> = None;
+    let mut dir = root;
+    loop {
+        if dir.join("pnpm-workspace.yaml").exists() || dir.join("lerna.json").exists() {
+            return dir.to_path_buf();
+        }
+        if dir.join("package.json").exists() {
+            if json_field_truthy(&dir.join("package.json"), "workspaces") {
+                return dir.to_path_buf();
+            }
+            if pkg_root.is_none() {
+                pkg_root = Some(dir.to_path_buf());
+            }
+        }
+        if json_field_truthy(&dir.join("deno.json"), "workspace")
+            || json_field_truthy(&dir.join("deno.jsonc"), "workspace")
+        {
+            return dir.to_path_buf();
+        }
+        match dir.parent() {
+            Some(p) => dir = p,
+            None => return pkg_root.unwrap_or_else(|| root.to_path_buf()),
+        }
     }
-    let mut patterns: Vec<(&String, &Vec<PathBuf>)> = paths.iter().collect();
-    patterns.sort_by_key(|(pattern, _)| std::cmp::Reverse(pattern.find('*').unwrap_or(0)));
-    patterns
-        .into_iter()
-        .filter_map(|(pattern, targets)| {
-            let matched = match pattern.split_once('*') {
-                None => (specifier == pattern.as_str()).then_some(""),
-                Some((prefix, suffix)) => specifier
-                    .strip_prefix(prefix)
-                    .and_then(|rest| rest.strip_suffix(suffix))
-                    .filter(|star| !star.is_empty()),
-            }?;
-            Some(
-                targets.iter().map(move |target| {
-                    PathBuf::from(target.to_string_lossy().replace('*', matched))
-                }),
-            )
-        })
-        .flatten()
-        .collect()
+}
+
+/// The parsed `field` of a JSON file, truthy by JavaScript's rules.
+fn json_field_truthy(file: &Path, field: &str) -> bool {
+    let Ok(txt) = std::fs::read_to_string(file) else {
+        return false;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) else {
+        return false;
+    };
+    match v.get(field) {
+        None | Some(serde_json::Value::Null) => false,
+        Some(serde_json::Value::Bool(b)) => *b,
+        Some(serde_json::Value::Number(n)) => n.as_f64().is_some_and(|f| f != 0.0),
+        Some(serde_json::Value::String(s)) => !s.is_empty(),
+        Some(_) => true,
+    }
+}
+
+/// `failure` for an import whose tsconfig `paths` answer was a declaration
+/// file, which the error names (an editor resolves the import fine).
+fn declaration_failure(failure: ResolveFailure, declaration: &Path) -> ResolveFailure {
+    ResolveFailure {
+        reason: format!(
+            "{}; tsconfig paths map it to '{}', a declaration file, which has no code to run",
+            failure.reason,
+            declaration.display()
+        ),
+        ..failure
+    }
 }
 
 #[cfg(test)]
@@ -599,6 +809,629 @@ mod tests {
                 .unwrap(),
             root.join("node_modules/events/events.js"),
             "the dependency gets the package"
+        );
+    }
+
+    /// A project tree from `(file, body)` pairs.
+    fn tree(files: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        for (file, body) in files {
+            let path = root.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, body).unwrap();
+        }
+        (tmp, root)
+    }
+
+    fn moded(root: &Path, mode: TsconfigPaths, alias: &[(String, String)]) -> OjResolver {
+        OjResolver::with_settings(
+            root,
+            ResolveSettings {
+                conditions: vec!["import".to_string()],
+                alias: alias.to_vec(),
+                tsconfig_paths: mode,
+                ..ResolveSettings::default()
+            },
+        )
+    }
+
+    const EXACT_AND_STAR: &[(&str, &str)] = &[
+        (
+            "tsconfig.json",
+            r#"{ "compilerOptions": { "paths": { "@/x": ["./src/a.ts"], "@/client": ["./src/client.d.ts"], "@/*": ["./src/*"], "events": ["./src/events.ts"] } } }"#,
+        ),
+        ("src/a.ts", ""),
+        ("src/x.ts", ""),
+        ("src/client.d.ts", ""),
+        ("src/client.ts", ""),
+        ("src/events.ts", ""),
+        (
+            "node_modules/events/package.json",
+            r#"{"name":"events","main":"events.js"}"#,
+        ),
+        ("node_modules/events/events.js", ""),
+    ];
+
+    // The three ways an app's Vite applies tsconfig `paths`: the plugin's
+    // order (`@/*` before an exact key), Vite 8's own (`resolve.tsconfigPaths`:
+    // the exact key first, a declaration file served), and none, where oj
+    // falls back to them only for what plain resolution does not find.
+    #[test]
+    fn tsconfig_paths_follow_how_the_app_turns_them_on() {
+        let (_tmp, root) = tree(EXACT_AND_STAR);
+        let src = root.join("src");
+        let plugin = moded(&root, TsconfigPaths::Plugin, &[]);
+        assert_eq!(plugin.resolve(&src, "@/x").unwrap(), src.join("x.ts"));
+        assert_eq!(
+            plugin.resolve(&src, "@/client").unwrap(),
+            src.join("client.ts")
+        );
+        assert_eq!(
+            plugin.resolve(&src, "events").unwrap(),
+            src.join("events.ts")
+        );
+
+        let native = moded(&root, TsconfigPaths::Native, &[]);
+        assert_eq!(native.resolve(&src, "@/x").unwrap(), src.join("a.ts"));
+        assert_eq!(
+            native.resolve(&src, "@/client").unwrap(),
+            src.join("client.d.ts")
+        );
+
+        let fallback = moded(&root, TsconfigPaths::Fallback, &[]);
+        assert_eq!(
+            fallback.resolve(&src, "events").unwrap(),
+            root.join("node_modules/events/events.js"),
+            "what Vite resolves without paths stands"
+        );
+        assert_eq!(fallback.resolve(&src, "@/x").unwrap(), src.join("x.ts"));
+
+        let off = moded(&root, TsconfigPaths::Off, &[]);
+        assert!(off.resolve(&src, "@/x").is_err());
+    }
+
+    // The plugin maps imports from TypeScript files only, unless `allowJs`.
+    #[test]
+    fn tsconfig_paths_take_typescript_importers_unless_allow_js() {
+        let (_tmp, root) = tree(&[
+            (
+                "tsconfig.json",
+                r#"{ "compilerOptions": { "paths": { "@/*": ["./src/*"] } } }"#,
+            ),
+            ("src/a.ts", ""),
+            ("src/m.ts", ""),
+            ("src/m.js", ""),
+        ]);
+        let src = root.join("src");
+        let resolver = moded(&root, TsconfigPaths::Plugin, &[]);
+        assert_eq!(
+            resolver.resolve_from(&src.join("m.ts"), "@/a").unwrap(),
+            src.join("a.ts")
+        );
+        assert!(resolver.resolve_from(&src.join("m.js"), "@/a").is_err());
+        std::fs::write(
+            root.join("tsconfig.json"),
+            r#"{ "compilerOptions": { "allowJs": true, "paths": { "@/*": ["./src/*"] } } }"#,
+        )
+        .unwrap();
+        let allow_js = moded(&root, TsconfigPaths::Plugin, &[]);
+        assert_eq!(
+            allow_js.resolve_from(&src.join("m.js"), "@/a").unwrap(),
+            src.join("a.ts")
+        );
+    }
+
+    // Vite's template: a root `tsconfig.json` with no files references an
+    // app and a node project. The project whose `include` holds the importer
+    // maps it; the root one has no resolver.
+    #[test]
+    fn the_referenced_project_that_includes_the_importer_maps_it() {
+        let (_tmp, root) = tree(&[
+            (
+                "tsconfig.json",
+                r#"{ "files": [], "references": [{ "path": "./tsconfig.node.json" }, { "path": "./tsconfig.app.json" }] }"#,
+            ),
+            (
+                "tsconfig.node.json",
+                r#"{ "include": ["vite.config.ts"], "compilerOptions": { "paths": { "@/*": ["./node/*"] } } }"#,
+            ),
+            (
+                "tsconfig.app.json",
+                r#"{ "include": ["src"], "compilerOptions": { "paths": { "@/*": ["./src/*"] } } }"#,
+            ),
+            ("src/a.ts", ""),
+            ("src/m.ts", ""),
+            ("node/a.ts", ""),
+            ("vite.config.ts", ""),
+        ]);
+        let resolver = moded(&root, TsconfigPaths::Plugin, &[]);
+        assert_eq!(
+            resolver
+                .resolve_from(&root.join("src/m.ts"), "@/a")
+                .unwrap(),
+            root.join("src/a.ts")
+        );
+        assert_eq!(
+            resolver
+                .resolve_from(&root.join("vite.config.ts"), "@/a")
+                .unwrap(),
+            root.join("node/a.ts")
+        );
+    }
+
+    // Every `*` captures, a target's n-th `*` takes the n-th capture; a
+    // `baseUrl` answer that is a `.json` the id did not name is none; a
+    // mapped path goes through the aliases again.
+    #[test]
+    fn tsconfig_paths_follow_the_plugins_details() {
+        let (_tmp, root) = tree(&[
+            (
+                "tsconfig.json",
+                r#"{ "compilerOptions": { "baseUrl": ".", "paths": { "x/*/y/*": ["./src/*/*"], "@/*": ["./src/*"] } } }"#,
+            ),
+            ("src/a/b.ts", ""),
+            ("lib/data.json", "{}"),
+            ("real/c.ts", ""),
+        ]);
+        let src = root.join("src");
+        let resolver = moded(&root, TsconfigPaths::Plugin, &[]);
+        assert_eq!(
+            resolver.resolve(&src, "x/a/y/b").unwrap(),
+            src.join("a/b.ts")
+        );
+        assert!(
+            resolver.resolve(&src, "lib/data").is_err(),
+            "a .json the id did not name"
+        );
+        assert_eq!(
+            resolver.resolve(&src, "lib/data.json").unwrap(),
+            root.join("lib/data.json")
+        );
+        let aliased = moded(
+            &root,
+            TsconfigPaths::Plugin,
+            &[(
+                src.to_string_lossy().into_owned(),
+                root.join("real").to_string_lossy().into_owned(),
+            )],
+        );
+        assert_eq!(
+            aliased.resolve(&src, "@/c").unwrap(),
+            root.join("real/c.ts")
+        );
+    }
+
+    // The plugin finds every `tsconfig.json` / `jsconfig.json` under Vite's
+    // workspace root, nearest the importer first: a package's own tsconfig
+    // with no root one, and a workspace-level one above the app.
+    #[test]
+    fn tsconfig_paths_come_from_the_nearest_tsconfig_in_the_workspace() {
+        let (_tmp, ws) = tree(&[
+            ("pnpm-workspace.yaml", "packages: [apps/*]\n"),
+            (
+                "tsconfig.json",
+                r##"{ "compilerOptions": { "paths": { "#shared/*": ["./shared/*"] } } }"##,
+            ),
+            ("shared/util.ts", ""),
+            ("apps/web/package.json", r#"{"name":"web"}"#),
+            (
+                "apps/web/src/feature/tsconfig.json",
+                r#"{ "compilerOptions": { "paths": { "~/*": ["./*"] } } }"#,
+            ),
+            ("apps/web/src/feature/a.ts", ""),
+            ("apps/web/src/feature/m.ts", ""),
+            ("apps/web/src/m.ts", ""),
+        ]);
+        let app = ws.join("apps/web");
+        let resolver = moded(&app, TsconfigPaths::Plugin, &[]);
+        let feature = app.join("src/feature");
+        assert_eq!(
+            resolver.resolve_from(&feature.join("m.ts"), "~/a").unwrap(),
+            feature.join("a.ts"),
+            "a nested project with no root tsconfig"
+        );
+        assert_eq!(
+            resolver
+                .resolve_from(&app.join("src/m.ts"), "#shared/util")
+                .unwrap(),
+            ws.join("shared/util.ts"),
+            "the workspace's tsconfig above the app"
+        );
+        assert!(
+            resolver.resolve_from(&app.join("src/m.ts"), "~/a").is_err(),
+            "not this importer's project"
+        );
+    }
+
+    // A bundler whose own resolver applies `paths` natively (oxc's order,
+    // ahead of packages) takes the plugin's answer in `Plugin` mode, the plain
+    // answer first in `Fallback` mode, and nothing in `Native` mode.
+    #[test]
+    fn a_bundler_takes_the_answer_the_mode_gives() {
+        let (_tmp, root) = tree(EXACT_AND_STAR);
+        let m = root.join("src/m.ts");
+        let plugin = moded(&root, TsconfigPaths::Plugin, &[]);
+        use TsconfigAnswer::*;
+        assert_eq!(
+            plugin.tsconfig_answer(&m, "@/x", false),
+            File(root.join("src/x.ts"))
+        );
+        let fallback = moded(&root, TsconfigPaths::Fallback, &[]);
+        assert_eq!(
+            fallback.tsconfig_answer(&m, "events", false),
+            File(root.join("node_modules/events/events.js"))
+        );
+        assert_eq!(
+            fallback.tsconfig_answer(&m, "@/x", false),
+            File(root.join("src/x.ts"))
+        );
+        assert_eq!(
+            fallback.tsconfig_answer(&m, "react", false),
+            Bundler,
+            "no pattern: the bundler's"
+        );
+        let native = moded(&root, TsconfigPaths::Native, &[]);
+        assert_eq!(native.tsconfig_answer(&m, "@/x", false), Bundler);
+        // Only a declaration file answers: unresolved, never the `.d.ts`.
+        std::fs::write(
+            root.join("tsconfig.json"),
+            r#"{ "compilerOptions": { "paths": { "@/client": ["./src/client.d.ts"] } } }"#,
+        )
+        .unwrap();
+        let plugin = moded(&root, TsconfigPaths::Plugin, &[]);
+        assert_eq!(plugin.tsconfig_answer(&m, "@/client", false), Unresolved);
+    }
+
+    // Vite's own resolver (`resolve.tsconfigPaths`) uses the tsconfig that
+    // owns the importer: Vite's template root with no files hands `src` to
+    // the app project; a file no project includes gets no `paths`; a nested
+    // package's own tsconfig maps its imports. Vite's `tsconfig` option
+    // names the one file instead.
+    #[test]
+    fn native_paths_come_from_the_tsconfig_that_owns_the_importer() {
+        let (_tmp, root) = tree(&[
+            (
+                "tsconfig.json",
+                r#"{ "files": [], "references": [{ "path": "./tsconfig.node.json" }, { "path": "./tsconfig.app.json" }] }"#,
+            ),
+            ("tsconfig.node.json", r#"{ "include": ["vite.config.ts"] }"#),
+            (
+                "tsconfig.app.json",
+                r#"{ "include": ["src"], "compilerOptions": { "paths": { "@/*": ["./src/*"] } } }"#,
+            ),
+            ("src/a.ts", ""),
+            ("src/m.ts", ""),
+            ("other/m.ts", ""),
+            (
+                "pkg/tsconfig.json",
+                r#"{ "compilerOptions": { "paths": { "~/*": ["./lib/*"] } } }"#,
+            ),
+            ("pkg/lib/b.ts", ""),
+            ("pkg/m.ts", ""),
+        ]);
+        let native = moded(&root, TsconfigPaths::Native, &[]);
+        assert_eq!(
+            native.resolve_from(&root.join("src/m.ts"), "@/a").unwrap(),
+            root.join("src/a.ts")
+        );
+        assert!(native
+            .resolve_from(&root.join("other/m.ts"), "@/a")
+            .is_err());
+        assert_eq!(
+            native.resolve_from(&root.join("pkg/m.ts"), "~/b").unwrap(),
+            root.join("pkg/lib/b.ts")
+        );
+        let named = OjResolver::with_settings(
+            &root,
+            ResolveSettings {
+                conditions: vec!["import".to_string()],
+                tsconfig_paths: TsconfigPaths::Native,
+                tsconfig_file: Some(root.join("tsconfig.app.json")),
+                ..ResolveSettings::default()
+            },
+        );
+        assert_eq!(
+            named.resolve_from(&root.join("pkg/m.ts"), "@/a").unwrap(),
+            root.join("src/a.ts")
+        );
+        // A glob maps through the importer's own tsconfig, its first target.
+        assert_eq!(
+            native.glob_mapped(&root.join("src/m.ts"), "@/pages/*.ts"),
+            Some(root.join("src/pages/*.ts").to_string_lossy().into_owned())
+        );
+        assert_eq!(
+            native.glob_mapped(&root.join("pkg/m.ts"), "~/views/*.ts"),
+            Some(
+                root.join("pkg/lib/views/*.ts")
+                    .to_string_lossy()
+                    .into_owned()
+            )
+        );
+        assert_eq!(
+            native.glob_mapped(&root.join("pkg/m.ts"), "@/pages/*.ts"),
+            None
+        );
+        assert_eq!(
+            named.glob_mapped(&root.join("pkg/m.ts"), "@/pages/*.ts"),
+            Some(root.join("src/pages/*.ts").to_string_lossy().into_owned()),
+            "Vite's `tsconfig` option names the one file"
+        );
+    }
+
+    // The plugin's details: a jsconfig takes JS importers; an importer
+    // known only by its directory is not filtered out; projects in one
+    // directory go in `localeCompare` order (`_` before `.`); tsconfigs
+    // inside node_modules are never found; with `resolve.tsconfigPaths` too,
+    // Vite's own resolver takes what the plugin passes on.
+    #[test]
+    fn plugin_mode_follows_the_plugins_discovery_and_filters() {
+        let (_tmp, root) = tree(&[
+            (
+                "jsconfig.json",
+                r#"{ "compilerOptions": { "paths": { "@/*": ["./src/*"] } } }"#,
+            ),
+            ("src/a.js", ""),
+            ("src/m.jsx", ""),
+        ]);
+        let plugin = moded(&root, TsconfigPaths::Plugin, &[]);
+        assert_eq!(
+            plugin.resolve_from(&root.join("src/m.jsx"), "@/a").unwrap(),
+            root.join("src/a.js")
+        );
+
+        let (_tmp, root) = tree(&[
+            (
+                "tsconfig.json",
+                r#"{ "include": ["src/**/*.tsx"], "compilerOptions": { "paths": { "@/*": ["./src/*"] } } }"#,
+            ),
+            ("src/a.ts", ""),
+        ]);
+        let plugin = moded(&root, TsconfigPaths::Plugin, &[]);
+        assert_eq!(
+            plugin.resolve(&root.join("src"), "@/a").unwrap(),
+            root.join("src/a.ts")
+        );
+
+        let (_tmp, root) = tree(&[
+            (
+                "tsconfig.b.json",
+                r#"{ "compilerOptions": { "paths": { "@/*": ["./b/*"] } } }"#,
+            ),
+            (
+                "tsconfig_a.json",
+                r#"{ "compilerOptions": { "paths": { "@/*": ["./a/*"] } } }"#,
+            ),
+            (
+                "tsconfig.json",
+                r#"{ "files": [], "references": [{ "path": "./tsconfig.b.json" }, { "path": "./tsconfig_a.json" }] }"#,
+            ),
+            ("a/x.ts", ""),
+            ("b/x.ts", ""),
+            ("m.ts", ""),
+        ]);
+        let plugin = moded(&root, TsconfigPaths::Plugin, &[]);
+        assert_eq!(
+            plugin.resolve_from(&root.join("m.ts"), "@/x").unwrap(),
+            root.join("a/x.ts")
+        );
+
+        let (_tmp, root) = tree(&[
+            (
+                "node_modules/dep/tsconfig.json",
+                r##"{ "compilerOptions": { "paths": { "#x": ["./x.ts"] } } }"##,
+            ),
+            ("node_modules/dep/x.ts", ""),
+            ("node_modules/dep/m.ts", ""),
+        ]);
+        let plugin = moded(&root, TsconfigPaths::Plugin, &[]);
+        assert!(plugin
+            .resolve_from(&root.join("node_modules/dep/m.ts"), "#x")
+            .is_err());
+
+        let (_tmp, root) = tree(&[
+            (
+                "tsconfig.json",
+                r#"{ "compilerOptions": { "paths": { "@/client": ["./src/client.d.ts"] } } }"#,
+            ),
+            ("src/client.d.ts", ""),
+            ("src/m.ts", ""),
+        ]);
+        let both = moded(&root, TsconfigPaths::PluginNative, &[]);
+        assert_eq!(
+            both.resolve_from(&root.join("src/m.ts"), "@/client")
+                .unwrap(),
+            root.join("src/client.d.ts")
+        );
+    }
+
+    // A bundler that lets its native `paths` take Vite's leftovers (a build)
+    // gets `Bundler` where a dev server's gets `Unresolved`; a `paths` key
+    // named like a package leaves the package in every mode but Native.
+    #[test]
+    fn a_build_bundler_keeps_its_native_paths_for_leftovers() {
+        let (_tmp, root) = tree(EXACT_AND_STAR);
+        let m = root.join("src/m.ts");
+        let fallback = moded(&root, TsconfigPaths::Fallback, &[]);
+        assert_eq!(
+            fallback.tsconfig_answer(&m, "events", true),
+            TsconfigAnswer::File(root.join("node_modules/events/events.js"))
+        );
+        assert_eq!(
+            fallback.tsconfig_answer(&root.join("src/m.js"), "@/nothing", true),
+            TsconfigAnswer::Bundler
+        );
+        assert_eq!(
+            fallback.tsconfig_answer(&root.join("src/m.js"), "@/nothing", false),
+            TsconfigAnswer::Unresolved
+        );
+        assert_eq!(
+            fallback.tsconfig_answer(&m, "@/x", true),
+            TsconfigAnswer::Bundler,
+            "what plain resolution leaves goes to the build's native order"
+        );
+    }
+
+    fn with_plugin(root: &Path, options: PluginOptions) -> OjResolver {
+        OjResolver::with_settings(
+            root,
+            ResolveSettings {
+                conditions: vec!["import".to_string()],
+                tsconfig_paths: TsconfigPaths::Plugin,
+                tsconfig_paths_plugin: options,
+                ..ResolveSettings::default()
+            },
+        )
+    }
+
+    // vite-tsconfig-paths' options (loadEagerProjects, getResolvers,
+    // isImporterSupported): `projects` loads those files alone; `root` moves
+    // the project and workspace roots; lazy discovery walks every ancestor;
+    // `configNames` names the files; `loose` takes any importer.
+    #[test]
+    fn plugin_options_change_what_the_plugin_finds() {
+        let (_tmp, ws) = tree(&[
+            (
+                "tsconfig.json",
+                r#"{ "compilerOptions": { "paths": { "~ws/*": ["./shared/*"] } } }"#,
+            ),
+            ("shared/s.ts", ""),
+            ("tools/m.ts", ""),
+            ("app/package.json", r#"{"name":"app"}"#),
+            (
+                "app/tsconfig.json",
+                r#"{ "compilerOptions": { "paths": { "@/*": ["./src/*"] } } }"#,
+            ),
+            (
+                "app/tsconfig.custom.json",
+                r##"{ "compilerOptions": { "paths": { "#c/*": ["./src/*"] } } }"##,
+            ),
+            ("app/src/a.ts", ""),
+            ("app/src/m.ts", ""),
+            ("app/src/m.js", ""),
+            (
+                "app/src/feature/tsconfig.json",
+                r#"{ "compilerOptions": { "paths": { "~f/*": ["./*"] } } }"#,
+            ),
+            ("app/src/feature/b.ts", ""),
+            ("app/src/feature/m.ts", ""),
+        ]);
+        let app = ws.join("app");
+        let feature = app.join("src/feature/m.ts");
+        let m = app.join("src/m.ts");
+
+        let default = with_plugin(&app, PluginOptions::default());
+        assert!(
+            default.resolve_from(&feature, "~f/b").is_ok(),
+            "discovery finds the nested one"
+        );
+        // The nearest project that matches nothing ends the search
+        // (`notFound`), so the workspace tsconfig answers from outside the app.
+        let tools = ws.join("tools/m.ts");
+        assert!(
+            default.resolve_from(&tools, "~ws/s").is_err(),
+            "the workspace root is the app"
+        );
+
+        let projects = with_plugin(
+            &app,
+            PluginOptions {
+                projects: Some(vec![app.join("tsconfig.json")]),
+                ..PluginOptions::default()
+            },
+        );
+        assert!(
+            projects.resolve_from(&feature, "~f/b").is_err(),
+            "the nested one is not listed"
+        );
+        assert_eq!(
+            projects.resolve_from(&feature, "@/a").unwrap(),
+            app.join("src/a.ts")
+        );
+
+        let rooted = with_plugin(
+            &app,
+            PluginOptions {
+                root: Some(ws.clone()),
+                ..PluginOptions::default()
+            },
+        );
+        assert_eq!(
+            rooted.resolve_from(&tools, "~ws/s").unwrap(),
+            ws.join("shared/s.ts")
+        );
+
+        let lazy = with_plugin(
+            &app,
+            PluginOptions {
+                lazy: true,
+                ..PluginOptions::default()
+            },
+        );
+        assert_eq!(
+            lazy.resolve_from(&tools, "~ws/s").unwrap(),
+            ws.join("shared/s.ts")
+        );
+
+        let named = with_plugin(
+            &app,
+            PluginOptions {
+                config_names: Some(vec!["tsconfig.custom.json".to_string()]),
+                ..PluginOptions::default()
+            },
+        );
+        assert_eq!(
+            named.resolve_from(&m, "#c/a").unwrap(),
+            app.join("src/a.ts")
+        );
+        assert!(named.resolve_from(&m, "@/a").is_err());
+
+        assert!(default.resolve_from(&app.join("src/m.js"), "@/a").is_err());
+        let loose = with_plugin(
+            &app,
+            PluginOptions {
+                loose: true,
+                ..PluginOptions::default()
+            },
+        );
+        assert_eq!(
+            loose.resolve_from(&app.join("src/m.js"), "@/a").unwrap(),
+            app.join("src/a.ts")
+        );
+    }
+
+    // An `include` a config inherits through `extends` stays relative to the
+    // config that declares it (tsconfck), not the extending one: a base's
+    // `["src"]` is the base's `src`, so the app's own `src` is left out.
+    #[test]
+    fn an_inherited_include_stays_relative_to_its_config() {
+        let (_tmp, root) = tree(&[
+            ("base/tsconfig.base.json", r#"{ "include": ["src"] }"#),
+            (
+                "app/tsconfig.json",
+                r#"{ "extends": "../base/tsconfig.base.json", "compilerOptions": { "paths": { "@/*": ["./src/*"] } } }"#,
+            ),
+            ("app/src/a.ts", ""),
+            ("app/src/m.ts", ""),
+            (
+                "own/tsconfig.json",
+                r#"{ "extends": "../base/tsconfig.base.json", "include": ["src"], "compilerOptions": { "paths": { "@/*": ["./src/*"] } } }"#,
+            ),
+            ("own/src/a.ts", ""),
+            ("own/src/m.ts", ""),
+        ]);
+        let app = root.join("app");
+        let resolver = with_plugin(&app, PluginOptions::default());
+        assert!(
+            resolver.resolve_from(&app.join("src/m.ts"), "@/a").is_err(),
+            "the inherited `src` is base/src"
+        );
+        let own = root.join("own");
+        let resolver = with_plugin(&own, PluginOptions::default());
+        assert_eq!(
+            resolver.resolve_from(&own.join("src/m.ts"), "@/a").unwrap(),
+            own.join("src/a.ts"),
+            "its own `include` is its own"
         );
     }
 

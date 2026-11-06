@@ -49,6 +49,34 @@ fn only_the_first_death_report_per_generation_declares_the_host_gone() {
     assert!(!first_death_report(&mut revive, 4), "once");
 }
 
+// The extractor reports how the app applies tsconfig `paths`: the plugin,
+// Vite 8's `resolve.tsconfigPaths`, or neither.
+#[test]
+fn the_tsconfig_paths_mode_follows_the_extracted_config() {
+    let mode = |resolve: serde_json::Value| {
+        let mut config = oj_config::OjConfig::default();
+        merge_vite_values(
+            &mut config,
+            parse_vite_values(&serde_json::json!({ "resolve": resolve })),
+        );
+        crate::tsconfig_paths(&config)
+    };
+    use oj_resolver::TsconfigPaths::*;
+    let both = serde_json::json!({ "tsconfigPathsPlugin": true, "tsconfigPaths": true });
+    assert_eq!(mode(both), PluginNative);
+    let plugin = serde_json::json!({ "tsconfigPathsPlugin": true, "tsconfigPaths": false });
+    assert_eq!(mode(plugin), Plugin);
+    let native = serde_json::json!({ "tsconfigPathsPlugin": false, "tsconfigPaths": true });
+    assert_eq!(mode(native), Native);
+    let neither = serde_json::json!({ "tsconfigPathsPlugin": false, "tsconfigPaths": false });
+    assert_eq!(mode(neither), Fallback);
+    assert_eq!(
+        crate::tsconfig_paths(&oj_config::OjConfig::default()),
+        Fallback,
+        "no host: no plugin, as Vite with no config"
+    );
+}
+
 // The resolved config's alias list is the one Vite matches against: its
 // order (mergeAlias puts a plugin's entries first when either side is an
 // array) and values lead; a statically read entry it lacks follows.

@@ -1745,6 +1745,22 @@ export async function extract(input) {
         if (Object.keys(resolveOut).length === 0) resolveOut = null;
       }
     }
+    // How the app applies tsconfig `paths`: vite-tsconfig-paths in the plugin
+    // list, Vite 8's own `resolve.tsconfigPaths`, or neither (no paths).
+    // Vite's top-level `tsconfig` option names the one file its own
+    // resolver reads. The plugin names are the ones Vite's own warning
+    // recognizes (resolveConfig).
+    // The config file is where vite-tsconfig-paths' options are read.
+    const tsconfigPathsPlugin = (c.plugins ?? []).some(
+      (p) => p?.name === "vite-tsconfig-paths" || p?.name === "vite-plugin-tsconfig-paths",
+    );
+    resolveOut = {
+      ...(resolveOut ?? {}),
+      tsconfigPaths: c.resolve?.tsconfigPaths === true,
+      tsconfigPathsPlugin,
+      tsconfigFile: typeof c.tsconfig === "string" ? c.tsconfig : null,
+      configFile: tsconfigPathsPlugin && typeof c.configFile === "string" ? c.configFile : null,
+    };
     recordEnvFilesForMode(typeof c.mode === "string" ? c.mode : mode, typeof c.envDir === "string" ? c.envDir : null);
     return {
       __ok: true,

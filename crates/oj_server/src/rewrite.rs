@@ -63,15 +63,30 @@ const PASSTHROUGH_QUERIES: &[&str] = &[
     "no-inline",
 ];
 
+/// Where an import sits: its directory, and its file when known (tsconfig
+/// `paths` check the file as Vite does).
+#[derive(Clone, Copy)]
+pub(crate) struct Importer<'a> {
+    pub dir: &'a Path,
+    pub file: Option<&'a Path>,
+}
+
+impl<'a> Importer<'a> {
+    pub fn dir(dir: &'a Path) -> Importer<'a> {
+        Importer { dir, file: None }
+    }
+}
+
 pub(crate) fn rewrite_specifier(
     root: &Path,
-    dir: &Path,
+    from: Importer<'_>,
     resolver: &OjResolver,
     fs_allow: &Mutex<std::collections::HashSet<PathBuf>>,
     dir_cache: &Mutex<DirCache>,
     spec: &str,
     css_import_marker: bool,
 ) -> Option<String> {
+    let (dir, importer) = (from.dir, from.file);
     if spec.starts_with('/') {
         return rewrite_absolute(root, fs_allow, dir_cache, spec);
     }
@@ -86,13 +101,15 @@ pub(crate) fn rewrite_specifier(
 
     if let Some((base, query)) = spec.split_once('?') {
         if PASSTHROUGH_QUERIES.contains(&query) {
-            let resolved = rewrite_specifier(root, dir, resolver, fs_allow, dir_cache, base, false)
-                .or_else(|| {
-                    resolver.resolve(dir, base).ok().map(|p| {
-                        allow_package(fs_allow, &p);
-                        url_of(root, &p)
-                    })
-                })?;
+            let resolved = rewrite_specifier(
+                root, from, resolver, fs_allow, dir_cache, base, false,
+            )
+            .or_else(|| {
+                resolve_in(resolver, dir, importer, base).ok().map(|p| {
+                    allow_package(fs_allow, &p);
+                    url_of(root, &p)
+                })
+            })?;
             return Some(format!("{resolved}?{query}"));
         }
     }
@@ -106,7 +123,7 @@ pub(crate) fn rewrite_specifier(
         }
     }
 
-    match resolver.resolve(dir, spec) {
+    match resolve_in(resolver, dir, importer, spec) {
         // An alias (`@/assets/logo.svg`) or root-absolute import of a style
         // or asset gets the same `?import` / `?url` marks a relative one does.
         Ok(resolved) if !in_node_modules(&resolved) && resolved.starts_with(root) => Some(
@@ -332,4 +349,18 @@ pub(crate) fn locate(root: &Path, public_dir: Option<&Path>, rel: &str) -> Optio
         return Some(public);
     }
     None
+}
+
+/// `spec` from the importing file when it is known (tsconfig `paths` check
+/// it as Vite does), else from its directory.
+pub(crate) fn resolve_in(
+    resolver: &OjResolver,
+    dir: &Path,
+    importer: Option<&Path>,
+    spec: &str,
+) -> Result<PathBuf, oj_resolver::ResolveFailure> {
+    match importer {
+        Some(file) => resolver.resolve_from(file, spec),
+        None => resolver.resolve(dir, spec),
+    }
 }

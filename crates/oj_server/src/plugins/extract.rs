@@ -1365,6 +1365,22 @@ fn merge_resolve_block(
     if rc.preserve_symlinks.is_none() {
         rc.preserve_symlinks = vr.get("preserveSymlinks").and_then(|b| b.as_bool());
     }
+    if rc.tsconfig_paths.is_none() {
+        rc.tsconfig_paths = vr.get("tsconfigPaths").and_then(|b| b.as_bool());
+    }
+    rc.tsconfig_paths_plugin = vr.get("tsconfigPathsPlugin").and_then(|b| b.as_bool());
+    if rc.tsconfig_file.is_none() {
+        rc.tsconfig_file = vr
+            .get("tsconfigFile")
+            .and_then(|f| f.as_str())
+            .map(str::to_string);
+    }
+    if rc.vite_config_file.is_none() {
+        rc.vite_config_file = vr
+            .get("configFile")
+            .and_then(|f| f.as_str())
+            .map(str::to_string);
+    }
 }
 
 /// The extractor's `serverFlags`. Runs after the vite `fsStrict` value, so that

@@ -25,7 +25,8 @@ pub mod tsconfig;
 pub(crate) use compile::detect_refresh_registrations;
 pub use compile::{
     compile, compile_module, compile_module_with_maps, transform_for_bundle, CompileError,
-    CompileOptions, CompileOutput, HotAccept, ImportRewriter, JsxConfig, COMPILE_STACK_SIZE,
+    CompileOptions, CompileOutput, GlobPaths, HotAccept, ImportRewriter, JsxConfig,
+    COMPILE_STACK_SIZE,
 };
 pub(crate) use env::defines_for;
 pub use env::ImportMetaEnv;

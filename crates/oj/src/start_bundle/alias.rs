@@ -65,3 +65,95 @@ impl Plugin for AppAliasPlugin {
         Ok(Some(HookResolveIdOutput::from_id(updated)))
     }
 }
+
+/// tsconfig `paths` as the app's Vite applies them, where vite:resolve
+/// sits, ahead of rolldown's own resolver, which applies them natively
+/// (oxc's order, ahead of packages):
+/// `oj_resolver::OjResolver::tsconfig_answer`. `native_after` lets that
+/// native resolution take what Vite's resolve plugin leaves, as `vite build`
+/// does (a dev server never does).
+pub(crate) struct TsconfigPathsPlugin {
+    resolver: oj_resolver::OjResolver,
+    native_after: bool,
+}
+
+impl TsconfigPathsPlugin {
+    pub fn new(resolver: oj_resolver::OjResolver, native_after: bool) -> Self {
+        TsconfigPathsPlugin {
+            resolver,
+            native_after,
+        }
+    }
+}
+
+impl std::fmt::Debug for TsconfigPathsPlugin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TsconfigPathsPlugin")
+    }
+}
+
+impl Plugin for TsconfigPathsPlugin {
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("oj:tsconfig-paths")
+    }
+
+    fn register_hook_usage(&self) -> rolldown_plugin::HookUsage {
+        rolldown_plugin::HookUsage::ResolveId | rolldown_plugin::HookUsage::BuildStart
+    }
+
+    // Each rebuild sees the files as they are now (a tsconfig edited, a
+    // package installed since).
+    async fn build_start(
+        &self,
+        _ctx: &PluginContext,
+        _args: &rolldown_plugin::HookBuildStartArgs<'_>,
+    ) -> rolldown_plugin::HookNoopReturn {
+        self.resolver.clear_cache();
+        Ok(())
+    }
+
+    async fn resolve_id(
+        &self,
+        ctx: &PluginContext,
+        args: &HookResolveIdArgs<'_>,
+    ) -> HookResolveIdReturn {
+        let spec = args.specifier;
+        let Some(importer) = args.importer else {
+            return Ok(None);
+        };
+        if spec.starts_with('.')
+            || spec.starts_with('/')
+            || spec.contains('\0')
+            || spec.contains(':')
+        {
+            return Ok(None);
+        }
+        let file = importer.split(['?', '#']).next().unwrap_or(importer);
+        let answer = match self
+            .resolver
+            .tsconfig_answer(Path::new(file), spec, self.native_after)
+        {
+            oj_resolver::TsconfigAnswer::File(answer) => answer,
+            oj_resolver::TsconfigAnswer::Bundler => return Ok(None),
+            // Vite fails the import; so does this bundle.
+            oj_resolver::TsconfigAnswer::Unresolved => {
+                return Err(anyhow::anyhow!(
+                    "Failed to resolve import \"{spec}\" from \"{file}\". Does the file exist?"
+                ))
+            }
+        };
+        let resolved = ctx
+            .resolve(
+                &answer.to_string_lossy(),
+                args.importer,
+                Some(PluginContextResolveOptions {
+                    import_kind: args.kind,
+                    is_entry: args.is_entry,
+                    skip_self: true,
+                    ..Default::default()
+                }),
+            )
+            .await?;
+        Ok(resolved.ok().map(HookResolveIdOutput::from_resolved_id))
+    }
+}

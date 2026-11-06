@@ -469,6 +469,7 @@ impl DevBundler {
                     entries: h.facts.alias.clone(),
                 }));
             }
+
             plugins.push(Pluginable::new_shared(
                 StartHostPlugin::new(
                     Arc::clone(&h.host),
@@ -484,6 +485,20 @@ impl DevBundler {
                         .with_route_tree(start.route_tree())
                         .with_alias(h.facts.alias.clone())
                         .routes_split_in_host(true),
+                ),
+            ));
+        }
+        // After the app's plugins, where vite:resolve sits: tsconfig `paths`
+        // as Vite's dev server applies them, which never falls through to
+        // rolldown's own (oxc's order, ahead of packages).
+        if matches!(
+            oj_server::tsconfig_paths(&start.config),
+            oj_resolver::TsconfigPaths::Plugin | oj_resolver::TsconfigPaths::Fallback
+        ) {
+            plugins.push(Pluginable::new_shared(
+                super::alias::TsconfigPathsPlugin::new(
+                    oj_server::client_resolver(&start.root, &start.config),
+                    false,
                 ),
             ));
         }

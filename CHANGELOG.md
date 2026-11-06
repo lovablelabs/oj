@@ -15,6 +15,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A dependency's own imports no longer take the app's tsconfig `paths`, as neither vite-tsconfig-paths nor oxc applies them inside `node_modules`. A `paths` key named like a package (`events`, `zod`) handed the app's file to the dependency.
 - The dependency scan tries each tsconfig `paths` target until one exists, as vite-tsconfig-paths does, so an exact key still answers when `@/*` finds nothing, and a second target answers when the first is missing. Its declaration-file rule now matches only `.d.ts`, like the dev resolver.
 - The alias list follows the resolved Vite config's order and values, which put a plugin's entries ahead of the app's when either side is an array. A find and replacement that both end in `/` lose it, as Vite normalizes them, so `{ "@/": "/src/" }` in `oj.config.json` matches `@/x`.
+- tsconfig `paths` resolve the way the app's Vite applies them, which depends on how the app turns them on. With vite-tsconfig-paths among the plugins, oj follows the plugin's model:
+  - The projects are every `tsconfig.json` and `jsconfig.json` between the importer and the workspace root, with their references. Within a directory they go in `localeCompare` order, and node_modules is skipped.
+  - The project whose `include` holds the importer maps it. Only TypeScript importers count, unless `allowJs` is set or the project is a jsconfig.
+  - Patterns go `@/*` before an exact key, and every `*` captures. A mapped path goes through `resolve.alias` again. `baseUrl` is tried after `paths`, and a `.json` the import did not name is not taken from it.
+  - A declaration-file answer is no answer.
+  - The plugin's own options, read from the Vite config where they are literal: `projects` loads only those tsconfigs, `root` moves the project and workspace roots, `projectDiscovery: "lazy"` walks every ancestor, `configNames` names the files, and `loose` (or an `importerFilter` function) takes any importer.
+  - An `include` or `exclude` a tsconfig inherits through `extends` stays relative to the config that declares it, as tsconfck reads it.
+- With Vite 8's `resolve.tsconfigPaths: true`, oj resolves as Vite's own resolver does: the tsconfig that owns the importer (or the one Vite's `tsconfig` option names), the exact key first, a declaration file served. `import.meta.glob` patterns map through the `paths` of the tsconfig that owns the importing file there. With both, Vite's own resolver takes what the plugin passes on.
+- With neither, Vite's dev server applies no `paths`. oj keeps them only for imports plain resolution does not find, so a `paths` key named like an installed package no longer hides the package. `vite build` resolves packages first too, then lets rolldown's own resolver apply `paths` to what is left, and `oj build` now does the same, worker bundles included.
+- The dependency scan and TanStack Start's dev client bundle follow the same rules. Their bundler applied `paths` natively, ahead of packages, where Vite's dev server never does. A Vite config read without evaluating it counts as using neither, as do apps with no Vite config. Editing a tsconfig or jsconfig in dev takes effect without a restart.
 
 ## [0.4.4] - 2026-11-06
 

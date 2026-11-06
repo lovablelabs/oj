@@ -228,3 +228,132 @@ async fn an_aliased_import_renders_the_module_vite_renders() {
         }
     }
 }
+
+const CLSX_INDEX: &str = r#"import { createFileRoute } from "@tanstack/react-router";
+import clsx from "clsx";
+
+export const Route = createFileRoute("/")({
+  component: () => <p id="who">{clsx("pkg")}</p>,
+});
+"#;
+
+// With neither vite-tsconfig-paths nor `resolve.tsconfigPaths`, Vite's dev
+// server applies no tsconfig `paths`: a `paths` key named like an installed
+// package leaves the package, on the server and once the page hydrates. oj's
+// client bundle went through rolldown's resolver, which applies `paths`
+// natively ahead of packages, so it took the shim.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_paths_key_named_like_a_package_leaves_the_package_without_the_plugin() {
+    let Some(app) = alias_app("paths-neither") else {
+        return;
+    };
+    let root = &app.0;
+    std::fs::write(root.join("src/routes/index.tsx"), CLSX_INDEX).unwrap();
+    std::fs::write(
+        root.join("src/clsx-shim.ts"),
+        "export default function clsx(_: string) { return \"shim\"; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("tsconfig.json"),
+        r#"{ "compilerOptions": { "jsx": "react-jsx", "module": "ESNext", "moduleResolution": "Bundler", "target": "ES2022", "strict": true, "skipLibCheck": true, "paths": { "clsx": ["./src/clsx-shim.ts"] } } }"#,
+    )
+    .unwrap();
+    std::fs::write(root.join("vite.neither.config.ts"), config("{}")).unwrap();
+    let config = "vite.neither.config.ts";
+    let vite = ViteDev::start(root, config);
+    let theirs = server_who(&vite.get("/"));
+    drop(vite);
+    assert_eq!(
+        theirs.as_deref(),
+        Some("pkg"),
+        "vite dev: the test's premise"
+    );
+
+    let _ = std::fs::remove_dir_all(root.join(".oj-cache"));
+    let dev = Server::oj_dev_with_args(root, &["--config", config], &[]);
+    let (status, html) = dev.request("GET", "/", &[]);
+    assert_eq!(
+        (status, server_who(&html)),
+        (200, theirs),
+        "oj dev vs vite dev: the server render\n{}",
+        dev.output()
+    );
+    if !browser::skip() {
+        let (who, errors) = hydrated_who(&dev.url("")).await;
+        assert_eq!(who, "pkg", "oj dev: the hydrated page");
+        assert_eq!(errors, Vec::<String>::new(), "oj dev: page errors");
+    }
+}
+
+const PLUGIN_INDEX: &str = r#"import { createFileRoute } from "@tanstack/react-router";
+import { x } from "@/x";
+
+export const Route = createFileRoute("/")({
+  component: () => <p id="who">{x}</p>,
+});
+"#;
+
+// With vite-tsconfig-paths, `@/*` goes before an exact `@/x` key: the server
+// render and the hydrated page take `src/x.ts`. oj's client bundle went
+// through rolldown's resolver, which takes the exact key first, so the page
+// hydrated with `src/a.ts`.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_client_takes_the_plugins_paths_order_like_the_server() {
+    let Some(app) = alias_app("paths-plugin") else {
+        return;
+    };
+    let root = &app.0;
+    if !root.join("node_modules/vite-tsconfig-paths").exists() {
+        assert!(
+            std::env::var_os("OJ_REQUIRE_FIXTURES").is_none(),
+            "vite-tsconfig-paths is not installed in the fixture"
+        );
+        return;
+    }
+    std::fs::write(root.join("src/routes/index.tsx"), PLUGIN_INDEX).unwrap();
+    std::fs::write(root.join("src/a.ts"), "export const x = \"exact-key\";\n").unwrap();
+    std::fs::write(root.join("src/x.ts"), "export const x = \"star\";\n").unwrap();
+    std::fs::write(
+        root.join("tsconfig.json"),
+        r#"{ "compilerOptions": { "jsx": "react-jsx", "module": "ESNext", "moduleResolution": "Bundler", "target": "ES2022", "strict": true, "skipLibCheck": true, "paths": { "@/x": ["./src/a.ts"], "@/*": ["./src/*"] } } }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("vite.plugin.config.ts"),
+        r#"import { tanstackStart } from "@tanstack/react-start/plugin/vite";
+import react from "@vitejs/plugin-react";
+import tsConfigPaths from "vite-tsconfig-paths";
+import { defineConfig } from "vite";
+
+export default defineConfig({
+  plugins: [tsConfigPaths(), tanstackStart(), react()],
+});
+"#,
+    )
+    .unwrap();
+    let config = "vite.plugin.config.ts";
+    let vite = ViteDev::start(root, config);
+    let theirs = server_who(&vite.get("/"));
+    drop(vite);
+    assert_eq!(
+        theirs.as_deref(),
+        Some("star"),
+        "vite dev: the test's premise"
+    );
+
+    let _ = std::fs::remove_dir_all(root.join(".oj-cache"));
+    let dev = Server::oj_dev_with_args(root, &["--config", config], &[]);
+    let (status, html) = dev.request("GET", "/", &[]);
+    assert_eq!(
+        (status, server_who(&html)),
+        (200, theirs),
+        "oj dev vs vite dev: the server render\n{}",
+        dev.output()
+    );
+    if !browser::skip() {
+        let (who, errors) = hydrated_who(&dev.url("")).await;
+        assert_eq!(who, "star", "oj dev: the hydrated page");
+        assert_eq!(errors, Vec::<String>::new(), "oj dev: page errors");
+    }
+}

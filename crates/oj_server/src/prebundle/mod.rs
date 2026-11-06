@@ -218,7 +218,7 @@ impl Prebundle {
             dedupe,
             facade_deps,
             needs_interop: input.needs_interop.iter().cloned().collect(),
-            alias: tsconfig::Aliases::load(root, &input.alias),
+            alias: tsconfig::Aliases::load(root, input),
             options: DepOptions::new(input),
             keep_existing,
             rolldown: rolldown.clone(),

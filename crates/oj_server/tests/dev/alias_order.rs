@@ -241,3 +241,170 @@ async fn a_paths_target_that_is_a_declaration_file_is_never_served() {
     let helper = server.text("/src/lib/helper.ts").await;
     assert!(helper.contains("-helper"), "{helper}");
 }
+
+/// An exact `paths` key next to `@/*`, and a `paths` key named like an
+/// installed package.
+const MODE_FILES: &[(&str, &str)] = &[
+    (
+        "package.json",
+        r#"{"name":"paths-modes","private":true,"type":"module"}"#,
+    ),
+    ("index.html", INDEX),
+    (
+        "src/main.ts",
+        "import { x } from \"@/x\";\ndocument.body.dataset.x = x;\n",
+    ),
+    (
+        "src/pkg.ts",
+        "import { ev } from \"evpkg\";\ndocument.body.dataset.ev = ev;\n",
+    ),
+    ("src/a.ts", "export const x = \"exact-key\";\n"),
+    ("src/x.ts", "export const x = \"star\";\n"),
+    ("src/evshim.ts", "export const ev = \"shim\";\n"),
+    (
+        "node_modules/evpkg/package.json",
+        r#"{"name":"evpkg","type":"module","main":"index.js"}"#,
+    ),
+    (
+        "node_modules/evpkg/index.js",
+        "export const ev = \"package\";\n",
+    ),
+    (
+        "tsconfig.json",
+        r#"{ "compilerOptions": { "paths": { "@/x": ["./src/a.ts"], "@/*": ["./src/*"], "evpkg": ["./src/evshim.ts"] } } }"#,
+    ),
+];
+
+// oj applies tsconfig `paths` the way the app's Vite does: vite-tsconfig-paths
+// tries `@/*` before the exact key, Vite 8's `resolve.tsconfigPaths` takes the
+// exact key first, and with neither Vite applies none, so the package stands
+// (oj keeps `paths` only for what plain resolution misses).
+#[tokio::test(flavor = "multi_thread")]
+async fn tsconfig_paths_follow_how_the_config_turns_them_on() {
+    crate::require_fixture!("vite", "vite-tsconfig-paths");
+    let app = App::new(MODE_FILES);
+    app.link_fixture("vite");
+    app.link_fixture("vite-tsconfig-paths");
+    // Each config: its body, whether `@/x` resolves (with neither, Vite
+    // fails it), and whether `evpkg` takes the shim.
+    let configs: &[(&str, &str, Option<&str>, bool)] = &[
+        (
+            "plugin",
+            "import tsConfigPaths from \"vite-tsconfig-paths\";\nexport default { plugins: [tsConfigPaths()] };\n",
+            Some("/src/x.ts"),
+            true,
+        ),
+        (
+            "native",
+            "export default { resolve: { tsconfigPaths: true } };\n",
+            Some("/src/a.ts"),
+            true,
+        ),
+        ("neither", "export default {};\n", None, false),
+    ];
+    for (name, body, x, shim) in configs {
+        let config_file = format!("vite.{name}.config.js");
+        app.write(&[(config_file.as_str(), body)]);
+        let vite = ViteDev::start(&app.root, &config_file);
+        let pkg = vite.imports("/src/pkg.ts");
+        let theirs_x = x.map(|_| vite.imports("/src/main.ts"));
+        drop(vite);
+        let takes_shim = |imports: &[String]| imports.iter().any(|i| i == "/src/evshim.ts");
+        assert_eq!(
+            takes_shim(&pkg),
+            *shim,
+            "vite dev, {name}: the premise ({pkg:?})"
+        );
+        if let (Some(theirs), Some(want)) = (&theirs_x, x) {
+            assert_eq!(theirs, &[*want], "vite dev, {name}: the premise");
+        }
+
+        let mut dev = app.dev();
+        dev.config = Some(app.root.join(&config_file));
+        let server = crate::serve(dev).await;
+        let ours_pkg = imports(&server.text("/src/pkg.ts").await);
+        assert_eq!(
+            takes_shim(&ours_pkg),
+            *shim,
+            "oj dev vs vite dev, {name}: evpkg ({ours_pkg:?})"
+        );
+        if let Some(theirs) = theirs_x {
+            let ours = imports(&server.text("/src/main.ts").await);
+            assert_eq!(ours, theirs, "oj dev vs vite dev, {name}: @/x");
+        }
+        drop(server);
+    }
+}
+
+/// A root tsconfig and a nested package's own, each with `paths`, and a glob
+/// through each.
+const GLOB_FILES: &[(&str, &str)] = &[
+    (
+        "package.json",
+        r#"{"name":"native-globs","private":true,"type":"module"}"#,
+    ),
+    ("index.html", INDEX),
+    (
+        "tsconfig.json",
+        r#"{ "compilerOptions": { "paths": { "@/*": ["./src/*"] } } }"#,
+    ),
+    (
+        "src/m.ts",
+        "export const pages = import.meta.glob(\"@/pages/*.ts\");\n",
+    ),
+    ("src/pages/p.ts", "export const p = 1;\n"),
+    (
+        "pkg/tsconfig.json",
+        r#"{ "compilerOptions": { "paths": { "~/*": ["./lib/*"] } } }"#,
+    ),
+    (
+        "pkg/m.ts",
+        "export const views = import.meta.glob(\"~/views/*.ts\");\n",
+    ),
+    ("pkg/lib/views/v.ts", "export const v = 1;\n"),
+    (
+        "vite.config.js",
+        "export default { resolve: { tsconfigPaths: true } };\n",
+    ),
+];
+
+/// The `import("…")` targets of a served module, in order.
+fn dynamic_imports(js: &str) -> Vec<String> {
+    js.split("import(\"")
+        .skip(1)
+        .filter_map(|rest| rest.split_once('"').map(|(spec, _)| spec.to_string()))
+        .collect()
+}
+
+// With `resolve.tsconfigPaths`, Vite's resolve plugin maps an
+// `import.meta.glob` pattern through the `paths` of the tsconfig that owns
+// the importer (resolve_tsconfig_path_alias): a nested package's glob goes
+// through its own tsconfig, not the root one.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_glob_maps_through_the_importers_own_tsconfig_paths() {
+    crate::require_fixture!("vite");
+    let app = App::new(GLOB_FILES);
+    app.link_fixture("vite");
+    let vite = ViteDev::start(&app.root, "vite.config.js");
+    let theirs = [
+        dynamic_imports(&vite.get("/src/m.ts").1),
+        dynamic_imports(&vite.get("/pkg/m.ts").1),
+    ];
+    drop(vite);
+    assert_eq!(
+        theirs,
+        [
+            vec!["/src/pages/p.ts".to_string()],
+            vec!["/pkg/lib/views/v.ts".to_string()]
+        ],
+        "vite dev: the test's premise"
+    );
+    let mut dev = app.dev();
+    dev.config = Some(app.root.join("vite.config.js"));
+    let server = crate::serve(dev).await;
+    let ours = [
+        dynamic_imports(&server.text("/src/m.ts").await),
+        dynamic_imports(&server.text("/pkg/m.ts").await),
+    ];
+    assert_eq!(ours, theirs, "oj dev vs vite dev");
+}

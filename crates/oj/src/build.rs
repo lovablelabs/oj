@@ -1460,11 +1460,14 @@ async fn bundle_worker_inline(
     opts: Option<&Arc<WorkerBundleOpts>>,
     nested: OjCssPlugin,
 ) -> anyhow::Result<String> {
+    // A worker bundle resolves as Vite's: the aliases first, then the
+    // nested pipeline, then tsconfig `paths` where vite:resolve sits.
     let mut plugins: Vec<SharedPluginable> = opts
         .and_then(|o| alias_plugin(root, &o.config))
         .into_iter()
         .collect();
     plugins.push(Pluginable::new_shared(nested));
+    plugins.extend(opts.and_then(|o| tsconfig_paths_plugin(root, &o.config, "client")));
     let mut bundler = BundlerBuilder::default()
         .with_plugins(plugins)
         .with_options(BundlerOptions {
@@ -1502,11 +1505,14 @@ async fn bundle_worker_entry(
     let names = |tail: &str| {
         oj_config::assets_dir_path(opts.map_or("assets", |o| o.assets_dir.as_str()), tail)
     };
+    // A worker bundle resolves as Vite's: the aliases first, then the
+    // nested pipeline, then tsconfig `paths` where vite:resolve sits.
     let mut plugins: Vec<SharedPluginable> = opts
         .and_then(|o| alias_plugin(root, &o.config))
         .into_iter()
         .collect();
     plugins.push(Pluginable::new_shared(nested));
+    plugins.extend(opts.and_then(|o| tsconfig_paths_plugin(root, &o.config, "client")));
     let mut bundler = BundlerBuilder::default()
         .with_plugins(plugins)
         .with_options(BundlerOptions {
@@ -2353,6 +2359,51 @@ fn alias_plugin(root: &Path, config: &oj_config::OjConfig) -> Option<SharedPlugi
         })
         .collect();
     (!entries.is_empty()).then(|| Pluginable::new_shared(AppAliasPlugin { entries }))
+}
+
+/// Vite's top-level `tsconfig` option, which Vite hands the build as
+/// `rolldownOptions.tsconfig`; else rolldown's default (each file's own).
+fn build_tsconfig(config: &oj_config::OjConfig) -> Option<rolldown_common::TsConfig> {
+    oj_server::tsconfig_file(config).map(rolldown_common::TsConfig::Manual)
+}
+
+/// tsconfig `paths` as `vite build` applies them, after the app's plugins
+/// where vite:resolve sits: plain resolution (packages first) for an id the
+/// `paths` could map, unless vite-tsconfig-paths or `resolve.tsconfigPaths`
+/// maps it; what that leaves goes to rolldown's own resolver, whose tsconfig
+/// (on by default) maps it natively, as in Vite's build. The resolver takes
+/// the bundle's own conditions, mainFields and extensions.
+fn tsconfig_paths_plugin(
+    root: &Path,
+    config: &oj_config::OjConfig,
+    env: &str,
+) -> Option<SharedPluginable> {
+    let mode = oj_server::tsconfig_paths(config);
+    if !matches!(
+        mode,
+        oj_resolver::TsconfigPaths::Plugin | oj_resolver::TsconfigPaths::Fallback
+    ) {
+        return None;
+    }
+    let resolve = rolldown_resolve(root, config, env)?;
+    let resolver = oj_resolver::OjResolver::with_settings(
+        root,
+        oj_resolver::ResolveSettings {
+            conditions: resolve.condition_names.unwrap_or_default(),
+            alias: oj_config::top_level_alias(config),
+            dedupe: oj_config::resolve_dedupe(config),
+            extensions: resolve.extensions,
+            main_fields: resolve.main_fields,
+            preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
+            server: env == "ssr",
+            tsconfig_paths: mode,
+            tsconfig_file: oj_server::tsconfig_file(config),
+            tsconfig_paths_plugin: oj_server::tsconfig_paths_plugin(root, config),
+        },
+    );
+    Some(Pluginable::new_shared(
+        crate::start_bundle::alias::TsconfigPathsPlugin::new(resolver, true),
+    ))
 }
 
 /// `root` is unused: `resolve.alias` goes through `alias_plugin`, ahead of
@@ -3692,6 +3743,7 @@ pub async fn build(
             bundle_graph::jsx_config(&config),
         )));
     }
+    oj_plugins.extend(tsconfig_paths_plugin(root.as_ref(), &config, "client"));
     let client_minify =
         oj_config::environment_build_bool(&config, "client", "minify").unwrap_or(minify);
     let client_define: Vec<(String, String)> = {
@@ -3778,6 +3830,7 @@ pub async fn build(
             cwd: Some(root.clone()),
             dir: Some(out_dir.display().to_string()),
             resolve: rolldown_resolve(&root, &config, "client"),
+            tsconfig: build_tsconfig(&config),
             entry_filenames: Some(
                 ro_output_str(ro_opts, "entryFileNames")
                     .unwrap_or_else(|| oj_config::assets_dir_path(&assets_dir, "[name]-[hash].js"))
@@ -5156,6 +5209,7 @@ pub(crate) async fn build_ssr(
             bundle_graph::jsx_config(config),
         )));
     }
+    oj_plugins.extend(tsconfig_paths_plugin(root, config, "ssr"));
     oj_plugins.push(Pluginable::new_shared(OjCssPlugin {
         collected: Arc::clone(&collected_css),
         root: root.to_path_buf(),
@@ -5187,6 +5241,7 @@ pub(crate) async fn build_ssr(
             cwd: Some(root.to_path_buf()),
             dir: Some(out_dir.display().to_string()),
             resolve: rolldown_resolve(root, config, "ssr"),
+            tsconfig: build_tsconfig(config),
             transform: transform_options(config, is_production),
             platform: Some(if externals.webworker() {
                 Platform::Browser
@@ -5762,6 +5817,7 @@ async fn build_client_entry(
             bundle_graph::jsx_config(config),
         )));
     }
+    oj_plugins.extend(tsconfig_paths_plugin(root, config, "client"));
     oj_plugins.push(Pluginable::new_shared(OjCssPlugin {
         collected: Arc::clone(&collected_css),
         root: root.to_path_buf(),
@@ -5794,6 +5850,7 @@ async fn build_client_entry(
             cwd: Some(root.to_path_buf()),
             dir: Some(out_dir.display().to_string()),
             resolve: rolldown_resolve(root, config, "client"),
+            tsconfig: build_tsconfig(config),
             transform: transform_options(config, is_production),
             entry_filenames: Some(
                 oj_config::assets_dir_path(&assets_dir, "[name]-[hash].js").into(),
@@ -6037,6 +6094,7 @@ async fn build_library(
         if let Some(plugin) = &stylex {
             plugins.push(crate::stylex_plugin::transform(plugin));
         }
+        plugins.extend(tsconfig_paths_plugin(root, config, "client"));
         plugins.push(Pluginable::new_shared(OjCssPlugin {
             collected: Arc::clone(&collected_css),
             root: root.to_path_buf(),
@@ -6074,6 +6132,7 @@ async fn build_library(
                 cwd: Some(root.to_path_buf()),
                 dir: Some(out_dir.display().to_string()),
                 resolve: rolldown_resolve(root, config, "client"),
+                tsconfig: build_tsconfig(config),
                 format: Some(format),
                 name: lib.name.clone(),
                 preserve_entry_signatures: Some(rolldown_common::PreserveEntrySignatures::Strict),
@@ -7798,6 +7857,129 @@ mod tests {
                 "{name}: ~lib through paths:\n{js}"
             );
         }
+    }
+
+    /// Vite's build resolves an id `vite:resolve` leaves through rolldown's
+    /// own resolver, whose tsconfig (on by default) applies `paths` natively
+    /// whether or not the app turns them on: the exact key first, as oxc
+    /// does. `vite build` with neither vite-tsconfig-paths nor
+    /// `resolve.tsconfigPaths` bundles the exact key's file, and so does
+    /// `oj build`.
+    #[tokio::test]
+    async fn the_build_applies_tsconfig_paths_as_vites_build_does() {
+        let root = scratch("build-paths-neither");
+        for (file, body) in [
+            ("package.json", r#"{"type":"module"}"#),
+            ("vite.config.mjs", "export default {};\n"),
+            (
+                "tsconfig.json",
+                r#"{ "compilerOptions": { "paths": { "@/x": ["./src/a.ts"], "@/*": ["./src/*"], "evpkg": ["./src/evshim.ts"] } } }"#,
+            ),
+            ("src/evshim.ts", "export const ev = \"the-shim\";\n"),
+            (
+                "node_modules/evpkg/package.json",
+                r#"{"name":"evpkg","type":"module","main":"index.js"}"#,
+            ),
+            (
+                "node_modules/evpkg/index.js",
+                "export const ev = \"the-package\";\n",
+            ),
+            (
+                "index.html",
+                r#"<html><body><script type="module" src="/src/main.ts"></script></body></html>"#,
+            ),
+            (
+                "src/main.ts",
+                "import { x } from \"@/x\";\nimport { ev } from \"evpkg\";\nconsole.log(x, ev);\n",
+            ),
+            ("src/a.ts", "export const x = \"exact-key\";\n"),
+            ("src/x.ts", "export const x = \"star\";\n"),
+        ] {
+            let path = root.join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, body).unwrap();
+        }
+        build(
+            root.clone(),
+            Some("production"),
+            &tokio::runtime::Handle::current(),
+            CliOptions::default(),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{e:#}"));
+        let js: String = fs::read_dir(root.join("dist/assets"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|x| x == "js"))
+            .map(|e| fs::read_to_string(e.path()).unwrap())
+            .collect();
+        assert!(js.contains("exact-key") && !js.contains("\"star\""), "{js}");
+        // vite:resolve resolves the package before rolldown's own resolver
+        // would map the `paths` key.
+        assert!(
+            js.contains("the-package") && !js.contains("the-shim"),
+            "{js}"
+        );
+    }
+
+    /// A worker bundle resolves as Vite builds one, through the same resolve
+    /// plugins: a `paths` key named like an installed package leaves the
+    /// package, as vite:resolve finds it before rolldown's own resolver maps
+    /// the key. The worker's bundle had no `paths` step and took the shim.
+    #[tokio::test]
+    async fn a_worker_bundle_applies_tsconfig_paths_as_vites_build_does() {
+        let root = scratch("build-worker-paths");
+        for (file, body) in [
+            ("package.json", r#"{"type":"module"}"#),
+            ("vite.config.mjs", "export default {};\n"),
+            (
+                "tsconfig.json",
+                r#"{ "compilerOptions": { "paths": { "evpkg": ["./src/evshim.ts"] } } }"#,
+            ),
+            (
+                "index.html",
+                r#"<html><body><script type="module" src="/src/main.ts"></script></body></html>"#,
+            ),
+            (
+                "src/main.ts",
+                "new Worker(new URL(\"./worker.ts\", import.meta.url), { type: \"module\" });\n",
+            ),
+            (
+                "src/worker.ts",
+                "import { ev } from \"evpkg\";\nself.postMessage(ev);\n",
+            ),
+            ("src/evshim.ts", "export const ev = \"the-shim\";\n"),
+            (
+                "node_modules/evpkg/package.json",
+                r#"{"name":"evpkg","type":"module","main":"index.js"}"#,
+            ),
+            (
+                "node_modules/evpkg/index.js",
+                "export const ev = \"the-package\";\n",
+            ),
+        ] {
+            let path = root.join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, body).unwrap();
+        }
+        build(
+            root.clone(),
+            Some("production"),
+            &tokio::runtime::Handle::current(),
+            CliOptions::default(),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{e:#}"));
+        let js: String = fs::read_dir(root.join("dist/assets"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|x| x == "js"))
+            .map(|e| fs::read_to_string(e.path()).unwrap())
+            .collect();
+        assert!(
+            js.contains("the-package") && !js.contains("the-shim"),
+            "{js}"
+        );
     }
 
     /// A RegExp alias find tests and replaces as JavaScript in a build too:

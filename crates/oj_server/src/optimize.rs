@@ -1104,6 +1104,12 @@ pub struct OptimizeInput {
     /// `optimizeDeps.needsInterop`: force `needsInterop: true` whatever the
     /// bundle's export shape (Vite's needsInterop()).
     pub needs_interop: Vec<String>,
+    /// How the app's Vite applies tsconfig `paths`: the scan follows it.
+    pub tsconfig_paths: oj_resolver::TsconfigPaths,
+    /// Vite's top-level `tsconfig` option.
+    pub tsconfig_file: Option<std::path::PathBuf>,
+    /// vite-tsconfig-paths' own options.
+    pub tsconfig_paths_plugin: oj_resolver::PluginOptions,
 }
 
 /// Prebundle mainFields: the resolved config's list with Vite's `pkg.main`
@@ -1207,6 +1213,13 @@ fn lockfile_hash(root: &Path, version: &str, input: &OptimizeInput) -> String {
     );
     hasher.update(b"\0bo=");
     hasher.update(input.build_out_dir.as_bytes());
+    hasher.update(
+        format!(
+            "\0tp={:?}:{:?}:{:?}",
+            input.tsconfig_paths, input.tsconfig_file, input.tsconfig_paths_plugin
+        )
+        .as_bytes(),
+    );
     for (find, replacement) in &input.alias {
         hasher.update(b"\0a");
         hasher.update(find.as_bytes());

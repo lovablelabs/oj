@@ -18,6 +18,25 @@ pub struct ResolveSettings {
     /// Resolving for SSR: the default mainFields drop `browser`, and the
     /// package.json `browser` object only applies when mainFields name it.
     pub server: bool,
+    /// How the app's Vite applies tsconfig `paths`.
+    pub tsconfig_paths: crate::TsconfigPaths,
+    /// Vite's top-level `tsconfig` option: the one file its own resolver
+    /// reads, in place of each importer's.
+    pub tsconfig_file: Option<std::path::PathBuf>,
+    /// vite-tsconfig-paths' own options, as the config passes them.
+    pub tsconfig_paths_plugin: crate::PluginOptions,
+}
+
+/// The tsconfig Vite's own resolver uses (`resolve.tsconfigPaths`): the one
+/// Vite's `tsconfig` option names, else each importer's own.
+pub(crate) fn native_tsconfig(settings: &ResolveSettings) -> TsconfigDiscovery {
+    match &settings.tsconfig_file {
+        Some(file) => TsconfigDiscovery::Manual(TsconfigOptions {
+            config_file: file.clone(),
+            references: TsconfigReferences::Auto,
+        }),
+        None => TsconfigDiscovery::Auto,
+    }
 }
 
 /// The oxc options for `settings` under `root`.

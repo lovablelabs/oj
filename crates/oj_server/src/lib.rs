@@ -1238,7 +1238,49 @@ fn block_on_host<T: Send>(
     })
 }
 
-fn client_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
+/// How the app's Vite applies tsconfig `paths`: vite-tsconfig-paths among
+/// the plugins (with `resolve.tsconfigPaths` too, Vite's own resolver after
+/// it), Vite 8's own `resolve.tsconfigPaths`, or neither, where oj keeps
+/// them for what plain resolution misses. Plugins unknown (no plugin host
+/// ran) count as none: Vite with no config applies no `paths`.
+pub fn tsconfig_paths(config: &oj_config::OjConfig) -> oj_resolver::TsconfigPaths {
+    let resolve = config.resolve.as_ref();
+    let plugin = resolve.and_then(|r| r.tsconfig_paths_plugin) == Some(true);
+    let native = resolve.and_then(|r| r.tsconfig_paths) == Some(true);
+    match (plugin, native) {
+        (true, true) => oj_resolver::TsconfigPaths::PluginNative,
+        (true, false) => oj_resolver::TsconfigPaths::Plugin,
+        (false, true) => oj_resolver::TsconfigPaths::Native,
+        (false, false) => oj_resolver::TsconfigPaths::Fallback,
+    }
+}
+
+/// vite-tsconfig-paths' own options, read from the Vite config file the
+/// extractor resolved (defaults when it passes none, or none are literal).
+pub fn tsconfig_paths_plugin(
+    root: &Path,
+    config: &oj_config::OjConfig,
+) -> oj_resolver::PluginOptions {
+    config
+        .resolve
+        .as_ref()
+        .filter(|r| r.tsconfig_paths_plugin == Some(true))
+        .and_then(|r| r.vite_config_file.as_deref())
+        .and_then(|file| plugins::static_config::tsconfig_paths_options(Path::new(file), root))
+        .unwrap_or_default()
+}
+
+/// Vite's top-level `tsconfig` option, as a path.
+pub fn tsconfig_file(config: &oj_config::OjConfig) -> Option<PathBuf> {
+    config
+        .resolve
+        .as_ref()
+        .and_then(|r| r.tsconfig_file.as_deref())
+        .map(PathBuf::from)
+}
+
+/// The client environment's resolver, as the dev server builds it.
+pub fn client_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
     OjResolver::with_settings(
         root,
         oj_resolver::ResolveSettings {
@@ -1249,6 +1291,9 @@ fn client_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
             main_fields: oj_config::resolve_main_fields(config),
             preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
             server: false,
+            tsconfig_paths: tsconfig_paths(config),
+            tsconfig_file: tsconfig_file(config),
+            tsconfig_paths_plugin: tsconfig_paths_plugin(root, config),
         },
     )
 }
@@ -1295,6 +1340,9 @@ pub(crate) fn environment_resolver(
             main_fields,
             preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
             server,
+            tsconfig_paths: tsconfig_paths(config),
+            tsconfig_file: tsconfig_file(config),
+            tsconfig_paths_plugin: tsconfig_paths_plugin(root, config),
         },
     )
 }
@@ -1322,6 +1370,9 @@ pub fn ssr_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
             preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
             // Vite's server environment: no `browser` main field or remap.
             server: true,
+            tsconfig_paths: tsconfig_paths(config),
+            tsconfig_file: tsconfig_file(config),
+            tsconfig_paths_plugin: tsconfig_paths_plugin(root, config),
         },
     )
 }
@@ -1344,6 +1395,9 @@ pub fn ssr_external_resolver(root: &Path, config: &oj_config::OjConfig) -> OjRes
             main_fields: Some(vec!["main".to_string()]),
             preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
             server: true,
+            tsconfig_paths: oj_resolver::TsconfigPaths::Off,
+            tsconfig_file: None,
+            tsconfig_paths_plugin: oj_resolver::PluginOptions::default(),
         },
     )
 }
@@ -1427,6 +1481,9 @@ fn optimized_deps(
             node_env: node_env.to_string(),
             plugin_names,
             needs_interop: oj_config::optimize_deps_needs_interop(config),
+            tsconfig_paths: tsconfig_paths(config),
+            tsconfig_file: tsconfig_file(config),
+            tsconfig_paths_plugin: tsconfig_paths_plugin(root, config),
         },
         host,
         rolldown,
@@ -2403,8 +2460,17 @@ async fn serve_oj_routes(State(state): State<Arc<ServerState>>) -> Response {
     let compile_opts = dev_compile_opts(&state);
     let compiled = tokio::task::spawn_blocking(move || {
         let dir = root.clone();
-        let mut rewrite =
-            |s: &str| rewrite_specifier(&root, &dir, &resolver, &fs_allow, &dir_cache, s, true);
+        let mut rewrite = |s: &str| {
+            rewrite_specifier(
+                &root,
+                crate::rewrite::Importer::dir(&dir),
+                &resolver,
+                &fs_allow,
+                &dir_cache,
+                s,
+                true,
+            )
+        };
         oj_compiler::compile_module(&synthetic, OJ_ROUTES_JS, &compile_opts, Some(&mut rewrite))
             .map(|o| o.code_with_inline_map())
             .map_err(|e| format!("{e}"))
@@ -2438,6 +2504,12 @@ fn dev_compile_opts(state: &ServerState) -> oj_compiler::CompileOptions {
     opts.env = Some(Arc::clone(&state.import_meta_env));
     opts.root = Some(state.root.clone());
     opts.alias = Arc::clone(&state.glob_alias);
+    // With `resolve.tsconfigPaths`, Vite's resolve plugin maps a glob through
+    // the importer's tsconfig `paths` after the aliases.
+    let resolver = Arc::clone(&state.resolver);
+    opts.glob_paths = Some(oj_compiler::GlobPaths(Arc::new(
+        move |importer, pattern| resolver.glob_mapped(importer, pattern),
+    )));
     opts.stylex = state.stylex.clone();
     opts
 }

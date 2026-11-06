@@ -184,12 +184,12 @@ async fn tsconfig_paths_reach_deps_and_a_deps_css_stays_external() {
     )
     .write("src/aliased.js", "import { greet } from \"defprop\";\nexport const v = greet(\"z\");\n")
     .write(
-        "entry.js",
+        "entry.ts",
         "import { v } from \"@/aliased\";\nimport { ok } from \"uikit\";\nexport const out = v + ok;\n",
     );
     let meta = app
         .optimize(OptimizeInput {
-            entries: app.entry("entry.js"),
+            entries: app.entry("entry.ts"),
             ..Default::default()
         })
         .await;
@@ -222,7 +222,7 @@ async fn the_scan_takes_aliases_before_tsconfig_paths() {
     .write("src/lib/helper.ts", "import { l } from \"libdep\";\nexport const helper = l;\n")
     .write("src/types/client.d.ts", "import \"typesdep\";\nexport declare const who: 1;\n")
     .write(
-        "entry.js",
+        "entry.ts",
         "import { who } from \"@/integrations/supabase/client\";\nimport { helper } from \"~lib/helper\";\nexport const out = who + helper;\n",
     );
     let backend = app
@@ -232,7 +232,7 @@ async fn the_scan_takes_aliases_before_tsconfig_paths() {
         .into_owned();
     let meta = app
         .optimize(OptimizeInput {
-            entries: app.entry("entry.js"),
+            entries: app.entry("entry.ts"),
             alias: vec![
                 ("@/integrations/supabase/client".to_string(), backend),
                 ("~lib".to_string(), "@/lib".to_string()),
@@ -252,12 +252,12 @@ async fn the_scan_takes_aliases_before_tsconfig_paths() {
         .cjs("plaincjs", &[("index.js", "exports.a = 1;\n")])
         .write("src/types/client.d.ts", "import \"typesdep\";\nexport declare const who: 1;\n")
         .write(
-            "entry.js",
+            "entry.ts",
             "import \"@/integrations/supabase/client\";\nimport { a } from \"plaincjs\";\nexport const out = a;\n",
         );
     let meta = unaliased
         .optimize(OptimizeInput {
-            entries: unaliased.entry("entry.js"),
+            entries: unaliased.entry("entry.ts"),
             ..Default::default()
         })
         .await;
@@ -293,6 +293,45 @@ async fn the_scan_tries_each_paths_target_until_one_exists() {
         })
         .await;
     assert_eq!(keys(&meta), ["configdep", "gendep"]);
+}
+
+// The scan resolves tsconfig `paths` as the app's Vite does: the plugin's
+// order (`@/*` before an exact key), Vite 8's own (`resolve.tsconfigPaths`:
+// the exact key, `paths` ahead of packages), or none, where oj applies them
+// only to what plain resolution misses (the package a `paths` key shadows).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_scan_follows_how_the_app_applies_tsconfig_paths() {
+    use oj_resolver::TsconfigPaths::*;
+    for (mode, want) in [
+        (Plugin, ["shimdep", "xdep"]),
+        (Native, ["adep", "shimdep"]),
+        (Fallback, ["evpkg", "xdep"]),
+    ] {
+        let app = App::new();
+        app.write(
+            "tsconfig.json",
+            r#"{ "compilerOptions": { "paths": { "@/x": ["./src/a.ts"], "@/*": ["./src/*"], "evpkg": ["./src/evshim.ts"] } } }"#,
+        )
+        .cjs("adep", &[("index.js", "exports.a = 1;\n")])
+        .cjs("xdep", &[("index.js", "exports.x = 1;\n")])
+        .cjs("shimdep", &[("index.js", "exports.s = 1;\n")])
+        .cjs("evpkg", &[("index.js", "exports.e = 1;\n")])
+        .write("src/a.ts", "import { a } from \"adep\";\nexport const v = a;\n")
+        .write("src/x.ts", "import { x } from \"xdep\";\nexport const v = x;\n")
+        .write("src/evshim.ts", "import { s } from \"shimdep\";\nexport const e = s;\n")
+        .write(
+            "entry.ts",
+            "import { v } from \"@/x\";\nimport { e } from \"evpkg\";\nexport const out = v + e;\n",
+        );
+        let meta = app
+            .optimize(OptimizeInput {
+                entries: app.entry("entry.ts"),
+                tsconfig_paths: mode,
+                ..Default::default()
+            })
+            .await;
+        assert_eq!(keys(&meta), want, "{mode:?}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -629,9 +629,206 @@ fn is_truthy(value: &Value) -> bool {
     }
 }
 
+/// vite-tsconfig-paths' options as `file` (the app's Vite config) passes
+/// them: the first `tsconfigPaths(…)` call of the plugin's default import,
+/// read where its value is a literal (`root` and `projects` may also be
+/// `path.resolve(__dirname, …)`). `root` resolves against `root` (Vite's
+/// `config.root`), `projects` against the plugin's root, a directory naming
+/// its `tsconfig.json` (loadEagerProjects). An `importerFilter` function
+/// counts as taking every importer, since oj cannot run it. None when the
+/// config does not parse or never calls the plugin.
+pub(crate) fn tsconfig_paths_options(
+    file: &Path,
+    root: &Path,
+) -> Option<oj_resolver::PluginOptions> {
+    use oxc_ast_visit::Visit;
+    let source = std::fs::read_to_string(file).ok()?;
+    let allocator = Allocator::default();
+    let source_type = SourceType::from_path(file).ok()?;
+    let parsed = Parser::new(&allocator, &source, source_type).parse();
+    if parsed.fatal_error {
+        return None;
+    }
+    let mut plugin = None;
+    let mut bindings = Bindings::default();
+    for statement in &parsed.program.body {
+        let Statement::ImportDeclaration(import) = statement else {
+            continue;
+        };
+        let source = import.source.value.as_str().unwrap_or_default();
+        for specifier in import.specifiers.iter().flatten() {
+            let local = specifier.local().name.to_string();
+            match (source, specifier) {
+                (
+                    "vite-tsconfig-paths" | "vite-plugin-tsconfig-paths",
+                    ImportDeclarationSpecifier::ImportDefaultSpecifier(_),
+                ) => plugin = Some(local),
+                (
+                    "vite-tsconfig-paths" | "vite-plugin-tsconfig-paths",
+                    ImportDeclarationSpecifier::ImportSpecifier(s),
+                ) if matches!(&s.imported, ModuleExportName::IdentifierName(n) if n.name == "default") => {
+                    plugin = Some(local)
+                }
+                (
+                    "path" | "node:path",
+                    ImportDeclarationSpecifier::ImportDefaultSpecifier(_)
+                    | ImportDeclarationSpecifier::ImportNamespaceSpecifier(_),
+                ) => bindings.path = Some(local),
+                _ => {}
+            }
+        }
+    }
+    let plugin = plugin?;
+    struct Find<'b> {
+        plugin: &'b str,
+        bindings: &'b Bindings,
+        dir: &'b Path,
+        root: &'b Path,
+        found: Option<oj_resolver::PluginOptions>,
+    }
+    impl<'a> Visit<'a> for Find<'_> {
+        fn visit_call_expression(&mut self, call: &oxc_ast::ast::CallExpression<'a>) {
+            if self.found.is_none() {
+                if let Expression::Identifier(id) = &call.callee {
+                    if id.name == self.plugin {
+                        self.found = Some(plugin_options(call, self.bindings, self.dir, self.root));
+                        return;
+                    }
+                }
+            }
+            oxc_ast_visit::walk::walk_call_expression(self, call);
+        }
+    }
+    let mut find = Find {
+        plugin: &plugin,
+        bindings: &bindings,
+        dir: file.parent()?,
+        root,
+        found: None,
+    };
+    find.visit_program(&parsed.program);
+    find.found
+}
+
+/// The options one `tsconfigPaths(…)` call passes.
+fn plugin_options(
+    call: &oxc_ast::ast::CallExpression,
+    bindings: &Bindings,
+    dir: &Path,
+    root: &Path,
+) -> oj_resolver::PluginOptions {
+    let mut options = oj_resolver::PluginOptions::default();
+    let Some(Argument::ObjectExpression(obj)) = call.arguments.first() else {
+        return options;
+    };
+    let absolute = |base: &Path, p: &str| normalize(&base.join(p));
+    let mut projects: Option<Vec<String>> = None;
+    let Some(props) = properties(obj) else {
+        return options;
+    };
+    for (key, value) in props {
+        match key.as_str() {
+            "root" => {
+                options.root = path_value(value, bindings, dir).map(|r| absolute(root, &r));
+            }
+            "projects" => {
+                if let Expression::ArrayExpression(list) = value {
+                    projects = list
+                        .elements
+                        .iter()
+                        .map(|e| path_value(e.as_expression()?, bindings, dir))
+                        .collect();
+                }
+            }
+            "projectDiscovery" => {
+                options.lazy = matches!(json_literal(value), Some(Value::String(s)) if s == "lazy");
+            }
+            "configNames" => {
+                options.config_names = match json_literal(value) {
+                    Some(Value::Array(names)) => names
+                        .into_iter()
+                        .map(|n| n.as_str().map(str::to_string))
+                        .collect(),
+                    _ => None,
+                };
+            }
+            "loose" => options.loose |= json_literal(value) == Some(Value::Bool(true)),
+            "importerFilter" => options.loose = true,
+            _ => {}
+        }
+    }
+    let project_root = options.root.clone().unwrap_or_else(|| root.to_path_buf());
+    options.projects = projects.map(|list| {
+        list.iter()
+            .map(|file| {
+                let path = absolute(&project_root, file);
+                if file.ends_with(".json") {
+                    path
+                } else {
+                    path.join("tsconfig.json")
+                }
+            })
+            .collect()
+    });
+    options
+}
+
 #[cfg(test)]
 mod tests {
     use super::{read_static, toolchain_mismatch, PLUGIN_REACT, VITE};
+
+    // vite-tsconfig-paths' options as the config passes them: the Lovable
+    // template's `projects`, `root` through `path.resolve`, lazy discovery,
+    // `configNames`, `loose`, an `importerFilter` function, no argument.
+    #[test]
+    fn the_tsconfig_paths_plugins_options_read_from_the_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let read = |name: &str, source: &str| {
+            let file = root.join(name);
+            std::fs::write(&file, source).unwrap();
+            super::tsconfig_paths_options(&file, root)
+        };
+        let lovable = read(
+            "vite.config.ts",
+            "import { defineConfig } from \"vite\";\nimport tsConfigPaths from \"vite-tsconfig-paths\";\nexport default defineConfig(({ mode }) => ({ plugins: [tsConfigPaths({ projects: [\"./tsconfig.json\", \"packages/ui\"] })] }));\n",
+        )
+        .unwrap();
+        assert_eq!(
+            lovable.projects,
+            Some(vec![
+                root.join("tsconfig.json"),
+                root.join("packages/ui/tsconfig.json")
+            ])
+        );
+        let rooted = read(
+            "vite.rooted.config.ts",
+            "import path from \"node:path\";\nimport paths from \"vite-tsconfig-paths\";\nexport default { plugins: [paths({ root: path.resolve(__dirname, \"..\"), projectDiscovery: \"lazy\", configNames: [\"tsconfig.app.json\"], loose: true })] };\n",
+        )
+        .unwrap();
+        assert_eq!(rooted.root.as_deref(), root.parent());
+        assert!(rooted.lazy && rooted.loose);
+        assert_eq!(
+            rooted.config_names,
+            Some(vec!["tsconfig.app.json".to_string()])
+        );
+        let filtered = read(
+            "vite.filter.config.ts",
+            "import { default as tp } from \"vite-tsconfig-paths\";\nexport default { plugins: [tp({ importerFilter: (f) => true })] };\n",
+        )
+        .unwrap();
+        assert!(
+            filtered.loose,
+            "a filter oj cannot run takes every importer"
+        );
+        let bare = read(
+            "vite.bare.config.ts",
+            "import tsconfigPaths from \"vite-tsconfig-paths\";\nexport default { plugins: [tsconfigPaths()] };\n",
+        )
+        .unwrap();
+        assert_eq!(bare, oj_resolver::PluginOptions::default());
+        assert_eq!(read("vite.none.config.ts", "export default {};\n"), None);
+    }
 
     fn install(root: &std::path::Path, name: &str, version: &str) {
         let dir = root.join("node_modules").join(name);
