@@ -1824,7 +1824,9 @@ export async function extract(input) {
       css: extractCss(c.css),
       envPrefix: extractEnvPrefix(c.envPrefix),
       envDir: typeof c.envDir === "string" ? c.envDir : null,
-      startRouter: startRouterPaths,
+      // Only when Start's generator ran: a plain app's output stays the one
+      // the Rust static reader's template holds (static_config_parity).
+      ...(startRouterPaths ? { startRouter: startRouterPaths } : {}),
       cors: extractCors(c.server?.cors),
       allowedHosts: extractAllowedHosts(c.server?.allowedHosts),
       preview: extractPreview(c.preview),

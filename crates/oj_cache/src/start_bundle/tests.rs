@@ -315,6 +315,36 @@ fn epoch_input_changes_the_key() {
     assert_ne!(other_version.unwrap().0, key, "tool version salts the key");
 }
 
+// An input no closure lists (the client bundle's route trees) keys the
+// generation by its contents: another content misses the restore, the same
+// content restores it, and a missing file is a key of its own.
+#[test]
+fn files_outside_the_closure_key_the_generation_by_content() {
+    let fx = Fixture::new("keyed-files");
+    let tree = fx.root.join("route-tree.client.js");
+    fs::write(&tree, "routes: [/]").unwrap();
+    let keyed = || fx.store().keyed_by_files(std::slice::from_ref(&tree));
+    let (key, _) = keyed().persist(&fx.start).unwrap();
+    assert!(keyed().restore(&fx.start, no_globs).is_ok());
+    fs::write(&tree, "routes: [/, /extra]").unwrap();
+    match keyed().restore(&fx.start, no_globs) {
+        Err(Miss::NoEntryForKey(k)) => assert_ne!(k, key),
+        other => panic!("expected key miss, got {other:?}"),
+    }
+    fs::write(&tree, "routes: [/]").unwrap();
+    assert_eq!(keyed().restore(&fx.start, no_globs).unwrap().0.key, key);
+    fs::remove_file(&tree).unwrap();
+    assert!(matches!(
+        keyed().restore(&fx.start, no_globs),
+        Err(Miss::NoEntryForKey(_))
+    ));
+    assert_ne!(
+        fx.store().persist(&fx.start).unwrap().0,
+        key,
+        "an unkeyed store names another generation"
+    );
+}
+
 #[test]
 fn dev_mode_and_its_env_file_change_the_key() {
     let fx = Fixture::new("mode");
