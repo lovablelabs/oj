@@ -1026,13 +1026,23 @@ pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues)
     }
     if let Some(valias) = v.alias {
         if !valias.is_empty() {
+            // The resolved config's list is the one Vite matches against:
+            // mergeAlias put plugin entries ahead of the user's when either
+            // side is an array, and an object key a plugin set overrides the
+            // user's value. It leads, in its order; what the static read had
+            // and the resolved list could not carry (a regex find) follows.
             let rc = config.resolve.get_or_insert_with(Default::default);
-            let map = rc.alias.get_or_insert_with(Default::default);
+            let written = rc.alias.take().unwrap_or_default();
+            let mut list = oj_config::AliasList::default();
             for (find, replacement) in valias {
                 if let Some(s) = replacement.as_str() {
-                    map.insert_if_absent(find, s.to_string());
+                    list.insert_if_absent(find, s.to_string());
                 }
             }
+            for (find, replacement) in written.0 {
+                list.insert_if_absent(find, replacement);
+            }
+            rc.alias = Some(list);
         }
     }
     if let Some(ro) = v.rollup_options {

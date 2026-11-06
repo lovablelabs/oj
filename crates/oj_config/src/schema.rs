@@ -449,6 +449,16 @@ impl AliasList {
         }
     }
 
+    /// Adds an entry as written in a config, after Vite's
+    /// normalizeSingleAlias: a find and replacement that both end in `/`
+    /// lose it (`{ "@/": "/src/" }` is `{ "@": "/src" }`).
+    fn push_written(&mut self, find: String, replacement: String) {
+        match (find.strip_suffix('/'), replacement.strip_suffix('/')) {
+            (Some(f), Some(r)) => self.insert_if_absent(f.to_string(), r.to_string()),
+            _ => self.insert_if_absent(find, replacement),
+        }
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = &(String, String)> {
         self.0.iter()
     }
@@ -472,7 +482,7 @@ impl<'de> Deserialize<'de> for AliasList {
             ) -> Result<AliasList, A::Error> {
                 let mut list = AliasList::default();
                 while let Some((find, replacement)) = map.next_entry::<String, String>()? {
-                    list.insert_if_absent(find, replacement);
+                    list.push_written(find, replacement);
                 }
                 Ok(list)
             }
@@ -487,7 +497,7 @@ impl<'de> Deserialize<'de> for AliasList {
                 }
                 let mut list = AliasList::default();
                 while let Some(Entry { find, replacement }) = seq.next_element::<Entry>()? {
-                    list.insert_if_absent(find, replacement);
+                    list.push_written(find, replacement);
                 }
                 Ok(list)
             }

@@ -384,6 +384,30 @@ mod tests {
         );
     }
 
+    // Vite's normalizeSingleAlias: a find and replacement that both end in
+    // `/` lose it, so `@/` takes `@/x`; one trailing `/` alone stays.
+    #[test]
+    fn a_trailing_slash_on_both_sides_is_dropped() {
+        let from = |json: &str| -> OjConfig { serde_json::from_str(json).unwrap() };
+        let pairs = |list: &[(&str, &str)]| -> Vec<(String, String)> {
+            list.iter()
+                .map(|(f, r)| (f.to_string(), r.to_string()))
+                .collect()
+        };
+        assert_eq!(
+            crate::top_level_alias(&from(
+                r##"{ "resolve": { "alias": { "@/": "/src/", "~/": "/home", "#": "/x/" } } }"##
+            )),
+            pairs(&[("@", "/src"), ("~/", "/home"), ("#", "/x/")])
+        );
+        assert_eq!(
+            crate::top_level_alias(&from(
+                r#"{ "resolve": { "alias": [{ "find": "@/", "replacement": "/src/" }] } }"#
+            )),
+            pairs(&[("@", "/src")])
+        );
+    }
+
     #[test]
     fn external_conditions_fall_back_from_environment_to_ssr_sugar_to_top_level() {
         let from = |json: &str| -> OjConfig { serde_json::from_str(json).unwrap() };

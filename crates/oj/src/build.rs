@@ -1460,7 +1460,11 @@ async fn bundle_worker_inline(
     opts: Option<&Arc<WorkerBundleOpts>>,
     nested: OjCssPlugin,
 ) -> anyhow::Result<String> {
-    let plugins: Vec<SharedPluginable> = vec![Pluginable::new_shared(nested)];
+    let mut plugins: Vec<SharedPluginable> = opts
+        .and_then(|o| alias_plugin(root, &o.config))
+        .into_iter()
+        .collect();
+    plugins.push(Pluginable::new_shared(nested));
     let mut bundler = BundlerBuilder::default()
         .with_plugins(plugins)
         .with_options(BundlerOptions {
@@ -1498,7 +1502,11 @@ async fn bundle_worker_entry(
     let names = |tail: &str| {
         oj_config::assets_dir_path(opts.map_or("assets", |o| o.assets_dir.as_str()), tail)
     };
-    let plugins: Vec<SharedPluginable> = vec![Pluginable::new_shared(nested)];
+    let mut plugins: Vec<SharedPluginable> = opts
+        .and_then(|o| alias_plugin(root, &o.config))
+        .into_iter()
+        .collect();
+    plugins.push(Pluginable::new_shared(nested));
     let mut bundler = BundlerBuilder::default()
         .with_plugins(plugins)
         .with_options(BundlerOptions {
@@ -2311,23 +2319,35 @@ async fn preprocess_via_engine(
         .map_err(|e| anyhow::anyhow!("css preprocess failed for {}: {e}", css_file.display()))
 }
 
-fn rolldown_resolve(
-    root: &Path,
-    config: &oj_config::OjConfig,
-    env: &str,
-) -> Option<rolldown_common::ResolveOptions> {
-    let alias = oj_config::resolve_alias(config, env);
-    let alias: Vec<(String, Vec<Option<String>>)> = alias
+/// `resolve.alias` as the bundle's first plugin, as Vite's alias plugin
+/// runs ahead of every other resolver: the first entry that matches, in the
+/// written order, rewrites the id, which then resolves through the rest
+/// (tsconfig `paths` included) skipping it. rolldown's own `alias` option
+/// would go after tsconfig `paths`. A `.`-led replacement is root-relative.
+fn alias_plugin(root: &Path, config: &oj_config::OjConfig) -> Option<SharedPluginable> {
+    use crate::start_bundle::alias::AppAliasPlugin;
+    use crate::start_bundle::facts::{AliasEntry, AliasFind};
+    let entries: Vec<AliasEntry> = oj_config::top_level_alias(config)
         .into_iter()
-        .map(|(find, replacement)| {
-            let target = if replacement.starts_with('.') {
+        .map(|(find, replacement)| AliasEntry {
+            find: AliasFind::Exact(find),
+            replacement: if replacement.starts_with('.') {
                 root.join(&replacement).to_string_lossy().into_owned()
             } else {
                 replacement
-            };
-            (find, vec![Some(target)])
+            },
         })
         .collect();
+    (!entries.is_empty()).then(|| Pluginable::new_shared(AppAliasPlugin { entries }))
+}
+
+/// `root` is unused: `resolve.alias` goes through `alias_plugin`, ahead of
+/// tsconfig `paths`, not rolldown's `alias` option.
+fn rolldown_resolve(
+    _root: &Path,
+    config: &oj_config::OjConfig,
+    env: &str,
+) -> Option<rolldown_common::ResolveOptions> {
     // The same `resolve.*` the dev resolver honors, so a module that resolves in
     // dev (a custom extension, a mainFields order, an exports condition) also
     // resolves in the build. Only user-set values are forwarded; rolldown keeps
@@ -2373,7 +2393,6 @@ fn rolldown_resolve(
         .and_then(|r| r.preserve_symlinks)
         .map(|preserve| !preserve);
     Some(rolldown_common::ResolveOptions {
-        alias: (!alias.is_empty()).then_some(alias),
         extensions,
         main_fields,
         condition_names,
@@ -3645,7 +3664,7 @@ pub async fn build(
     let plugin_defines = plugin_config_defines(&plugin_host).await;
     let env_delta = plugin_env_delta(&plugin_host).await;
     let emit = Arc::new(EmitState::new(root.to_path_buf()));
-    let mut oj_plugins: Vec<SharedPluginable> = Vec::new();
+    let mut oj_plugins: Vec<SharedPluginable> = alias_plugin(&root, &config).into_iter().collect();
     let stylex =
         oj_server::stylex::plugin_for(&root, &config, "build").map_err(|e| anyhow::anyhow!(e))?;
     if let Some(plugin) = &stylex {
@@ -5109,7 +5128,7 @@ pub(crate) async fn build_ssr(
     })));
 
     let emit = Arc::new(EmitState::new(root.to_path_buf()));
-    let mut oj_plugins: Vec<SharedPluginable> = Vec::new();
+    let mut oj_plugins: Vec<SharedPluginable> = alias_plugin(root, config).into_iter().collect();
     let stylex =
         oj_server::stylex::plugin_for(root, config, "build").map_err(|e| anyhow::anyhow!(e))?;
     if let Some(plugin) = &stylex {
@@ -5715,7 +5734,7 @@ async fn build_client_entry(
     let plugin_defines = plugin_config_defines(&plugin_host).await;
     let env_delta = plugin_env_delta(&plugin_host).await;
     let emit = Arc::new(EmitState::new(root.to_path_buf()));
-    let mut oj_plugins: Vec<SharedPluginable> = Vec::new();
+    let mut oj_plugins: Vec<SharedPluginable> = alias_plugin(root, config).into_iter().collect();
     let stylex =
         oj_server::stylex::plugin_for(root, config, "build").map_err(|e| anyhow::anyhow!(e))?;
     if let Some(plugin) = &stylex {
@@ -6000,7 +6019,7 @@ async fn build_library(
             rolldown_minify(minify)
         };
 
-        let mut plugins: Vec<SharedPluginable> = Vec::new();
+        let mut plugins: Vec<SharedPluginable> = alias_plugin(root, config).into_iter().collect();
         if let Some(plugin) = &stylex {
             plugins.push(crate::stylex_plugin::transform(plugin));
         }
@@ -7691,6 +7710,79 @@ mod tests {
                 "{config_name}: {config}"
             );
             assert!(root.join("dist/index.html").is_file());
+        }
+    }
+
+    /// Vite's alias plugin runs ahead of every resolver in a build too: the
+    /// first entry that matches, in the written order, wins over tsconfig
+    /// `paths` (whose exact key names a declaration file here), and an alias
+    /// to a `paths` name still resolves through the `paths`. rolldown's own
+    /// `alias` option went after the `paths`, so the build bundled the
+    /// declaration file.
+    #[tokio::test]
+    async fn the_build_takes_aliases_before_tsconfig_paths() {
+        for (name, alias, want, not) in [
+            (
+                "specific-first",
+                r#"{ "@/integrations/supabase/client": "./src/appBackend.ts", "~lib": "@/lib", "@": "./src" }"#,
+                "app-backend",
+                "generated-client",
+            ),
+            (
+                "at-first",
+                r#"[{ "find": "@", "replacement": "./src" }, { "find": "~lib", "replacement": "@/lib" }, { "find": "@/integrations/supabase/client", "replacement": "./src/appBackend.ts" }]"#,
+                "generated-client",
+                "app-backend",
+            ),
+        ] {
+            let root = scratch(&format!("build-alias-order-{name}"));
+            for (file, body) in [
+                ("package.json", r#"{"type":"module"}"#.to_string()),
+                ("oj.config.json", format!(r#"{{ "resolve": {{ "alias": {alias} }} }}"#)),
+                (
+                    "tsconfig.json",
+                    r#"{ "compilerOptions": { "baseUrl": ".", "paths": { "@/integrations/supabase/client": ["./src/types/client.d.ts"], "@/*": ["./src/*"] } } }"#.to_string(),
+                ),
+                (
+                    "index.html",
+                    r#"<html><body><script type="module" src="/src/main.ts"></script></body></html>"#.to_string(),
+                ),
+                (
+                    "src/main.ts",
+                    "import { who } from \"@/integrations/supabase/client\";\nimport { helper } from \"~lib/helper\";\nconsole.log(who, helper);\n".to_string(),
+                ),
+                ("src/lib/helper.ts", "export const helper = \"lib-helper\";\n".to_string()),
+                (
+                    "src/integrations/supabase/client.ts",
+                    "export const who = \"generated-client\";\n".to_string(),
+                ),
+                ("src/appBackend.ts", "export const who = \"app-backend\";\n".to_string()),
+                ("src/types/client.d.ts", "export declare const who: string;\n".to_string()),
+            ] {
+                let path = root.join(file);
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::write(path, body).unwrap();
+            }
+            build(
+                root.clone(),
+                Some("production"),
+                &tokio::runtime::Handle::current(),
+                CliOptions::default(),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{name}: {e:#}"));
+            let js: String = fs::read_dir(root.join("dist/assets"))
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().is_some_and(|x| x == "js"))
+                .map(|e| fs::read_to_string(e.path()).unwrap())
+                .collect();
+            assert!(js.contains(want), "{name}: {want} bundled:\n{js}");
+            assert!(!js.contains(not), "{name}: {not} not bundled:\n{js}");
+            assert!(
+                js.contains("lib-helper"),
+                "{name}: ~lib through paths:\n{js}"
+            );
         }
     }
 

@@ -51,16 +51,28 @@ impl Aliases {
     /// The rewrite of `id`, as a path: the first `resolve.alias` entry that
     /// takes it (Vite's alias plugin runs ahead of every resolver), then
     /// tsconfig `paths` on what it gave, as the alias plugin hands the
-    /// rewritten id to the rest of the pipeline. A `paths` target that is a
-    /// declaration file is no rewrite (vite-tsconfig-paths passes on one).
+    /// rewritten id to the rest of the pipeline.
     pub fn apply(&self, id: &str) -> Option<String> {
         let Some(aliased) = first_rewrite(&self.config, id) else {
-            return first_rewrite(&self.paths, id).filter(|p| !is_declaration_file(p));
+            return self.mapped(id);
         };
-        match first_rewrite(&self.paths, &aliased) {
-            Some(mapped) if !is_declaration_file(&mapped) => Some(mapped),
-            _ => Some(aliased),
-        }
+        Some(self.mapped(&aliased).unwrap_or(aliased))
+    }
+
+    /// `id` through tsconfig `paths` as vite-tsconfig-paths maps it: each
+    /// matching pattern's targets in order, the first that resolves wins,
+    /// and an answer that is a declaration file is none.
+    fn mapped(&self, id: &str) -> Option<String> {
+        let found = self.paths.iter().find_map(|a| {
+            let target = match a {
+                Alias::Exact { find, target } if id == find => target.clone(),
+                Alias::Prefix { prefix, target } => target.join(id.strip_prefix(prefix.as_str())?),
+                _ => return None,
+            };
+            module_file(&target)
+        })?;
+        let found = found.to_string_lossy().into_owned();
+        (!found.ends_with(".d.ts")).then_some(found)
     }
 }
 
@@ -74,10 +86,25 @@ fn first_rewrite(aliases: &[Alias], id: &str) -> Option<String> {
     })
 }
 
-fn is_declaration_file(path: &str) -> bool {
-    [".d.ts", ".d.mts", ".d.cts"]
-        .iter()
-        .any(|ext| path.ends_with(ext))
+/// The file a mapped `paths` target loads, the way the dev resolver finds
+/// it: the path itself, with an extension, or a directory's index.
+fn module_file(target: &Path) -> Option<PathBuf> {
+    const EXTENSIONS: [&str; 8] = ["mjs", "js", "mts", "ts", "jsx", "tsx", "json", "cjs"];
+    if target.is_file() {
+        return Some(target.to_path_buf());
+    }
+    let with_ext = |base: &Path| {
+        EXTENSIONS.iter().find_map(|ext| {
+            let file = PathBuf::from(format!("{}.{ext}", base.display()));
+            file.is_file().then_some(file)
+        })
+    };
+    with_ext(target).or_else(|| {
+        if target.join("package.json").is_file() {
+            return Some(target.to_path_buf());
+        }
+        with_ext(&target.join("index"))
+    })
 }
 
 /// `paths` and the directory its targets are relative to.

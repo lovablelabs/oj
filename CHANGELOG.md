@@ -5,6 +5,16 @@ All notable changes to oj are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `oj build` resolves `resolve.alias` before tsconfig `paths`, as dev does and as Vite's alias plugin runs in a build. The aliases went to rolldown's resolver, which tries tsconfig `paths` first, so a build could bundle a different file than dev served, or a declaration file.
+- A plugin's `this.resolve` of an id an alias maps under its own name (`{ process: "process/browser" }`) resolves again. oj applied the alias a second time to the id the plugin host had already rewritten, so `process/browser` became `process/browser/browser`.
+- A dependency's own imports no longer take the app's tsconfig `paths`, as neither vite-tsconfig-paths nor oxc applies them inside `node_modules`. A `paths` key named like a package (`events`, `zod`) handed the app's file to the dependency.
+- The dependency scan tries each tsconfig `paths` target until one exists, as vite-tsconfig-paths does, so an exact key still answers when `@/*` finds nothing, and a second target answers when the first is missing. Its declaration-file rule now matches only `.d.ts`, like the dev resolver.
+- The alias list follows the resolved Vite config's order and values, which put a plugin's entries ahead of the app's when either side is an array. A find and replacement that both end in `/` lose it, as Vite normalizes them, so `{ "@/": "/src/" }` in `oj.config.json` matches `@/x`.
+
 ## [0.4.4] - 2026-11-06
 
 ### Fixed
