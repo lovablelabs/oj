@@ -298,14 +298,15 @@ async fn the_scan_tries_each_paths_target_until_one_exists() {
 // The scan resolves tsconfig `paths` as the app's Vite does: the plugin's
 // order (`@/*` before an exact key), Vite 8's own (`resolve.tsconfigPaths`:
 // the exact key, `paths` ahead of packages), or none, where oj applies them
-// only to what plain resolution misses (the package a `paths` key shadows).
+// with neither, Vite's dev scan applies none (`@/x` stays unresolved, the
+// package a `paths` key names stays the package).
 #[tokio::test(flavor = "multi_thread")]
 async fn the_scan_follows_how_the_app_applies_tsconfig_paths() {
     use oj_resolver::TsconfigPaths::*;
     for (mode, want) in [
-        (Plugin, ["shimdep", "xdep"]),
-        (Native, ["adep", "shimdep"]),
-        (Fallback, ["evpkg", "xdep"]),
+        (Plugin, vec!["shimdep", "xdep"]),
+        (Native, vec!["adep", "shimdep"]),
+        (Neither, vec!["evpkg"]),
     ] {
         let app = App::new();
         app.write(

@@ -69,10 +69,10 @@ fn the_tsconfig_paths_mode_follows_the_extracted_config() {
     let native = serde_json::json!({ "tsconfigPathsPlugin": false, "tsconfigPaths": true });
     assert_eq!(mode(native), Native);
     let neither = serde_json::json!({ "tsconfigPathsPlugin": false, "tsconfigPaths": false });
-    assert_eq!(mode(neither), Fallback);
+    assert_eq!(mode(neither), Neither);
     assert_eq!(
         crate::tsconfig_paths(&oj_config::OjConfig::default()),
-        Fallback,
+        Neither,
         "no host: no plugin, as Vite with no config"
     );
 }

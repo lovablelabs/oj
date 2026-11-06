@@ -1467,7 +1467,7 @@ async fn bundle_worker_inline(
         .into_iter()
         .collect();
     plugins.push(Pluginable::new_shared(nested));
-    plugins.extend(opts.and_then(|o| tsconfig_paths_plugin(root, &o.config, "client")));
+    plugins.extend(opts.and_then(|o| tsconfig_paths_plugin(root, &o.config, "client", true)));
     let mut bundler = BundlerBuilder::default()
         .with_plugins(plugins)
         .with_options(BundlerOptions {
@@ -1512,7 +1512,7 @@ async fn bundle_worker_entry(
         .into_iter()
         .collect();
     plugins.push(Pluginable::new_shared(nested));
-    plugins.extend(opts.and_then(|o| tsconfig_paths_plugin(root, &o.config, "client")));
+    plugins.extend(opts.and_then(|o| tsconfig_paths_plugin(root, &o.config, "client", true)));
     let mut bundler = BundlerBuilder::default()
         .with_plugins(plugins)
         .with_options(BundlerOptions {
@@ -2377,11 +2377,23 @@ fn tsconfig_paths_plugin(
     root: &Path,
     config: &oj_config::OjConfig,
     env: &str,
+    worker: bool,
 ) -> Option<SharedPluginable> {
-    let mode = oj_server::tsconfig_paths(config);
+    let mut mode = oj_server::tsconfig_paths(config);
+    // Vite builds a worker with `worker.plugins` alone: the app's
+    // vite-tsconfig-paths never sees it, `resolve.tsconfigPaths` still does.
+    if worker {
+        mode = match mode {
+            oj_resolver::TsconfigPaths::Plugin => oj_resolver::TsconfigPaths::Neither,
+            oj_resolver::TsconfigPaths::PluginNative => oj_resolver::TsconfigPaths::Native,
+            other => other,
+        };
+    }
     if !matches!(
         mode,
-        oj_resolver::TsconfigPaths::Plugin | oj_resolver::TsconfigPaths::Fallback
+        oj_resolver::TsconfigPaths::Plugin
+            | oj_resolver::TsconfigPaths::PluginNative
+            | oj_resolver::TsconfigPaths::Neither
     ) {
         return None;
     }
@@ -2389,7 +2401,7 @@ fn tsconfig_paths_plugin(
     let resolver = oj_resolver::OjResolver::with_settings(
         root,
         oj_resolver::ResolveSettings {
-            conditions: resolve.condition_names.unwrap_or_default(),
+            conditions: build_conditions(config, env),
             alias: oj_config::top_level_alias(config),
             dedupe: oj_config::resolve_dedupe(config),
             extensions: resolve.extensions,
@@ -2404,6 +2416,19 @@ fn tsconfig_paths_plugin(
     Some(Pluginable::new_shared(
         crate::start_bundle::alias::TsconfigPathsPlugin::new(resolver, true),
     ))
+}
+
+/// The build's export conditions, `import`/`require`/`default` included
+/// (rolldown's list leaves those to the import kind).
+fn build_conditions(config: &oj_config::OjConfig, env: &str) -> Vec<String> {
+    if env == "ssr"
+        && oj_config::ssr_runner_backed(config)
+        && !oj_config::ssr_externals(config).webworker()
+    {
+        oj_config::node_server_conditions(config, false)
+    } else {
+        oj_config::resolve_conditions_for(config, env, false)
+    }
 }
 
 /// `root` is unused: `resolve.alias` goes through `alias_plugin`, ahead of
@@ -2442,16 +2467,9 @@ fn rolldown_resolve(
     // unless `ssr.target: "webworker"` says this ssr bundle itself targets a
     // worker runtime: it never executes under Node then, and Node conditions
     // would pick the wrong entries, so the environment's own list stands.
-    let condition_names = Some(oj_resolver::rolldown_conditions(
-        if env == "ssr"
-            && oj_config::ssr_runner_backed(config)
-            && !oj_config::ssr_externals(config).webworker()
-        {
-            oj_config::node_server_conditions(config, false)
-        } else {
-            oj_config::resolve_conditions_for(config, env, false)
-        },
-    ));
+    let condition_names = Some(oj_resolver::rolldown_conditions(build_conditions(
+        config, env,
+    )));
     let symlinks = config
         .resolve
         .as_ref()
@@ -3743,7 +3761,12 @@ pub async fn build(
             bundle_graph::jsx_config(&config),
         )));
     }
-    oj_plugins.extend(tsconfig_paths_plugin(root.as_ref(), &config, "client"));
+    oj_plugins.extend(tsconfig_paths_plugin(
+        root.as_ref(),
+        &config,
+        "client",
+        false,
+    ));
     let client_minify =
         oj_config::environment_build_bool(&config, "client", "minify").unwrap_or(minify);
     let client_define: Vec<(String, String)> = {
@@ -5209,7 +5232,7 @@ pub(crate) async fn build_ssr(
             bundle_graph::jsx_config(config),
         )));
     }
-    oj_plugins.extend(tsconfig_paths_plugin(root, config, "ssr"));
+    oj_plugins.extend(tsconfig_paths_plugin(root, config, "ssr", false));
     oj_plugins.push(Pluginable::new_shared(OjCssPlugin {
         collected: Arc::clone(&collected_css),
         root: root.to_path_buf(),
@@ -5817,7 +5840,7 @@ async fn build_client_entry(
             bundle_graph::jsx_config(config),
         )));
     }
-    oj_plugins.extend(tsconfig_paths_plugin(root, config, "client"));
+    oj_plugins.extend(tsconfig_paths_plugin(root, config, "client", false));
     oj_plugins.push(Pluginable::new_shared(OjCssPlugin {
         collected: Arc::clone(&collected_css),
         root: root.to_path_buf(),
@@ -6094,7 +6117,7 @@ async fn build_library(
         if let Some(plugin) = &stylex {
             plugins.push(crate::stylex_plugin::transform(plugin));
         }
-        plugins.extend(tsconfig_paths_plugin(root, config, "client"));
+        plugins.extend(tsconfig_paths_plugin(root, config, "client", false));
         plugins.push(Pluginable::new_shared(OjCssPlugin {
             collected: Arc::clone(&collected_css),
             root: root.to_path_buf(),
@@ -8029,6 +8052,86 @@ mod tests {
             "{js}"
         );
         assert!(js.contains("tilde-other"), "{js}");
+    }
+
+    /// With `baseUrl` (the shadcn and Lovable templates' `"."`), a package
+    /// still resolves as the bundle's own resolver resolves it: its `import`
+    /// entry for an import, its `require` entry for a CJS dependency's
+    /// `require()`. The `paths` step took over every bare import there, with
+    /// rolldown's condition list (which leaves `import` to the import kind),
+    /// so it bundled the `default` (CJS) entry, and a `require()` got the
+    /// `import` one.
+    #[tokio::test]
+    async fn a_base_url_leaves_package_entries_to_the_bundle() {
+        let root = scratch("build-base-url-entries");
+        for (file, body) in [
+            ("package.json", r#"{"type":"module"}"#),
+            ("vite.config.mjs", "export default {};\n"),
+            (
+                "tsconfig.json",
+                r#"{ "compilerOptions": { "baseUrl": "." } }"#,
+            ),
+            (
+                "index.html",
+                r#"<html><body><script type="module" src="/src/main.ts"></script></body></html>"#,
+            ),
+            (
+                "src/main.ts",
+                "import { e } from \"dualpkg\";\nimport c from \"cjsdep\";\nconsole.log(e, c);\n",
+            ),
+            (
+                "node_modules/dualpkg/package.json",
+                r#"{"name":"dualpkg","exports":{".":{"import":"./esm.mjs","require":"./cjs.cjs","default":"./cjs.cjs"}}}"#,
+            ),
+            (
+                "node_modules/dualpkg/esm.mjs",
+                "export const e = \"dual-esm\";\n",
+            ),
+            (
+                "node_modules/dualpkg/cjs.cjs",
+                "exports.e = \"dual-cjs\";\n",
+            ),
+            (
+                "node_modules/cjsdep/package.json",
+                r#"{"name":"cjsdep","main":"index.js"}"#,
+            ),
+            (
+                "node_modules/cjsdep/index.js",
+                "module.exports = require(\"reqpkg\");\n",
+            ),
+            (
+                "node_modules/reqpkg/package.json",
+                r#"{"name":"reqpkg","exports":{".":{"import":"./esm.mjs","require":"./cjs.cjs"}}}"#,
+            ),
+            (
+                "node_modules/reqpkg/esm.mjs",
+                "export default \"req-esm\";\n",
+            ),
+            (
+                "node_modules/reqpkg/cjs.cjs",
+                "module.exports = \"req-cjs\";\n",
+            ),
+        ] {
+            let path = root.join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, body).unwrap();
+        }
+        build(
+            root.clone(),
+            Some("production"),
+            &tokio::runtime::Handle::current(),
+            CliOptions::default(),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{e:#}"));
+        let js: String = fs::read_dir(root.join("dist/assets"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|x| x == "js"))
+            .map(|e| fs::read_to_string(e.path()).unwrap())
+            .collect();
+        assert!(js.contains("dual-esm") && !js.contains("dual-cjs"), "{js}");
+        assert!(js.contains("req-cjs") && !js.contains("req-esm"), "{js}");
     }
 
     /// Vite's define plugin: a browser bundle gets `process.env` -> `{}` (so an

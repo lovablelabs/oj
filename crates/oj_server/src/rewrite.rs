@@ -262,7 +262,18 @@ pub(crate) fn relative_import_missing(dir: &Path, resolver: &OjResolver, spec: &
 
 /// A bare import the resolver cannot find and nothing else answers (builtin,
 /// virtual id, data:, browser-false mapping): Vite's importAnalysis fails these.
+#[cfg(test)]
 pub(crate) fn bare_import_unresolved(dir: &Path, resolver: &OjResolver, spec: &str) -> bool {
+    bare_import_unresolved_in(Importer::dir(dir), resolver, spec)
+}
+
+/// [`bare_import_unresolved`] from the importing file when it is known, so
+/// tsconfig `paths` decide as they do for the import's own rewrite.
+pub(crate) fn bare_import_unresolved_in(
+    from: Importer<'_>,
+    resolver: &OjResolver,
+    spec: &str,
+) -> bool {
     if !is_bare_specifier(spec)
         || spec.is_empty()
         || spec.starts_with("virtual:")
@@ -274,7 +285,7 @@ pub(crate) fn bare_import_unresolved(dir: &Path, resolver: &OjResolver, spec: &s
         return false;
     }
     let base = spec.split('?').next().unwrap_or(spec);
-    resolver.resolve(dir, base).is_err_and(|e| !e.ignored)
+    resolve_in(resolver, from.dir, from.file, base).is_err_and(|e| !e.ignored)
 }
 
 pub(crate) const UNRESOLVED_IMPORT_MARK: &str = "Failed to resolve import \"";

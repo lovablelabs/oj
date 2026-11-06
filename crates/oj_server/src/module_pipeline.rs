@@ -1,5 +1,6 @@
 use super::*;
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::time::SystemTime;
 
 /// A file's mtime and size: the warm-path key into `mtime_keys`.
@@ -226,13 +227,22 @@ pub(crate) async fn ensure_module_as(
         Some(e) if is_style_ext(e) => CompileKind::Css,
         _ => CompileKind::Script,
     };
-    let (dep_map, pre_resolved) = match kind {
+    let (dep_map, pre_resolved, unresolved_bare) = match kind {
         CompileKind::Script => {
             let dep_map = state.optimized.ready().await;
             let pre_resolved = pre_resolve_bare(state, file, &source, &dep_map).await;
-            (dep_map, pre_resolved)
+            let unresolved = if is_dep || is_server {
+                HashSet::new()
+            } else {
+                unresolved_bare(state, file, &source, &pre_resolved).await
+            };
+            (dep_map, pre_resolved, unresolved)
         }
-        _ => (Arc::new(optimize::DepMap::new()), HashMap::new()),
+        _ => (
+            Arc::new(optimize::DepMap::new()),
+            HashMap::new(),
+            HashSet::new(),
+        ),
     };
     let job = CompileJob {
         state: Arc::clone(state),
@@ -250,6 +260,7 @@ pub(crate) async fn ensure_module_as(
         plugin_maps: transformed.maps,
         dep_map,
         pre_resolved,
+        unresolved_bare,
     };
     let compiled = tokio::task::spawn_blocking(move || job.run()).await;
 
@@ -816,6 +827,57 @@ pub struct PreAnswer {
 /// own resolution, or the specifier's own pre-bundle (a `this.resolve`
 /// passthrough), is dropped so the import takes
 /// oj's dep handling unchanged.
+/// The bare imports of `source` nothing resolves, as Vite's import analysis
+/// finds them (`this.resolve` through every plugin, then its own resolver,
+/// which fails the importer): not a `pre` plugin's answer, not oj's
+/// resolver, and not the rest of the app's resolveId hooks. Asked only for
+/// what oj's resolver misses, and only when a plugin has resolveId at all.
+async fn unresolved_bare(
+    state: &ServerState,
+    file: &Path,
+    source: &str,
+    pre_resolved: &HashMap<String, PreAnswer>,
+) -> HashSet<String> {
+    let Some(host) = state
+        .plugins
+        .as_ref()
+        .filter(|_| state.plugins_have_resolve_id)
+    else {
+        return HashSet::new();
+    };
+    let importer = file.to_string_lossy().into_owned();
+    let dir = file.parent().unwrap_or(Path::new(""));
+    let missed: Vec<String> = oj_compiler::interop::bare_import_specifiers(source)
+        .into_iter()
+        .filter(|spec| {
+            is_bare_specifier(spec)
+                && !state.virtual_ids.contains(spec)
+                && !pre_resolved.contains_key(spec)
+                && crate::rewrite::bare_import_unresolved_in(
+                    crate::rewrite::Importer {
+                        dir,
+                        file: Some(file),
+                    },
+                    &state.resolver,
+                    spec,
+                )
+        })
+        .collect();
+    let answers = futures_util::future::join_all(missed.into_iter().map(|spec| {
+        let importer = &importer;
+        async move {
+            let answered = !matches!(host.resolve_id(&spec, importer).await, Ok(None));
+            (spec, answered)
+        }
+    }))
+    .await;
+    answers
+        .into_iter()
+        .filter(|(_, answered)| !answered)
+        .map(|(spec, _)| spec)
+        .collect()
+}
+
 pub(crate) async fn pre_resolve_bare(
     state: &ServerState,
     file: &Path,
@@ -830,7 +892,6 @@ pub(crate) async fn pre_resolve_bare(
         return HashMap::new();
     }
     let importer = file.to_string_lossy().into_owned();
-    let dir = file.parent().unwrap_or(Path::new(""));
     let specs = oj_compiler::interop::bare_import_specifiers(source)
         .into_iter()
         .filter(|spec| is_bare_specifier(spec) && !state.virtual_ids.contains(spec))
@@ -866,7 +927,7 @@ pub(crate) async fn pre_resolve_bare(
             // not a passthrough to oj's resolution.
             let answer = answer
                 .filter(|a| {
-                    a.external || a.id == spec || !is_native_resolution(state, dir, &spec, &a.id)
+                    a.external || a.id == spec || !is_native_resolution(state, file, &spec, &a.id)
                 })
                 .map(|a| PreAnswer {
                     resolver: !a.external && is_resolver_answer(state, &spec, &a.id),
@@ -909,11 +970,11 @@ fn is_resolver_answer(state: &ServerState, spec: &str, id: &str) -> bool {
     answers.contains(&(spec.to_string(), id.to_string()))
 }
 
-fn is_native_resolution(state: &ServerState, dir: &Path, spec: &str, id: &str) -> bool {
+fn is_native_resolution(state: &ServerState, file: &Path, spec: &str, id: &str) -> bool {
     let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     state
         .resolver
-        .resolve(dir, spec)
+        .resolve_from(file, spec)
         .is_ok_and(|native| canonical(&native) == canonical(Path::new(id)))
 }
 
@@ -937,6 +998,9 @@ struct CompileJob {
     dep_map: Arc<optimize::DepMap>,
     /// Bare specifiers a `pre` plugin's resolveId claimed, to its answers.
     pre_resolved: HashMap<String, PreAnswer>,
+    /// Bare specifiers nothing resolves: not oj's resolver, not any plugin's
+    /// resolveId (see [`unresolved_bare`]).
+    unresolved_bare: HashSet<String>,
 }
 
 impl CompileJob {
@@ -1232,6 +1296,14 @@ impl ImportRewrite<'_> {
                 .hmr_timestamp(Path::new(url.split('?').next().unwrap_or(&url)));
             return Some(stamp_import_url(&url, stamp));
         }
+        // Vite's import analysis fails an import nothing resolves; oj asked
+        // every plugin's resolveId before compiling.
+        if job.unresolved_bare.contains(spec) {
+            self.unresolved
+                .borrow_mut()
+                .get_or_insert_with(|| spec.to_string());
+            return None;
+        }
         if plugin_fallback && is_bare_specifier(spec) {
             return Some(self.id_url(spec));
         }
@@ -1240,7 +1312,14 @@ impl ImportRewrite<'_> {
         if !job.is_dep
             && !job.is_server
             && (relative_import_missing(&job.dir, resolver, spec)
-                || bare_import_unresolved(&job.dir, resolver, spec))
+                || crate::rewrite::bare_import_unresolved_in(
+                    crate::rewrite::Importer {
+                        dir: &job.dir,
+                        file: Some(&job.file),
+                    },
+                    resolver,
+                    spec,
+                ))
         {
             self.unresolved
                 .borrow_mut()

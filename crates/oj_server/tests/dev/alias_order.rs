@@ -224,19 +224,13 @@ async fn a_paths_target_that_is_a_declaration_file_is_never_served() {
     let mut dev = app.dev();
     dev.config = Some(app.root.join("vite.paths.config.js"));
     let server = crate::serve(dev).await;
-    // oj leaves an import it cannot resolve as an `/@id/` URL where Vite's
-    // import analysis fails the importer; either way the import fails.
-    let main = server.text("/src/main.ts").await;
-    let client = imports(&main).into_iter().next().unwrap();
-    assert!(client.starts_with("/@id/"), "{main}");
-    let served = server.get(&client).await;
-    assert_eq!(served.status, 500, "{}", served.body);
+    // Vite's import analysis fails the importer; so does oj's.
+    let main = server.get("/src/main.ts").await;
+    assert_eq!(main.status, 500, "{}", main.body);
     assert!(
-        served
-            .body
-            .contains("Failed to resolve import \"@/integrations/supabase/client\""),
+        main.body.contains("@/integrations/supabase/client"),
         "{}",
-        served.body
+        main.body
     );
     let helper = server.text("/src/lib/helper.ts").await;
     assert!(helper.contains("-helper"), "{helper}");
@@ -407,4 +401,48 @@ async fn a_glob_maps_through_the_importers_own_tsconfig_paths() {
         dynamic_imports(&server.text("/pkg/m.ts").await),
     ];
     assert_eq!(ours, theirs, "oj dev vs vite dev");
+}
+
+// vite-tsconfig-paths maps only TypeScript importers without `allowJs`: a
+// `.js` file's `@/a` fails in Vite's dev server, and in oj's, rather than
+// shipping the bare `@/a` to the browser.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_js_importers_paths_import_fails_as_in_vite() {
+    crate::require_fixture!("vite", "vite-tsconfig-paths");
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"js-importer","private":true,"type":"module"}"#,
+        ),
+        ("index.html", INDEX),
+        (
+            "tsconfig.json",
+            r#"{ "compilerOptions": { "paths": { "@/*": ["./src/*"] } } }"#,
+        ),
+        ("src/a.ts", "export const a = 1;\n"),
+        (
+            "src/m.js",
+            "import { a } from \"@/a\";\nexport const m = a;\n",
+        ),
+        (
+            "src/m.ts",
+            "import { a } from \"@/a\";\nexport const m = a;\n",
+        ),
+    ]);
+    app.link_fixture("vite");
+    app.link_fixture("vite-tsconfig-paths");
+    app.write(&[("vite.plugin.config.js", &config("{}"))]);
+    let vite = ViteDev::start(&app.root, "vite.plugin.config.js");
+    let (js_status, _) = vite.get("/src/m.js");
+    let ts = vite.imports("/src/m.ts");
+    drop(vite);
+    assert_eq!(js_status, 500, "vite dev fails the .js importer's import");
+    assert_eq!(ts, ["/src/a.ts"]);
+    let mut dev = app.dev();
+    dev.config = Some(app.root.join("vite.plugin.config.js"));
+    let server = crate::serve(dev).await;
+    let ours = server.get("/src/m.js").await;
+    assert_eq!(ours.status, 500, "{}", ours.body);
+    assert!(ours.body.contains("@/a"), "{}", ours.body);
+    assert_eq!(imports(&server.text("/src/m.ts").await), ts);
 }
