@@ -210,6 +210,12 @@ impl ConfigExtractStore {
             integrity::write_self_verified(&path, &serde_json::to_vec(&entry).unwrap_or_default());
     }
 
+    /// Drops the entry for `config`, `command` and `mode`: the next read
+    /// evaluates the config again.
+    pub fn forget(&self, config: &Path, command: &str, mode: &str) {
+        let _ = fs::remove_file(self.entry_path(config, command, mode));
+    }
+
     /// An entry holds while the env epoch matches, the env vars the config
     /// read hold the values they had, and every stamped file (config plus its
     /// imports) still has the recorded digest.

@@ -413,3 +413,119 @@ async fn a_start_src_directory_is_read_by_an_extraction_the_host_takes_over() {
         .expect("the router generator's paths");
     assert!(routes.ends_with("app/routes"), "{}", routes.display());
 }
+
+/// An app whose vite.config is `plugin` (a plugin object literal) plus an
+/// `eval` line in `log` per evaluation, a file outside the root at
+/// `<root>.allowed/x.js`, and the URL that serves it.
+fn outside_app(name: &str, plugin: &str) -> (App, std::path::PathBuf, String) {
+    let app = App::new(&[
+        (
+            "package.json",
+            &format!(r#"{{"name":"{name}","private":true,"type":"module"}}"#),
+        ),
+        ("index.html", INDEX_HTML),
+        (
+            "src/main.js",
+            "import x from \"aliased\";\nexport const v = x;\n",
+        ),
+        ("src/target.js", "export default \"from-alias\";\n"),
+    ]);
+    let outside = app.root.with_extension("allowed");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("x.js"), "export const allowed = 1;\n").unwrap();
+    let log = app.root.with_extension("evals.log");
+    let plugin = plugin
+        .replace(
+            "{{OUTSIDE}}",
+            &format!("{:?}", outside.display().to_string()),
+        )
+        .replace(
+            "{{TARGET}}",
+            &format!("{:?}", app.root.join("src/target.js").display().to_string()),
+        );
+    app.write(&[(
+        "vite.config.mjs",
+        &format!(
+            "import {{ appendFileSync }} from \"node:fs\";\nappendFileSync({log:?}, \"eval\\n\");\nexport default {{ plugins: [{plugin}] }};\n"
+        ),
+    )]);
+    app.link_fixture("vite");
+    let url = format!("/@fs{}/x.js", outside.display());
+    (app, log, url)
+}
+
+/// Vite runs every configResolved hook on the resolved config it then serves
+/// from (resolveConfig), and its file check reads `server.fs.allow` off that
+/// object per request (isFileLoadingAllowed): a directory a plugin allows
+/// there is served, in Vite and in oj: on a cold boot (one evaluation, the
+/// host taking the extraction's run over) and on a warm one (the stored
+/// values), the directory allowed once.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_config_resolved_edit_reaches_what_the_server_serves() {
+    crate::require_fixture!("vite");
+    let (app, log, url) = outside_app(
+        "config-resolved-edit",
+        "{ name: \"allow\", configResolved(c) { c.server.fs.allow.push({{OUTSIDE}}); } }",
+    );
+    let vite = crate::alias_order::ViteDev::start(&app.root, "vite.config.mjs");
+    let (status, body) = vite.get(&url);
+    drop(vite);
+    assert_eq!(status, 200, "vite serves the allowed file:\n{body}");
+    std::fs::remove_file(&log).unwrap();
+
+    let server = app.serve().await;
+    let r = server.get(&url).await;
+    assert_eq!(r.status, 200, "oj, cold boot:\n{}", r.body);
+    drop(server);
+    assert_eq!(counts(&log).0, 1, "a cold boot evaluates the config once");
+    let outside = app.root.with_extension("allowed").display().to_string();
+    // The stored values, not this process's copy of them.
+    oj_server::plugins::forget_resolved_values(&app.root);
+    let stored = oj_server::plugins::extract_vite_values(&app.root, None, "serve", "development")
+        .and_then(|v| v.fs_allow)
+        .unwrap_or_default();
+    assert_eq!(
+        stored.iter().filter(|d| **d == outside).count(),
+        1,
+        "the directory, stored once: {stored:?}"
+    );
+    let server = app.serve().await;
+    let r = server.get(&url).await;
+    assert_eq!(r.status, 200, "oj, warm boot:\n{}", r.body);
+}
+
+/// Vite reads `server.fs.allow` as it serves, so a configureServer hook that
+/// allows a directory reaches what it serves too.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_configure_server_edit_reaches_what_the_server_serves() {
+    crate::require_fixture!("vite");
+    let (app, _log, url) = outside_app(
+        "configure-server-edit",
+        "{ name: \"allow\", configureServer(s) { s.config.server.fs.allow.push({{OUTSIDE}}); } }",
+    );
+    let vite = crate::alias_order::ViteDev::start(&app.root, "vite.config.mjs");
+    let (status, body) = vite.get(&url);
+    drop(vite);
+    assert_eq!(status, 200, "vite serves the allowed file:\n{body}");
+    let server = app.serve().await;
+    let r = server.get(&url).await;
+    assert_eq!(r.status, 200, "oj:\n{}", r.body);
+}
+
+/// Vite's dev alias plugin took its entries before the configResolved hooks
+/// ran: an alias one pushes there resolves nothing (`vite build`'s does).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_config_resolved_alias_resolves_nothing_in_dev_as_in_vite() {
+    crate::require_fixture!("vite");
+    let (app, _log, _url) = outside_app(
+        "config-resolved-dev-alias",
+        "{ name: \"alias\", configResolved(c) { c.resolve.alias.push({ find: \"aliased\", replacement: {{TARGET}} }); } }",
+    );
+    let vite = crate::alias_order::ViteDev::start(&app.root, "vite.config.mjs");
+    let (status, body) = vite.get("/src/main.js");
+    drop(vite);
+    assert_eq!(status, 500, "vite fails the import:\n{body}");
+    let server = app.serve().await;
+    let r = server.get("/src/main.js").await;
+    assert_eq!(r.status, 500, "oj:\n{}", r.body);
+}

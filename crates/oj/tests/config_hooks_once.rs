@@ -369,3 +369,214 @@ fn a_build_under_the_configs_own_mode_resolves_once_as_in_vite() {
         .current_dir(&app.root));
     assert_eq!(app.take(), theirs, "oj build vs vite build");
 }
+
+// Vite runs the configResolved hooks on the resolved config the build then
+// reads (resolveConfig): an alias a hook pushes there resolves the build's
+// import (vite build bundles the aliased module). oj read the config's
+// values before those hooks on a cold build, so the import failed.
+#[test]
+fn a_config_resolved_alias_reaches_the_build_as_in_vite() {
+    let Some(app) = Spa::new("") else {
+        return;
+    };
+    std::fs::write(
+        app.root.join("src/main.ts"),
+        "import x from \"aliased\";\nconsole.log(x);\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app.root.join("src/target.ts"),
+        "export default \"from-alias\";\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app.root.join("vite.config.js"),
+        format!(
+            r#"export default {{ plugins: [{{
+  name: "alias-in-config-resolved",
+  configResolved(c) {{ c.resolve.alias.push({{ find: "aliased", replacement: {:?} }}); }},
+}}] }};
+"#,
+            app.root.join("src/target.ts").display().to_string()
+        ),
+    )
+    .unwrap();
+    let built = |cmd: &mut Command, dist: &str| -> String {
+        let out = cmd.output().unwrap();
+        assert!(
+            out.status.success(),
+            "{cmd:?}:\n{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let mut js = String::new();
+        for entry in std::fs::read_dir(app.root.join(dist).join("assets"))
+            .unwrap()
+            .flatten()
+        {
+            if entry.path().extension().is_some_and(|e| e == "js") {
+                js.push_str(&std::fs::read_to_string(entry.path()).unwrap());
+            }
+        }
+        js
+    };
+    let vite = built(
+        Command::new("node")
+            .arg(app.root.join("node_modules/vite/bin/vite.js"))
+            .args(["build", "--outDir", "vite-dist"])
+            .current_dir(&app.root),
+        "vite-dist",
+    );
+    assert!(vite.contains("from-alias"), "vite:\n{vite}");
+    app.reset();
+    let oj = built(
+        Command::new(env!("CARGO_BIN_EXE_oj"))
+            .args(["build", "--outDir", "oj-dist"])
+            .arg(&app.root)
+            .current_dir(&app.root),
+        "oj-dist",
+    );
+    assert!(oj.contains("from-alias"), "oj:\n{oj}");
+}
+
+/// Builds the scratch SPA with Vite then oj (fresh caches), each into its
+/// default outDir: per tool, the dirs it wrote and its JS.
+fn build_both_tools(app: &Spa) -> [(Vec<String>, String); 2] {
+    let run = |cmd: &mut Command| {
+        let out = cmd.output().unwrap();
+        assert!(
+            out.status.success(),
+            "{cmd:?}:\n{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    let written = |root: &Path| -> (Vec<String>, String) {
+        let mut dirs = Vec::new();
+        let mut js = String::new();
+        for name in ["dist", "edited-out"] {
+            let assets = root.join(name).join("assets");
+            if !assets.is_dir() {
+                continue;
+            }
+            dirs.push(name.to_string());
+            for entry in std::fs::read_dir(&assets).unwrap().flatten() {
+                if entry.path().extension().is_some_and(|e| e == "js") {
+                    js.push_str(&std::fs::read_to_string(entry.path()).unwrap());
+                }
+            }
+            let _ = std::fs::remove_dir_all(root.join(name));
+        }
+        (dirs, js)
+    };
+    run(Command::new("node")
+        .arg(app.root.join("node_modules/vite/bin/vite.js"))
+        .arg("build")
+        .current_dir(&app.root));
+    let vite = written(&app.root);
+    app.reset();
+    run(Command::new(env!("CARGO_BIN_EXE_oj"))
+        .arg("build")
+        .arg(&app.root)
+        .current_dir(&app.root));
+    let oj = written(&app.root);
+    [vite, oj]
+}
+
+// What Vite does with configResolved edits in a build: the env variable and
+// the define set in place reach the code (its define plugin reads them as
+// it starts, the client environment holding those objects); `build.outDir`
+// does not (the builder copied the build options before the hooks).
+#[test]
+fn config_resolved_build_edits_apply_where_vite_reads_them() {
+    let Some(app) = Spa::new(", define: { __INPLACE__: JSON.stringify(\"before\") }") else {
+        return;
+    };
+    std::fs::write(
+        app.root.join("src/main.ts"),
+        "console.log(import.meta.env.VITE_EDIT, __INPLACE__);\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app.root.join("vite.config.js"),
+        r#"export default { define: { __INPLACE__: JSON.stringify("before") }, plugins: [{ name: "edits", configResolved(c) {
+  c.env.VITE_EDIT = "env-edited";
+  c.define.__INPLACE__ = JSON.stringify("inplace-edited");
+  c.build.outDir = "edited-out";
+} }] };
+"#,
+    )
+    .unwrap();
+    let [(vite_dirs, vite), (oj_dirs, oj)] = build_both_tools(&app);
+    assert_eq!(vite_dirs, ["dist"], "vite");
+    assert!(
+        vite.contains("env-edited") && vite.contains("inplace-edited"),
+        "vite:\n{vite}"
+    );
+    assert_eq!(oj_dirs, vite_dirs, "oj writes where vite does");
+    assert!(oj.contains("env-edited"), "oj, the env edit:\n{oj}");
+    assert!(oj.contains("inplace-edited"), "oj, the define edit:\n{oj}");
+}
+
+// A define replaced in configResolved reaches no environment in Vite: the
+// code keeps the config's own value.
+#[test]
+fn a_replaced_define_changes_nothing_as_in_vite() {
+    let Some(app) = Spa::new("") else {
+        return;
+    };
+    std::fs::write(app.root.join("src/main.ts"), "console.log(__D__);\n").unwrap();
+    std::fs::write(
+        app.root.join("vite.config.js"),
+        r#"export default { define: { __D__: JSON.stringify("from-config") }, plugins: [{ name: "replace", configResolved(c) {
+  c.define = { __D__: JSON.stringify("replaced") };
+} }] };
+"#,
+    )
+    .unwrap();
+    let [(_, vite), (_, oj)] = build_both_tools(&app);
+    assert!(
+        vite.contains("from-config") && !vite.contains("replaced"),
+        "vite:\n{vite}"
+    );
+    assert!(
+        oj.contains("from-config") && !oj.contains("replaced"),
+        "oj:\n{oj}"
+    );
+}
+
+// What the config's values warn about prints the same on a cold build (the
+// host takes the run over) and a warm one (the stored values).
+#[test]
+fn a_builds_config_warnings_are_the_same_cold_and_warm() {
+    let Some(app) = Spa::new(", build: { target: false }") else {
+        return;
+    };
+    let oj_build = || -> Vec<String> {
+        let out = Command::new(env!("CARGO_BIN_EXE_oj"))
+            .arg("build")
+            .arg(&app.root)
+            .current_dir(&app.root)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        text.lines()
+            .filter(|l| l.contains("vite.config:"))
+            .map(str::to_string)
+            .collect()
+    };
+    app.reset();
+    let cold = oj_build();
+    let warm = oj_build();
+    assert!(!cold.is_empty(), "the premise: the config warns");
+    assert_eq!(cold, warm, "cold vs warm build");
+}

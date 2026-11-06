@@ -1900,7 +1900,7 @@ impl DevServer {
             ),
             config: &config,
         };
-        let mut defines = client_defines.build(&[]);
+        let defines = client_defines.build(&[]);
 
         let server_cfg = config.server.clone().unwrap_or_default();
         let port = self.port.or(server_cfg.port).unwrap_or(5199);
@@ -1964,6 +1964,86 @@ impl DevServer {
             None => None,
         };
         boot_phase("plugin host ready");
+        // Vite runs the configResolved hooks on the resolved config it then
+        // serves from (resolveConfig), so their edits reach everything below.
+        // A run the host took over read the values before them: read again.
+        let reread = match &plugin_host {
+            Some(host) => match host.resolved_values().await {
+                Some(values) => plugins::store_resolved_values(&root, &values),
+                // A host of its own resolve: what a kept run stored goes.
+                None => {
+                    plugins::forget_kept_run(&root);
+                    false
+                }
+            },
+            None => false,
+        };
+        let config = if reread {
+            match load_dev_config(&root, config_file.as_deref(), &dev_mode) {
+                Ok(config) => config,
+                Err(e) => {
+                    if let Some(host) = &plugin_host {
+                        host.shutdown();
+                    }
+                    return Err(e);
+                }
+            }
+        } else {
+            config
+        };
+        let build_cfg = config.build.as_ref();
+        let inline_limit_fn = build_cfg
+            .and_then(|b| b.assets_inline_limit_fn)
+            .unwrap_or(false)
+            || build_cfg
+                .and_then(|b| b.assets_inline_limit_envs.as_ref())
+                .and_then(|e| e.as_object())
+                .is_some_and(|e| e.values().any(|v| v == "fn"));
+        let env_dir = config
+            .env_dir
+            .as_deref()
+            .map(|d| root.join(d))
+            .unwrap_or_else(|| root.clone());
+        let client_defines = ClientDefines {
+            app: oj_env::AppEnv::resolve(
+                oj_env::get(),
+                &env_dir,
+                &dev_mode,
+                oj_config::env_prefixes(&config),
+                "development",
+            ),
+            config: &config,
+        };
+        let mut defines = if reread {
+            client_defines.build(&[])
+        } else {
+            defines
+        };
+        let server_cfg = config.server.clone().unwrap_or_default();
+        let (port, strict_port, host, proxy, proxy_regex) = if reread {
+            let proxy: Vec<(String, oj_config::ProxyEntry)> = server_cfg
+                .proxy
+                .clone()
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+            let proxy_regex: Vec<Option<regex::Regex>> = proxy
+                .iter()
+                .map(|(ctx, _)| proxy_context_regex(ctx))
+                .collect();
+            // These values were resolved under the command line's (Vite's
+            // inline config): a hook that set the port or host afterwards
+            // wins, as in Vite.
+            (
+                server_cfg.port.or(self.port).unwrap_or(5199),
+                oj_config::server_strict_port(&config),
+                resolve_host(server_cfg.host.as_deref().or(self.host.as_deref())),
+                proxy,
+                proxy_regex,
+            )
+        } else {
+            (port, strict_port, host, proxy, proxy_regex)
+        };
         on_plugin_host(plugin_host.clone());
         let plugin_names = match &plugin_host {
             Some(host) => host.plugin_names().await,
