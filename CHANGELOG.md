@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-11-06
+
 ### Fixed
 
 - A plugin's `this.resolve` in `oj build` answers with the build's resolve settings (its conditions, aliases and `resolve.tsconfigPaths`), as Vite's plugin container resolves through vite:resolve with them. It fell back to a bare resolver that ignored the config.
@@ -28,11 +30,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - With neither, Vite's dev server applies no `paths`, and neither does oj's, so a `paths` key named like an installed package no longer hides the package. oj applied them anyway. `vite build` resolves packages first too, then lets rolldown's own resolver apply `paths` to what is left, and `oj build` now does the same, worker bundles included.
 - The dependency scan and TanStack Start's dev client bundle follow the same rules. Their bundler applied `paths` natively, ahead of packages, where Vite's dev server never does. A Vite config read without evaluating it counts as using neither, as do apps with no Vite config. Only an import a `paths` pattern or `baseUrl` actually maps is taken from the bundler, which keeps its own conditions and import kinds for the rest. Editing any JSON file in dev (a tsconfig reached through `extends` included) takes effect without a restart.
 - A bare import nothing resolves fails its importing module with a 500, as Vite's import analysis does, also when the app has `resolveId` plugins. oj served it as an `/@id/` URL that only failed when fetched; it now asks every plugin's `resolveId` before compiling the module.
-
-## [0.4.4] - 2026-11-06
-
-### Fixed
-
 - An import that matches a `resolve.alias` entry now resolves through that entry, in dev and in TanStack Start's server render, as Vite resolves it. oj tried tsconfig `paths` before the aliases, and kept the aliases sorted. So `{ "@/integrations/supabase/client": "./src/appBackend.ts", "@": "./src" }` sent the client import to the file `@` or tsconfig `paths` gave it, not the one written for it. As in Vite, aliases now go first, and the first entry that matches in the written order wins, from an object or a `[{ find, replacement }]` array. The rewritten id still goes through tsconfig `paths`, so an alias to a `paths` name such as `@/lib` works. tsconfig `paths` follow vite-tsconfig-paths: a `*` pattern goes before an exact key, and a target that is a declaration file (`.d.ts`) is no answer rather than being served as the module. The dependency scan follows the same order, so it no longer crawls the declaration file and finds the app's dependencies late.
 - An environment's own `resolve.alias` is ignored, as in Vite 8: every environment resolves with the top-level list.
 - In TanStack Start dev, a server render no longer fails with "require is not defined" when it imports a dependency like turndown, whose `module` build calls `require` (a build meant for a bundler) while its `main` is CommonJS. oj loads a dependency's `module` entry on the server, where Vite loads the file its module runner resolves for an external: `main` only, the external conditions, `resolve.dedupe`. When the `module` build calls a `require` no scope of it declares, directly or through esbuild's `__require` shim, oj now loads that same file. This holds whether the app or another dependency imports it, and for a package subdirectory. An aliased import keeps its alias, as Vite never externalizes one.
