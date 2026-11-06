@@ -8,7 +8,7 @@ import { asset } from "./harness.mjs";
 
 // live-reload.js in a page with a stub socket, document and HMR runtime;
 // `log` records reloads, sends and the runtime's notified events.
-function loadPage({ overlays = [], stamp = "null" } = {}) {
+function loadPage({ overlays = [], stamp = "null", storage = new Map() } = {}) {
   const log = [];
   const sockets = [];
   class WebSocket {
@@ -23,9 +23,13 @@ function loadPage({ overlays = [], stamp = "null" } = {}) {
   }
   const page = {
     WebSocket,
-    console: { error() {}, debug() {} },
+    console: { error() {}, debug() {}, warn() {} },
     location: { protocol: "http:", host: "localhost", pathname: "/", reload: () => log.push(["reload"]) },
-    sessionStorage: { setItem() {}, getItem: () => null, removeItem() {} },
+    sessionStorage: {
+      setItem: (k, v) => storage.set(k, String(v)),
+      getItem: (k) => (storage.has(k) ? storage.get(k) : null),
+      removeItem: (k) => storage.delete(k),
+    },
     document: {
       readyState: "loading",
       activeElement: null,
@@ -111,4 +115,22 @@ test("after the first update, an update closes the overlay instead", () => {
 test("the socket names the document's stamp, so a change it missed while loading reloads it", () => {
   assert.equal(loadPage({ stamp: '"1f-4"' }).url, "ws://localhost/@oj-start/hmr?g=1f-4");
   assert.equal(loadPage().url, "ws://localhost/@oj-start/hmr");
+});
+
+test("a page found behind on connect reloads once per stamp, so a cached document cannot loop", async () => {
+  const storage = new Map();
+  const reloadsFor = async (stamp, frame) => {
+    const { log, open, receive } = loadPage({ stamp, storage });
+    open();
+    log.length = 0;
+    await receive(frame);
+    return log.filter(([kind]) => kind === "reload").length;
+  };
+  assert.equal(await reloadsFor('"1f-4"', { type: "oj:behind" }), 1);
+  // The reload served the same document again (a cache): no second reload.
+  assert.equal(await reloadsFor('"1f-4"', { type: "oj:behind" }), 0);
+  // A newer document that is behind again reloads.
+  assert.equal(await reloadsFor('"1f-5"', { type: "oj:behind" }), 1);
+  // A change that goes out while the page is open always reloads it.
+  assert.equal(await reloadsFor('"1f-5"', "reload"), 1);
 });

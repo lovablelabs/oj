@@ -638,7 +638,12 @@ pub async fn start_dev(
         let mut flushes = gate.subscribe_flush();
         let weak = Arc::downgrade(&state);
         tokio::spawn(async move {
-            while flushes.recv().await.is_ok() {
+            // A lagged receiver missed flushes, not what they released: the
+            // next publish covers them all.
+            while !matches!(
+                flushes.recv().await,
+                Err(broadcast::error::RecvError::Closed)
+            ) {
                 let Some(state) = weak.upgrade() else { return };
                 state.reloads.flushed();
             }
@@ -1271,7 +1276,6 @@ fn spawn_start_watcher(
             // while the rebuild below still runs, and a hold taken only at
             // rebuild end would wait out the cap for a flush that already
             // happened, serving the previous bundle for minutes.
-            batch += 1;
             if let Some(gate) = &state.gate {
                 let batch_paths: Vec<PathBuf> = paths.iter().cloned().collect();
                 gate.hold_reload(&batch_paths);
@@ -1279,6 +1283,7 @@ fn spawn_start_watcher(
             // Narrate the compile batch to the editor: "Applying changes…" while
             // it rebuilds; the rebundle worker sends the done-frame so the pill
             // clears.
+            batch += 1;
             let _ = state.ws_tx.send(oj_server::update_progress_frame(
                 batch, "watch", 0, 0, None, false,
             ));
@@ -2648,6 +2653,10 @@ fn page_custom_frame(text: &str) -> bool {
         .is_ok_and(|v| v["type"] == "custom" && v["event"].is_string())
 }
 
+/// Sent on connect to a page whose document is older than the published
+/// changes (see start_reloads). A client that knows no such frame reloads.
+const BEHIND_FRAME: &str = r#"{"type":"oj:behind"}"#;
+
 async fn start_hmr_socket(
     mut socket: WebSocket,
     mut epoch: crate::start_reloads::PageEpoch,
@@ -2658,8 +2667,14 @@ async fn start_hmr_socket(
 ) {
     use crate::start_hot::PageMessage;
     // A change went out while the page loaded, before this socket could
-    // take it.
-    if epoch.behind() && socket.send(Message::Text("reload".into())).await.is_err() {
+    // take it. Its own frame, so the client can tell a document that keeps
+    // coming back behind (served from a cache) from a new change.
+    if epoch.behind()
+        && socket
+            .send(Message::Text(BEHIND_FRAME.into()))
+            .await
+            .is_err()
+    {
         return;
     }
     if let Some(frame) = replay {
@@ -3956,7 +3971,9 @@ mod tests {
         for attempt in 0..64 {
             let (mut client, _) = connect_async(&server.url).await.unwrap();
             client.close(Some(close.clone())).await.unwrap();
-            assert!(server.reloads.bump());
+            // The closing client is still subscribed when the change goes out.
+            assert_eq!(server.reloads.receivers(), 1);
+            server.reloads.bump();
             // Let the I/O driver observe the close frame before releasing the handler.
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
             gate.notify_one();
@@ -3964,7 +3981,9 @@ mod tests {
                 loop {
                     match client.next().await {
                         Some(Ok(ClientMessage::Close(frame))) => break frame,
-                        Some(Ok(ClientMessage::Text(text))) => assert_eq!(text, "reload"),
+                        Some(Ok(ClientMessage::Text(text))) => {
+                            assert!(text == "reload" || text == BEHIND_FRAME, "{text}")
+                        }
                         other => panic!("close handshake failed on attempt {attempt}: {other:?}"),
                     }
                 }
@@ -4000,12 +4019,13 @@ mod tests {
         .await
         .expect("client subscription never registered");
         // The handler is held while the changes go out: a count, not a queue,
-        // so none is lost and the page reloads once onto the newest.
+        // so none is lost and the page reloads once onto the newest (found
+        // behind when the handler starts).
         for _ in 0..32 {
             assert!(server.reloads.bump());
         }
         gate.notify_one();
-        assert_eq!(next_text(&mut client).await, "reload");
+        assert_eq!(next_text(&mut client).await, BEHIND_FRAME);
         let more = tokio::time::timeout(std::time::Duration::from_millis(200), client.next()).await;
         assert!(more.is_err(), "the page reloaded more than once: {more:?}");
         client.close(None).await.unwrap();
@@ -4023,7 +4043,7 @@ mod tests {
         let (mut behind, _) = connect_async(format!("{}?g={rendered}", server.url))
             .await
             .unwrap();
-        assert_eq!(next_text(&mut behind).await, "reload");
+        assert_eq!(next_text(&mut behind).await, BEHIND_FRAME);
         let current = server.reloads.stamp();
         let (mut fresh, _) = connect_async(format!("{}?g={current}", server.url))
             .await

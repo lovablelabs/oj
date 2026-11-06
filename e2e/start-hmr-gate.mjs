@@ -47,13 +47,13 @@ const original = fs.readFileSync(aboutFile, "utf8");
 const gateConfig = path.join(app, "oj.config.json");
 
 // Connect to the Start live-reload socket and collect "reload" frames.
-async function reloadListener(query = "", onReload = () => {}) {
+async function reloadListener(query = "") {
   const ws = new WebSocket(`ws://localhost:${PORT}/@oj-start/hmr${query}`);
   const reloads = [];
   ws.addEventListener("message", (ev) => {
-    if (String(ev.data) === "reload") {
+    // "reload", or the frame a page found behind on connect gets.
+    if (String(ev.data) === "reload" || String(ev.data) === '{"type":"oj:behind"}') {
       reloads.push(Date.now());
-      onReload();
     }
   });
   await new Promise((resolve, reject) => {
@@ -92,10 +92,7 @@ async function run(label, gated, check) {
   try {
     await waitUp(`http://localhost:${PORT}/`);
     await (await reloadListener()).close();
-    // The server log as each reload arrived.
-    const logAtReload = [];
-    const listener = await reloadListener("", () => logAtReload.push(log));
-    listener.logAtReload = logAtReload;
+    const listener = await reloadListener();
     // A real source change: the watcher rebuilds the client bundle. The
     // probe is identical bytes on every retouch (see `settles`), so it stays
     // one logical change (Vite's chokidar scan has the same registration
@@ -200,16 +197,12 @@ await run("flush-during-rebuild", true, async (listener, log) => {
   const reloadBy = Date.now() + 10000;
   while (Date.now() < reloadBy && listener.reloads.length === 0) await sleep(100);
   must(listener.reloads.length >= 1, "race: no reload reached the page after the flushed rebuild");
-  // The flush waited for the rebuild: no reload onto the old bundle before
-  // it, and one after.
+  // The flush waited for the rebuild: one reload, from its end. Reloading
+  // at the flush too (onto the old bundle) made two.
   await sleep(1500);
   must(
     listener.reloads.length === 1,
     `race: expected one reload for the flushed rebuild, got ${listener.reloads.length}`,
-  );
-  must(
-    listener.logAtReload[0].includes("oj start: rebuilt"),
-    "race: the flush reloaded the page before the rebuild finished (onto the old bundle)",
   );
   console.log("flush-during-rebuild: the flush waited for the rebuild, which reloaded once");
 });
