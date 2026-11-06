@@ -243,6 +243,78 @@ async fn dev_hydrates_a_page_whose_functions_module_imports_the_server_entry() {
     );
 }
 
+/// The same, with the server module loaded by `await import()` inside the
+/// handler, and that module importing `@tanstack/react-start/server`. Start's
+/// compiler drops the handler, and the dynamic import with it, on the client.
+const DYNAMIC_SERVER: &str = r#"import { getRequest } from "@tanstack/react-start/server";
+
+export const inspect = () => getRequest()?.method ?? "dynamic-server-secret";
+"#;
+
+const DYNAMIC_FNS: &str = r#"import { createServerFn } from "@tanstack/react-start";
+
+export const inspectFn = createServerFn({ method: "POST" }).handler(async () => {
+  const { inspect } = await import("./inspect.server");
+  return inspect();
+});
+"#;
+
+fn dynamic_handler_files() -> [(&'static str, String); 3] {
+    [
+        ("src/lib/inspect.server.ts", DYNAMIC_SERVER.to_string()),
+        ("src/lib/inspect.functions.ts", DYNAMIC_FNS.to_string()),
+        (
+            "src/routes/about.tsx",
+            about(
+                "import { inspectFn } from \"../lib/inspect.functions\";",
+                "const extra = <button onClick={() => inspectFn()}>inspect</button>;",
+            ),
+        ),
+    ]
+}
+
+#[test]
+fn a_server_module_a_handler_imports_dynamically_builds() {
+    let Some(app) = app_with("ip-dynamic", &dynamic_handler_files(), None) else {
+        return;
+    };
+    let (ok, text) = build(&app.0);
+    assert!(ok, "the build failed:\n{text}");
+    assert!(!text.contains("[import-protection]"), "{text}");
+    assert!(
+        !client_has(&app.0, "dynamic-server-secret"),
+        "the client holds the server module"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_hydrates_a_page_whose_handler_imports_a_server_module_dynamically() {
+    let Some(app) = app_with("ip-dynamic-dev", &dynamic_handler_files(), None) else {
+        return;
+    };
+    let dev = Server::oj_dev(&app.0);
+    let (status, _) = dev.request("GET", "/@oj-start/client-entry.js", &[]);
+    assert_eq!(status, 200, "the client entry\n{}", dev.output());
+    assert!(
+        !dev.output().contains("[import-protection]"),
+        "import protection flagged a handler-only dynamic import\n{}",
+        dev.output()
+    );
+    if browser::skip() {
+        return;
+    }
+    let (hydrated, _, console, errors) = visit(&dev).await;
+    assert!(
+        hydrated,
+        "the page did not hydrate: {errors:?} {console:?}\n{}",
+        dev.output()
+    );
+    assert!(
+        !console.iter().any(|c| c.contains("[import-protection]")),
+        "import protection flagged a handler-only dynamic import: {console:?}"
+    );
+}
+
 #[test]
 fn the_start_server_entry_in_client_code_fails_the_build() {
     let files = [(
