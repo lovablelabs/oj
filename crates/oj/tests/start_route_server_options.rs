@@ -208,6 +208,64 @@ fn a_server_routes_handlers_stay_out_of_the_client_build() {
     );
 }
 
+/// The hook route loading its server-only module with `await import()` inside
+/// the handler, through a tsconfig path. The client splitter deletes
+/// `server`, and the dynamic import with it.
+const DYNAMIC_HOOK: &str = r#"import { createFileRoute } from "@tanstack/react-router";
+
+export const Route = createFileRoute("/api/hook")({
+  server: {
+    handlers: {
+      ANY: async () => {
+        const { secret } = await import("@app/server/hook-secret.server");
+        return new Response(secret());
+      },
+    },
+  },
+});
+"#;
+
+fn dynamic_routed(name: &str) -> Option<start_app::App> {
+    let app = file_routed(name)?;
+    std::fs::write(app.0.join("src/routes/api/hook.ts"), DYNAMIC_HOOK).unwrap();
+    Some(app)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_routes_dynamic_import_stays_out_of_the_client_in_dev() {
+    let Some(app) = dynamic_routed("route-server-dynamic-dev") else {
+        return;
+    };
+    let dev = Server::oj_dev(&app.0);
+    let (status, body) = dev.request("GET", "/api/hook", &[]);
+    assert!(
+        status == 200 && body.contains("hook-server-secret"),
+        "the server route answered {status} {body:?}\n{}",
+        dev.output()
+    );
+    let (status, _) = dev.request("GET", "/@oj-start/client-entry.js", &[]);
+    assert_eq!(status, 200, "the client entry\n{}", dev.output());
+    assert!(
+        !dev.output().contains("[import-protection]"),
+        "import protection saw the route's dynamic import\n{}",
+        dev.output()
+    );
+}
+
+#[test]
+fn a_server_routes_dynamic_import_stays_out_of_the_client_build() {
+    let Some(app) = dynamic_routed("route-server-dynamic-build") else {
+        return;
+    };
+    let (ok, text) = build(&app.0);
+    assert!(ok, "the build failed:\n{text}");
+    assert!(!text.contains("[import-protection]"), "{text}");
+    assert!(
+        !client_has(&app.0, "hook-server-secret"),
+        "the client holds the route's dynamic import"
+    );
+}
+
 /// The hook route with a component as well as its handlers: no longer
 /// server-only.
 const HOOK_WITH_PAGE: &str = r#"import { createFileRoute } from "@tanstack/react-router";
