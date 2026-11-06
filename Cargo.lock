@@ -6651,6 +6651,7 @@ dependencies = [
 name = "oj_resolver"
 version = "0.4.4"
 dependencies = [
+ "json-strip-comments",
  "oxc_resolver",
  "regex",
  "serde_json",
@@ -6692,6 +6693,7 @@ dependencies = [
  "opentelemetry_sdk",
  "oxc_allocator",
  "oxc_ast",
+ "oxc_ast_visit",
  "oxc_parser",
  "oxc_sourcemap",
  "oxc_span",
