@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- TanStack Start dev: an edit that removes a file's `server-only` marker, or adds an import of a marked file, reaches the client on the next rebuild. The dev engine never called the hook that tells Start's import protection about a change (it was not registered), so only the dev server's watcher pass did, on its own clock: it could clear the plugin's state mid rebuild (a mocked import then had no exports), or run for a file none of its graphs held and clear nothing, leaving the client on the mock while the server rendered the module.
+
 ## [0.4.3] - 2026-11-05
 
 ### Changed

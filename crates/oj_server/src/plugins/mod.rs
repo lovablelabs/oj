@@ -204,4 +204,6 @@ mod hook_plan_tests;
 #[cfg(test)]
 mod host_filter_tests;
 #[cfg(test)]
+mod import_protection_pass_tests;
+#[cfg(test)]
 mod vite_values_tests;
