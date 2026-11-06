@@ -357,3 +357,96 @@ export default defineConfig({
         assert_eq!(errors, Vec::<String>::new(), "oj dev: page errors");
     }
 }
+
+/// The watcher events a plugin's listener heard, `event file-name` per line,
+/// for the files named `note*`.
+fn heard(log: &Path) -> Vec<String> {
+    let mut lines: Vec<String> = std::fs::read_to_string(log)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    lines.sort();
+    lines
+}
+
+// A plugin listening on the dev server watcher hears each change once, as
+// under Vite's chokidar (the specific event, then "all").
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plugins_watcher_listener_hears_start_dev_changes_as_in_vite() {
+    let Some(app) = alias_app("watcher-listener") else {
+        return;
+    };
+    let root = &app.0;
+    let log = root.join("heard.log");
+    std::fs::write(
+        root.join("vite.listen.config.ts"),
+        format!(
+            r#"import fs from "node:fs";
+import path from "node:path";
+import {{ tanstackStart }} from "@tanstack/react-start/plugin/vite";
+import react from "@vitejs/plugin-react";
+import {{ defineConfig }} from "vite";
+
+const src = (p: string) => path.resolve(__dirname, "src", p);
+const listen = {{
+  name: "listen",
+  configureServer(server) {{
+    fs.appendFileSync({log:?}, "configureServer\n");
+    const note = (event, file) => {{
+      if (path.basename(file).startsWith("note")) fs.appendFileSync({log:?}, `${{event}} ${{path.basename(file)}}\n`);
+    }};
+    server.watcher.on("change", (file) => note("change", file));
+    server.watcher.on("add", (file) => note("add", file));
+    server.watcher.on("all", (event, file) => note(`all:${{event}}`, file));
+  }},
+}};
+
+export default defineConfig({{
+  resolve: {{ alias: {{ "@": src("") }} }},
+  plugins: [listen, tanstackStart(), react()],
+}});
+"#
+        ),
+    )
+    .unwrap();
+    std::fs::write(root.join("src/note.txt"), "one\n").unwrap();
+    let config = "vite.listen.config.ts";
+    let edit = || {
+        std::thread::sleep(Duration::from_millis(500));
+        std::fs::write(root.join("src/note.txt"), "two\n").unwrap();
+        std::fs::write(root.join("src/note-new.txt"), "new\n").unwrap();
+    };
+    let want = [
+        "add note-new.txt",
+        "all:add note-new.txt",
+        "all:change note.txt",
+        "change note.txt",
+        "configureServer",
+    ];
+    let wait = || {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while heard(&log).len() < want.len() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        std::thread::sleep(Duration::from_millis(1000));
+        heard(&log)
+    };
+
+    let vite = ViteDev::start(root, config);
+    vite.get("/");
+    edit();
+    let theirs = wait();
+    drop(vite);
+    assert_eq!(theirs, want, "vite dev: the test's premise");
+
+    let _ = std::fs::remove_file(&log);
+    let _ = std::fs::remove_file(root.join("src/note-new.txt"));
+    std::fs::write(root.join("src/note.txt"), "one\n").unwrap();
+    let _ = std::fs::remove_dir_all(root.join(".oj-cache"));
+    let dev = Server::oj_dev_with_args(root, &["--config", config], &[]);
+    let (status, _) = dev.request("GET", "/", &[]);
+    assert_eq!(status, 200, "oj dev\n{}", dev.output());
+    edit();
+    assert_eq!(wait(), theirs, "oj dev vs vite dev\n{}", dev.output());
+}

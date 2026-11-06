@@ -274,7 +274,9 @@ async fn ssr_pre_resolve(
         return Ok(None);
     }
     let importer_dir = Path::new(importer).parent().unwrap_or(&state.root);
-    let native = state.ssr_resolver.resolve(importer_dir, spec).ok();
+    // Vite's createIsConfiguredAsExternal decides with tryNodeResolve: no
+    // alias (checked apart) and no tsconfig `paths`.
+    let native = state.ssr_resolver.resolve_plain(importer_dir, spec).ok();
     let externalized = |p: &PathBuf| {
         !matches_alias(&state.alias_finds, spec)
             && ssr_externalizes(&state.ssr_externals, spec, &p.to_string_lossy())

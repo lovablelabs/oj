@@ -152,6 +152,19 @@ pub(crate) async fn handle_plugin_server_event(state: &Arc<ServerState>, ev: &se
             println!("oj: plugin requested server.restart()");
             state.restarter.request("plugin requested server.restart()");
         }
+        // A plugin's `server.watcher.add`: chokidar watches the file.
+        Some("watch") => {
+            for file in ev
+                .get("files")
+                .and_then(|f| f.as_array())
+                .into_iter()
+                .flatten()
+            {
+                if let Some(file) = file.as_str() {
+                    crate::watch::ensure_watched_file(state, Path::new(file));
+                }
+            }
+        }
         Some("invalidateAll") => {
             state.mtime_keys.lock().unwrap().clear();
             state.memory.lock().unwrap().clear();
@@ -902,8 +915,8 @@ pub(crate) fn drop_resolver_misses(
     paths: &[PathBuf],
     created: &std::collections::HashSet<PathBuf>,
 ) {
-    // A tsconfig or jsconfig edit changes the `paths` (vite-tsconfig-paths
-    // reloads a project on `change`).
+    // A tsconfig or jsconfig edit changes the `paths` Vite's own resolver
+    // reads (vite-tsconfig-paths hears it through the host's watcher).
     // Any JSON file: a tsconfig reached through `extends` or a custom
     // `configNames` entry has any name.
     let tsconfig = |p: &PathBuf| p.extension().is_some_and(|e| e == "json");
@@ -1042,6 +1055,48 @@ fn hot_update_modules_json(state: &ServerState, path: &Path) -> String {
         }])
         .to_string(),
         None => "[]".to_string(),
+    }
+}
+
+/// Vite's chokidar telling the dev server watcher's listeners of a settled
+/// batch (`add`, `change`, `unlink`, each then `all`), ahead of the reload,
+/// `watchChange` and HMR, as its listeners hear an event in the tick it
+/// lands. Its default `ignored` leaves `.git` and `node_modules` out.
+pub(crate) async fn run_watcher_events(
+    state: &ServerState,
+    paths: &[PathBuf],
+    created: &std::collections::HashSet<PathBuf>,
+) {
+    let Some(host) = &state.plugins else {
+        return;
+    };
+    let changes: Vec<(String, &str)> = paths
+        .iter()
+        .filter(|path| gate_relevant(path) && !path.components().any(|c| c.as_os_str() == ".git"))
+        .map(|path| {
+            (
+                path.display().to_string(),
+                watcher_event_type(path, created),
+            )
+        })
+        .collect();
+    if changes.is_empty() {
+        return;
+    }
+    if let Err(e) = host.watcher_events(&changes).await {
+        eprintln!("oj: the plugin host's watcher listeners failed: {e}");
+    }
+}
+
+/// chokidar's event for a settled change: `unlink` when gone, `add` when it
+/// appeared in the batch, else `change` (as `create` / `delete` / `update`).
+fn watcher_event_type(path: &Path, created: &std::collections::HashSet<PathBuf>) -> &'static str {
+    if !path.exists() {
+        "delete"
+    } else if created.contains(path) {
+        "create"
+    } else {
+        "update"
     }
 }
 

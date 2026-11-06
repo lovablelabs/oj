@@ -220,6 +220,20 @@ fn client_plugins(
             ),
         ));
     }
+    // After the app's plugins, where vite:resolve sits, as `vite build`.
+    // A worker bundle runs `worker.plugins` alone in Vite.
+    let env = if matches!(target, CodeTarget::Server) {
+        "ssr"
+    } else {
+        "client"
+    };
+    let worker = matches!(target, CodeTarget::Worker { .. });
+    plugins.extend(crate::build::tsconfig_paths_plugin(
+        &start.root,
+        &start.config,
+        env,
+        worker,
+    ));
     plugins.push(Pluginable::new_shared(
         StartCodePlugin::new(&start.root, target)
             .with_route_tree(start.route_tree())
@@ -536,7 +550,9 @@ pub(crate) async fn build(
             server_host.as_ref().map_or(&[][..], |h| &h.env_delta),
             server_host.as_ref().map_or(&[][..], |h| &h.defines),
         );
-        let server_plugins = || -> Vec<SharedPluginable> {
+        // `conditions`: a Cloudflare worker's, for the `paths` step's package
+        // lookups (the environment's own resolve conditions).
+        let server_plugins = |conditions: Option<Vec<String>>| -> Vec<SharedPluginable> {
             let mut plugins: Vec<SharedPluginable> = Vec::new();
             if let Some(plugin) = &start.stylex {
                 plugins.push(crate::stylex_plugin::transform(plugin));
@@ -569,6 +585,13 @@ pub(crate) async fn build(
                     ),
                 ));
             }
+            plugins.extend(crate::build::tsconfig_paths_plugin_with(
+                &start.root,
+                &start.config,
+                "ssr",
+                false,
+                conditions,
+            ));
             plugins.push(Pluginable::new_shared(
                 StartCodePlugin::new(&start.root, CodeTarget::Server)
                     .with_route_tree(start.route_tree())
@@ -610,8 +633,6 @@ pub(crate) async fn build(
                         server_entry.clone(),
                     )));
                 }
-                plugins.extend(server_plugins());
-                plugins.extend(cloudflare::builtin_plugins(env));
                 let mut conditions = env.conditions.clone();
                 conditions.push("import".into());
                 conditions.push(
@@ -622,6 +643,8 @@ pub(crate) async fn build(
                     }
                     .into(),
                 );
+                plugins.extend(server_plugins(Some(conditions.clone())));
+                plugins.extend(cloudflare::builtin_plugins(env));
                 let mut transform = start.transform_options();
                 if let Some(target) = &env.target {
                     transform.target = Some(rolldown_common::Either::Left(target.clone()));
@@ -680,7 +703,7 @@ pub(crate) async fn build(
                     start.cache.join("cf-server.mjs"),
                 ));
                 let mut server = BundlerBuilder::default()
-                    .with_plugins(server_plugins())
+                    .with_plugins(server_plugins(None))
                     .with_options(BundlerOptions {
                         input: Some(vec![input("server-bundle", &server_entry)]),
                         cwd: Some(start.root.clone()),

@@ -83,12 +83,11 @@ pub(crate) fn is_restart_trigger(files: &[PathBuf], path: &Path) -> bool {
     files.iter().any(|f| f == path)
 }
 
-/// Tsconfig files whose change re-runs the tsconfig-aware transform; the name
-/// pattern covers `extends` bases like tsconfig.base.json (Vite parity).
+/// A change that clears the tsconfig caches and reloads the page: Vite's
+/// reloadOnTsconfigChange takes a file named `tsconfig.json` and no other
+/// (a `tsconfig.app.json` or an `extends` base reloads nothing).
 pub(crate) fn is_tsconfig_file(path: &Path) -> bool {
-    path.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
-        n == "tsconfig.json" || (n.starts_with("tsconfig.") && n.ends_with(".json"))
-    })
+    path.file_name().is_some_and(|n| n == "tsconfig.json")
 }
 
 /// Registry of spawned children, SIGKILLed and reaped before the restart
@@ -636,7 +635,8 @@ impl WatchFeed {
     }
 }
 
-/// What every consumer of watcher events skips: `server.watch.ignored` plus
+/// What every consumer of watcher events skips: `server.watch.ignored`, any
+/// `test-results` directory (Vite's chokidar `ignored` default), plus
 /// the resolved cache dir, which Vite puts in chokidar's `ignored` -- the
 /// name-based skip in `is_unwatched_dir` misses an `OJ_CACHE_DIR` inside the
 /// root, whose writes would echo every compile back into the watcher -- plus
@@ -648,6 +648,7 @@ pub(crate) fn watch_excluded(
     path: &Path,
 ) -> bool {
     path.starts_with(cache_base)
+        || path.components().any(|c| c.as_os_str() == "test-results")
         || path
             .file_name()
             .and_then(|n| n.to_str())
@@ -1326,13 +1327,11 @@ fn handle_batch(
     // Vite's reloadOnTsconfigChange: clear caches, full reload. The compile
     // key folds class-field semantics in, so stale persistent-cache entries
     // become unreachable once discovery is cleared.
-    if paths.iter().any(|p| is_tsconfig_file(p)) {
+    let tsconfig = paths.iter().any(|p| is_tsconfig_file(p));
+    if tsconfig {
         oj_compiler::tsconfig::clear_cache();
         state.mtime_keys.lock().unwrap().clear();
         state.memory.lock().unwrap().clear();
-        let _ = state
-            .reload_tx
-            .send(full_reload_frame("tsconfig change", None, None));
     }
     // Vite's watcher, per change: plugin watchChange, then the module graph
     // invalidation, then HMR, which `server.hmr: false` skips and the editor
@@ -1354,6 +1353,14 @@ fn handle_batch(
             .is_some_and(|gate| gate.hold(state, &hot, false));
     let (state, paths, created) = (Arc::clone(state), paths.to_vec(), created.clone());
     state.rt.clone().spawn(async move {
+        // The watcher's listeners hear the change first (a plugin reloading
+        // its tsconfig projects), then the page reloads for a tsconfig.
+        crate::hmr::run_watcher_events(&state, &paths, &created).await;
+        if tsconfig {
+            let _ = state
+                .reload_tx
+                .send(full_reload_frame("tsconfig change", None, None));
+        }
         run_watch_change(&state, &paths, &created).await;
         invalidate_changed(&state, &paths);
         if !dispatch {

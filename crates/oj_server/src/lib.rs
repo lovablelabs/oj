@@ -1021,13 +1021,9 @@ async fn spawn_plugin_host(
         boot_preseed,
     )
     .await;
-    let host = match spawned {
-        Ok(host) => host,
-        Err(e) => {
-            eprintln!("oj: plugin host failed to start: {e}");
-            return Ok(None);
-        }
-    };
+    // A config whose plugins cannot load fails the boot, as it fails Vite's
+    // createServer: never a server running without the app's plugins.
+    let host = spawned.map_err(|e| anyhow::anyhow!("the plugin host failed to start: {e}"))?;
     let count = host.plugin_count().await;
     // A plugin that fails the host's init (a throwing config hook, an
     // environment it cannot apply to) fails the boot, as it fails Vite's
@@ -1255,21 +1251,6 @@ pub fn tsconfig_paths(config: &oj_config::OjConfig) -> oj_resolver::TsconfigPath
     }
 }
 
-/// vite-tsconfig-paths' own options, read from the Vite config file the
-/// extractor resolved (defaults when it passes none, or none are literal).
-pub fn tsconfig_paths_plugin(
-    root: &Path,
-    config: &oj_config::OjConfig,
-) -> oj_resolver::PluginOptions {
-    config
-        .resolve
-        .as_ref()
-        .filter(|r| r.tsconfig_paths_plugin == Some(true))
-        .and_then(|r| r.vite_config_file.as_deref())
-        .and_then(|file| plugins::static_config::tsconfig_paths_options(Path::new(file), root))
-        .unwrap_or_default()
-}
-
 /// Vite's top-level `tsconfig` option, as a path.
 pub fn tsconfig_file(config: &oj_config::OjConfig) -> Option<PathBuf> {
     config
@@ -1293,7 +1274,6 @@ pub fn client_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver 
             server: false,
             tsconfig_paths: tsconfig_paths(config),
             tsconfig_file: tsconfig_file(config),
-            tsconfig_paths_plugin: tsconfig_paths_plugin(root, config),
         },
     )
 }
@@ -1342,7 +1322,6 @@ pub(crate) fn environment_resolver(
             server,
             tsconfig_paths: tsconfig_paths(config),
             tsconfig_file: tsconfig_file(config),
-            tsconfig_paths_plugin: tsconfig_paths_plugin(root, config),
         },
     )
 }
@@ -1372,7 +1351,6 @@ pub fn ssr_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
             server: true,
             tsconfig_paths: tsconfig_paths(config),
             tsconfig_file: tsconfig_file(config),
-            tsconfig_paths_plugin: tsconfig_paths_plugin(root, config),
         },
     )
 }
@@ -1397,7 +1375,6 @@ pub fn ssr_external_resolver(root: &Path, config: &oj_config::OjConfig) -> OjRes
             server: true,
             tsconfig_paths: oj_resolver::TsconfigPaths::Off,
             tsconfig_file: None,
-            tsconfig_paths_plugin: oj_resolver::PluginOptions::default(),
         },
     )
 }
@@ -1483,7 +1460,6 @@ fn optimized_deps(
             needs_interop: oj_config::optimize_deps_needs_interop(config),
             tsconfig_paths: tsconfig_paths(config),
             tsconfig_file: tsconfig_file(config),
-            tsconfig_paths_plugin: tsconfig_paths_plugin(root, config),
         },
         host,
         rolldown,

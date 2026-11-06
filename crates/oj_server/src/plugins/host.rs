@@ -50,6 +50,10 @@ pub(crate) struct HostCore {
     /// `{ ojServer: { action, ... } }` pushes from the host: a plugin invalidating
     /// a module via server.moduleGraph, or server.restart(). Wired once.
     server_events: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<serde_json::Value>>,
+    /// Server events pushed before `server_events` is wired (a plugin's
+    /// configureServer or configResolved runs during the host's init: its
+    /// `server.watcher.add`), handed over when it is.
+    early_server_events: Mutex<Vec<serde_json::Value>>,
     /// The host's async reverse RPC (`{ rpc, method, args, container }`
     /// pushes), routed to the asking container's handler, which answers with
     /// [`PluginHost::rpc_reply`].
@@ -599,8 +603,8 @@ pub(crate) fn ctx_rpc(
             let server = arg(3) == "server";
             let own = env_resolver(arg(2), arg(3));
             let resolver = own.as_deref().unwrap_or(ctx.resolver);
-            // The importing file, when it is one, so tsconfig `paths` check
-            // it as vite-tsconfig-paths does.
+            // The importing file, when it is one, so `resolve.tsconfigPaths`
+            // takes the tsconfig that owns it.
             let file = Path::new(importer.split('?').next().unwrap_or_default());
             let resolved = if file.is_absolute() && file.is_file() {
                 resolver.resolve_from(file, source)
@@ -1048,6 +1052,7 @@ impl PluginHost {
             host_module: script.to_string_lossy().into_owned(),
             ws_out: std::sync::OnceLock::new(),
             server_events: std::sync::OnceLock::new(),
+            early_server_events: Mutex::new(Vec::new()),
             rpc_routes: Mutex::new(std::collections::HashMap::new()),
             serve_info_push: tokio::sync::watch::channel(None).0,
             initialized: tokio::sync::watch::channel(false).0,
@@ -1191,6 +1196,12 @@ impl PluginHost {
     /// so the hook gates take that set's filters, as rolldown takes each
     /// environment's plugins' filters in Vite.
     #[inline]
+    /// The next build over the same plugins (a library's next format):
+    /// buildStart and the module graph afresh, closeBundle still to come.
+    pub async fn next_build(&self) -> Result<(), String> {
+        self.call_unit("nextBuild", &[]).await
+    }
+
     pub async fn switch_environment(&self, name: &str) -> Result<(), String> {
         self.call_unit("switchEnvironment", &[name]).await?;
         self.reset_hook_plan();
@@ -1475,6 +1486,19 @@ impl PluginHost {
     #[inline]
     pub async fn watch_change(&self, file: &str, event: &str) -> Result<(), String> {
         self.call_unit("watchChange", &[file, event]).await
+    }
+
+    /// The dev server watcher's listeners hear `changes` (path, `create` |
+    /// `update` | `delete`), as Vite's chokidar tells them of each event.
+    pub async fn watcher_events(&self, changes: &[(String, &str)]) -> Result<(), String> {
+        let json = serde_json::Value::Array(
+            changes
+                .iter()
+                .map(|(path, kind)| serde_json::json!({ "path": path, "type": kind }))
+                .collect(),
+        )
+        .to_string();
+        self.call_unit("watcherEvents", &[json.as_str()]).await
     }
 
     /// Hands changed files to Start's import protection, which forgets what
@@ -2401,8 +2425,12 @@ impl HostCore {
             self.init_progress_seen.send_modify(|c| *c += 1);
             let _ = self.init_failed.send_replace(false);
         } else if let Some(ev) = msg.get("ojServer") {
-            if let Some(tx) = self.server_events.get() {
-                let _ = tx.send(ev.clone());
+            let mut early = self.early_server_events.lock().unwrap();
+            match self.server_events.get() {
+                Some(tx) => {
+                    let _ = tx.send(ev.clone());
+                }
+                None => early.push(ev.clone()),
             }
         } else if let Some(ws) = msg.get("ojWs") {
             if let Some(tx) = self.ws_out.get() {
@@ -2905,6 +2933,10 @@ impl HostCore {
         &self,
         tx: tokio::sync::mpsc::UnboundedSender<serde_json::Value>,
     ) {
+        let mut early = self.early_server_events.lock().unwrap();
+        for ev in early.drain(..) {
+            let _ = tx.send(ev);
+        }
         let _ = self.server_events.set(tx);
     }
 
