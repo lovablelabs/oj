@@ -367,22 +367,7 @@ impl Plugin for StartHostPlugin {
     }
 
     fn register_hook_usage(&self) -> rolldown_plugin::HookUsage {
-        use rolldown_plugin::HookUsage;
-        let mut usage =
-            HookUsage::ResolveId | HookUsage::Load | HookUsage::Transform | HookUsage::BuildStart;
-        // Vite's dev server runs no output-generation hook; the dev bundles
-        // run over the dev server's own plugin instances.
-        if self.command == Command::Build {
-            usage |= HookUsage::RenderStart
-                | HookUsage::BuildEnd
-                | HookUsage::RenderChunk
-                | HookUsage::GenerateBundle
-                | HookUsage::WriteBundle;
-            if self.module_parsed {
-                usage |= HookUsage::ModuleParsed;
-            }
-        }
-        usage
+        hook_usage(self.command, self.module_parsed)
     }
 
     /// Rolldown's dev engine runs this for each changed file before it
@@ -920,9 +905,45 @@ pub(crate) fn empty_virtual_stub(root: &Path, id: &str) -> String {
     out
 }
 
+/// The rolldown hooks a Start bundle's host plugin takes, for `command`.
+fn hook_usage(command: Command, module_parsed: bool) -> rolldown_plugin::HookUsage {
+    use rolldown_plugin::HookUsage;
+    let mut usage =
+        HookUsage::ResolveId | HookUsage::Load | HookUsage::Transform | HookUsage::BuildStart;
+    // The dev engine's watchChange, before each rebuild or update: Start's
+    // import protection forgets the changed files there (see
+    // `StartHostPlugin::watch_change`). Without it rolldown never calls the
+    // hook.
+    if command == Command::Serve {
+        usage |= HookUsage::WatchChange;
+    }
+    // Vite's dev server runs no output-generation hook; the dev bundles
+    // run over the dev server's own plugin instances.
+    if command == Command::Build {
+        usage |= HookUsage::RenderStart
+            | HookUsage::BuildEnd
+            | HookUsage::RenderChunk
+            | HookUsage::GenerateBundle
+            | HookUsage::WriteBundle;
+        if module_parsed {
+            usage |= HookUsage::ModuleParsed;
+        }
+    }
+    usage
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The dev engine calls watchChange only on plugins that register it, and
+    // Start's import protection learns of an edit there before the rebuild.
+    #[test]
+    fn the_dev_bundle_takes_watch_change_and_a_build_does_not() {
+        use rolldown_plugin::HookUsage;
+        assert!(hook_usage(Command::Serve, false).contains(HookUsage::WatchChange));
+        assert!(!hook_usage(Command::Build, true).contains(HookUsage::WatchChange));
+    }
 
     /// A skipped buildStart names its plugin, from either environment's
     /// container, and keeps only the error's first line.
