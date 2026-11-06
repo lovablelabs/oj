@@ -33,8 +33,12 @@ pub enum TsconfigPaths {
     /// vite-tsconfig-paths runs (or the plugins are unknown).
     #[default]
     Plugin,
-    /// `resolve.tsconfigPaths: true`: Vite 8's own resolver (oxc), an exact
-    /// key first, a declaration file served like any file.
+    /// vite-tsconfig-paths and `resolve.tsconfigPaths: true`: the plugin
+    /// first, Vite's own resolver for whatever it passes on.
+    PluginNative,
+    /// `resolve.tsconfigPaths: true`: Vite 8's own resolver (oxc, the
+    /// tsconfig that owns the importer), an exact key first, a declaration
+    /// file served like any file.
     Native,
     /// Neither: Vite applies no `paths`. oj keeps them for what plain
     /// resolution does not find, in the plugin's model, so it agrees with
@@ -86,6 +90,17 @@ impl Includer {
         }
     }
 
+    /// Whether `exclude` takes `importer`'s directory: a file there, whatever
+    /// its name (an importer known only by its directory).
+    fn excludes_dir(&self, dir: &Path) -> bool {
+        let probe = dir.join("__oj_importer__");
+        let rel = probe
+            .strip_prefix(&self.dir)
+            .map(|r| format!("./{}", r.to_string_lossy()))
+            .unwrap_or_else(|_| probe.to_string_lossy().into_owned());
+        self.exclude.iter().any(|g| g.is_match(&rel))
+    }
+
     fn includes(&self, importer: &Path) -> bool {
         if self.include.is_empty() && self.exclude.is_empty() {
             return true;
@@ -134,8 +149,11 @@ fn compiled_glob(glob: &str) -> Vec<Regex> {
     out
 }
 
-/// globrex with `globstar` and `extended`: `**` spans segments, `*` and `?`
-/// stay within one, `{a,b}` alternates, `[...]` is a class.
+/// globrex with `globstar` and `extended`: `**` spans segments, `*` stays
+/// within one, `?` is any one character, `{a,b}` alternates, `[...]` is a
+/// class (`[!…]` negated), and the extglobs `?(…)`, `*(…)`, `+(…)`, `@(…)`
+/// group alternatives (`!(…)` needs a lookahead the regex crate lacks, and
+/// stays literal).
 fn glob_regex(glob: &str) -> Option<Regex> {
     let segments: Vec<&str> = glob.split('/').collect();
     let mut re = String::from("^");
@@ -145,36 +163,58 @@ fn glob_regex(glob: &str) -> Option<Regex> {
             re.push_str(if last { ".*" } else { "(?:[^/]*(?:/|$))*" });
             continue;
         }
-        let mut chars = seg.chars().peekable();
-        let mut in_group = false;
-        while let Some(c) = chars.next() {
+        let chars: Vec<char> = seg.chars().collect();
+        let mut braces = 0usize;
+        // The closing suffix of each open extglob group.
+        let mut groups: Vec<&str> = Vec::new();
+        let mut j = 0;
+        while j < chars.len() {
+            let c = chars[j];
+            let next = chars.get(j + 1).copied();
             match c {
+                '?' | '*' | '+' | '@' if next == Some('(') => {
+                    groups.push(match c {
+                        '?' => ")?",
+                        '*' => ")*",
+                        '+' => ")+",
+                        _ => ")",
+                    });
+                    re.push_str("(?:");
+                    j += 2;
+                    continue;
+                }
+                ')' if !groups.is_empty() => re.push_str(groups.pop().unwrap_or(")")),
+                '|' if !groups.is_empty() => re.push('|'),
                 '*' => re.push_str("[^/]*"),
-                '?' => re.push_str("[^/]"),
+                '?' => re.push('.'),
                 '{' => {
-                    in_group = true;
+                    braces += 1;
                     re.push_str("(?:");
                 }
-                '}' if in_group => {
-                    in_group = false;
+                '}' if braces > 0 => {
+                    braces -= 1;
                     re.push(')');
                 }
-                ',' if in_group => re.push('|'),
+                ',' if braces > 0 => re.push('|'),
                 '[' => {
                     re.push('[');
-                    for c in chars.by_ref() {
-                        if c == ']' {
-                            break;
-                        }
-                        if c == '\\' {
+                    j += 1;
+                    if chars.get(j) == Some(&'!') {
+                        re.push('^');
+                        j += 1;
+                    }
+                    while j < chars.len() && chars[j] != ']' {
+                        if chars[j] == '\\' || chars[j] == '[' {
                             re.push('\\');
                         }
-                        re.push(c);
+                        re.push(chars[j]);
+                        j += 1;
                     }
                     re.push(']');
                 }
                 c => re.push_str(&regex::escape(&c.to_string())),
             }
+            j += 1;
         }
         if !last {
             re.push('/');
@@ -243,6 +283,48 @@ pub(crate) fn candidates(project: &TsConfig, id: &str) -> Vec<PathBuf> {
     out
 }
 
+/// Whether any project from `importer_dir` up has a `paths` pattern that
+/// takes `id`, or a `baseUrl`: what a bundler applying `paths` natively could
+/// map, whatever the importer.
+pub(crate) fn could_map(projects: &[Arc<TsConfig>], id: &str) -> bool {
+    let bare = !(id.starts_with('.') || id.starts_with('/') || id.contains('\0'));
+    bare && projects.iter().any(|p| {
+        p.compiler_options.base_url.is_some()
+            || p.compiler_options
+                .paths
+                .as_ref()
+                .is_some_and(|paths| paths.keys().any(|k| star_match(k, id).is_some()))
+    })
+}
+
+/// `localeCompare` as the plugin sorts a directory's projects (ICU root
+/// collation for file names: punctuation first, `_` before `-` before `.`,
+/// then digits, then letters without regard to case, lowercase first on a
+/// tie).
+fn locale_compare(a: &Path, b: &Path) -> std::cmp::Ordering {
+    const PUNCT: &str = "_-,;:!?.'\"()[]{}@*/\\&#%`^+<=>|~$";
+    let key = |p: &Path| -> Vec<(u32, u32)> {
+        p.to_string_lossy()
+            .chars()
+            .map(|c| {
+                let primary = if let Some(i) = PUNCT.find(c) {
+                    i as u32 + 1
+                } else if c.is_ascii_digit() {
+                    100 + c as u32
+                } else if c.is_alphabetic() {
+                    1000 + c.to_lowercase().next().unwrap_or(c) as u32
+                } else {
+                    500 + c as u32
+                };
+                (primary, c.is_uppercase() as u32)
+            })
+            .collect()
+    };
+    let (ka, kb) = (key(a), key(b));
+    let primary = |k: &[(u32, u32)]| k.iter().map(|x| x.0).collect::<Vec<_>>();
+    primary(&ka).cmp(&primary(&kb)).then_with(|| ka.cmp(&kb))
+}
+
 /// The importers a project's resolver takes: TypeScript files, any script
 /// with `allowJs` (the plugin's default importerFilter).
 fn takes_importer(project: &TsConfig, importer: &Path) -> bool {
@@ -250,7 +332,11 @@ fn takes_importer(project: &TsConfig, importer: &Path) -> bool {
     let name = name.split(['?', '#']).next().unwrap_or("");
     let ext = name.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
     let ts = matches!(ext, "ts" | "tsx" | "mts" | "cts" | "mtsx" | "ctsx");
-    if project.compiler_options.allow_js == Some(true) {
+    let jsconfig = project
+        .path
+        .file_name()
+        .is_some_and(|n| n.to_string_lossy().starts_with("jsconfig."));
+    if project.compiler_options.allow_js == Some(true) || jsconfig {
         ts || matches!(
             ext,
             "js" | "jsx" | "mjs" | "cjs" | "mjsx" | "cjsx" | "astro" | "mdx" | "svelte" | "vue"
@@ -270,7 +356,7 @@ pub(crate) struct Projects {
 
 impl Projects {
     /// The projects from `dir` up to `workspace`, their references included.
-    fn projects_for(
+    pub fn projects_for(
         &self,
         dir: &Path,
         load: &impl Fn(&Path) -> Option<Arc<TsConfig>>,
@@ -285,7 +371,16 @@ impl Projects {
             return Arc::clone(found);
         }
         let mut all: Vec<Arc<TsConfig>> = Vec::new();
-        for d in dir.ancestors().take_while(|d| d.starts_with(workspace)) {
+        // The plugin's discovery never descends into node_modules or .git.
+        let skipped = |d: &Path| {
+            d.components()
+                .any(|c| c.as_os_str() == "node_modules" || c.as_os_str() == ".git")
+        };
+        for d in dir
+            .ancestors()
+            .take_while(|d| d.starts_with(workspace))
+            .filter(|d| !skipped(d))
+        {
             for name in ["tsconfig.json", "jsconfig.json"] {
                 let file = d.join(name);
                 if !file.is_file() || all.iter().any(|p| p.path == file) {
@@ -338,11 +433,14 @@ impl Projects {
     /// searchForWorkspaceRoot), with the projects they reference; `load`
     /// parses one (None when it does not parse: the plugin logs and skips
     /// it). `resolve` loads a mapped path (through the aliases).
+    /// `importer` is None when only its directory is known: no project then
+    /// passes on it for its extension or its `include`.
     pub fn map(
         &self,
         load: impl Fn(&Path) -> Option<Arc<TsConfig>>,
         workspace: &Path,
-        importer: &Path,
+        importer_dir: &Path,
+        importer: Option<&Path>,
         id: &str,
         resolve: impl Fn(&str) -> Option<PathBuf>,
     ) -> Mapped {
@@ -354,16 +452,13 @@ impl Projects {
         {
             return Mapped::None;
         }
-        let Some(importer_dir) = importer.parent() else {
-            return Mapped::None;
-        };
         let all = self.projects_for(importer_dir, &load, workspace);
         let mut declaration = None;
-        let mut dir = importer.parent();
+        let mut dir = Some(importer_dir);
         while let Some(d) = dir {
             let mut here: Vec<&Arc<TsConfig>> =
                 all.iter().filter(|p| p.path.parent() == Some(d)).collect();
-            here.sort_by(|a, b| a.path.cmp(&b.path));
+            here.sort_by(|a, b| locale_compare(&a.path, &b.path));
             for project in here {
                 let options = &project.compiler_options;
                 let no_files = project.files.as_ref().is_some_and(|f| f.is_empty())
@@ -371,8 +466,14 @@ impl Projects {
                 if no_files || (options.paths.is_none() && options.base_url.is_none()) {
                     continue;
                 }
-                if !takes_importer(project, importer) || !self.includer(project).includes(importer)
-                {
+                let passes = match importer {
+                    Some(importer) => {
+                        !takes_importer(project, importer)
+                            || !self.includer(project).includes(importer)
+                    }
+                    None => self.includer(project).excludes_dir(importer_dir),
+                };
+                if passes {
                     continue;
                 }
                 let (id, query) = match id.split_once('?') {
@@ -439,5 +540,11 @@ mod tests {
         assert!(any("./**/node_modules", "./a/node_modules/x/y.js"));
         assert!(any("./src/*.{ts,tsx}", "./src/a.tsx"));
         assert!(!any("./src/*.{ts,tsx}", "./src/a/b.tsx"));
+        assert!(any("./src/[!x]*.ts", "./src/a.ts"));
+        assert!(!any("./src/[!x]*.ts", "./src/x.ts"));
+        assert!(any("./src/?.ts", "./src/a.ts"));
+        assert!(any("./src/@(a|b).ts", "./src/b.ts"));
+        assert!(!any("./src/@(a|b).ts", "./src/c.ts"));
+        assert!(any("./src/+(a).ts", "./src/aa.ts"));
     }
 }

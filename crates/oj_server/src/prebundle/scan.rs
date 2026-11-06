@@ -336,8 +336,10 @@ impl ScanState {
                 .alias
                 .apply(id, importer.filter(|i| *i != INCLUDE_ID));
             if let Some(host) = &self.host {
-                let aliased = rewrite.as_ref().ok().and_then(|a| a.as_deref());
-                if let Ok(Some(r)) = host.resolve_id(id, from, aliased).await {
+                // The host's plugins (vite-tsconfig-paths among them) see the
+                // alias's rewrite alone, as in Vite's pipeline.
+                let aliased = self.pre.alias.alias(id);
+                if let Ok(Some(r)) = host.resolve_id(id, from, aliased.as_deref()).await {
                     let abs = Path::new(clean_url(&r.id)).is_absolute();
                     return (!r.is_external() && abs).then_some(r.id);
                 }
@@ -574,7 +576,7 @@ impl Plugin for DepScanPlugin {
             args.code,
             Path::new(file),
             &self.0.pre.root,
-            &|id| self.0.pre.alias.alias(id),
+            &|id| self.0.pre.alias.glob(id),
             &mut scopes,
         ) {
             Ok(code) if code != args.code.as_str() => Ok(Some(HookTransformOutput {

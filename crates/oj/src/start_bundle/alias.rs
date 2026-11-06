@@ -66,13 +66,24 @@ impl Plugin for AppAliasPlugin {
     }
 }
 
-/// tsconfig `paths` as the app's Vite dev server applies them, ahead of
-/// rolldown's resolver, which applies them natively (oxc's order, ahead of
-/// packages): with neither vite-tsconfig-paths nor `resolve.tsconfigPaths`,
-/// Vite's dev server applies none, so an id the `paths` would map resolves
-/// plainly first (`oj_resolver::OjResolver::tsconfig_answer`).
+/// tsconfig `paths` as the app's Vite applies them, where vite:resolve
+/// sits, ahead of rolldown's own resolver, which applies them natively
+/// (oxc's order, ahead of packages):
+/// `oj_resolver::OjResolver::tsconfig_answer`. `native_after` lets that
+/// native resolution take what Vite's resolve plugin leaves, as `vite build`
+/// does (a dev server never does).
 pub(crate) struct TsconfigPathsPlugin {
-    pub resolver: oj_resolver::OjResolver,
+    resolver: oj_resolver::OjResolver,
+    native_after: bool,
+}
+
+impl TsconfigPathsPlugin {
+    pub fn new(resolver: oj_resolver::OjResolver, native_after: bool) -> Self {
+        TsconfigPathsPlugin {
+            resolver,
+            native_after,
+        }
+    }
 }
 
 impl std::fmt::Debug for TsconfigPathsPlugin {
@@ -87,7 +98,18 @@ impl Plugin for TsconfigPathsPlugin {
     }
 
     fn register_hook_usage(&self) -> rolldown_plugin::HookUsage {
-        rolldown_plugin::HookUsage::ResolveId
+        rolldown_plugin::HookUsage::ResolveId | rolldown_plugin::HookUsage::BuildStart
+    }
+
+    // Each rebuild sees the files as they are now (a tsconfig edited, a
+    // package installed since).
+    async fn build_start(
+        &self,
+        _ctx: &PluginContext,
+        _args: &rolldown_plugin::HookBuildStartArgs<'_>,
+    ) -> rolldown_plugin::HookNoopReturn {
+        self.resolver.clear_cache();
+        Ok(())
     }
 
     async fn resolve_id(
@@ -107,13 +129,16 @@ impl Plugin for TsconfigPathsPlugin {
             return Ok(None);
         }
         let file = importer.split(['?', '#']).next().unwrap_or(importer);
-        let answer = match self.resolver.tsconfig_answer(Path::new(file), spec) {
+        let answer = match self
+            .resolver
+            .tsconfig_answer(Path::new(file), spec, self.native_after)
+        {
             oj_resolver::TsconfigAnswer::File(answer) => answer,
             oj_resolver::TsconfigAnswer::Bundler => return Ok(None),
-            // Only a declaration file answers it: Vite's dev server fails it.
+            // Vite fails the import; so does this bundle.
             oj_resolver::TsconfigAnswer::Unresolved => {
                 return Err(anyhow::anyhow!(
-                    "Failed to resolve import \"{spec}\" from \"{file}\": tsconfig paths map it only to a declaration file"
+                    "Failed to resolve import \"{spec}\" from \"{file}\". Does the file exist?"
                 ))
             }
         };

@@ -18,6 +18,9 @@ pub(super) struct Unresolved;
 
 pub(super) struct Aliases {
     config: Vec<(String, String)>,
+    /// The aliases a glob pattern goes through: the config's, then the
+    /// tsconfig `paths` Vite's resolve plugin maps it by.
+    glob: Vec<(String, String)>,
     resolver: oj_resolver::OjResolver,
 }
 
@@ -36,17 +39,31 @@ impl Aliases {
                 preserve_symlinks: input.preserve_symlinks,
                 server: false,
                 tsconfig_paths: input.tsconfig_paths,
+                tsconfig_file: input.tsconfig_file.clone(),
             },
         );
+        let glob = input
+            .alias
+            .iter()
+            .cloned()
+            .chain(resolver.glob_aliases())
+            .collect();
         Aliases {
             config: input.alias.clone(),
+            glob,
             resolver,
         }
     }
 
-    /// `id` after the first `resolve.alias` entry that takes it, alone: what
-    /// `import.meta.glob` patterns go through (a `paths`-mapped glob names no
-    /// file, so vite-tsconfig-paths has no answer for it).
+    /// What `import.meta.glob` patterns go through: the aliases, then, with
+    /// `resolve.tsconfigPaths`, the tsconfig `paths` (Vite's resolve plugin
+    /// maps a glob by them; vite-tsconfig-paths has no answer for a glob,
+    /// which names no file).
+    pub fn glob(&self, id: &str) -> Option<String> {
+        first_rewrite(&self.glob, id)
+    }
+
+    /// `id` after the first `resolve.alias` entry that takes it, alone.
     pub fn alias(&self, id: &str) -> Option<String> {
         first_rewrite(&self.config, id)
     }
@@ -63,7 +80,10 @@ impl Aliases {
             return Ok(aliased);
         };
         let file = importer.split(['?', '#']).next().unwrap_or(importer);
-        match self.resolver.tsconfig_answer(Path::new(file), target) {
+        match self
+            .resolver
+            .tsconfig_answer(Path::new(file), target, false)
+        {
             oj_resolver::TsconfigAnswer::File(p) => Ok(Some(p.to_string_lossy().into_owned())),
             oj_resolver::TsconfigAnswer::Bundler => Ok(aliased),
             oj_resolver::TsconfigAnswer::Unresolved => Err(Unresolved),

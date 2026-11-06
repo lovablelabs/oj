@@ -129,7 +129,10 @@
       "jsnext:main",
       "jsnext"
     ],
-    "preserveSymlinks": false
+    "preserveSymlinks": false,
+    "tsconfigPaths": false,
+    "tsconfigPathsPlugin": false,
+    "tsconfigFile": null
   },
   "resolveError": null,
   "rollupOptions": {

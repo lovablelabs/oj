@@ -97,9 +97,15 @@ async fn compile_plugin_source(
             if let Some(url) = pre(spec) {
                 return Some(url);
             }
-            if let Some(url) =
-                rewrite_specifier(&root, &root, &resolver, &fs_allow, &dir_cache, spec, true)
-            {
+            if let Some(url) = rewrite_specifier(
+                &root,
+                crate::rewrite::Importer::dir(&root),
+                &resolver,
+                &fs_allow,
+                &dir_cache,
+                spec,
+                true,
+            ) {
                 return Some(url);
             }
             is_bare_specifier(spec).then(|| {

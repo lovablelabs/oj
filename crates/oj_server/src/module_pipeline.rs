@@ -1205,7 +1205,10 @@ impl ImportRewrite<'_> {
         }
         if let Some(url) = rewrite_specifier(
             &state.root,
-            &job.dir,
+            crate::rewrite::Importer {
+                dir: &job.dir,
+                file: Some(&job.file),
+            },
             resolver,
             &state.fs_allow,
             &state.dir_cache,
@@ -1316,7 +1319,7 @@ impl ImportRewrite<'_> {
         if let Some(m) = self.register_missing_dep(spec, &job.state.resolver) {
             return m.needs_interop.then_some(m.url);
         }
-        let resolved = job.state.resolver.resolve(&job.dir, spec).ok()?;
+        let resolved = job.state.resolver.resolve_from(&job.file, spec).ok()?;
         let in_node_modules = resolved
             .components()
             .any(|c| c.as_os_str() == "node_modules");
@@ -1344,7 +1347,7 @@ impl ImportRewrite<'_> {
         if job.is_server || !may_register_import(&job.state, &job.dir, spec) {
             return None;
         }
-        let resolved = resolver.resolve(&job.dir, spec).ok()?;
+        let resolved = resolver.resolve_from(&job.file, spec).ok()?;
         register_missing_import(&job.state, spec, &resolved)
     }
 }
@@ -1771,7 +1774,7 @@ pub(crate) fn resolved_imports_json(
         if is_node_builtin(&spec) {
             continue;
         }
-        let val = match resolver.resolve(dir, &spec) {
+        let val = match resolver.resolve_from(file, &spec) {
             Ok(p) => {
                 // If the transform keeps the import, the browser fetches it from
                 // /@fs, so allow-list its package root now.

@@ -902,9 +902,17 @@ pub(crate) fn drop_resolver_misses(
     paths: &[PathBuf],
     created: &std::collections::HashSet<PathBuf>,
 ) {
+    // A tsconfig or jsconfig edit changes the `paths` (vite-tsconfig-paths
+    // reloads a project on `change`).
+    let tsconfig = |p: &PathBuf| {
+        p.file_name().is_some_and(|n| {
+            let n = n.to_string_lossy();
+            (n.starts_with("tsconfig") || n.starts_with("jsconfig")) && n.ends_with(".json")
+        })
+    };
     if paths
         .iter()
-        .any(|p| change_type(state, p, created) != "update")
+        .any(|p| tsconfig(p) || change_type(state, p, created) != "update")
     {
         state.resolver.clear_cache();
         state.ssr_resolver.clear_cache();

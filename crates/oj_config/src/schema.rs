@@ -525,6 +525,10 @@ pub struct ResolveConfig {
     /// plugin host reports it (None when no host ran).
     #[serde(skip)]
     pub tsconfig_paths_plugin: Option<bool>,
+    /// Vite's top-level `tsconfig` option, resolved: the one file its own
+    /// resolver reads.
+    #[serde(skip)]
+    pub tsconfig_file: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]

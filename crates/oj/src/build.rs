@@ -2341,6 +2341,50 @@ fn alias_plugin(root: &Path, config: &oj_config::OjConfig) -> Option<SharedPlugi
     (!entries.is_empty()).then(|| Pluginable::new_shared(AppAliasPlugin { entries }))
 }
 
+/// Vite's top-level `tsconfig` option, which Vite hands the build as
+/// `rolldownOptions.tsconfig`; else rolldown's default (each file's own).
+fn build_tsconfig(config: &oj_config::OjConfig) -> Option<rolldown_common::TsConfig> {
+    oj_server::tsconfig_file(config).map(rolldown_common::TsConfig::Manual)
+}
+
+/// tsconfig `paths` as `vite build` applies them, after the app's plugins
+/// where vite:resolve sits: plain resolution (packages first) for an id the
+/// `paths` could map, unless vite-tsconfig-paths or `resolve.tsconfigPaths`
+/// maps it; what that leaves goes to rolldown's own resolver, whose tsconfig
+/// (on by default) maps it natively, as in Vite's build. The resolver takes
+/// the bundle's own conditions, mainFields and extensions.
+fn tsconfig_paths_plugin(
+    root: &Path,
+    config: &oj_config::OjConfig,
+    env: &str,
+) -> Option<SharedPluginable> {
+    let mode = oj_server::tsconfig_paths(config);
+    if !matches!(
+        mode,
+        oj_resolver::TsconfigPaths::Plugin | oj_resolver::TsconfigPaths::Fallback
+    ) {
+        return None;
+    }
+    let resolve = rolldown_resolve(root, config, env)?;
+    let resolver = oj_resolver::OjResolver::with_settings(
+        root,
+        oj_resolver::ResolveSettings {
+            conditions: resolve.condition_names.unwrap_or_default(),
+            alias: oj_config::top_level_alias(config),
+            dedupe: oj_config::resolve_dedupe(config),
+            extensions: resolve.extensions,
+            main_fields: resolve.main_fields,
+            preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
+            server: env == "ssr",
+            tsconfig_paths: mode,
+            tsconfig_file: oj_server::tsconfig_file(config),
+        },
+    );
+    Some(Pluginable::new_shared(
+        crate::start_bundle::alias::TsconfigPathsPlugin::new(resolver, true),
+    ))
+}
+
 /// `root` is unused: `resolve.alias` goes through `alias_plugin`, ahead of
 /// tsconfig `paths`, not rolldown's `alias` option.
 fn rolldown_resolve(
@@ -3678,6 +3722,7 @@ pub async fn build(
             bundle_graph::jsx_config(&config),
         )));
     }
+    oj_plugins.extend(tsconfig_paths_plugin(root.as_ref(), &config, "client"));
     let client_minify =
         oj_config::environment_build_bool(&config, "client", "minify").unwrap_or(minify);
     let client_define: Vec<(String, String)> = {
@@ -3764,6 +3809,7 @@ pub async fn build(
             cwd: Some(root.clone()),
             dir: Some(out_dir.display().to_string()),
             resolve: rolldown_resolve(&root, &config, "client"),
+            tsconfig: build_tsconfig(&config),
             entry_filenames: Some(
                 ro_output_str(ro_opts, "entryFileNames")
                     .unwrap_or_else(|| oj_config::assets_dir_path(&assets_dir, "[name]-[hash].js"))
@@ -5142,6 +5188,7 @@ pub(crate) async fn build_ssr(
             bundle_graph::jsx_config(config),
         )));
     }
+    oj_plugins.extend(tsconfig_paths_plugin(root, config, "ssr"));
     oj_plugins.push(Pluginable::new_shared(OjCssPlugin {
         collected: Arc::clone(&collected_css),
         root: root.to_path_buf(),
@@ -5173,6 +5220,7 @@ pub(crate) async fn build_ssr(
             cwd: Some(root.to_path_buf()),
             dir: Some(out_dir.display().to_string()),
             resolve: rolldown_resolve(root, config, "ssr"),
+            tsconfig: build_tsconfig(config),
             transform: transform_options(config, is_production),
             platform: Some(if externals.webworker() {
                 Platform::Browser
@@ -5748,6 +5796,7 @@ async fn build_client_entry(
             bundle_graph::jsx_config(config),
         )));
     }
+    oj_plugins.extend(tsconfig_paths_plugin(root, config, "client"));
     oj_plugins.push(Pluginable::new_shared(OjCssPlugin {
         collected: Arc::clone(&collected_css),
         root: root.to_path_buf(),
@@ -5780,6 +5829,7 @@ async fn build_client_entry(
             cwd: Some(root.to_path_buf()),
             dir: Some(out_dir.display().to_string()),
             resolve: rolldown_resolve(root, config, "client"),
+            tsconfig: build_tsconfig(config),
             transform: transform_options(config, is_production),
             entry_filenames: Some(
                 oj_config::assets_dir_path(&assets_dir, "[name]-[hash].js").into(),
@@ -6023,6 +6073,7 @@ async fn build_library(
         if let Some(plugin) = &stylex {
             plugins.push(crate::stylex_plugin::transform(plugin));
         }
+        plugins.extend(tsconfig_paths_plugin(root, config, "client"));
         plugins.push(Pluginable::new_shared(OjCssPlugin {
             collected: Arc::clone(&collected_css),
             root: root.to_path_buf(),
@@ -6060,6 +6111,7 @@ async fn build_library(
                 cwd: Some(root.to_path_buf()),
                 dir: Some(out_dir.display().to_string()),
                 resolve: rolldown_resolve(root, config, "client"),
+                tsconfig: build_tsconfig(config),
                 format: Some(format),
                 name: lib.name.clone(),
                 preserve_entry_signatures: Some(rolldown_common::PreserveEntrySignatures::Strict),
@@ -7800,7 +7852,16 @@ mod tests {
             ("vite.config.mjs", "export default {};\n"),
             (
                 "tsconfig.json",
-                r#"{ "compilerOptions": { "paths": { "@/x": ["./src/a.ts"], "@/*": ["./src/*"] } } }"#,
+                r#"{ "compilerOptions": { "paths": { "@/x": ["./src/a.ts"], "@/*": ["./src/*"], "evpkg": ["./src/evshim.ts"] } } }"#,
+            ),
+            ("src/evshim.ts", "export const ev = \"the-shim\";\n"),
+            (
+                "node_modules/evpkg/package.json",
+                r#"{"name":"evpkg","type":"module","main":"index.js"}"#,
+            ),
+            (
+                "node_modules/evpkg/index.js",
+                "export const ev = \"the-package\";\n",
             ),
             (
                 "index.html",
@@ -7808,7 +7869,7 @@ mod tests {
             ),
             (
                 "src/main.ts",
-                "import { x } from \"@/x\";\nconsole.log(x);\n",
+                "import { x } from \"@/x\";\nimport { ev } from \"evpkg\";\nconsole.log(x, ev);\n",
             ),
             ("src/a.ts", "export const x = \"exact-key\";\n"),
             ("src/x.ts", "export const x = \"star\";\n"),
@@ -7832,6 +7893,12 @@ mod tests {
             .map(|e| fs::read_to_string(e.path()).unwrap())
             .collect();
         assert!(js.contains("exact-key") && !js.contains("\"star\""), "{js}");
+        // vite:resolve resolves the package before rolldown's own resolver
+        // would map the `paths` key.
+        assert!(
+            js.contains("the-package") && !js.contains("the-shim"),
+            "{js}"
+        );
     }
 
     /// Vite's define plugin: a browser bundle gets `process.env` -> `{}` (so an
