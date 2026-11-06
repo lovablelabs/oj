@@ -47,11 +47,14 @@ const original = fs.readFileSync(aboutFile, "utf8");
 const gateConfig = path.join(app, "oj.config.json");
 
 // Connect to the Start live-reload socket and collect "reload" frames.
-async function reloadListener() {
-  const ws = new WebSocket(`ws://localhost:${PORT}/@oj-start/hmr`);
+async function reloadListener(query = "") {
+  const ws = new WebSocket(`ws://localhost:${PORT}/@oj-start/hmr${query}`);
   const reloads = [];
   ws.addEventListener("message", (ev) => {
-    if (String(ev.data) === "reload") reloads.push(Date.now());
+    // "reload", or the frame a page found behind on connect gets.
+    if (String(ev.data) === "reload" || String(ev.data) === '{"type":"oj:behind"}') {
+      reloads.push(Date.now());
+    }
   });
   await new Promise((resolve, reject) => {
     ws.addEventListener("open", resolve);
@@ -194,7 +197,49 @@ await run("flush-during-rebuild", true, async (listener, log) => {
   const reloadBy = Date.now() + 10000;
   while (Date.now() < reloadBy && listener.reloads.length === 0) await sleep(100);
   must(listener.reloads.length >= 1, "race: no reload reached the page after the flushed rebuild");
-  console.log("flush-during-rebuild: mid-rebuild flush consumed the hold, rebuild reloaded");
+  // The flush waited for the rebuild: one reload, from its end. Reloading
+  // at the flush too (onto the old bundle) made two.
+  await sleep(1500);
+  must(
+    listener.reloads.length === 1,
+    `race: expected one reload for the flushed rebuild, got ${listener.reloads.length}`,
+  );
+  console.log("flush-during-rebuild: the flush waited for the rebuild, which reloaded once");
+});
+
+// 4. A page still loading when a reload goes out has no socket open to take
+//    it. Its document names the reloads sent before it rendered, and its
+//    socket gets the missed one on connect.
+await run("late-page", false, async (listener) => {
+  if ((await (await fetch(`http://localhost:${PORT}/__hmr_gate`)).json()).enabled) {
+    console.log("late-page: the gate is enabled by the environment, skipping");
+    return;
+  }
+  const seenIn = async () => {
+    const html = await (await fetch(`http://localhost:${PORT}/`)).text();
+    const m = html.match(/live-reload\.js\?g=([0-9a-f]+-\d+)/);
+    must(m, "late: the document carries no stamp");
+    return m[1];
+  };
+  // The run's own edit first, then a document, then a second edit whose
+  // reload that document never saw.
+  await settles(() => listener.reloads.length > 0, { timeoutMs: 60000 });
+  await sleep(1500);
+  const reloaded = listener.reloads.length;
+  const before = await seenIn();
+  const touch = () => fs.writeFileSync(aboutFile, original + "\n// gate probe late-page 2\n");
+  touch();
+  await settles(() => listener.reloads.length > reloaded, { touch, timeoutMs: 60000 });
+  const late = await reloadListener(`?g=${before}`);
+  const by = Date.now() + 5000;
+  while (Date.now() < by && late.reloads.length === 0) await sleep(50);
+  must(late.reloads.length === 1, "late: a page that rendered before the reload never got it");
+  await late.close().catch(() => {});
+  const current = await reloadListener(`?g=${await seenIn()}`);
+  await sleep(1000);
+  must(current.reloads.length === 0, "late: a page rendered after the reload got it again");
+  await current.close();
+  console.log("late-page: a reload sent before the socket connected arrived on connect");
 });
 
 console.log("START HMR GATE E2E PASSED");

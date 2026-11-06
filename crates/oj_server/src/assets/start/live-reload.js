@@ -188,9 +188,20 @@
     return "continue";
   };
 
+  // The changes this document had when the server rendered it, filled in
+  // from this script's url (null without one). The socket names them, so a
+  // change that went out while the page still loaded (no socket open to take
+  // it) reloads the page on connect.
+  const stamp = __OJ_PAGE_STAMP__;
+  const BEHIND_KEY = "oj:start:behind:" + location.pathname;
   const connect = () => {
     ws = new WebSocket(
-      (location.protocol === "https:" ? "wss" : "ws") + "://" + location.host + base + "/@oj-start/hmr",
+      (location.protocol === "https:" ? "wss" : "ws") +
+        "://" +
+        location.host +
+        base +
+        "/@oj-start/hmr" +
+        (stamp == null ? "" : "?g=" + encodeURIComponent(stamp)),
     );
     ws.onopen = () => {
       if (bus.runtime) send({ type: "oj:client", id: bus.runtime.clientId });
@@ -231,6 +242,23 @@
         if (msg.relink !== false) refreshStyles();
         linkStyles(msg.add || []);
         return;
+      }
+      // The page connected behind the server's changes: reload, once per
+      // stamp. A document that comes back with the same stamp was served
+      // from a cache (a service worker's, say), and reloading again would
+      // only loop.
+      if (msg && msg.type === "oj:behind") {
+        let last = null;
+        try {
+          last = sessionStorage.getItem(BEHIND_KEY);
+        } catch {}
+        if (last === stamp) {
+          console.warn("[oj] this page is older than the dev server's code, and reloading served it unchanged");
+          return;
+        }
+        try {
+          sessionStorage.setItem(BEHIND_KEY, stamp);
+        } catch {}
       }
     }
     await notify("vite:beforeFullReload", { type: "full-reload" });
