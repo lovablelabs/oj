@@ -19,6 +19,8 @@ pub(super) struct Unresolved;
 pub(super) struct Aliases {
     config: Vec<(String, String)>,
     resolver: oj_resolver::OjResolver,
+    /// For a `require()`: `require` in place of `import` (getConditions).
+    require: oj_resolver::OjResolver,
 }
 
 impl Aliases {
@@ -42,6 +44,7 @@ impl Aliases {
         );
         Aliases {
             config: input.alias.clone(),
+            require: resolver.require_variant(),
             resolver,
         }
     }
@@ -65,17 +68,24 @@ impl Aliases {
     /// every resolver), then tsconfig `paths` on what it gave, as the app's
     /// Vite applies them. No importer, no `paths` (the plugin's rule).
     /// `Err` when nothing answers the id in Vite (only a declaration file).
-    pub fn apply(&self, id: &str, importer: Option<&str>) -> Result<Option<String>, Unresolved> {
+    pub fn apply(
+        &self,
+        id: &str,
+        importer: Option<&str>,
+        require: bool,
+    ) -> Result<Option<String>, Unresolved> {
         let aliased = oj_resolver::alias::first_rewrite(&self.config, id);
         let target = aliased.as_deref().unwrap_or(id);
         let Some(importer) = importer else {
             return Ok(aliased);
         };
         let file = importer.split(['?', '#']).next().unwrap_or(importer);
-        match self
-            .resolver
-            .tsconfig_answer(Path::new(file), target, false)
-        {
+        let resolver = if require {
+            &self.require
+        } else {
+            &self.resolver
+        };
+        match resolver.tsconfig_answer(Path::new(file), target, false) {
             oj_resolver::TsconfigAnswer::File(p) => Ok(Some(p.to_string_lossy().into_owned())),
             oj_resolver::TsconfigAnswer::Bundler => Ok(aliased),
             oj_resolver::TsconfigAnswer::Unresolved => Err(Unresolved),

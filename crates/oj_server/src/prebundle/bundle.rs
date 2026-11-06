@@ -296,7 +296,8 @@ impl Plugin for DepBundlePlugin {
             }
             return external_url(url);
         }
-        if let Ok(Some(aliased)) = pre.alias.apply(id, Some(importer)) {
+        let require = matches!(args.kind, ImportKind::Require);
+        if let Ok(Some(aliased)) = pre.alias.apply(id, Some(importer), require) {
             if let Ok(r) = ctx
                 .resolve(&aliased, Some(importer), resolve_options(args.kind))
                 .await?

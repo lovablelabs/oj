@@ -1240,8 +1240,8 @@ fn block_on_host<T: Send>(
 
 /// How the app's Vite applies tsconfig `paths`: vite-tsconfig-paths among
 /// the plugins (with `resolve.tsconfigPaths` too, Vite's own resolver after
-/// it), Vite 8's own `resolve.tsconfigPaths`, or neither, where oj keeps
-/// them for what plain resolution misses. Plugins unknown (no plugin host
+/// it), Vite 8's own `resolve.tsconfigPaths`, or neither, where Vite's dev
+/// server applies none. Plugins unknown (no plugin host
 /// ran) count as none: Vite with no config applies no `paths`.
 pub fn tsconfig_paths(config: &oj_config::OjConfig) -> oj_resolver::TsconfigPaths {
     let resolve = config.resolve.as_ref();
@@ -1251,7 +1251,7 @@ pub fn tsconfig_paths(config: &oj_config::OjConfig) -> oj_resolver::TsconfigPath
         (true, true) => oj_resolver::TsconfigPaths::PluginNative,
         (true, false) => oj_resolver::TsconfigPaths::Plugin,
         (false, true) => oj_resolver::TsconfigPaths::Native,
-        (false, false) => oj_resolver::TsconfigPaths::Fallback,
+        (false, false) => oj_resolver::TsconfigPaths::Neither,
     }
 }
 

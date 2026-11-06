@@ -280,11 +280,8 @@ impl OjResolver {
                 Mapped::File(path) => Ok(path),
                 _ => native(),
             },
-            TsconfigPaths::Fallback => plain().or_else(|failure| match mapped() {
-                Mapped::File(path) => Ok(path),
-                Mapped::Declaration(declaration) => Err(declaration_failure(failure, &declaration)),
-                Mapped::None => Err(failure),
-            }),
+            // Vite's dev server applies no `paths`.
+            TsconfigPaths::Neither => plain(),
         }
     }
 
@@ -297,11 +294,9 @@ impl OjResolver {
         importer: Option<&Path>,
         specifier: &str,
     ) -> Result<PathBuf, ResolveFailure> {
-        let auto = matches!(
-            self.native.options().tsconfig,
-            Some(TsconfigDiscovery::Auto)
-        );
-        if !auto || self.should_dedupe(specifier) {
+        // Vite's resolver resolves from the file, Vite's `tsconfig` option
+        // or not (`resolve_file`: the reference whose `include` holds it).
+        if self.should_dedupe(specifier) {
             return self.resolve_with(&self.native, importer_dir, specifier);
         }
         // With only a directory, a TypeScript file in it stands in.
@@ -333,11 +328,14 @@ impl OjResolver {
     }
 
     /// What a bundler whose own resolver applies tsconfig `paths` natively
-    /// (rolldown: oxc's order, ahead of packages) should do instead, for the
-    /// app's [`TsconfigPaths`]. `native_after` is whether the bundler, like
-    /// `vite build`, lets that native resolution take the ids Vite's resolve
-    /// plugin leaves (a dev server never does). An id no `paths` pattern or
-    /// `baseUrl` could take stays the bundler's.
+    /// (rolldown: the importer's nearest tsconfig, oxc's order, ahead of
+    /// packages) should do instead, for the app's [`TsconfigPaths`]. It
+    /// steps in only where that native mapping, or vite-tsconfig-paths,
+    /// would answer: everything else stays the bundler's, with its own
+    /// conditions and import kinds. `native_after` is whether the bundler,
+    /// like `vite build`, lets its native `paths` take what Vite's resolve
+    /// plugin leaves (a dev server never does). For a `require`, ask the
+    /// [`Self::require_variant`].
     pub fn tsconfig_answer(
         &self,
         importer: &Path,
@@ -346,42 +344,57 @@ impl OjResolver {
     ) -> TsconfigAnswer {
         let file = clean_importer(importer);
         let dir = file.parent().unwrap_or(&self.root);
-        if matches!(
-            self.tsconfig_paths,
-            TsconfigPaths::Native | TsconfigPaths::Off
-        ) {
+        let id = specifier.split('?').next().unwrap_or(specifier);
+        let bare = !(id.starts_with('.') || id.starts_with('/') || id.contains('\0'));
+        if !bare
+            || matches!(
+                self.tsconfig_paths,
+                TsconfigPaths::Native | TsconfigPaths::Off
+            )
+        {
             return TsconfigAnswer::Bundler;
         }
-        let load = |f: &Path| self.tsconfigs.resolve_tsconfig(f).ok();
-        let projects = self.projects.projects_for(dir, &load, &self.workspace);
-        if !tsconfig_paths::could_map(&projects, specifier.split('?').next().unwrap_or(specifier)) {
-            return TsconfigAnswer::Bundler;
-        }
+        let native_hit = || self.native_hit(file, dir, id);
         let plain = || self.resolve_with(&self.no_paths, dir, specifier).ok();
-        let leftover = if native_after {
-            TsconfigAnswer::Bundler
-        } else {
-            TsconfigAnswer::Unresolved
-        };
-        let mapped = self.mapped(dir, Some(file), specifier);
-        match (self.tsconfig_paths, mapped) {
-            (_, Mapped::File(path)) if self.tsconfig_paths != TsconfigPaths::Fallback => {
-                TsconfigAnswer::File(path)
+        let leftover = || {
+            if native_after {
+                TsconfigAnswer::Bundler
+            } else {
+                TsconfigAnswer::Unresolved
             }
-            // Vite's own resolver takes what the plugin passes on.
-            (TsconfigPaths::PluginNative, _) => TsconfigAnswer::Bundler,
-            // A build hands what plain resolution leaves to its native
-            // `paths`, as Vite's; a dev server has oj's fallback mapping.
-            (TsconfigPaths::Fallback, mapped) => match plain() {
-                Some(path) => TsconfigAnswer::File(path),
-                None if native_after => TsconfigAnswer::Bundler,
-                None => match mapped {
-                    Mapped::File(path) => TsconfigAnswer::File(path),
-                    _ => TsconfigAnswer::Unresolved,
-                },
-            },
-            _ => plain().map_or(leftover, TsconfigAnswer::File),
+        };
+        match self.tsconfig_paths {
+            TsconfigPaths::Plugin | TsconfigPaths::PluginNative => {
+                if let Mapped::File(path) = self.mapped(dir, Some(file), specifier) {
+                    return TsconfigAnswer::File(path);
+                }
+                // Vite's own resolver takes what the plugin passes on.
+                if self.tsconfig_paths == TsconfigPaths::PluginNative || native_hit().is_none() {
+                    return TsconfigAnswer::Bundler;
+                }
+                plain().map_or_else(leftover, TsconfigAnswer::File)
+            }
+            _ => {
+                if native_hit().is_none() {
+                    return TsconfigAnswer::Bundler;
+                }
+                plain().map_or_else(leftover, TsconfigAnswer::File)
+            }
         }
+    }
+
+    /// The file the bundler's own resolver would map `id` to through
+    /// tsconfig `paths` or `baseUrl`: the importer's nearest tsconfig
+    /// (references followed), its targets in oxc's order.
+    fn native_hit(&self, file: &Path, dir: &Path, id: &str) -> Option<PathBuf> {
+        let tsconfig = self.tsconfigs.find_tsconfig(file).ok()??;
+        tsconfig
+            .resolve_path_alias_or_base_url(id)
+            .iter()
+            .find_map(|c| {
+                self.resolve_with(&self.no_paths, dir, &c.to_string_lossy())
+                    .ok()
+            })
     }
 
     /// An `import.meta.glob` pattern through tsconfig `paths`, as Vite's
@@ -497,6 +510,22 @@ pub enum TsconfigAnswer {
 /// a `deno.json(c)` with `workspace`), else the nearest ancestor with a
 /// `package.json`, else `root`. `.git` is no marker.
 pub fn workspace_root(root: &Path) -> PathBuf {
+    // Found once per root: each resolver a server or a build constructs asks.
+    static FOUND: std::sync::LazyLock<
+        std::sync::Mutex<std::collections::HashMap<PathBuf, PathBuf>>,
+    > = std::sync::LazyLock::new(Default::default);
+    if let Some(found) = FOUND.lock().unwrap_or_else(|e| e.into_inner()).get(root) {
+        return found.clone();
+    }
+    let found = search_workspace_root(root);
+    FOUND
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(root.to_path_buf(), found.clone());
+    found
+}
+
+fn search_workspace_root(root: &Path) -> PathBuf {
     let mut pkg_root: Option<PathBuf> = None;
     let mut dir = root;
     loop {
@@ -557,6 +586,39 @@ fn declaration_failure(failure: ResolveFailure, declaration: &Path) -> ResolveFa
 mod tests {
     use super::*;
 
+    /// `OjResolver::new` with vite-tsconfig-paths among the plugins: what
+    /// these tests check the `paths` against.
+    fn plugin_with_options(
+        root: &Path,
+        conditions: &[String],
+        alias: &[(String, String)],
+        dedupe: &[String],
+    ) -> OjResolver {
+        OjResolver::with_settings(
+            root,
+            ResolveSettings {
+                conditions: conditions.to_vec(),
+                alias: alias.to_vec(),
+                dedupe: dedupe.to_vec(),
+                tsconfig_paths: TsconfigPaths::Plugin,
+                ..ResolveSettings::default()
+            },
+        )
+    }
+
+    fn plugin_resolver(root: &Path) -> OjResolver {
+        OjResolver::with_settings(
+            root,
+            ResolveSettings {
+                conditions: ["browser", "import", "module", "development", "default"]
+                    .map(String::from)
+                    .to_vec(),
+                tsconfig_paths: TsconfigPaths::Plugin,
+                ..ResolveSettings::default()
+            },
+        )
+    }
+
     fn playground_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../playground")
     }
@@ -566,7 +628,7 @@ mod tests {
 
     #[test]
     fn resolves_relative_import_with_tsx_extension_probing() {
-        let resolver = OjResolver::new(&playground_root());
+        let resolver = plugin_resolver(&playground_root());
         let resolved = resolver.resolve(&playground_src(), "./App").unwrap();
         assert!(resolved.ends_with("App.tsx"), "got {resolved:?}");
     }
@@ -604,7 +666,15 @@ mod tests {
             .iter()
             .map(|(f, r)| (f.to_string(), root.join(r).to_string_lossy().into_owned()))
             .collect();
-        OjResolver::with_options(root, &["import".to_string()], &alias, &[])
+        OjResolver::with_settings(
+            root,
+            ResolveSettings {
+                conditions: vec!["import".to_string()],
+                alias,
+                tsconfig_paths: TsconfigPaths::Plugin,
+                ..ResolveSettings::default()
+            },
+        )
     }
 
     // Vite's alias plugin runs ahead of tsconfig `paths`, and takes the first
@@ -659,7 +729,7 @@ mod tests {
         let tmp = supabase_project();
         let root = tmp.path().canonicalize().unwrap();
         let src = root.join("src");
-        let resolver = OjResolver::with_options(
+        let resolver = plugin_with_options(
             &root,
             &["import".to_string()],
             &[("~lib".to_string(), "@/lib".to_string())],
@@ -670,7 +740,7 @@ mod tests {
             src.join("lib/helper.ts")
         );
         // The rewritten id is not aliased again (`skipSelf`).
-        let looped = OjResolver::with_options(
+        let looped = plugin_with_options(
             &root,
             &["import".to_string()],
             &[
@@ -698,7 +768,7 @@ mod tests {
         let tmp = supabase_project();
         let root = tmp.path().canonicalize().unwrap();
         let src = root.join("src");
-        let resolver = OjResolver::new(&root);
+        let resolver = moded(&root, TsconfigPaths::Plugin, &[]);
         assert_eq!(
             resolver
                 .resolve(&src, "@/integrations/supabase/client")
@@ -711,7 +781,7 @@ mod tests {
             r#"{ "compilerOptions": { "paths": { "@/integrations/supabase/client": ["./src/types/existingSupabaseClient.d.ts"], "@/lib/*": ["./src/lib/*"] } } }"#,
         )
         .unwrap();
-        let resolver = OjResolver::new(&root);
+        let resolver = moded(&root, TsconfigPaths::Plugin, &[]);
         let failure = resolver
             .resolve(&src, "@/integrations/supabase/client")
             .unwrap_err();
@@ -757,7 +827,7 @@ mod tests {
         .unwrap();
         std::fs::write(pkg.join("index.js"), "").unwrap();
         std::fs::write(pkg.join("browser.js"), "").unwrap();
-        let resolver = OjResolver::with_options(
+        let resolver = plugin_with_options(
             &root,
             &["import".to_string()],
             &[("process".to_string(), "process/browser".to_string())],
@@ -797,7 +867,7 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, body).unwrap();
         }
-        let resolver = OjResolver::new(&root);
+        let resolver = moded(&root, TsconfigPaths::Plugin, &[]);
         assert_eq!(
             resolver.resolve(&root.join("src"), "events").unwrap(),
             root.join("src/events.ts"),
@@ -879,13 +949,15 @@ mod tests {
             src.join("client.d.ts")
         );
 
-        let fallback = moded(&root, TsconfigPaths::Fallback, &[]);
+        let neither = moded(&root, TsconfigPaths::Neither, &[]);
         assert_eq!(
-            fallback.resolve(&src, "events").unwrap(),
+            neither.resolve(&src, "events").unwrap(),
             root.join("node_modules/events/events.js"),
-            "what Vite resolves without paths stands"
         );
-        assert_eq!(fallback.resolve(&src, "@/x").unwrap(), src.join("x.ts"));
+        assert!(
+            neither.resolve(&src, "@/x").is_err(),
+            "Vite's dev server applies no paths"
+        );
 
         let off = moded(&root, TsconfigPaths::Off, &[]);
         assert!(off.resolve(&src, "@/x").is_err());
@@ -1046,7 +1118,7 @@ mod tests {
 
     // A bundler whose own resolver applies `paths` natively (oxc's order,
     // ahead of packages) takes the plugin's answer in `Plugin` mode, the plain
-    // answer first in `Fallback` mode, and nothing in `Native` mode.
+    // answer first in `Neither` mode, and nothing in `Native` mode.
     #[test]
     fn a_bundler_takes_the_answer_the_mode_gives() {
         let (_tmp, root) = tree(EXACT_AND_STAR);
@@ -1057,14 +1129,15 @@ mod tests {
             plugin.tsconfig_answer(&m, "@/x", false),
             File(root.join("src/x.ts"))
         );
-        let fallback = moded(&root, TsconfigPaths::Fallback, &[]);
+        let fallback = moded(&root, TsconfigPaths::Neither, &[]);
         assert_eq!(
             fallback.tsconfig_answer(&m, "events", false),
             File(root.join("node_modules/events/events.js"))
         );
         assert_eq!(
             fallback.tsconfig_answer(&m, "@/x", false),
-            File(root.join("src/x.ts"))
+            Unresolved,
+            "Vite's dev server applies no paths"
         );
         assert_eq!(
             fallback.tsconfig_answer(&m, "react", false),
@@ -1252,7 +1325,7 @@ mod tests {
     fn a_build_bundler_keeps_its_native_paths_for_leftovers() {
         let (_tmp, root) = tree(EXACT_AND_STAR);
         let m = root.join("src/m.ts");
-        let fallback = moded(&root, TsconfigPaths::Fallback, &[]);
+        let fallback = moded(&root, TsconfigPaths::Neither, &[]);
         assert_eq!(
             fallback.tsconfig_answer(&m, "events", true),
             TsconfigAnswer::File(root.join("node_modules/events/events.js"))
@@ -1263,7 +1336,7 @@ mod tests {
         );
         assert_eq!(
             fallback.tsconfig_answer(&root.join("src/m.js"), "@/nothing", false),
-            TsconfigAnswer::Unresolved
+            TsconfigAnswer::Bundler
         );
         assert_eq!(
             fallback.tsconfig_answer(&m, "@/x", true),
@@ -1435,9 +1508,130 @@ mod tests {
         );
     }
 
+    // With `baseUrl` (the shadcn template's `"."`), a package import and a
+    // Node builtin stay the bundler's: only an id the native mapping or the
+    // plugin actually resolves is taken, so the bundler keeps its own
+    // conditions and import kinds.
+    #[test]
+    fn a_base_url_leaves_packages_and_builtins_to_the_bundler() {
+        let (_tmp, root) = tree(&[
+            (
+                "tsconfig.json",
+                r#"{ "compilerOptions": { "baseUrl": ".", "paths": { "@/*": ["./src/*"] } } }"#,
+            ),
+            ("src/a.ts", ""),
+            ("src/m.ts", ""),
+            (
+                "node_modules/clsx/package.json",
+                r#"{"name":"clsx","exports":{".":{"import":"./clsx.mjs","default":"./clsx.js"}}}"#,
+            ),
+            ("node_modules/clsx/clsx.mjs", ""),
+            ("node_modules/clsx/clsx.js", ""),
+        ]);
+        let m = root.join("src/m.ts");
+        for mode in [TsconfigPaths::Plugin, TsconfigPaths::Neither] {
+            let resolver = moded(&root, mode, &[]);
+            for native_after in [false, true] {
+                assert_eq!(
+                    resolver.tsconfig_answer(&m, "clsx", native_after),
+                    TsconfigAnswer::Bundler,
+                    "{mode:?}"
+                );
+                assert_eq!(
+                    resolver.tsconfig_answer(&m, "path", native_after),
+                    TsconfigAnswer::Bundler,
+                    "{mode:?}"
+                );
+            }
+        }
+        let plugin = moded(&root, TsconfigPaths::Plugin, &[]);
+        assert_eq!(
+            plugin.tsconfig_answer(&m, "@/a", false),
+            TsconfigAnswer::File(root.join("src/a.ts"))
+        );
+    }
+
+    // tsconfck and tsc keep an inherited `baseUrl` relative to the config
+    // that declares it, and replace `${configDir}` with the final config's
+    // directory; oxc rebases both onto the extending config.
+    #[test]
+    fn an_inherited_base_url_and_config_dir_follow_tsconfck() {
+        let (_tmp, root) = tree(&[
+            (
+                "base/tsconfig.base.json",
+                r#"{ "compilerOptions": { "baseUrl": "./lib" } }"#,
+            ),
+            ("base/lib/util.ts", ""),
+            (
+                "app/tsconfig.json",
+                r#"{ "extends": "../base/tsconfig.base.json" }"#,
+            ),
+            ("app/lib/util.ts", ""),
+            ("app/src/m.ts", ""),
+            (
+                "shared/tsconfig.base.json",
+                r#"{ "include": ["${configDir}/src"] }"#,
+            ),
+            (
+                "web/tsconfig.json",
+                r#"{ "extends": "../shared/tsconfig.base.json", "compilerOptions": { "paths": { "@/*": ["./src/*"] } } }"#,
+            ),
+            ("web/src/a.ts", ""),
+            ("web/src/m.ts", ""),
+        ]);
+        let app = root.join("app");
+        let resolver = moded(&app, TsconfigPaths::Plugin, &[]);
+        assert_eq!(
+            resolver
+                .resolve_from(&app.join("src/m.ts"), "util")
+                .unwrap(),
+            root.join("base/lib/util.ts")
+        );
+        let web = root.join("web");
+        let resolver = moded(&web, TsconfigPaths::Plugin, &[]);
+        assert_eq!(
+            resolver.resolve_from(&web.join("src/m.ts"), "@/a").unwrap(),
+            web.join("src/a.ts")
+        );
+    }
+
+    // Vite's resolver resolves from the importing file with Vite's `tsconfig`
+    // option too: the reference whose `include` holds it maps it.
+    #[test]
+    fn the_tsconfig_option_still_picks_the_reference_that_owns_the_importer() {
+        let (_tmp, root) = tree(&[
+            (
+                "tsconfig.json",
+                r#"{ "files": [], "references": [{ "path": "./tsconfig.node.json" }, { "path": "./tsconfig.app.json" }] }"#,
+            ),
+            ("tsconfig.node.json", r#"{ "include": ["vite.config.ts"] }"#),
+            (
+                "tsconfig.app.json",
+                r#"{ "include": ["src"], "compilerOptions": { "paths": { "@/*": ["./src/*"] } } }"#,
+            ),
+            ("src/a.ts", ""),
+            ("src/m.ts", ""),
+        ]);
+        let resolver = OjResolver::with_settings(
+            &root,
+            ResolveSettings {
+                conditions: vec!["import".to_string()],
+                tsconfig_paths: TsconfigPaths::Native,
+                tsconfig_file: Some(root.join("tsconfig.json")),
+                ..ResolveSettings::default()
+            },
+        );
+        assert_eq!(
+            resolver
+                .resolve_from(&root.join("src/m.ts"), "@/a")
+                .unwrap(),
+            root.join("src/a.ts")
+        );
+    }
+
     #[test]
     fn resolves_tsconfig_paths_alias() {
-        let resolver = OjResolver::new(&playground_root());
+        let resolver = plugin_resolver(&playground_root());
         let resolved = resolver.resolve(&playground_src(), "@/App").unwrap();
         assert!(resolved.ends_with("App.tsx"), "alias @/App -> {resolved:?}");
     }
@@ -1486,7 +1680,7 @@ mod tests {
         // tsconfig-paths imports alike; an existing `.js` still wins over `.ts`.
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/tsout");
         let src = root.join("src/lib");
-        let r = OjResolver::with_options(
+        let r = plugin_with_options(
             &root,
             &["import", "default"].map(String::from),
             &[("~".to_string(), "./src".to_string())],
@@ -1512,7 +1706,7 @@ mod tests {
 
     #[test]
     fn reports_unresolvable_specifier() {
-        let resolver = OjResolver::new(&playground_root());
+        let resolver = plugin_resolver(&playground_root());
         let err = resolver
             .resolve(&playground_src(), "./does-not-exist")
             .unwrap_err();
@@ -1617,7 +1811,7 @@ mod tests {
         // must resolve to its module entry, not fall back to CJS main; and the
         // package.json `browser` object must remap the resolved file.
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/mainfields");
-        let r = OjResolver::new(&dir);
+        let r = plugin_resolver(&dir);
         assert!(
             r.resolve(&dir, "mf-pkg").unwrap().ends_with("esm.js"),
             "module field must win over main: {:?}",
@@ -1633,7 +1827,7 @@ mod tests {
     #[test]
     fn resolves_package_subpath_exports_and_enforces_encapsulation() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/subpath");
-        let resolver = OjResolver::new(&dir);
+        let resolver = plugin_resolver(&dir);
         assert!(resolver
             .resolve(&dir, "sub-pkg")
             .unwrap()
@@ -1650,7 +1844,7 @@ mod tests {
 
     #[test]
     fn resolves_json_css_and_explicit_extensions() {
-        let resolver = OjResolver::new(&playground_root());
+        let resolver = plugin_resolver(&playground_root());
         let src = playground_src();
         assert!(resolver
             .resolve(&src, "./data.json")
@@ -1679,7 +1873,7 @@ mod tests {
         std::fs::write(root.join("both.ts"), "export const ts = 1;").unwrap();
         std::fs::write(root.join("modern.mts"), "export const m = 1;").unwrap();
         std::fs::write(root.join("main.ts"), "").unwrap();
-        let resolver = OjResolver::new(root);
+        let resolver = plugin_resolver(root);
         assert!(
             resolver
                 .resolve(root, "./both")
@@ -1709,7 +1903,7 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("fixtures/deprelative/node_modules/dep/dist");
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
-        let resolver = OjResolver::new(&root);
+        let resolver = plugin_resolver(&root);
         let hit = resolver.resolve(&dir, "./greet").unwrap();
         assert!(
             hit.ends_with("greet.js"),
@@ -1726,7 +1920,7 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("fixtures/deprelative/node_modules/dep/dist");
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
-        let resolver = OjResolver::new(&root);
+        let resolver = plugin_resolver(&root);
         let hit = resolver.resolve(&dir, "./helpers").unwrap();
         assert!(
             hit.ends_with("helpers/m.js"),
@@ -1743,7 +1937,7 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("fixtures/deprelative/node_modules/dep/dist");
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
-        let resolver = OjResolver::new(&root);
+        let resolver = plugin_resolver(&root);
         let hit = resolver.resolve(&dir, "./exports-dir").unwrap();
         assert!(
             hit.ends_with("exports-dir/e.js"),
@@ -1758,7 +1952,7 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("fixtures/deprelative/node_modules/dep/dist");
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
-        let resolver = OjResolver::new(&root);
+        let resolver = plugin_resolver(&root);
         let hit = resolver.resolve(&dir, "./bare-dir").unwrap();
         assert!(
             hit.ends_with("bare-dir/index.js"),
@@ -1800,7 +1994,7 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("fixtures/deprelative/node_modules/dep/dist");
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
-        let resolver = OjResolver::new(&root);
+        let resolver = plugin_resolver(&root);
         let hit = resolver.resolve(&dir, "./broken-exports-idx").unwrap();
         assert!(
             hit.ends_with("broken-exports-idx/index.js"),
@@ -1815,7 +2009,7 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("fixtures/deprelative/node_modules/dep/dist");
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
-        let resolver = OjResolver::new(&root);
+        let resolver = plugin_resolver(&root);
         let err = resolver
             .resolve(&dir, "./broken-exports-noidx")
             .unwrap_err();
@@ -1833,7 +2027,7 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("fixtures/deprelative/node_modules/dep/dist");
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
-        let resolver = OjResolver::new(&root);
+        let resolver = plugin_resolver(&root);
         let hit = resolver.resolve(&dir, "./exports-only").unwrap();
         assert!(
             hit.ends_with("exports-only/e.js"),
@@ -1849,7 +2043,7 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("fixtures/deprelative/node_modules/dep/dist");
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
-        let resolver = OjResolver::new(&root);
+        let resolver = plugin_resolver(&root);
         let hit = resolver.resolve(&dir, "./sugar-string").unwrap();
         assert!(
             hit.ends_with("sugar-string/s.js"),
@@ -1864,7 +2058,7 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("fixtures/deprelative/node_modules/dep/dist");
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
-        let resolver = OjResolver::new(&root);
+        let resolver = plugin_resolver(&root);
         let hit = resolver.resolve(&dir, "./sugar-conditions").unwrap();
         assert!(
             hit.ends_with("sugar-conditions/i.js"),
@@ -1881,7 +2075,7 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("fixtures/deprelative/node_modules/dep/dist");
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
-        let resolver = OjResolver::new(&root);
+        let resolver = plugin_resolver(&root);
         let hit = resolver.resolve(&dir, "./nomatch-idx").unwrap();
         assert!(
             hit.ends_with("nomatch-idx/index.js"),
@@ -1894,7 +2088,7 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("fixtures/deprelative/node_modules/dep/dist");
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
-        let resolver = OjResolver::new(&root);
+        let resolver = plugin_resolver(&root);
         let err = resolver.resolve(&dir, "./nomatch-noidx").unwrap_err();
         assert!(
             err.reason.contains("exports name a missing file"),
@@ -1910,7 +2104,7 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("fixtures/deprelative/node_modules/dep/dist");
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
-        let resolver = OjResolver::new(&root);
+        let resolver = plugin_resolver(&root);
         let hit = resolver.resolve(&dir, "./subpath-only").unwrap();
         assert!(
             hit.ends_with("subpath-only/index.js"),
@@ -1926,7 +2120,7 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("fixtures/deprelative/node_modules/dep/dist");
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
-        let resolver = OjResolver::new(&root);
+        let resolver = plugin_resolver(&root);
         let hit = resolver.resolve(&dir, "./greet.js").unwrap();
         assert!(
             hit.ends_with("dist/greet.js"),
@@ -1941,7 +2135,7 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("fixtures/deprelative/node_modules/dep/dist");
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
-        let resolver = OjResolver::new(&root);
+        let resolver = plugin_resolver(&root);
         let hit = resolver.resolve(&dir, "./falsy-exports").unwrap();
         assert!(
             hit.ends_with("falsy-exports/m.js"),
@@ -1957,7 +2151,7 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("fixtures/deprelative/node_modules/dep/dist");
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deprelative");
-        let resolver = OjResolver::new(&root);
+        let resolver = plugin_resolver(&root);
         let hit = resolver.resolve(&dir, "./bare-target").unwrap();
         assert!(
             hit.ends_with("bare-target/lib.js"),
@@ -1970,7 +2164,7 @@ mod tests {
         // resolve.extensions replaces the default probe list (Vite semantics):
         // a `.vue` file is only reachable once the caller supplies the extension.
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/extensions");
-        let default = OjResolver::new(&dir);
+        let default = plugin_resolver(&dir);
         assert!(
             default.resolve(&dir, "./Widget").is_err(),
             "default extensions must not resolve a .vue file",
@@ -1997,7 +2191,7 @@ mod tests {
         // mf-pkg ships both `module` (esm.js) and `main` (cjs.js). The default
         // ordering prefers module; forcing mainFields:["main"] must pick main.
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/mainfields");
-        let default = OjResolver::new(&dir);
+        let default = plugin_resolver(&dir);
         assert!(
             default.resolve(&dir, "mf-pkg").unwrap().ends_with("esm.js"),
             "default mainFields prefers module",

@@ -331,10 +331,6 @@ impl ScanState {
                 .or_default(),
         );
         cell.get_or_init(|| async {
-            let rewrite = self
-                .pre
-                .alias
-                .apply(id, importer.filter(|i| *i != INCLUDE_ID));
             if let Some(host) = &self.host {
                 // The host's plugins (vite-tsconfig-paths among them) see the
                 // alias's rewrite alone, as in Vite's pipeline.
@@ -344,7 +340,12 @@ impl ScanState {
                     return (!r.is_external() && abs).then_some(r.id);
                 }
             }
-            // Only a declaration file answers it: Vite's scan finds nothing.
+            // Asked once the host's plugins passed. Only a declaration file
+            // answers it: Vite's scan finds nothing.
+            let rewrite = self
+                .pre
+                .alias
+                .apply(id, importer.filter(|i| *i != INCLUDE_ID), false);
             let Ok(target) = rewrite else {
                 return None;
             };

@@ -641,6 +641,25 @@ pub(crate) fn tsconfig_paths_options(
     file: &Path,
     root: &Path,
 ) -> Option<oj_resolver::PluginOptions> {
+    // Read once per config file version: each resolver a server or a build
+    // constructs asks.
+    type Key = (PathBuf, PathBuf, Option<std::time::SystemTime>);
+    static READ: std::sync::LazyLock<
+        std::sync::Mutex<std::collections::HashMap<Key, Option<oj_resolver::PluginOptions>>>,
+    > = std::sync::LazyLock::new(Default::default);
+    let mtime = std::fs::metadata(file).and_then(|m| m.modified()).ok();
+    let key = (file.to_path_buf(), root.to_path_buf(), mtime);
+    if let Some(found) = READ.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return found.clone();
+    }
+    let found = read_tsconfig_paths_options(file, root);
+    READ.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, found.clone());
+    found
+}
+
+fn read_tsconfig_paths_options(file: &Path, root: &Path) -> Option<oj_resolver::PluginOptions> {
     use oxc_ast_visit::Visit;
     let source = std::fs::read_to_string(file).ok()?;
     let allocator = Allocator::default();
@@ -650,6 +669,7 @@ pub(crate) fn tsconfig_paths_options(
         return None;
     }
     let mut plugin = None;
+    let mut resolve_fn = None;
     let mut bindings = Bindings::default();
     for statement in &parsed.program.body {
         let Statement::ImportDeclaration(import) = statement else {
@@ -674,6 +694,9 @@ pub(crate) fn tsconfig_paths_options(
                     ImportDeclarationSpecifier::ImportDefaultSpecifier(_)
                     | ImportDeclarationSpecifier::ImportNamespaceSpecifier(_),
                 ) => bindings.path = Some(local),
+                ("path" | "node:path", ImportDeclarationSpecifier::ImportSpecifier(s)) if matches!(&s.imported, ModuleExportName::IdentifierName(n) if n.name == "resolve") => {
+                    resolve_fn = Some(local)
+                }
                 _ => {}
             }
         }
@@ -682,6 +705,7 @@ pub(crate) fn tsconfig_paths_options(
     struct Find<'b> {
         plugin: &'b str,
         bindings: &'b Bindings,
+        resolve_fn: Option<&'b str>,
         dir: &'b Path,
         root: &'b Path,
         found: Option<oj_resolver::PluginOptions>,
@@ -691,7 +715,13 @@ pub(crate) fn tsconfig_paths_options(
             if self.found.is_none() {
                 if let Expression::Identifier(id) = &call.callee {
                     if id.name == self.plugin {
-                        self.found = Some(plugin_options(call, self.bindings, self.dir, self.root));
+                        self.found = Some(plugin_options(
+                            call,
+                            self.bindings,
+                            self.resolve_fn,
+                            self.dir,
+                            self.root,
+                        ));
                         return;
                     }
                 }
@@ -702,6 +732,7 @@ pub(crate) fn tsconfig_paths_options(
     let mut find = Find {
         plugin: &plugin,
         bindings: &bindings,
+        resolve_fn: resolve_fn.as_deref(),
         dir: file.parent()?,
         root,
         found: None,
@@ -714,29 +745,60 @@ pub(crate) fn tsconfig_paths_options(
 fn plugin_options(
     call: &oxc_ast::ast::CallExpression,
     bindings: &Bindings,
+    resolve_fn: Option<&str>,
     dir: &Path,
     root: &Path,
 ) -> oj_resolver::PluginOptions {
+    // A string, `path.resolve(…)`, or `resolve(…)` from `node:path`.
+    let path_of = |expr: &Expression| -> Option<String> {
+        if let (Expression::CallExpression(c), Some(name)) = (expr, resolve_fn) {
+            if matches!(&c.callee, Expression::Identifier(id) if id.name == name) {
+                let mut out = PathBuf::new();
+                for arg in &c.arguments {
+                    match arg.as_expression()? {
+                        Expression::Identifier(id) if id.name == "__dirname" => out.push(dir),
+                        Expression::StaticMemberExpression(m)
+                            if m.property.name == "dirname"
+                                && matches!(&m.object, Expression::ImportMeta(_)) =>
+                        {
+                            out.push(dir)
+                        }
+                        Expression::StringLiteral(s) => out.push(s.value.as_str()?),
+                        _ => return None,
+                    }
+                }
+                return out
+                    .is_absolute()
+                    .then(|| normalize(&out).to_string_lossy().into_owned());
+            }
+        }
+        path_value(expr, bindings, dir)
+    };
     let mut options = oj_resolver::PluginOptions::default();
     let Some(Argument::ObjectExpression(obj)) = call.arguments.first() else {
         return options;
     };
     let absolute = |base: &Path, p: &str| normalize(&base.join(p));
     let mut projects: Option<Vec<String>> = None;
-    let Some(props) = properties(obj) else {
-        return options;
-    };
+    // Each property with a static key; a spread or computed key carries
+    // nothing oj can read, and the other keys still count.
+    let props = obj.properties.iter().filter_map(|p| match p {
+        ObjectPropertyKind::ObjectProperty(prop) if !prop.computed => {
+            Some((prop.key.static_name()?.as_str()?.to_string(), &prop.value))
+        }
+        _ => None,
+    });
     for (key, value) in props {
         match key.as_str() {
             "root" => {
-                options.root = path_value(value, bindings, dir).map(|r| absolute(root, &r));
+                options.root = path_of(value).map(|r| absolute(root, &r));
             }
             "projects" => {
                 if let Expression::ArrayExpression(list) = value {
                     projects = list
                         .elements
                         .iter()
-                        .map(|e| path_value(e.as_expression()?, bindings, dir))
+                        .map(|e| path_of(e.as_expression()?))
                         .collect();
                 }
             }
@@ -828,6 +890,18 @@ mod tests {
         .unwrap();
         assert_eq!(bare, oj_resolver::PluginOptions::default());
         assert_eq!(read("vite.none.config.ts", "export default {};\n"), None);
+        // A spread carries nothing oj can read; the other keys still count.
+        // `resolve` imported by name from `node:path` works as `path.resolve`.
+        let spread = read(
+            "vite.spread.config.ts",
+            "import { resolve } from \"node:path\";\nimport tsconfigPaths from \"vite-tsconfig-paths\";\nconst base = { loose: true };\nexport default { plugins: [tsconfigPaths({ ...base, root: resolve(__dirname, \"..\"), projects: [\"./tsconfig.app.json\"] })] };\n",
+        )
+        .unwrap();
+        assert_eq!(spread.root.as_deref(), root.parent());
+        assert_eq!(
+            spread.projects,
+            Some(vec![root.parent().unwrap().join("tsconfig.app.json")])
+        );
     }
 
     fn install(root: &std::path::Path, name: &str, version: &str) {

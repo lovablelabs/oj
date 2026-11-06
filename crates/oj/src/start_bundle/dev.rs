@@ -493,7 +493,9 @@ impl DevBundler {
         // rolldown's own (oxc's order, ahead of packages).
         if matches!(
             oj_server::tsconfig_paths(&start.config),
-            oj_resolver::TsconfigPaths::Plugin | oj_resolver::TsconfigPaths::Fallback
+            oj_resolver::TsconfigPaths::Plugin
+                | oj_resolver::TsconfigPaths::PluginNative
+                | oj_resolver::TsconfigPaths::Neither
         ) {
             plugins.push(Pluginable::new_shared(
                 super::alias::TsconfigPathsPlugin::new(
@@ -564,6 +566,8 @@ impl DevBundler {
             platform: Some(Platform::Browser),
             transform: Some(start.transform_options()),
             define: Some(defines.into_iter().collect()),
+            tsconfig: oj_server::tsconfig_file(&start.config)
+                .map(rolldown_common::TsConfig::Manual),
             resolve: Some(start.resolve_options(
                 &start.client_aliases(),
                 start.client_main_fields(),

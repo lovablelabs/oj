@@ -74,12 +74,15 @@ impl Plugin for AppAliasPlugin {
 /// does (a dev server never does).
 pub(crate) struct TsconfigPathsPlugin {
     resolver: oj_resolver::OjResolver,
+    /// For a `require()`: `require` in place of `import` (getConditions).
+    require: oj_resolver::OjResolver,
     native_after: bool,
 }
 
 impl TsconfigPathsPlugin {
     pub fn new(resolver: oj_resolver::OjResolver, native_after: bool) -> Self {
         TsconfigPathsPlugin {
+            require: resolver.require_variant(),
             resolver,
             native_after,
         }
@@ -98,17 +101,21 @@ impl Plugin for TsconfigPathsPlugin {
     }
 
     fn register_hook_usage(&self) -> rolldown_plugin::HookUsage {
-        rolldown_plugin::HookUsage::ResolveId | rolldown_plugin::HookUsage::BuildStart
+        rolldown_plugin::HookUsage::ResolveId | rolldown_plugin::HookUsage::WatchChange
     }
 
-    // Each rebuild sees the files as they are now (a tsconfig edited, a
-    // package installed since).
-    async fn build_start(
+    // A rebuild after a file appears or goes, or a JSON file (a tsconfig, a
+    // package.json) changes, sees the files as they are now.
+    async fn watch_change(
         &self,
         _ctx: &PluginContext,
-        _args: &rolldown_plugin::HookBuildStartArgs<'_>,
+        path: &str,
+        event: rolldown_common::WatcherChangeKind,
     ) -> rolldown_plugin::HookNoopReturn {
-        self.resolver.clear_cache();
+        if path.ends_with(".json") || !matches!(event, rolldown_common::WatcherChangeKind::Update) {
+            self.resolver.clear_cache();
+            self.require.clear_cache();
+        }
         Ok(())
     }
 
@@ -129,10 +136,12 @@ impl Plugin for TsconfigPathsPlugin {
             return Ok(None);
         }
         let file = importer.split(['?', '#']).next().unwrap_or(importer);
-        let answer = match self
-            .resolver
-            .tsconfig_answer(Path::new(file), spec, self.native_after)
-        {
+        let resolver = if args.kind == rolldown_common::ImportKind::Require {
+            &self.require
+        } else {
+            &self.resolver
+        };
+        let answer = match resolver.tsconfig_answer(Path::new(file), spec, self.native_after) {
             oj_resolver::TsconfigAnswer::File(answer) => answer,
             oj_resolver::TsconfigAnswer::Bundler => return Ok(None),
             // Vite fails the import; so does this bundle.

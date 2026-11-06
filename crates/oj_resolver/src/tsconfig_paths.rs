@@ -30,8 +30,7 @@ use regex::Regex;
 /// How the app's Vite applies tsconfig `paths`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TsconfigPaths {
-    /// vite-tsconfig-paths runs (or the plugins are unknown).
-    #[default]
+    /// vite-tsconfig-paths runs.
     Plugin,
     /// vite-tsconfig-paths and `resolve.tsconfigPaths: true`: the plugin
     /// first, Vite's own resolver for whatever it passes on.
@@ -40,10 +39,11 @@ pub enum TsconfigPaths {
     /// tsconfig that owns the importer), an exact key first, a declaration
     /// file served like any file.
     Native,
-    /// Neither: Vite applies no `paths`. oj keeps them for what plain
-    /// resolution does not find, in the plugin's model, so it agrees with
-    /// Vite wherever Vite resolves.
-    Fallback,
+    /// Neither (or the plugins are unknown): Vite's dev server applies no
+    /// `paths`. `vite build` lets rolldown's own resolver apply them to what
+    /// its resolve plugin leaves (`TsconfigAnswer::Bundler` for a build).
+    #[default]
+    Neither,
     /// No `paths` at all (Vite's module runner resolving an external).
     Off,
 }
@@ -81,14 +81,25 @@ pub(crate) enum Mapped {
 struct Includer {
     include: Vec<Regex>,
     exclude: Vec<Regex>,
+    /// `baseUrl`, relative to the config that declares it (oxc rebases an
+    /// inherited one onto the extending config; tsconfck and tsc do not).
+    base_url: Option<PathBuf>,
 }
 
 impl Includer {
     fn new(project: &TsConfig) -> Includer {
         let dir = project.path.parent().unwrap_or(Path::new("/"));
+        // `${configDir}` is the final config's directory (tsconfck's
+        // replaceTokens), wherever the pattern is declared.
         let globs = |base: &Path, list: &[String]| -> Vec<Regex> {
             list.iter()
-                .flat_map(|p| compiled_glob(&lexical(&base.join(p)).to_string_lossy()))
+                .flat_map(|p| {
+                    let path = match p.strip_prefix("${configDir}") {
+                        Some(rest) => dir.join(rest.trim_start_matches('/')),
+                        None => base.join(p),
+                    };
+                    compiled_glob(&lexical(&path).to_string_lossy())
+                })
                 .collect()
         };
         let include = match declared(&project.path, "include", 0) {
@@ -105,7 +116,18 @@ impl Includer {
         if let Some(out) = &project.compiler_options.out_dir {
             exclude.extend(compiled_glob(&lexical(out).to_string_lossy()));
         }
-        Includer { include, exclude }
+        let base_url = declared(&project.path, "baseUrl", 0).map(|(base, list)| {
+            let value = &list[0];
+            match value.strip_prefix("${configDir}") {
+                Some(rest) => lexical(&dir.join(rest.trim_start_matches('/'))),
+                None => lexical(&base.join(value)),
+            }
+        });
+        Includer {
+            include,
+            exclude,
+            base_url,
+        }
     }
 
     /// Whether `exclude` takes `importer`'s directory: a file there, whatever
@@ -138,11 +160,19 @@ fn declared(file: &Path, key: &str, depth: usize) -> Option<(PathBuf, Vec<String
     json_strip_comments::strip(&mut text).ok()?;
     let json: serde_json::Value = serde_json::from_str(&text).ok()?;
     let dir = file.parent()?;
-    if let Some(list) = json.get(key).and_then(|v| v.as_array()) {
-        let list = list
-            .iter()
-            .filter_map(|v| v.as_str().map(str::to_string))
-            .collect();
+    let own: Option<Vec<String>> = match key {
+        "baseUrl" => json
+            .get("compilerOptions")
+            .and_then(|o| o.get("baseUrl"))
+            .and_then(|v| v.as_str())
+            .map(|v| vec![v.to_string()]),
+        _ => json.get(key).and_then(|v| v.as_array()).map(|list| {
+            list.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        }),
+    };
+    if let Some(list) = own {
         return Some((dir.to_path_buf(), list));
     }
     let parents: Vec<&str> = match json.get("extends") {
@@ -344,20 +374,6 @@ pub(crate) fn candidates(project: &TsConfig, id: &str) -> Vec<PathBuf> {
         }
     }
     out
-}
-
-/// Whether any project from `importer_dir` up has a `paths` pattern that
-/// takes `id`, or a `baseUrl`: what a bundler applying `paths` natively could
-/// map, whatever the importer.
-pub(crate) fn could_map(projects: &[Arc<TsConfig>], id: &str) -> bool {
-    let bare = !(id.starts_with('.') || id.starts_with('/') || id.contains('\0'));
-    bare && projects.iter().any(|p| {
-        p.compiler_options.base_url.is_some()
-            || p.compiler_options
-                .paths
-                .as_ref()
-                .is_some_and(|paths| paths.keys().any(|k| star_match(k, id).is_some()))
-    })
 }
 
 /// `localeCompare` as the plugin sorts a directory's projects (ICU root
@@ -589,7 +605,11 @@ impl Projects {
                     .iter()
                     .find_map(|c| resolve(&c.to_string_lossy()))
                     .or_else(|| {
-                        let base = options.base_url.as_ref().filter(|_| !id.starts_with('/'))?;
+                        options.base_url.as_ref()?;
+                        if id.starts_with('/') {
+                            return None;
+                        }
+                        let base = self.includer(project).base_url.clone()?;
                         let found = resolve(&base.join(id).to_string_lossy())?;
                         let json = found.extension().is_some_and(|e| e == "json");
                         (!json || id.ends_with(".json")).then_some(found)

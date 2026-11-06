@@ -430,6 +430,8 @@ pub(crate) async fn build(
                 platform: Some(Platform::Browser),
                 transform: Some(start.transform_options()),
                 define: Some(client_defines.iter().cloned().collect()),
+                tsconfig: oj_server::tsconfig_file(&start.config)
+                    .map(rolldown_common::TsConfig::Manual),
                 resolve: Some(resolve_client.clone()),
                 external: client_external(
                     client_facts,
@@ -635,6 +637,8 @@ pub(crate) async fn build(
                         platform: Some(Platform::Neutral),
                         transform: Some(transform),
                         define: Some(server_defines.iter().cloned().collect()),
+                        tsconfig: oj_server::tsconfig_file(&start.config)
+                            .map(rolldown_common::TsConfig::Manual),
                         resolve: Some(
                             start.resolve_options(
                                 &server_aliases,
@@ -684,6 +688,7 @@ pub(crate) async fn build(
                         external: ssr_external(&start),
                         transform: Some(start.transform_options()),
                         define: Some(server_defines.iter().cloned().collect()),
+                        tsconfig: oj_server::tsconfig_file(&start.config).map(rolldown_common::TsConfig::Manual),
                         resolve: Some(start.resolve_options(
                             &server_aliases,
                             Some(start.server_main_fields()),
@@ -885,6 +890,8 @@ async fn bundle_worker(
             platform: Some(Platform::Browser),
             transform: Some(start.transform_options()),
             define: Some(options.defines.into_iter().collect()),
+            tsconfig: oj_server::tsconfig_file(&start.config)
+                .map(rolldown_common::TsConfig::Manual),
             resolve: Some(options.resolve),
             external,
             format: Some(format),

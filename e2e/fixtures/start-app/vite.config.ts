@@ -161,6 +161,8 @@ function wsEchoPlugin(): Plugin {
 }
 
 export default defineConfig({
+  // The tsconfig `paths` (`@app/*`, `#lib/*`) through Vite 8's own resolver.
+  resolve: { tsconfigPaths: true },
   // A non-default publicDir, to exercise oj adopting vite's publicDir.
   publicDir: "public",
   // A config define: must be applied by the SSR loader (dev) and the prod bundles.
