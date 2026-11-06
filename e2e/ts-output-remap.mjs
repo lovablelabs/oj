@@ -29,7 +29,9 @@ const write = (rel, text) => {
 };
 write("package.json", JSON.stringify({ name: "tsremap-app", version: "1.0.0", type: "module" }));
 write("tsconfig.json", JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "@/*": ["./src/*"] } } }));
-write("oj.config.json", JSON.stringify({ resolve: { alias: { "~": "./src" } } }));
+// The tsconfig `paths` through Vite 8's own resolver (`resolve.tsconfigPaths`,
+// off by default): Vite applies none without it or vite-tsconfig-paths.
+write("oj.config.json", JSON.stringify({ resolve: { alias: { "~": "./src" }, tsconfigPaths: true } }));
 write("src/utils/a.ts", `export const a = "A_FROM_TS";\n`);
 write("src/utils/comp.tsx", `export const comp = "COMP_FROM_TSX";\n`);
 write("src/utils/m.mts", `export const m = "M_FROM_MTS";\n`);
