@@ -8,6 +8,7 @@
 //! integration test so build.rs's exported-symbols link flag applies to the
 //! napi addons a plugin host loads.
 
+mod alias_order;
 mod assets;
 mod browser;
 mod browser_errors;

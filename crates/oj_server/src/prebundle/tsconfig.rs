@@ -16,39 +16,68 @@ enum Alias {
     Prefix { prefix: String, target: PathBuf },
 }
 
-pub(super) struct Aliases(Vec<Alias>);
+/// `resolve.alias`, then tsconfig `paths`, as the dev server orders them.
+pub(super) struct Aliases {
+    config: Vec<Alias>,
+    paths: Vec<Alias>,
+}
 
 impl Aliases {
-    /// The root tsconfig's paths (`tsconfig.json`, else `tsconfig.app.json`),
-    /// then each `(find, replacement)` of the config, which matches `find`
-    /// itself and `find/…`.
+    /// Each `(find, replacement)` of the config, in the written order, which
+    /// matches `find` itself and `find/…`; then the root tsconfig's paths
+    /// (`tsconfig.json`, else `tsconfig.app.json`).
     pub fn load(root: &Path, config: &[(String, String)]) -> Aliases {
-        let mut out = tsconfig_paths(root);
-        for (find, replacement) in config {
-            out.push(Alias::Exact {
-                find: find.clone(),
-                target: PathBuf::from(replacement),
-            });
-            out.push(Alias::Prefix {
-                prefix: format!("{find}/"),
-                target: PathBuf::from(replacement),
-            });
+        let config = config
+            .iter()
+            .flat_map(|(find, replacement)| {
+                [
+                    Alias::Exact {
+                        find: find.clone(),
+                        target: PathBuf::from(replacement),
+                    },
+                    Alias::Prefix {
+                        prefix: format!("{find}/"),
+                        target: PathBuf::from(replacement),
+                    },
+                ]
+            })
+            .collect();
+        Aliases {
+            config,
+            paths: tsconfig_paths(root),
         }
-        Aliases(out)
     }
 
-    /// The first alias's rewrite of `id`, as a path.
+    /// The rewrite of `id`, as a path: the first `resolve.alias` entry that
+    /// takes it (Vite's alias plugin runs ahead of every resolver), then
+    /// tsconfig `paths` on what it gave, as the alias plugin hands the
+    /// rewritten id to the rest of the pipeline. A `paths` target that is a
+    /// declaration file is no rewrite (vite-tsconfig-paths passes on one).
     pub fn apply(&self, id: &str) -> Option<String> {
-        self.0.iter().find_map(|a| match a {
-            Alias::Exact { find, target } if id == find => {
-                Some(target.to_string_lossy().into_owned())
-            }
-            Alias::Prefix { prefix, target } => id
-                .strip_prefix(prefix.as_str())
-                .map(|rest| target.join(rest).to_string_lossy().into_owned()),
-            _ => None,
-        })
+        let Some(aliased) = first_rewrite(&self.config, id) else {
+            return first_rewrite(&self.paths, id).filter(|p| !is_declaration_file(p));
+        };
+        match first_rewrite(&self.paths, &aliased) {
+            Some(mapped) if !is_declaration_file(&mapped) => Some(mapped),
+            _ => Some(aliased),
+        }
     }
+}
+
+fn first_rewrite(aliases: &[Alias], id: &str) -> Option<String> {
+    aliases.iter().find_map(|a| match a {
+        Alias::Exact { find, target } if id == find => Some(target.to_string_lossy().into_owned()),
+        Alias::Prefix { prefix, target } => id
+            .strip_prefix(prefix.as_str())
+            .map(|rest| target.join(rest).to_string_lossy().into_owned()),
+        _ => None,
+    })
+}
+
+fn is_declaration_file(path: &str) -> bool {
+    [".d.ts", ".d.mts", ".d.cts"]
+        .iter()
+        .any(|ext| path.ends_with(ext))
 }
 
 /// `paths` and the directory its targets are relative to.
@@ -85,6 +114,16 @@ fn tsconfig_paths(root: &Path) -> Vec<Alias> {
             }
         }
         if !out.is_empty() {
+            // The longest prefix first, as vite-tsconfig-paths orders them: a
+            // pattern with no `*` counts as no prefix (`getPrefixLength`), so
+            // `@/*` goes before an exact key. The sort is stable, so a key's
+            // targets keep their order.
+            out.sort_by_key(|a| {
+                std::cmp::Reverse(match a {
+                    Alias::Exact { .. } => 0,
+                    Alias::Prefix { prefix, .. } => prefix.len(),
+                })
+            });
             return out;
         }
     }

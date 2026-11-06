@@ -429,10 +429,77 @@ pub struct ProxyRewrite {
     pub to: String,
 }
 
+/// `resolve.alias` in the order it was written. Vite tries the entries in
+/// order and takes the first match (normalizeAlias keeps an object's key
+/// order), so `{ "@/lib/client": ..., "@": ... }` sends `@/lib/client` to its
+/// own entry, never through `@`. An object or Vite's `[{ find, replacement }]`
+/// array.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct AliasList(pub Vec<(String, String)>);
+
+impl AliasList {
+    pub fn get(&self, find: &str) -> Option<&String> {
+        self.0.iter().find(|(f, _)| f == find).map(|(_, r)| r)
+    }
+
+    /// Adds `find` at the end unless an entry has it already.
+    pub fn insert_if_absent(&mut self, find: String, replacement: String) {
+        if self.get(&find).is_none() {
+            self.0.push((find, replacement));
+        }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &(String, String)> {
+        self.0.iter()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl<'de> Deserialize<'de> for AliasList {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = AliasList;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("an alias object or an array of { find, replacement }")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<AliasList, A::Error> {
+                let mut list = AliasList::default();
+                while let Some((find, replacement)) = map.next_entry::<String, String>()? {
+                    list.insert_if_absent(find, replacement);
+                }
+                Ok(list)
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<AliasList, A::Error> {
+                #[derive(Deserialize)]
+                struct Entry {
+                    find: String,
+                    replacement: String,
+                }
+                let mut list = AliasList::default();
+                while let Some(Entry { find, replacement }) = seq.next_element::<Entry>()? {
+                    list.insert_if_absent(find, replacement);
+                }
+                Ok(list)
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ResolveConfig {
-    pub alias: Option<BTreeMap<String, String>>,
+    pub alias: Option<AliasList>,
     pub dedupe: Option<Vec<String>>,
     pub extensions: Option<Vec<String>>,
     pub main_fields: Option<Vec<String>>,

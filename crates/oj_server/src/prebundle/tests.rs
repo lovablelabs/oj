@@ -205,6 +205,69 @@ async fn tsconfig_paths_reach_deps_and_a_deps_css_stays_external() {
     );
 }
 
+// The scan follows an alias ahead of tsconfig `paths`, in the written order,
+// and an alias to a `paths` name through the `paths`, as the dev server
+// resolves; a `paths` target that is a declaration file is not crawled.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_scan_takes_aliases_before_tsconfig_paths() {
+    let app = App::new();
+    app.write(
+        "tsconfig.json",
+        r#"{ "compilerOptions": { "baseUrl": ".", "paths": { "@/*": ["./src/*"], "@/integrations/supabase/client": ["./src/types/client.d.ts"] } } }"#,
+    )
+    .cjs("backenddep", &[("index.js", "exports.b = 1;\n")])
+    .cjs("libdep", &[("index.js", "exports.l = 1;\n")])
+    .cjs("typesdep", &[("index.js", "exports.t = 1;\n")])
+    .write("src/appBackend.ts", "import { b } from \"backenddep\";\nexport const who = b;\n")
+    .write("src/lib/helper.ts", "import { l } from \"libdep\";\nexport const helper = l;\n")
+    .write("src/types/client.d.ts", "import \"typesdep\";\nexport declare const who: 1;\n")
+    .write(
+        "entry.js",
+        "import { who } from \"@/integrations/supabase/client\";\nimport { helper } from \"~lib/helper\";\nexport const out = who + helper;\n",
+    );
+    let backend = app
+        .root()
+        .join("src/appBackend.ts")
+        .to_string_lossy()
+        .into_owned();
+    let meta = app
+        .optimize(OptimizeInput {
+            entries: app.entry("entry.js"),
+            alias: vec![
+                ("@/integrations/supabase/client".to_string(), backend),
+                ("~lib".to_string(), "@/lib".to_string()),
+            ],
+            ..Default::default()
+        })
+        .await;
+    assert_eq!(keys(&meta), ["backenddep", "libdep"]);
+
+    let unaliased = App::new();
+    unaliased
+        .write(
+            "tsconfig.json",
+            r#"{ "compilerOptions": { "baseUrl": ".", "paths": { "@/integrations/supabase/client": ["./src/types/client.d.ts"] } } }"#,
+        )
+        .cjs("typesdep", &[("index.js", "exports.t = 1;\n")])
+        .cjs("plaincjs", &[("index.js", "exports.a = 1;\n")])
+        .write("src/types/client.d.ts", "import \"typesdep\";\nexport declare const who: 1;\n")
+        .write(
+            "entry.js",
+            "import \"@/integrations/supabase/client\";\nimport { a } from \"plaincjs\";\nexport const out = a;\n",
+        );
+    let meta = unaliased
+        .optimize(OptimizeInput {
+            entries: unaliased.entry("entry.js"),
+            ..Default::default()
+        })
+        .await;
+    assert_eq!(
+        keys(&meta),
+        ["plaincjs"],
+        "the declaration file is not crawled"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_queried_specifier_is_never_prebundled() {
     let app = App::new();
