@@ -2397,8 +2397,23 @@ fn tsconfig_paths_plugin(
     ) {
         return None;
     }
+    let resolver = build_resolver(root, config, env, mode)?;
+    Some(Pluginable::new_shared(
+        crate::start_bundle::alias::TsconfigPathsPlugin::new(resolver, true),
+    ))
+}
+
+/// A resolver with the build's own resolve settings for `env`: its
+/// conditions (production), mainFields, extensions, aliases and tsconfig
+/// `paths` mode.
+fn build_resolver(
+    root: &Path,
+    config: &oj_config::OjConfig,
+    env: &str,
+    mode: oj_resolver::TsconfigPaths,
+) -> Option<oj_resolver::OjResolver> {
     let resolve = rolldown_resolve(root, config, env)?;
-    let resolver = oj_resolver::OjResolver::with_settings(
+    Some(oj_resolver::OjResolver::with_settings(
         root,
         oj_resolver::ResolveSettings {
             conditions: build_conditions(config, env),
@@ -2412,10 +2427,33 @@ fn tsconfig_paths_plugin(
             tsconfig_file: oj_server::tsconfig_file(config),
             tsconfig_paths_plugin: oj_server::tsconfig_paths_plugin(root, config),
         },
-    );
-    Some(Pluginable::new_shared(
-        crate::start_bundle::alias::TsconfigPathsPlugin::new(resolver, true),
     ))
+}
+
+/// The plugins' `this.resolve` answers with the build's settings, as Vite's
+/// plugin container resolves through vite:resolve with them (the app's
+/// `resolve.tsconfigPaths` included). Unset, a bare resolver at the root
+/// answers, blind to the config.
+fn install_build_resolvers(
+    host: &Option<Arc<PluginHost>>,
+    root: &Path,
+    config: &oj_config::OjConfig,
+    env: &str,
+) {
+    let Some(host) = host else {
+        return;
+    };
+    let mode = oj_server::tsconfig_paths(config);
+    let Some(client) = build_resolver(root, config, env, mode) else {
+        return;
+    };
+    host.set_resolvers(oj_server::plugins::EnvResolvers {
+        root: root.to_path_buf(),
+        config: Arc::new(config.clone()),
+        client: Arc::new(client),
+        production: true,
+        optimized_dep: Default::default(),
+    });
 }
 
 /// The build's export conditions, `import`/`require`/`default` included
@@ -3602,6 +3640,7 @@ pub async fn build(
         mode,
     )
     .await;
+    install_build_resolvers(&plugin_host, &root, &config, "client");
     let mut html_docs: Vec<HtmlDoc> = Vec::new();
     let html_inline: Arc<Mutex<std::collections::HashMap<String, String>>> =
         Arc::new(Mutex::new(std::collections::HashMap::new()));
@@ -5165,6 +5204,7 @@ pub(crate) async fn build_ssr(
         mode,
     )
     .await;
+    install_build_resolvers(&plugin_host, root, config, "ssr");
     let plugin_defines = plugin_config_defines(&plugin_host).await;
     let env_delta = plugin_env_delta(&plugin_host).await;
 
@@ -5823,6 +5863,7 @@ async fn build_client_entry(
         mode,
     )
     .await;
+    install_build_resolvers(&plugin_host, root, config, "client");
     let plugin_defines = plugin_config_defines(&plugin_host).await;
     let env_delta = plugin_env_delta(&plugin_host).await;
     let emit = Arc::new(EmitState::new(root.to_path_buf()));
@@ -8132,6 +8173,51 @@ mod tests {
             .collect();
         assert!(js.contains("dual-esm") && !js.contains("dual-cjs"), "{js}");
         assert!(js.contains("req-cjs") && !js.contains("req-esm"), "{js}");
+    }
+
+    /// A plugin's `this.resolve` in a build answers with the build's own
+    /// resolve settings, as Vite's plugin container resolves through
+    /// vite:resolve with them: `resolve.tsconfigPaths` maps `@/x`. With no
+    /// setting, the bare resolver it fell back to ignored the config.
+    #[tokio::test]
+    async fn a_plugins_this_resolve_in_a_build_follows_the_config() {
+        let root = scratch("build-this-resolve-paths");
+        for (file, body) in [
+            ("package.json", r#"{"type":"module"}"#),
+            (
+                "vite.config.mjs",
+                "export default { resolve: { tsconfigPaths: true }, plugins: [{ name: \"probe\", async transform(code, id) { if (!id.endsWith(\"main.ts\")) return null; const r = await this.resolve(\"@/x\", id); return code.replace(\"__RESOLVED__\", r ? r.id.split(\"/\").pop() : \"unresolved\"); } }] };\n",
+            ),
+            (
+                "tsconfig.json",
+                r#"{ "compilerOptions": { "paths": { "@/*": ["./src/*"] } } }"#,
+            ),
+            (
+                "index.html",
+                r#"<html><body><script type="module" src="/src/main.ts"></script></body></html>"#,
+            ),
+            ("src/main.ts", "console.log(\"__RESOLVED__\");\n"),
+            ("src/x.ts", "export const x = 1;\n"),
+        ] {
+            let path = root.join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, body).unwrap();
+        }
+        build(
+            root.clone(),
+            Some("production"),
+            &tokio::runtime::Handle::current(),
+            CliOptions::default(),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{e:#}"));
+        let js: String = fs::read_dir(root.join("dist/assets"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|x| x == "js"))
+            .map(|e| fs::read_to_string(e.path()).unwrap())
+            .collect();
+        assert!(js.contains("x.ts") && !js.contains("unresolved"), "{js}");
     }
 
     /// Vite's define plugin: a browser bundle gets `process.env` -> `{}` (so an
