@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A worker bundle in `oj build` runs `worker.plugins`, as Vite builds a worker, a nested worker's too; they were left out. Each worker bundle gets its container once, through buildEnd and closeBundle, and a worker imported from several modules (an inline one too) is bundled once.
 - Start production bundles apply tsconfig `paths` where Vite's resolver would, as the SPA build does, a Cloudflare worker's under that environment's resolve conditions.
 - A plugin listening on the dev server's watcher (vite-tsconfig-paths reloading a project when its tsconfig changes) hears every change once, before the page reloads, as under Vite's chokidar (the event, then `all`). It heard nothing unless the plugin middleware path carried the change. A file a plugin passes to `server.watcher.add` is watched, a tsconfig outside the root included.
+- Only a file named `tsconfig.json` clears the tsconfig caches and reloads the page while dev runs, as Vite's `reloadOnTsconfigChange` does; a `tsconfig.app.json` or another `tsconfig.*.json` did too.
+- The dev watcher ignores `test-results` directories, as Vite's chokidar does by default.
 - The SSR externalization check resolves a bare import without tsconfig `paths`, as Vite's `tryNodeResolve` does.
 - The dev server and `oj build` stop with an error when the plugin host fails to start, instead of serving without the app's plugins.
 

@@ -558,6 +558,8 @@ struct EditCase<'a> {
     edits: &'a [(&'a str, &'a str)],
     before: &'a str,
     after: &'a str,
+    /// What a served module's body says; its imports when None.
+    probe: Option<fn(&str) -> String>,
 }
 
 impl EditCase<'_> {
@@ -573,8 +575,8 @@ impl EditCase<'_> {
 
     fn served(&self, app: &App, status: u16, body: &str) -> String {
         if status == 200 {
-            imports(body)
-                .join(",")
+            self.probe
+                .map_or_else(|| imports(body).join(","), |probe| probe(body))
                 .replace(&app.root.display().to_string(), "<root>")
         } else {
             format!("status {status}")
@@ -605,7 +607,12 @@ impl EditCase<'_> {
             "vite before, {label}"
         );
         self.edit(&app);
-        let deadline = Instant::now() + Duration::from_secs(20);
+        // An edit that must change nothing: read once, after a while.
+        let wait = if self.before == self.after { 0 } else { 20 };
+        if wait == 0 {
+            std::thread::sleep(Duration::from_secs(3));
+        }
+        let deadline = Instant::now() + Duration::from_secs(wait);
         let theirs = loop {
             let (status, body) = vite.get(&url);
             let got = self.served(&app, status, &body);
@@ -629,7 +636,10 @@ impl EditCase<'_> {
             "oj before, {label}"
         );
         self.edit(&app);
-        let deadline = Instant::now() + Duration::from_secs(20);
+        if wait == 0 {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        }
+        let deadline = Instant::now() + Duration::from_secs(wait);
         let ours = loop {
             let r = server.get(&url).await;
             let got = self.served(&app, r.status, &r.body);
@@ -677,6 +687,7 @@ async fn a_paths_key_added_while_dev_runs_answers_as_in_vite() {
             ],
             before: "status 500",
             after: "/lib/x.ts",
+            probe: None,
         }
         .check(label)
         .await;
@@ -715,7 +726,108 @@ async fn a_tsconfig_outside_the_root_the_plugin_watches_answers_as_in_vite() {
         ],
         before: "/@fs<root>/packages/ui/a/btn.ts",
         after: "/@fs<root>/packages/ui/b/btn.ts",
+        probe: None,
     }
     .check("a workspace package")
+    .await;
+}
+
+// The app's tsconfig extends the workspace's, outside the root, whose
+// `useDefineForClassFields` decides the class field. Vite's chokidar watches
+// the root, and its transform names no tsconfig to watch (rolldown's
+// `transformSync` gives `tsconfigFilePaths: []`), so an edit there changes
+// nothing until a restart, in Vite and in oj.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_extended_tsconfig_outside_the_root_changes_nothing_as_in_vite() {
+    crate::require_fixture!("vite", "vite-tsconfig-paths");
+    fn field(body: &str) -> String {
+        if body.contains("this.x = 1") {
+            "assigned".to_string()
+        } else if body.contains("x = 1") {
+            "defined".to_string()
+        } else {
+            format!("neither: {body}")
+        }
+    }
+    EditCase {
+        files: &[
+            ("pnpm-workspace.yaml", "packages: ['apps/*']\n"),
+            ("package.json", r#"{"name":"ws","private":true}"#),
+            (
+                "tsconfig.json",
+                r#"{ "compilerOptions": { "useDefineForClassFields": false } }"#,
+            ),
+            ("apps/web/package.json", r#"{"name":"web","type":"module"}"#),
+            (
+                "apps/web/tsconfig.json",
+                r#"{ "extends": "../../tsconfig.json" }"#,
+            ),
+            (
+                "apps/web/index.html",
+                "<script type=\"module\" src=\"/src/main.ts\"></script>",
+            ),
+            ("apps/web/src/main.ts", "export class A {\n  x = 1;\n}\n"),
+            ("apps/web/vite.config.js", "export default {};\n"),
+        ],
+        web: "apps/web",
+        url: "/src/main.ts",
+        edits: &[(
+            "tsconfig.json",
+            r#"{ "compilerOptions": { "useDefineForClassFields": true } }"#,
+        )],
+        before: "assigned",
+        after: "assigned",
+        probe: Some(field),
+    }
+    .check("an extended workspace tsconfig")
+    .await;
+}
+
+// Vite's reloadOnTsconfigChange takes a file named `tsconfig.json` and no
+// other: an edit of the `tsconfig.app.json` the root one references keeps
+// the cached tsconfig, so the class field compiles as before, in Vite and
+// in oj (which cleared and reloaded for any `tsconfig.*.json`).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_referenced_tsconfig_edit_keeps_the_cached_one_as_in_vite() {
+    crate::require_fixture!("vite", "vite-tsconfig-paths");
+    fn field(body: &str) -> String {
+        if body.contains("this.x = 1") {
+            "assigned".to_string()
+        } else if body.contains("x = 1") {
+            "defined".to_string()
+        } else {
+            format!("neither: {body}")
+        }
+    }
+    let app_json = |define: bool| {
+        format!(
+            r#"{{ "compilerOptions": {{ "useDefineForClassFields": {define} }}, "include": ["src"] }}"#
+        )
+    };
+    let before = app_json(false);
+    let after = app_json(true);
+    EditCase {
+        files: &[
+            ("package.json", r#"{"name":"web","type":"module"}"#),
+            (
+                "tsconfig.json",
+                r#"{ "files": [], "references": [{ "path": "./tsconfig.app.json" }] }"#,
+            ),
+            ("tsconfig.app.json", &before),
+            (
+                "index.html",
+                "<script type=\"module\" src=\"/src/main.ts\"></script>",
+            ),
+            ("src/main.ts", "export class A {\n  x = 1;\n}\n"),
+            ("vite.config.js", "export default {};\n"),
+        ],
+        web: ".",
+        url: "/src/main.ts",
+        edits: &[("tsconfig.app.json", &after)],
+        before: "assigned",
+        after: "assigned",
+        probe: Some(field),
+    }
+    .check("a referenced tsconfig")
     .await;
 }

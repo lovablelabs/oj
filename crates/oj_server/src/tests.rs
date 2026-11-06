@@ -825,11 +825,18 @@ fn restart_triggers_are_the_files_oj_loaded() {
 }
 
 #[test]
+// Vite's reloadOnTsconfigChange: a file named `tsconfig.json`, no other.
 fn tsconfig_files_trigger_the_reload_path() {
-    for f in ["tsconfig.json", "app/tsconfig.json", "tsconfig.base.json"] {
+    for f in ["tsconfig.json", "app/tsconfig.json"] {
         assert!(is_tsconfig_file(Path::new(f)), "{f}");
     }
-    for f in ["package.json", "src/tsconfig.ts", "not-tsconfig.json"] {
+    for f in [
+        "package.json",
+        "src/tsconfig.ts",
+        "not-tsconfig.json",
+        "tsconfig.base.json",
+        "tsconfig.app.json",
+    ] {
         assert!(!is_tsconfig_file(Path::new(f)), "{f}");
     }
 }
@@ -3078,5 +3085,28 @@ fn an_aliased_specifier_is_never_resolved_as_an_external() {
     }
     for spec in ["turndown-plugin", "dompurify"] {
         assert!(!ssr::aliased(&aliases, spec), "{spec}");
+    }
+}
+
+// Vite's chokidar `ignored` default: `**/.git/**`, `**/node_modules/**`,
+// `**/test-results/**` and the cache dir (resolveChokidarOptions).
+#[test]
+fn the_watcher_ignores_what_vites_chokidar_ignores_by_default() {
+    let root = Path::new("/app");
+    let cache = Path::new("/app/node_modules/.vite");
+    for p in [
+        "/app/test-results/run/trace.zip",
+        "/app/e2e/test-results/x.json",
+    ] {
+        assert!(
+            crate::watch::watch_excluded(&[], root, cache, Path::new(p)),
+            "{p}"
+        );
+    }
+    for p in ["/app/src/test-results.ts", "/app/src/main.ts"] {
+        assert!(
+            !crate::watch::watch_excluded(&[], root, cache, Path::new(p)),
+            "{p}"
+        );
     }
 }

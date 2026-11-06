@@ -83,12 +83,11 @@ pub(crate) fn is_restart_trigger(files: &[PathBuf], path: &Path) -> bool {
     files.iter().any(|f| f == path)
 }
 
-/// Tsconfig files whose change re-runs the tsconfig-aware transform; the name
-/// pattern covers `extends` bases like tsconfig.base.json (Vite parity).
+/// A change that clears the tsconfig caches and reloads the page: Vite's
+/// reloadOnTsconfigChange takes a file named `tsconfig.json` and no other
+/// (a `tsconfig.app.json` or an `extends` base reloads nothing).
 pub(crate) fn is_tsconfig_file(path: &Path) -> bool {
-    path.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
-        n == "tsconfig.json" || (n.starts_with("tsconfig.") && n.ends_with(".json"))
-    })
+    path.file_name().is_some_and(|n| n == "tsconfig.json")
 }
 
 /// Registry of spawned children, SIGKILLed and reaped before the restart
@@ -636,7 +635,8 @@ impl WatchFeed {
     }
 }
 
-/// What every consumer of watcher events skips: `server.watch.ignored` plus
+/// What every consumer of watcher events skips: `server.watch.ignored`, any
+/// `test-results` directory (Vite's chokidar `ignored` default), plus
 /// the resolved cache dir, which Vite puts in chokidar's `ignored` -- the
 /// name-based skip in `is_unwatched_dir` misses an `OJ_CACHE_DIR` inside the
 /// root, whose writes would echo every compile back into the watcher -- plus
@@ -648,6 +648,7 @@ pub(crate) fn watch_excluded(
     path: &Path,
 ) -> bool {
     path.starts_with(cache_base)
+        || path.components().any(|c| c.as_os_str() == "test-results")
         || path
             .file_name()
             .and_then(|n| n.to_str())
