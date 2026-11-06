@@ -1375,12 +1375,6 @@ fn merge_resolve_block(
             .and_then(|f| f.as_str())
             .map(str::to_string);
     }
-    if rc.vite_config_file.is_none() {
-        rc.vite_config_file = vr
-            .get("configFile")
-            .and_then(|f| f.as_str())
-            .map(str::to_string);
-    }
 }
 
 /// The extractor's `serverFlags`. Runs after the vite `fsStrict` value, so that

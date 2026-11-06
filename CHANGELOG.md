@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- vite-tsconfig-paths decides for itself, with the app's real options (`projects`, `root`, `loose`, `configNames`, `projectDiscovery`, an `importerFilter` or `skip` function, values the config computes). oj's plugin host runs the plugin ahead of oj's resolver wherever Vite runs it, and oj no longer applies its own copy of the plugin to what the plugin passed on: that reaches vite:resolve, which applies no `paths` (or Vite's own resolver's, with `resolve.tsconfigPaths` too). oj's copy read only literal options, so a computed `projects` list or a filter function let it map imports Vite fails.
+- A library build (`build.lib`) runs the app's plugins, as `vite build` does; it ran none.
+- A worker bundle in `oj build` runs `worker.plugins`, as Vite builds a worker; they were left out.
+- Start production bundles apply tsconfig `paths` where Vite's resolver would, as the SPA build does.
+- A plugin listening on the dev server's watcher (vite-tsconfig-paths reloading a project when its tsconfig changes) hears every change, as under Vite; it heard none unless some plugin added a middleware.
+- The SSR externalization check resolves a bare import without tsconfig `paths`, as Vite's `tryNodeResolve` does.
+- The dev server and `oj build` stop with an error when the plugin host fails to start, instead of serving without the app's plugins.
+
 ## [0.4.4] - 2026-11-06
 
 ### Fixed

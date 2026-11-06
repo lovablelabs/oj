@@ -3662,8 +3662,13 @@ async function invalidateChange(environments, watcher, file, type) {
   if (type === "create" && (graphKnowsFile(environments, file) || (real && graphKnowsFile(environments, real))))
     type = "update";
   if (!freshChange({ file, real, type }, environments)) return false;
+  // chokidar emits "all" (event, path) with every specific event; plugins
+  // listen on it (vite-tsconfig-paths reloads its projects there).
   try {
     watcher.emit(WATCHER_EVENT[type], file);
+  } catch {}
+  try {
+    watcher.emit("all", WATCHER_EVENT[type], file);
   } catch {}
   if (!environments) return false;
   const timestamp = Date.now();
@@ -5402,7 +5407,27 @@ async function watchChange(c, id, event) {
     if (!runsInDevEnvironment(c, p, "perEnvironmentWatchChangeDuringDev")) continue;
     await fn.call(ctxFor(c, p), id, { event });
   }
+  // Vite's watcher tells every listener of every change: a plugin listening
+  // from configureServer (vite-tsconfig-paths reloads its projects there)
+  // hears it here when no middleware server's invalidation carries it.
+  if (emitsWatcherEvents(c)) {
+    const type = WATCHER_EVENT[event];
+    try {
+      devServer.watcher.emit(type, id);
+    } catch {}
+    try {
+      devServer.watcher.emit("all", type, id);
+    } catch {}
+  }
   return null;
+}
+// Whether this container's watchChange carries the dev server watcher's
+// events: the client one, while the middleware server (whose invalidation
+// emits them) is not running, and only when a plugin listens.
+function emitsWatcherEvents(c) {
+  if (c.startAfter || ojMiddlewareServerStarted || !devServer?.watcher) return false;
+  const w = devServer.watcher;
+  return ["all", "change", "add", "unlink"].some((e) => w.listenerCount(e) > 0);
 }
 // Vite's dev rule for buildStart, buildEnd and watchChange: every plugin runs
 // them on the client environment, another environment's container only the
@@ -6460,9 +6485,10 @@ async function run(hook, args, c) {
       resolveId: planFor("resolveId", false),
       watchChange:
         !runnerOwns(c) &&
-        pluginsWithHook(c, "watchChange").some(({ p }) =>
+        (pluginsWithHook(c, "watchChange").some(({ p }) =>
           runsInDevEnvironment(c, p, "perEnvironmentWatchChangeDuringDev"),
-        ),
+        ) ||
+          emitsWatcherEvents(c)),
       hotUpdate: !runnerOwns(c) && hotUpdatePlugins(c).length > 0,
     });
   }

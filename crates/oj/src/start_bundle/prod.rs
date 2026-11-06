@@ -220,6 +220,20 @@ fn client_plugins(
             ),
         ));
     }
+    // After the app's plugins, where vite:resolve sits, as `vite build`.
+    // A worker bundle runs `worker.plugins` alone in Vite.
+    let env = if matches!(target, CodeTarget::Server) {
+        "ssr"
+    } else {
+        "client"
+    };
+    let worker = matches!(target, CodeTarget::Worker { .. });
+    plugins.extend(crate::build::tsconfig_paths_plugin(
+        &start.root,
+        &start.config,
+        env,
+        worker,
+    ));
     plugins.push(Pluginable::new_shared(
         StartCodePlugin::new(&start.root, target)
             .with_route_tree(start.route_tree())
@@ -569,6 +583,12 @@ pub(crate) async fn build(
                     ),
                 ));
             }
+            plugins.extend(crate::build::tsconfig_paths_plugin(
+                &start.root,
+                &start.config,
+                "ssr",
+                false,
+            ));
             plugins.push(Pluginable::new_shared(
                 StartCodePlugin::new(&start.root, CodeTarget::Server)
                     .with_route_tree(start.route_tree())

@@ -190,6 +190,7 @@ async fn tsconfig_paths_reach_deps_and_a_deps_css_stays_external() {
     let meta = app
         .optimize(OptimizeInput {
             entries: app.entry("entry.ts"),
+            tsconfig_paths: oj_resolver::TsconfigPaths::Native,
             ..Default::default()
         })
         .await;
@@ -205,9 +206,9 @@ async fn tsconfig_paths_reach_deps_and_a_deps_css_stays_external() {
     );
 }
 
-// The scan follows an alias ahead of tsconfig `paths`, in the written order,
-// and an alias to a `paths` name through the `paths`, as the dev server
-// resolves; a `paths` target that is a declaration file is not crawled.
+// With `resolve.tsconfigPaths`, the scan follows an alias ahead of tsconfig
+// `paths`, in the written order, and an alias to a `paths` name through the
+// `paths`, as the dev server resolves.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_scan_takes_aliases_before_tsconfig_paths() {
     let app = App::new();
@@ -233,6 +234,7 @@ async fn the_scan_takes_aliases_before_tsconfig_paths() {
     let meta = app
         .optimize(OptimizeInput {
             entries: app.entry("entry.ts"),
+            tsconfig_paths: oj_resolver::TsconfigPaths::Native,
             alias: vec![
                 ("@/integrations/supabase/client".to_string(), backend),
                 ("~lib".to_string(), "@/lib".to_string()),
@@ -241,36 +243,11 @@ async fn the_scan_takes_aliases_before_tsconfig_paths() {
         })
         .await;
     assert_eq!(keys(&meta), ["backenddep", "libdep"]);
-
-    let unaliased = App::new();
-    unaliased
-        .write(
-            "tsconfig.json",
-            r#"{ "compilerOptions": { "baseUrl": ".", "paths": { "@/integrations/supabase/client": ["./src/types/client.d.ts"] } } }"#,
-        )
-        .cjs("typesdep", &[("index.js", "exports.t = 1;\n")])
-        .cjs("plaincjs", &[("index.js", "exports.a = 1;\n")])
-        .write("src/types/client.d.ts", "import \"typesdep\";\nexport declare const who: 1;\n")
-        .write(
-            "entry.ts",
-            "import \"@/integrations/supabase/client\";\nimport { a } from \"plaincjs\";\nexport const out = a;\n",
-        );
-    let meta = unaliased
-        .optimize(OptimizeInput {
-            entries: unaliased.entry("entry.ts"),
-            ..Default::default()
-        })
-        .await;
-    assert_eq!(
-        keys(&meta),
-        ["plaincjs"],
-        "the declaration file is not crawled"
-    );
 }
 
-// vite-tsconfig-paths tries each matching pattern's targets until one
-// resolves: an exact key goes after `@/*`, and still answers when `@/*`
-// finds nothing; a second target answers when the first is missing.
+// Vite's own resolver (`resolve.tsconfigPaths`) takes an exact key first and
+// tries a pattern's targets until one resolves: a second target answers when
+// the first is missing.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_scan_tries_each_paths_target_until_one_exists() {
     let app = App::new();
@@ -289,22 +266,25 @@ async fn the_scan_tries_each_paths_target_until_one_exists() {
     let meta = app
         .optimize(OptimizeInput {
             entries: app.entry("entry.ts"),
+            tsconfig_paths: oj_resolver::TsconfigPaths::Native,
             ..Default::default()
         })
         .await;
     assert_eq!(keys(&meta), ["configdep", "gendep"]);
 }
 
-// The scan resolves tsconfig `paths` as the app's Vite does: the plugin's
-// order (`@/*` before an exact key), Vite 8's own (`resolve.tsconfigPaths`:
-// the exact key, `paths` ahead of packages), or none, where oj applies them
-// with neither, Vite's dev scan applies none (`@/x` stays unresolved, the
-// package a `paths` key names stays the package).
+// The scan resolves tsconfig `paths` as the app's Vite does: Vite 8's own
+// resolver with `resolve.tsconfigPaths` (the exact key, `paths` ahead of
+// packages); with neither, none (`@/x` stays unresolved, the package a
+// `paths` key names stays the package); with vite-tsconfig-paths, whatever
+// the plugin answers in the host, and none for what it passed on.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_scan_follows_how_the_app_applies_tsconfig_paths() {
     use oj_resolver::TsconfigPaths::*;
     for (mode, want) in [
-        (Plugin, vec!["shimdep", "xdep"]),
+        // vite-tsconfig-paths answers in the plugin host, ahead of this
+        // (none here): what reaches oj it passed on, which maps nothing.
+        (Plugin, vec!["evpkg"]),
         (Native, vec!["adep", "shimdep"]),
         (Neither, vec!["evpkg"]),
     ] {

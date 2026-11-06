@@ -39,7 +39,6 @@ impl Aliases {
                 server: false,
                 tsconfig_paths: input.tsconfig_paths,
                 tsconfig_file: input.tsconfig_file.clone(),
-                tsconfig_paths_plugin: input.tsconfig_paths_plugin.clone(),
             },
         );
         Aliases {
@@ -66,7 +65,7 @@ impl Aliases {
     /// The rewrite of `id` from `importer`, as a path: the first
     /// `resolve.alias` entry that takes it (Vite's alias plugin runs ahead of
     /// every resolver), then tsconfig `paths` on what it gave, as the app's
-    /// Vite applies them. No importer, no `paths` (the plugin's rule).
+    /// Vite applies them. No importer, no `paths`.
     /// `Err` when nothing answers the id in Vite (only a declaration file).
     pub fn apply(
         &self,

@@ -902,8 +902,8 @@ pub(crate) fn drop_resolver_misses(
     paths: &[PathBuf],
     created: &std::collections::HashSet<PathBuf>,
 ) {
-    // A tsconfig or jsconfig edit changes the `paths` (vite-tsconfig-paths
-    // reloads a project on `change`).
+    // A tsconfig or jsconfig edit changes the `paths` Vite's own resolver
+    // reads (vite-tsconfig-paths hears it through the host's watcher).
     // Any JSON file: a tsconfig reached through `extends` or a custom
     // `configNames` entry has any name.
     let tsconfig = |p: &PathBuf| p.extension().is_some_and(|e| e == "json");

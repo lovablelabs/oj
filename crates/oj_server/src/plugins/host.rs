@@ -599,8 +599,8 @@ pub(crate) fn ctx_rpc(
             let server = arg(3) == "server";
             let own = env_resolver(arg(2), arg(3));
             let resolver = own.as_deref().unwrap_or(ctx.resolver);
-            // The importing file, when it is one, so tsconfig `paths` check
-            // it as vite-tsconfig-paths does.
+            // The importing file, when it is one, so `resolve.tsconfigPaths`
+            // takes the tsconfig that owns it.
             let file = Path::new(importer.split('?').next().unwrap_or_default());
             let resolved = if file.is_absolute() && file.is_file() {
                 resolver.resolve_from(file, source)

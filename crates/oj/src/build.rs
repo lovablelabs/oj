@@ -1459,13 +1459,24 @@ async fn bundle_worker_inline(
     file: &str,
     opts: Option<&Arc<WorkerBundleOpts>>,
     nested: OjCssPlugin,
+    container: Option<Arc<PluginHost>>,
 ) -> anyhow::Result<String> {
-    // A worker bundle resolves as Vite's: the aliases first, then the
-    // nested pipeline, then tsconfig `paths` where vite:resolve sits.
+    // A worker bundle resolves as Vite's: the aliases first, then
+    // `worker.plugins` (their container), the nested pipeline, then tsconfig
+    // `paths` where vite:resolve sits.
     let mut plugins: Vec<SharedPluginable> = opts
         .and_then(|o| alias_plugin(root, &o.config))
         .into_iter()
         .collect();
+    if let Some(container) = &container {
+        plugins.push(Pluginable::new_shared(OjUserPlugin::new(
+            Arc::clone(container),
+            Arc::new(EmitState::new(root.to_path_buf())),
+            container.build_hook_plan().await,
+            opts.map(|o| bundle_graph::jsx_config(&o.config))
+                .unwrap_or_default(),
+        )));
+    }
     plugins.push(Pluginable::new_shared(nested));
     plugins.extend(opts.and_then(|o| tsconfig_paths_plugin(root, &o.config, "client", true)));
     let mut bundler = BundlerBuilder::default()
@@ -1501,16 +1512,27 @@ async fn bundle_worker_entry(
     file: &str,
     opts: Option<&Arc<WorkerBundleOpts>>,
     nested: OjCssPlugin,
+    container: Option<Arc<PluginHost>>,
 ) -> anyhow::Result<String> {
     let names = |tail: &str| {
         oj_config::assets_dir_path(opts.map_or("assets", |o| o.assets_dir.as_str()), tail)
     };
-    // A worker bundle resolves as Vite's: the aliases first, then the
-    // nested pipeline, then tsconfig `paths` where vite:resolve sits.
+    // A worker bundle resolves as Vite's: the aliases first, then
+    // `worker.plugins` (their container), the nested pipeline, then tsconfig
+    // `paths` where vite:resolve sits.
     let mut plugins: Vec<SharedPluginable> = opts
         .and_then(|o| alias_plugin(root, &o.config))
         .into_iter()
         .collect();
+    if let Some(container) = &container {
+        plugins.push(Pluginable::new_shared(OjUserPlugin::new(
+            Arc::clone(container),
+            Arc::new(EmitState::new(root.to_path_buf())),
+            container.build_hook_plan().await,
+            opts.map(|o| bundle_graph::jsx_config(&o.config))
+                .unwrap_or_default(),
+        )));
+    }
     plugins.push(Pluginable::new_shared(nested));
     plugins.extend(opts.and_then(|o| tsconfig_paths_plugin(root, &o.config, "client", true)));
     let mut bundler = BundlerBuilder::default()
@@ -2162,10 +2184,34 @@ impl Plugin for OjCssPlugin {
                     url_sheets: None,
                     emit: None,
                 };
+                // Vite builds the worker with `worker.plugins` alone: a container
+                // of its own on the app's host, closed with the bundle.
+                let container = match &host {
+                    Some(h) => {
+                        Some(Arc::new(h.open_worker_container(&chain).await.map_err(
+                            |e| anyhow::anyhow!("the worker plugin container: {e}"),
+                        )?))
+                    }
+                    None => None,
+                };
+                let close = |container: Option<Arc<PluginHost>>| async move {
+                    if let Some(c) = container {
+                        let _ = c.close_container().await;
+                    }
+                };
                 if inline {
                     // `?worker&inline`: the worker's bundled code travels inside
                     // this chunk and starts from a Blob URL (data: URL fallback).
-                    let code = bundle_worker_inline(&root, file, worker.as_ref(), nested).await?;
+                    let code = bundle_worker_inline(
+                        &root,
+                        file,
+                        worker.as_ref(),
+                        nested,
+                        container.clone(),
+                    )
+                    .await;
+                    close(container).await;
+                    let code = code?;
                     let literal = serde_json::Value::String(code).to_string();
                     return Ok(Some(rolldown_plugin::HookLoadOutput {
                         code: arcstr::ArcStr::from(format!(
@@ -2186,10 +2232,19 @@ impl Plugin for OjCssPlugin {
                 );
                 let reference = cell
                     .get_or_try_init(|| {
-                        bundle_worker_entry(&ctx, &root, file, worker.as_ref(), nested)
+                        bundle_worker_entry(
+                            &ctx,
+                            &root,
+                            file,
+                            worker.as_ref(),
+                            nested,
+                            container.clone(),
+                        )
                     })
-                    .await?
-                    .clone();
+                    .await
+                    .cloned();
+                close(container).await;
+                let reference = reference?;
                 let code = if url {
                     // `?worker&url` (also what `new Worker(new URL(...))` becomes):
                     // the chunk's URL as a string.
@@ -2373,7 +2428,7 @@ fn build_tsconfig(config: &oj_config::OjConfig) -> Option<rolldown_common::TsCon
 /// maps it; what that leaves goes to rolldown's own resolver, whose tsconfig
 /// (on by default) maps it natively, as in Vite's build. The resolver takes
 /// the bundle's own conditions, mainFields and extensions.
-fn tsconfig_paths_plugin(
+pub(crate) fn tsconfig_paths_plugin(
     root: &Path,
     config: &oj_config::OjConfig,
     env: &str,
@@ -2425,7 +2480,6 @@ fn build_resolver(
             server: env == "ssr",
             tsconfig_paths: mode,
             tsconfig_file: oj_server::tsconfig_file(config),
-            tsconfig_paths_plugin: oj_server::tsconfig_paths_plugin(root, config),
         },
     ))
 }
@@ -3313,9 +3367,11 @@ async fn user_plugin_host(
     environments: &serde_json::Value,
     env_name: &str,
     mode: &str,
-) -> Option<Arc<PluginHost>> {
-    let (file, plugins_format, label) = match oj_server::plugins::plugin_source(root, config_file)?
-    {
+) -> anyhow::Result<Option<Arc<PluginHost>>> {
+    let Some(source) = oj_server::plugins::plugin_source(root, config_file) else {
+        return Ok(None);
+    };
+    let (file, plugins_format, label) = match source {
         oj_server::plugins::PluginSource::OjPlugins(p) => {
             let label = p.file_name().unwrap().to_string_lossy().into_owned();
             (p, "oj", label)
@@ -3329,16 +3385,12 @@ async fn user_plugin_host(
         "pluginsFormat": plugins_format,
     })
     .to_string();
-    match PluginHost::spawn(root, &file, &config, None).await {
-        Ok(host) => {
-            println!("oj build ({env_name}): plugins from {label}");
-            Some(host)
-        }
-        Err(e) => {
-            eprintln!("oj build ({env_name}): plugin host failed to start: {e}");
-            None
-        }
-    }
+    // A config whose plugins cannot load fails the build, as in Vite.
+    let host = PluginHost::spawn(root, &file, &config, None)
+        .await
+        .map_err(|e| anyhow::anyhow!("oj build ({env_name}): plugin host failed to start: {e}"))?;
+    println!("oj build ({env_name}): plugins from {label}");
+    Ok(Some(host))
 }
 
 // Vite (build.ts) closes the bundle in a `finally`, so a failed build still
@@ -3597,7 +3649,7 @@ pub async fn build(
 
     if let Some(lib) = build_cfg.lib.clone() {
         return build_library(
-            &root, &out_dir, &config, lib, &app_env, minify, sourcemap, rolldown,
+            &root, &out_dir, &config, lib, &app_env, minify, sourcemap, rolldown, &cli, mode,
         )
         .await;
     }
@@ -3639,7 +3691,7 @@ pub async fn build(
         "client",
         mode,
     )
-    .await;
+    .await?;
     install_build_resolvers(&plugin_host, &root, &config, "client");
     let mut html_docs: Vec<HtmlDoc> = Vec::new();
     let html_inline: Arc<Mutex<std::collections::HashMap<String, String>>> =
@@ -5203,7 +5255,7 @@ pub(crate) async fn build_ssr(
         "ssr",
         mode,
     )
-    .await;
+    .await?;
     install_build_resolvers(&plugin_host, root, config, "ssr");
     let plugin_defines = plugin_config_defines(&plugin_host).await;
     let env_delta = plugin_env_delta(&plugin_host).await;
@@ -5862,7 +5914,7 @@ async fn build_client_entry(
         "client",
         mode,
     )
-    .await;
+    .await?;
     install_build_resolvers(&plugin_host, root, config, "client");
     let plugin_defines = plugin_config_defines(&plugin_host).await;
     let env_delta = plugin_env_delta(&plugin_host).await;
@@ -6010,9 +6062,23 @@ async fn build_library(
     minify: bool,
     sourcemap: oj_config::Sourcemap,
     rolldown: &tokio::runtime::Handle,
+    cli: &CliOptions,
+    mode: &str,
 ) -> anyhow::Result<()> {
-    // No plugin host runs for a library build, so no config() env delta.
     let is_production = app_env.is_production();
+    // Vite builds a library with the app's plugins, as any build.
+    let plugin_host = user_plugin_host(
+        cli.config.as_deref(),
+        root,
+        &normalize_base(config.base.as_deref().unwrap_or("/")),
+        &serde_json::json!(config.define),
+        &serde_json::json!(config.environments),
+        "client",
+        mode,
+    )
+    .await?;
+    install_build_resolvers(&plugin_host, root, config, "client");
+    let emit = Arc::new(EmitState::new(root.to_path_buf()));
     let import_of = |p: &str| {
         if p.starts_with('.') {
             p.to_string()
@@ -6157,6 +6223,14 @@ async fn build_library(
         let mut plugins: Vec<SharedPluginable> = alias_plugin(root, config).into_iter().collect();
         if let Some(plugin) = &stylex {
             plugins.push(crate::stylex_plugin::transform(plugin));
+        }
+        if let Some(host) = &plugin_host {
+            plugins.push(Pluginable::new_shared(OjUserPlugin::new(
+                Arc::clone(host),
+                Arc::clone(&emit),
+                host.build_hook_plan().await,
+                bundle_graph::jsx_config(config),
+            )));
         }
         plugins.extend(tsconfig_paths_plugin(root, config, "client", false));
         plugins.push(Pluginable::new_shared(OjCssPlugin {

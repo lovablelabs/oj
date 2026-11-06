@@ -23,8 +23,6 @@ pub struct ResolveSettings {
     /// Vite's top-level `tsconfig` option: the one file its own resolver
     /// reads, in place of each importer's.
     pub tsconfig_file: Option<std::path::PathBuf>,
-    /// vite-tsconfig-paths' own options, as the config passes them.
-    pub tsconfig_paths_plugin: crate::PluginOptions,
 }
 
 /// The tsconfig Vite's own resolver uses (`resolve.tsconfigPaths`): the one

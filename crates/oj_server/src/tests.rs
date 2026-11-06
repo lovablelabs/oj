@@ -514,6 +514,8 @@ fn node_builtins_are_recognized_for_stubbing() {
 
 #[test]
 fn workspace_root_matches_vite_search_for_workspace_root() {
+    // The disk changes between searches here; a server searches once.
+    let workspace_root = oj_resolver::search_workspace_root;
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().canonicalize().unwrap();
     // A git repository is NOT a workspace marker (Vite comments `.git` out):

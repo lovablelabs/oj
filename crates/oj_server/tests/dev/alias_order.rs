@@ -446,3 +446,179 @@ async fn a_js_importers_paths_import_fails_as_in_vite() {
     assert!(ours.body.contains("@/a"), "{}", ours.body);
     assert_eq!(imports(&server.text("/src/m.ts").await), ts);
 }
+
+/// A root tsconfig, an app one, and a nested package's own, each mapping
+/// differently, for vite-tsconfig-paths' options to choose between.
+const OPTION_FILES: &[(&str, &str)] = &[
+    (
+        "package.json",
+        r#"{"name":"plugin-options","private":true,"type":"module"}"#,
+    ),
+    ("index.html", INDEX),
+    (
+        "tsconfig.json",
+        r#"{ "compilerOptions": { "paths": { "@/*": ["./root/*"] } } }"#,
+    ),
+    (
+        "tsconfig.app.json",
+        r#"{ "compilerOptions": { "paths": { "@/*": ["./src/*"] } } }"#,
+    ),
+    ("root/x.ts", "export const x = \"root\";\n"),
+    ("src/x.ts", "export const x = \"app\";\n"),
+    (
+        "src/main.ts",
+        "import { x } from \"@/x\";\nexport const m = x;\n",
+    ),
+    (
+        "src/legacy/old.ts",
+        "import { x } from \"@/x\";\nexport const o = x;\n",
+    ),
+    (
+        "pkg/tsconfig.json",
+        r#"{ "compilerOptions": { "paths": { "~/*": ["./lib/*"] } } }"#,
+    ),
+    ("pkg/lib/b.ts", "export const b = 1;\n"),
+    (
+        "pkg/m.ts",
+        "import { b } from \"~/b\";\nexport const p = b;\n",
+    ),
+];
+
+// vite-tsconfig-paths decides with its own options, which live in its
+// closure (Vite never exposes them): a computed `projects` list, an
+// `importerFilter` and a `skip` function. oj's plugin host runs the plugin
+// ahead of oj's resolver, so oj serves what Vite serves, the imports a
+// copy of the plugin with default options would map otherwise included.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_plugins_own_options_decide_as_in_vite() {
+    crate::require_fixture!("vite", "vite-tsconfig-paths");
+    let app = App::new(OPTION_FILES);
+    app.link_fixture("vite");
+    app.link_fixture("vite-tsconfig-paths");
+    // Each config, and what Vite 8.3.6 with vite-tsconfig-paths 6.1.1 serves
+    // for /src/main.ts, /src/legacy/old.ts and /pkg/m.ts.
+    let configs: &[(&str, &str, [&str; 3])] = &[
+        (
+            "projects",
+            "import path from \"node:path\";\nimport tsConfigPaths from \"vite-tsconfig-paths\";\nconst dir = path.dirname(new URL(import.meta.url).pathname);\nconst names = [\"app\"].map((n) => path.join(dir, `tsconfig.${n}.json`));\nexport default { plugins: [tsConfigPaths({ projects: names })] };\n",
+            ["/src/x.ts", "/src/x.ts", "status 500"],
+        ),
+        (
+            "filter",
+            "import tsConfigPaths from \"vite-tsconfig-paths\";\nexport default { plugins: [tsConfigPaths({ importerFilter: (file) => !file.includes(\"/legacy/\") })] };\n",
+            ["/root/x.ts", "status 500", "/pkg/lib/b.ts"],
+        ),
+        (
+            "skip",
+            "import tsConfigPaths from \"vite-tsconfig-paths\";\nexport default { plugins: [tsConfigPaths({ skip: (dir) => dir === \"pkg\" })] };\n",
+            ["/root/x.ts", "/root/x.ts", "status 500"],
+        ),
+    ];
+    let served = |status: u16, body: &str| -> String {
+        if status == 200 {
+            imports(body).join(",")
+        } else {
+            format!("status {status}")
+        }
+    };
+    for (name, body, want) in configs {
+        let file = format!("vite.{name}.config.js");
+        app.write(&[(file.as_str(), body)]);
+        let vite = ViteDev::start(&app.root, &file);
+        let theirs: Vec<String> = ["/src/main.ts", "/src/legacy/old.ts", "/pkg/m.ts"]
+            .iter()
+            .map(|p| {
+                let (status, body) = vite.get(p);
+                served(status, &body)
+            })
+            .collect();
+        drop(vite);
+        assert_eq!(theirs, want, "vite dev, {name}");
+        let mut dev = app.dev();
+        dev.config = Some(app.root.join(&file));
+        let server = crate::serve(dev).await;
+        let mut ours = Vec::new();
+        for p in ["/src/main.ts", "/src/legacy/old.ts", "/pkg/m.ts"] {
+            let r = server.get(p).await;
+            ours.push(served(r.status, &r.body));
+        }
+        drop(server);
+        assert_eq!(ours, theirs, "oj dev vs vite dev, {name}");
+    }
+}
+
+// vite-tsconfig-paths reloads its projects on a watcher event for a
+// tsconfig: a `paths` key added while dev runs answers the next transform of
+// an importer, in Vite and in oj (whose host plugin hears the same event).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_paths_key_added_while_dev_runs_answers_as_in_vite() {
+    crate::require_fixture!("vite", "vite-tsconfig-paths");
+    const BEFORE: &str = r#"{ "compilerOptions": { "paths": { "@/*": ["./src/*"] } } }"#;
+    const AFTER: &str =
+        r#"{ "compilerOptions": { "paths": { "@/*": ["./src/*"], "~lib/*": ["./lib/*"] } } }"#;
+    let files: &[(&str, &str)] = &[
+        ("index.html", "<script type=\"module\" src=\"/src/main.ts\"></script>"),
+        ("tsconfig.json", BEFORE),
+        ("lib/x.ts", "export const x = 1;\n"),
+        ("src/main.ts", "import { x } from \"~lib/x\";\nconsole.log(x);\n"),
+        (
+            "vite.config.js",
+            "import tsConfigPaths from \"vite-tsconfig-paths\";\nexport default { plugins: [tsConfigPaths()] };\n",
+        ),
+    ];
+    let served = |status: u16, body: &str| -> String {
+        if status == 200 {
+            imports(body).join(",")
+        } else {
+            format!("status {status}")
+        }
+    };
+    let edit = |app: &App, n: usize| {
+        app.write(&[("tsconfig.json", AFTER)]);
+        std::thread::sleep(Duration::from_millis(300));
+        let main = format!("import {{ x }} from \"~lib/x\";\nconsole.log(x, {n});\n");
+        app.write(&[("src/main.ts", main.as_str())]);
+    };
+    let want = "/lib/x.ts";
+
+    let app = App::new(files);
+    app.link_fixture("vite");
+    app.link_fixture("vite-tsconfig-paths");
+    let vite = ViteDev::start(&app.root, "vite.config.js");
+    let (status, body) = vite.get("/src/main.ts");
+    assert_eq!(served(status, &body), "status 500", "vite before the edit");
+    edit(&app, 1);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let theirs = loop {
+        let (status, body) = vite.get("/src/main.ts");
+        let got = served(status, &body);
+        if got == want || Instant::now() > deadline {
+            break got;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    drop(vite);
+    assert_eq!(theirs, want, "vite after the edit");
+
+    let app = App::new(files);
+    app.link_fixture("vite");
+    app.link_fixture("vite-tsconfig-paths");
+    let server = crate::serve(app.dev()).await;
+    let r = server.get("/src/main.ts").await;
+    assert_eq!(
+        served(r.status, &r.body),
+        "status 500",
+        "oj before the edit"
+    );
+    edit(&app, 1);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let ours = loop {
+        let r = server.get("/src/main.ts").await;
+        let got = served(r.status, &r.body);
+        if got == want || Instant::now() > deadline {
+            break got;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    assert_eq!(ours, want, "oj after the edit");
+}
