@@ -5,9 +5,9 @@
 //! gives it. Vite's resolveConfig (config.ts) sets `NODE_ENV` to the default
 //! when unset, then builds `configEnv = { mode, command, isSsrBuild,
 //! isPreview }`, and only then calls loadConfigFromFile, which calls a
-//! function config with that configEnv. oj evaluates the config twice (the
-//! value extraction and the plugin host, whose engine imports vite ahead of
-//! the config); every evaluation must match.
+//! function config with that configEnv. oj evaluates it once, as Vite does
+//! (the value extraction on the plugin host's engine, which the host takes
+//! over).
 
 use crate::{require_fixture, App};
 
@@ -54,14 +54,11 @@ async fn function_config_gets_vites_config_env_and_node_env() {
         "the config's plugin did not run:\n{module}"
     );
     let seen = std::fs::read_to_string(app.root.join("seen.jsonl")).unwrap();
-    // The extraction's evaluation and the plugin host's, at least.
-    assert!(
-        seen.lines().count() >= 2,
-        "the config ran fewer than twice:\n{seen}"
+    assert_eq!(
+        seen.lines().collect::<Vec<_>>(),
+        [expected],
+        "one evaluation, Vite's env"
     );
-    for line in seen.lines() {
-        assert_eq!(line, expected, "a config evaluation saw another env");
-    }
 }
 
 const BUILD_CONFIG: &str = r#"import { appendFileSync } from "node:fs";

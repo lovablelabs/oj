@@ -133,13 +133,19 @@ const initial = JSON.parse((ojEngineBoot ? ojEngineBoot.initialJson : process.ar
 //   swallowed; route them (console.log included — Deno's console does not go
 //   through process.stdout) to stderr, which was always the visible stream.
 if (ojEngineBoot) {
-  try {
-    Object.defineProperty(process, "env", {
-      value: { ...process.env },
-      configurable: true,
-      writable: true,
-    });
-  } catch {}
+  // A config run this host takes over (vite-extract.mjs `keepForHost`) left
+  // process.env its own private copy, with what the config and Vite wrote
+  // (NODE_ENV included): the host serves on that one, as Vite's one process
+  // does, and any module the config loaded holds the same object.
+  if (!globalThis.__ojConfigRun) {
+    try {
+      Object.defineProperty(process, "env", {
+        value: { ...process.env },
+        configurable: true,
+        writable: true,
+      });
+    } catch {}
+  }
   if (ojEngineBoot.cacheRoot) process.env.OJ_CACHE_ROOT = String(ojEngineBoot.cacheRoot);
   // process.cwd() THROWS NotFound when the process's directory was deleted
   // (another host chdir'd somewhere that vanished), so the boot path must
@@ -248,7 +254,11 @@ const unsetOjNodeEnvForResolve = () => {
 };
 // Snapshot after the host's own env tweaks (the NODE_ENV pre-set included) so
 // the config()-hook delta reports only plugin mutations, not bootstrap noise.
-const ssrEnvBase = { ...process.env };
+// A taken-over run's base is the env before the config ran (with the same
+// pre-set), so its writes count as the plugins' too.
+const ssrEnvBase = globalThis.__ojConfigRun?.envBefore
+  ? { ...globalThis.__ojConfigRun.envBefore, NODE_ENV: globalThis.__ojConfigRun.envBefore.NODE_ENV ?? defaultNodeEnv }
+  : { ...process.env };
 
 // resolve.alias from the app's own vite config (loaded below for its plugins).
 // oj applies aliases in its Rust resolver and does not forward them in the
@@ -872,6 +882,16 @@ async function appViteForResolve() {
 // The recording resolve: the config hooks run once, on the host's own
 // instances, under Vite, each recorded for the host to replay.
 async function loadUserResolvedViteConfig() {
+  if (adoptedRun) {
+    adoptRecords(adoptedRun);
+    const rc = adoptedRun.resolved;
+    const appRoot = initial.config?.root ?? process.cwd();
+    // What a resolve that loaded the file itself reports (see viteResolve).
+    rc.configFile = pluginsPath;
+    rc.configFileDependencies = userConfigDependencies;
+    rc.inlineConfig = { root: appRoot, configFile: pluginsPath, mode: env.mode, logLevel: "silent" };
+    return rc;
+  }
   const vite = await appViteForResolve();
   if (!vite) return null;
   // A Start SSR or bundle host resolves without the framework plugins oj
@@ -1564,6 +1584,39 @@ async function bundleViteConfigFile(configPath, appRoot) {
 
 // The files the config evaluation read (Vite's configFileDependencies).
 let userConfigDependencies = [];
+// The config extractor's run on this engine, when oj started the host's
+// engine for it (see vite-extract.mjs `keepForHost`): the config evaluated,
+// its config and configEnvironment hooks run once and recorded, as the host's
+// own resolve would have. The host takes it over instead of running them
+// again, as Vite's one resolveConfig serves its whole server.
+let adoptedRun = null;
+function takeKeptRun() {
+  const run = globalThis.__ojConfigRun;
+  globalThis.__ojConfigRun = undefined;
+  if (!run || initial.pluginsFormat !== "vite") return null;
+  const real = (p) => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return p;
+    }
+  };
+  if (real(run.configPath) !== real(pluginsPath)) return null;
+  if (run.command !== env.command || run.mode !== env.mode) return null;
+  return run;
+}
+// The kept run's records as the host's own (what each hook did, replayed).
+function adoptRecords(run) {
+  const record = (r) => ({
+    partial: r.returned,
+    edits: editsOf(r.before, r.after),
+    ...(r.threw ? { threw: r.threw } : {}),
+  });
+  for (const [p, r] of run.records.config) recordedConfigPartials.set(p, record(r));
+  for (const [p, byName] of run.records.environment) {
+    for (const [name, r] of byName) environmentPartials(p).set(name, record(r));
+  }
+}
 async function loadViteConfig(configPath) {
   const appRoot = initial.config?.root ?? process.cwd();
   let vite = null;
@@ -1681,7 +1734,9 @@ try {
   let list;
   let userConfig = null;
   if (initial.pluginsFormat === "vite") {
-    const cfg = await loadViteConfig(pluginsPath);
+    adoptedRun = takeKeptRun();
+    if (adoptedRun) userConfigDependencies = adoptedRun.dependencies ?? [];
+    const cfg = adoptedRun ? adoptedRun.config : await loadViteConfig(pluginsPath);
     userConfig = cfg && typeof cfg === "object" ? cfg : null;
     userViteConfig = userConfig;
     userResolveAlias = cfg?.resolve?.alias ?? null;
@@ -2267,7 +2322,10 @@ async function runConfigHook(
 async function runConfigResolved(list, resolved, container = main) {
   const resolvedContext = minimalContext({ watchMode: command === "serve" });
   await fillStartConfigContext(list, resolved, resolvedContext);
+  // Hooks a taken-over run already ran (Start's router generator).
+  const ran = container === main ? adoptedRun?.records?.configResolvedRan : null;
   for (const { p, fn } of hooksOf(list, "configResolved")) {
+    if (ran?.has(p)) continue;
     initStage(`configResolved:${p.name ?? "?"}`);
     try {
       await fn.call(resolvedContext, resolved);
@@ -2449,6 +2507,17 @@ async function hostConfig(rc, list, { replay = false, container = main } = {}) {
   // `env` is the one ConfigEnv plus isSsrTargetWebworker (config.ts
   // runConfigEnvironmentHook), the same for every environment.
   const envNames = Object.keys(config.environments ?? {});
+  // Vite's resolveConfig adds `ssr` to a build only when declared, or `ssr`
+  // or `build.ssr` is set; the hooks see the environments it resolves.
+  // (Read off the user config after the config hooks, as Vite reads it: the
+  // resolved base always carries its `ssr` defaults.)
+  const user = [userViteConfig ?? {}, delta ?? {}];
+  const ssrResolved =
+    env.command !== "build" ||
+    envNames.includes("ssr") ||
+    user.some((c) => !!c.ssr || !!c.build?.ssr || !!c.environments?.ssr);
+  // The environment this host builds is one Vite resolves (an ssr build's).
+  const viteResolves = (name) => name !== "ssr" || ssrResolved || name === hostEnvName;
   for (const n of ["client", "ssr"]) if (!envNames.includes(n)) envNames.push(n);
   const configEnvHooks = hooksOf(list, "configEnvironment");
   // Plugin by plugin, then environment by environment, as
@@ -2468,7 +2537,7 @@ async function hostConfig(rc, list, { replay = false, container = main } = {}) {
           if (record) {
             if (rebase) applyEdits(config.environments[name], record.edits);
             if (record.threw) throw record.threw;
-          } else if (!replay) {
+          } else if (!replay && viteResolves(name)) {
             const options = config.environments[name];
             const before = plainCopy(options);
             const r = await fn.call(configContext, name, options, opts);

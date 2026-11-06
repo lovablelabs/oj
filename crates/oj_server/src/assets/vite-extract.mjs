@@ -77,26 +77,53 @@ let ojCacheDir = null;
 // test import) the sink is the real stderr.
 let emitStderr = (text) => process.stderr.write(text);
 
+// A run on the plugin host's own engine (oj starts it alongside the
+// extraction): the host takes it over (`globalThis.__ojConfigRun`) instead of
+// evaluating the config and running its hooks a second time, as Vite's one
+// resolveConfig serves its whole server.
+let keepForHost = false;
+// The command line's inline config (`--port`, `--host`) the resolve runs
+// under, as Vite's CLI passes it: the config hooks see it.
+let cliInline = null;
+// The kept run, published once the values are emitted.
+let keptRun = null;
+// Whether an extraction is running: the process wrappers below (stdio,
+// console, fs, process.env) capture and record only then, and pass through
+// after. They stay installed: a module the config loaded may hold one (a
+// package's `const log = console.error`), and on the host's engine that
+// module serves the host for its whole life, so what it holds must work.
+let capturing = false;
+
+let captureSink = null;
+let outputWrapped = false;
 function installOutputCapture(chunks) {
   const capture = (text) => {
     chunks.push(text);
   };
-  emitStderr = capture;
+  captureSink = capture;
+  emitStderr = (text) => (capturing && captureSink ? captureSink(text) : process.stderr.write(text));
+  if (outputWrapped) return;
+  outputWrapped = true;
   const asText = (chunk) => (typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
   const wrapWrite = (stream, sink) => {
     try {
-      stream.write = (chunk, ...rest) => {
+      const write = stream.write;
+      const wrapper = function (chunk, ...rest) {
+        // Past the extraction, whatever the stream writes with now (the
+        // host's own, when it replaced this one).
+        if (!capturing) return (stream.write !== wrapper ? stream.write : write).call(this, chunk, ...rest);
         sink(asText(chunk));
         const cb = rest.find((a) => typeof a === "function");
         if (cb) cb();
         return true;
       };
+      stream.write = wrapper;
     } catch {}
   };
   // stderr joins the transcript; stdout is swallowed, as the old subprocess's
   // captured-then-dropped stdout was. Deno's console writes past process.std*
   // straight to the fds, so the console methods are wrapped too.
-  wrapWrite(process.stderr, capture);
+  wrapWrite(process.stderr, (text) => captureSink?.(text));
   wrapWrite(process.stdout, () => {});
   try {
     const fmt = (args) => {
@@ -106,8 +133,17 @@ function installOutputCapture(chunks) {
         return args.map(String).join(" ");
       }
     };
-    for (const name of ["error", "warn"]) console[name] = (...args) => capture(fmt(args) + "\n");
-    for (const name of ["log", "info", "debug", "trace"]) console[name] = () => {};
+    for (const name of ["error", "warn", "log", "info", "debug", "trace"]) {
+      const original = console[name];
+      const captured = name === "error" || name === "warn";
+      const wrapper = function (...args) {
+        // Past the extraction, whatever the console does now (the host's
+        // own routing, when it replaced this one).
+        if (!capturing) return (console[name] !== wrapper ? console[name] : original).apply(this, args);
+        if (captured) captureSink?.(fmt(args) + "\n");
+      };
+      console[name] = wrapper;
+    }
   } catch {}
 }
 
@@ -189,7 +225,7 @@ function readByConfigCode() {
 
 function recordingEnv(env) {
   const note = (key) => {
-    if (typeof key !== "string" || observedEnvReads.has(key)) return;
+    if (!capturing || typeof key !== "string" || observedEnvReads.has(key)) return;
     if (readByConfigCode()) observedEnvReads.add(key);
   };
   return new Proxy(env, {
@@ -206,7 +242,7 @@ function recordingEnv(env) {
       return Reflect.getOwnPropertyDescriptor(target, key);
     },
     ownKeys(target) {
-      if (!observedEnvEnumerated && readByConfigCode()) observedEnvEnumerated = true;
+      if (capturing && !observedEnvEnumerated && readByConfigCode()) observedEnvEnumerated = true;
       return Reflect.ownKeys(target);
     },
   });
@@ -263,6 +299,7 @@ function installConfigReadRecorder() {
   const CONFIG_FILE = /\.(?:json|jsonc|toml)$/i;
   const ENV_FILE = /(?:^|[\\/])\.env(?:\.[^\\/]*)?$/;
   const record = (p) => {
+    if (!capturing) return;
     try {
       const s = typeof p === "string" ? p : p instanceof URL ? fileURLToPath(p) : null;
       if (!s || !(CONFIG_FILE.test(s) || ENV_FILE.test(s))) return;
@@ -745,6 +782,150 @@ function snapshotPlainData(v, seen = new WeakMap()) {
   return out;
 }
 
+// The plugin host's plainCopy, so a kept run's records read as the host's
+// own: plain data copied, functions, RegExps, class instances and the
+// plugins of a `plugins` list kept by reference.
+function hostCopy(v, seen = new WeakMap()) {
+  if (!v || typeof v !== "object") return v;
+  const cached = seen.get(v);
+  if (cached) return cached;
+  if (Array.isArray(v)) {
+    const out = [];
+    seen.set(v, out);
+    for (const x of v) out.push(hostCopy(x, seen));
+    return out;
+  }
+  const proto = Object.getPrototypeOf(v);
+  if (proto !== Object.prototype && proto !== null) return v;
+  const out = {};
+  seen.set(v, out);
+  const plugins = (x) => (Array.isArray(x) ? x.map(plugins) : x);
+  for (const [k, x] of Object.entries(v)) out[k] = k === "plugins" ? plugins(x) : hostCopy(x, seen);
+  return out;
+}
+
+// Start's router generator: its configResolved writes the route tree and
+// names the paths oj reads before the host starts (recordStartRouterPaths),
+// so a kept run runs it, and the host does not run it again.
+const RUNS_IN_EXTRACTION = new Set(["tanstack:router-generator"]);
+
+// The resolve's hooks on `p`, as the host's own resolve shows them to Vite
+// (plugin-host.mjs resolveHooks): `config` and `configEnvironment` recorded
+// (what they did: the config before and after, the answer, a throw) for the
+// host to replay, so they run once; configResolved and applyToEnvironment
+// hidden once the config hooks are done, the host running them where Vite
+// does, right before configureServer.
+function resolveHooks(p, records) {
+  const handlerOf = (hook) =>
+    typeof hook === "function" ? hook : hook && typeof hook.handler === "function" ? hook.handler : null;
+  const wrap = (hook, fn) => (typeof hook === "function" ? fn : { ...hook, handler: fn });
+  const config = handlerOf(p.config);
+  const environment = handlerOf(p.configEnvironment);
+  const recordConfig = async function (cfg, env) {
+    const before = hostCopy(cfg);
+    try {
+      const returned = await config.call(this, cfg, env);
+      records.config.set(p, { before, after: hostCopy(cfg), returned: returned === cfg ? null : hostCopy(returned) });
+      return returned;
+    } catch (e) {
+      records.config.set(p, { before, after: hostCopy(cfg), returned: null, threw: e });
+      throw e;
+    }
+  };
+  const recordEnvironment = async function (name, options, env) {
+    if (!records.environment.has(p)) records.environment.set(p, new Map());
+    const before = hostCopy(options);
+    try {
+      const returned = await environment.call(this, name, options, env);
+      records.environment
+        .get(p)
+        .set(name, { before, after: hostCopy(options), returned: returned === options ? null : hostCopy(returned) });
+      return returned;
+    } catch (e) {
+      records.environment.get(p).set(name, { before, after: hostCopy(options), returned: null, threw: e });
+      throw e;
+    }
+  };
+  const hooks = {
+    config: config ? wrap(p.config, recordConfig) : undefined,
+    configEnvironment: environment ? wrap(p.configEnvironment, recordEnvironment) : undefined,
+    configResolved: undefined,
+    applyToEnvironment: undefined,
+  };
+  if (RUNS_IN_EXTRACTION.has(p.name)) {
+    delete hooks.configResolved;
+    records.configResolvedRan.add(p);
+  }
+  return hooks;
+}
+
+// The resolve's hooks swapped onto each plugin itself (the host's
+// recordInPlace), so the list Vite hands the config hooks holds the real
+// objects; a frozen plugin gets a stand-in instead (the host's
+// recordingPlugin). A hidden hook reads as the plugin's own until the config
+// hooks are done (a sibling may wrap one); one the plugin assigns meanwhile
+// is held for the host. Returns the list to resolve and the undo.
+function recordConfigHooks(plugins, records, phase) {
+  const undo = [];
+  const list = plugins.map((p) => {
+    if (!p || typeof p !== "object") return p;
+    const hooks = resolveHooks(p, records);
+    const own = [];
+    try {
+      for (const [key, value] of Object.entries(hooks)) {
+        const descriptor = Object.getOwnPropertyDescriptor(p, key);
+        const enumerable = descriptor?.enumerable ?? false;
+        const original = p[key];
+        let assigned;
+        let wasAssigned = false;
+        const hidden = {
+          get: () => (phase.hidden ? undefined : wasAssigned ? assigned : original),
+          set: (v) => {
+            assigned = v;
+            wasAssigned = true;
+          },
+        };
+        Object.defineProperty(
+          p,
+          key,
+          value === undefined
+            ? { ...hidden, configurable: true, enumerable }
+            : { value, writable: true, configurable: true, enumerable },
+        );
+        own.push(() => {
+          const now = Object.getOwnPropertyDescriptor(p, key);
+          if (wasAssigned) {
+            Object.defineProperty(p, key, { value: assigned, writable: true, configurable: true, enumerable });
+          } else if (now && (now.get === hidden.get || (value !== undefined && now.value === value))) {
+            if (descriptor) Object.defineProperty(p, key, descriptor);
+            else delete p[key];
+          }
+          // Otherwise the plugin redefined the hook itself: it keeps that.
+        });
+      }
+    } catch {
+      for (const u of own.reverse()) {
+        try {
+          u();
+        } catch {}
+      }
+      return Object.create(p, Object.fromEntries(Object.entries(hooks).map(([k, value]) => [k, { value }])));
+    }
+    undo.push(...own);
+    return p;
+  });
+  return {
+    list,
+    undo: () => {
+      for (const u of undo.reverse()) {
+        try {
+          u();
+        } catch {}
+      }
+    },
+  };
+}
+
 // Why Vite's own resolveConfig of the config threw, when it did.
 let resolveFailure = null;
 async function loadConfig() {
@@ -800,9 +981,12 @@ async function loadConfig() {
             // config hook that MUTATES the config in place (conditions.push)
             // would otherwise write into the object later emitted as raw.
             rawSnapshot = snapshotPlainData(loaded.config);
+            // The file's config as it evaluated, its plugins the instances
+            // themselves, for a host that takes this run over.
+            const pristine = keepForHost ? hostCopy(loaded.config) : null;
             detect = detectionSentinel(loaded.config.build?.ssr);
             const inline = modeExplicit ? { root: appRoot, mode } : { root: appRoot };
-            const merged = vite.mergeConfig(loaded.config, inline);
+            let merged = vite.mergeConfig(loaded.config, inline);
             merged.configFile = false;
             // The file's build.ssr must not ride the inline config (isSsrBuild
             // is computed from it; see detectionSentinel) — the sentinel's pre
@@ -811,15 +995,62 @@ async function loadConfig() {
               merged.build = { ...merged.build };
               delete merged.build.ssr;
             }
-            merged.plugins = [
-              detect.prePlugin,
-              ...(Array.isArray(merged.plugins) ? merged.plugins : []),
-              detect.plugin,
-            ];
+            const userPlugins = keepForHost
+              ? await flattenPlugins(merged.plugins)
+              : Array.isArray(merged.plugins)
+                ? merged.plugins
+                : [];
+            const records = { config: new Map(), environment: new Map(), configResolvedRan: new Set() };
+            // Hidden hooks show once the config hooks are done, as in the
+            // host's resolve (`oj:config-hooks-done`, last of the post hooks).
+            const phase = { hidden: false };
+            const hooksDone = {
+              name: "oj:config-hooks-done",
+              enforce: "post",
+              config: {
+                order: "post",
+                handler() {
+                  phase.hidden = true;
+                },
+              },
+            };
+            const recorded = keepForHost
+              ? recordConfigHooks(userPlugins, records, phase)
+              : { list: userPlugins, undo: () => {} };
+            merged.plugins = [detect.prePlugin, ...recorded.list, detect.plugin, ...(keepForHost ? [hooksDone] : [])];
+            if (cliInline) merged = vite.mergeConfig(merged, cliInline);
+            const unrecord = recorded.undo;
             unsetOjNodeEnvForResolve();
-            resolved = await vite.resolveConfig(merged, command, mode, defaultNodeEnv);
+            try {
+              resolved = await vite.resolveConfig(merged, command, mode, defaultNodeEnv);
+            } finally {
+              unrecord();
+            }
+            if (keepForHost && resolved) {
+              const own = new Set([detect.prePlugin, detect.plugin, hooksDone]);
+              const drop = (list) => {
+                if (!Array.isArray(list)) return;
+                for (let i = list.length - 1; i >= 0; i--) if (own.has(list[i])) list.splice(i, 1);
+              };
+              drop(resolved.plugins);
+              for (const options of Object.values(resolved.environments ?? {})) drop(options?.plugins);
+              // The host's own resolve is silent (its logger and logLevel):
+              // the adopted config is too, so a cold start and a warm one
+              // log alike. What this resolve printed is in the transcript.
+              if (typeof vite.createLogger === "function") resolved.logger = vite.createLogger("silent");
+              resolved.logLevel = "silent";
+              keptRun = {
+                configPath,
+                command,
+                mode: resolved.mode,
+                config: pristine,
+                dependencies: absDeps(loaded.dependencies),
+                resolved,
+                records,
+              };
+            }
           } else {
-            const inline = { root: appRoot, configFile: configPath };
+            const inline = { root: appRoot, configFile: configPath, ...(cliInline ?? {}) };
             if (modeExplicit) inline.mode = mode;
             unsetOjNodeEnvForResolve();
             resolved = await asNode(() => vite.resolveConfig(inline, command, mode, defaultNodeEnv));
@@ -1666,6 +1897,35 @@ async function stylexPlugin(raw) {
 }
 
 export async function extract(input) {
+  keepForHost = input.keep === true;
+  cliInline =
+    input.cliInline && typeof input.cliInline === "object" && Object.keys(input.cliInline).length
+      ? input.cliInline
+      : null;
+  keptRun = null;
+  globalThis.__ojConfigRun = undefined;
+  // The env before the config ran, for the host's diff of what its hooks
+  // wrote (getEnvDelta).
+  const envBefore = { ...process.env };
+  let out;
+  capturing = true;
+  try {
+    out = await extractValues(input);
+  } finally {
+    capturing = false;
+    emitStderr = (text) => process.stderr.write(text);
+  }
+  if (keptRun && out?.__ok === true) {
+    // process.env stays the run's own (its writes, Vite's NODE_ENV): the
+    // host serves on it, as Vite's one process does.
+    globalThis.__ojConfigRun = { ...keptRun, envBefore };
+    out.__kept = { mode: keptRun.mode, command: keptRun.command };
+  }
+  keptRun = null;
+  return out;
+}
+
+async function extractValues(input) {
   configPath = String(input.vite);
   appRoot = String(input.root);
   command = input.command || "serve";
