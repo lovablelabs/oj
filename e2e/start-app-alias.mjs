@@ -51,10 +51,12 @@ const dist = path.join(app, "dist");
 
 // Both Vite alias forms: the object shape a shared config returns
 // (`"@": <abs>/src`) and an array entry with a RegExp `find` and `$1`.
+// Into the fixture's own `resolve` block: a second `resolve` key would
+// replace it (the later key of an object literal wins).
 const aliasedConfig = originalConfig.replace(
-  "export default defineConfig({",
-  `export default defineConfig({
-  resolve: {
+  "  resolve: { tsconfigPaths: true },",
+  `  resolve: {
+    tsconfigPaths: true,
     alias: [
       { find: "@", replacement: \`\${process.cwd()}/src\` },
       { find: /^~legacy\\/(.*)$/, replacement: \`\${process.cwd()}/src/alias-legacy/$1\` },
