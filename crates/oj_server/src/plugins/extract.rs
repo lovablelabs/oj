@@ -192,6 +192,92 @@ pub fn withdraw_host_engine(root: &Path) {
 /// Per root, what the extraction left on the offered engine: `Some` when the
 /// host may take the run over (for that command and mode), `None` when the
 /// config ran there without a run to take (it failed, or was cut off).
+/// What a run the host takes over stored, by root: its values are read
+/// before the host runs the configResolved hooks, so the host's reading
+/// after them replaces them (see [`store_resolved_values`]).
+struct KeptRun {
+    vite: PathBuf,
+    command: String,
+    keys: Vec<String>,
+    json: serde_json::Value,
+    stderr: String,
+}
+
+type KeptRuns = std::collections::HashMap<PathBuf, KeptRun>;
+static KEPT_RUNS: std::sync::LazyLock<std::sync::Mutex<KeptRuns>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// A run the host engine kept that no host took over (a fresh host ran its
+/// own resolve): the values it stored were read with configResolved hidden,
+/// so they go, and the next start reads the config again.
+pub fn forget_kept_run(root: &Path) {
+    let Some(run) = KEPT_RUNS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(root)
+    else {
+        return;
+    };
+    let store = extraction_store(root);
+    for key in &run.keys {
+        store.forget(&run.vite, &run.command, key);
+    }
+}
+
+/// Drops what [`store_resolved_values`] holds for `root` in this process,
+/// so its next read is the store's (tests of the stored copy).
+#[doc(hidden)]
+pub fn forget_resolved_values(root: &Path) {
+    RESOLVED_VALUES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|(r, _, _), _| r != root);
+}
+
+/// The config's values as its host read them after the configResolved hooks
+/// (Vite runs those on the resolved config it then serves from), over what
+/// the run it took over stored: stored again under the same keys. Whether
+/// they changed, so the caller reads its config again.
+pub fn store_resolved_values(root: &Path, values: &serde_json::Value) -> bool {
+    let Some(run) = KEPT_RUNS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(root)
+    else {
+        return false;
+    };
+    let (Some(stored), Some(fresh)) = (run.json.as_object(), values.as_object()) else {
+        return false;
+    };
+    let mut merged = stored.clone();
+    for (key, value) in fresh {
+        if !key.starts_with("__") {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
+    if &merged == stored {
+        return false;
+    }
+    let json = serde_json::Value::Object(merged);
+    let store = extraction_store(root);
+    let mut held = RESOLVED_VALUES.lock().unwrap_or_else(|e| e.into_inner());
+    for key in &run.keys {
+        store_extraction(&store, &run.vite, &run.command, key, &json, &run.stderr);
+        // Read from here this start, a store that declined the entry included.
+        held.insert(
+            (root.to_path_buf(), run.command.clone(), key.clone()),
+            json.clone(),
+        );
+    }
+    true
+}
+
+/// [`store_resolved_values`]' values, for this process's next read of the
+/// same config (by root, command and store key).
+type HeldValues = std::collections::HashMap<(PathBuf, String, String), serde_json::Value>;
+static RESOLVED_VALUES: std::sync::LazyLock<std::sync::Mutex<HeldValues>> =
+    std::sync::LazyLock::new(Default::default);
+
 type EngineRuns = std::collections::HashMap<PathBuf, Option<(String, String)>>;
 static ENGINE_RUN: std::sync::LazyLock<std::sync::Mutex<EngineRuns>> =
     std::sync::LazyLock::new(Default::default);
@@ -577,6 +663,18 @@ fn extraction(
     let mode_key = mode_key.as_str();
     let vite = vite_config_file(root, config)?;
     if !fresh {
+        let held = RESOLVED_VALUES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&(
+                root.to_path_buf(),
+                command.to_string(),
+                mode_key.to_string(),
+            ))
+            .cloned();
+        if let Some(json) = held {
+            return Some((parse_vite_values(&json), false));
+        }
         if let Some(json) = super::static_config::static_extraction(root, &vite, command, mode) {
             crate::boot_phase("vite-extract static (no engine)");
             return Some((parse_vite_values(&json), false));
@@ -685,6 +783,8 @@ fn run_extraction(
         "spaBuild": spa_build,
         "cacheDir": cache.to_string_lossy(),
     });
+    // A fresh evaluation supersedes what this process held for the root.
+    forget_resolved_values(root);
     // Vite's config hooks see the command line's values, whichever engine runs.
     payload["cliInline"] = cli_inline(root).unwrap_or_else(|| serde_json::json!({}));
     let host = take_host_engine(root);
@@ -738,11 +838,13 @@ fn run_extraction(
         return None;
     }
     // Whether the host took the run over is this start's alone.
+    let kept = json.get("__kept").is_some();
     let mut json = json;
     if let Some(o) = json.as_object_mut() {
         o.remove("__kept");
     }
     store_extraction(&store, vite, command, mode_key, &json, &stderr);
+    let mut keys = vec![mode_key.to_string()];
     // A default mode the config named itself resolved under that mode, as
     // Vite resolves once (`mode = inline.mode || config.mode`): a reload
     // under it reads this evaluation instead of running the config again.
@@ -754,7 +856,20 @@ fn run_extraction(
         {
             let key = extraction_mode_key(root, named, true, spa_build);
             store_extraction(&store, vite, command, &key, &json, &stderr);
+            keys.push(key);
         }
+    }
+    if kept {
+        KEPT_RUNS.lock().unwrap_or_else(|e| e.into_inner()).insert(
+            root.to_path_buf(),
+            KeptRun {
+                vite: vite.to_path_buf(),
+                command: command.to_string(),
+                keys,
+                json: json.clone(),
+                stderr: stderr.clone(),
+            },
+        );
     }
     EXTRACTION_RAN_FRESH.store(true, std::sync::atomic::Ordering::Relaxed);
     crate::boot_phase("vite-extract cache miss (engine ran)");

@@ -107,13 +107,13 @@ fn imports(js: &str) -> Vec<String> {
 }
 
 /// Vite's dev server on `root` with `config`, once it answers.
-struct ViteDev {
+pub(crate) struct ViteDev {
     child: Child,
     port: u16,
 }
 
 impl ViteDev {
-    fn start(root: &Path, config: &str) -> ViteDev {
+    pub(crate) fn start(root: &Path, config: &str) -> ViteDev {
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
             .local_addr()
@@ -138,7 +138,7 @@ impl ViteDev {
     }
 
     /// The status and body of `path`.
-    fn get(&self, path: &str) -> (u16, String) {
+    pub(crate) fn get(&self, path: &str) -> (u16, String) {
         let out = Command::new("curl")
             .args(["-s", "-m", "60", "-w", "\n%{http_code}"])
             .arg(format!("http://127.0.0.1:{}{path}", self.port))

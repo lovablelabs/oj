@@ -3498,6 +3498,59 @@ fn start_host_engine(
     Some(warm)
 }
 
+/// The config and mode a build reads. Vite: `mode = inlineConfig.mode ||
+/// config.mode || "production"`; when the config file itself names a mode
+/// and the CLI did not, oj's own values are loaded again under that mode
+/// (`.env.<mode>`), from the same evaluation.
+fn load_build_config(
+    root: &Path,
+    cli_mode: Option<&str>,
+    cli: &CliOptions,
+) -> anyhow::Result<(oj_config::OjConfig, String)> {
+    let mut mode_owned = cli_mode.unwrap_or("production").to_string();
+    let mut config =
+        oj_config::load_with(root, "build", &mode_owned).map_err(|e| anyhow::anyhow!("{e}"))?;
+    if cli_mode.is_none() {
+        oj_server::plugins::adopt_vite_config_values_default_mode(
+            &mut config,
+            root,
+            cli.config.as_deref(),
+            "build",
+            &mode_owned,
+        )
+        .map_err(|e| anyhow::anyhow!(e))?;
+        if let Some(m) = config.mode.clone().filter(|m| *m != mode_owned) {
+            mode_owned = m;
+            config = oj_config::load_with(root, "build", &mode_owned)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            oj_server::plugins::adopt_vite_config_values(
+                &mut config,
+                root,
+                cli.config.as_deref(),
+                "build",
+                &mode_owned,
+            )
+            .map_err(|e| anyhow::anyhow!(e))?;
+        }
+    } else {
+        oj_server::plugins::adopt_vite_config_values(
+            &mut config,
+            root,
+            cli.config.as_deref(),
+            "build",
+            &mode_owned,
+        )
+        .map_err(|e| anyhow::anyhow!(e))?;
+    }
+    Ok((config, mode_owned))
+}
+
+/// The host a build started right after reading its config (see `build`),
+/// by root, for the build step that asks for that environment's host.
+type EarlyHosts = std::collections::HashMap<PathBuf, (String, Arc<PluginHost>)>;
+static EARLY_BUILD_HOSTS: std::sync::LazyLock<std::sync::Mutex<EarlyHosts>> =
+    std::sync::LazyLock::new(Default::default);
+
 async fn user_plugin_host(
     config_file: Option<&Path>,
     root: &Path,
@@ -3507,6 +3560,12 @@ async fn user_plugin_host(
     env_name: &str,
     mode: &str,
 ) -> anyhow::Result<Option<Arc<PluginHost>>> {
+    {
+        let mut early = EARLY_BUILD_HOSTS.lock().unwrap_or_else(|e| e.into_inner());
+        if early.get(root).is_some_and(|(env, _)| env == env_name) {
+            return Ok(early.remove(root).map(|(_, host)| host));
+        }
+    }
     let Some(source) = oj_server::plugins::plugin_source(root, config_file) else {
         return Ok(None);
     };
@@ -3727,44 +3786,7 @@ pub async fn build(
     }
     let withdraw = Withdraw(&root);
 
-    // Vite: `mode = inlineConfig.mode || config.mode || "production"`; when the
-    // config file itself names a mode and the CLI did not, the config is loaded
-    // again under that mode (its function form and `.env.<mode>` depend on it).
-    let mut mode_owned = cli_mode.unwrap_or("production").to_string();
-    let mut config =
-        oj_config::load_with(&root, "build", &mode_owned).map_err(|e| anyhow::anyhow!("{e}"))?;
-    if cli_mode.is_none() {
-        oj_server::plugins::adopt_vite_config_values_default_mode(
-            &mut config,
-            &root,
-            cli.config.as_deref(),
-            "build",
-            &mode_owned,
-        )
-        .map_err(|e| anyhow::anyhow!(e))?;
-        if let Some(m) = config.mode.clone().filter(|m| *m != mode_owned) {
-            mode_owned = m;
-            config = oj_config::load_with(&root, "build", &mode_owned)
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
-            oj_server::plugins::adopt_vite_config_values(
-                &mut config,
-                &root,
-                cli.config.as_deref(),
-                "build",
-                &mode_owned,
-            )
-            .map_err(|e| anyhow::anyhow!(e))?;
-        }
-    } else {
-        oj_server::plugins::adopt_vite_config_values(
-            &mut config,
-            &root,
-            cli.config.as_deref(),
-            "build",
-            &mode_owned,
-        )
-        .map_err(|e| anyhow::anyhow!(e))?;
-    }
+    let (mut config, mut mode_owned) = load_build_config(&root, cli_mode, &cli)?;
     drop(withdraw);
     if let Some(warm) = warm {
         BUILD_PREWARM
@@ -3773,6 +3795,54 @@ pub async fn build(
             .insert(root.clone(), warm);
     }
     apply_cli_options(&mut config, &cli);
+    // Vite runs the configResolved hooks inside resolveConfig, on the config
+    // the build then reads, so their edits are in it. The host starts now;
+    // when it took the extraction's run over (which read the values before
+    // them), it reads them again after the hooks, and the build reads those.
+    let host_env = if ssr.is_some() || oj_config::build_ssr_entry(&config).ok().flatten().is_some()
+    {
+        "ssr"
+    } else {
+        "client"
+    };
+    let first_host = user_plugin_host(
+        cli.config.as_deref(),
+        &root,
+        &if host_env == "ssr" {
+            config.base.clone().unwrap_or_else(|| "/".into())
+        } else {
+            normalize_base(config.base.as_deref().unwrap_or("/"))
+        },
+        &serde_json::json!(config.define),
+        &serde_json::json!(config.environments),
+        host_env,
+        &mode_owned,
+    )
+    .await?;
+    if let Some(host) = &first_host {
+        let reread = match host.resolved_values().await {
+            Some(values) => oj_server::plugins::store_resolved_values(&root, &values),
+            // A host of its own resolve: what a kept run stored goes.
+            None => {
+                oj_server::plugins::forget_kept_run(&root);
+                false
+            }
+        };
+        if reread {
+            match load_build_config(&root, cli_mode, &cli) {
+                Ok(read) => (config, mode_owned) = read,
+                Err(e) => {
+                    host.shutdown();
+                    return Err(e);
+                }
+            }
+            apply_cli_options(&mut config, &cli);
+        }
+        EARLY_BUILD_HOSTS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(root.clone(), (host_env.to_string(), Arc::clone(host)));
+    }
     warn_unsupported_build_options(&config);
     let mode: &str = &mode_owned;
     let build_cfg = config.build.clone().unwrap_or_default();

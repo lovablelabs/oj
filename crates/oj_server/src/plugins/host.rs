@@ -1897,6 +1897,14 @@ impl PluginHost {
     }
 
     /// A no-arg query parsed as JSON; `None` on failure or bad JSON.
+    /// The config's values once its configResolved hooks ran, when this host
+    /// took the config extraction's run over (see `resolvedValues`).
+    pub async fn resolved_values(&self) -> Option<serde_json::Value> {
+        self.call_json("resolvedValues")
+            .await
+            .filter(|v| v.is_object())
+    }
+
     async fn call_json(&self, hook: &str) -> Option<serde_json::Value> {
         serde_json::from_str(&self.call_ok(hook).await?).ok()
     }

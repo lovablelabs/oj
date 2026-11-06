@@ -885,6 +885,8 @@ async function loadUserResolvedViteConfig() {
   if (adoptedRun) {
     adoptRecords(adoptedRun);
     const rc = adoptedRun.resolved;
+    // Before any hook the host runs edits what it shares with rc.
+    adoptedRun.pristine = plainCopy(rc);
     const appRoot = initial.config?.root ?? process.cwd();
     // What a resolve that loaded the file itself reports (see viteResolve).
     rc.configFile = pluginsPath;
@@ -1605,6 +1607,43 @@ function takeKeptRun() {
   if (run.command !== env.command || run.mode !== env.mode) return null;
   return run;
 }
+// Whether Vite reads the resolved config at `path` after the configResolved
+// hooks ran (so an edit there takes effect) rather than having copied it
+// before (resolveConfig resolves each environment's options, the plugins and
+// the env first): the dev server's options it reads from the config as it
+// serves, except `fs.deny` (compiled to a glob) and `warmup` (copied to the
+// environments); `resolve.alias`, which a build's alias plugin reads as it
+// starts (the dev one took its entries before); and `define`, `optimizeDeps`
+// and `env` edited in place (the client environment holds those objects; a
+// replaced one reaches no environment). `replaced(key)`: whether that
+// top-level object is another one now.
+function readAfterConfigResolved(path, replaced) {
+  const [top, second, third] = path;
+  if (top === "server") return second !== "warmup" && !(second === "fs" && third === "deny");
+  if (top === "resolve" && second === "alias") return env.command === "build";
+  if (top === "define" || top === "optimizeDeps" || top === "env") return path.length > 1 && !replaced(top);
+  return false;
+}
+// What the configResolved (and configureServer) hooks set in place on the
+// top-level `define`, for the client environment: Vite's holds that very
+// object when the config declares no `environments.client.define` of its
+// own, so those edits reach the client's code (its define plugin reads the
+// environment's define as it starts).
+function clientDefineEditsInPlace(c) {
+  if (c !== main || c.environment?.name !== "client" || !configResolvedBase) return {};
+  const declared = [userViteConfig, pluginConfigDelta].some((cfg) => cfg?.environments?.client?.define);
+  const now = main.resolvedConfig;
+  if (declared || now?.define !== configResolvedRefs.define) return {};
+  const out = {};
+  for (const [path, value] of editsOf(configResolvedBase, now)) {
+    if (path[0] === "define" && path.length === 2 && value !== DELETED) out[path[1]] = value;
+  }
+  return out;
+}
+// The resolved config as configResolved first saw it, and its define,
+// optimizeDeps and env objects then.
+let configResolvedBase = null;
+let configResolvedRefs = {};
 // The kept run's records as the host's own (what each hook did, replayed).
 function adoptRecords(run) {
   const record = (r) => ({
@@ -2571,6 +2610,8 @@ async function runConfigHooks() {
   hookedUserConfig = config;
   main.resolvedConfig = resolved;
   const before = plainCopy(resolved);
+  configResolvedBase = before;
+  configResolvedRefs = { define: resolved.define, optimizeDeps: resolved.optimizeDeps, env: resolved.env };
   await runConfigResolved(main.plugins, main.resolvedConfig);
   configResolvedEdits = editsOf(before, main.resolvedConfig);
 }
@@ -6607,10 +6648,33 @@ async function run(hook, args, c) {
       const merged = {
         ...((c.configDelta ?? pluginConfigDelta).define ?? {}),
         ...((c.ojConfig ?? c.resolvedConfig)?.environments?.[c.environment.name]?.define ?? {}),
+        ...clientDefineEditsInPlace(c),
       };
       define = Object.keys(merged).length ? JSON.parse(JSON.stringify(merged)) : null;
     } catch {}
     return JSON.stringify({ define });
+  }
+  if (hook === "resolvedValues") {
+    // The config's values as Vite serves and builds from them: it runs the
+    // configResolved hooks on the resolved config (resolveConfig) and reads
+    // some of it afterwards, so edits there count (and in configureServer,
+    // for what it reads per request). The run this host took over read its
+    // values before them: those edits land on a copy of its resolved config
+    // taken before the hooks, and the values are read off that again.
+    const run = adoptedRun;
+    if (!run?.valuesOf || !run.pristine || !configResolvedBase) return null;
+    const now = main.resolvedConfig;
+    const edits = editsOf(configResolvedBase, now).filter(([path]) =>
+      readAfterConfigResolved(path, (key) => now[key] !== configResolvedRefs[key]),
+    );
+    const values = await run.valuesOf(applyEdits(plainCopy(run.pristine), edits), { quiet: true });
+    // An env variable set in place (`config.env.X`): Vite's define plugin
+    // reads config.env as it starts, so it is `import.meta.env.X`.
+    for (const [path, value] of edits) {
+      if (path[0] !== "env" || path.length !== 2 || value === DELETED) continue;
+      values.define = { ...(values.define ?? {}), [`import.meta.env.${path[1]}`]: JSON.stringify(value) };
+    }
+    return JSON.stringify(values);
   }
   if (hook === "getEnvDelta") {
     // config() hooks ran at module init (top-level await), so the diff vs the

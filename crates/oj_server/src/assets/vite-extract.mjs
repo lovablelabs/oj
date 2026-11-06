@@ -1225,7 +1225,12 @@ function stringMap(obj) {
   return Object.keys(out).length ? out : null;
 }
 
-const warn = (msg) => emitStderr(`oj: vite.config: ${msg}\n`);
+// A second reading of the values (the host's, after configResolved) says
+// nothing the first one did not.
+let quietWarnings = false;
+const warn = (msg) => {
+  if (!quietWarnings) emitStderr(`oj: vite.config: ${msg}\n`);
+};
 
 function extractProxy(proxy) {
   if (!proxy || typeof proxy !== "object") return null;
@@ -1984,118 +1989,135 @@ async function extractValues(input) {
             },
             merge ?? mergeConfigLite,
           );
-    let ssr = extractSsr(c.ssr, c.environments?.ssr);
-    let resolveOut = extractResolve(c.resolve);
-    if (raw == null) {
-      // No raw config means detection could not run: the resolved ssr.resolve
-      // conditions may describe a plugin's foreign runtime (workerd) that Node
-      // consumers must never adopt undetected. Correctness over completeness:
-      // withhold the sugar (loadConfig already warned) and let defaults stand.
-      if (ssr) {
-        delete ssr.resolve;
-        if (Object.keys(ssr).length === 0) ssr = null;
+    // The values, read off a resolved config: this one, and on the host's
+    // engine again once the host ran the configResolved hooks on it (Vite
+    // runs them inside resolveConfig, on the config it then serves from).
+    const valuesOf = async (c, { quiet = false } = {}) => {
+      quietWarnings = quiet;
+      try {
+        const values = await readValues(c);
+        // After the values: what reading them warned is in the transcript.
+        return { ...values, __stderr: chunks.join("") };
+      } finally {
+        quietWarnings = false;
       }
-      // Same rule for the resolved TOP-LEVEL conditions: that list is Vite's
-      // client-environment fill (browser-bearing, possibly plugin-extended) and
-      // the Node consumers would adopt it with no detection to gate it — no
-      // foreign conditions may reach them undetected on this path either.
-      if (resolveOut) {
-        delete resolveOut.conditions;
-        delete resolveOut.externalConditions;
-        if (Object.keys(resolveOut).length === 0) resolveOut = null;
+    };
+    const readValues = async (c) => {
+      let ssr = extractSsr(c.ssr, c.environments?.ssr);
+      let resolveOut = extractResolve(c.resolve);
+      if (raw == null) {
+        // No raw config means detection could not run: the resolved ssr.resolve
+        // conditions may describe a plugin's foreign runtime (workerd) that Node
+        // consumers must never adopt undetected. Correctness over completeness:
+        // withhold the sugar (loadConfig already warned) and let defaults stand.
+        if (ssr) {
+          delete ssr.resolve;
+          if (Object.keys(ssr).length === 0) ssr = null;
+        }
+        // Same rule for the resolved TOP-LEVEL conditions: that list is Vite's
+        // client-environment fill (browser-bearing, possibly plugin-extended) and
+        // the Node consumers would adopt it with no detection to gate it — no
+        // foreign conditions may reach them undetected on this path either.
+        if (resolveOut) {
+          delete resolveOut.conditions;
+          delete resolveOut.externalConditions;
+          if (Object.keys(resolveOut).length === 0) resolveOut = null;
+        }
       }
-    }
-    // How the app applies tsconfig `paths`: vite-tsconfig-paths in the plugin
-    // list, Vite 8's own `resolve.tsconfigPaths`, or neither (no paths).
-    // Vite's top-level `tsconfig` option names the one file its own
-    // resolver reads. The plugin names are the ones Vite's own warning
-    // recognizes (resolveConfig).
-    const tsconfigPathsPlugin = (c.plugins ?? []).some(
-      (p) => p?.name === "vite-tsconfig-paths" || p?.name === "vite-plugin-tsconfig-paths",
-    );
-    resolveOut = {
-      ...(resolveOut ?? {}),
-      tsconfigPaths: c.resolve?.tsconfigPaths === true,
-      tsconfigPathsPlugin,
-      tsconfigFile: typeof c.tsconfig === "string" ? c.tsconfig : null,
+      // How the app applies tsconfig `paths`: vite-tsconfig-paths in the plugin
+      // list, Vite 8's own `resolve.tsconfigPaths`, or neither (no paths).
+      // Vite's top-level `tsconfig` option names the one file its own
+      // resolver reads. The plugin names are the ones Vite's own warning
+      // recognizes (resolveConfig).
+      const tsconfigPathsPlugin = (c.plugins ?? []).some(
+        (p) => p?.name === "vite-tsconfig-paths" || p?.name === "vite-plugin-tsconfig-paths",
+      );
+      resolveOut = {
+        ...(resolveOut ?? {}),
+        tsconfigPaths: c.resolve?.tsconfigPaths === true,
+        tsconfigPathsPlugin,
+        tsconfigFile: typeof c.tsconfig === "string" ? c.tsconfig : null,
+      };
+      recordEnvFilesForMode(typeof c.mode === "string" ? c.mode : mode, typeof c.envDir === "string" ? c.envDir : null);
+      return {
+        __ok: true,
+        // Config imports plus the config-shaped files (.json/.jsonc/.toml,
+        // .env*) the evaluation read (or probed): both invalidate the
+        // extraction cache when they change.
+        __deps: [...new Set([...(deps ?? []), ...observedConfigReads])],
+        // The recorder overflowed: __deps is incomplete, so the caller must
+        // not cache this extraction under it (absent when the stamp is whole).
+        ...(observedReadsTruncated ? { __depsTruncated: true } : {}),
+        // The env the evaluation read (see recordingEnv): the Rust cache stamps
+        // these values, so another value is a miss as Vite re-reads them.
+        __envReads: [...observedEnvReads].sort(),
+        __envEnumerated: observedEnvEnumerated,
+        __envPrefixes: (Array.isArray(c.envPrefix) ? c.envPrefix : [c.envPrefix ?? "VITE_"]).filter(
+          (p) => typeof p === "string",
+        ),
+        base: typeof c.base === "string" ? c.base : null,
+        publicDir: typeof c.publicDir === "string" ? c.publicDir : c.publicDir === false ? false : null,
+        port: typeof c.server?.port === "number" ? c.server.port : null,
+        origin: typeof c.server?.origin === "string" ? c.server.origin : null,
+        host: typeof c.server?.host === "string" ? c.server.host : null,
+        hmr: c.server?.hmr === false ? false : null,
+        fsAllow: Array.isArray(c.server?.fs?.allow) ? c.server.fs.allow.filter((x) => typeof x === "string") : null,
+        fsStrict: typeof c.server?.fs?.strict === "boolean" ? c.server.fs.strict : null,
+        // The RESOLVED `server.watch.ignored`: plugin config hooks add entries
+        // (vite-plugin-cloudflare ignores `**/.wrangler/**`) that exist nowhere
+        // in the user's own config. String globs only; RegExp and function
+        // matchers cannot cross the bridge (same rule as oj's WatchConfig).
+        watchIgnored: extractWatchIgnored(c.server?.watch?.ignored),
+        define: c.define && typeof c.define === "object" ? c.define : null,
+        alias: extractAlias(c.resolve?.alias),
+        headers: stringMap(c.server?.headers),
+        proxy: extractProxy(c.server?.proxy),
+        rollupOptions: markFunctions(c.build?.rolldownOptions ?? c.build?.rollupOptions ?? null),
+        assetsInlineLimit: typeof c.build?.assetsInlineLimit === "number" ? c.build.assetsInlineLimit : null,
+        // The function itself stays in the plugin host, which dev asks per file.
+        assetsInlineLimitFn: typeof c.build?.assetsInlineLimit === "function" ? true : null,
+        // Each environment's own resolved value: a number, or "fn" for a function.
+        assetsInlineLimitEnvs: Object.fromEntries(
+          Object.entries(c.environments ?? {}).flatMap(([name, env]) => {
+            const limit = env?.build?.assetsInlineLimit;
+            if (typeof limit === "number") return [[name, limit]];
+            return typeof limit === "function" ? [[name, "fn"]] : [];
+          }),
+        ),
+        dedupe: Array.isArray(c.resolve?.dedupe) ? c.resolve.dedupe.filter((x) => typeof x === "string") : null,
+        optimizeDeps: extractOptimizeDeps(c.optimizeDeps, raw?.optimizeDeps),
+        build: extractBuild(c.build),
+        oxc: extractOxc(c.oxc),
+        esbuild: extractEsbuild(c.esbuild),
+        ssr: ssrRunnerBacked ? { ...(ssr ?? {}), runnerBacked: true } : ssr,
+        mode: typeof c.mode === "string" ? c.mode : null,
+        resolve: resolveOut,
+        // The RAW config file's own top-level `resolve` block. The resolved
+        // config's `resolve.conditions` is Vite's CLIENT environment list
+        // (browser-bearing defaults) — never a server-side conditions source —
+        // while this one is user-authored and runtime-neutral: the Node SSR
+        // consumers add it to their Node defaults when ssr is runner-backed.
+        rawResolve: extractResolve(raw?.resolve),
+        serverFlags: extractServerFlags(c.server, c.legacy, c.appType),
+        css: extractCss(c.css),
+        envPrefix: extractEnvPrefix(c.envPrefix),
+        envDir: typeof c.envDir === "string" ? c.envDir : null,
+        // Only when Start's generator ran: a plain app's output stays the one
+        // the Rust static reader's template holds (static_config_parity).
+        ...(startRouterPaths ? { startRouter: startRouterPaths } : {}),
+        cors: extractCors(c.server?.cors),
+        allowedHosts: extractAllowedHosts(c.server?.allowedHosts),
+        preview: extractPreview(c.preview),
+        appType: typeof c.appType === "string" ? c.appType : null,
+        html: typeof c.html?.cspNonce === "string" ? { cspNonce: c.html.cspNonce } : null,
+        activePlugins: await activePluginCount(raw),
+        resolveError: resolveFailure ? String((resolveFailure && resolveFailure.message) || resolveFailure) : null,
+        stylex: await stylexPlugin(raw),
+      };
     };
-    recordEnvFilesForMode(typeof c.mode === "string" ? c.mode : mode, typeof c.envDir === "string" ? c.envDir : null);
-    return {
-      __ok: true,
-      __stderr: chunks.join(""),
-      // Config imports plus the config-shaped files (.json/.jsonc/.toml,
-      // .env*) the evaluation read (or probed): both invalidate the
-      // extraction cache when they change.
-      __deps: [...new Set([...(deps ?? []), ...observedConfigReads])],
-      // The recorder overflowed: __deps is incomplete, so the caller must
-      // not cache this extraction under it (absent when the stamp is whole).
-      ...(observedReadsTruncated ? { __depsTruncated: true } : {}),
-      // The env the evaluation read (see recordingEnv): the Rust cache stamps
-      // these values, so another value is a miss as Vite re-reads them.
-      __envReads: [...observedEnvReads].sort(),
-      __envEnumerated: observedEnvEnumerated,
-      __envPrefixes: (Array.isArray(c.envPrefix) ? c.envPrefix : [c.envPrefix ?? "VITE_"]).filter(
-        (p) => typeof p === "string",
-      ),
-      base: typeof c.base === "string" ? c.base : null,
-      publicDir: typeof c.publicDir === "string" ? c.publicDir : c.publicDir === false ? false : null,
-      port: typeof c.server?.port === "number" ? c.server.port : null,
-      origin: typeof c.server?.origin === "string" ? c.server.origin : null,
-      host: typeof c.server?.host === "string" ? c.server.host : null,
-      hmr: c.server?.hmr === false ? false : null,
-      fsAllow: Array.isArray(c.server?.fs?.allow) ? c.server.fs.allow.filter((x) => typeof x === "string") : null,
-      fsStrict: typeof c.server?.fs?.strict === "boolean" ? c.server.fs.strict : null,
-      // The RESOLVED `server.watch.ignored`: plugin config hooks add entries
-      // (vite-plugin-cloudflare ignores `**/.wrangler/**`) that exist nowhere
-      // in the user's own config. String globs only; RegExp and function
-      // matchers cannot cross the bridge (same rule as oj's WatchConfig).
-      watchIgnored: extractWatchIgnored(c.server?.watch?.ignored),
-      define: c.define && typeof c.define === "object" ? c.define : null,
-      alias: extractAlias(c.resolve?.alias),
-      headers: stringMap(c.server?.headers),
-      proxy: extractProxy(c.server?.proxy),
-      rollupOptions: markFunctions(c.build?.rolldownOptions ?? c.build?.rollupOptions ?? null),
-      assetsInlineLimit: typeof c.build?.assetsInlineLimit === "number" ? c.build.assetsInlineLimit : null,
-      // The function itself stays in the plugin host, which dev asks per file.
-      assetsInlineLimitFn: typeof c.build?.assetsInlineLimit === "function" ? true : null,
-      // Each environment's own resolved value: a number, or "fn" for a function.
-      assetsInlineLimitEnvs: Object.fromEntries(
-        Object.entries(c.environments ?? {}).flatMap(([name, env]) => {
-          const limit = env?.build?.assetsInlineLimit;
-          if (typeof limit === "number") return [[name, limit]];
-          return typeof limit === "function" ? [[name, "fn"]] : [];
-        }),
-      ),
-      dedupe: Array.isArray(c.resolve?.dedupe) ? c.resolve.dedupe.filter((x) => typeof x === "string") : null,
-      optimizeDeps: extractOptimizeDeps(c.optimizeDeps, raw?.optimizeDeps),
-      build: extractBuild(c.build),
-      oxc: extractOxc(c.oxc),
-      esbuild: extractEsbuild(c.esbuild),
-      ssr: ssrRunnerBacked ? { ...(ssr ?? {}), runnerBacked: true } : ssr,
-      mode: typeof c.mode === "string" ? c.mode : null,
-      resolve: resolveOut,
-      // The RAW config file's own top-level `resolve` block. The resolved
-      // config's `resolve.conditions` is Vite's CLIENT environment list
-      // (browser-bearing defaults) — never a server-side conditions source —
-      // while this one is user-authored and runtime-neutral: the Node SSR
-      // consumers add it to their Node defaults when ssr is runner-backed.
-      rawResolve: extractResolve(raw?.resolve),
-      serverFlags: extractServerFlags(c.server, c.legacy, c.appType),
-      css: extractCss(c.css),
-      envPrefix: extractEnvPrefix(c.envPrefix),
-      envDir: typeof c.envDir === "string" ? c.envDir : null,
-      // Only when Start's generator ran: a plain app's output stays the one
-      // the Rust static reader's template holds (static_config_parity).
-      ...(startRouterPaths ? { startRouter: startRouterPaths } : {}),
-      cors: extractCors(c.server?.cors),
-      allowedHosts: extractAllowedHosts(c.server?.allowedHosts),
-      preview: extractPreview(c.preview),
-      appType: typeof c.appType === "string" ? c.appType : null,
-      html: typeof c.html?.cspNonce === "string" ? { cspNonce: c.html.cspNonce } : null,
-      activePlugins: await activePluginCount(raw),
-      resolveError: resolveFailure ? String((resolveFailure && resolveFailure.message) || resolveFailure) : null,
-      stylex: await stylexPlugin(raw),
-    };
+    const out = await valuesOf(c);
+    if (keptRun) keptRun.valuesOf = valuesOf;
+    return out;
   } catch (e) {
     emitStderr(`oj: could not extract vite.config values: ${(e && e.stack) || e}\n`);
     // A config that failed to evaluate is not a config with no values: __ok
