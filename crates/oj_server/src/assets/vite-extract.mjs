@@ -120,7 +120,7 @@ function installOutputCapture(chunks) {
 function isolateProcessForExtraction() {
   try {
     Object.defineProperty(process, "env", {
-      value: { ...process.env },
+      value: recordingEnv({ ...process.env }),
       configurable: true,
       writable: true,
     });
@@ -128,6 +128,88 @@ function isolateProcessForExtraction() {
   try {
     process.cwd = () => appRoot;
   } catch {}
+}
+
+// The env vars the config evaluation read. Vite evaluates the config on
+// every start, so a config that reads `process.env.API_URL` (directly, in a
+// plugin, or through `loadEnv(mode, dir, "")`) gets that start's value; the
+// Rust extraction cache stamps each value read (`__envReads`), and the whole
+// env when the config listed it (`__envEnumerated`). Reads from Vite's own
+// toolchain and from oj's scripts alone are left out: Vite's loadEnv copies
+// the whole env on every resolve, and what it keeps is the `envPrefix` vars
+// (`__envPrefixes`), stamped by prefix. A read counts when any frame of its
+// stack belongs to other code (the config, a plugin), so `loadEnv` called by
+// the config counts and `loadEnv` called by resolveConfig does not.
+const observedEnvReads = new Set();
+let observedEnvEnumerated = false;
+const OJ_SCRIPT_DIR = (() => {
+  try {
+    return dirname(fileURLToPath(import.meta.url));
+  } catch {
+    return null;
+  }
+})();
+const TOOLCHAIN_FILE =
+  /[\\/]node_modules[\\/](?:vite|rolldown|esbuild|@rolldown[\\/][^\\/]+|@esbuild[\\/][^\\/]+)[\\/]/;
+
+/** The file of every frame on the caller's stack, or null when V8 will not say. */
+function stackFiles() {
+  const prepare = Error.prepareStackTrace;
+  const limit = Error.stackTraceLimit;
+  try {
+    Error.stackTraceLimit = 64;
+    Error.prepareStackTrace = (_, sites) => sites.map((site) => site.getFileName?.() ?? "");
+    const files = new Error().stack;
+    return Array.isArray(files) ? files : null;
+  } catch {
+    return null;
+  } finally {
+    Error.prepareStackTrace = prepare;
+    Error.stackTraceLimit = limit;
+  }
+}
+
+/** Whether code other than Vite's toolchain and oj's scripts asked. */
+function readByConfigCode() {
+  const files = stackFiles();
+  // Unknown: count it. A read too many costs a cache miss, one too few a stale config.
+  if (!files) return true;
+  return files.some((file) => {
+    if (!file || /^(?:node|ext|internal|deno):/.test(file)) return false;
+    let path = file;
+    if (path.startsWith("file:")) {
+      try {
+        path = fileURLToPath(path);
+      } catch {}
+    }
+    if (OJ_SCRIPT_DIR && dirname(path) === OJ_SCRIPT_DIR) return false;
+    return !TOOLCHAIN_FILE.test(path);
+  });
+}
+
+function recordingEnv(env) {
+  const note = (key) => {
+    if (typeof key !== "string" || observedEnvReads.has(key)) return;
+    if (readByConfigCode()) observedEnvReads.add(key);
+  };
+  return new Proxy(env, {
+    get(target, key, receiver) {
+      note(key);
+      return Reflect.get(target, key, receiver);
+    },
+    has(target, key) {
+      note(key);
+      return Reflect.has(target, key);
+    },
+    getOwnPropertyDescriptor(target, key) {
+      note(key);
+      return Reflect.getOwnPropertyDescriptor(target, key);
+    },
+    ownKeys(target) {
+      if (!observedEnvEnumerated && readByConfigCode()) observedEnvEnumerated = true;
+      return Reflect.ownKeys(target);
+    },
+  });
 }
 
 // Vite's defaultNodeEnv follows the COMMAND, never the mode (node.js
@@ -1606,6 +1688,8 @@ export async function extract(input) {
   ojCacheDir = typeof input.cacheDir === "string" && input.cacheDir ? input.cacheDir : null;
   const chunks = [];
   installOutputCapture(chunks);
+  observedEnvReads.clear();
+  observedEnvEnumerated = false;
   isolateProcessForExtraction();
   process.env.VITE_CONFIG_NATIVE_IGNORE_WARNING ??= "true";
   defaultNodeEnv = command === "build" ? "production" : "development";
@@ -1686,6 +1770,13 @@ export async function extract(input) {
       // The recorder overflowed: __deps is incomplete, so the caller must
       // not cache this extraction under it (absent when the stamp is whole).
       ...(observedReadsTruncated ? { __depsTruncated: true } : {}),
+      // The env the evaluation read (see recordingEnv): the Rust cache stamps
+      // these values, so another value is a miss as Vite re-reads them.
+      __envReads: [...observedEnvReads].sort(),
+      __envEnumerated: observedEnvEnumerated,
+      __envPrefixes: (Array.isArray(c.envPrefix) ? c.envPrefix : [c.envPrefix ?? "VITE_"]).filter(
+        (p) => typeof p === "string",
+      ),
       base: typeof c.base === "string" ? c.base : null,
       publicDir: typeof c.publicDir === "string" ? c.publicDir : c.publicDir === false ? false : null,
       port: typeof c.server?.port === "number" ? c.server.port : null,
