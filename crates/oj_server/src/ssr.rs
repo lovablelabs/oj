@@ -483,9 +483,12 @@ pub(crate) fn public_file(state: &ServerState, rel: &str) -> Option<PathBuf> {
 
 /// Vite's alias pattern matcher (preAlias.ts `matches`) over the top-level
 /// `resolve.alias` finds: the find itself or anything under it.
+/// A RegExp find matches as it tests.
 pub(crate) fn matches_alias(finds: &[String], spec: &str) -> bool {
     finds.iter().any(|find| {
-        if find.ends_with('/') {
+        if oj_resolver::alias::regex_parts(find).is_some() {
+            oj_resolver::alias::matches(find, spec)
+        } else if find.ends_with('/') {
             spec.starts_with(find.as_str())
         } else {
             spec == find
@@ -506,7 +509,11 @@ pub(crate) fn aliased(aliases: &[(String, String)], spec: &str) -> bool {
 
 pub(crate) fn apply_alias(aliases: &[(String, String)], spec: &str) -> String {
     for (find, replacement) in aliases {
-        if find.ends_with('/') {
+        if oj_resolver::alias::regex_parts(find).is_some() {
+            if let Some(aliased) = oj_resolver::alias::rewrite(find, replacement, spec) {
+                return aliased;
+            }
+        } else if find.ends_with('/') {
             if let Some(rest) = spec.strip_prefix(find.as_str()) {
                 return format!("{replacement}{rest}");
             }

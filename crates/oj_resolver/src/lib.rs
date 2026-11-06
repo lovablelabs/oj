@@ -5,6 +5,7 @@
 //! (extensions, mainFields, conditions, aliases, tsconfig paths), plus the Vite
 //! behaviors oxc does not have (dedupe, exports-first directory entries).
 
+pub mod alias;
 mod defaults;
 mod exports;
 mod settings;
@@ -194,15 +195,10 @@ impl OjResolver {
                     .strip_prefix(base)
                     .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
             };
-            if under(replacement.trim_end_matches('/')) {
+            if alias::regex_parts(find).is_none() && under(replacement.trim_end_matches('/')) {
                 return None;
             }
-            if specifier == find {
-                return Some(replacement.clone());
-            }
-            let rest = specifier.strip_prefix(find.as_str())?;
-            rest.starts_with('/')
-                .then(|| format!("{}{rest}", replacement.trim_end_matches('/')))
+            alias::rewrite(find, replacement, specifier)
         })
     }
 

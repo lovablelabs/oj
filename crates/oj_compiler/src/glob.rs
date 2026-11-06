@@ -23,13 +23,11 @@ pub fn no_alias(_: &str) -> Option<String> {
     None
 }
 
-/// @rollup/plugin-alias over string `find`s: the first entry whose `find` is
-/// the id itself or a `find/` prefix of it.
+/// @rollup/plugin-alias over the `resolve.alias` list: the first entry that
+/// takes the id (a string `find` as the id or a `find/` prefix, a RegExp as
+/// it tests), see [`oj_resolver::alias`].
 pub fn string_alias(entries: &[(String, String)], id: &str) -> Option<String> {
-    entries.iter().find_map(|(find, replacement)| {
-        let rest = id.strip_prefix(find.as_str())?;
-        (rest.is_empty() || rest.starts_with('/')).then(|| format!("{replacement}{rest}"))
-    })
+    oj_resolver::alias::first_rewrite(entries, id)
 }
 
 /// `root` is the app root (Vite's `config.root`) that `/` patterns resolve
@@ -2076,5 +2074,14 @@ mod tests {
         assert_eq!(string_alias(&entries, "~lib").as_deref(), Some("/app/lib"));
         assert_eq!(string_alias(&entries, "@scope/pkg/*.ts"), None);
         assert_eq!(string_alias(&entries, "~library/*.ts"), None);
+        // A RegExp find replaces as JavaScript (`$1` the capture).
+        let regex = vec![(
+            oj_resolver::alias::regex_find("^#(.*)$", ""),
+            "/app/src/$1".to_string(),
+        )];
+        assert_eq!(
+            string_alias(&regex, "#views/*.ts").as_deref(),
+            Some("/app/src/views/*.ts")
+        );
     }
 }

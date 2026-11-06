@@ -83,6 +83,13 @@ const CONFIGS: &[(&str, &str, &str)] = &[
         r#"[{ find: "@/integrations/supabase/client", replacement: src("appBackend.ts") }, { find: "~lib", replacement: "@/lib" }, { find: "@", replacement: src("") }]"#,
         "/src/appBackend.ts",
     ),
+    // RegExp finds test and replace as JavaScript: an anchored `^@\/lib$`
+    // never takes `@/lib/helper`, and `$1` carries the capture.
+    (
+        "regex",
+        r#"[{ find: /^@\/lib$/, replacement: src("appBackend.ts") }, { find: /^@\/integrations\/supabase\/client$/, replacement: src("appBackend.ts") }, { find: /^~lib\/(.*)$/, replacement: src("lib/$1") }, { find: "@", replacement: src("") }]"#,
+        "/src/appBackend.ts",
+    ),
     // No alias for it: vite-tsconfig-paths tries `@/*` before the exact key.
     (
         "paths-only",

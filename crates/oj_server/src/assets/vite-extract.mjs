@@ -964,18 +964,6 @@ function relativeImportDeps(entry) {
   return [...seen];
 }
 
-function aliasKeyFromRegex(source) {
-  let s = source;
-  if (s.startsWith("^")) s = s.slice(1);
-  if (s.endsWith("$")) s = s.slice(0, -1);
-  s = s.replace(/\\?\/?\((?:\.\*|\.\+)\??\)\??$/, "");
-  s = s.replace(/\\(.)/g, "$1");
-  return s.replace(/\/$/, "");
-}
-function aliasDirFromReplacement(replacement) {
-  return replacement.replace(/[\\/]\$\d+$/, "").replace(/[\\/]index\.[a-z]+$/i, "");
-}
-
 const VITE_CLIENT_ALIAS = /^\^\\\/\?@vite\\\/(env|client)$/;
 
 function extractAlias(alias) {
@@ -990,12 +978,10 @@ function extractAlias(alias) {
       // Vite adds these two for its own client (config.ts clientAlias); oj serves
       // /@vite/client and /@vite/env itself, so they are not user aliases to warn about.
       if (VITE_CLIENT_ALIAS.test(find.source)) continue;
-      const key = aliasKeyFromRegex(find.source);
-      if (!key || /[.*+?()[\]{}|^$]/.test(key)) {
-        warn(`resolve.alias regex ${find} not convertible to a path alias; skipped`);
-        continue;
-      }
-      if (out[key] == null) out[key] = aliasDirFromReplacement(replacement);
+      // A RegExp find travels as oj_resolver::alias::regex_find encodes it,
+      // and matches and replaces as Vite's alias plugin applies it.
+      const key = `\u0000regex:${find.flags}:${find.source}`;
+      if (out[key] == null) out[key] = replacement;
     }
   }
   return out;

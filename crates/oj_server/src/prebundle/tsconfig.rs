@@ -51,12 +51,13 @@ impl Aliases {
     /// maps a glob by them; vite-tsconfig-paths has no answer for a glob,
     /// which names no file).
     pub fn glob(&self, id: &str, importer: &Path) -> Option<String> {
-        first_rewrite(&self.config, id).or_else(|| self.resolver.glob_mapped(importer, id))
+        oj_resolver::alias::first_rewrite(&self.config, id)
+            .or_else(|| self.resolver.glob_mapped(importer, id))
     }
 
     /// `id` after the first `resolve.alias` entry that takes it, alone.
     pub fn alias(&self, id: &str) -> Option<String> {
-        first_rewrite(&self.config, id)
+        oj_resolver::alias::first_rewrite(&self.config, id)
     }
 
     /// The rewrite of `id` from `importer`, as a path: the first
@@ -65,7 +66,7 @@ impl Aliases {
     /// Vite applies them. No importer, no `paths` (the plugin's rule).
     /// `Err` when nothing answers the id in Vite (only a declaration file).
     pub fn apply(&self, id: &str, importer: Option<&str>) -> Result<Option<String>, Unresolved> {
-        let aliased = first_rewrite(&self.config, id);
+        let aliased = oj_resolver::alias::first_rewrite(&self.config, id);
         let target = aliased.as_deref().unwrap_or(id);
         let Some(importer) = importer else {
             return Ok(aliased);
@@ -80,12 +81,4 @@ impl Aliases {
             oj_resolver::TsconfigAnswer::Unresolved => Err(Unresolved),
         }
     }
-}
-
-/// @rollup/plugin-alias: a `find` takes the id itself or `find/…`.
-fn first_rewrite(aliases: &[(String, String)], id: &str) -> Option<String> {
-    aliases.iter().find_map(|(find, replacement)| {
-        let rest = id.strip_prefix(find.as_str())?;
-        (rest.is_empty() || rest.starts_with('/')).then(|| format!("{replacement}{rest}"))
-    })
 }
