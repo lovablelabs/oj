@@ -124,26 +124,20 @@ impl From<CssResolve<'_>> for CssResolveConfig {
 
 impl CssResolve<'_> {
     /// The specifier after `resolve.alias`, matched like @rollup/plugin-alias:
-    /// the whole specifier or a `find/` prefix. Yields an absolute path for a
+    /// the whole specifier or a `find/` prefix, a RegExp find as it tests. Yields an absolute path for a
     /// path alias, a bare specifier for a package alias.
     pub fn alias_spec(&self, spec: &str) -> Option<String> {
         self.alias.iter().find_map(|(find, replacement)| {
             if find.is_empty() {
                 return None;
             }
-            let rest = if spec == find {
-                ""
-            } else {
-                spec.strip_prefix(find.as_str())
-                    .filter(|rest| rest.starts_with('/'))?
-            };
-            let target = match (replacement.starts_with('.'), self.root) {
-                (true, Some(root)) => normalize(&root.join(replacement))
+            let aliased = oj_resolver::alias::rewrite(find, replacement, spec)?;
+            Some(match (aliased.starts_with('.'), self.root) {
+                (true, Some(root)) => normalize(&root.join(&aliased))
                     .to_string_lossy()
                     .into_owned(),
-                _ => replacement.clone(),
-            };
-            Some(format!("{target}{rest}"))
+                _ => aliased,
+            })
         })
     }
 
@@ -218,6 +212,21 @@ mod tests {
         assert_eq!(
             r.alias_spec("react/x.css").as_deref(),
             Some("preact/compat/x.css")
+        );
+        // A RegExp find tests and replaces as JavaScript.
+        let regex = vec![(
+            oj_resolver::alias::regex_find("^~(.*)$", ""),
+            "./styles/$1".to_string(),
+        )];
+        let re = CssResolve {
+            root: Some(Path::new("/proj")),
+            public_dir: None,
+            alias: &regex,
+            ..CssResolve::default()
+        };
+        assert_eq!(
+            re.alias_spec("~theme.css").as_deref(),
+            Some("/proj/styles/theme.css")
         );
         assert!(r.alias_path("react/x.css").is_none());
         assert_eq!(

@@ -2329,13 +2329,27 @@ fn alias_plugin(root: &Path, config: &oj_config::OjConfig) -> Option<SharedPlugi
     use crate::start_bundle::facts::{AliasEntry, AliasFind};
     let entries: Vec<AliasEntry> = oj_config::top_level_alias(config)
         .into_iter()
-        .map(|(find, replacement)| AliasEntry {
-            find: AliasFind::Exact(find),
-            replacement: if replacement.starts_with('.') {
-                root.join(&replacement).to_string_lossy().into_owned()
-            } else {
-                replacement
-            },
+        .filter_map(|(find, replacement)| {
+            let find = match oj_resolver::alias::regex_parts(&find) {
+                Some((source, flags)) => {
+                    let flags: String = flags
+                        .chars()
+                        .filter(|c| !matches!(c, 'g' | 'y' | 'd'))
+                        .collect();
+                    AliasFind::Regex(
+                        rolldown_utils::js_regex::HybridRegex::with_flags(source, &flags).ok()?,
+                    )
+                }
+                None => AliasFind::Exact(find),
+            };
+            Some(AliasEntry {
+                find,
+                replacement: if replacement.starts_with('.') {
+                    root.join(&replacement).to_string_lossy().into_owned()
+                } else {
+                    replacement
+                },
+            })
         })
         .collect();
     (!entries.is_empty()).then(|| Pluginable::new_shared(AppAliasPlugin { entries }))
@@ -7784,6 +7798,55 @@ mod tests {
                 "{name}: ~lib through paths:\n{js}"
             );
         }
+    }
+
+    /// A RegExp alias find tests and replaces as JavaScript in a build too:
+    /// an anchored `^@\/lib$` leaves `@/lib/helper` to `@`, and `$1` carries
+    /// the capture.
+    #[tokio::test]
+    async fn the_build_applies_regex_alias_finds_as_vite() {
+        let root = scratch("build-regex-alias");
+        for (file, body) in [
+            ("package.json", r#"{"type":"module"}"#),
+            (
+                "vite.config.mjs",
+                "import path from \"node:path\";\nconst src = (p) => path.resolve(import.meta.dirname, \"src\", p);\nexport default { resolve: { alias: [{ find: /^@\\/lib$/, replacement: src(\"wrong.ts\") }, { find: /^~(.*)$/, replacement: src(\"$1\") }, { find: \"@\", replacement: src(\"\") }] } };\n",
+            ),
+            (
+                "index.html",
+                r#"<html><body><script type="module" src="/src/main.ts"></script></body></html>"#,
+            ),
+            (
+                "src/main.ts",
+                "import { helper } from \"@/lib/helper\";\nimport { other } from \"~other\";\nconsole.log(helper, other);\n",
+            ),
+            ("src/lib/helper.ts", "export const helper = \"lib-helper\";\n"),
+            ("src/other.ts", "export const other = \"tilde-other\";\n"),
+            ("src/wrong.ts", "export const helper = \"wrong-file\";\n"),
+        ] {
+            let path = root.join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, body).unwrap();
+        }
+        build(
+            root.clone(),
+            Some("production"),
+            &tokio::runtime::Handle::current(),
+            CliOptions::default(),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{e:#}"));
+        let js: String = fs::read_dir(root.join("dist/assets"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|x| x == "js"))
+            .map(|e| fs::read_to_string(e.path()).unwrap())
+            .collect();
+        assert!(
+            js.contains("lib-helper") && !js.contains("wrong-file"),
+            "{js}"
+        );
+        assert!(js.contains("tilde-other"), "{js}");
     }
 
     /// Vite's define plugin: a browser bundle gets `process.env` -> `{}` (so an

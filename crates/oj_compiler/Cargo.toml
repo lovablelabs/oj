@@ -7,6 +7,7 @@ repository.workspace = true
 description = "Fused per-file pipeline"
 
 [dependencies]
+oj_resolver.workspace = true
 oxc_allocator.workspace = true
 oxc_ast.workspace = true
 oxc_ast_visit.workspace = true
