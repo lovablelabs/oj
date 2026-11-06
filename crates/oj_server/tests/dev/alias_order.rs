@@ -549,7 +549,7 @@ async fn the_plugins_own_options_decide_as_in_vite() {
 
 /// An edit while dev runs, in Vite and in oj: `files` laid out, dev served
 /// from `web` (relative to the app), `url` fetched before (`before`), then
-/// each of `edits` written 300ms apart; `url` must come to serve `after`.
+/// each of `edits` written a second apart; `url` must come to serve `after`.
 /// `<root>` in `url` and in served imports is the app's directory.
 struct EditCase<'a> {
     files: &'a [(&'a str, &'a str)],
@@ -586,8 +586,10 @@ impl EditCase<'_> {
     fn edit(&self, app: &App) {
         // A watcher's `add` settles in the background, chokidar's as oj's.
         std::thread::sleep(Duration::from_millis(1000));
+        // Apart by more than a watcher settle window: each edit is its own
+        // change, as the test means it (a plugin reloads a project between).
         for (file, body) in self.edits {
-            std::thread::sleep(Duration::from_millis(300));
+            std::thread::sleep(Duration::from_millis(1000));
             app.write(&[(*file, *body)]);
         }
     }

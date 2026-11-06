@@ -140,6 +140,93 @@ pub fn run_engine_job_in_process(
     }
 }
 
+/// The plugin host's engine, started ahead of its host, offered to this
+/// boot's config extraction: a fresh evaluation runs there and the host takes
+/// the run over (the config evaluated and its hooks run once, as Vite's one
+/// `resolveConfig` serves its server). By app root, as is the command line's
+/// inline config: one process may boot several apps (the tests do).
+static HOST_ENGINE: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<PathBuf, std::sync::Arc<oj_js::JsEngine>>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// The command line's inline config an app resolves under (`--port`,
+/// `--host`): Vite's config hooks see it, so an evaluation under it is
+/// stored apart from one without.
+static CLI_INLINE: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<PathBuf, serde_json::Value>>,
+> = std::sync::LazyLock::new(Default::default);
+
+pub fn set_cli_inline(root: &Path, cli: serde_json::Value) {
+    let mut map = CLI_INLINE.lock().unwrap_or_else(|e| e.into_inner());
+    if cli.as_object().is_some_and(|o| !o.is_empty()) {
+        map.insert(root.to_path_buf(), cli);
+    } else {
+        map.remove(root);
+    }
+}
+
+fn cli_inline(root: &Path) -> Option<serde_json::Value> {
+    CLI_INLINE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(root)
+        .cloned()
+}
+
+pub(crate) fn offer_host_engine(root: &Path, engine: std::sync::Arc<oj_js::JsEngine>) {
+    HOST_ENGINE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(root.to_path_buf(), engine);
+}
+
+/// Ends the offer for `root` (its config is read): an engine the boot drops
+/// is not kept alive here.
+pub fn withdraw_host_engine(root: &Path) {
+    HOST_ENGINE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(root);
+}
+
+fn take_host_engine(root: &Path) -> Option<std::sync::Arc<oj_js::JsEngine>> {
+    HOST_ENGINE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(root)
+}
+
+/// `export` of `module` on `engine`, blocking (a scoped thread inside tokio).
+fn run_on_engine(
+    engine: &oj_js::JsEngine,
+    module: &Path,
+    export: &str,
+    payload: serde_json::Value,
+    deadline: Option<std::time::Duration>,
+) -> Result<serde_json::Value, oj_js::EngineError> {
+    let run = move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| oj_js::EngineError::Boot(e.to_string()))?;
+        rt.block_on(engine.call(
+            module.to_string_lossy().into_owned(),
+            export,
+            vec![payload],
+            deadline,
+        ))
+    };
+    if tokio::runtime::Handle::try_current().is_ok() {
+        std::thread::scope(|s| {
+            s.spawn(run)
+                .join()
+                .expect("extraction thread must not panic")
+        })
+    } else {
+        run()
+    }
+}
+
 /// The `--result` file of an `oj engine-job` run, encoding the exact [`oj_js::EngineError`].
 /// A file, not stdout, so job code that prints cannot corrupt the channel.
 pub fn engine_job_envelope(
@@ -385,12 +472,15 @@ pub(crate) fn extract_vite_values_with(
 /// key. `worker` options reach only a build's worker bundles, which an SPA
 /// build makes without them (the Start build applies them, dev bundles none),
 /// so only an SPA build warns; its stderr is cached apart.
-fn extraction_mode_key(mode: &str, mode_explicit: bool, spa_build: bool) -> String {
-    let key = if mode_explicit {
+fn extraction_mode_key(root: &Path, mode: &str, mode_explicit: bool, spa_build: bool) -> String {
+    let mut key = if mode_explicit {
         mode.to_string()
     } else {
         format!("{mode}@default")
     };
+    if let Some(cli) = cli_inline(root) {
+        key.push_str(&format!("@cli={cli}"));
+    }
     if spa_build {
         format!("{key}@spa-build")
     } else {
@@ -413,8 +503,11 @@ pub(crate) fn cached_active_plugins(
     if let Some(json) = super::static_config::static_extraction(root, &vite, "serve", mode) {
         return json.get("activePlugins")?.as_u64().map(|n| n as usize);
     }
-    let hit =
-        extraction_store(root).lookup(&vite, "serve", &extraction_mode_key(mode, true, false))?;
+    let hit = extraction_store(root).lookup(
+        &vite,
+        "serve",
+        &extraction_mode_key(root, mode, true, false),
+    )?;
     let json: serde_json::Value = serde_json::from_str(&hit.output).ok()?;
     json.get("activePlugins")?.as_u64().map(|n| n as usize)
 }
@@ -456,7 +549,7 @@ fn extraction(
         return None;
     }
     let spa_build = command == "build" && !crate::is_tanstack_start_app(root);
-    let mode_key = extraction_mode_key(mode, mode_explicit, spa_build);
+    let mode_key = extraction_mode_key(root, mode, mode_explicit, spa_build);
     let mode_key = mode_key.as_str();
     let vite = vite_config_file(root, config)?;
     if !fresh {
@@ -510,7 +603,7 @@ pub fn static_and_engine_extraction(
     vite: &Path,
 ) -> (Option<serde_json::Value>, Option<serde_json::Value>) {
     let read = super::static_config::static_extraction(root, vite, "serve", "development");
-    let mode_key = extraction_mode_key("development", true, false);
+    let mode_key = extraction_mode_key(root, "development", true, false);
     let evaluated = run_extraction(
         root,
         vite,
@@ -559,7 +652,7 @@ fn run_extraction(
     let cache = oj_cache::cache_root(root);
     let _ = std::fs::create_dir_all(&cache);
     let script = materialize_extract_script(&cache)?;
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "vite": vite.to_string_lossy(),
         "root": root.to_string_lossy(),
         "command": command,
@@ -568,8 +661,17 @@ fn run_extraction(
         "spaBuild": spa_build,
         "cacheDir": cache.to_string_lossy(),
     });
+    let host = take_host_engine(root);
+    if host.is_some() {
+        payload["keep"] = true.into();
+        payload["cliInline"] = cli_inline(root).unwrap_or_else(|| serde_json::json!({}));
+    }
     // The result is the call's return value: config code that prints cannot corrupt it.
-    let json = match run_engine_job(root, &script, "extract", payload, timeout) {
+    let ran = match &host {
+        Some(engine) => run_on_engine(engine, &script, "extract", payload, timeout),
+        None => run_engine_job(root, &script, "extract", payload, timeout),
+    };
+    let json = match ran {
         Ok(json) => json,
         Err(oj_js::EngineError::Deadline) => {
             eprintln!(
@@ -594,6 +696,11 @@ fn run_extraction(
     // Never parse that into an empty ViteValues; return None.
     if json.get("__ok").and_then(|v| v.as_bool()) != Some(true) {
         return None;
+    }
+    // Whether the host took the run over is this start's alone.
+    let mut json = json;
+    if let Some(o) = json.as_object_mut() {
+        o.remove("__kept");
     }
     store_extraction(&store, vite, command, mode_key, &json, &stderr);
     EXTRACTION_RAN_FRESH.store(true, std::sync::atomic::Ordering::Relaxed);

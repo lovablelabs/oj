@@ -281,6 +281,10 @@ pub async fn start_dev(
     oj_server::write_start_assets(&cache)?;
     oj_server::boot_phase("start_dev begin");
 
+    // The dev server's plugin host engine, before the config is first read
+    // below and in the dev server build alongside: that first evaluation runs
+    // on it, so the config and its hooks run once, as in Vite.
+    oj_server::start_host_engine_early(&root, config_file.as_deref(), &mode, port, host.as_deref());
     // Before boot: the long start boot is where supervisor signals land, and
     // plugin children (workerd) spawn well before the server listens.
     let host_slot = std::sync::Arc::new(std::sync::OnceLock::new());

@@ -919,6 +919,81 @@ fn empty_plugin_file(root: &Path) -> Option<PluginFile> {
     })
 }
 
+/// Before any engine can spawn: reap children a SIGKILLed predecessor (OOM
+/// kill, supervisor escalation) left behind and start this process's file;
+/// plugin-hook children register (own process group each) so restarts and
+/// shutdown can kill whole plugin-spawned trees. Repeating it is harmless.
+fn prepare_engines(root: &Path) {
+    prepare_cache_root(root);
+    child_groups::init_registry(&oj_cache::cache_root(root).join("children"));
+    deno_process::oj_hook::set(child_groups::register, child_groups::unregister);
+    // The engine's own signal path (deno_signals) exits the process itself on an
+    // unhandled SIGHUP/SIGTERM/SIGINT, beating the tokio shutdown task; sweep there
+    // too or a supervisor restart strands every plugin child (workerd) on pid 1.
+    deno_process::oj_hook::set_shutdown_sweep(|| {
+        child_groups::kill_all();
+    });
+}
+
+/// The plugin host's engine, booting and importing vite while the config is
+/// read, instead of after. Not when the last evaluation found no plugin to
+/// host (the boot then drops the host, once the config confirms it). A fresh
+/// evaluation runs on it and the host takes the run over: the config and its
+/// hooks run once, as in Vite.
+fn host_prewarm(
+    root: &Path,
+    config_file: Option<&Path>,
+    mode: &str,
+    registry: &oj_js::EngineRegistry,
+) -> Option<plugins::HostPrewarm> {
+    let warm = plugin_file(root, config_file)
+        .filter(|f| f.format == PluginsFormat::Vite)
+        .filter(|_| plugins::cached_active_plugins(root, config_file, mode) != Some(0))
+        .and_then(|_| PluginHost::prewarm(root, Some(registry.clone())))?;
+    warm.offer_to_extraction(root);
+    Some(warm)
+}
+
+/// A host engine started before the dev server builds (Start reads the config
+/// alongside), which the build takes.
+struct EarlyHost {
+    root: PathBuf,
+    registry: oj_js::EngineRegistry,
+    prewarm: Option<plugins::HostPrewarm>,
+}
+
+static EARLY_HOST: std::sync::Mutex<Option<EarlyHost>> = std::sync::Mutex::new(None);
+
+/// Starts the dev server's plugin host engine now, offered to the config's
+/// first evaluation, for a caller that reads the config before the dev server
+/// builds (Start): that evaluation is the host's, as Vite resolves once.
+pub fn start_host_engine_early(
+    root: &Path,
+    config_file: Option<&Path>,
+    mode: &str,
+    port: Option<u16>,
+    host: Option<&str>,
+) {
+    prepare_engines(root);
+    plugins::set_cli_inline(root, cli_inline(port, host));
+    let registry = oj_js::EngineRegistry::new();
+    let prewarm = host_prewarm(root, config_file, mode, &registry);
+    *EARLY_HOST.lock().unwrap_or_else(|e| e.into_inner()) = Some(EarlyHost {
+        root: root.to_path_buf(),
+        registry,
+        prewarm,
+    });
+}
+
+fn take_early_host(root: &Path) -> Option<EarlyHost> {
+    let mut slot = EARLY_HOST.lock().unwrap_or_else(|e| e.into_inner());
+    if slot.as_ref().is_some_and(|e| e.root == root) {
+        slot.take()
+    } else {
+        None
+    }
+}
+
 /// The dev host's environment mode (Vite's `environment.mode`).
 const HOST_ENV_MODE: &str = "dev";
 
@@ -1756,35 +1831,27 @@ impl DevServer {
         });
 
         boot_phase("build_app begin");
-        prepare_cache_root(&root);
-        // Before any engine can spawn: reap children a SIGKILLed predecessor
-        // (OOM kill, supervisor escalation) left behind, then start our file.
-        child_groups::init_registry(&oj_cache::cache_root(&root).join("children"));
+        prepare_engines(&root);
         let dev_mode = self.dev_mode();
-        // BEFORE any engine boots: plugin-hook children register here (own process
-        // group each) so restarts and shutdown can kill whole plugin-spawned trees.
-        deno_process::oj_hook::set(child_groups::register, child_groups::unregister);
-        // The engine's own signal path (deno_signals) exits the process itself on an
-        // unhandled SIGHUP/SIGTERM/SIGINT, beating the tokio shutdown task; sweep there
-        // too or a supervisor restart strands every plugin child (workerd) on pid 1.
-        deno_process::oj_hook::set_shutdown_sweep(|| {
-            child_groups::kill_all();
-        });
-        let engine_registry = oj_js::EngineRegistry::new();
+        plugins::set_cli_inline(&root, cli_inline(self.port, self.host.as_deref()));
+        let early = take_early_host(&root);
+        let engine_registry = early
+            .as_ref()
+            .map(|e| e.registry.clone())
+            .unwrap_or_default();
         let plugin_file = plugin_file(&root, config_file.as_deref());
         // The plugin host's engine boots and imports vite while the config is
         // extracted, instead of after: neither needs the other until the host's
         // payload, which the extracted values build.
         // Not when the last extraction found no plugin to host (the boot
         // then drops the host below, once the config confirms it).
-        let prewarm = plugin_file
-            .as_ref()
-            .filter(|f| f.format == PluginsFormat::Vite)
-            .filter(|_| {
-                plugins::cached_active_plugins(&root, config_file.as_deref(), &dev_mode) != Some(0)
-            })
-            .and_then(|_| PluginHost::prewarm(&root, Some(engine_registry.clone())));
-        let config = load_dev_config(&root, config_file.as_deref(), &dev_mode)?;
+        let prewarm = match early {
+            Some(early) => early.prewarm,
+            None => host_prewarm(&root, config_file.as_deref(), &dev_mode, &engine_registry),
+        };
+        let config = load_dev_config(&root, config_file.as_deref(), &dev_mode);
+        plugins::withdraw_host_engine(&root);
+        let config = config?;
         let has_proxy = config
             .server
             .as_ref()

@@ -136,6 +136,15 @@ pub struct HostPrewarm {
     boot_preseed: BootPreseed,
 }
 
+impl HostPrewarm {
+    /// Offers this engine to the boot's config extraction: a fresh one runs
+    /// on it, and the host this engine becomes takes the run over instead of
+    /// evaluating the config again.
+    pub fn offer_to_extraction(&self, root: &Path) {
+        super::extract::offer_host_engine(root, std::sync::Arc::clone(&self.engine));
+    }
+}
+
 /// What the dev server resolves plugin requests with: a `this.resolve` no
 /// plugin answers takes the calling environment's own resolve options, as
 /// Vite builds its resolve plugin per environment (`applyToEnvironment`,

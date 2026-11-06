@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
-//! The app's vite.config runs once per consumer, as Vite's createServer
-//! resolves it once: the plugin host evaluates the file once and runs each
-//! plugin's config hook once, and only a cold extraction adds an evaluation.
+//! The app's vite.config runs once per start, as Vite's createServer resolves
+//! it once: a cold boot's extraction runs on the plugin host's engine and the
+//! host takes it over, and a warm boot's host evaluates it itself.
 
 use crate::App;
 
@@ -61,10 +61,10 @@ async fn plugin_host_evaluates_the_config_once() {
             "the plugin host did not run:\n{main}"
         );
     }
-    // The extraction and the plugin host.
+    // The extraction, which the plugin host took over.
     assert_eq!(
         counts(&log),
-        (2, 2),
+        (1, 1),
         "cold boot (evaluations, config hooks)"
     );
 
