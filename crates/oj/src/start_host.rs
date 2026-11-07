@@ -1178,7 +1178,12 @@ impl StartHost {
                     }
                     return Ok(Some(self.module_url(&tagged, importer_id, generation)));
                 }
-                Ok(Some(self.module_url(&id, importer_id, generation)))
+                // Classify second, as the dependency branch does: a style or
+                // asset file (or an intent-carrying id) must reach the load
+                // path tagged, or it falls into the JS compile and dies with
+                // "unsupported file type". Plain sources classify to
+                // themselves, so their graph identity is unchanged.
+                Ok(Some(self.module_url(&tagged, importer_id, generation)))
             }
             // A plugin's module id, used as is.
             StartResolution::Module(id) => Ok(Some(self.module_url(&id, importer_id, generation))),
@@ -2067,6 +2072,167 @@ mod tests {
         assert_eq!(graph.invalidate(), 2);
         assert_eq!(graph.version_of("virtual:old-importer"), 0);
         assert_eq!(graph.version_of("virtual:new-importer"), 1);
+    }
+
+    // A custom server entry wrapping the framework default through the named
+    // export (`import handler, { createServerEntry } from
+    // "@tanstack/solid-start/server-entry"`, as a real app's src/server.ts
+    // does): the Start host shadows that subpath with its runner, so the
+    // shadow must provide the named export too. Before it did, every page
+    // 500d with "does not provide an export named 'createServerEntry'".
+    #[tokio::test(flavor = "multi_thread")]
+    async fn custom_server_entry_may_wrap_the_default_through_create_server_entry() {
+        let root =
+            std::env::temp_dir().join(format!("oj-start-serverentry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let cache = root.join("start-cache");
+        // The real runner stubs, as the dev server writes them.
+        oj_server::write_start_assets(&cache).unwrap();
+        // A minimal `@tanstack/solid-start` shaped like 1.169: the default
+        // entry re-exports `createServerEntry` from the `server` subpath.
+        let package = root.join("node_modules/@tanstack/solid-start");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("package.json"), r#"{"type":"module"}"#).unwrap();
+        std::fs::write(
+            package.join("package.json"),
+            r#"{"name":"@tanstack/solid-start","type":"module","exports":{".":"./index.js","./server":{"import":"./server.js"},"./server-entry":{"import":"./server-entry.js"}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            package.join("server.js"),
+            "export function createStartHandler() {\n  return async () => new Response(\"<p>stub-marker</p>\");\n}\nexport function defaultStreamHandler() {}\nexport function createServerEntry(entry) {\n  return { async fetch(...args) {\n    const response = await entry.fetch(...args);\n    const headers = new Headers(response.headers);\n    headers.set(\"x-server-entry\", \"wrapped\");\n    return new Response(response.body, { status: response.status, statusText: response.statusText, headers });\n  } };\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            package.join("server-entry.js"),
+            "export { createServerEntry } from \"./server.js\";\n",
+        )
+        .unwrap();
+        let entry = root.join("src/server.ts");
+        std::fs::write(
+            &entry,
+            "import handler, { createServerEntry } from \"@tanstack/solid-start/server-entry\";\nexport default createServerEntry({\n  fetch(request) {\n    return handler.fetch(request);\n  },\n});\n",
+        )
+        .unwrap();
+        let built = oj_server::DevServer {
+            root: root.clone(),
+            port: None,
+            host: None,
+            config: None,
+            enable_cache: false,
+            no_cache: true,
+            lazy: true,
+            typecheck: false,
+            mode: None,
+            rolldown: tokio::runtime::Handle::current(),
+        }
+        .build_app()
+        .await
+        .unwrap();
+        let engine = StartEngine::new(
+            root.clone(),
+            &cache,
+            built.ssr.clone(),
+            entry,
+            Default::default(),
+            None,
+            Vec::new(),
+            StartFramework::Solid,
+        )
+        .unwrap();
+        let response = engine
+            .handle(StartRequest {
+                method: "GET".into(),
+                url: "/".into(),
+                host: "localhost".into(),
+                headers: Vec::new(),
+                body: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(response.status, 200);
+        assert!(
+            response
+                .headers
+                .contains(&("x-server-entry".into(), "wrapped".into())),
+            "the named export did not wrap the response: {response:?}"
+        );
+        assert_eq!(
+            String::from_utf8(response.body).unwrap(),
+            "<p>stub-marker</p>"
+        );
+        drop(engine);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    // Stylesheets in the Start SSR graph are modules, not JS: a plain import
+    // links the css pipeline's module, `?url` the served URL. Before the
+    // resolver classified them, both fell into the JS compile and every page
+    // 500d with "unsupported file type".
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_engine_serves_stylesheet_imports_as_modules() {
+        let root = std::env::temp_dir().join(format!("oj-start-styles-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let cache = root.join("start-cache");
+        oj_server::write_start_assets(&cache).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("package.json"), r#"{"type":"module"}"#).unwrap();
+        std::fs::write(root.join("src/empty.css"), ".x { color: red; }\n").unwrap();
+        std::fs::write(root.join("src/url.css"), ".y { color: blue; }\n").unwrap();
+        let entry = root.join("src/server.ts");
+        std::fs::write(
+            &entry,
+            "import \"./empty.css\";\nimport urlCss from \"./url.css?url\";\nexport default {\n  async fetch(request: Request) {\n    if (new URL(request.url).pathname === \"/css-probe\") {\n      return new Response(urlCss);\n    }\n    return new Response(\"<p>css-marker</p>\");\n  },\n};\n",
+        )
+        .unwrap();
+        let built = oj_server::DevServer {
+            root: root.clone(),
+            port: None,
+            host: None,
+            config: None,
+            enable_cache: false,
+            no_cache: true,
+            lazy: true,
+            typecheck: false,
+            mode: None,
+            rolldown: tokio::runtime::Handle::current(),
+        }
+        .build_app()
+        .await
+        .unwrap();
+        let engine = StartEngine::new(
+            root.clone(),
+            &cache,
+            built.ssr.clone(),
+            entry,
+            Default::default(),
+            None,
+            Vec::new(),
+            StartFramework::Solid,
+        )
+        .unwrap();
+        let request = |url: &str| StartRequest {
+            method: "GET".into(),
+            url: url.into(),
+            host: "localhost".into(),
+            headers: Vec::new(),
+            body: None,
+        };
+        let response = engine.handle(request("/")).await.unwrap();
+        assert_eq!(response.status, 200);
+        assert_eq!(
+            String::from_utf8(response.body).unwrap(),
+            "<p>css-marker</p>"
+        );
+        let probe = engine.handle(request("/css-probe")).await.unwrap();
+        assert_eq!(probe.status, 200);
+        assert!(
+            String::from_utf8(probe.body).unwrap().contains("url.css"),
+            "the ?url import did not serve the stylesheet URL"
+        );
+        drop(engine);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     // Reproduce the external Start runtime's module-scope entriesPromise:

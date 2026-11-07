@@ -50,6 +50,23 @@ fn start_manifest_shims_serve_old_and_new_start_server_core_shapes() {
     );
 }
 
+// The runner shadows `{pkg}/server-entry` so an app server entry wrapping
+// the default composes against it; the shadow must keep the default's named
+// export too, or a wrapper importing `createServerEntry` 500s every page
+// with "does not provide an export named 'createServerEntry'".
+#[test]
+fn both_runner_stubs_export_create_server_entry() {
+    let dir = tmp("runner-stubs");
+    write_start_assets(&dir).unwrap();
+    for name in ["server-entry.tsx", "server-entry-solid.tsx"] {
+        let src = std::fs::read_to_string(dir.join(name)).unwrap();
+        assert!(
+            src.contains("export function createServerEntry"),
+            "{name} lost the named export app server entries wrap with"
+        );
+    }
+}
+
 #[test]
 fn start_build_scripts_match_the_embedded_assets_in_cache_order() {
     let expected_names = [
