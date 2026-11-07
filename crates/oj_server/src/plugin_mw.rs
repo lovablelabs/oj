@@ -227,6 +227,13 @@ pub async fn proxy_to_loopback_streaming(
     let m = reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?;
     let mut out = client.request(m, &target);
     for (name, value) in loopback_request_headers(headers) {
+        // A bodyless forward must not promise a body: the sidecar's parser
+        // would wait for bytes that never arrive, then eat the next pooled
+        // request's head as the missing body (Node answers 400, empty, and
+        // destroys the socket). Real bodies keep their framing untouched.
+        if body.is_none() && (name == header::CONTENT_LENGTH || name == header::TRANSFER_ENCODING) {
+            continue;
+        }
         out = out.header(name, value);
     }
     if let Some(b) = body {
