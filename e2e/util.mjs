@@ -11,6 +11,10 @@ export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // release cannot change what CI runs; bump them on purpose.
 export const CLOUDFLARE_DEPS = "@cloudflare/vite-plugin@1.64.0 wrangler@4.151.3";
 
+// The Nitro tests install this exact version, so a Nitro release cannot
+// change what CI runs; bump it on purpose.
+export const NITRO_DEPS = "nitro@3.0.261103-rc";
+
 // Teardown rm for app dirs a killed server's cache writes can still land in
 // for a beat. The async rm, not rmSync: on ENOTEMPTY, sync rimraf clears the
 // children once and then only retries the bare rmdir, so a single straggler

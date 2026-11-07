@@ -3930,6 +3930,15 @@ pub async fn build(
     )
     .await?;
     install_build_resolvers(&plugin_host, &root, &config, "client");
+    // Nitro builds its server from its buildApp hooks, which only oj's Start
+    // build runs: without them the build would ship the client alone.
+    if let Some(host) = &plugin_host {
+        if host.plugin_names().await.iter().any(|n| n == "nitro:main") {
+            anyhow::bail!(
+                "nitro/vite is configured, but oj build supports it only in TanStack Start apps so far; this build would leave out Nitro's server"
+            );
+        }
+    }
     let mut html_docs: Vec<HtmlDoc> = Vec::new();
     let html_inline: Arc<Mutex<std::collections::HashMap<String, String>>> =
         Arc::new(Mutex::new(std::collections::HashMap::new()));

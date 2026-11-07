@@ -2,10 +2,11 @@
 // Copyright (c) 2026 Raphael Amorim
 //
 // A TanStack Start production build honors the build options Vite applies to
-// any app: `--out` / `build.outDir`, `base`, `build.sourcemap`, `build.minify`.
-// The fixture is built with a config override (its own config plus a sub-path
-// base, source maps and no minification) into a temporary outDir, then served
-// to check the base-prefixed asset URLs resolve.
+// any app: `--out` / `build.outDir`, `base`, `build.assetsDir`,
+// `build.sourcemap`, `build.minify`. The fixture is built with a config
+// override (its own config plus a sub-path base, a nested assetsDir, source
+// maps and no minification) into a temporary outDir, then served to check the
+// base-prefixed asset URLs resolve.
 
 import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
@@ -38,7 +39,7 @@ fs.writeFileSync(path.join(tmp, "package.json"), '{"type":"module"}\n');
 fs.writeFileSync(
   config,
   `import base from ${JSON.stringify(path.join(app, "vite.config"))};\n` +
-    `export default { ...base, base: "/app/", build: { ...(base as any).build, sourcemap: true, minify: false } };\n`,
+    `export default { ...base, base: "/app/", build: { ...(base as any).build, assetsDir: "static/build", sourcemap: true, minify: false } };\n`,
 );
 
 // A dist/ left by an earlier fixture build would read as "--out ignored" below;
@@ -60,9 +61,13 @@ try {
   for (const f of ["server.mjs", "server-bundle.mjs", "server-bundle.mjs.map", "client"]) {
     if (!fs.existsSync(path.join(out, f))) throw new Error(`outDir is missing ${f}`);
   }
-  const assets = path.join(out, "client", "assets");
+  if (fs.existsSync(path.join(out, "client", "assets")))
+    throw new Error("build.assetsDir was ignored: client/assets/ was written");
+  const assets = path.join(out, "client", "static", "build");
   const clientJs = fs.readdirSync(assets).find((f) => /^client-.*\.js$/.test(f));
-  if (!clientJs) throw new Error("no client entry chunk in outDir");
+  if (!clientJs) throw new Error("no client entry chunk under build.assetsDir in outDir");
+  if (!fs.readdirSync(assets).some((f) => f.endsWith(".css")))
+    throw new Error("no stylesheet under build.assetsDir in outDir");
   if (!fs.existsSync(path.join(assets, clientJs + ".map")))
     throw new Error("build.sourcemap: true emitted no client .map");
   const code = fs.readFileSync(path.join(assets, clientJs), "utf8");
@@ -83,7 +88,7 @@ try {
     .filter((f) => String(f).endsWith(".mjs"))
     .map((f) => fs.readFileSync(path.join(out, String(f)), "utf8"));
   for (const [key, field] of [
-    ["clientEntry", new RegExp(`"clientEntry"\\s*:\\s*"/app/assets/${clientJs.replace(/[.$]/g, "\\$&")}"`)],
+    ["clientEntry", new RegExp(`"clientEntry"\\s*:\\s*"/app/static/build/${clientJs.replace(/[.$]/g, "\\$&")}"`)],
     ["assets", /"assets"\s*:/],
   ]) {
     if (!serverChunks.some((code) => field.test(code))) {
@@ -102,16 +107,21 @@ try {
     const home = await fetch(`http://localhost:${port}/`);
     const html = await home.text();
     if (home.status !== 200) throw new Error(`/ returned ${home.status}`);
-    if (!html.includes(`src="/app/assets/${clientJs}"`)) {
+    if (!html.includes(`src="/app/static/build/${clientJs}"`)) {
       throw new Error("the rendered page does not load the client entry under the base:\n" + html.slice(0, 800));
     }
-    if (/(?:src|href)="\/assets\//.test(html)) throw new Error("an asset URL was emitted without the base prefix");
-    const asset = await fetch(`http://localhost:${port}/app/assets/${clientJs}`);
+    if (/(?:src|href)="\/(?:assets|static)\//.test(html))
+      throw new Error("an asset URL was emitted without the base prefix");
+    const asset = await fetch(`http://localhost:${port}/app/static/build/${clientJs}`);
     if (asset.status !== 200) throw new Error(`base-prefixed asset returned ${asset.status}`);
+    const sheet = html.match(/href="(\/app\/static\/build\/[^"]+\.css)"/)?.[1];
+    if (!sheet) throw new Error("the stylesheet is not linked under base + assetsDir:\n" + html.slice(0, 800));
+    if ((await fetch(`http://localhost:${port}${sheet}`)).status !== 200)
+      throw new Error(`the linked stylesheet ${sheet} is not served`);
   } finally {
     srv.kill("SIGKILL");
   }
-  console.log("start-build-options: outDir, base, sourcemap and minify honored");
+  console.log("start-build-options: outDir, base, assetsDir, sourcemap and minify honored");
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }

@@ -7,6 +7,25 @@ pub(crate) const MAIN_CONTAINER: u32 = 0;
 /// opens; worker containers count up from 1 below it.
 const ENVIRONMENT_CONTAINERS: u32 = 1 << 20;
 
+/// Vite's `define` entries as (key, expression) pairs: a string is the
+/// expression, anything else its JSON.
+pub fn define_exprs(define: &serde_json::Value) -> Vec<(String, String)> {
+    define
+        .as_object()
+        .map(|d| {
+            d.iter()
+                .map(|(k, v)| {
+                    let expr = match v {
+                        serde_json::Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    };
+                    (k.clone(), expr)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// A handle on one plugin container of a plugin host: the host's own
 /// (MAIN_CONTAINER), or a worker bundle's ([`PluginHost::open_worker_container`]).
 /// Every container lives in the one engine and realm the host runs.
@@ -1221,9 +1240,10 @@ impl PluginHost {
     /// Vite's `builder.buildApp`: the plugins' buildApp hooks, which reach
     /// oj's environment builds through the `buildEnvironments` reverse RPC.
     /// `built_json` names the environments oj builds (name -> `{ outDir, input }`).
+    /// Answers where Nitro's build went (`{ outputDir, preview }`), if it ran.
     #[inline]
-    pub async fn build_app(&self, built_json: &str) -> Result<(), String> {
-        self.call_unit("buildApp", &[built_json]).await
+    pub async fn build_app(&self, built_json: &str) -> Result<Option<String>, String> {
+        self.call("buildApp", &[built_json]).await
     }
 
     #[inline]
@@ -1294,6 +1314,19 @@ impl PluginHost {
     pub async fn start_facts(&self) -> Result<serde_json::Value, String> {
         let raw = self.call("startFacts", &[]).await?.unwrap_or_default();
         serde_json::from_str(&raw).map_err(|e| format!("start facts: {e}"))
+    }
+
+    /// The current environment's build options (plugin-host.mjs
+    /// `environmentBuildFacts`), for an environment oj bundles from its
+    /// config alone: input, output options, resolve and define, functions
+    /// as `{ "$fn": n }` handles. Read after `start_facts`, whose call resets
+    /// the handles.
+    pub async fn environment_build_facts(&self) -> Result<serde_json::Value, String> {
+        let raw = self
+            .call("environmentBuildFacts", &[])
+            .await?
+            .unwrap_or_default();
+        serde_json::from_str(&raw).map_err(|e| format!("environment build facts: {e}"))
     }
 
     /// Calls the config function behind a `{ "$fn": n }` handle with JSON
@@ -1727,20 +1760,7 @@ impl PluginHost {
         let Some(v) = self.call_json("getPluginConfig").await else {
             return Vec::new();
         };
-        v.get("define")
-            .and_then(|d| d.as_object())
-            .map(|d| {
-                d.iter()
-                    .map(|(k, v)| {
-                        let expr = match v {
-                            serde_json::Value::String(s) => s.clone(),
-                            other => other.to_string(),
-                        };
-                        (k.clone(), expr)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+        v.get("define").map(define_exprs).unwrap_or_default()
     }
 
     pub async fn env_delta(&self) -> std::collections::BTreeMap<String, String> {

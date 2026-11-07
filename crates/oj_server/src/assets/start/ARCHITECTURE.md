@@ -78,6 +78,11 @@ The bundles (`crates/oj/src/start_bundle/`):
   on `rolldown_dev`'s `DevEngine`, and React Fast Refresh.
 - `prod.rs` / `cloudflare.rs`: `oj build`, and the Worker environment's
   bundle when the app uses `@cloudflare/vite-plugin`.
+- `environment.rs`: an environment a plugin's buildApp hook builds itself
+  (`builder.build(env)`, Nitro's `nitro`), bundled from its resolved config:
+  input, output options (file name functions called back in the host),
+  resolve conditions, defines and `transform.inject`, on the host's plugin
+  set for it, `build.rolldownOptions.plugins` included.
 
 The files in this directory:
 
@@ -232,7 +237,10 @@ respawned behind a write lock (a cheap snapshot boot).
    the framework's `#`-import aliases resolve at build time, code-split
    because the framework's server module uses top-level await that a
    single-file bundle cannot always carry. With `@cloudflare/vite-plugin` the
-   Worker environment's bundle replaces it.
+   Worker environment's bundle replaces it. With `nitro/vite` it is Nitro's
+   ssr service: written to the ssr environment's `outDir`, `nitro/*` left
+   external, the client in Nitro's public directory (both where Nitro's
+   configEnvironment hook put them).
 5. Each bundle runs its plugin host's `renderChunk`, `generateBundle` and
    `writeBundle` over the real output, so plugins that publish files (for
    example content-assets emitting `/__content/<collection>/<file>`) or write
@@ -240,10 +248,22 @@ respawned behind a write lock (a cheap snapshot boot).
    `closeBundle`, before the next environment builds.
 6. Emit `server.mjs` (Node http), `worker.mjs` (edge fetch handler),
    `cf-server.mjs` and `cf-loader.mjs`, copy `public/`, and prerender any
-   `build.prerender` routes.
+   `build.prerender` routes. With `nitro/vite`, Nitro's post buildApp hook
+   does the rest instead: it copies the public assets, prerenders, and has
+   oj build its `nitro` environment (`environment.rs`) into its output
+   (`.output` by default), whose directory and preview command `oj build`
+   reports. The plugin host learns them from Nitro itself, through a Nitro
+   module it adds (a plugin's `nitro` key, which nitro/vite installs); a
+   build Nitro never compiled fails.
 
 The bundles emit assets through one content-hash emitter, so they produce
-identical `/assets/<hash>` URLs for identical bytes. CSS is emitted with its
+identical `<base><assetsDir>/<name>-<hash>` URLs for identical bytes. The
+directory is the client environment's resolved `build.assetsDir` (`assets` by
+default; nitro/vite's configEnvironment hook sets Nitro's `buildAssetsDir`,
+`_vercel/immutable/...` for Vercel's immutable static files), read from the
+client host's facts; the client's chunks and a worker's default file names go
+under it too, and the buildApp hooks see it as each oj-built environment's
+`build.assetsDir` (Nitro's post hook caches `/<assetsDir>/**` as immutable). CSS is emitted with its
 `url()` references rewritten and its referenced fonts and images emitted
 alongside. The emitter records the stylesheet URLs, which the manifest lists
 under the root route's `css` so `HeadContent` links them in the SSR `<head>`
@@ -295,8 +315,18 @@ back, never copies.
 - The `buildApp` hooks run in hook order, with oj's environment builds (the
   `buildEnvironments` reverse RPC) standing in for TanStack Start's config
   builder just before the first post-order hook. A throwing hook fails the
-  build; an environment a plugin builds itself (Nitro's) stops it with an
-  error, since oj does not run it.
+  build. Nitro's `nitro` environment, when its hook builds it, Rust bundles
+  from its config (the `buildEnvironment` reverse RPC), answering its output;
+  any other environment a hook builds is refused.
+- Nitro's `nitro` environment build runs its `build.rolldownOptions.plugins`
+  after its normal plugins, ahead of the post ones (Vite's
+  `vite:rollup-options-plugins`); oj's own environment builds don't yet.
+- With `nitro/vite`, the config Vite's resolve starts from carries what
+  Nitro's config hooks read where oj's host differs from Vite under Node:
+  `nitro.defaultPreset: "node-server"` (the host runs on Deno, where Nitro
+  would pick its Deno preset) and, in a build, the server entry as the ssr
+  environment's input (TanStack Start's config hook, which oj runs natively,
+  sets it), from which Nitro registers its ssr service.
 - moduleParsed comes from rolldown (every module, node_modules included,
   with the resolved imports), its code lowered to JS as vite:oxc would.
 - Off the client `build.emitAssets` is false by default, and at vite:asset's
