@@ -1824,15 +1824,17 @@ fn sweep_drops_unreadable_files_and_skips_our_own() {
     assert!(ours.exists(), "our own file must never be swept");
 }
 
-// The registry round trip behind the deno_process hook: init writes our file,
+// The registry round trip behind the deno_process hook: reset writes our file,
 // register records the child with its identity, unregister removes it, and
-// kill_all persists the drained state. The one test allowed to init_registry
-// (the process-global registry path is set once).
+// kill_all persists the drained state. The one test allowed to own the
+// registry (the path is process-global: other tests' `build_app` calls set it
+// first via `prepare_engines`, so this test re-points it with the test reset
+// hook instead of `init_registry`).
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn child_registry_lifecycle_persists_and_drains() {
     let dir = tempfile::tempdir().unwrap();
-    child_groups::init_registry(dir.path());
+    child_groups::reset_registry_for_tests(dir.path());
     let own_file = dir.path().join(format!("{}.json", std::process::id()));
     let read = || -> serde_json::Value {
         serde_json::from_str(&std::fs::read_to_string(&own_file).unwrap()).unwrap()

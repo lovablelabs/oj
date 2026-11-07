@@ -2053,18 +2053,21 @@ fn merge_adopts_css_preprocessor_options() {
 
 #[test]
 fn extraction_stderr_lines_print_once_per_process() {
+    // Probe lines are unique to this test: real extractions print their own
+    // `oj: vite.config: ...` lines through the same process-global SEEN set,
+    // which poisoned this test whenever one ran first in the same process.
     let first = unseen_extraction_lines(
-        "oj: vite.config: worker config is not applied\nsome plugin notice\n",
+        "oj-test: extraction stderr once-per-process alpha\noj-test: extraction stderr once-per-process beta\n",
     );
     assert_eq!(
         first,
-        "oj: vite.config: worker config is not applied\nsome plugin notice\n"
+        "oj-test: extraction stderr once-per-process alpha\noj-test: extraction stderr once-per-process beta\n"
     );
     let again = unseen_extraction_lines(
-        "oj: vite.config: worker config is not applied\nsome plugin notice\nnew line\n",
+        "oj-test: extraction stderr once-per-process alpha\noj-test: extraction stderr once-per-process beta\noj-test: extraction stderr once-per-process gamma\n",
     );
     assert_eq!(
-        again, "new line\n",
+        again, "oj-test: extraction stderr once-per-process gamma\n",
         "only lines not printed before in this process come back"
     );
     assert_eq!(unseen_extraction_lines(""), "");
