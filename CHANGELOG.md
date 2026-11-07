@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A Start dev page reloaded (or refreshed by hand) while a rebuild for an edit still runs waits for that rebuild, and loads the new bundle; it loaded the bundle from before the edit (its entry keeps its url, and revalidated against the old one) and reloaded again once the rebuild landed. The wait covers the edits the watcher had seen when the document was asked for, at most 60 seconds, as the other document waits.
+
+### Added
+
+- The `lovable:update-progress` done-frame names the reload stamp (`stamp`) a Start dev document rendered from then on carries, so the editor can tell a page that loaded before a change.
+
 ## [0.4.5] - 2026-11-06
 
 ### Fixed

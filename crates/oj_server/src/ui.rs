@@ -106,6 +106,9 @@ pub fn boot_progress_frame(
 
 /// A `lovable:update-progress` custom HMR frame (editor narration).
 /// batch is monotonic; trigger is one of "flush" | "watch" | "restart".
+/// `stamp` (Start dev's done-frames) is the reload stamp a document rendered
+/// from now on carries in its live-reload script url (`?g=`): a page whose
+/// stamp is older loaded before this batch's change.
 pub fn update_progress_frame(
     batch: u64,
     trigger: &str,
@@ -113,8 +116,9 @@ pub fn update_progress_frame(
     client_modules: usize,
     idle_ms: Option<u64>,
     done: bool,
+    stamp: Option<&str>,
 ) -> String {
-    serde_json::json!({
+    let mut frame = serde_json::json!({
         "type": "custom",
         "event": "lovable:update-progress",
         "data": {
@@ -126,6 +130,36 @@ pub fn update_progress_frame(
             "done": done,
             "buildError": serde_json::Value::Null,
         },
-    })
-    .to_string()
+    });
+    if let Some(stamp) = stamp {
+        frame["data"]["stamp"] = stamp.into();
+    }
+    frame.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_update_progress_frame_names_the_stamp_only_when_given() {
+        let done: serde_json::Value = serde_json::from_str(&update_progress_frame(
+            4,
+            "watch",
+            0,
+            12,
+            Some(0),
+            true,
+            Some("1f-3"),
+        ))
+        .unwrap();
+        assert_eq!(done["event"], "lovable:update-progress");
+        assert_eq!(done["data"]["batch"], 4);
+        assert_eq!(done["data"]["done"], true);
+        assert_eq!(done["data"]["stamp"], "1f-3");
+        let start: serde_json::Value =
+            serde_json::from_str(&update_progress_frame(5, "watch", 0, 0, None, false, None))
+                .unwrap();
+        assert!(start["data"].get("stamp").is_none(), "{start}");
+    }
 }

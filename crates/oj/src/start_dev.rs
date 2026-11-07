@@ -59,6 +59,10 @@ struct StartState {
     workspace_root: PathBuf,
     /// The pages' reloads, as counts (see start_reloads).
     reloads: Arc<crate::start_reloads::Epochs>,
+    /// The watcher batches queued against the ones the rebundle worker
+    /// finished: a document waits for the rebuild of an edit already seen
+    /// (see start_reloads::Builds).
+    builds: crate::start_reloads::Builds,
     /// The client bundle's last failure as a `{type:"error", err}` frame,
     /// Vite's bundled dev `lastBuildError`: sent to every page when a bundle
     /// fails, replayed to each page that connects until one succeeds.
@@ -566,6 +570,7 @@ pub async fn start_dev(
         hmr_overlay,
         workspace_root: workspace_root(&root),
         reloads: Arc::clone(&reloads),
+        builds: crate::start_reloads::Builds::default(),
         build_error: std::sync::RwLock::new(boot_error.clone()),
         error_tx: broadcast::channel(16).0,
         ws_tx: built.reload_tx.clone(),
@@ -1289,7 +1294,7 @@ fn spawn_start_watcher(
             // clears.
             batch += 1;
             let _ = state.ws_tx.send(oj_server::update_progress_frame(
-                batch, "watch", 0, 0, None, false,
+                batch, "watch", 0, 0, None, false, None,
             ));
             // Invalidate the plugin's worker DevEnvironments so a Cloudflare
             // app re-renders with the changed modules (not stale SSR). Spawned
@@ -1306,6 +1311,9 @@ fn spawn_start_watcher(
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let run = slot.get_or_insert_with(PendingRebundle::default);
+                // Under the queue's lock: the worker cannot take this run (and
+                // mark it built) before the batch counts as queued.
+                state.builds.queued(batch);
                 run.paths.extend(paths.iter().cloned());
                 run.invalidates.extend(early_invalidate);
                 run.invalidates.extend(invalidate);
@@ -1612,7 +1620,12 @@ async fn rebundle_worker(
         // run built released it, and the reload reaches the pages now, with
         // the fresh bundle; otherwise it waits for the flush.
         let held = reload && !state.reloads.bump();
+        // After the bump: a document released here is stamped with this run's
+        // change, and the done-frame names the stamp a page rendered from now
+        // on carries, so the editor can tell a page that loaded behind it.
+        state.builds.built(run.batch);
         let modules = client_module_count(&cache);
+        let stamp = state.reloads.stamp();
         let _ = state.ws_tx.send(oj_server::update_progress_frame(
             run.batch,
             "watch",
@@ -1620,6 +1633,7 @@ async fn rebundle_worker(
             modules,
             Some(0),
             true,
+            Some(&stamp),
         ));
         for done in run.done {
             let _ = done.send(());
@@ -2792,6 +2806,14 @@ async fn forward_document(
     raw: String,
     headers: &header::HeaderMap,
 ) -> Response {
+    // A document rendered while a rebuild runs would load the bundle from
+    // before the edit (the entry keeps its url and revalidates against the old
+    // pin): wait for the edits the watcher already saw, bounded like the
+    // waits below.
+    state
+        .builds
+        .current(std::time::Duration::from_secs(60))
+        .await;
     // A document loads the client output: never one from before a hot update.
     state.client_output_fresh().await;
     // Editor plugins (dev-server bridge) register configureServer routes

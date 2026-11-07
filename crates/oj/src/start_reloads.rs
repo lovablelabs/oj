@@ -145,6 +145,66 @@ impl PageEpoch {
     }
 }
 
+/// The edits the rebundle worker has seen against the ones it finished, as
+/// watcher batch numbers. A document rendered while a rebuild runs would
+/// hand the page the bundle from before the edit (its entry keeps its url,
+/// and the browser revalidates it against the old pin); one that waits for
+/// the run loads the new bundle, so a refresh right after a change shows it
+/// instead of reloading onto it a moment later.
+pub(crate) struct Builds {
+    /// (queued, built): the newest batch handed to the worker, and the newest
+    /// one a completed run covered.
+    seen: watch::Sender<(u64, u64)>,
+}
+
+impl Default for Builds {
+    fn default() -> Self {
+        Self {
+            seen: watch::channel((0, 0)).0,
+        }
+    }
+}
+
+impl Builds {
+    /// The watcher handed `batch` to the worker.
+    pub(crate) fn queued(&self, batch: u64) {
+        self.seen.send_if_modified(|(queued, _)| {
+            let moved = batch > *queued;
+            *queued = batch.max(*queued);
+            moved
+        });
+    }
+
+    /// A run that covered every batch up to `batch` completed (built, skipped
+    /// or failed: the pages keep the last bundle either way).
+    pub(crate) fn built(&self, batch: u64) {
+        self.seen.send_if_modified(|(_, built)| {
+            let moved = batch > *built;
+            *built = batch.max(*built);
+            moved
+        });
+    }
+
+    /// Whether every queued batch is built.
+    #[cfg(test)]
+    fn settled(&self) -> bool {
+        let (queued, built) = *self.seen.borrow();
+        built >= queued
+    }
+
+    /// Waits until the batches queued by now are built, at most `cap` (a
+    /// stuck run must not hold documents forever). Batches queued while it
+    /// waits are not waited for: edits that keep coming never starve a
+    /// document. True when it settled in time.
+    pub(crate) async fn current(&self, cap: std::time::Duration) -> bool {
+        let mut rx = self.seen.subscribe();
+        let target = rx.borrow_and_update().0;
+        tokio::time::timeout(cap, rx.wait_for(|(_, built)| *built >= target))
+            .await
+            .is_ok_and(|r| r.is_ok())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,6 +303,86 @@ mod tests {
             reloads(&mut page).await,
             "a page with no stamp missed the next change"
         );
+    }
+
+    const CAP: std::time::Duration = std::time::Duration::from_secs(5);
+
+    #[tokio::test]
+    async fn a_document_with_no_rebuild_running_goes_straight_through() {
+        let builds = Builds::default();
+        assert!(builds.settled());
+        assert!(builds.current(std::time::Duration::ZERO).await);
+        builds.queued(1);
+        builds.built(1);
+        assert!(builds.settled());
+        assert!(builds.current(std::time::Duration::ZERO).await);
+    }
+
+    #[tokio::test]
+    async fn a_document_waits_for_the_rebuild_of_an_edit_already_seen() {
+        let builds = Arc::new(Builds::default());
+        builds.queued(1);
+        assert!(!builds.settled());
+        let waiter = {
+            let builds = Arc::clone(&builds);
+            tokio::spawn(async move { builds.current(CAP).await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(!waiter.is_finished(), "served before the rebuild finished");
+        builds.built(1);
+        assert!(waiter.await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn merged_batches_are_built_by_the_run_that_covers_the_newest() {
+        let builds = Arc::new(Builds::default());
+        builds.queued(1);
+        builds.queued(2);
+        builds.queued(3);
+        let waiter = {
+            let builds = Arc::clone(&builds);
+            tokio::spawn(async move { builds.current(CAP).await })
+        };
+        builds.built(1);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(!waiter.is_finished(), "served with batches 2-3 unbuilt");
+        builds.built(3);
+        assert!(waiter.await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn edits_landing_while_a_document_waits_never_starve_it() {
+        let builds = Arc::new(Builds::default());
+        builds.queued(1);
+        let waiter = {
+            let builds = Arc::clone(&builds);
+            tokio::spawn(async move { builds.current(CAP).await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        builds.queued(2);
+        builds.built(1);
+        assert!(waiter.await.unwrap());
+        assert!(!builds.settled());
+    }
+
+    #[tokio::test]
+    async fn a_stuck_rebuild_holds_a_document_only_up_to_the_cap() {
+        let builds = Builds::default();
+        builds.queued(1);
+        let started = std::time::Instant::now();
+        assert!(!builds.current(std::time::Duration::from_millis(30)).await);
+        assert!(started.elapsed() < CAP);
+    }
+
+    #[test]
+    fn counts_never_move_backwards() {
+        let builds = Builds::default();
+        builds.queued(3);
+        builds.queued(2);
+        builds.built(3);
+        builds.built(0); // a forced deferred run carries no batch
+        assert!(builds.settled());
+        assert_eq!(*builds.seen.borrow(), (3, 3));
     }
 
     #[test]
