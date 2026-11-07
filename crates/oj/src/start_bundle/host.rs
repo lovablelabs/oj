@@ -295,6 +295,52 @@ fn hook_output(r: ResolvedId) -> HookResolveIdOutput {
     }
 }
 
+/// A bare specifier (a package name or `#` import), as opposed to a relative
+/// or absolute path, a plugin namespace (`\0...`) or a `scheme:` URL: the
+/// bundler resolves it through node_modules, never the filesystem. Same
+/// shape as the `BARE_RE` gate the Start pipeline's JS twin routes on.
+fn is_bare_specifier(spec: &str) -> bool {
+    let bytes = spec.as_bytes();
+    let Some(&first) = bytes.first() else {
+        return false;
+    };
+    if matches!(first, b'.' | b'/' | b'\\' | 0) {
+        return false;
+    }
+    if let Some(colon) = spec.find(':') {
+        // A `scheme:` URL (`data:`, `node:`, ...) or a drive path (`C:\`):
+        // `C:foo` matches the scheme shape too, and node reads that as a
+        // drive-relative path, never a package.
+        let head = &spec[..colon];
+        let mut chars = head.bytes();
+        if chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+            && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'+' | b'-' | b'.'))
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// The importer the core resolver sees for a virtual module's bare import.
+/// A virtual id (`/@solid-refresh`, `\0...`) names no file, so rolldown
+/// walks the filesystem root for node_modules and the import fails even
+/// though the app provides it (vite-plugin-solid's HMR runtime importing
+/// `solid-js`, every boot and rebuild). Anchoring the lookup at the app root
+/// resolves it like app code. Anything but a bare specifier keeps the real
+/// importer: a virtual module has no directory for a relative import, and
+/// the app plugins answering those must still see where the import came
+/// from. The anchor names the root's package.json: only its directory is
+/// ever read (the node_modules walk starts there), and every app root has
+/// one.
+fn anchored_core_importer(root: &Path, spec: &str, importer: Option<&str>) -> Option<String> {
+    let importer = importer.filter(|i| !i.is_empty())?;
+    if !(importer.starts_with("/@") || importer.starts_with('\0')) {
+        return None;
+    }
+    is_bare_specifier(spec).then(|| root.join("package.json").to_string_lossy().into_owned())
+}
+
 /// Specifiers oj's own plugins own: asset imports, which Vite's core
 /// resolver answers before a normal plugin's resolveId sees them. A plain
 /// stylesheet one the core resolver misses (`virtual:theme.css`) is a
@@ -459,8 +505,17 @@ impl Plugin for StartHostPlugin {
         let (pre, post) = (self.pre && wants, self.post && wants && !asset_owned(&spec));
         let host = Arc::clone(&self.host);
         let ctx = ctx.clone();
+        let root = self.root.clone();
         async move {
-            if !pre && !post {
+            // A virtual module's bare import anchors at the app root for the
+            // core lookup (its own id names no file for the node_modules
+            // walk). That lookup is the core-resolver step, which Vite runs
+            // between pre and post whether or not a post hook exists -- so it
+            // runs even when the `!post` shortcut below would otherwise skip
+            // the core entirely (rolldown's own fallback resolves from the
+            // virtual id and fails at the filesystem root).
+            let anchored = anchored_core_importer(&root, &spec, importer.as_deref());
+            if !pre && !post && anchored.is_none() {
                 return Ok(None);
             }
             let importer_str = importer.as_deref().unwrap_or("");
@@ -474,15 +529,16 @@ impl Plugin for StartHostPlugin {
                     return Ok(Some(hook_output(r)));
                 }
             }
-            if !post {
+            if !post && anchored.is_none() {
                 return Ok(None);
             }
             // The core resolver (everything after this plugin) first; the
-            // remaining hooks only see what it left.
+            // remaining hooks only see what it left. The post phase below
+            // still sees the real importer.
             let core = ctx
                 .resolve(
                     &spec,
-                    importer.as_deref(),
+                    anchored.as_deref().or(importer.as_deref()),
                     Some(PluginContextResolveOptions {
                         import_kind: kind,
                         is_entry,
@@ -493,6 +549,9 @@ impl Plugin for StartHostPlugin {
                 .await?;
             if let Ok(found) = core {
                 return Ok(Some(HookResolveIdOutput::from_resolved_id(found)));
+            }
+            if !post {
+                return Ok(None);
             }
             Ok(host
                 .resolve_id_phase(&spec, importer_str, "post", is_entry)
@@ -1096,5 +1155,62 @@ mod tests {
         }
         assert!(!stub.contains("Skip") && !stub.contains("other"), "{stub}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A virtual module's bare imports anchor at the app root (its own id
+    /// names no file for the node_modules walk); anything else keeps the
+    /// real importer.
+    #[test]
+    fn virtual_importers_anchor_bare_specifiers_at_the_app_root() {
+        let root = Path::new("/app");
+        let anchor = "/app/package.json";
+        // The reported failure: vite-plugin-solid's HMR runtime importing
+        // its framework package.
+        assert_eq!(
+            anchored_core_importer(root, "solid-js", Some("/@solid-refresh")),
+            Some(anchor.into())
+        );
+        // A `\0` plugin namespace anchors the same way.
+        assert_eq!(
+            anchored_core_importer(root, "@scope/pkg/sub", Some("\0virtual:entry")),
+            Some(anchor.into())
+        );
+        // `#` imports resolve against a package.json: the anchor's own.
+        assert_eq!(
+            anchored_core_importer(root, "#tanstack-router-entry", Some("/@solid-refresh")),
+            Some(anchor.into())
+        );
+        // A real file importer never anchors, nor does a missing one.
+        assert_eq!(
+            anchored_core_importer(root, "solid-js", Some("/app/src/a.tsx")),
+            None
+        );
+        assert_eq!(anchored_core_importer(root, "solid-js", None), None);
+        assert_eq!(anchored_core_importer(root, "solid-js", Some("")), None);
+        // Relative, absolute, namespaced and scheme imports are not bare:
+        // a virtual module has no directory for them.
+        for spec in [
+            "./sibling",
+            "../up",
+            "/abs/file.js",
+            "\0virtual:other",
+            "virtual:other",
+            "data:text/javascript,export default 1",
+            "node:fs",
+            "C:\\win\\path",
+        ] {
+            assert_eq!(
+                anchored_core_importer(root, spec, Some("/@solid-refresh")),
+                None,
+                "{spec}"
+            );
+        }
+        // Bare-specifier shapes the gate still lets through.
+        for spec in ["solid-js", "solid-js/web", "@scope/pkg", "a+b-c.d_e"] {
+            assert!(
+                is_bare_specifier(spec),
+                "{spec} should count as a bare specifier"
+            );
+        }
     }
 }
