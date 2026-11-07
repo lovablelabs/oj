@@ -1,0 +1,280 @@
+[
+ {
+  "id": "upstream/import-export-import-none-002:prod",
+  "filename": "test.js",
+  "source": "\n        export const styles = stylex.create({\n          root: {\n            color: 'red'\n          }\n        });\n      ",
+  "options": {
+   "unstable_moduleResolution": {
+    "rootDir": "<CORPUSROOT>",
+    "type": "commonJS"
+   },
+   "dev": false
+  },
+  "expectedRules": []
+ },
+ {
+  "id": "upstream/import-export-import-none-002:dev",
+  "filename": "test.js",
+  "source": "\n        export const styles = stylex.create({\n          root: {\n            color: 'red'\n          }\n        });\n      ",
+  "options": {
+   "unstable_moduleResolution": {
+    "rootDir": "<CORPUSROOT>",
+    "type": "commonJS"
+   },
+   "dev": true
+  },
+  "expectedRules": []
+ },
+ {
+  "id": "upstream/import-export-import-non-stylex-003:prod",
+  "filename": "test.js",
+  "source": "\n        import {foo, bar} from 'other';\n      ",
+  "options": {
+   "unstable_moduleResolution": {
+    "rootDir": "<CORPUSROOT>",
+    "type": "commonJS"
+   },
+   "dev": false
+  },
+  "expectedRules": []
+ },
+ {
+  "id": "upstream/import-export-import-non-stylex-003:dev",
+  "filename": "test.js",
+  "source": "\n        import {foo, bar} from 'other';\n      ",
+  "options": {
+   "unstable_moduleResolution": {
+    "rootDir": "<CORPUSROOT>",
+    "type": "commonJS"
+   },
+   "dev": true
+  },
+  "expectedRules": []
+ },
+ {
+  "id": "upstream/import-export-require-non-stylex-004:prod",
+  "filename": "test.js",
+  "source": "\n        const {foo, bar} = require('other');\n      ",
+  "options": {
+   "unstable_moduleResolution": {
+    "rootDir": "<CORPUSROOT>",
+    "type": "commonJS"
+   },
+   "dev": false
+  },
+  "expectedRules": []
+ },
+ {
+  "id": "upstream/import-export-require-non-stylex-004:dev",
+  "filename": "test.js",
+  "source": "\n        const {foo, bar} = require('other');\n      ",
+  "options": {
+   "unstable_moduleResolution": {
+    "rootDir": "<CORPUSROOT>",
+    "type": "commonJS"
+   },
+   "dev": true
+  },
+  "expectedRules": []
+ },
+ {
+  "id": "upstream/import-export-transform-stylex-exports-011:prod",
+  "filename": "test.js",
+  "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const styles = stylex.create({\n      root: {\n        color: 'red',\n      }\n    });\n      ",
+  "options": {
+   "unstable_moduleResolution": {
+    "rootDir": "<CORPUSROOT>",
+    "type": "commonJS"
+   },
+   "dev": false
+  },
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ]
+ },
+ {
+  "id": "upstream/import-export-transform-stylex-exports-011:dev",
+  "filename": "test.js",
+  "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const styles = stylex.create({\n      root: {\n        color: 'red',\n      }\n    });\n      ",
+  "options": {
+   "unstable_moduleResolution": {
+    "rootDir": "<CORPUSROOT>",
+    "type": "commonJS"
+   },
+   "dev": true
+  },
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ]
+ },
+ {
+  "id": "upstream/import-export-export-named-property-012:prod",
+  "filename": "test.js",
+  "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const styles = stylex.create({\n      root: {\n        color: 'red',\n      }\n    });\n        export {styles}\n      ",
+  "options": {
+   "unstable_moduleResolution": {
+    "rootDir": "<CORPUSROOT>",
+    "type": "commonJS"
+   },
+   "dev": false
+  },
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ]
+ },
+ {
+  "id": "upstream/import-export-export-named-property-012:dev",
+  "filename": "test.js",
+  "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const styles = stylex.create({\n      root: {\n        color: 'red',\n      }\n    });\n        export {styles}\n      ",
+  "options": {
+   "unstable_moduleResolution": {
+    "rootDir": "<CORPUSROOT>",
+    "type": "commonJS"
+   },
+   "dev": true
+  },
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ]
+ },
+ {
+  "id": "upstream/import-export-export-named-declaration-013:prod",
+  "filename": "test.js",
+  "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({\n      root: {\n        color: 'red',\n      }\n    });\n      ",
+  "options": {
+   "unstable_moduleResolution": {
+    "rootDir": "<CORPUSROOT>",
+    "type": "commonJS"
+   },
+   "dev": false
+  },
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ]
+ },
+ {
+  "id": "upstream/import-export-export-named-declaration-013:dev",
+  "filename": "test.js",
+  "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({\n      root: {\n        color: 'red',\n      }\n    });\n      ",
+  "options": {
+   "unstable_moduleResolution": {
+    "rootDir": "<CORPUSROOT>",
+    "type": "commonJS"
+   },
+   "dev": true
+  },
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ]
+ },
+ {
+  "id": "upstream/import-export-export-default-014:prod",
+  "filename": "test.js",
+  "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export default (stylex.create({\n      root: {\n        color: 'red',\n      }\n    }));\n      ",
+  "options": {
+   "unstable_moduleResolution": {
+    "rootDir": "<CORPUSROOT>",
+    "type": "commonJS"
+   },
+   "dev": false
+  },
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ]
+ },
+ {
+  "id": "upstream/import-export-export-default-014:dev",
+  "filename": "test.js",
+  "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export default (stylex.create({\n      root: {\n        color: 'red',\n      }\n    }));\n      ",
+  "options": {
+   "unstable_moduleResolution": {
+    "rootDir": "<CORPUSROOT>",
+    "type": "commonJS"
+   },
+   "dev": true
+  },
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ]
+ },
+ {
+  "id": "upstream/import-export-module-export-015:prod",
+  "filename": "test.js",
+  "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const styles = stylex.create({\n      root: {\n        color: 'red',\n      }\n    });\n        module.export = styles;\n      ",
+  "options": {
+   "unstable_moduleResolution": {
+    "rootDir": "<CORPUSROOT>",
+    "type": "commonJS"
+   },
+   "dev": false
+  },
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ]
+ },
+ {
+  "id": "upstream/import-export-module-export-015:dev",
+  "filename": "test.js",
+  "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const styles = stylex.create({\n      root: {\n        color: 'red',\n      }\n    });\n        module.export = styles;\n      ",
+  "options": {
+   "unstable_moduleResolution": {
+    "rootDir": "<CORPUSROOT>",
+    "type": "commonJS"
+   },
+   "dev": true
+  },
+  "expectedRules": [
+   {
+    "className": "x1e2nbdu",
+    "ltr": ".x1e2nbdu{color:red}",
+    "rtl": null,
+    "priority": 3000
+   }
+  ]
+ }
+]

@@ -134,7 +134,7 @@ declare const ambient: number;
 export abstract class A<T extends object = {}> implements I {
   a!: string;
   private readonly p?: number;
-  constructor(public q: number) { super(); }
+  constructor(public q: number) {}
   abstract m(): void;
   n<U>(x: U): U { return x as U; }
 }
@@ -194,9 +194,12 @@ fn each_extension_gets_the_right_module_or_script_treatment() {
     assert!(dev("/src/a.cts", "const a: number = 1;").is_ok());
     // TypeScript syntax in a plain `.js` file is not.
     assert!(dev("/src/a.js", "const a: number = 1;").is_err());
-    // Strict-mode-only errors such as `with` are not reported by the parser;
-    // they are the browser's to report, like the other early errors above.
-    assert!(dev("/src/a.mjs", "with (x) {}").is_ok());
+    // Strict-mode-only errors such as `with` are early errors in a module
+    // (esbuild rejects them; V8 refuses the emitted file), and the syntax
+    // check reports them at compile. A `.cjs` script is sloppy mode, where
+    // `with` is legal.
+    assert!(dev("/src/a.mjs", "with (x) {}").is_err());
+    assert!(dev("/src/a.cjs", "with (x) {}").is_ok());
 }
 
 #[test]
@@ -322,6 +325,28 @@ fn refresh_instrumentation_only_happens_in_dev_and_only_for_components() {
     assert!(!no_refresh.code.contains("$RefreshReg$"));
 }
 
+// Vite's oxc plugin: refresh only for a `.jsx`/`.tsx` path or code naming the
+// JSX runtime, so a capitalized function in a plain `.ts` module (one a module
+// worker imports) is no boundary and gets no window-reading glue.
+#[test]
+fn refresh_skips_plain_ts_modules_like_vite() {
+    let fn_export = "export function M(x: number) { return x * 2; }";
+    let ts = dev("/src/game/scale.ts", fn_export).unwrap();
+    assert!(!ts.is_refresh_boundary, "{}", ts.code);
+    assert!(!ts.code.contains("$RefreshReg$"), "{}", ts.code);
+
+    let tsx = dev("/src/game/Scale.tsx", fn_export).unwrap();
+    assert!(tsx.is_refresh_boundary, "{}", tsx.code);
+
+    let runtime = format!("import {{ jsx }} from \"react/jsx-runtime\";\n{fn_export}");
+    let ts_with_runtime = dev("/src/game/scale.ts", &runtime).unwrap();
+    assert!(
+        ts_with_runtime.is_refresh_boundary,
+        "{}",
+        ts_with_runtime.code
+    );
+}
+
 #[test]
 fn a_source_map_is_omitted_when_a_module_gains_synthesized_nodes() {
     // Glob and dynamic-import-vars expansions splice generated spans, which the
@@ -394,6 +419,7 @@ fn a_cjs_dep_with_module_syntax_is_treated_as_esm() {
         "export const a = 1;\nimport b from \"./b\";",
         &mut resolve,
         None,
+        None,
     )
     .unwrap();
     assert_eq!(out.imports, vec!["/@id/./b".to_string()]);
@@ -408,6 +434,7 @@ fn a_cjs_dep_without_module_syntax_is_wrapped() {
         "/node_modules/pkg/index.js",
         "const dep = require(\"./dep\");\nmodule.exports = dep;",
         &mut resolve,
+        None,
         None,
     )
     .unwrap();

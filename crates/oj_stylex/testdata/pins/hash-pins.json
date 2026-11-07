@@ -1,0 +1,127 @@
+[
+  {
+    "input": "",
+    "murmur_base36": "ph554m",
+    "short_hash": "gFYqE"
+  },
+  {
+    "input": "a",
+    "murmur_base36": "acqbnw",
+    "short_hash": "gMozE"
+  },
+  {
+    "input": "ab",
+    "murmur_base36": "rznw1a",
+    "short_hash": "qXVQE"
+  },
+  {
+    "input": "abc",
+    "murmur_base36": "qtcrsx",
+    "short_hash": "ljKnh"
+  },
+  {
+    "input": "abcd",
+    "murmur_base36": "1ju7jti",
+    "short_hash": "gUwn0"
+  },
+  {
+    "input": "abcde",
+    "murmur_base36": "1ldhsvy",
+    "short_hash": "mmZBe"
+  },
+  {
+    "input": "<>color",
+    "murmur_base36": "kr9m1x",
+    "short_hash": "MwMTN"
+  },
+  {
+    "input": "<>backgroundColor",
+    "murmur_base36": "1hggvfk",
+    "short_hash": "WkggS"
+  },
+  {
+    "input": "<>colorbluenull",
+    "murmur_base36": "ju2f9n",
+    "short_hash": "JAO2l"
+  },
+  {
+    "input": "<>background-colorrednull",
+    "murmur_base36": "rkmrrc",
+    "short_hash": "opZfc"
+  },
+  {
+    "input": "<>margin-inline-start8pxnull",
+    "murmur_base36": "13fj5qh",
+    "short_hash": "bM9Hd"
+  },
+  {
+    "input": "<>color:hover@media (min-width: 600px)null",
+    "murmur_base36": "1b3bzsh",
+    "short_hash": "6hr61"
+  },
+  {
+    "input": "packages/ui:styles/tokens.stylex.ts//bg.base",
+    "murmur_base36": "g03gbq",
+    "short_hash": "3U29G"
+  },
+  {
+    "input": "conformance-fixture-a:src/x.stylex.ts//vars",
+    "murmur_base36": "1dtv1yz",
+    "short_hash": "HuF2J"
+  },
+  {
+    "input": "→",
+    "murmur_base36": "1qqh9l4",
+    "short_hash": "8id2G"
+  },
+  {
+    "input": "a→b",
+    "murmur_base36": "x1aimo",
+    "short_hash": "BBX4y"
+  },
+  {
+    "input": "😀",
+    "murmur_base36": "mf91be",
+    "short_hash": "Tl6Ak"
+  },
+  {
+    "input": "x😀y",
+    "murmur_base36": "5ewnbw",
+    "short_hash": "M9bYq"
+  },
+  {
+    "input": "ünïcode-välüe",
+    "murmur_base36": "1r3oys0",
+    "short_hash": "ADkm0"
+  },
+  {
+    "input": "日本語のテキスト",
+    "murmur_base36": "tbg3xr",
+    "short_hash": "vyGL9"
+  },
+  {
+    "input": "\u0000\u0001ÿ",
+    "murmur_base36": "1icd99l",
+    "short_hash": "aNV29"
+  },
+  {
+    "input": "<>kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+    "murmur_base36": "1babv7o",
+    "short_hash": "7VAAO"
+  },
+  {
+    "input": "<>content\"quoted → value\"null",
+    "murmur_base36": "1kqgspf",
+    "short_hash": "kAHFz"
+  },
+  {
+    "input": "01234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789",
+    "murmur_base36": "xxc1x1",
+    "short_hash": "EpLxF"
+  },
+  {
+    "input": "the quick brown fox jumps over the lazy dog",
+    "murmur_base36": "1uu43ve",
+    "short_hash": "PV5A2"
+  }
+]

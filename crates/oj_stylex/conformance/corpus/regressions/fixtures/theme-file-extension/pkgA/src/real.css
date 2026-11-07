@@ -1,0 +1,8 @@
+.foo {
+  color: red;
+}
+@media (min-width: 10px) {
+  .b {
+    color: blue;
+  }
+}

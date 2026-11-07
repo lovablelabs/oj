@@ -108,7 +108,7 @@ try {
   const SLOW_PORT = PORT + 1;
   const slow = spawn(oj, ["dev", app, "--port", String(SLOW_PORT)], {
     stdio: "ignore",
-    env: { ...process.env, OJ_PLUGIN_TIMEOUT: "2" },
+    env: { ...process.env },
   });
   try {
     const up = await waitUp(`http://localhost:${SLOW_PORT}/`).then(

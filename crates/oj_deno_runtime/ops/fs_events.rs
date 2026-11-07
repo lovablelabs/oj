@@ -669,7 +669,11 @@ fn ensure_watcher(
       }
       let _ = dispatch_tx.send(res);
     },
-    Default::default(),
+    // notify 8's set (no CLOSE_NOWRITE, which notify 9's default adds), minus
+    // the OPEN events `is_ignored_notify_event` drops, so they never queue.
+    notify::Config::default().with_event_kinds(
+      notify::EventKindMask::CORE | notify::EventKindMask::ACCESS_CLOSE,
+    ),
   )
   .map_err(|e| FsEventsError::Notify(JsNotifyError(e)))?;
 

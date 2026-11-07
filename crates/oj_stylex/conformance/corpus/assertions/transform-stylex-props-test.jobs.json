@@ -1,0 +1,2498 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/transform-stylex-props-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs and upstream's own expected values — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "assertions/props-empty-stylex-props-call-001-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          stylex.props();\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import stylex from 'stylex';\n({});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "empty stylex.props call",
+          "line": 61
+        }
+      }
+    },
+    {
+      "id": "assertions/props-basic-stylex-call-002-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            red: {\n              color: 'red',\n            }\n          });\n          stylex.props(styles.red);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n({\n  className: \"x1e2nbdu\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "basic stylex call",
+          "line": 73
+        }
+      }
+    },
+    {
+      "id": "assertions/props-basic-stylex-attrs-call-003-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            red: {\n              color: 'red',\n            }\n          });\n          stylex.attrs(styles.red);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "attrs", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n({\n  class: \"x1e2nbdu\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "basic stylex attrs call",
+          "line": 98
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-env-resolves-in-inlin-004-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            red: {\n              color: stylex.env.primaryColor,\n            }\n          });\n          stylex.props(styles.red);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "env": {
+          "primaryColor": "#ff0000"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xe4pkkx{color:#ff0000}\",\n  priority: 3000\n});\n({\n  className: \"xe4pkkx\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex.env resolves in inline objects",
+          "line": 123
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-attrs-named-import-re-005-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import { attrs, create, env } from 'stylex';\n          const styles = create({\n            red: {\n              color: env.primaryColor,\n            }\n          });\n          attrs(styles.red);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "env": {
+          "primaryColor": "#00ffaa"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "attrs", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport { attrs, create, env } from 'stylex';\n_inject2({\n  ltr: \".x4iekqp{color:#00ffaa}\",\n  priority: 3000\n});\n({\n  class: \"x4iekqp\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex.attrs named import resolves in inline objects",
+          "line": 151
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-env-named-import-reso-006-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import { props, create, env } from 'stylex';\n          const styles = create({\n            red: {\n              color: env.primaryColor,\n            }\n          });\n          props(styles.red);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "env": {
+          "primaryColor": "#00ffaa"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport { props, create, env } from 'stylex';\n_inject2({\n  ltr: \".x4iekqp{color:#00ffaa}\",\n  priority: 3000\n});\n({\n  className: \"x4iekqp\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex.env named import resolves in inline objects",
+          "line": 179
+        }
+      }
+    },
+    {
+      "id": "assertions/props-local-static-styles-007-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "js/node_modules/npm-package/dist/components/Foo.react.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              red: {\n                color: 'red',\n              }\n            });\n            function Foo() {\n              return (\n                <>\n                  <div id=\"test\" {...stylex.props(styles.red)}>Hello World</div>\n                  <div className=\"test\" {...stylex.props(styles.red)} id=\"test\">Hello World</div>\n                  <div id=\"test\" {...stylex.props(styles.red)} className=\"test\">Hello World</div>\n                </>\n              );\n            }\n          ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "debug": true,
+        "enableDebugClassNames": true,
+        "dev": true,
+        "enableDevClassNames": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".color-x1e2nbdu{color:red}\",\n  priority: 3000\n});\nfunction Foo() {\n  return <>\n                  <div id=\"test\" className=\"color-x1e2nbdu\" data-style-src=\"npm-package:js/node_modules/npm-package/dist/components/Foo.react.js:4\">Hello World</div>\n                  <div className=\"test\" className=\"color-x1e2nbdu\" data-style-src=\"npm-package:js/node_modules/npm-package/dist/components/Foo.react.js:4\" id=\"test\">Hello World</div>\n                  <div id=\"test\" className=\"color-x1e2nbdu\" data-style-src=\"npm-package:js/node_modules/npm-package/dist/components/Foo.react.js:4\" className=\"test\">Hello World</div>\n                </>;\n}",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "local static styles",
+          "line": 216
+        }
+      }
+    },
+    {
+      "id": "assertions/props-test-that-sx-attribute-can-b-008-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "js/node_modules/npm-package/dist/components/Foo.react.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              red: {\n                color: 'red',\n              }\n            });\n            function Foo() {\n              return (\n                <>\n                  <div id=\"test\" sx={styles.red}>Hello World</div>\n                  <div className=\"test\" sx={styles.red} id=\"test\">Hello World</div>\n                  <div id=\"test\" sx={styles.red} className=\"test\">Hello World</div>\n                </>\n              );\n            }\n          ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "debug": true,
+        "enableDebugClassNames": true,
+        "dev": true,
+        "enableDevClassNames": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".color-x1e2nbdu{color:red}\",\n  priority: 3000\n});\nfunction Foo() {\n  return <>\n                  <div id=\"test\" className=\"color-x1e2nbdu\" data-style-src=\"npm-package:js/node_modules/npm-package/dist/components/Foo.react.js:4\">Hello World</div>\n                  <div className=\"test\" className=\"color-x1e2nbdu\" data-style-src=\"npm-package:js/node_modules/npm-package/dist/components/Foo.react.js:4\" id=\"test\">Hello World</div>\n                  <div id=\"test\" className=\"color-x1e2nbdu\" data-style-src=\"npm-package:js/node_modules/npm-package/dist/components/Foo.react.js:4\" className=\"test\">Hello World</div>\n                </>;\n}",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "Test that sx attribute can be used instead of ...stylex.props",
+          "line": 256
+        }
+      }
+    },
+    {
+      "id": "assertions/props-sx-prop-with-custom-sxpropna-009-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "js/node_modules/npm-package/dist/components/Foo.react.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              red: {\n                color: 'red',\n              }\n            });\n            function Foo() {\n              return <div css={styles.red}>Hello World</div>;\n            }\n          ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "debug": true,
+        "enableDebugClassNames": true,
+        "dev": true,
+        "enableDevClassNames": false,
+        "sxPropName": "css",
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".color-x1e2nbdu{color:red}\",\n  priority: 3000\n});\nfunction Foo() {\n  return <div className=\"color-x1e2nbdu\" data-style-src=\"npm-package:js/node_modules/npm-package/dist/components/Foo.react.js:4\">Hello World</div>;\n}",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "sx prop with custom sxPropName",
+          "line": 296
+        }
+      }
+    },
+    {
+      "id": "assertions/props-injects-a-value-namespace-im-010-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.tsx",
+      "source": "\n              import type * as stylex from '@stylexjs/stylex';\n              function Foo(props) {\n                const x = props.x;\n                return <svg sx={x} />;\n              }\n            ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as _stylex from \"@stylexjs/stylex\";\nimport type * as stylex from '@stylexjs/stylex';\nfunction Foo(props) {\n  const x = props.x;\n  return <svg {..._stylex.props(x)} />;\n}",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "injects a value namespace import alongside a type namespace import",
+          "line": 327
+        }
+      }
+    },
+    {
+      "id": "assertions/props-injects-a-value-namespace-im-011-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n              import type { StyleXStyles } from '@stylexjs/stylex';\n              function Foo(props) {\n                const x = props.x;\n                return <svg sx={x} />;\n              }\n            ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as _stylex from \"@stylexjs/stylex\";\nimport type { StyleXStyles } from '@stylexjs/stylex';\nfunction Foo(props) {\n  const x = props.x;\n  return <svg {..._stylex.props(x)} />;\n}",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "injects a value namespace import alongside a named type import",
+          "line": 346
+        }
+      }
+    },
+    {
+      "id": "assertions/props-injects-a-value-namespace-im-012-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n              function Foo(props) {\n                const x = props.x;\n                return <svg sx={x} />;\n              }\n            ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from \"@stylexjs/stylex\";\nfunction Foo(props) {\n  const x = props.x;\n  return <svg {...stylex.props(x)} />;\n}",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "injects a value namespace import when there is no stylex import",
+          "line": 365
+        }
+      }
+    },
+    {
+      "id": "assertions/props-injects-from-configured-impo-013-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n                function Foo(props) {\n                  const x = props.x;\n                  return <svg sx={x} />;\n                }\n              ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "importSources": ["custom-stylex-path"],
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from \"custom-stylex-path\";\nfunction Foo(props) {\n  const x = props.x;\n  return <svg {...stylex.props(x)} />;\n}",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "injects from configured import source when there is no stylex import",
+          "line": 382
+        }
+      }
+    },
+    {
+      "id": "assertions/props-injects-from-existing-type-o-014-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n                import type { StyleXStyles } from 'custom-stylex-path';\n                function Foo(props) {\n                  const x = props.x;\n                  return <svg sx={x} />;\n                }\n              ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "importSources": ["custom-stylex-path"],
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as _stylex from \"custom-stylex-path\";\nimport type { StyleXStyles } from 'custom-stylex-path';\nfunction Foo(props) {\n  const x = props.x;\n  return <svg {..._stylex.props(x)} />;\n}",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "injects from existing type-only custom import source",
+          "line": 402
+        }
+      }
+    },
+    {
+      "id": "assertions/props-reuses-an-existing-value-nam-015-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n              import * as stylex from '@stylexjs/stylex';\n              function Foo(props) {\n                const x = props.x;\n                return <svg sx={x} />;\n              }\n            ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nfunction Foo(props) {\n  const x = props.x;\n  return <svg {...stylex.props(x)} />;\n}",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "reuses an existing value namespace import",
+          "line": 424
+        }
+      }
+    },
+    {
+      "id": "assertions/props-avoids-a-local-stylex-bindin-016-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n              function Foo(props) {\n                const stylex = props.stylex;\n                const x = props.x;\n                return <svg sx={x} />;\n              }\n            ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as _stylex from \"@stylexjs/stylex\";\nfunction Foo(props) {\n  const stylex = props.stylex;\n  const x = props.x;\n  return <svg {..._stylex.props(x)} />;\n}",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "avoids a local stylex binding that would shadow the injected import",
+          "line": 442
+        }
+      }
+    },
+    {
+      "id": "assertions/props-injects-one-value-namespace-017-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n              function Foo(props) {\n                const x = props.x;\n                return (\n                  <>\n                    <svg sx={x} />\n                    <svg sx={props.y} />\n                  </>\n                );\n              }\n            ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from \"@stylexjs/stylex\";\nfunction Foo(props) {\n  const x = props.x;\n  return <>\n                    <svg {...stylex.props(x)} />\n                    <svg {...stylex.props(props.y)} />\n                  </>;\n}",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "injects one value namespace import for multiple sx attributes",
+          "line": 461
+        }
+      }
+    },
+    {
+      "id": "assertions/props-does-not-transform-sx-on-cap-018-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n              function Foo(props) {\n                const x = props.x;\n                return <CustomComponent sx={x} />;\n              }\n            ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "function Foo(props) {\n  const x = props.x;\n  return <CustomComponent sx={x} />;\n}",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "does not transform sx on capitalized components",
+          "line": 486
+        }
+      }
+    },
+    {
+      "id": "assertions/props-local-dynamic-styles-019-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "js/node_modules/npm-package/dist/components/Foo.react.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              red: {\n                color: 'red',\n              },\n              opacity: (opacity) => ({\n                opacity\n              })\n            });\n            function Foo() {\n              return (\n                <div id=\"test\" {...stylex.props(styles.red, styles.opacity(1))}>\n                  Hello World\n                </div>\n              );\n            }\n          ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "debug": true,
+        "enableDebugClassNames": true,
+        "dev": true,
+        "enableDevClassNames": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".color-x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".opacity-xb4nw82{opacity:var(--x-opacity)}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \"@property --x-opacity { syntax: \\\"*\\\"; inherits: false;}\",\n  priority: 0\n});\nconst styles = {\n  red: {\n    \"color-kMwMTN\": \"color-x1e2nbdu\",\n    $$css: \"npm-package:js/node_modules/npm-package/dist/components/Foo.react.js:4\"\n  },\n  opacity: opacity => [{\n    \"opacity-kSiTet\": opacity != null ? \"opacity-xb4nw82\" : opacity,\n    $$css: \"npm-package:js/node_modules/npm-package/dist/components/Foo.react.js:7\"\n  }, {\n    \"--x-opacity\": opacity != null ? opacity : undefined\n  }]\n};\nfunction Foo() {\n  return <div id=\"test\" {...stylex.props(styles.red, styles.opacity(1))}>\n                  Hello World\n                </div>;\n}",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "local dynamic styles",
+          "line": 503
+        }
+      }
+    },
+    {
+      "id": "assertions/props-non-local-styles-020-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "js/node_modules/npm-package/dist/components/Foo.react.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              red: {\n                color: 'red',\n              }\n            });\n            function Foo(props) {\n              return (\n                <div id=\"test\" {...stylex.props(props.style, styles.red)}>\n                  Hello World\n                </div>\n              );\n            }\n          ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "debug": true,
+        "enableDebugClassNames": true,
+        "dev": true,
+        "enableDevClassNames": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".color-x1e2nbdu{color:red}\",\n  priority: 3000\n});\nconst styles = {\n  red: {\n    \"color-kMwMTN\": \"color-x1e2nbdu\",\n    $$css: \"npm-package:js/node_modules/npm-package/dist/components/Foo.react.js:4\"\n  }\n};\nfunction Foo(props) {\n  return <div id=\"test\" {...stylex.props(props.style, styles.red)}>\n                  Hello World\n                </div>;\n}",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "non-local styles",
+          "line": 562
+        }
+      }
+    },
+    {
+      "id": "assertions/props-inline-static-styles-match-s-021-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          import css from '@stylexjs/atoms';\n          stylex.props(css.display.flex);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nimport css from '@stylexjs/atoms';\n_inject2({\n  ltr: \".x78zum5{display:flex}\",\n  priority: 3000\n});\n({\n  className: \"x78zum5\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "inline static styles match stylex.create",
+          "line": 611
+        }
+      }
+    },
+    {
+      "id": "assertions/props-inline-static-styles-match-s-022-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            flex: { display: 'flex' },\n          });\n          stylex.props(styles.flex);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x78zum5{display:flex}\",\n  priority: 3000\n});\n({\n  className: \"x78zum5\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "inline static styles match stylex.create",
+          "line": 631
+        }
+      }
+    },
+    {
+      "id": "assertions/props-inline-static-supports-leadi-023-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          import css from '@stylexjs/atoms';\n          stylex.props(css.padding._16px);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nimport css from '@stylexjs/atoms';\n_inject2({\n  ltr: \".x1tamke2{padding:16px}\",\n  priority: 1000\n});\n({\n  className: \"x1tamke2\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "inline static supports leading underscore value",
+          "line": 651
+        }
+      }
+    },
+    {
+      "id": "assertions/props-inline-static-supports-leadi-024-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            pad: { padding: '16px' },\n          });\n          stylex.props(styles.pad);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1tamke2{padding:16px}\",\n  priority: 1000\n});\n({\n  className: \"x1tamke2\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "inline static supports leading underscore value",
+          "line": 671
+        }
+      }
+    },
+    {
+      "id": "assertions/props-inline-static-supports-compu-025-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          import css from '@stylexjs/atoms';\n          stylex.props(css.width['calc(100% - 20px)']);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nimport css from '@stylexjs/atoms';\n_inject2({\n  ltr: \".xnlsq7q{width:calc(100% - 20px)}\",\n  priority: 4000\n});\n({\n  className: \"xnlsq7q\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "inline static supports computed key syntax",
+          "line": 691
+        }
+      }
+    },
+    {
+      "id": "assertions/props-inline-static-supports-compu-026-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            w: { width: 'calc(100% - 20px)' },\n          });\n          stylex.props(styles.w);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xnlsq7q{width:calc(100% - 20px)}\",\n  priority: 4000\n});\n({\n  className: \"xnlsq7q\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "inline static supports computed key syntax",
+          "line": 711
+        }
+      }
+    },
+    {
+      "id": "assertions/props-inline-css-supports-default-027-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          import css from '@stylexjs/atoms';\n          stylex.props(css.color.blue);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nimport css from '@stylexjs/atoms';\n_inject2({\n  ltr: \".xju2f9n{color:blue}\",\n  priority: 3000\n});\n({\n  className: \"xju2f9n\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "inline css supports default imports",
+          "line": 731
+        }
+      }
+    },
+    {
+      "id": "assertions/props-dedupes-duplicate-properties-028-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          import css from '@stylexjs/atoms';\n          const styles = stylex.create({\n            base: { color: 'red', backgroundColor: 'white' },\n          });\n          stylex.props(styles.base, css.color.blue, css.backgroundColor.white);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nimport css from '@stylexjs/atoms';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x12peec7{background-color:white}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xju2f9n{color:blue}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x12peec7{background-color:white}\",\n  priority: 3000\n});\n({\n  className: \"xju2f9n x12peec7\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "dedupes duplicate properties across create and atoms",
+          "line": 755
+        }
+      }
+    },
+    {
+      "id": "assertions/props-dynamic-style-029-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            color: (c) => ({ color: c }),\n          });\n          stylex.props(styles.color(color));\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x14rh7hd{color:var(--x-color)}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \"@property --x-color { syntax: \\\"*\\\"; inherits: false;}\",\n  priority: 0\n});\nconst styles = {\n  color: c => [{\n    kMwMTN: c != null ? \"x14rh7hd\" : c,\n    $$css: true\n  }, {\n    \"--x-color\": c != null ? c : undefined\n  }]\n};\nstylex.props(styles.color(color));",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "dynamic style",
+          "line": 795
+        }
+      }
+    },
+    {
+      "id": "assertions/props-dynamic-style-030-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          import css from '@stylexjs/atoms';\n          stylex.props(css.color(color));\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nimport css from '@stylexjs/atoms';\n_inject2({\n  ltr: \".x14rh7hd{color:var(--x-color)}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \"@property --x-color { syntax: \\\"*\\\"; inherits: false;}\",\n  priority: 0\n});\nconst _temp = {\n  color: _v => [{\n    \"kMwMTN\": _v != null ? \"x14rh7hd\" : _v,\n    \"$$css\": true\n  }, {\n    \"--x-color\": _v != null ? _v : undefined\n  }]\n};\nstylex.props(_temp.color(color));",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "dynamic style",
+          "line": 817
+        }
+      }
+    },
+    {
+      "id": "assertions/props-inline-static-inline-dynamic-031-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import stylex from 'stylex';\n        import css from '@stylexjs/atoms';\n        stylex.props(css.display.flex, css.color(color));\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nimport css from '@stylexjs/atoms';\n_inject2({\n  ltr: \".x78zum5{display:flex}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x14rh7hd{color:var(--x-color)}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \"@property --x-color { syntax: \\\"*\\\"; inherits: false;}\",\n  priority: 0\n});\nconst _temp = {\n  color: _v => [{\n    \"kMwMTN\": _v != null ? \"x14rh7hd\" : _v,\n    \"$$css\": true\n  }, {\n    \"--x-color\": _v != null ? _v : undefined\n  }]\n};\nconst _temp2 = {\n  k1xSpc: \"x78zum5\",\n  $$css: true\n};\nstylex.props(_temp2, _temp.color(color));",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "inline static + inline dynamic coexist",
+          "line": 848
+        }
+      }
+    },
+    {
+      "id": "assertions/props-inline-static-create-dynamic-032-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import stylex from 'stylex';\n        import css from '@stylexjs/atoms';\n        const styles = stylex.create({\n          opacity: (o) => ({ opacity: o }),\n        });\n        stylex.props(css.display.flex, styles.opacity(0.5));\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nimport css from '@stylexjs/atoms';\n_inject2({\n  ltr: \".xb4nw82{opacity:var(--x-opacity)}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \"@property --x-opacity { syntax: \\\"*\\\"; inherits: false;}\",\n  priority: 0\n});\nconst styles = {\n  opacity: o => [{\n    kSiTet: o != null ? \"xb4nw82\" : o,\n    $$css: true\n  }, {\n    \"--x-opacity\": o != null ? o : undefined\n  }]\n};\n_inject2({\n  ltr: \".x78zum5{display:flex}\",\n  priority: 3000\n});\nconst _temp = {\n  k1xSpc: \"x78zum5\",\n  $$css: true\n};\nstylex.props(_temp, styles.opacity(0.5));",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "inline static + create dynamic",
+          "line": 890
+        }
+      }
+    },
+    {
+      "id": "assertions/props-inline-dynamic-create-dynami-033-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import stylex from 'stylex';\n        import css from '@stylexjs/atoms';\n        const styles = stylex.create({\n          opacity: (o) => ({ opacity: o }),\n        });\n        stylex.props(css.color(color), styles.opacity(0.5));\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nimport css from '@stylexjs/atoms';\n_inject2({\n  ltr: \".xb4nw82{opacity:var(--x-opacity)}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \"@property --x-opacity { syntax: \\\"*\\\"; inherits: false;}\",\n  priority: 0\n});\nconst styles = {\n  opacity: o => [{\n    kSiTet: o != null ? \"xb4nw82\" : o,\n    $$css: true\n  }, {\n    \"--x-opacity\": o != null ? o : undefined\n  }]\n};\n_inject2({\n  ltr: \".x14rh7hd{color:var(--x-color)}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \"@property --x-color { syntax: \\\"*\\\"; inherits: false;}\",\n  priority: 0\n});\nconst _temp = {\n  color: _v => [{\n    \"kMwMTN\": _v != null ? \"x14rh7hd\" : _v,\n    \"$$css\": true\n  }, {\n    \"--x-color\": _v != null ? _v : undefined\n  }]\n};\nstylex.props(_temp.color(color), styles.opacity(0.5));",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "inline dynamic + create dynamic",
+          "line": 932
+        }
+      }
+    },
+    {
+      "id": "assertions/props-atoms-with-conditional-034-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            import css from '@stylexjs/atoms';\n            stylex.props(css.display.flex, isActive && css.color.blue);\n          ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nimport css from '@stylexjs/atoms';\n_inject2({\n  ltr: \".x78zum5{display:flex}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xju2f9n{color:blue}\",\n  priority: 3000\n});\n({\n  0: {\n    className: \"x78zum5\"\n  },\n  1: {\n    className: \"x78zum5 xju2f9n\"\n  }\n})[!!isActive << 0];",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "atoms with && conditional",
+          "line": 980
+        }
+      }
+    },
+    {
+      "id": "assertions/props-atoms-with-ternary-condition-035-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            import css from '@stylexjs/atoms';\n            stylex.props(isActive ? css.color.blue : css.color.red);\n          ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nimport css from '@stylexjs/atoms';\n_inject2({\n  ltr: \".xju2f9n{color:blue}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n({\n  0: {\n    className: \"x1e2nbdu\"\n  },\n  1: {\n    className: \"xju2f9n\"\n  }\n})[!!isActive << 0];",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "atoms with ternary conditional",
+          "line": 1010
+        }
+      }
+    },
+    {
+      "id": "assertions/props-atoms-with-conditional-and-c-036-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            import css from '@stylexjs/atoms';\n            const styles = stylex.create({\n              active: { color: 'blue' },\n            });\n            stylex.props(css.display.flex, isActive && styles.active);\n          ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nimport css from '@stylexjs/atoms';\n_inject2({\n  ltr: \".xju2f9n{color:blue}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x78zum5{display:flex}\",\n  priority: 3000\n});\n({\n  0: {\n    className: \"x78zum5\"\n  },\n  1: {\n    className: \"x78zum5 xju2f9n\"\n  }\n})[!!isActive << 0];",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "atoms with conditional and create styles",
+          "line": 1043
+        }
+      }
+    },
+    {
+      "id": "assertions/props-dynamic-atoms-with-ternary-c-037-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            import css from '@stylexjs/atoms';\n            stylex.props(isActive ? css.color(activeColor) : css.backgroundColor(inactiveBg));\n          ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nimport css from '@stylexjs/atoms';\n_inject2({\n  ltr: \".x14rh7hd{color:var(--x-color)}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \"@property --x-color { syntax: \\\"*\\\"; inherits: false;}\",\n  priority: 0\n});\nconst _temp = {\n  color: _v => [{\n    \"kMwMTN\": _v != null ? \"x14rh7hd\" : _v,\n    \"$$css\": true\n  }, {\n    \"--x-color\": _v != null ? _v : undefined\n  }]\n};\n_inject2({\n  ltr: \".xl8spv7{background-color:var(--x-backgroundColor)}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \"@property --x-backgroundColor { syntax: \\\"*\\\"; inherits: false;}\",\n  priority: 0\n});\nconst _temp2 = {\n  backgroundColor: _v => [{\n    \"kWkggS\": _v != null ? \"xl8spv7\" : _v,\n    \"$$css\": true\n  }, {\n    \"--x-backgroundColor\": _v != null ? _v : undefined\n  }]\n};\nstylex.props(isActive ? _temp.color(activeColor) : _temp2.backgroundColor(inactiveBg));",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "dynamic atoms with ternary conditional",
+          "line": 1073
+        }
+      }
+    },
+    {
+      "id": "assertions/props-atoms-mixed-with-unknown-ext-038-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            import css from '@stylexjs/atoms';\n            import { externalStyles } from './other.stylex';\n            stylex.props(css.color.blue, externalStyles.root);\n          ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nimport css from '@stylexjs/atoms';\nimport { externalStyles } from './other.stylex';\n_inject2({\n  ltr: \".xju2f9n{color:blue}\",\n  priority: 3000\n});\nconst _temp = {\n  kMwMTN: \"xju2f9n\",\n  $$css: true\n};\nstylex.props(_temp, externalStyles.root);",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "atoms mixed with unknown external styles",
+          "line": 1123
+        }
+      }
+    },
+    {
+      "id": "assertions/props-atoms-with-dynamic-condition-039-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            import css from '@stylexjs/atoms';\n            function Button({ isActive, color }) {\n              return stylex.props(\n                css.padding._8px,\n                css.borderRadius._4px,\n                isActive && css.color(color),\n              );\n            }\n          ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nimport css from '@stylexjs/atoms';\n_inject2({\n  ltr: \".xe8ttls{padding:8px}\",\n  priority: 1000\n});\n_inject2({\n  ltr: \".x12oqio5{border-radius:4px}\",\n  priority: 2000\n});\n_inject2({\n  ltr: \".x14rh7hd{color:var(--x-color)}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \"@property --x-color { syntax: \\\"*\\\"; inherits: false;}\",\n  priority: 0\n});\nconst _temp = {\n  color: _v => [{\n    \"kMwMTN\": _v != null ? \"x14rh7hd\" : _v,\n    \"$$css\": true\n  }, {\n    \"--x-color\": _v != null ? _v : undefined\n  }]\n};\nconst _temp2 = {\n  kmVPX3: \"xe8ttls\",\n  $$css: true\n};\nconst _temp3 = {\n  kaIpWk: \"x12oqio5\",\n  $$css: true\n};\nfunction Button({\n  isActive,\n  color\n}) {\n  return stylex.props(_temp2, _temp3, isActive && _temp.color(color));\n}",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "atoms with dynamic conditional inside function",
+          "line": 1153
+        }
+      }
+    },
+    {
+      "id": "assertions/props-atoms-with-variable-referenc-040-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            import css from '@stylexjs/atoms';\n            function Component({ xstyle }) {\n              return stylex.props(css.display.flex, xstyle);\n            }\n          ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nimport css from '@stylexjs/atoms';\n_inject2({\n  ltr: \".x78zum5{display:flex}\",\n  priority: 3000\n});\nconst _temp = {\n  k1xSpc: \"x78zum5\",\n  $$css: true\n};\nfunction Component({\n  xstyle\n}) {\n  return stylex.props(_temp, xstyle);\n}",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "atoms with variable reference forces bailout",
+          "line": 1207
+        }
+      }
+    },
+    {
+      "id": "assertions/props-static-atoms-inside-function-041-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            import css from '@stylexjs/atoms';\n            function Component() {\n              return stylex.props(css.display.flex, css.color.blue);\n            }\n          ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nimport css from '@stylexjs/atoms';\n_inject2({\n  ltr: \".x78zum5{display:flex}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xju2f9n{color:blue}\",\n  priority: 3000\n});\nfunction Component() {\n  return {\n    className: \"x78zum5 xju2f9n\"\n  };\n}",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "static atoms inside function declaration",
+          "line": 1238
+        }
+      }
+    },
+    {
+      "id": "assertions/props-dynamic-atoms-inside-functio-042-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            import css from '@stylexjs/atoms';\n            function Component(color) {\n              return stylex.props(css.display.flex, css.color(color));\n            }\n          ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nimport css from '@stylexjs/atoms';\n_inject2({\n  ltr: \".x78zum5{display:flex}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x14rh7hd{color:var(--x-color)}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \"@property --x-color { syntax: \\\"*\\\"; inherits: false;}\",\n  priority: 0\n});\nconst _temp = {\n  color: _v => [{\n    \"kMwMTN\": _v != null ? \"x14rh7hd\" : _v,\n    \"$$css\": true\n  }, {\n    \"--x-color\": _v != null ? _v : undefined\n  }]\n};\nconst _temp2 = {\n  k1xSpc: \"x78zum5\",\n  $$css: true\n};\nfunction Component(color) {\n  return stylex.props(_temp2, _temp.color(color));\n}",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "dynamic atoms inside function declaration",
+          "line": 1267
+        }
+      }
+    },
+    {
+      "id": "assertions/props-atoms-inside-arrow-function-043-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            import css from '@stylexjs/atoms';\n            const Component = () => stylex.props(css.display.flex, css.color.blue);\n          ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nimport css from '@stylexjs/atoms';\n_inject2({\n  ltr: \".x78zum5{display:flex}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xju2f9n{color:blue}\",\n  priority: 3000\n});\nconst Component = () => ({\n  className: \"x78zum5 xju2f9n\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "atoms inside arrow function",
+          "line": 1308
+        }
+      }
+    },
+    {
+      "id": "assertions/props-multiple-stylex-props-calls-044-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            import css from '@stylexjs/atoms';\n            function Component(isHeader) {\n              const headerStyles = stylex.props(css.fontSize['24px'], css.fontWeight.bold);\n              const bodyStyles = stylex.props(css.fontSize['16px'], css.color.black);\n              return [headerStyles, bodyStyles];\n            }\n          ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nimport css from '@stylexjs/atoms';\n_inject2({\n  ltr: \".x1pvqxga{font-size:24px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x117nqv4{font-weight:bold}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1j61zf2{font-size:16px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1mqxbix{color:black}\",\n  priority: 3000\n});\nfunction Component(isHeader) {\n  const headerStyles = {\n    className: \"x1pvqxga x117nqv4\"\n  };\n  const bodyStyles = {\n    className: \"x1j61zf2 x1mqxbix\"\n  };\n  return [headerStyles, bodyStyles];\n}",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "multiple stylex.props calls with atoms in same function",
+          "line": 1337
+        }
+      }
+    },
+    {
+      "id": "assertions/props-dev-debug-classnames-for-ato-045-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "tmp/Foo.js",
+      "source": "\n              import stylex from 'stylex';\n              import css from '@stylexjs/atoms';\n              stylex.props(css.display.flex);\n            ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "dev": true,
+        "debug": true,
+        "enableDevClassNames": true,
+        "enableDebugClassNames": true,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nimport css from '@stylexjs/atoms';\n_inject2({\n  ltr: \".display-x78zum5{display:flex}\",\n  priority: 3000\n});\n({\n  className: \"Foo____inline__ display-x78zum5\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "dev/debug classnames for atoms",
+          "line": 1387
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-with-number-046-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            0: {\n              color: 'red',\n            },\n            1: {\n              backgroundColor: 'blue',\n            }\n          });\n          stylex.props([styles[0], styles[1]]);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1t391ir{background-color:blue}\",\n  priority: 3000\n});\n({\n  className: \"x1e2nbdu x1t391ir\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex call with number",
+          "line": 1405
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-with-computed-nu-047-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            [0]: {\n              color: 'red',\n            },\n            [1]: {\n              backgroundColor: 'blue',\n            }\n          });\n          stylex.props([styles[0], styles[1]]);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1t391ir{background-color:blue}\",\n  priority: 3000\n});\n({\n  className: \"x1e2nbdu x1t391ir\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex call with computed number",
+          "line": 1437
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-with-computed-st-048-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            'default': {\n              color: 'red',\n            }\n          });\n          stylex.props(styles['default']);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n({\n  className: \"x1e2nbdu\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex call with computed string",
+          "line": 1469
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-with-multiple-na-049-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import {create, props} from 'stylex';\n          const styles = create({\n            default: {\n              color: 'red',\n            },\n          });\n          const otherStyles = create({\n            default: {\n              backgroundColor: 'blue',\n            }\n          });\n          props([styles.default, otherStyles.default]);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport { create, props } from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1t391ir{background-color:blue}\",\n  priority: 3000\n});\n({\n  className: \"x1e2nbdu x1t391ir\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex call with multiple namespaces",
+          "line": 1494
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-within-variable-050-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: { color: 'red' }\n          });\n          const a = function() {\n            return stylex.props(styles.foo);\n          }\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\nconst a = function () {\n  return {\n    className: \"x1e2nbdu\"\n  };\n};",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex call within variable declarations",
+          "line": 1528
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-with-styles-vari-051-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              color: 'red',\n            },\n            bar: {\n              backgroundColor: 'blue',\n            }\n          });\n          stylex.props([styles.foo, styles.bar]);\n          const foo = styles;\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1t391ir{background-color:blue}\",\n  priority: 3000\n});\nconst styles = {\n  foo: {\n    kMwMTN: \"x1e2nbdu\",\n    $$css: true\n  },\n  bar: {\n    kWkggS: \"x1t391ir\",\n    $$css: true\n  }\n};\n({\n  className: \"x1e2nbdu x1t391ir\"\n});\nconst foo = styles;",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex call with styles variable assignment",
+          "line": 1555
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-within-export-de-052-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: { color: 'red' }\n          });\n          export default function MyExportDefault() {\n            return stylex.props(styles.foo);\n          }\n          export function MyExport() {\n            return stylex.props(styles.foo);\n          }\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\nexport default function MyExportDefault() {\n  return {\n    className: \"x1e2nbdu\"\n  };\n}\nexport function MyExport() {\n  return {\n    className: \"x1e2nbdu\"\n  };\n}",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex call within export declarations",
+          "line": 1599
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-with-short-form-053-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              padding: 5\n            }\n          });\n          stylex.props(styles.foo);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x14odnwx{padding:5px}\",\n  priority: 1000\n});\n({\n  className: \"x14odnwx\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex call with short-form properties",
+          "line": 1634
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-with-exported-sh-054-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            foo: {\n              padding: 5\n            }\n          });\n          stylex.props([styles.foo]);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x14odnwx{padding:5px}\",\n  priority: 1000\n});\nexport const styles = {\n  foo: {\n    kmVPX3: \"x14odnwx\",\n    $$css: true\n  }\n};\n({\n  className: \"x14odnwx\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex call with exported short-form properties",
+          "line": 1659
+        }
+      }
+    },
+    {
+      "id": "assertions/props-last-property-wins-even-if-s-055-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const borderRadius = 2;\n          export const styles = stylex.create({\n            default: {\n              marginBottom: 15,\n              marginInlineEnd: 10,\n              marginInlineStart: 20,\n              marginTop: 5,\n            },\n            override: {\n              margin: 0,\n              marginBottom: 100,\n            }\n          });\n          const result = stylex.props(styles.default, styles.override);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nconst borderRadius = 2;\n_inject2({\n  ltr: \".x1fqp7bg{margin-bottom:15px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x1sa5p1d{margin-inline-end:10px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xqsn43r{margin-inline-start:20px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1ok221b{margin-top:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x1ghz6dp{margin:0}\",\n  priority: 1000\n});\n_inject2({\n  ltr: \".xiv7p99{margin-bottom:100px}\",\n  priority: 4000\n});\nexport const styles = {\n  default: {\n    k1K539: \"x1fqp7bg\",\n    k71WvV: \"x1sa5p1d\",\n    keTefX: \"xqsn43r\",\n    keoZOQ: \"x1ok221b\",\n    $$css: true\n  },\n  override: {\n    kogj98: \"x1ghz6dp\",\n    k1K539: \"xiv7p99\",\n    $$css: true\n  }\n};\nconst result = {\n  className: \"x1sa5p1d xqsn43r x1ok221b x1ghz6dp xiv7p99\"\n};",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "Last property wins, even if shorthand",
+          "line": 1690
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-using-styles-wit-056-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            default: {\n              color: 'red',\n              ':hover': {\n                color: 'blue',\n              }\n            }\n          });\n          stylex.props(styles.default);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x17z2mba:hover{color:blue}\",\n  priority: 3130\n});\n({\n  className: \"x1e2nbdu x17z2mba\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex call using styles with pseudo selectors",
+          "line": 1758
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-using-styles-wit-057-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from 'stylex';\n          const styles = stylex.create({\n            default: {\n              color: {\n                default: 'red',\n                ':hover': 'blue',\n              }\n            }\n          });\n          stylex.props(styles.default);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport * as stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x17z2mba:hover{color:blue}\",\n  priority: 3130\n});\n({\n  className: \"x1e2nbdu x17z2mba\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex call using styles with pseudo selectors within property",
+          "line": 1790
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-using-styles-wit-058-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            default: {\n              backgroundColor: 'red',\n              '@media (min-width: 1000px)': {\n                backgroundColor: 'blue',\n              },\n              '@media (min-width: 2000px)': {\n                backgroundColor: 'purple',\n              },\n            },\n          });\n          stylex.props(styles.default);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xrkmrrc{background-color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \"@media (min-width: 1000px){.xc445zv.xc445zv{background-color:blue}}\",\n  priority: 3200\n});\n_inject2({\n  ltr: \"@media (min-width: 2000px){.x1ssfqz5.x1ssfqz5{background-color:purple}}\",\n  priority: 3200\n});\n({\n  className: \"xrkmrrc xc445zv x1ssfqz5\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex call using styles with Media Queries",
+          "line": 1822
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-using-styles-wit-059-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            default: {\n              backgroundColor: {\n                default:'red',\n                '@media (min-width: 1000px)': 'blue',\n                '@media (min-width: 2000px)': 'purple',\n              },\n            },\n          });\n          stylex.props(styles.default);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xrkmrrc{background-color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \"@media (min-width: 1000px) and (max-width: 1999.99px){.xw6up8c.xw6up8c{background-color:blue}}\",\n  priority: 3200\n});\n_inject2({\n  ltr: \"@media (min-width: 2000px){.x1ssfqz5.x1ssfqz5{background-color:purple}}\",\n  priority: 3200\n});\n({\n  className: \"xrkmrrc xw6up8c x1ssfqz5\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex call using styles with Media Queries within property",
+          "line": 1861
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-using-styles-wit-060-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            default: {\n              backgroundColor: 'red',\n              '@supports (hover: hover)': {\n                backgroundColor: 'blue',\n              },\n              '@supports not (hover: hover)': {\n                backgroundColor: 'purple',\n              },\n            },\n          });\n          stylex.props(styles.default);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xrkmrrc{background-color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \"@supports (hover: hover){.x6m3b6q.x6m3b6q{background-color:blue}}\",\n  priority: 3030\n});\n_inject2({\n  ltr: \"@supports not (hover: hover){.x6um648.x6um648{background-color:purple}}\",\n  priority: 3030\n});\n({\n  className: \"xrkmrrc x6m3b6q x6um648\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex call using styles with Support Queries",
+          "line": 1898
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-using-styles-wit-061-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            default: {\n              backgroundColor: {\n                default:'red',\n                '@supports (hover: hover)': 'blue',\n                '@supports not (hover: hover)': 'purple',\n              },\n            },\n          });\n          stylex.props(styles.default);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xrkmrrc{background-color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \"@supports (hover: hover){.x6m3b6q.x6m3b6q{background-color:blue}}\",\n  priority: 3030\n});\n_inject2({\n  ltr: \"@supports not (hover: hover){.x6um648.x6um648{background-color:purple}}\",\n  priority: 3030\n});\n({\n  className: \"xrkmrrc x6m3b6q x6um648\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex call using styles with Support Queries within property",
+          "line": 1937
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-with-conditions-062-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              default: {\n                backgroundColor: 'red',\n              },\n              active: {\n                color: 'blue',\n              }\n            });\n            stylex.props([styles.default, isActive && styles.active]);\n          ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xrkmrrc{background-color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xju2f9n{color:blue}\",\n  priority: 3000\n});\n({\n  0: {\n    className: \"xrkmrrc\"\n  },\n  1: {\n    className: \"xrkmrrc xju2f9n\"\n  }\n})[!!isActive << 0];",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex call with conditions",
+          "line": 1975
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-with-conditions-063-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              default: {\n                backgroundColor: 'red',\n              },\n              active: {\n                color: 'blue',\n              }\n            });\n            stylex.props([styles.default, isActive && styles.active]);\n            ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "enableInlinedConditionalMerge": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xrkmrrc{background-color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xju2f9n{color:blue}\",\n  priority: 3000\n});\nconst styles = {\n  default: {\n    kWkggS: \"xrkmrrc\",\n    $$css: true\n  },\n  active: {\n    kMwMTN: \"xju2f9n\",\n    $$css: true\n  }\n};\nstylex.props([styles.default, isActive && styles.active]);",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex call with conditions - skip conditional",
+          "line": 2014
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-with-property-co-064-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              red: {\n                color: 'red',\n              },\n              blue: {\n                color: 'blue',\n              }\n            });\n            stylex.props([styles.red, styles.blue]);\n            stylex.props([styles.blue, styles.red]);\n          ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xju2f9n{color:blue}\",\n  priority: 3000\n});\n({\n  className: \"xju2f9n\"\n});\n({\n  className: \"x1e2nbdu\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex call with property collisions",
+          "line": 2057
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-with-reverting-b-065-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              red: {\n                color: 'red',\n              },\n              revert: {\n                color: null,\n              }\n            });\n            stylex.props([styles.red, styles.revert]);\n            stylex.props([styles.revert, styles.red]);\n          ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n({});\n({\n  className: \"x1e2nbdu\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex call with reverting by null",
+          "line": 2093
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-with-short-form-066-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              foo: {\n                padding: 5,\n                paddingEnd: 10,\n              },\n\n              bar: {\n                padding: 2,\n                paddingStart: 10,\n              },\n            });\n            stylex.props([styles.foo, styles.bar]);\n          ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x14odnwx{padding:5px}\",\n  priority: 1000\n});\n_inject2({\n  ltr: \".x2vl965{padding-inline-end:10px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1i3ajwb{padding:2px}\",\n  priority: 1000\n});\n_inject2({\n  ltr: \".xe2zdcy{padding-inline-start:10px}\",\n  priority: 3000\n});\n({\n  className: \"x2vl965 x1i3ajwb xe2zdcy\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex call with short-form property collisions",
+          "line": 2123
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-with-short-form-067-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              foo: {\n                padding: 5,\n                paddingEnd: 10,\n              },\n\n              bar: {\n                padding: 2,\n                paddingStart: null,\n              },\n            });\n            stylex.props([styles.foo, styles.bar]);\n          ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x14odnwx{padding:5px}\",\n  priority: 1000\n});\n_inject2({\n  ltr: \".x2vl965{padding-inline-end:10px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1i3ajwb{padding:2px}\",\n  priority: 1000\n});\n({\n  className: \"x2vl965 x1i3ajwb\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex call with short-form property collisions with null",
+          "line": 2166
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-with-conditions-068-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              red: {\n                color: 'red',\n              },\n              blue: {\n                color: 'blue',\n              }\n            });\n            stylex.props([styles.red, isActive && styles.blue]);\n          ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xju2f9n{color:blue}\",\n  priority: 3000\n});\n({\n  0: {\n    className: \"x1e2nbdu\"\n  },\n  1: {\n    className: \"xju2f9n\"\n  }\n})[!!isActive << 0];",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex call with conditions and collisions",
+          "line": 2205
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-with-conditions-069-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              red: {\n                color: 'red',\n              },\n              blue: {\n                color: 'blue',\n              }\n            });\n            stylex.props([styles.red, isActive && styles.blue]);\n            ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "enableInlinedConditionalMerge": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xju2f9n{color:blue}\",\n  priority: 3000\n});\nconst styles = {\n  red: {\n    kMwMTN: \"x1e2nbdu\",\n    $$css: true\n  },\n  blue: {\n    kMwMTN: \"xju2f9n\",\n    $$css: true\n  }\n};\nstylex.props([styles.red, isActive && styles.blue]);",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex call with conditions and collisions - skip conditional",
+          "line": 2244
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-with-conditions-070-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              red: {\n                color: 'red',\n              },\n              blue: {\n                color: null,\n              }\n            });\n            stylex.props([styles.red, isActive && styles.blue]);\n          ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n({\n  0: {\n    className: \"x1e2nbdu\"\n  },\n  1: {}\n})[!!isActive << 0];",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex call with conditions and null collisions",
+          "line": 2287
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-with-conditions-071-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              red: {\n                color: 'red',\n              },\n              blue: {\n                color: null,\n              }\n            });\n            stylex.props([styles.red, isActive && styles.blue]);\n            ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "enableInlinedConditionalMerge": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\nconst styles = {\n  red: {\n    kMwMTN: \"x1e2nbdu\",\n    $$css: true\n  },\n  blue: {\n    kMwMTN: null,\n    $$css: true\n  }\n};\nstylex.props([styles.red, isActive && styles.blue]);",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex call with conditions and null collisions - skip conditional",
+          "line": 2320
+        }
+      }
+    },
+    {
+      "id": "assertions/props-dev-true-and-enableinlinedco-072-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "html/js/FooBar.react.js",
+      "source": "\n              import stylex from 'stylex';\n              const styles = stylex.create({\n                default: {\n                  color: 'red',\n                },\n              });\n              stylex.props(styles.default);\n            ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "dev": true,
+        "enableInlinedConditionalMerge": false,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".color-x1e2nbdu{color:red}\",\n  priority: 3000\n});\n({\n  className: \"color-x1e2nbdu\",\n  \"data-style-src\": \"html/js/FooBar.react.js:4\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "dev:true and enableInlinedConditionalMerge:false",
+          "line": 2369
+        }
+      }
+    },
+    {
+      "id": "assertions/props-dev-true-and-enableinlinedco-073-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "html/js/FooBar.react.js",
+      "source": "\n              import stylex from 'stylex';\n              const styles = stylex.create({\n                default: {\n                  color: 'red',\n                },\n              });\n              const otherStyles = stylex.create({\n                default: {\n                  backgroundColor: 'blue',\n                }\n              });\n              stylex.props([styles.default, isActive && otherStyles.default]);\n          ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "dev": true,
+        "enableInlinedConditionalMerge": false,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".color-x1e2nbdu{color:red}\",\n  priority: 3000\n});\nconst styles = {\n  default: {\n    \"color-kMwMTN\": \"color-x1e2nbdu\",\n    $$css: \"html/js/FooBar.react.js:4\"\n  }\n};\n_inject2({\n  ltr: \".backgroundColor-x1t391ir{background-color:blue}\",\n  priority: 3000\n});\nconst otherStyles = {\n  default: {\n    \"backgroundColor-kWkggS\": \"backgroundColor-x1t391ir\",\n    $$css: \"html/js/FooBar.react.js:9\"\n  }\n};\nstylex.props([styles.default, isActive && otherStyles.default]);",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "dev:true and enableInlinedConditionalMerge:false",
+          "line": 2396
+        }
+      }
+    },
+    {
+      "id": "assertions/props-dev-true-074-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "html/js/FooBar.react.js",
+      "source": "\n              import stylex from 'stylex';\n              const styles = stylex.create({\n                default: {\n                  color: 'red',\n                },\n              });\n              const otherStyles = stylex.create({\n                default: {\n                  backgroundColor: 'blue',\n                }\n              });\n              stylex.props([styles.default, isActive && otherStyles.default]);\n          ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "dev": true,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".color-x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".backgroundColor-x1t391ir{background-color:blue}\",\n  priority: 3000\n});\n({\n  0: {\n    className: \"color-x1e2nbdu\",\n    \"data-style-src\": \"html/js/FooBar.react.js:4\"\n  },\n  1: {\n    className: \"color-x1e2nbdu backgroundColor-x1t391ir\",\n    \"data-style-src\": \"html/js/FooBar.react.js:4; html/js/FooBar.react.js:9\"\n  }\n})[!!isActive << 0];",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "dev:true",
+          "line": 2449
+        }
+      }
+    },
+    {
+      "id": "assertions/props-dev-true-075-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "html/js/FooBar.react.js",
+      "source": "\n              import stylex from 'stylex';\n              const styles = stylex.create({\n                default: {\n                  color: 'red',\n                },\n                active: {\n                  color: 'blue',\n                }\n              });\n              stylex.props([styles.default, isActive && styles.active]);\n          ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "dev": true,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".color-x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".color-xju2f9n{color:blue}\",\n  priority: 3000\n});\n({\n  0: {\n    className: \"color-x1e2nbdu\",\n    \"data-style-src\": \"html/js/FooBar.react.js:4\"\n  },\n  1: {\n    className: \"color-xju2f9n\",\n    \"data-style-src\": \"html/js/FooBar.react.js:4; html/js/FooBar.react.js:7\"\n  }\n})[!!isActive << 0];",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "dev:true",
+          "line": 2491
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-with-computed-ke-076-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            const styles = stylex.create({\n              [0]: {\n                color: 'red',\n              },\n              [1]: {\n                backgroundColor: 'blue',\n              }\n            });\n            stylex.props(styles[variant]);\n          ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1t391ir{background-color:blue}\",\n  priority: 3000\n});\nconst styles = {\n  \"0\": {\n    kMwMTN: \"x1e2nbdu\",\n    $$css: true\n  },\n  \"1\": {\n    kWkggS: \"x1t391ir\",\n    $$css: true\n  }\n};\nstylex.props(styles[variant]);",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex call with computed key access",
+          "line": 2536
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-with-composition-077-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            default: {\n              color: 'red',\n            },\n          });\n          stylex.props([styles.default, props]);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\nconst styles = {\n  default: {\n    kMwMTN: \"x1e2nbdu\",\n    $$css: true\n  }\n};\nstylex.props([styles.default, props]);",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex call with composition of external styles",
+          "line": 2576
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-using-exported-s-078-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            default: {\n              ':hover': {\n                color: 'blue',\n              },\n              '@media (min-width: 1000px)': {\n                backgroundColor: 'blue',\n              },\n            }\n          });\n          stylex.props(styles.default);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x17z2mba:hover{color:blue}\",\n  priority: 3130\n});\n_inject2({\n  ltr: \"@media (min-width: 1000px){.xc445zv.xc445zv{background-color:blue}}\",\n  priority: 3200\n});\nexport const styles = {\n  default: {\n    kDPRdz: \"x17z2mba\",\n    ksQ81T: \"xc445zv\",\n    $$css: true\n  }\n};\n({\n  className: \"x17z2mba xc445zv\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex call using exported styles with pseudo selectors, and queries",
+          "line": 2605
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-with-computed-ke-079-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            stylex.props(styles[variant]);\n            const styles = stylex.create({\n              [0]: {\n                color: 'red',\n              },\n              [1]: {\n                backgroundColor: 'blue',\n              }\n            });\n          ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nstylex.props(styles[variant]);\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1t391ir{background-color:blue}\",\n  priority: 3000\n});\nconst styles = {\n  \"0\": {\n    kMwMTN: \"x1e2nbdu\",\n    $$css: true\n  },\n  \"1\": {\n    kWkggS: \"x1t391ir\",\n    $$css: true\n  }\n};",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex call with computed key access",
+          "line": 2647
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-with-mixed-acces-080-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n\n            function MyComponent() {\n              return (\n                <>\n                  <div {...stylex.props(styles.foo)} />\n                  <div {...stylex.props(styles.bar)} />\n                  <CustomComponent xstyle={styles.foo} />\n                  <div {...stylex.props([styles.foo, styles.bar])} />\n                </>\n              );\n            }\n\n            const styles = stylex.create({\n              foo: {\n                color: 'red',\n              },\n              bar: {\n                backgroundColor: 'blue',\n              }\n            });\n          ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nfunction MyComponent() {\n  return <>\n                  <div className=\"x1e2nbdu\" />\n                  <div className=\"x1t391ir\" />\n                  <CustomComponent xstyle={styles.foo} />\n                  <div className=\"x1e2nbdu x1t391ir\" />\n                </>;\n}\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1t391ir{background-color:blue}\",\n  priority: 3000\n});\nconst styles = {\n  foo: {\n    kMwMTN: \"x1e2nbdu\",\n    $$css: true\n  }\n};",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex call with mixed access",
+          "line": 2687
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-with-composition-081-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            stylex.props([styles.default, props]);\n            const styles = stylex.create({\n              default: {\n                color: 'red',\n              },\n            });\n          ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\nstylex.props([styles.default, props]);\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\nconst styles = {\n  default: {\n    kMwMTN: \"x1e2nbdu\",\n    $$css: true\n  }\n};",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex call with composition of external styles",
+          "line": 2741
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-using-exported-s-082-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import stylex from 'stylex';\n            stylex.props(styles.default);\n            export const styles = stylex.create({\n              default: {\n                ':hover': {\n                  color: 'blue',\n                },\n                '@media (min-width: 1000px)': {\n                  backgroundColor: 'blue',\n                },\n              }\n            });\n          ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n({\n  className: \"x17z2mba xc445zv\"\n});\n_inject2({\n  ltr: \".x17z2mba:hover{color:blue}\",\n  priority: 3130\n});\n_inject2({\n  ltr: \"@media (min-width: 1000px){.xc445zv.xc445zv{background-color:blue}}\",\n  priority: 3200\n});\nexport const styles = {\n  default: {\n    kDPRdz: \"x17z2mba\",\n    ksQ81T: \"xc445zv\",\n    $$css: true\n  }\n};",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "stylex call using exported styles with pseudo selectors, and queries",
+          "line": 2770
+        }
+      }
+    },
+    {
+      "id": "assertions/props-basic-stylex-call-083-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'custom-stylex-path';\n          const styles = stylex.create({\n            red: {\n              color: 'red',\n            }\n          });\n          stylex.props(styles.red);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "importSources": ["custom-stylex-path"],
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'custom-stylex-path';\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n({\n  className: \"x1e2nbdu\"\n});",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "Basic stylex call",
+          "line": 2814
+        }
+      }
+    },
+    {
+      "id": "assertions/props-basic-stylex-call-084-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const styles = stylex.create({\n            sidebar: {\n              boxSizing: 'border-box',\n              gridArea: 'sidebar',\n            },\n            content: {\n              gridArea: 'content',\n            },\n            root: {\n              display: 'grid',\n              gridTemplateRows: '100%',\n              gridTemplateAreas: '\"content\"',\n            },\n            withSidebar: {\n              gridTemplateColumns: 'auto minmax(0, 1fr)',\n              gridTemplateRows: '100%',\n              gridTemplateAreas: '\"sidebar content\"',\n              '@media (max-width: 640px)': {\n                gridTemplateRows: 'minmax(0, 1fr) auto',\n                gridTemplateAreas: '\"content\" \"sidebar\"',\n                gridTemplateColumns: '100%',\n              },\n            },\n            noSidebar: {\n              gridTemplateColumns: 'minmax(0, 1fr)',\n            },\n          });\n          stylex.props([\n            styles.root,\n            sidebar == null ? styles.noSidebar : styles.withSidebar,\n          ]);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "dev": true,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport * as stylex from '@stylexjs/stylex';\n_inject2({\n  ltr: \".boxSizing-x9f619{box-sizing:border-box}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".gridArea-x1yc5d2u{grid-area:sidebar}\",\n  priority: 1000\n});\n_inject2({\n  ltr: \".gridArea-x1fdo2jl{grid-area:content}\",\n  priority: 1000\n});\n_inject2({\n  ltr: \".display-xrvj5dj{display:grid}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".gridTemplateRows-x7k18q3{grid-template-rows:100%}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".gridTemplateAreas-x5gp9wm{grid-template-areas:\\\"content\\\"}\",\n  priority: 2000\n});\n_inject2({\n  ltr: \".gridTemplateColumns-x1rkzygb{grid-template-columns:auto minmax(0,1fr)}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".gridTemplateAreas-x17lh93j{grid-template-areas:\\\"sidebar content\\\"}\",\n  priority: 2000\n});\n_inject2({\n  ltr: \"@media (max-width: 640px){.gridTemplateRows-xmr4b4k.gridTemplateRows-xmr4b4k{grid-template-rows:minmax(0,1fr) auto}}\",\n  priority: 3200\n});\n_inject2({\n  ltr: \"@media (max-width: 640px){.gridTemplateAreas-xesbpuc.gridTemplateAreas-xesbpuc{grid-template-areas:\\\"content\\\" \\\"sidebar\\\"}}\",\n  priority: 2200\n});\n_inject2({\n  ltr: \"@media (max-width: 640px){.gridTemplateColumns-x15nfgh4.gridTemplateColumns-x15nfgh4{grid-template-columns:100%}}\",\n  priority: 3200\n});\n_inject2({\n  ltr: \".gridTemplateColumns-x1mkdm3x{grid-template-columns:minmax(0,1fr)}\",\n  priority: 3000\n});\nexport const styles = {\n  sidebar: {\n    \"boxSizing-kB7OPa\": \"boxSizing-x9f619\",\n    \"gridArea-kJuA4N\": \"gridArea-x1yc5d2u\",\n    $$css: \"@stylexjs/babel-plugin::4\"\n  },\n  content: {\n    \"gridArea-kJuA4N\": \"gridArea-x1fdo2jl\",\n    $$css: \"@stylexjs/babel-plugin::8\"\n  },\n  root: {\n    \"display-k1xSpc\": \"display-xrvj5dj\",\n    \"gridTemplateRows-k9llMU\": \"gridTemplateRows-x7k18q3\",\n    \"gridTemplateAreas-kC13JO\": \"gridTemplateAreas-x5gp9wm\",\n    $$css: \"@stylexjs/babel-plugin::11\"\n  },\n  withSidebar: {\n    \"gridTemplateColumns-kumcoG\": \"gridTemplateColumns-x1rkzygb\",\n    \"gridTemplateRows-k9llMU\": \"gridTemplateRows-x7k18q3\",\n    \"gridTemplateAreas-kC13JO\": \"gridTemplateAreas-x17lh93j\",\n    \"@media (max-width: 640px)_gridTemplateRows-k9pwkU\": \"gridTemplateRows-xmr4b4k\",\n    \"@media (max-width: 640px)_gridTemplateAreas-kOnEH4\": \"gridTemplateAreas-xesbpuc\",\n    \"@media (max-width: 640px)_gridTemplateColumns-k1JLwA\": \"gridTemplateColumns-x15nfgh4\",\n    $$css: \"@stylexjs/babel-plugin::16\"\n  },\n  noSidebar: {\n    \"gridTemplateColumns-kumcoG\": \"gridTemplateColumns-x1mkdm3x\",\n    $$css: \"@stylexjs/babel-plugin::26\"\n  }\n};\n({\n  0: {\n    className: \"display-xrvj5dj gridTemplateColumns-x1rkzygb gridTemplateRows-x7k18q3 gridTemplateAreas-x17lh93j gridTemplateRows-xmr4b4k gridTemplateAreas-xesbpuc gridTemplateColumns-x15nfgh4\",\n    \"data-style-src\": \"@stylexjs/babel-plugin::11; @stylexjs/babel-plugin::16\"\n  },\n  1: {\n    className: \"display-xrvj5dj gridTemplateRows-x7k18q3 gridTemplateAreas-x5gp9wm gridTemplateColumns-x1mkdm3x\",\n    \"data-style-src\": \"@stylexjs/babel-plugin::11; @stylexjs/babel-plugin::26\"\n  }\n})[!!(sidebar == null) << 0];",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "Basic stylex call",
+          "line": 2844
+        }
+      }
+    },
+    {
+      "id": "assertions/props-basic-stylex-call-085-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "html/js/FooBar.react.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            sidebar: {\n              boxSizing: 'border-box',\n              gridArea: 'sidebar',\n            },\n            content: {\n              gridArea: 'content',\n            },\n            root: {\n              display: 'grid',\n              gridTemplateRows: '100%',\n              gridTemplateAreas: '\"content\"',\n            },\n            withSidebar: {\n              gridTemplateColumns: 'auto minmax(0, 1fr)',\n              gridTemplateRows: '100%',\n              gridTemplateAreas: '\"sidebar content\"',\n              '@media (max-width: 640px)': {\n                gridTemplateRows: 'minmax(0, 1fr) auto',\n                gridTemplateAreas: '\"content\" \"sidebar\"',\n                gridTemplateColumns: '100%',\n              },\n            },\n            noSidebar: {\n              gridTemplateColumns: 'minmax(0, 1fr)',\n            },\n          });\n          const complex = stylex.props([\n            styles.root,\n            sidebar == null && !isSidebar ? styles.noSidebar : styles.withSidebar,\n            isSidebar && styles.sidebar,\n            isContent && styles.content,\n          ]);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "dev": true,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport * as stylex from '@stylexjs/stylex';\n_inject2({\n  ltr: \".boxSizing-x9f619{box-sizing:border-box}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".gridArea-x1yc5d2u{grid-area:sidebar}\",\n  priority: 1000\n});\n_inject2({\n  ltr: \".gridArea-x1fdo2jl{grid-area:content}\",\n  priority: 1000\n});\n_inject2({\n  ltr: \".display-xrvj5dj{display:grid}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".gridTemplateRows-x7k18q3{grid-template-rows:100%}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".gridTemplateAreas-x5gp9wm{grid-template-areas:\\\"content\\\"}\",\n  priority: 2000\n});\n_inject2({\n  ltr: \".gridTemplateColumns-x1rkzygb{grid-template-columns:auto minmax(0,1fr)}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".gridTemplateAreas-x17lh93j{grid-template-areas:\\\"sidebar content\\\"}\",\n  priority: 2000\n});\n_inject2({\n  ltr: \"@media (max-width: 640px){.gridTemplateRows-xmr4b4k.gridTemplateRows-xmr4b4k{grid-template-rows:minmax(0,1fr) auto}}\",\n  priority: 3200\n});\n_inject2({\n  ltr: \"@media (max-width: 640px){.gridTemplateAreas-xesbpuc.gridTemplateAreas-xesbpuc{grid-template-areas:\\\"content\\\" \\\"sidebar\\\"}}\",\n  priority: 2200\n});\n_inject2({\n  ltr: \"@media (max-width: 640px){.gridTemplateColumns-x15nfgh4.gridTemplateColumns-x15nfgh4{grid-template-columns:100%}}\",\n  priority: 3200\n});\n_inject2({\n  ltr: \".gridTemplateColumns-x1mkdm3x{grid-template-columns:minmax(0,1fr)}\",\n  priority: 3000\n});\nconst complex = {\n  0: {\n    className: \"display-xrvj5dj gridTemplateColumns-x1rkzygb gridTemplateRows-x7k18q3 gridTemplateAreas-x17lh93j gridTemplateRows-xmr4b4k gridTemplateAreas-xesbpuc gridTemplateColumns-x15nfgh4\",\n    \"data-style-src\": \"html/js/FooBar.react.js:11; html/js/FooBar.react.js:16\"\n  },\n  4: {\n    className: \"display-xrvj5dj gridTemplateRows-x7k18q3 gridTemplateAreas-x5gp9wm gridTemplateColumns-x1mkdm3x\",\n    \"data-style-src\": \"html/js/FooBar.react.js:11; html/js/FooBar.react.js:26\"\n  },\n  2: {\n    className: \"display-xrvj5dj gridTemplateColumns-x1rkzygb gridTemplateRows-x7k18q3 gridTemplateAreas-x17lh93j gridTemplateRows-xmr4b4k gridTemplateAreas-xesbpuc gridTemplateColumns-x15nfgh4 boxSizing-x9f619 gridArea-x1yc5d2u\",\n    \"data-style-src\": \"html/js/FooBar.react.js:11; html/js/FooBar.react.js:16; html/js/FooBar.react.js:4\"\n  },\n  6: {\n    className: \"display-xrvj5dj gridTemplateRows-x7k18q3 gridTemplateAreas-x5gp9wm gridTemplateColumns-x1mkdm3x boxSizing-x9f619 gridArea-x1yc5d2u\",\n    \"data-style-src\": \"html/js/FooBar.react.js:11; html/js/FooBar.react.js:26; html/js/FooBar.react.js:4\"\n  },\n  1: {\n    className: \"display-xrvj5dj gridTemplateColumns-x1rkzygb gridTemplateRows-x7k18q3 gridTemplateAreas-x17lh93j gridTemplateRows-xmr4b4k gridTemplateAreas-xesbpuc gridTemplateColumns-x15nfgh4 gridArea-x1fdo2jl\",\n    \"data-style-src\": \"html/js/FooBar.react.js:11; html/js/FooBar.react.js:16; html/js/FooBar.react.js:8\"\n  },\n  5: {\n    className: \"display-xrvj5dj gridTemplateRows-x7k18q3 gridTemplateAreas-x5gp9wm gridTemplateColumns-x1mkdm3x gridArea-x1fdo2jl\",\n    \"data-style-src\": \"html/js/FooBar.react.js:11; html/js/FooBar.react.js:26; html/js/FooBar.react.js:8\"\n  },\n  3: {\n    className: \"display-xrvj5dj gridTemplateColumns-x1rkzygb gridTemplateRows-x7k18q3 gridTemplateAreas-x17lh93j gridTemplateRows-xmr4b4k gridTemplateAreas-xesbpuc gridTemplateColumns-x15nfgh4 boxSizing-x9f619 gridArea-x1fdo2jl\",\n    \"data-style-src\": \"html/js/FooBar.react.js:11; html/js/FooBar.react.js:16; html/js/FooBar.react.js:4; html/js/FooBar.react.js:8\"\n  },\n  7: {\n    className: \"display-xrvj5dj gridTemplateRows-x7k18q3 gridTemplateAreas-x5gp9wm gridTemplateColumns-x1mkdm3x boxSizing-x9f619 gridArea-x1fdo2jl\",\n    \"data-style-src\": \"html/js/FooBar.react.js:11; html/js/FooBar.react.js:26; html/js/FooBar.react.js:4; html/js/FooBar.react.js:8\"\n  }\n}[!!(sidebar == null && !isSidebar) << 2 | !!isSidebar << 1 | !!isContent << 0];",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "Basic stylex call",
+          "line": 2982
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-with-debug-on-086-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "html/js/FooBar.react.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            sidebar: {\n              boxSizing: 'border-box',\n              gridArea: 'sidebar',\n            },\n            content: {\n              gridArea: 'content',\n            },\n            root: {\n              display: 'grid',\n              gridTemplateRows: '100%',\n              gridTemplateAreas: '\"content\"',\n            },\n            withSidebar: {\n              gridTemplateColumns: 'auto minmax(0, 1fr)',\n              gridTemplateRows: '100%',\n              gridTemplateAreas: '\"sidebar content\"',\n              '@media (max-width: 640px)': {\n                gridTemplateRows: 'minmax(0, 1fr) auto',\n                gridTemplateAreas: '\"content\" \"sidebar\"',\n                gridTemplateColumns: '100%',\n              },\n            },\n            noSidebar: {\n              gridTemplateColumns: 'minmax(0, 1fr)',\n            },\n          });\n          const complex = stylex.props([\n            styles.root,\n            sidebar == null && !isSidebar ? styles.noSidebar : styles.withSidebar,\n            isSidebar && styles.sidebar,\n            isContent && styles.content,\n          ]);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "dev": true,
+        "debug": true,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport * as stylex from '@stylexjs/stylex';\n_inject2({\n  ltr: \".boxSizing-x9f619{box-sizing:border-box}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".gridArea-x1yc5d2u{grid-area:sidebar}\",\n  priority: 1000\n});\n_inject2({\n  ltr: \".gridArea-x1fdo2jl{grid-area:content}\",\n  priority: 1000\n});\n_inject2({\n  ltr: \".display-xrvj5dj{display:grid}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".gridTemplateRows-x7k18q3{grid-template-rows:100%}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".gridTemplateAreas-x5gp9wm{grid-template-areas:\\\"content\\\"}\",\n  priority: 2000\n});\n_inject2({\n  ltr: \".gridTemplateColumns-x1rkzygb{grid-template-columns:auto minmax(0,1fr)}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".gridTemplateAreas-x17lh93j{grid-template-areas:\\\"sidebar content\\\"}\",\n  priority: 2000\n});\n_inject2({\n  ltr: \"@media (max-width: 640px){.gridTemplateRows-xmr4b4k.gridTemplateRows-xmr4b4k{grid-template-rows:minmax(0,1fr) auto}}\",\n  priority: 3200\n});\n_inject2({\n  ltr: \"@media (max-width: 640px){.gridTemplateAreas-xesbpuc.gridTemplateAreas-xesbpuc{grid-template-areas:\\\"content\\\" \\\"sidebar\\\"}}\",\n  priority: 2200\n});\n_inject2({\n  ltr: \"@media (max-width: 640px){.gridTemplateColumns-x15nfgh4.gridTemplateColumns-x15nfgh4{grid-template-columns:100%}}\",\n  priority: 3200\n});\n_inject2({\n  ltr: \".gridTemplateColumns-x1mkdm3x{grid-template-columns:minmax(0,1fr)}\",\n  priority: 3000\n});\nconst complex = {\n  0: {\n    className: \"display-xrvj5dj gridTemplateColumns-x1rkzygb gridTemplateRows-x7k18q3 gridTemplateAreas-x17lh93j gridTemplateRows-xmr4b4k gridTemplateAreas-xesbpuc gridTemplateColumns-x15nfgh4\",\n    \"data-style-src\": \"html/js/FooBar.react.js:11; html/js/FooBar.react.js:16\"\n  },\n  4: {\n    className: \"display-xrvj5dj gridTemplateRows-x7k18q3 gridTemplateAreas-x5gp9wm gridTemplateColumns-x1mkdm3x\",\n    \"data-style-src\": \"html/js/FooBar.react.js:11; html/js/FooBar.react.js:26\"\n  },\n  2: {\n    className: \"display-xrvj5dj gridTemplateColumns-x1rkzygb gridTemplateRows-x7k18q3 gridTemplateAreas-x17lh93j gridTemplateRows-xmr4b4k gridTemplateAreas-xesbpuc gridTemplateColumns-x15nfgh4 boxSizing-x9f619 gridArea-x1yc5d2u\",\n    \"data-style-src\": \"html/js/FooBar.react.js:11; html/js/FooBar.react.js:16; html/js/FooBar.react.js:4\"\n  },\n  6: {\n    className: \"display-xrvj5dj gridTemplateRows-x7k18q3 gridTemplateAreas-x5gp9wm gridTemplateColumns-x1mkdm3x boxSizing-x9f619 gridArea-x1yc5d2u\",\n    \"data-style-src\": \"html/js/FooBar.react.js:11; html/js/FooBar.react.js:26; html/js/FooBar.react.js:4\"\n  },\n  1: {\n    className: \"display-xrvj5dj gridTemplateColumns-x1rkzygb gridTemplateRows-x7k18q3 gridTemplateAreas-x17lh93j gridTemplateRows-xmr4b4k gridTemplateAreas-xesbpuc gridTemplateColumns-x15nfgh4 gridArea-x1fdo2jl\",\n    \"data-style-src\": \"html/js/FooBar.react.js:11; html/js/FooBar.react.js:16; html/js/FooBar.react.js:8\"\n  },\n  5: {\n    className: \"display-xrvj5dj gridTemplateRows-x7k18q3 gridTemplateAreas-x5gp9wm gridTemplateColumns-x1mkdm3x gridArea-x1fdo2jl\",\n    \"data-style-src\": \"html/js/FooBar.react.js:11; html/js/FooBar.react.js:26; html/js/FooBar.react.js:8\"\n  },\n  3: {\n    className: \"display-xrvj5dj gridTemplateColumns-x1rkzygb gridTemplateRows-x7k18q3 gridTemplateAreas-x17lh93j gridTemplateRows-xmr4b4k gridTemplateAreas-xesbpuc gridTemplateColumns-x15nfgh4 boxSizing-x9f619 gridArea-x1fdo2jl\",\n    \"data-style-src\": \"html/js/FooBar.react.js:11; html/js/FooBar.react.js:16; html/js/FooBar.react.js:4; html/js/FooBar.react.js:8\"\n  },\n  7: {\n    className: \"display-xrvj5dj gridTemplateRows-x7k18q3 gridTemplateAreas-x5gp9wm gridTemplateColumns-x1mkdm3x boxSizing-x9f619 gridArea-x1fdo2jl\",\n    \"data-style-src\": \"html/js/FooBar.react.js:11; html/js/FooBar.react.js:26; html/js/FooBar.react.js:4; html/js/FooBar.react.js:8\"\n  }\n}[!!(sidebar == null && !isSidebar) << 2 | !!isSidebar << 1 | !!isContent << 0];",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "Stylex call with debug on",
+          "line": 3117
+        }
+      }
+    },
+    {
+      "id": "assertions/props-stylex-call-with-debug-on-an-087-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "html/js/FooBar.react.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            sidebar: {\n              boxSizing: 'border-box',\n              gridArea: 'sidebar',\n            },\n            content: {\n              gridArea: 'content',\n            },\n            root: {\n              display: 'grid',\n              gridTemplateRows: '100%',\n              gridTemplateAreas: '\"content\"',\n            },\n            withSidebar: {\n              gridTemplateColumns: 'auto minmax(0, 1fr)',\n              gridTemplateRows: '100%',\n              gridTemplateAreas: '\"sidebar content\"',\n              '@media (max-width: 640px)': {\n                gridTemplateRows: 'minmax(0, 1fr) auto',\n                gridTemplateAreas: '\"content\" \"sidebar\"',\n                gridTemplateColumns: '100%',\n              },\n            },\n            noSidebar: {\n              gridTemplateColumns: 'minmax(0, 1fr)',\n            },\n          });\n          const complex = stylex.props([\n            styles.root,\n            sidebar == null && !isSidebar ? styles.noSidebar : styles.withSidebar,\n            isSidebar && styles.sidebar,\n            isContent && styles.content,\n          ]);\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "dev": true,
+        "debug": true,
+        "enableDebugClassNames": false,
+        "enableDevClassNames": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport * as stylex from '@stylexjs/stylex';\n_inject2({\n  ltr: \".x9f619{box-sizing:border-box}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1yc5d2u{grid-area:sidebar}\",\n  priority: 1000\n});\n_inject2({\n  ltr: \".x1fdo2jl{grid-area:content}\",\n  priority: 1000\n});\n_inject2({\n  ltr: \".xrvj5dj{display:grid}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x7k18q3{grid-template-rows:100%}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x5gp9wm{grid-template-areas:\\\"content\\\"}\",\n  priority: 2000\n});\n_inject2({\n  ltr: \".x1rkzygb{grid-template-columns:auto minmax(0,1fr)}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x17lh93j{grid-template-areas:\\\"sidebar content\\\"}\",\n  priority: 2000\n});\n_inject2({\n  ltr: \"@media (max-width: 640px){.xmr4b4k.xmr4b4k{grid-template-rows:minmax(0,1fr) auto}}\",\n  priority: 3200\n});\n_inject2({\n  ltr: \"@media (max-width: 640px){.xesbpuc.xesbpuc{grid-template-areas:\\\"content\\\" \\\"sidebar\\\"}}\",\n  priority: 2200\n});\n_inject2({\n  ltr: \"@media (max-width: 640px){.x15nfgh4.x15nfgh4{grid-template-columns:100%}}\",\n  priority: 3200\n});\n_inject2({\n  ltr: \".x1mkdm3x{grid-template-columns:minmax(0,1fr)}\",\n  priority: 3000\n});\nconst complex = {\n  0: {\n    className: \"xrvj5dj x1rkzygb x7k18q3 x17lh93j xmr4b4k xesbpuc x15nfgh4\",\n    \"data-style-src\": \"html/js/FooBar.react.js:11; html/js/FooBar.react.js:16\"\n  },\n  4: {\n    className: \"xrvj5dj x7k18q3 x5gp9wm x1mkdm3x\",\n    \"data-style-src\": \"html/js/FooBar.react.js:11; html/js/FooBar.react.js:26\"\n  },\n  2: {\n    className: \"xrvj5dj x1rkzygb x7k18q3 x17lh93j xmr4b4k xesbpuc x15nfgh4 x9f619 x1yc5d2u\",\n    \"data-style-src\": \"html/js/FooBar.react.js:11; html/js/FooBar.react.js:16; html/js/FooBar.react.js:4\"\n  },\n  6: {\n    className: \"xrvj5dj x7k18q3 x5gp9wm x1mkdm3x x9f619 x1yc5d2u\",\n    \"data-style-src\": \"html/js/FooBar.react.js:11; html/js/FooBar.react.js:26; html/js/FooBar.react.js:4\"\n  },\n  1: {\n    className: \"xrvj5dj x1rkzygb x7k18q3 x17lh93j xmr4b4k xesbpuc x15nfgh4 x1fdo2jl\",\n    \"data-style-src\": \"html/js/FooBar.react.js:11; html/js/FooBar.react.js:16; html/js/FooBar.react.js:8\"\n  },\n  5: {\n    className: \"xrvj5dj x7k18q3 x5gp9wm x1mkdm3x x1fdo2jl\",\n    \"data-style-src\": \"html/js/FooBar.react.js:11; html/js/FooBar.react.js:26; html/js/FooBar.react.js:8\"\n  },\n  3: {\n    className: \"xrvj5dj x1rkzygb x7k18q3 x17lh93j xmr4b4k xesbpuc x15nfgh4 x9f619 x1fdo2jl\",\n    \"data-style-src\": \"html/js/FooBar.react.js:11; html/js/FooBar.react.js:16; html/js/FooBar.react.js:4; html/js/FooBar.react.js:8\"\n  },\n  7: {\n    className: \"xrvj5dj x7k18q3 x5gp9wm x1mkdm3x x9f619 x1fdo2jl\",\n    \"data-style-src\": \"html/js/FooBar.react.js:11; html/js/FooBar.react.js:26; html/js/FooBar.react.js:4; html/js/FooBar.react.js:8\"\n  }\n}[!!(sidebar == null && !isSidebar) << 2 | !!isSidebar << 1 | !!isContent << 0];",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "Stylex call with debug on and debug classnames off",
+          "line": 3253
+        }
+      }
+    },
+    {
+      "id": "assertions/props-hoisting-correctly-with-dupl-088-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n            import * as stylex from \"@stylexjs/stylex\";\n            import * as React from \"react\";\n\n            function Foo() {\n              const styles = stylex.create({\n                div: { color: \"red\" },\n              });\n              return <div {...stylex.props(styles.div)}>Hello, foo!</div>;\n            }\n\n            function Bar() {\n              const styles = stylex.create({\n                div: { color: \"blue\" },\n              });\n              return <div {...stylex.props(styles.div)}>Hello, bar!</div>;\n            }\n\n            export function App() {\n              return (\n                <>\n                  <Foo />\n                  <Bar />\n                </>\n              );\n            }\n          ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport * as stylex from \"@stylexjs/stylex\";\nimport * as React from \"react\";\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\nconst _styles = {\n  div: {\n    kMwMTN: \"x1e2nbdu\",\n    $$css: true\n  }\n};\nfunction Foo() {\n  const styles = _styles;\n  return <div {...stylex.props(styles.div)}>Hello, foo!</div>;\n}\n_inject2({\n  ltr: \".xju2f9n{color:blue}\",\n  priority: 3000\n});\nconst _styles2 = {\n  div: {\n    kMwMTN: \"xju2f9n\",\n    $$css: true\n  }\n};\nfunction Bar() {\n  const styles = _styles2;\n  return <div {...stylex.props(styles.div)}>Hello, bar!</div>;\n}\nexport function App() {\n  return <>\n                  <Foo />\n                  <Bar />\n                </>;\n}",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "hoisting correctly with duplicte names",
+          "line": 3389
+        }
+      }
+    },
+    {
+      "id": "assertions/props-all-local-styles-089-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            default: {\n              color: 'black',\n            },\n            red: {\n              color: 'red',\n            },\n            blueBg: {\n              backgroundColor: 'blue',\n            },\n\n          });\n\n          <div {...stylex.props(styles.default, styles.red, styles.blueBg)} />\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport * as stylex from '@stylexjs/stylex';\n_inject2({\n  ltr: \".x1mqxbix{color:black}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1t391ir{background-color:blue}\",\n  priority: 3000\n});\n<div className=\"x1e2nbdu x1t391ir\" />;",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "all local styles",
+          "line": 3464
+        }
+      }
+    },
+    {
+      "id": "assertions/props-local-array-styles-090-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.create({\n            default: {\n              color: 'black',\n            },\n            red: {\n              color: 'red',\n            },\n            blueBg: {\n              backgroundColor: 'blue',\n            },\n          });\n\n          const base = [styles.default, styles.red];\n\n          <div {...stylex.props(base, styles.blueBg)} />\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "enableMinifiedKeys": false,
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport * as stylex from '@stylexjs/stylex';\n_inject2({\n  ltr: \".x1mqxbix{color:black}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1e2nbdu{color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1t391ir{background-color:blue}\",\n  priority: 3000\n});\nconst styles = {\n  default: {\n    color: \"x1mqxbix\",\n    $$css: true\n  },\n  red: {\n    color: \"x1e2nbdu\",\n    $$css: true\n  }\n};\nconst base = [styles.default, styles.red];\n<div className=\"x1e2nbdu x1t391ir\" />;",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "local array styles",
+          "line": 3504
+        }
+      }
+    },
+    {
+      "id": "assertions/props-regular-style-import-091-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          import {someStyle} from './otherFile';\n          const styles = stylex.create({\n            default: {\n              color: 'black',\n            },\n          });\n          <div {...stylex.props(styles.default, someStyle)} />\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport * as stylex from '@stylexjs/stylex';\nimport { someStyle } from './otherFile';\n_inject2({\n  ltr: \".x1mqxbix{color:black}\",\n  priority: 3000\n});\nconst styles = {\n  default: {\n    kMwMTN: \"x1mqxbix\",\n    $$css: true\n  }\n};\n<div {...stylex.props(styles.default, someStyle)} />;",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "regular style import",
+          "line": 3559
+        }
+      }
+    },
+    {
+      "id": "assertions/props-default-import-from-stylex-j-092-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "transform-stylex-props-test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          import {someStyle, vars} from './__fixtures__/constants.stylex.js';\n          const styles = stylex.create({\n            default: {\n              color: 'black',\n              backgroundColor: vars.foo,\n            },\n          });\n          <div {...stylex.props(styles.default, someStyle)} />\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport * as stylex from '@stylexjs/stylex';\nimport { someStyle, vars } from './__fixtures__/constants.stylex.js';\n_inject2({\n  ltr: \".x1mqxbix{color:black}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1ptj8da{background-color:var(--xu6xsfm)}\",\n  priority: 3000\n});\nconst styles = {\n  default: {\n    kMwMTN: \"x1mqxbix\",\n    kWkggS: \"x1ptj8da\",\n    $$css: true\n  }\n};\n<div {...stylex.props(styles.default, someStyle)} />;",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "default import from .stylex.js file",
+          "line": 3591
+        }
+      }
+    },
+    {
+      "id": "assertions/props-object-import-from-stylex-js-093-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "transform-stylex-props-test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          import {someStyle} from './__fixtures__/constants.stylex.js';\n          const styles = stylex.create({\n            default: {\n              color: 'black',\n              backgroundColor: someStyle.foo,\n            },\n          });\n          <div {...stylex.props(styles.default, someStyle.foo)} />\n        ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["props", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport * as stylex from '@stylexjs/stylex';\nimport { someStyle } from './__fixtures__/constants.stylex.js';\n_inject2({\n  ltr: \".x1mqxbix{color:black}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xxtkuhj{background-color:var(--x18h8e3f)}\",\n  priority: 3000\n});\nconst styles = {\n  default: {\n    kMwMTN: \"x1mqxbix\",\n    kWkggS: \"xxtkuhj\",\n    $$css: true\n  }\n};\n<div {...stylex.props(styles.default, someStyle.foo)} />;",
+        "site": {
+          "file": "transform-stylex-props-test.js",
+          "test": "object import from .stylex.js file",
+          "line": 3632
+        }
+      }
+    }
+  ]
+}

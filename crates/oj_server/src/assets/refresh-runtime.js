@@ -257,11 +257,6 @@ function collectCustomHooksForSignature(type) {
 }
 
 export function injectIntoGlobalHook(globalObject) {
-  // Mark refresh as installed for oj's compiled boundary modules. oj's own
-  // refresh-preamble.js sets this, but a TanStack Start app installs refresh via
-  // its dev client entry (which calls this), where oj's preamble is not injected.
-  globalObject.__oj_refresh_installed__ = true;
-
   let hook = globalObject.__REACT_DEVTOOLS_GLOBAL_HOOK__;
   if (hook === undefined) {
     let nextID = 0;

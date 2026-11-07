@@ -119,6 +119,96 @@ pub fn resolve_conditions_for(config: &OjConfig, env_name: &str, dev: bool) -> V
         .to_vec()
 }
 
+/// Export conditions for a dev environment as Vite resolves its own options
+/// (`resolveEnvironmentResolveOptions`): the environment's list, else the
+/// consumer's defaults. Only the client reads the top-level list; other
+/// environments drop it, as Vite's `getDefaultEnvironmentOptions` does.
+/// `server` is false for a client consumer and the ssr webworker target;
+/// `dev` picks `development` for the `development|production` placeholder.
+pub fn environment_resolve_conditions(
+    config: &OjConfig,
+    env_name: &str,
+    server: bool,
+    dev: bool,
+) -> Vec<String> {
+    if env_name == "client" {
+        return resolve_conditions_for(config, "client", dev);
+    }
+    if let Some(user) = env_resolve_list(config, env_name, "conditions") {
+        return reported_conditions(user, dev);
+    }
+    let base = if server { "node" } else { "browser" };
+    [base, "import", "module", dev_prod(dev), "default"]
+        .map(String::from)
+        .to_vec()
+}
+
+/// A resolve list an environment inherits from the top level: Vite's
+/// getDefaultEnvironmentOptions keeps it and mergeConfig concatenates the
+/// environment's own after it (duplicates dropped).
+fn inherited_list(config: &OjConfig, env_name: &str, key: &str, top: Vec<String>) -> Vec<String> {
+    let mut out = top;
+    if env_name != "client" {
+        for item in env_resolve_list(config, env_name, key).unwrap_or_default() {
+            if !out.contains(&item) {
+                out.push(item);
+            }
+        }
+    }
+    out
+}
+
+/// An environment's `resolve.dedupe` (see [`inherited_list`]).
+pub fn environment_dedupe(config: &OjConfig, env_name: &str) -> Vec<String> {
+    inherited_list(config, env_name, "dedupe", resolve_dedupe(config))
+}
+
+/// An environment's `resolve.extensions`, or None for the defaults (see
+/// [`inherited_list`]). Vite's DEFAULT_EXTENSIONS stand in for an unset
+/// top-level list an environment extends.
+pub fn environment_extensions(config: &OjConfig, env_name: &str) -> Option<Vec<String>> {
+    let top = resolve_extensions(config);
+    let own = env_name != "client" && env_resolve_list(config, env_name, "extensions").is_some();
+    if top.is_none() && !own {
+        return None;
+    }
+    let top = top.unwrap_or_else(|| {
+        [".mjs", ".js", ".mts", ".ts", ".jsx", ".tsx", ".json"]
+            .map(String::from)
+            .to_vec()
+    });
+    Some(inherited_list(config, env_name, "extensions", top))
+}
+
+/// The top-level `resolve.alias`, which Vite gives every environment
+/// (resolveEnvironmentResolveOptions sets each environment's alias to it).
+pub fn top_level_alias(config: &OjConfig) -> Vec<(String, String)> {
+    config
+        .resolve
+        .as_ref()
+        .and_then(|r| r.alias.as_ref())
+        .map(|a| a.0.clone())
+        .unwrap_or_default()
+}
+
+/// An environment's `resolve.mainFields`, or None for the consumer's defaults
+/// (same inheritance as [`environment_resolve_conditions`]).
+pub fn environment_main_fields(config: &OjConfig, env_name: &str) -> Option<Vec<String>> {
+    if env_name == "client" {
+        resolve_main_fields(config)
+    } else {
+        env_resolve_list(config, env_name, "mainFields")
+    }
+}
+
+/// A resolved `resolve.conditions` list as a Vite resolved config carries it:
+/// the placeholder mapped, `import`/`default` appended.
+pub fn reported_conditions(list: Vec<String>, dev: bool) -> Vec<String> {
+    let mut out = Vec::new();
+    extend_conditions(&mut out, list, dev_prod(dev));
+    out
+}
+
 /// Conditions for a Node-executing SSR consumer (Start loader, unbundled SSR
 /// resolver) when the ssr environment is runner-backed: Vite's Node server
 /// semantics, not the foreign runtime's list. DEFAULT_SERVER_CONDITIONS
@@ -156,6 +246,22 @@ pub fn node_server_external_conditions(config: &OjConfig, dev: bool) -> Vec<Stri
     }
 }
 
+/// The ssr environment's `externalConditions`, as Vite's module runner
+/// resolves an external with them (fetchModule): the environment's own list
+/// (`environments.ssr.resolve`, the `ssr.resolve` sugar, then the top level),
+/// else DEFAULT_EXTERNAL_CONDITIONS.
+pub fn ssr_external_conditions(config: &OjConfig, dev: bool) -> Vec<String> {
+    match user_external_conditions(config, "ssr") {
+        Some(user) => {
+            let dev_prod = dev_prod(dev);
+            user.into_iter()
+                .map(|c| map_dev_prod(c, dev_prod))
+                .collect()
+        }
+        None => node_server_external_conditions(config, dev),
+    }
+}
+
 pub fn resolve_dedupe(config: &OjConfig) -> Vec<String> {
     config
         .resolve
@@ -173,6 +279,20 @@ pub fn resolve_main_fields(config: &OjConfig) -> Option<Vec<String>> {
     config.resolve.as_ref().and_then(|r| r.main_fields.clone())
 }
 
+/// The ssr environment's `resolve.mainFields`. The top-level list never
+/// applies: Vite drops `mainFields` and `conditions` from the resolve options
+/// its environments inherit (getDefaultEnvironmentOptions, config.ts), so a
+/// server environment resolves with DEFAULT_SERVER_MAIN_FIELDS — no `browser` —
+/// unless `environments.ssr.resolve.mainFields` (or legacy
+/// `ssr.resolve.mainFields`) names its own list. An adopted resolved config
+/// always carries the top-level list filled with Vite's CLIENT defaults, so
+/// inheriting it here resolved server modules through `browser` entries (a
+/// UMD build's named exports are invisible to CJS analysis, and SSR died at
+/// link with "does not provide an export named").
+pub fn ssr_resolve_main_fields(config: &OjConfig) -> Option<Vec<String>> {
+    env_resolve_list(config, "ssr", "mainFields")
+}
+
 pub fn resolve_preserve_symlinks(config: &OjConfig) -> bool {
     config
         .resolve
@@ -181,25 +301,12 @@ pub fn resolve_preserve_symlinks(config: &OjConfig) -> bool {
         .unwrap_or(false)
 }
 
-/// Top-level `resolve.alias`, overlaid by the environment's string entries.
-pub fn resolve_alias(config: &OjConfig, env_name: &str) -> Vec<(String, String)> {
-    let mut merged: std::collections::BTreeMap<String, String> = config
-        .resolve
-        .as_ref()
-        .and_then(|r| r.alias.as_ref())
-        .map(|a| a.clone().into_iter().collect())
-        .unwrap_or_default();
-    if let Some(env_alias) = env_resolve(config, env_name)
-        .and_then(|r| r.get("alias"))
-        .and_then(|a| a.as_object())
-    {
-        for (find, replacement) in env_alias {
-            if let Some(s) = replacement.as_str() {
-                merged.insert(find.clone(), s.to_string());
-            }
-        }
-    }
-    merged.into_iter().collect()
+/// The `resolve.alias` an environment resolves with: the top-level list.
+/// Vite 8 gives every environment that list and ignores
+/// `environments.*.resolve.alias` (resolveEnvironmentResolveOptions
+/// overwrites it).
+pub fn resolve_alias(config: &OjConfig, _env_name: &str) -> Vec<(String, String)> {
+    top_level_alias(config)
 }
 
 #[cfg(test)]
@@ -210,6 +317,96 @@ mod tests {
     use crate::load::load;
     use crate::optimize::optimize_deps_lists;
     use crate::server::{config_defines, environment_defines};
+
+    // Vite tries the alias entries in the written order (normalizeAlias keeps
+    // an object's key order), from an object or a `{ find, replacement }`
+    // array; an environment's own alias is ignored, as in Vite 8.
+    #[test]
+    fn aliases_keep_the_written_order() {
+        let from = |json: &str| -> OjConfig { serde_json::from_str(json).unwrap() };
+        let pairs = |list: &[(&str, &str)]| -> Vec<(String, String)> {
+            list.iter()
+                .map(|(f, r)| (f.to_string(), r.to_string()))
+                .collect()
+        };
+        let object = from(
+            r##"{ "resolve": { "alias": { "@/lib/client": "/backend.ts", "@": "/src", "#x": "/x" } } }"##,
+        );
+        assert_eq!(
+            crate::top_level_alias(&object),
+            pairs(&[("@/lib/client", "/backend.ts"), ("@", "/src"), ("#x", "/x")])
+        );
+        let array = from(
+            r#"{ "resolve": { "alias": [{ "find": "@", "replacement": "/src" }, { "find": "@/lib/client", "replacement": "/backend.ts" }, { "find": "@", "replacement": "/ignored" }] } }"#,
+        );
+        assert_eq!(
+            crate::top_level_alias(&array),
+            pairs(&[("@", "/src"), ("@/lib/client", "/backend.ts")]),
+            "the first entry for a find stands"
+        );
+        let env = from(
+            r#"{ "resolve": { "alias": { "b": "/b", "a": "/a" } },
+                 "environments": { "ssr": { "resolve": { "alias": { "a": "/ssr-a", "c": "/c" } } } } }"#,
+        );
+        assert_eq!(
+            crate::resolve_alias(&env, "ssr"),
+            pairs(&[("b", "/b"), ("a", "/a")])
+        );
+        assert_eq!(
+            crate::resolve_alias(&env, "client"),
+            pairs(&[("b", "/b"), ("a", "/a")])
+        );
+    }
+
+    #[test]
+    fn ssr_external_conditions_default_to_vites_and_map_the_mode() {
+        let from = |json: &str| -> OjConfig { serde_json::from_str(json).unwrap() };
+        assert_eq!(
+            crate::ssr_external_conditions(&from("{}"), true),
+            vec!["node".to_string(), "module-sync".to_string()]
+        );
+        let env = from(
+            r#"{ "environments": { "ssr": { "resolve": { "externalConditions": ["edge", "development|production"] } } },
+                 "resolve": { "externalConditions": ["top"] } }"#,
+        );
+        assert_eq!(
+            crate::ssr_external_conditions(&env, true),
+            vec!["edge".to_string(), "development".to_string()]
+        );
+        assert_eq!(
+            crate::ssr_external_conditions(&env, false),
+            vec!["edge".to_string(), "production".to_string()]
+        );
+        let top = from(r#"{ "resolve": { "externalConditions": ["top"] } }"#);
+        assert_eq!(
+            crate::ssr_external_conditions(&top, true),
+            vec!["top".to_string()]
+        );
+    }
+
+    // Vite's normalizeSingleAlias: a find and replacement that both end in
+    // `/` lose it, so `@/` takes `@/x`; one trailing `/` alone stays.
+    #[test]
+    fn a_trailing_slash_on_both_sides_is_dropped() {
+        let from = |json: &str| -> OjConfig { serde_json::from_str(json).unwrap() };
+        let pairs = |list: &[(&str, &str)]| -> Vec<(String, String)> {
+            list.iter()
+                .map(|(f, r)| (f.to_string(), r.to_string()))
+                .collect()
+        };
+        assert_eq!(
+            crate::top_level_alias(&from(
+                r##"{ "resolve": { "alias": { "@/": "/src/", "~/": "/home", "#": "/x/" } } }"##
+            )),
+            pairs(&[("@", "/src"), ("~/", "/home"), ("#", "/x/")])
+        );
+        assert_eq!(
+            crate::top_level_alias(&from(
+                r#"{ "resolve": { "alias": [{ "find": "@/", "replacement": "/src/" }] } }"#
+            )),
+            pairs(&[("@", "/src")])
+        );
+    }
 
     #[test]
     fn external_conditions_fall_back_from_environment_to_ssr_sugar_to_top_level() {
@@ -398,6 +595,37 @@ mod tests {
         assert!(resolve_extensions(&empty).is_none());
         assert!(resolve_main_fields(&empty).is_none());
         assert!(!resolve_preserve_symlinks(&empty));
+    }
+
+    // Vite never inherits the top-level mainFields into an environment
+    // (getDefaultEnvironmentOptions drops mainFields and conditions), and a
+    // resolved config always carries the CLIENT defaults there (`browser`
+    // first). The ssr consumer must only see the ssr environment's own list.
+    #[test]
+    fn ssr_main_fields_ignore_the_top_level_list() {
+        let top_level: OjConfig = serde_json::from_str(
+            r#"{ "resolve": { "mainFields": ["browser", "module", "jsnext:main", "jsnext"] } }"#,
+        )
+        .unwrap();
+        assert_eq!(ssr_resolve_main_fields(&top_level), None);
+
+        let env: OjConfig = serde_json::from_str(
+            r#"{ "resolve": { "mainFields": ["browser"] },
+                 "environments": { "ssr": { "resolve": { "mainFields": ["module", "custom"] } } } }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            ssr_resolve_main_fields(&env),
+            Some(vec!["module".to_string(), "custom".to_string()])
+        );
+
+        let legacy: OjConfig =
+            serde_json::from_str(r#"{ "ssr": { "resolve": { "mainFields": ["main"] } } }"#)
+                .unwrap();
+        assert_eq!(
+            ssr_resolve_main_fields(&legacy),
+            Some(vec!["main".to_string()])
+        );
     }
 
     #[test]

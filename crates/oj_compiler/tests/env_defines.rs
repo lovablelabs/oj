@@ -212,6 +212,7 @@ fn an_esm_dependency_gets_the_server_defines() {
         src,
         &mut |_| None,
         Some(Arc::clone(&env)),
+        None,
     )
     .expect("dep compiles");
     assert!(!out.code.contains("process.env"), "{}", out.code);

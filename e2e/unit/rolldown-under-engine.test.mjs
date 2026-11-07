@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 //
-// The Start one-shots (client bundle, production build) run rolldown on oj's
-// EMBEDDED engine, not on spawned node: rolldown's napi binding must dlopen
-// against the Node-API symbols the oj binary exports (crates/oj/build.rs).
-// This probe drives the real binary's internal `js-eval` through a script that
-// imports rolldown from the Start fixture's node_modules and bundles a tiny
-// virtual graph. It is the canary for napi-symbol export regressions (a
-// deno_napi bump, a linker-flag change): everything else in the Start
-// pipeline fails confusingly when this breaks.
+// An app's Vite runs rolldown on oj's EMBEDDED engine, not on spawned node:
+// Vite 8 bundles the vite.config with it, and plugins load napi addons the
+// same way. rolldown's napi binding must dlopen against the Node-API symbols
+// the oj binary exports (crates/oj/build.rs). This probe drives the real
+// binary's internal `js-eval` through a script that imports rolldown from the
+// Start fixture's node_modules and bundles a tiny virtual graph. It is the
+// canary for napi-symbol export regressions (a deno_napi bump, a linker-flag
+// change): config loading fails confusingly when this breaks.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";

@@ -1,0 +1,2746 @@
+{
+  "header": {
+    "corpus": "regressions/legacy-merge",
+    "description": "Differential probes pinning the legacy stylex(...) call form (legacyMerge) against stylex.props(...). Every `-legacy` job has a `-props` twin over identical arguments; the pair is the spec. Oracle-verified 2026-08-28.",
+    "oracle": "@stylexjs/babel-plugin@0.19.0",
+    "written": "2026-08-28",
+    "notes": "Roots point at corpus/hand/fixtures/default (package name conformance-fixture-a) because dev/debug $$css strings derive from it. Run: node src/babel-runner.mjs <file> --mode both Six jobs (lm/import-as-legacy, lm2/legacy-expand-{legacy,props}) exercise other option gaps (importSources {from,as}, styleResolution legacy-expand-shorthands) and stay red until those land."
+  },
+  "jobs": [
+    {
+      "id": "lm/one-ns-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(styles.a);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/one-ns-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(styles.a);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/two-ns-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(styles.a, styles.b);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/two-ns-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(styles.a, styles.b);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/zero-args-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex();\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/zero-args-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props();\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/null-literal-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(null);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/null-literal-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(null);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/undefined-ident-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(undefined);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/undefined-ident-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(undefined);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/false-literal-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(false);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/false-literal-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(false);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/true-literal-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(true);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/true-literal-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(true);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/string-literal-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex('foo');\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/string-literal-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props('foo');\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/number-literal-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(0);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/number-literal-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(0);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/array-arg-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex([styles.a, styles.b]);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/array-arg-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props([styles.a, styles.b]);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/array-nested-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex([[styles.a], styles.b]);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/array-nested-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props([[styles.a], styles.b]);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/ident-arg-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(s);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/ident-arg-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(s);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/object-arg-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex({ color: 'red' });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/object-arg-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props({ color: 'red' });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/call-arg-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(mk());\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/call-arg-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(mk());\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/spread-arg-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(...arr);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/spread-arg-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(...arr);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/ts-as-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(styles.a as any);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/ts-as-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(styles.a as any);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/paren-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex((styles.a));\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/paren-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props((styles.a));\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/null-ns-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(styles.d);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/null-ns-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(styles.d);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/null-in-ns-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(styles.c);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/null-in-ns-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(styles.c);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/unknown-ns-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(styles.zzz);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/unknown-ns-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(styles.zzz);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/foreign-obj-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(other.a);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/foreign-obj-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(other.a);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/computed-str-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(styles['a']);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/computed-str-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(styles['a']);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/computed-num-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(styles[0]);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/computed-num-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(styles[0]);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/computed-ident-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(styles[key]);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/computed-ident-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(styles[key]);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/dup-ns-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(styles.a, styles.a);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/dup-ns-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(styles.a, styles.a);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/dyn-member-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(styles.dyn);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/dyn-member-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(styles.dyn);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/dyn-call-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(styles.dyn(4));\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/dyn-call-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(styles.dyn(4));\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/mixed-null-first-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(null, styles.a);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/mixed-null-first-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(null, styles.a);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/mixed-null-mid-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(styles.a, null, styles.b);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/mixed-null-mid-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(styles.a, null, styles.b);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/cond-basic-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(flag ? styles.a : styles.b);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/cond-basic-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(flag ? styles.a : styles.b);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/cond-null-alt-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(flag ? styles.a : null);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/cond-null-alt-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(flag ? styles.a : null);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/cond-undef-alt-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(flag ? styles.a : undefined);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/cond-undef-alt-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(flag ? styles.a : undefined);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/cond-both-null-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(flag ? null : null);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/cond-both-null-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(flag ? null : null);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/cond-other-branch-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(flag ? styles.a : other.x);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/cond-other-branch-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(flag ? styles.a : other.x);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/and-basic-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(flag && styles.a);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/and-basic-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(flag && styles.a);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/and-static-left-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(styles.a && styles.b);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/and-static-left-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(styles.a && styles.b);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/or-basic-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(flag || styles.a);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/or-basic-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(flag || styles.a);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/nullish-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(flag ?? styles.a);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/nullish-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(flag ?? styles.a);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/cond-plus-static-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(styles.a, flag ? styles.b : null);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/cond-plus-static-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(styles.a, flag ? styles.b : null);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/two-conds-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(c1 ? styles.a : null, c2 ? styles.b : null);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/two-conds-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(c1 ? styles.a : null, c2 ? styles.b : null);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/four-conds-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(c1 ? styles.a : null, c2 ? styles.b : null, c3 ? styles.c : null, c4 ? styles.a : null);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/four-conds-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(c1 ? styles.a : null, c2 ? styles.b : null, c3 ? styles.c : null, c4 ? styles.a : null);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/five-conds-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(c1 ? styles.a : null, c2 ? styles.b : null, c3 ? styles.c : null, c4 ? styles.a : null, c5 ? styles.b : null);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/five-conds-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(c1 ? styles.a : null, c2 ? styles.b : null, c3 ? styles.c : null, c4 ? styles.a : null, c5 ? styles.b : null);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/cond-off-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(flag ? styles.a : null);\n",
+      "options": {
+        "enableInlinedConditionalMerge": false
+      },
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/cond-off-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(flag ? styles.a : null);\n",
+      "options": {
+        "enableInlinedConditionalMerge": false
+      },
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/and-off-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(flag && styles.a);\n",
+      "options": {
+        "enableInlinedConditionalMerge": false
+      },
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/and-off-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(flag && styles.a);\n",
+      "options": {
+        "enableInlinedConditionalMerge": false
+      },
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/cond-inside-array-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex([flag ? styles.a : null]);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/cond-inside-array-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props([flag ? styles.a : null]);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/cond-in-cond-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(flag ? (f2 ? styles.a : styles.b) : null);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/cond-in-cond-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(flag ? (f2 ? styles.a : styles.b) : null);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/bail-then-good-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(other.x, styles.a);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/bail-then-good-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(other.x, styles.a);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/good-then-bail-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(styles.a, other.x);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/good-then-bail-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(styles.a, other.x);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/bail-both-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(other.x, other.y);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/bail-both-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(other.x, other.y);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/or-then-good-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(flag || styles.a, styles.b);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/or-then-good-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(flag || styles.a, styles.b);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/cond-then-bail-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(flag ? styles.a : null, other.x);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/cond-then-bail-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(flag ? styles.a : null, other.x);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/two-ns-debugprop-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(styles.a, styles.b);\n",
+      "options": {
+        "debug": true,
+        "enableDebugDataProp": true
+      },
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "debug",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/two-ns-debugprop-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(styles.a, styles.b);\n",
+      "options": {
+        "debug": true,
+        "enableDebugDataProp": true
+      },
+      "mode": "prod",
+      "tags": [
+        "props",
+        "debug",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/two-ns-nodebugprop-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(styles.a, styles.b);\n",
+      "options": {
+        "debug": true,
+        "enableDebugDataProp": false
+      },
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "debug",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/two-ns-nodebugprop-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(styles.a, styles.b);\n",
+      "options": {
+        "debug": true,
+        "enableDebugDataProp": false
+      },
+      "mode": "prod",
+      "tags": [
+        "props",
+        "debug",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/two-ns-devclass-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(styles.a, styles.b);\n",
+      "options": {
+        "dev": true,
+        "enableDevClassNames": true
+      },
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "dev",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/two-ns-devclass-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(styles.a, styles.b);\n",
+      "options": {
+        "dev": true,
+        "enableDevClassNames": true
+      },
+      "mode": "prod",
+      "tags": [
+        "props",
+        "dev",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/two-ns-test-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(styles.a, styles.b);\n",
+      "options": {
+        "test": true
+      },
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "test",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/two-ns-test-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(styles.a, styles.b);\n",
+      "options": {
+        "test": true
+      },
+      "mode": "prod",
+      "tags": [
+        "props",
+        "test",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/nested-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(styles.a, stylex(styles.b));\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/props-inside-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(styles.a, stylex.props(styles.b));\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/legacy-inside-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex.props(styles.a, stylex(styles.b));\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/jsx-classname-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const C = () => <div className={stylex(styles.a, styles.b)} />;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "jsx",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/jsx-spread-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const C = () => <div {...stylex.props(styles.a, styles.b)} />;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "jsx",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/jsx-spread-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const C = () => <div {...stylex(styles.a, styles.b)} />;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "jsx",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/jsx-classname-cond-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const C = () => <div className={stylex(flag ? styles.a : null, styles.b)} />;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "jsx",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/dce-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nconst styles = stylex.create({ a: { color: 'red' }, b: { color: 'blue' }, c: { color: null, width: 20 } });\nexport const out = stylex(styles.a);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "dce",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/dce-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nconst styles = stylex.create({ a: { color: 'red' }, b: { color: 'blue' }, c: { color: null, width: 20 } });\nexport const out = stylex.props(styles.a);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "dce",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/dce-bail-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nconst styles = stylex.create({ a: { color: 'red' }, b: { color: 'blue' }, c: { color: null, width: 20 } });\nexport const out = stylex(other.x, styles.c);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "dce",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/dce-bail-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nconst styles = stylex.create({ a: { color: 'red' }, b: { color: 'blue' }, c: { color: null, width: 20 } });\nexport const out = stylex.props(other.x, styles.c);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "dce",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/dce-outside-ref-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nconst styles = stylex.create({ a: { color: 'red' }, b: { color: 'blue' }, c: { color: null, width: 20 } });\nsink(styles.b);\nexport const out = stylex(styles.a);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "dce",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/dce-nullprops-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nconst styles = stylex.create({ a: { color: 'red' }, b: { color: 'blue' }, c: { color: null, width: 20 } });\nexport const out = stylex(styles.c, other.x);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "dce",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/dce-nullprops-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nconst styles = stylex.create({ a: { color: 'red' }, b: { color: 'blue' }, c: { color: null, width: 20 } });\nexport const out = stylex.props(styles.c, other.x);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "dce",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/import-namespace-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import * as stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(styles.a);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "imports",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/import-require-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "const stylex = require('@stylexjs/stylex');\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const out = stylex(styles.a);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "imports",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/import-as-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import { css } from 'react-strict-dom';\nexport const styles = css.create({ a: { color: 'red' }, b: { color: 'blue' } });\nexport const out = css(styles.a, styles.b);\n",
+      "options": {
+        "importSources": [
+          {
+            "from": "react-strict-dom",
+            "as": "css"
+          }
+        ]
+      },
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "imports",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/import-named-legacymerge",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import { create, legacyMerge } from '@stylexjs/stylex';\nexport const styles = create({ a: { color: 'red' } });\nexport const out = legacyMerge(styles.a);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "imports",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm/import-default-both",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const f2: boolean;\ndeclare const c1: boolean;\ndeclare const c2: boolean;\ndeclare const c3: boolean;\ndeclare const c4: boolean;\ndeclare const c5: boolean;\ndeclare const key: string;\ndeclare const arr: any[];\ndeclare const other: any;\ndeclare function mk(): any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  b: { color: 'blue', width: 10 },\n  c: { color: null, width: 20 },\n  d: { color: null },\n  dyn: (w) => ({ width: w }),\n  0: { opacity: 0.5 },\n});\nconst s = styles.a;\nexport const a1 = stylex(styles.a);\nexport const b1 = stylex.props(styles.a);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/bailindex-overwrite-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nconst styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  e: { opacity: null },\n});\nconst s = styles.a;\nexport const out = stylex(styles.a, s, flag || styles.e);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/bailindex-overwrite-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nconst styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  e: { opacity: null },\n});\nconst s = styles.a;\nexport const out = stylex.props(styles.a, s, flag || styles.e);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/bailindex-overwrite-obj-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nconst styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  e: { opacity: null },\n});\nconst s = styles.a;\nexport const out = stylex(styles.a, { color: 'x' }, flag || styles.e);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/bailindex-overwrite-obj-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nconst styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  e: { opacity: null },\n});\nconst s = styles.a;\nexport const out = stylex.props(styles.a, { color: 'x' }, flag || styles.e);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/bailindex-arraybail-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nconst styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  e: { opacity: null },\n});\nconst s = styles.a;\nexport const out = stylex(styles.a, [styles.a], flag || styles.e);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/bailindex-arraybail-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nconst styles = stylex.create({\n  a: { color: 'red', marginInlineStart: 4 },\n  e: { opacity: null },\n});\nconst s = styles.a;\nexport const out = stylex.props(styles.a, [styles.a], flag || styles.e);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/cond-ident-branch-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red' },\n  b: { color: 'blue' },\n});\nconst s = styles.a;\nexport const out = stylex(flag ? s : null);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/cond-ident-branch-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red' },\n  b: { color: 'blue' },\n});\nconst s = styles.a;\nexport const out = stylex.props(flag ? s : null);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/cond-obj-branch-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red' },\n  b: { color: 'blue' },\n});\nconst s = styles.a;\nexport const out = stylex(flag ? { color: 'red' } : null);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/cond-obj-branch-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red' },\n  b: { color: 'blue' },\n});\nconst s = styles.a;\nexport const out = stylex.props(flag ? { color: 'red' } : null);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/and-obj-right-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red' },\n  b: { color: 'blue' },\n});\nconst s = styles.a;\nexport const out = stylex(flag && { color: 'red' });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/and-obj-right-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red' },\n  b: { color: 'blue' },\n});\nconst s = styles.a;\nexport const out = stylex.props(flag && { color: 'red' });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/and-ident-right-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red' },\n  b: { color: 'blue' },\n});\nconst s = styles.a;\nexport const out = stylex(flag && s);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/and-ident-right-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red' },\n  b: { color: 'blue' },\n});\nconst s = styles.a;\nexport const out = stylex.props(flag && s);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/cond-array-branch-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red' },\n  b: { color: 'blue' },\n});\nconst s = styles.a;\nexport const out = stylex(flag ? [styles.a] : null);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/cond-array-branch-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red' },\n  b: { color: 'blue' },\n});\nconst s = styles.a;\nexport const out = stylex.props(flag ? [styles.a] : null);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/cond-call-branch-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red' },\n  b: { color: 'blue' },\n});\nconst s = styles.a;\nexport const out = stylex(flag ? styles.a : undefined);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/cond-call-branch-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red' },\n  b: { color: 'blue' },\n});\nconst s = styles.a;\nexport const out = stylex.props(flag ? styles.a : undefined);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/optional-call-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red' },\n  b: { color: 'blue' },\n});\nconst s = styles.a;\nexport const out = stylex?.(styles.a);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/optional-call-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red' },\n  b: { color: 'blue' },\n});\nconst s = styles.a;\nexport const out = stylex.props?.(styles.a);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/computed-callee-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red' },\n  b: { color: 'blue' },\n});\nconst s = styles.a;\nexport const out = stylex['props'](styles.a);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/bracket-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red' },\n  b: { color: 'blue' },\n});\nconst s = styles.a;\nexport const out = (stylex)(styles.a);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/new-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red' },\n  b: { color: 'blue' },\n});\nconst s = styles.a;\nexport const out = new stylex(styles.a);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/shadowed-styles-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red' },\n  b: { color: 'blue' },\n});\nconst s = styles.a;\nexport function f(styles: any) { return stylex(styles.a); }\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/shadowed-styles-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red' },\n  b: { color: 'blue' },\n});\nconst s = styles.a;\nexport function f(styles: any) { return stylex.props(styles.a); }\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/nontoplevel-create-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nexport function f() { const styles = stylex.create({ a: { color: 'red' } }); return stylex(styles.a); }\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/nontoplevel-create-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nexport function f() { const styles = stylex.create({ a: { color: 'red' } }); return stylex.props(styles.a); }\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/jsx-empty-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red' },\n  b: { color: 'blue' },\n});\nconst s = styles.a;\nexport const C = () => <div className={stylex()} />;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "jsx",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/jsx-empty-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red' },\n  b: { color: 'blue' },\n});\nconst s = styles.a;\nexport const C = () => <div {...stylex.props()} />;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "jsx",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/jsx-spread-empty-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red' },\n  b: { color: 'blue' },\n});\nconst s = styles.a;\nexport const C = () => <div {...stylex()} />;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "jsx",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/legacy-expand-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({ a: { margin: 4 }, b: { marginTop: 8 } });\nexport const out = stylex(styles.a, styles.b);\n",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/legacy-expand-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({ a: { margin: 4 }, b: { marginTop: 8 } });\nexport const out = stylex.props(styles.a, styles.b);\n",
+      "options": {
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/treeshake-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red' },\n  b: { color: 'blue' },\n});\nconst s = styles.a;\nexport const out = stylex(styles.a);\n",
+      "options": {
+        "treeshakeCompensation": true
+      },
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/treeshake-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red' },\n  b: { color: 'blue' },\n});\nconst s = styles.a;\nexport const out = stylex.props(styles.a);\n",
+      "options": {
+        "treeshakeCompensation": true
+      },
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/runtime-injection-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red' },\n  b: { color: 'blue' },\n});\nconst s = styles.a;\nexport const out = stylex(styles.a);\n",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/runtime-injection-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red' },\n  b: { color: 'blue' },\n});\nconst s = styles.a;\nexport const out = stylex.props(styles.a);\n",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/legacy-as-statement",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red' },\n  b: { color: 'blue' },\n});\nconst s = styles.a;\nstylex(styles.a);\nexport const k = 1;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm2/legacy-template",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\ndeclare function sink(x: any): void;\nexport const styles = stylex.create({\n  a: { color: 'red' },\n  b: { color: 'blue' },\n});\nconst s = styles.a;\nexport const out = `pre ${stylex(styles.a)} post`;\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm3/bail-hoist-cssobj-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nconst styles = stylex.create({ a: { color: 'red' }, e: { opacity: null } });\nexport const out = stylex(other.x, { $$css: true, foo: 'bar' });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm3/bail-hoist-cssobj-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nconst styles = stylex.create({ a: { color: 'red' }, e: { opacity: null } });\nexport const out = stylex.props(other.x, { $$css: true, foo: 'bar' });\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm3/bail-hoist-nested-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nconst styles = stylex.create({ a: { color: 'red' }, e: { opacity: null } });\nexport const out = stylex(other.x, flag ? { $$css: true, foo: 'bar' } : null);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm3/bail-hoist-nested-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nconst styles = stylex.create({ a: { color: 'red' }, e: { opacity: null } });\nexport const out = stylex.props(other.x, flag ? { $$css: true, foo: 'bar' } : null);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm3/bail-nested-member-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nconst styles = stylex.create({ a: { color: 'red' }, e: { opacity: null } });\nexport const out = stylex(other.f(styles.e), other.x);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm3/bail-nested-member-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nconst styles = stylex.create({ a: { color: 'red' }, e: { opacity: null } });\nexport const out = stylex.props(other.f(styles.e), other.x);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm3/bail-array-index-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nconst styles = stylex.create({ a: { color: 'red' }, e: { opacity: null } });\nexport const out = stylex([styles.e], other.x);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm3/bail-array-index-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nconst styles = stylex.create({ a: { color: 'red' }, e: { opacity: null } });\nexport const out = stylex.props([styles.e], other.x);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm3/cap-with-legacy-bail-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nconst styles = stylex.create({ a: { color: 'red' }, e: { opacity: null } });\nexport const out = stylex(flag ? styles.a : null, [styles.a], flag ? styles.a : null);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm3/cap-with-legacy-bail-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nconst styles = stylex.create({ a: { color: 'red' }, e: { opacity: null } });\nexport const out = stylex.props(flag ? styles.a : null, [styles.a], flag ? styles.a : null);\n",
+      "options": {},
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm3/escape-devclass-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nexport const styles = stylex.create({ 'a\"b': { color: 'red' } });\nexport const out = stylex(styles['a\"b']);\n",
+      "options": {
+        "dev": true,
+        "enableDevClassNames": true
+      },
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm3/escape-devclass-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nexport const styles = stylex.create({ 'a\"b': { color: 'red' } });\nexport const out = stylex.props(styles['a\"b']);\n",
+      "options": {
+        "dev": true,
+        "enableDevClassNames": true
+      },
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm3/prefix-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nexport const styles = stylex.create({ a: { color: 'red' }, b: { width: 4 } });\nexport const out = stylex(styles.a, styles.b);\n",
+      "options": {
+        "classNamePrefix": "zz"
+      },
+      "mode": "prod",
+      "tags": [
+        "legacy",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm3/prefix-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nexport const styles = stylex.create({ a: { color: 'red' }, b: { width: 4 } });\nexport const out = stylex.props(styles.a, styles.b);\n",
+      "options": {
+        "classNamePrefix": "zz"
+      },
+      "mode": "prod",
+      "tags": [
+        "props",
+        "legacy-merge"
+      ],
+      "expect": "ok"
+    },
+    {
+      "id": "lm4/optmember-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nexport const styles = stylex.create({ a: { color: 'red' }, b: { width: 4 } });\nexport const out = stylex(styles?.a);\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-merge"
+      ]
+    },
+    {
+      "id": "lm4/optmember-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nexport const styles = stylex.create({ a: { color: 'red' }, b: { width: 4 } });\nexport const out = stylex.props(styles?.a);\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-merge"
+      ]
+    },
+    {
+      "id": "lm4/optmember2-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nexport const styles = stylex.create({ a: { color: 'red' }, b: { width: 4 } });\nexport const out = stylex(styles?.['a']);\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-merge"
+      ]
+    },
+    {
+      "id": "lm4/optmember2-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nexport const styles = stylex.create({ a: { color: 'red' }, b: { width: 4 } });\nexport const out = stylex.props(styles?.['a']);\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-merge"
+      ]
+    },
+    {
+      "id": "lm4/nonnull-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nexport const styles = stylex.create({ a: { color: 'red' }, b: { width: 4 } });\nexport const out = stylex(styles.a!);\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-merge"
+      ]
+    },
+    {
+      "id": "lm4/nonnull-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nexport const styles = stylex.create({ a: { color: 'red' }, b: { width: 4 } });\nexport const out = stylex.props(styles.a!);\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-merge"
+      ]
+    },
+    {
+      "id": "lm4/seq-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nexport const styles = stylex.create({ a: { color: 'red' }, b: { width: 4 } });\nexport const out = stylex((0, styles.a));\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-merge"
+      ]
+    },
+    {
+      "id": "lm4/seq-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nexport const styles = stylex.create({ a: { color: 'red' }, b: { width: 4 } });\nexport const out = stylex.props((0, styles.a));\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-merge"
+      ]
+    },
+    {
+      "id": "lm4/satisfies-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nexport const styles = stylex.create({ a: { color: 'red' }, b: { width: 4 } });\nexport const out = stylex(styles.a satisfies any);\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-merge"
+      ]
+    },
+    {
+      "id": "lm4/satisfies-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nexport const styles = stylex.create({ a: { color: 'red' }, b: { width: 4 } });\nexport const out = stylex.props(styles.a satisfies any);\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-merge"
+      ]
+    },
+    {
+      "id": "lm4/await-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nexport const styles = stylex.create({ a: { color: 'red' }, b: { width: 4 } });\nexport const out = stylex(styles.a);\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-merge"
+      ]
+    },
+    {
+      "id": "lm4/await-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nexport const styles = stylex.create({ a: { color: 'red' }, b: { width: 4 } });\nexport const out = stylex.props(styles.a);\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-merge"
+      ]
+    },
+    {
+      "id": "lm4/cond-optmember-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nexport const styles = stylex.create({ a: { color: 'red' }, b: { width: 4 } });\nexport const out = stylex(flag ? styles?.a : null);\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-merge"
+      ]
+    },
+    {
+      "id": "lm4/cond-optmember-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nexport const styles = stylex.create({ a: { color: 'red' }, b: { width: 4 } });\nexport const out = stylex.props(flag ? styles?.a : null);\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-merge"
+      ]
+    },
+    {
+      "id": "lm4/and-optmember-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nexport const styles = stylex.create({ a: { color: 'red' }, b: { width: 4 } });\nexport const out = stylex(flag && styles?.a);\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-merge"
+      ]
+    },
+    {
+      "id": "lm4/and-optmember-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nexport const styles = stylex.create({ a: { color: 'red' }, b: { width: 4 } });\nexport const out = stylex.props(flag && styles?.a);\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-merge"
+      ]
+    },
+    {
+      "id": "lm4/spread-array-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nexport const styles = stylex.create({ a: { color: 'red' }, b: { width: 4 } });\nexport const out = stylex(...[styles.a]);\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-merge"
+      ]
+    },
+    {
+      "id": "lm4/spread-array-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nexport const styles = stylex.create({ a: { color: 'red' }, b: { width: 4 } });\nexport const out = stylex.props(...[styles.a]);\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-merge"
+      ]
+    },
+    {
+      "id": "lm4/yield-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nexport const styles = stylex.create({ a: { color: 'red' }, b: { width: 4 } });\nexport const out = stylex(styles.a);\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-merge"
+      ]
+    },
+    {
+      "id": "lm4/yield-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\ndeclare const flag: boolean;\ndeclare const other: any;\nexport const styles = stylex.create({ a: { color: 'red' }, b: { width: 4 } });\nexport const out = stylex.props(styles.a);\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy-merge"
+      ]
+    },
+    {
+      "id": "lm5/test-has-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { color: 'red' }, b: { width: 4 } });\nexport const out = stylex(stylex.props(styles.b).className ? styles.a : null);\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy",
+        "legacy-merge",
+        "nested"
+      ]
+    },
+    {
+      "id": "lm5/test-has-legacy",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { color: 'red' }, b: { width: 4 } });\nexport const out = stylex(stylex(styles.b) ? styles.a : null);\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy",
+        "legacy-merge",
+        "nested"
+      ]
+    },
+    {
+      "id": "lm5/and-left-has-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { color: 'red' }, b: { width: 4 } });\nexport const out = stylex(stylex.props(styles.b).className && styles.a);\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy",
+        "legacy-merge",
+        "nested"
+      ]
+    },
+    {
+      "id": "lm5/propscall-test-in-props",
+      "root": "corpus/hand/fixtures/default",
+      "filename": "src/input.tsx",
+      "source": "import stylex from '@stylexjs/stylex';\nexport const styles = stylex.create({ a: { color: 'red' }, b: { width: 4 } });\nexport const out = stylex.props(stylex.props(styles.b).className ? styles.a : null);\n",
+      "options": {},
+      "mode": "prod",
+      "expect": "ok",
+      "tags": [
+        "legacy",
+        "legacy-merge",
+        "nested"
+      ]
+    }
+  ]
+}

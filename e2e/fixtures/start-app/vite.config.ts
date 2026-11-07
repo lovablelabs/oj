@@ -53,7 +53,116 @@ function freshModulePlugin(): Plugin {
   };
 }
 
+// vite-imagetools' shape: an `enforce: "pre"` object-form load keyed on an
+// image's query, which must run before oj's own asset loader claims the id.
+function imageVariantPlugin(): Plugin {
+  return {
+    name: "fixture-image-variant",
+    enforce: "pre",
+    load: {
+      filter: { id: /\.png\?w=\d+/ },
+      handler(id) {
+        const w = new URL(id, "file:").searchParams.get("w");
+        return `export default ${JSON.stringify(`image-variant:${w}`)};`;
+      },
+    },
+  };
+}
+
+// A `pre` resolveId that answers a bare import by its query, as a package's
+// `styles.css?url` plugin does: it must see the query, in SSR as in the browser.
+function sheetUrlPlugin(): Plugin {
+  const RESOLVED = "\0fixture-sheet-url";
+  return {
+    name: "fixture-sheet-url",
+    enforce: "pre",
+    resolveId: {
+      filter: { id: /^fixture-sheet\/styles\.css\?url$/ },
+      handler() {
+        return RESOLVED;
+      },
+    },
+    load(id) {
+      if (id === RESOLVED) return `export default "fixture-sheet-url-ok";`;
+    },
+  };
+}
+
+// resolveId sees each import once, as written (Vite's import analysis): a
+// file answer keeps its own query, a claim wins over an installed package or
+// an existing file, a /-prefixed id comes to the pre hooks first, and a claim
+// of the bare id alone never takes the queried import.
+// In the dev server render only (the client and the build take a virtual
+// module): a remote URL answer, which the Start host stubs rather than fetch,
+// and a hook that throws, which fails its import.
+function devSsrAnswersPlugin(): Plugin {
+  let serve = false;
+  return {
+    name: "fixture-dev-ssr-answers",
+    enforce: "pre",
+    configResolved(config) {
+      serve = config.command === "serve";
+    },
+    resolveId(id, _importer, options) {
+      const devSsr = serve && (options?.ssr || this.environment?.config?.consumer === "server");
+      if (id === "fixture-remote/x.css?url") {
+        return devSsr ? "https://cdn.example/x.css" : "\0fixture-remote";
+      }
+      if (id === "fixture-throws/x.css?url") {
+        // Only when the Start test asks (OJ_FIXTURE_RESOLVE_THROWS), so the
+        // other suites on this fixture, a scan and pre-transforms included,
+        // never hit it.
+        const throws = process.env.OJ_FIXTURE_RESOLVE_THROWS === "1" && !options?.scan;
+        if (devSsr && throws) throw new Error("fixture resolveId hook threw");
+        return "\0fixture-throws";
+      }
+      return null;
+    },
+    load(id) {
+      if (id === "\0fixture-remote") return `export default "remote-client";`;
+      if (id === "\0fixture-throws") return `export default "resolved-without-throwing";`;
+    },
+  };
+}
+
+function queryClaimsPlugin(): Plugin {
+  const answer = new URL("./src/content/answer.txt", import.meta.url).pathname;
+  // Extension-free virtual ids, so no bundler types them by the import's.
+  const virtual: Record<string, [string, string]> = {
+    "react/index.js?raw": ["installed", "installed-package-claimed-ok"],
+    "../content/claimed.txt?raw": ["relative", "relative-file-claimed-ok"],
+    "/virtual-probe.txt?raw": ["slash", "slash-claimed-ok"],
+  };
+  const byId = new Map(Object.values(virtual).map(([key, text]) => [`\0query-claim-${key}`, text]));
+  return {
+    name: "fixture-query-claims",
+    enforce: "pre",
+    resolveId(id) {
+      if (id === "fixture-missing/notes.txt?raw") return `${answer}?raw`;
+      if (id in virtual) return `\0query-claim-${virtual[id][0]}`;
+      if (id === "react/package.json") return "\0bare-file-claim";
+      return null;
+    },
+    load(id) {
+      if (byId.has(id)) return `export default ${JSON.stringify(byId.get(id))};`;
+      if (id === "\0bare-file-claim") return `export default "bare-claim-took-the-raw-import";`;
+    },
+  };
+}
+
+// Echoes a page's import.meta.hot.send back to it (server.ws.on -> send).
+function wsEchoPlugin(): Plugin {
+  return {
+    name: "fixture-ws-echo",
+    configureServer(server) {
+      server.ws.on("fixture:ping", (data) => server.ws.send("fixture:pong", { echo: data }));
+    },
+  };
+}
+
 export default defineConfig({
+  // The tsconfig `paths` (`@app/*`, `#lib/*`) through Vite 8's own resolver.
+  resolve: { tsconfigPaths: true },
   // A non-default publicDir, to exercise oj adopting vite's publicDir.
   publicDir: "public",
   // A config define: must be applied by the SSR loader (dev) and the prod bundles.
@@ -70,6 +179,11 @@ export default defineConfig({
   plugins: [
     buildInfoPlugin(),
     freshModulePlugin(),
+    imageVariantPlugin(),
+    sheetUrlPlugin(),
+    queryClaimsPlugin(),
+    devSsrAnswersPlugin(),
+    wsEchoPlugin(),
     // .mdx before react/tanstack so its output is plain JSX for them to handle.
     mdx(),
     // exportType:"default" makes a bare `.svg` import a component; the second

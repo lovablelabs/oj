@@ -1,0 +1,672 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/legacy/transform-logical-values-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs and upstream's own expected values — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "assertions/legacy-logical-values-value-inline-end-for-clear-p-001-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { clear: 'inline-end' } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-values", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xof8tvn{clear:right}\",\n  rtl: \".xof8tvn{clear:left}\",\n  priority: 3000\n});\nconst classnames = \"xof8tvn\";",
+        "site": {
+          "file": "legacy/transform-logical-values-test.js",
+          "test": "value \"inline-end\" for \"clear\" property",
+          "line": 36
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-values-value-inline-start-for-clear-002-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { clear: 'inline-start' } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-values", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x18lmvvi{clear:left}\",\n  rtl: \".x18lmvvi{clear:right}\",\n  priority: 3000\n});\nconst classnames = \"x18lmvvi\";",
+        "site": {
+          "file": "legacy/transform-logical-values-test.js",
+          "test": "value \"inline-start\" for \"clear\" property",
+          "line": 56
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-values-value-inline-end-for-float-p-003-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { float: 'inline-end' } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-values", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1h0q493{float:right}\",\n  rtl: \".x1h0q493{float:left}\",\n  priority: 3000\n});\nconst classnames = \"x1h0q493\";",
+        "site": {
+          "file": "legacy/transform-logical-values-test.js",
+          "test": "value \"inline-end\" for \"float\" property",
+          "line": 76
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-values-value-inline-start-for-float-004-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { float: 'inline-start' } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-values", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1kmio9f{float:left}\",\n  rtl: \".x1kmio9f{float:right}\",\n  priority: 3000\n});\nconst classnames = \"x1kmio9f\";",
+        "site": {
+          "file": "legacy/transform-logical-values-test.js",
+          "test": "value \"inline-start\" for \"float\" property",
+          "line": 96
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-values-value-end-for-textalign-prop-005-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { textAlign: 'end' } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-values", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xp4054r{text-align:end}\",\n  priority: 3000\n});\nconst classnames = \"xp4054r\";",
+        "site": {
+          "file": "legacy/transform-logical-values-test.js",
+          "test": "value \"end\" for \"textAlign\" property",
+          "line": 116
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-values-value-start-for-textalign-pr-006-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { textAlign: 'start' } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-values", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1yc453h{text-align:start}\",\n  priority: 3000\n});\nconst classnames = \"x1yc453h\";",
+        "site": {
+          "file": "legacy/transform-logical-values-test.js",
+          "test": "value \"start\" for \"textAlign\" property",
+          "line": 135
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-values-legacy-value-e-resize-for-cu-007-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { cursor: 'e-resize' } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-values", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x14mnfz1{cursor:e-resize}\",\n  rtl: \".x14mnfz1{cursor:w-resize}\",\n  priority: 3000\n});\nconst classnames = \"x14mnfz1\";",
+        "site": {
+          "file": "legacy/transform-logical-values-test.js",
+          "test": "[legacy] value \"e-resize\" for \"cursor\" property",
+          "line": 158
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-values-legacy-value-w-resize-for-cu-008-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { cursor: 'w-resize' } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-values", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x14isd7o{cursor:w-resize}\",\n  rtl: \".x14isd7o{cursor:e-resize}\",\n  priority: 3000\n});\nconst classnames = \"x14isd7o\";",
+        "site": {
+          "file": "legacy/transform-logical-values-test.js",
+          "test": "[legacy] value \"w-resize\" for \"cursor\" property",
+          "line": 181
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-values-legacy-value-ne-resize-for-c-009-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { cursor: 'ne-resize' } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-values", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xc7edbc{cursor:ne-resize}\",\n  rtl: \".xc7edbc{cursor:nw-resize}\",\n  priority: 3000\n});\nconst classnames = \"xc7edbc\";",
+        "site": {
+          "file": "legacy/transform-logical-values-test.js",
+          "test": "[legacy] value \"ne-resize\" for \"cursor\" property",
+          "line": 204
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-values-legacy-value-nw-resize-for-c-010-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { cursor: 'nw-resize' } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-values", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xrpsa6j{cursor:nw-resize}\",\n  rtl: \".xrpsa6j{cursor:ne-resize}\",\n  priority: 3000\n});\nconst classnames = \"xrpsa6j\";",
+        "site": {
+          "file": "legacy/transform-logical-values-test.js",
+          "test": "[legacy] value \"nw-resize\" for \"cursor\" property",
+          "line": 227
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-values-legacy-value-se-resize-for-c-011-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { cursor: 'se-resize' } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-values", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xp35lg9{cursor:se-resize}\",\n  rtl: \".xp35lg9{cursor:sw-resize}\",\n  priority: 3000\n});\nconst classnames = \"xp35lg9\";",
+        "site": {
+          "file": "legacy/transform-logical-values-test.js",
+          "test": "[legacy] value \"se-resize\" for \"cursor\" property",
+          "line": 250
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-values-legacy-value-sw-resize-for-c-012-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { cursor: 'sw-resize' } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-values", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1egwzy8{cursor:sw-resize}\",\n  rtl: \".x1egwzy8{cursor:se-resize}\",\n  priority: 3000\n});\nconst classnames = \"x1egwzy8\";",
+        "site": {
+          "file": "legacy/transform-logical-values-test.js",
+          "test": "[legacy] value \"sw-resize\" for \"cursor\" property",
+          "line": 273
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-values-legacy-value-of-animationnam-013-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { animationName: 'ignore' } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-values", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x13xdq3h{animation-name:ignore}\",\n  priority: 3000\n});\nconst classnames = \"x13xdq3h\";",
+        "site": {
+          "file": "legacy/transform-logical-values-test.js",
+          "test": "[legacy] value of \"animationName\" property",
+          "line": 301
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-values-legacy-value-of-backgroundpo-014-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { backgroundPosition: 'top end' } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-values", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xl0ducr{background-position:top right}\",\n  rtl: \".xl0ducr{background-position:top left}\",\n  priority: 2000\n});\nconst classnames = \"xl0ducr\";",
+        "site": {
+          "file": "legacy/transform-logical-values-test.js",
+          "test": "[legacy] value of \"backgroundPosition\" property",
+          "line": 320
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-values-legacy-value-of-backgroundpo-015-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { backgroundPosition: 'top start' } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-values", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xgg80n4{background-position:top left}\",\n  rtl: \".xgg80n4{background-position:top right}\",\n  priority: 2000\n});\nconst classnames = \"xgg80n4\";",
+        "site": {
+          "file": "legacy/transform-logical-values-test.js",
+          "test": "[legacy] value of \"backgroundPosition\" property",
+          "line": 337
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-values-legacy-value-of-paddinginlin-016-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            x: {\n              animationName: stylex.keyframes({\n                '0%': {\n                  paddingInline: '1px 2px'\n                },\n                '100%': {\n                  paddingInline: '10px 20px'\n                }\n              })\n            }\n          });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "enableLogicalStylesPolyfill": true,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-values", "legacy", "keyframes", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \"@keyframes x4skwlr-B{0%{padding-left:1px;padding-right:2px;}100%{padding-left:10px;padding-right:20px;}}\",\n  rtl: \"@keyframes x4skwlr-B{0%{padding-right:1px;padding-left:2px;}100%{padding-right:10px;padding-left:20px;}}\",\n  priority: 0\n});\n_inject2({\n  ltr: \".xzebctn{animation-name:x4skwlr-B}\",\n  priority: 3000\n});\nconst classnames = \"xzebctn\";",
+        "site": {
+          "file": "legacy/transform-logical-values-test.js",
+          "test": "[legacy] value of \"paddingInline\" property",
+          "line": 357
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-values-legacy-value-of-paddinginlin-017-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            x: {\n              animationName: stylex.keyframes({\n                '0%': {\n                  paddingInline: '1px 2px'\n                },\n                '100%': {\n                  paddingInline: '10px 20px'\n                }\n              })\n            }\n          });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "enableLogicalStylesPolyfill": false,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-values", "legacy", "keyframes", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \"@keyframes x4skwlr-B{0%{padding-inline-start:1px;padding-inline-end:2px;}100%{padding-inline-start:10px;padding-inline-end:20px;}}\",\n  priority: 0\n});\n_inject2({\n  ltr: \".xzebctn{animation-name:x4skwlr-B}\",\n  priority: 3000\n});\nconst classnames = \"xzebctn\";",
+        "site": {
+          "file": "legacy/transform-logical-values-test.js",
+          "test": "[legacy] value of \"paddingInline\" property",
+          "line": 396
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-values-legacy-value-of-boxshadow-pr-018-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            x: {\n              animationName: stylex.keyframes({\n                '0%': {\n                  boxShadow: '1px 2px 3px 4px red'\n                },\n                '100%': {\n                  boxShadow: '10px 20px 30px 40px green'\n                }\n              })\n            }\n          });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "enableLegacyValueFlipping": true,
+        "styleResolution": "legacy-expand-shorthands"
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-values", "legacy", "keyframes", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \"@keyframes x19mpx8i-B{0%{box-shadow:1px 2px 3px 4px red;}100%{box-shadow:10px 20px 30px 40px green;}}\",\n  priority: 0\n});\n_inject2({\n  ltr: \".x14pamct{animation-name:x19mpx8i-B}\",\n  priority: 3000\n});\nconst classnames = \"x14pamct\";",
+        "site": {
+          "file": "legacy/transform-logical-values-test.js",
+          "test": "[legacy] value of \"boxShadow\" property",
+          "line": 436
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-values-legacy-value-of-boxshadow-pr-019-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { boxShadow: 'none' } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-values", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1gnnqk1{box-shadow:none}\",\n  priority: 3000\n});\nconst classnames = \"x1gnnqk1\";",
+        "site": {
+          "file": "legacy/transform-logical-values-test.js",
+          "test": "[legacy] value of \"boxShadow\" property",
+          "line": 474
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-values-legacy-value-of-boxshadow-pr-020-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { boxShadow: '1px 1px #000' } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-values", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xtgyqtp{box-shadow:1px 1px #000}\",\n  rtl: \".xtgyqtp{box-shadow:-1px 1px #000}\",\n  priority: 3000\n});\nconst classnames = \"xtgyqtp\";",
+        "site": {
+          "file": "legacy/transform-logical-values-test.js",
+          "test": "[legacy] value of \"boxShadow\" property",
+          "line": 493
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-values-legacy-value-of-boxshadow-pr-021-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { boxShadow: '-1px -1px #000' } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-values", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1d2r41h{box-shadow:-1px -1px #000}\",\n  rtl: \".x1d2r41h{box-shadow:1px -1px #000}\",\n  priority: 3000\n});\nconst classnames = \"x1d2r41h\";",
+        "site": {
+          "file": "legacy/transform-logical-values-test.js",
+          "test": "[legacy] value of \"boxShadow\" property",
+          "line": 513
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-values-legacy-value-of-boxshadow-pr-022-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { boxShadow: 'inset 1px 1px #000' } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-values", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1x0mpz7{box-shadow:inset 1px 1px #000}\",\n  rtl: \".x1x0mpz7{box-shadow:inset -1px 1px #000}\",\n  priority: 3000\n});\nconst classnames = \"x1x0mpz7\";",
+        "site": {
+          "file": "legacy/transform-logical-values-test.js",
+          "test": "[legacy] value of \"boxShadow\" property",
+          "line": 533
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-values-legacy-value-of-boxshadow-pr-023-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { boxShadow: '1px 1px 1px 1px #000' } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-values", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1fumi7f{box-shadow:1px 1px 1px 1px #000}\",\n  rtl: \".x1fumi7f{box-shadow:-1px 1px 1px 1px #000}\",\n  priority: 3000\n});\nconst classnames = \"x1fumi7f\";",
+        "site": {
+          "file": "legacy/transform-logical-values-test.js",
+          "test": "[legacy] value of \"boxShadow\" property",
+          "line": 553
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-values-legacy-value-of-boxshadow-pr-024-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { boxShadow: 'inset 1px 1px 1px 1px #000' } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-values", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1fs23zf{box-shadow:inset 1px 1px 1px 1px #000}\",\n  rtl: \".x1fs23zf{box-shadow:inset -1px 1px 1px 1px #000}\",\n  priority: 3000\n});\nconst classnames = \"x1fs23zf\";",
+        "site": {
+          "file": "legacy/transform-logical-values-test.js",
+          "test": "[legacy] value of \"boxShadow\" property",
+          "line": 573
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-values-legacy-value-of-boxshadow-pr-025-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { boxShadow: '2px 2px 2px 2px red, inset 1px 1px 1px 1px #000' } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-values", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xtgmjod{box-shadow:2px 2px 2px 2px red,inset 1px 1px 1px 1px #000}\",\n  rtl: \".xtgmjod{box-shadow:-2px 2px 2px 2px red,inset -1px 1px 1px 1px #000}\",\n  priority: 3000\n});\nconst classnames = \"xtgmjod\";",
+        "site": {
+          "file": "legacy/transform-logical-values-test.js",
+          "test": "[legacy] value of \"boxShadow\" property",
+          "line": 593
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-values-legacy-value-of-textshadow-p-026-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { textShadow: 'none' } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-values", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x19pm5ym{text-shadow:none}\",\n  priority: 3000\n});\nconst classnames = \"x19pm5ym\";",
+        "site": {
+          "file": "legacy/transform-logical-values-test.js",
+          "test": "[legacy] value of \"textShadow\" property",
+          "line": 616
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-values-legacy-value-of-textshadow-p-027-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { textShadow: '1px 1px #000' } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-values", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x12y90mb{text-shadow:1px 1px #000}\",\n  rtl: \".x12y90mb{text-shadow:-1px 1px #000}\",\n  priority: 3000\n});\nconst classnames = \"x12y90mb\";",
+        "site": {
+          "file": "legacy/transform-logical-values-test.js",
+          "test": "[legacy] value of \"textShadow\" property",
+          "line": 635
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-values-legacy-value-of-textshadow-p-028-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { textShadow: '-1px -1px #000' } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-values", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1l3mtsg{text-shadow:-1px -1px #000}\",\n  rtl: \".x1l3mtsg{text-shadow:1px -1px #000}\",\n  priority: 3000\n});\nconst classnames = \"x1l3mtsg\";",
+        "site": {
+          "file": "legacy/transform-logical-values-test.js",
+          "test": "[legacy] value of \"textShadow\" property",
+          "line": 655
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-logical-values-legacy-value-of-textshadow-p-029-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({ x: { textShadow: '1px 1px 1px #000' } });\n          const classnames = stylex(styles.x);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "enableLegacyValueFlipping": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-logical-values", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x67hq7l{text-shadow:1px 1px 1px #000}\",\n  rtl: \".x67hq7l{text-shadow:-1px 1px 1px #000}\",\n  priority: 3000\n});\nconst classnames = \"x67hq7l\";",
+        "site": {
+          "file": "legacy/transform-logical-values-test.js",
+          "test": "[legacy] value of \"textShadow\" property",
+          "line": 675
+        }
+      }
+    }
+  ]
+}

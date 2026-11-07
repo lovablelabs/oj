@@ -147,6 +147,10 @@ pub struct CachedModule {
     /// context, and these are the `accept` declarations for the module graph.
     #[serde(default)]
     pub hot: Option<HotMeta>,
+    /// The StyleX rules the module compiled to, so a cache hit can restore
+    /// its part of the stylesheet without recompiling.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stylex_rules: Vec<oj_stylex::rules::StylexRule>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -249,6 +253,7 @@ mod tests {
             watch_files: Vec::new(),
             import_bindings: Vec::new(),
             hot: None,
+            stylex_rules: Vec::new(),
         }
     }
 

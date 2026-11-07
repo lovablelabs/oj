@@ -8,7 +8,7 @@ use std::sync::LazyLock;
 use lightningcss::dependencies::Dependency;
 use regex::Regex;
 
-use crate::path::{is_external, join_relative, posix_join, relative_path, split_query};
+use crate::path::{is_external, join_relative, normalize, posix_join, relative_path, split_query};
 use crate::resolve::CssResolve;
 
 /// Rewrite the relative urls of a stylesheet in `from_dir` so they are
@@ -42,7 +42,43 @@ pub(crate) fn rebase_to_dir(
     if out.contains("image-set(") {
         out = rewrite_image_set_strings(&out, &rebase);
     }
+    if out.contains("@source") || out.contains("@plugin") || out.contains("@config") {
+        out = rebase_tailwind_paths(&out, &base);
+    }
     out
+}
+
+/// Tailwind's `@source` / `@plugin` / `@config "./x"` name a path relative to
+/// the file they are written in, which `@tailwindcss/postcss` rebases from
+/// each node's source file (its fix-relative-paths step). An inlined file
+/// loses that origin, so its paths are rebased here: a quoted `./` / `../`
+/// param, after an optional `!`, made relative to the inlining sheet.
+fn rebase_tailwind_paths(css: &str, base: &str) -> String {
+    static TAILWIND_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"@[\w-]*(?:source|plugin|config)[\w-]*\s+("[^"]*"|'[^']*')\s*;"#).unwrap()
+    });
+    TAILWIND_PATH_RE
+        .replace_all(css, |caps: &regex::Captures<'_>| {
+            let param = caps.get(1).unwrap();
+            let quote = &param.as_str()[..1];
+            let inner = &param.as_str()[1..param.as_str().len() - 1];
+            let (bang, path) = match inner.strip_prefix('!') {
+                Some(path) => ("!", path),
+                None => ("", inner),
+            };
+            if !path.starts_with("./") && !path.starts_with("../") {
+                return caps[0].to_string();
+            }
+            let whole = caps.get(0).unwrap();
+            let at = param.start() - whole.start();
+            format!(
+                "{}{quote}{bang}{}{quote}{}",
+                &whole.as_str()[..at],
+                join_relative(base, path),
+                &whole.as_str()[at + param.len()..]
+            )
+        })
+        .into_owned()
 }
 
 type Rebase<'a> = dyn Fn(&str) -> Option<String> + 'a;
@@ -149,6 +185,86 @@ fn rewrite_image_set_strings(css: &str, rebase: &Rebase<'_>) -> String {
         }
         changed.then(|| format!("image-set({out})"))
     })
+}
+
+/// Vite's `rewriteCssImageSet` (its url-rewrite PostCSS plugin): each
+/// candidate of `image-set()` through `rebase`, a bare string one wrapped in
+/// `url()`, gradients and other images left alone, the list re-joined.
+pub(crate) fn rewrite_css_image_set(css: &str, rebase: &Rebase<'_>) -> String {
+    static NOT_PROCESSED_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?:gradient|element|cross-fade|image)\(").unwrap());
+    replace_matches(css, &IMAGE_SET_RE, |m, _| {
+        let body = &m["image-set(".len()..m.len() - 1];
+        let candidates: Vec<String> = parse_srcset(body)
+            .into_iter()
+            .map(|(url, descriptor)| {
+                let url = if URL_RE.is_match(&url) {
+                    rewrite_css_urls(&url, rebase)
+                } else if !NOT_PROCESSED_RE.is_match(&url) {
+                    match url_replace(&url, rebase) {
+                        Some((wrap, new)) => format!("url({wrap}{new}{wrap})"),
+                        None => url,
+                    }
+                } else {
+                    url
+                };
+                if descriptor.is_empty() {
+                    url
+                } else {
+                    format!("{url} {descriptor}")
+                }
+            })
+            .collect();
+        Some(format!("image-set({})", candidates.join(", ")))
+    })
+}
+
+/// Vite's `parseSrcset`: `(url, descriptor)` per image candidate.
+fn parse_srcset(srcset: &str) -> Vec<(String, String)> {
+    static ESCAPED_SPACES: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?: |\\t|\\n|\\f|\\r)+").unwrap());
+    static NEWLINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\r?\n").unwrap());
+    static COMMA_SPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r",\s+").unwrap());
+    static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
+    // Vite's `imageCandidateRegex`, whose `(?<=,)` start is where the previous
+    // match (ending at its comma) left off.
+    static CANDIDATE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r#"(?:^|\s)?(?P<url>[A-Za-z0-9_-]+\([^)]*\)|"[^"]*"|'[^']*'|[^,]\S*[^,])\s*(?:\s(?P<descriptor>[A-Za-z0-9_][^,]+))?(?:,|$)"#,
+        )
+        .unwrap()
+    });
+    let s = ESCAPED_SPACES.replace_all(srcset.trim(), " ");
+    let s = NEWLINE.replacen(&s, 1, "");
+    let s = COMMA_SPACE.replacen(&s, 1, ", ");
+    let s = SPACES.replace_all(&s, " ");
+    CANDIDATE
+        .captures_iter(&s)
+        .map(|c| {
+            let field = |name| c.name(name).map_or("", |m| m.as_str().trim()).to_string();
+            (field("url"), field("descriptor"))
+        })
+        .filter(|(url, _)| !url.is_empty())
+        .collect()
+}
+
+/// A `style` attribute's declarations with their urls rewritten like Vite's
+/// url-rewrite PostCSS plugin does in dev: `url()`s, then `image-set()`
+/// candidates, rebased as in a sheet served at `url`. Text only, as under
+/// Vite's default PostCSS transformer, so the declarations stay as written.
+pub fn rewrite_style_attribute_dev(url: &str, code: &str, resolve: &CssResolve<'_>) -> String {
+    let Some(base) = css_base_dir(url) else {
+        return code.to_string();
+    };
+    let rebase = |spec: &str| Some(dev_url_of(spec, &base, resolve));
+    let mut out = code.to_string();
+    if URL_RE.is_match(&out) {
+        out = rewrite_css_urls(&out, &rebase);
+    }
+    if IMAGE_SET_RE.is_match(&out) {
+        out = rewrite_css_image_set(&out, &rebase);
+    }
+    out
 }
 
 /// Vite's `doUrlReplace`: the new url and the quote to wrap it in, or None to
@@ -262,13 +378,54 @@ pub(crate) fn css_base_dir(url: &str) -> Option<String> {
 
 /// The server url a spec in a stylesheet served from `base_dir` stands for:
 /// an alias becomes the file's url, a relative path joins `base_dir`, the
-/// rest (root-absolute, external, data:) is kept.
+/// rest (root-absolute, external, data:) is kept. Like Vite's dev url
+/// resolver, a relative path is rewritten only when it names a file: one that
+/// resolves nowhere (a missing file, a sheet whose url has no directory on
+/// disk, such as a page's with no file) stays as written.
 pub(crate) fn dev_url_of(spec: &str, base_dir: &str, resolve: &CssResolve<'_>) -> String {
     let (path, suffix) = split_query(spec);
     if let Some(file) = resolve.alias_path(path) {
         return format!("{}{suffix}", resolve.dev_url(&file));
     }
-    rebase_relative(spec, base_dir).unwrap_or_else(|| spec.to_string())
+    match rebase_relative(spec, base_dir) {
+        Some(url) if relative_resolves(path, base_dir, resolve) => url,
+        _ => spec.to_string(),
+    }
+}
+
+/// Whether relative `path` names a file from the directory `base_dir` is
+/// served from. Without a root there is no disk to ask, and it is assumed to.
+fn relative_resolves(path: &str, base_dir: &str, resolve: &CssResolve<'_>) -> bool {
+    let Some(root) = resolve.root else {
+        return true;
+    };
+    let dir = match base_dir.strip_prefix("/@fs") {
+        Some(abs) if abs.starts_with('/') => Path::new(abs).to_path_buf(),
+        _ => root.join(base_dir.trim_start_matches('/')),
+    };
+    // Vite resolves `decodeURI(url)` minus its `#fragment`.
+    let path = path.split('#').next().unwrap_or(path);
+    normalize(&dir.join(percent_decode(path))).is_file()
+}
+
+/// `decodeURI` for a path: `%XX` escapes decoded, a malformed one kept.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16).map(|d| d as u8);
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h), Some(l)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                out.push(h << 4 | l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
 }
 
 /// A relative spec joined onto `base_dir`; None for anything not relative.
@@ -329,6 +486,126 @@ mod tests {
     use lightningcss::dependencies::DependencyOptions;
     use lightningcss::printer::PrinterOptions;
     use lightningcss::stylesheet::{ParserOptions, StyleSheet};
+
+    /// An app root holding `src/a.png`, `src/b.png`, `a.png` and
+    /// `__preview/a.png`, with `@` aliased to its `src`.
+    fn url_app(name: &str) -> (std::path::PathBuf, [(String, String); 1]) {
+        let root = std::env::temp_dir().join(format!("oj-css-urls-{name}-{}", std::process::id()));
+        for f in ["src/a.png", "src/b.png", "a.png", "__preview/a.png"] {
+            let p = root.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b"x").unwrap();
+        }
+        let alias = [("@".to_string(), root.join("src").display().to_string())];
+        (root, alias)
+    }
+
+    /// Each pair is a `style` attribute of a page at `/index.html` and what
+    /// Vite 8.2.1's dev transform writes for it, quotes unescaped.
+    #[test]
+    fn style_attribute_urls_rewrite_like_vites() {
+        let (root, alias) = url_app("attr");
+        let resolve = CssResolve {
+            root: Some(&root),
+            alias: &alias,
+            ..CssResolve::default()
+        };
+        let cases = [
+            (
+                "background: url(./src/a.png)",
+                "background: url(/src/a.png)",
+            ),
+            (
+                r#"background: url('./src/a.png'), url("@/b.png")"#,
+                r#"background: url('/src/a.png'), url("/src/b.png")"#,
+            ),
+            (
+                r#"background-image: image-set("./src/a.png" 1x, './src/b.png' 2x)"#,
+                r#"background-image: image-set(url("/src/a.png") 1x, url('/src/b.png') 2x)"#,
+            ),
+            (
+                r#"background-image: image-set(url(./src/a.png) 1x, "@/b.png" type("image/png"))"#,
+                r#"background-image: image-set(url(/src/a.png) 1x, url("/src/b.png") type("image/png"))"#,
+            ),
+            (
+                r#"background-image: -webkit-image-set("./src/a.png" 1x); color: red"#,
+                r#"background-image: -webkit-image-set(url("/src/a.png") 1x); color: red"#,
+            ),
+            (
+                r#"background-image: image-set(linear-gradient(red, blue) 1x, "data:image/png;base64,AA" 2x, "https://x.dev/a.png" 3x)"#,
+                r#"background-image: image-set(linear-gradient(red, blue) 1x, "data:image/png;base64,AA" 2x, "https://x.dev/a.png" 3x)"#,
+            ),
+            (
+                r#"background: url(./src/b.png) no-repeat, image-set( "./src/a.png"   1x ,"./src/b.png" 2x )"#,
+                r#"background: url(/src/b.png) no-repeat, image-set(url("/src/a.png") 1x, url("/src/b.png") 2x)"#,
+            ),
+            (
+                r#"background: url(./missing.png), url(./src/a.png), url(./a.png), url("./src/a.png?v=1#x")"#,
+                r#"background: url(./missing.png), url(/src/a.png), url(/a.png), url("/src/a.png?v=1#x")"#,
+            ),
+        ];
+        for (attr, vite) in cases {
+            let url = "/index.html?html-proxy&inline-css&style-attr&index=0.css";
+            assert_eq!(
+                rewrite_style_attribute_dev(url, attr, &resolve),
+                vite,
+                "{attr}"
+            );
+        }
+        // A page with no file: nothing relative resolves, even `./a.png`
+        // beside its path; an alias still does.
+        let url = "/@id/__x00__/__preview/Card?html-proxy&inline-css&style-attr&index=0.css";
+        assert_eq!(
+            rewrite_style_attribute_dev(
+                url,
+                "background: url(./missing.png), url(./src/a.png), url(./a.png), url(@/a.png)",
+                &resolve
+            ),
+            "background: url(./missing.png), url(./src/a.png), url(./a.png), url(/src/a.png)"
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn a_sheets_image_set_strings_print_as_urls_like_vites() {
+        let (root, _) = url_app("sheet");
+        let resolve = CssResolve {
+            root: Some(&root),
+            ..CssResolve::default()
+        };
+        let src = r#".s { background-image: image-set("./a.png" 1x, url(./b.png) 2x) }"#;
+        let css = compile_css_dev("/src/x.css", src, false, &resolve)
+            .unwrap()
+            .css;
+        assert!(
+            css.contains(r#"image-set(url("/src/a.png") 1x, url("/src/b.png") 2x)"#),
+            "{css}"
+        );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// Vite's dev url resolver rewrites a relative url only when it resolves
+    /// to a file; a missing one, or any in a sheet whose url has no directory
+    /// on disk, stays as written.
+    #[test]
+    fn a_sheets_relative_urls_resolve_only_to_files() {
+        let (root, _) = url_app("miss");
+        let resolve = CssResolve {
+            root: Some(&root),
+            ..CssResolve::default()
+        };
+        let src = ".a { background: url(./a.png) } .m { background: url(./missing.png) }";
+        let css = compile_css_dev("/src/x.css", src, false, &resolve)
+            .unwrap()
+            .css;
+        assert!(css.contains(r#"url("/src/a.png")"#), "{css}");
+        assert!(css.contains(r#"url("./missing.png")"#), "{css}");
+        let css = compile_css_dev("/@id/__x00__virtual.css", src, false, &resolve)
+            .unwrap()
+            .css;
+        assert!(css.contains(r#"url("./a.png")"#), "{css}");
+        std::fs::remove_dir_all(root).ok();
+    }
 
     /// The sequential `str::replace` loop `substitute_placeholders` replaced.
     fn sequential_replace(code: &str, pairs: &[(String, String)]) -> String {

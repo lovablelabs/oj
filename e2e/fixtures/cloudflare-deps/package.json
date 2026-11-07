@@ -1,0 +1,10 @@
+{
+  "name": "oj-cloudflare-deps",
+  "private": true,
+  "type": "module",
+  "description": "The Cloudflare plugin the Start tests run, installed beside an app copy (its parent's node_modules), with the start-app fixture's node_modules in the app itself.",
+  "dependencies": {
+    "@cloudflare/vite-plugin": "1.64.0",
+    "wrangler": "4.151.3"
+  }
+}

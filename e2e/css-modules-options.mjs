@@ -11,7 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { waitUp } from "./util.mjs";
+import { rmrf, waitUp } from "./util.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
@@ -69,9 +69,11 @@ function checkExports(mode, styles, theme, css) {
     styles["my-button"] && styles.myButton === styles["my-button"],
     JSON.stringify(styles),
   );
+  // generic-names over `[local]__[hash:base64:5]`, exactly as Vite 8.3.5
+  // names these (the hash covers the module's path and the local).
   check(
-    `${mode}: generateScopedName pattern`,
-    /^my-button__[A-Za-z0-9_-]+$/.test(styles["my-button"] ?? ""),
+    `${mode}: generateScopedName pattern gives Vite's names`,
+    styles["my-button"] === "my-button__HuMui" && styles.wide === "wide__P5f5e base__bYZhS",
     JSON.stringify(styles),
   );
   check(
@@ -90,7 +92,9 @@ function checkExports(mode, styles, theme, css) {
 // Dev: the JS wrappers of the two modules plus the served CSS.
 {
   const port = 6304;
-  const srv = spawn(oj, ["dev", app, "--port", String(port)], { stdio: ["ignore", "pipe", "pipe"] });
+  // From the app, as Vite ran for the recorded names: a pattern's hash
+  // covers the file's path from the directory it was started in.
+  const srv = spawn(oj, ["dev", app, "--port", String(port)], { cwd: app, stdio: ["ignore", "pipe", "pipe"] });
   let log = "";
   srv.stdout.on("data", (d) => (log += d));
   srv.stderr.on("data", (d) => (log += d));
@@ -111,13 +115,19 @@ function checkExports(mode, styles, theme, css) {
     check("dev: module wrapper carries a default export map", !!styles, wrapper);
     if (styles) checkExports("dev", styles, theme, css);
   } finally {
-    srv.kill();
+    // Wait it out: a server still exiting writes its code cache into the app
+    // dir the cleanup below removes.
+    if (srv.exitCode === null && srv.signalCode === null) {
+      const exited = new Promise((resolve) => srv.once("exit", resolve));
+      srv.kill();
+      await exited;
+    }
   }
 }
 
 // Build: the bundled chunk and the emitted stylesheet.
 {
-  const r = spawnSync(oj, ["build", app], { cwd: repo, encoding: "utf8" });
+  const r = spawnSync(oj, ["build", app], { cwd: app, encoding: "utf8" });
   check("build succeeds", r.status === 0, `${r.stdout}\n${r.stderr}`);
   if (r.status === 0) {
     const assets = path.join(app, "dist", "assets");
@@ -132,11 +142,7 @@ function checkExports(mode, styles, theme, css) {
       .map((f) => fs.readFileSync(path.join(assets, f), "utf8"))
       .join("\n");
     check("build: myButton camelCase key is in the chunk", /myButton/.test(js), js.slice(0, 400));
-    check(
-      "build: scoped name follows the pattern",
-      /my-button__[A-Za-z0-9_-]+/.test(js) && /\.my-button__/.test(css),
-      css,
-    );
+    check("build: scoped names are Vite's", js.includes("my-button__HuMui") && css.includes(".my-button__HuMui{"), css);
     check(
       "build: composes value has two classes",
       /wide"?:["'`]wide__[^"'` ]+ base__[^"'` ]+["'`]/.test(js),
@@ -146,6 +152,47 @@ function checkExports(mode, styles, theme, css) {
   }
 }
 
-fs.rmSync(app, { recursive: true, force: true });
+// Started from the app's parent, a pattern's hash covers `<app>/src/...`
+// (postcss-modules' context is `process.cwd()`): oj names the classes as
+// Vite does from there.
+{
+  const viteBin = path.join(repo, "e2e", "fixtures", "start-app", "node_modules", "vite", "bin", "vite.js");
+  if (fs.existsSync(viteBin)) {
+    fs.writeFileSync(
+      path.join(app, "vite.config.js"),
+      `export default { css: { modules: { localsConvention: "camelCase", generateScopedName: "[local]__[hash:base64:5]", globalModulePaths: [/\\.global\\.module\\.css$/] } } };\n`,
+    );
+    const parent = path.dirname(app);
+    const named = (dir) => {
+      const assets = path.join(app, dir, "assets");
+      const css = fs
+        .readdirSync(assets)
+        .filter((f) => f.endsWith(".css"))
+        .map((f) => fs.readFileSync(path.join(assets, f), "utf8"))
+        .join("\n");
+      return /\.(my-button__[A-Za-z0-9_-]{5})\{/.exec(css)?.[1];
+    };
+    const o = spawnSync(oj, ["build", app], { cwd: parent, encoding: "utf8" });
+    check("build from the parent succeeds", o.status === 0, `${o.stdout}\n${o.stderr}`);
+    const v = spawnSync(process.execPath, [viteBin, "build", app, "--outDir", "dist-vite", "--logLevel", "error"], {
+      cwd: parent,
+      encoding: "utf8",
+    });
+    check("vite build from the parent succeeds", v.status === 0, `${v.stdout}\n${v.stderr}`);
+    if (o.status === 0 && v.status === 0) {
+      const ojName = named("dist");
+      check(
+        "build from the parent: Vite's names",
+        ojName && ojName === named("dist-vite"),
+        `${ojName} vs ${named("dist-vite")}`,
+      );
+      check("build from the parent: the path is in the hash", ojName !== "my-button__HuMui", ojName);
+    }
+  } else {
+    console.log("skip parent-directory check: fixture Vite not installed");
+  }
+}
+
+await rmrf(app);
 if (failed) process.exit(1);
 console.log("CSS-MODULES-OPTIONS E2E PASSED");

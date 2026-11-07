@@ -122,8 +122,8 @@ const routeTreePath = path.join(app, "src", "routeTree.ts");
 const routeTree = fs
   .readFileSync(routeTreePath, "utf8")
   .replace("import { rootRoute }", 'import { esmRelativeRoute } from "./routes/esm-relative";\nimport { rootRoute }')
-  .replace("requestUrlRoute]", "requestUrlRoute, esmRelativeRoute]");
-if (!routeTree.includes("esmRelativeRoute]")) throw new Error("could not register the test route");
+  .replace("rootRoute.addChildren([", "rootRoute.addChildren([esmRelativeRoute, ");
+if (!routeTree.includes("addChildren([esmRelativeRoute, ")) throw new Error("could not register the test route");
 fs.writeFileSync(routeTreePath, routeTree);
 
 const port = 5219;

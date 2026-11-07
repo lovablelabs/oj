@@ -87,9 +87,11 @@ test("a tanstack-style applyToEnvironment reading configResolved state does not 
   }
 });
 
-// A plugin whose applyToEnvironment genuinely throws must not take down the
-// host: oj warns and keeps the plugin active, and the host keeps serving RPC.
-test("a throwing applyToEnvironment does not crash the plugin host", async () => {
+// A plugin whose applyToEnvironment genuinely throws rejects Vite's
+// createServer (the dev boot fails, tests/dev plugin_environments.rs); Start
+// mode tolerates a framework config's lifecycle hooks per plugin instead: oj
+// warns, keeps the plugin active, and the host keeps serving RPC.
+test("in Start mode a throwing applyToEnvironment keeps the plugin, the host serving", async () => {
   const fx = tmpProject({ prefix: "oj-ate-" });
   fx.write(
     "oj.plugins.mjs",
@@ -102,7 +104,7 @@ test("a throwing applyToEnvironment does not crash the plugin host", async () =>
      }];\n`,
   );
   const host = rpcSidecar("plugin-host.mjs", {
-    args: [path.join(fx.root, "oj.plugins.mjs"), JSON.stringify({ root: fx.root })],
+    args: [path.join(fx.root, "oj.plugins.mjs"), JSON.stringify({ root: fx.root, ojStartMode: true })],
     env: { OJ_CACHE_ROOT: fx.root },
     cwd: fx.root,
   });

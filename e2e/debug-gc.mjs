@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Raphael Amorim
 
-// OJ_DEBUG_MEM=1 exposes /@oj/debug/gc, which forces a full V8 collection in
+// `--debug=mem` exposes /@oj/debug/gc, which forces a full V8 collection in
 // every live engine (the memory-probing instrument from issue #202: measure
-// retained heap, not whatever V8 has not collected yet). Without the env the
+// retained heap, not whatever V8 has not collected yet). Without the flag the
 // route must 404 — it is an instrument, never part of the dev surface.
 // Run with a built target/debug/oj.
 import { spawn } from "node:child_process";
@@ -31,16 +31,20 @@ write(
   `<!doctype html><html><head><title>t</title></head><body><script type="module" src="/src/main.js"></script></body></html>`,
 );
 
-async function boot(port, env) {
-  const childEnv = { ...process.env, ...env };
-  // The disabled case must not inherit an OJ_DEBUG_MEM the caller exported
-  // (plausibly set by whoever is using the very feature under test).
-  if (!("OJ_DEBUG_MEM" in env)) delete childEnv.OJ_DEBUG_MEM;
+async function boot(port, flags) {
+  const childEnv = { ...process.env };
+  // The disabled case must not inherit a DEBUG the caller exported
+  // (plausibly naming oj:mem, the very feature under test).
+  delete childEnv.DEBUG;
   // detached: the server gets its own process group, so the kill below can
   // take the whole group — config extraction runs in an `oj engine-job`
   // child, and killing only the parent orphans it mid-write into .oj-cache
   // (the teardown then races its writes: the ENOTEMPTY class).
-  const proc = spawn(oj, ["dev", app, "--port", String(port)], { stdio: "ignore", env: childEnv, detached: true });
+  const proc = spawn(oj, ["dev", app, "--port", String(port), ...flags], {
+    stdio: "ignore",
+    env: childEnv,
+    detached: true,
+  });
   try {
     await waitUp(`http://localhost:${port}/`, { pollMs: 50 });
     return proc;
@@ -64,7 +68,7 @@ let failed = false;
 let proc;
 try {
   // Enabled: 200 with a requested count, >=1 once the plugin host is up.
-  proc = await boot(5464, { OJ_DEBUG_MEM: "1" });
+  proc = await boot(5464, ["--debug=mem"]);
   await fetch(`http://localhost:5464/src/main.js`); // nudge the plugin host awake
   let collected = 0;
   await settles(
@@ -84,7 +88,7 @@ try {
   await killGroup(proc);
 
   // Disabled: the route does not exist.
-  proc = await boot(5465, {});
+  proc = await boot(5465, []);
   const res = await fetch(`http://localhost:5465/@oj/debug/gc`);
   if (res.status !== 404) throw new Error(`disabled: expected 404, got ${res.status}`);
   console.log("DEBUG GC E2E PASSED");

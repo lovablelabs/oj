@@ -34,176 +34,6 @@ async fn cached_js_response_304_on_matching_etag_has_empty_body() {
     assert!(got.is_empty());
 }
 
-// The watcher's pre-init fast-skip toward the lazy SSR host: recording a
-// skipped event is instant (the watcher path makes NO RPC toward a
-// still-initializing host — dispatching used to serially burn a full
-// per-call init window per hook per save on a wedged init), the backlog
-// dedups by file keeping the latest change type, and once the host
-// initializes the catch-up task replays the backlog as watchChange.
-#[tokio::test]
-async fn ssr_watch_skip_is_instant_and_replays_at_the_hosts_init() {
-    let root = std::env::temp_dir().join(format!("oj-ssr-watch-skip-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
-    let config = serde_json::json!({
-        "config": { "root": root.display().to_string() },
-        "env": { "command": "serve", "mode": "development" },
-    })
-    .to_string();
-
-    // A wedged lazy host: skips must complete in milliseconds anyway.
-    let plugins = root.join("oj.plugins.mjs");
-    std::fs::write(
-        &plugins,
-        "setInterval(() => {}, 1000);\nawait new Promise(() => {});\nexport default [];\n",
-    )
-    .unwrap();
-    let wedged = match plugins::PluginHost::spawn_lazy_with_wait(
-        &root,
-        &plugins,
-        &config,
-        std::time::Duration::from_secs(5),
-    )
-    .await
-    {
-        Ok(h) => h,
-        Err(_) => return, // no node on this machine
-    };
-    let queue = Arc::new(SsrWatchQueue::default());
-    assert!(!wedged.is_initialized());
-    let t0 = std::time::Instant::now();
-    // What decide() does per save while the host is pre-init.
-    note_ssr_watch_skip(&queue, "/app/a.ts", "update");
-    note_ssr_watch_skip(&queue, "/app/a.ts", "delete");
-    note_ssr_watch_skip(&queue, "/app/b.ts", "update");
-    assert!(
-        t0.elapsed() < std::time::Duration::from_millis(200),
-        "a skipped dispatch never waits on the host: {:?}",
-        t0.elapsed()
-    );
-    assert_eq!(
-        *queue.backlog.lock().unwrap(),
-        vec![
-            ("/app/a.ts".to_string(), "delete".to_string()),
-            ("/app/b.ts".to_string(), "update".to_string()),
-        ],
-        "deduped by file, latest change type wins"
-    );
-    wedged.shutdown();
-
-    // A healthy slow host: the catch-up task replays the backlog at init.
-    std::fs::write(
-        &plugins,
-        "await new Promise((r) => setTimeout(r, 1000));\nexport default [];\n",
-    )
-    .unwrap();
-    let host = match plugins::PluginHost::spawn_lazy_with_wait(
-        &root,
-        &plugins,
-        &config,
-        std::time::Duration::from_secs(30),
-    )
-    .await
-    {
-        Ok(h) => h,
-        Err(_) => return,
-    };
-    spawn_ssr_watch_catch_up(std::sync::Arc::clone(&host), Arc::clone(&queue));
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    while !queue.backlog.lock().unwrap().is_empty() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the backlog must drain once the host initializes"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    assert!(host.is_initialized(), "the replay only runs post-init");
-    host.shutdown();
-    let _ = std::fs::remove_dir_all(&root);
-}
-
-// The ordering guarantee: every dispatch toward the SSR host serializes
-// on the queue's order lock with the backlog drained first, so a queued
-// (older) watchChange always reaches the host BEFORE a live (newer) event
-// for the same file — even when the live dispatch races the catch-up
-// task mid-replay. The host-side plugin logs arrivals; the log's last
-// line must be the live event.
-#[tokio::test]
-async fn ssr_watch_catch_up_events_land_before_a_racing_live_event() {
-    let root = std::env::temp_dir().join(format!("oj-ssr-watch-order-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
-    let log = root.join("watch.log");
-    // A slow-boot host whose watchChange hook is slow and logs arrivals:
-    // the live dispatch below races the catch-up task mid-replay.
-    let plugins = root.join("oj.plugins.mjs");
-    std::fs::write(
-        &plugins,
-        format!(
-            r#"import {{ appendFileSync }} from "node:fs";
-await new Promise((r) => setTimeout(r, 800));
-export default [{{
-  name: "watch-logger",
-  async watchChange(id, change) {{
-await new Promise((r) => setTimeout(r, 150));
-appendFileSync({log:?}, id + "|" + ((change && change.event) || "?") + "\n");
-  }},
-}}];
-"#,
-            log = log.display().to_string(),
-        ),
-    )
-    .unwrap();
-    let config = serde_json::json!({
-        "config": { "root": root.display().to_string() },
-        "env": { "command": "serve", "mode": "development" },
-    })
-    .to_string();
-    let host = match plugins::PluginHost::spawn_lazy_with_wait(
-        &root,
-        &plugins,
-        &config,
-        std::time::Duration::from_secs(30),
-    )
-    .await
-    {
-        Ok(h) => h,
-        Err(_) => return, // no node on this machine
-    };
-    let queue = Arc::new(SsrWatchQueue::default());
-    note_ssr_watch_skip(&queue, "/app/a.ts", "update");
-    note_ssr_watch_skip(&queue, "/app/b.ts", "update");
-    spawn_ssr_watch_catch_up(std::sync::Arc::clone(&host), Arc::clone(&queue));
-    // Wait out init, then dispatch a LIVE event while the catch-up task
-    // is (very likely) mid-replay — the order lock, not luck, is what
-    // guarantees the outcome under every interleaving.
-    let mut init = host.initialized_updates();
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_secs(20), init.wait_for(|v| *v),)
-            .await
-            .is_ok_and(|r| r.is_ok())
-    );
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    // What decide() does for a live post-init event: flush, then send.
-    replay_ssr_watch_backlog(&host, &queue).await;
-    host.watch_change("/app/a.ts", "live")
-        .await
-        .expect("live dispatch reaches the host");
-    let lines = std::fs::read_to_string(&log).unwrap_or_default();
-    let lines: Vec<&str> = lines.lines().collect();
-    assert_eq!(
-        lines.last().copied(),
-        Some("/app/a.ts|live"),
-        "the live (newer) event lands LAST: {lines:?}"
-    );
-    assert!(
-        lines.contains(&"/app/a.ts|update") && lines.contains(&"/app/b.ts|update"),
-        "both queued events were replayed before it: {lines:?}"
-    );
-    host.shutdown();
-    let _ = std::fs::remove_dir_all(&root);
-}
-
 // The late-activation resync ENQUEUE is confirmed only on an ACK:
 // transient failures are retried with backoff, and a middleware that never
 // acknowledges makes the helper report failure (the caller then warns
@@ -420,9 +250,15 @@ async fn non_css_inline_stays_a_data_uri() {
     let dir = tempfile::tempdir().unwrap();
     let png = dir.path().join("pixel.png");
     std::fs::write(&png, [0u8, 1, 2, 3]).unwrap();
-    let out = asset_module(&png, "/pixel.png?inline", "inline")
-        .await
-        .unwrap();
+    let out = asset_module(
+        &png,
+        "/pixel.png?inline",
+        "inline",
+        &DevAssetUrls::default(),
+        "client",
+    )
+    .await
+    .unwrap();
     assert!(
         out.contains("data:"),
         "binary asset stays a data URI: {out}"
@@ -678,6 +514,8 @@ fn node_builtins_are_recognized_for_stubbing() {
 
 #[test]
 fn workspace_root_matches_vite_search_for_workspace_root() {
+    // The disk changes between searches here; a server searches once.
+    let workspace_root = oj_resolver::search_workspace_root;
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().canonicalize().unwrap();
     // A git repository is NOT a workspace marker (Vite comments `.git` out):
@@ -803,17 +641,22 @@ fn ts_source_outside_root_is_not_treated_as_a_dep() {
 }
 
 #[test]
-fn html_injection_puts_preamble_first_in_head() {
-    let out = inject_dev_scripts("<html><head><title>x</title></head></html>".into());
-    let preamble = out.find("refresh-preamble").unwrap();
-    let title = out.find("<title>").unwrap();
-    assert!(preamble < title);
-}
-
-#[test]
 fn glue_only_added_for_boundary_modules() {
-    assert!(hot_glue("/src/util.ts", None, false, false).is_empty());
-    let glue = hot_glue("/src/App.tsx", Some("t=1700000000000"), true, false);
+    assert!(hot_glue(
+        "/src/util.ts",
+        None,
+        false,
+        false,
+        &OjPublicPaths::new(None)
+    )
+    .is_empty());
+    let glue = hot_glue(
+        "/src/App.tsx",
+        Some("t=1700000000000"),
+        true,
+        false,
+        &OjPublicPaths::new(None),
+    );
     assert!(glue.contains(r#"createHotContext("/src/App.tsx")"#));
     assert!(
         glue.contains(r#"from "/src/App.tsx?t=1700000000000""#),
@@ -831,8 +674,14 @@ fn glue_only_added_for_boundary_modules() {
 // files, whose router plugin injects its own import.meta.hot handler).
 #[test]
 fn glue_reuses_a_predefined_hot_context_instead_of_redeclaring_it() {
-    let banner = svelte_hot_glue("/src/routes/a.tsx");
-    let glue = hot_glue("/src/routes/a.tsx", Some("t=1700000000000"), true, true);
+    let banner = svelte_hot_glue("/src/routes/a.tsx", &OjPublicPaths::new(None));
+    let glue = hot_glue(
+        "/src/routes/a.tsx",
+        Some("t=1700000000000"),
+        true,
+        true,
+        &OjPublicPaths::new(None),
+    );
     assert!(!glue.contains("__oj_createHotContext"), "{glue}");
     assert!(glue.contains("registerExportsForReactRefresh"), "{glue}");
     let combined = format!("{banner}{glue}");
@@ -856,6 +705,7 @@ fn glue_never_doubles_a_query_the_url_already_carries() {
         Some("t=1700000000000"),
         true,
         false,
+        &OjPublicPaths::new(None),
     );
     assert!(
         glue.contains(r#"createHotContext("/src/App.tsx")"#),
@@ -877,6 +727,7 @@ fn glue_never_doubles_a_query_the_url_already_carries() {
         Some("tsr-shared=1&t=1700000000000"),
         true,
         false,
+        &OjPublicPaths::new(None),
     );
     assert!(
         v.contains(r#"createHotContext("/src/r.tsx?tsr-shared=1")"#),
@@ -888,29 +739,104 @@ fn glue_never_doubles_a_query_the_url_already_carries() {
     );
 }
 
+// Vite's clientPublicPath: every import oj writes of its client and refresh
+// runtime carries the base, as the page's injected tags do, so one module
+// instance serves the page.
 #[test]
-fn restart_triggers_include_every_config_flavor() {
+fn oj_modules_are_imported_under_the_base() {
+    let paths = OjPublicPaths::new(Some("/app/"));
+    assert_eq!(paths.client, "/app/@oj/client.js");
+    assert_eq!(paths.refresh_runtime, "/app/@oj/refresh-runtime.js");
+    assert_eq!(paths.refresh_preamble, "/app/@oj/refresh-preamble.js");
+    let glue = hot_glue("/src/App.tsx", None, true, false, &paths);
+    assert!(glue.contains(r#"from "/app/@oj/client.js""#), "{glue}");
+    assert!(
+        glue.contains(r#"from "/app/@oj/refresh-runtime.js""#),
+        "{glue}"
+    );
+    let banner = svelte_hot_glue("/src/a.svelte", &paths);
+    assert!(banner.contains(r#"from "/app/@oj/client.js""#), "{banner}");
+    let runtime = std::str::from_utf8(&paths.refresh_runtime_js).unwrap();
+    assert!(
+        runtime.starts_with("import \"/app/@oj/client.js\";\n"),
+        "{runtime}"
+    );
+    let preamble = std::str::from_utf8(&paths.refresh_preamble_js).unwrap();
+    assert!(
+        preamble.contains(r#"from "/app/@oj/refresh-runtime.js""#),
+        "{preamble}"
+    );
+    assert!(!preamble.contains(r#""/@oj/"#), "{preamble}");
+    // plugin-react's `/@react-refresh` re-exports the based runtime: one instance.
+    let react_refresh = std::str::from_utf8(&paths.react_refresh_js).unwrap();
+    assert_eq!(
+        react_refresh,
+        "export * from \"/app/@oj/refresh-runtime.js\";\nexport { default } from \"/app/@oj/refresh-runtime.js\";\n"
+    );
+    // A component module asks for what Vite's refresh wrapper does.
+    assert!(glue.contains("if (!window.$RefreshReg$)"), "{glue}");
+    assert!(paths.owns("/app/@oj/refresh-runtime.js") && paths.owns("/@oj/routes.js"));
+    assert!(!paths.owns("/app/src/main.tsx"));
+
+    let root = OjPublicPaths::new(None);
+    assert_eq!(root.client, "/@oj/client.js");
+    assert!(std::str::from_utf8(&root.refresh_runtime_js)
+        .unwrap()
+        .starts_with("import \"/@oj/client.js\";\n"));
+}
+
+#[test]
+fn restart_triggers_are_the_files_oj_loaded() {
+    let root = Path::new("/app");
+    let files = restart_files(
+        root,
+        &root.join("config/../env"),
+        "staging",
+        Some(Path::new("/elsewhere/custom.config.ts")),
+    );
     for f in [
-        "oj.config.ts",
-        "oj.config.json",
-        "vite.config.mts",
-        ".env",
-        ".env.staging",
-        "postcss.config.cjs",
+        "/app/oj.config.ts",
+        "/app/oj.config.json",
+        "/app/vite.config.mts",
+        "/app/postcss.config.cjs",
+        "/app/env/.env",
+        "/app/env/.env.local",
+        "/app/env/.env.staging",
+        "/app/env/.env.staging.local",
+        "/elsewhere/custom.config.ts",
     ] {
-        assert!(is_restart_trigger(Path::new(f)), "{f}");
+        assert!(is_restart_trigger(&files, Path::new(f)), "{f}");
     }
-    for f in ["src/main.ts", "package.json", "config.json", "env.ts"] {
-        assert!(!is_restart_trigger(Path::new(f)), "{f}");
+    // Vite restarts for the mode's env files in envDir and the config only:
+    // the same names elsewhere (a sibling package an outside-root `@source`
+    // watches, a nested dir, another mode) are files like any other.
+    for f in [
+        "/app/src/main.ts",
+        "/app/package.json",
+        "/app/.env",
+        "/app/env/.env.production",
+        "/app/src/.env",
+        "/app/packages/ui/vite.config.ts",
+        "/sibling/.env",
+        "/sibling/postcss.config.js",
+    ] {
+        assert!(!is_restart_trigger(&files, Path::new(f)), "{f}");
     }
 }
 
 #[test]
+// Vite's reloadOnTsconfigChange: a file named `tsconfig.json`, no other.
 fn tsconfig_files_trigger_the_reload_path() {
-    for f in ["tsconfig.json", "app/tsconfig.json", "tsconfig.base.json"] {
+    for f in ["tsconfig.json", "app/tsconfig.json"] {
         assert!(is_tsconfig_file(Path::new(f)), "{f}");
     }
-    for f in ["package.json", "src/tsconfig.ts", "not-tsconfig.json"] {
+    for f in [
+        "package.json",
+        "src/tsconfig.ts",
+        "not-tsconfig.json",
+        "tsconfig.base.json",
+        "tsconfig.app.json",
+    ] {
         assert!(!is_tsconfig_file(Path::new(f)), "{f}");
     }
 }
@@ -929,12 +855,10 @@ fn error_frame_is_a_vite_error_payload() {
     assert_eq!(f["err"]["id"], "src/App.tsx");
     assert_eq!(f["err"]["loc"]["line"], 3);
     assert_eq!(f["err"]["loc"]["column"], 7);
-    assert!(
-        f["err"]["frame"]
-            .as_str()
-            .unwrap()
-            .contains("Unexpected token")
-    );
+    assert!(f["err"]["frame"]
+        .as_str()
+        .unwrap()
+        .contains("Unexpected token"));
     let plain: serde_json::Value = serde_json::from_str(&error_frame("boom")).unwrap();
     assert!(plain["err"]["id"].is_null() && plain["err"]["frame"].is_null());
     let u = update_entry("css-update", "/a.css", 5);
@@ -1334,7 +1258,11 @@ fn stamp_import_url_marks_only_compilable_module_urls() {
         stamp_import_url("/src/a.css?inline", 5),
         "/src/a.css?inline&t=5"
     );
-    assert_eq!(stamp_import_url("/logo.svg?url", 5), "/logo.svg?url");
+    assert_eq!(
+        stamp_import_url("/src/hero.png?url", 5),
+        "/src/hero.png?url&t=5",
+        "an updated image's importer must fetch its new url"
+    );
     assert_eq!(
         stamp_import_url("/@oj-deps/react.js", 5),
         "/@oj-deps/react.js"
@@ -1419,28 +1347,6 @@ fn unresolved_import_error_points_at_the_specifier() {
     assert!(!is_unresolved_import_error(
         "compile error:\nparse error in x.tsx"
     ));
-}
-
-#[test]
-fn preload_hints_name_the_exact_import_url() {
-    assert_eq!(preload_href("/src/main.tsx", "abcd1234"), "/src/main.tsx");
-    assert_eq!(preload_href("/src/a.css", "abcd1234"), "/src/a.css?import");
-    // Optimized deps and package bundles preload under their versioned URL,
-    // so the preload and the later import hit one immutable cache entry.
-    assert_eq!(
-        preload_href("/@oj-deps/react.mjs", "abcd1234"),
-        "/@oj-deps/react.mjs?v=abcd1234"
-    );
-    assert_eq!(
-        preload_href("/@oj-deps/react.mjs", ""),
-        "/@oj-deps/react.mjs",
-        "no version, no query"
-    );
-    assert_eq!(
-        preload_href("/@id/6e6f6465", "abcd1234"),
-        "/@id/6e6f6465",
-        "stubs are unversioned"
-    );
 }
 
 #[test]
@@ -1990,4 +1896,1217 @@ fn child_registry_lifecycle_persists_and_drains() {
     );
     child_groups::unregister(std::process::id());
     drop(sleeper.try_wait());
+}
+
+/// Start scripts import siblings by `./name`: each one must be written into
+/// the same directory, or the script fails to load in the app.
+#[test]
+fn start_assets_sibling_imports_are_written() {
+    let names: std::collections::HashSet<&str> = START_ASSETS.iter().map(|(n, _)| *n).collect();
+    // Top-level import/export statements only (a script may write import
+    // lines into code it generates, as string literals).
+    let sibling =
+        regex::Regex::new(r#"(?m)^(?:import|export)\b[^;]*?\bfrom\s*["']\./([^"'/]+)["']"#)
+            .unwrap();
+    for (name, source) in START_ASSETS {
+        for cap in sibling.captures_iter(source) {
+            assert!(
+                names.contains(&cap[1]),
+                "{name} imports ./{} but START_ASSETS does not write it",
+                &cap[1]
+            );
+        }
+    }
+    assert!(names.contains("vite-globs.mjs"));
+}
+
+// @cloudflare/vite-plugin (1.55+) adds `**/.wrangler/**` to the resolved
+// `server.watch.ignored` (wrangler-watch-ignore.ts), so miniflare's state
+// writes on every SSR request never reach the watcher's consumers.
+#[test]
+fn the_cloudflare_plugin_ignore_covers_miniflare_state() {
+    let root = Path::new("/repo/web");
+    let pats = watch_ignored_patterns(root, &["**/.wrangler/**".to_string()]);
+    for p in [
+        "/repo/web/.wrangler/state/v3/observability/miniflare-wobs-trace-store/abc.sqlite",
+        "/repo/web/.wrangler/state/v3/d1/x.sqlite-wal",
+    ] {
+        assert!(is_watch_ignored(&pats, root, Path::new(p)), "{p}");
+    }
+    assert!(!is_watch_ignored(
+        &pats,
+        root,
+        Path::new("/repo/web/src/routes/index.tsx")
+    ));
+}
+
+// A directory that appears reports its files as creates, as chokidar's
+// addDir walk does, except where Vite's chokidar never looks: a fresh
+// install's top-level node_modules is one Create event and must not report
+// every package file. Nested dirs are walked too (a staged tree moved under
+// a glob), and a symlink back up the tree does not loop.
+#[test]
+fn created_dirs_skip_what_vite_never_watches() {
+    use notify::event::{CreateKind, ModifyKind, RenameMode};
+    use notify::{Event, EventKind};
+    let root = std::env::temp_dir().join(format!("oj-created-dirs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let file = |rel: &str| {
+        let p = root.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, "x").unwrap();
+        p
+    };
+    file("node_modules/react/index.js");
+    file(".git/HEAD");
+    file("dist/a.js");
+    file("generated/a.ts");
+    file(".oj-cache/a");
+    file("cache/a");
+    file("src/pkg/node_modules/x/index.js");
+    file("src/vendor/.git/HEAD");
+    file("src/file.ts");
+    let top = file("content/a.md");
+    let moved_a = file("src/content/moved/a.json");
+    let moved_dist = file("src/content/moved/dist/b.json");
+    file("src/content/moved/node_modules/x/y.json");
+    file("src/content/moved/.git/z");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(root.join("src"), root.join("src/content/moved/up")).unwrap();
+    let moved = root.join("src/content/moved");
+    let outside = std::env::temp_dir();
+
+    let ignored = watch_ignored_patterns(&root, &["generated".to_string()]);
+    let cache = root.join("cache");
+    let ev = |kind| {
+        let mut ev = Event::new(kind);
+        ev.paths = [
+            "node_modules",
+            ".git",
+            "dist",
+            "generated",
+            ".oj-cache",
+            "cache",
+            "src/pkg/node_modules",
+            "src/vendor/.git",
+            "src/file.ts",
+            "content",
+            "src/content/moved",
+        ]
+        .iter()
+        .map(|r| root.join(r))
+        .chain([outside.clone()])
+        .collect();
+        ev
+    };
+    let want = vec![root.join("content"), moved.clone()];
+    for kind in [
+        EventKind::Create(CreateKind::Folder),
+        EventKind::Modify(ModifyKind::Name(RenameMode::To)),
+    ] {
+        assert_eq!(
+            crate::watch::created_dirs(&ignored, &root, &cache, &ev(kind)),
+            want,
+            "{kind:?}"
+        );
+    }
+    assert!(
+        crate::watch::created_dirs(
+            &ignored,
+            &root,
+            &cache,
+            &ev(EventKind::Modify(ModifyKind::Any))
+        )
+        .is_empty(),
+        "a write's parent-directory event is no new directory"
+    );
+
+    let mut found = Vec::new();
+    crate::watch::scan_files(&moved, &mut found);
+    found.sort();
+    let mut expected = vec![moved_a, moved_dist];
+    expected.sort();
+    assert_eq!(
+        found, expected,
+        "a nested dist is watched; node_modules, .git, the symlink are not"
+    );
+    let mut found = Vec::new();
+    crate::watch::scan_files(&root.join("content"), &mut found);
+    assert_eq!(found, [top]);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// The boot scan is chokidar's initial watched set: every file the root watch
+// covers, under the root's real path, never one inside an unwatched dir.
+#[test]
+fn watched_files_cover_what_the_root_watch_covers() {
+    let root = std::env::temp_dir().join(format!("oj-watched-files-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let file = |rel: &str| {
+        let p = root.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, "x").unwrap();
+        p
+    };
+    let real = |p: PathBuf| std::fs::canonicalize(p).unwrap();
+    let want: std::collections::HashSet<PathBuf> = [
+        real(file("index.html")),
+        real(file("src/main.ts")),
+        real(file("src/dist/kept.ts")),
+        real(file(".wrangler/state/a.sqlite")),
+    ]
+    .into();
+    for rel in [
+        "node_modules/react/index.js",
+        ".git/HEAD",
+        "dist/a.js",
+        ".oj-cache/a",
+        "src/vendor/node_modules/x/index.js",
+        "src/vendor/.git/HEAD",
+    ] {
+        file(rel);
+    }
+    assert_eq!(watched_files(&root), want);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// Zed's reading of a rescan: an inotify overflow has no path (the whole
+// root), FSEvents' MustScanSubDirs names a subtree or an ancestor of the root
+// (the whole root), and a subtree the root watch leaves out is no rescan.
+#[test]
+fn rescan_roots_read_overflow_and_must_scan_subdirs() {
+    use notify::event::Flag;
+    use notify::{Event, EventKind};
+    let root = Path::new("/app");
+    let cache = Path::new("/app/.oj-cache");
+    let ignored = watch_ignored_patterns(root, &["generated".to_string()]);
+    let rescan = |paths: &[&str]| {
+        let mut ev = Event::new(EventKind::Other).set_flag(Flag::Rescan);
+        ev.paths = paths.iter().map(PathBuf::from).collect();
+        crate::watch::rescan_roots(&ignored, root, cache, &ev)
+    };
+    assert_eq!(rescan(&[]), [PathBuf::from("/app")], "inotify overflow");
+    assert_eq!(rescan(&["/"]), [PathBuf::from("/app")], "an ancestor");
+    assert_eq!(
+        rescan(&["/app/src/routes"]),
+        [PathBuf::from("/app/src/routes")]
+    );
+    for skipped in [
+        "/app/node_modules/react",
+        "/app/src/pkg/node_modules",
+        "/app/.git",
+        "/app/dist",
+        "/app/.oj-cache/start",
+        "/app/generated",
+        "/elsewhere",
+    ] {
+        assert!(rescan(&[skipped]).is_empty(), "{skipped}");
+    }
+    let mut plain = Event::new(EventKind::Other);
+    plain.paths = vec![PathBuf::from("/app/src")];
+    assert!(crate::watch::rescan_roots(&ignored, root, cache, &plain).is_empty());
+
+    let collapsed = crate::watch::collapse_rescans(
+        [
+            "/app/src/a",
+            "/app/src",
+            "/app/src-b",
+            "/app/lib/x",
+            "/app/lib/x",
+        ]
+        .iter()
+        .map(PathBuf::from)
+        .collect(),
+    );
+    assert_eq!(
+        collapsed,
+        ["/app/lib/x", "/app/src", "/app/src-b"].map(PathBuf::from)
+    );
+}
+
+// A rescan diffs the subtree against the watcher's snapshot, as Zed's does:
+// unknown files are adds (a moved-in tree keeps its old mtimes), known paths
+// gone are removals, known files whose mtime, inode or size moved are edits
+// (a rename onto one brings its own inode), and directories it never knew,
+// or knew under another inode or birth, are new and get re-armed. A chmod, untouched
+// files, ignored paths and node_modules stay silent.
+#[test]
+fn rescan_changes_diff_against_the_known_files() {
+    let base = std::env::temp_dir().join(format!("oj-rescan-diff-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(base.join("app")).unwrap();
+    let base = std::fs::canonicalize(&base).unwrap();
+    let root = base.join("app");
+    let write = |p: &Path, body: &str| {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, body).unwrap();
+    };
+    let old = SystemTime::now() - Duration::from_secs(3600);
+    let age = |p: &Path| {
+        std::fs::File::options()
+            .write(true)
+            .open(p)
+            .unwrap()
+            .set_modified(old)
+            .unwrap()
+    };
+    for rel in [
+        "src/edited.ts",
+        "src/gone.ts",
+        "src/replaced.ts",
+        "src/untouched.ts",
+        "src/chmod.ts",
+        "src/recreated/a.ts",
+        "generated/a.ts",
+        "index.html",
+    ] {
+        let p = root.join(rel);
+        write(&p, "x");
+        age(&p);
+    }
+    let staged = base.join("staged/tree/inner.ts");
+    write(&staged, "x");
+    age(&staged);
+    let cache = root.join(".oj-cache");
+    let ignored = watch_ignored_patterns(&root, &["**/generated/**".to_string()]);
+    let known = crate::watch::boot_snapshot(&ignored, &root, &cache);
+    assert!(
+        known.contains_key(&root.join("src")),
+        "directories are known"
+    );
+    assert!(known.contains_key(&root.join("src/recreated")));
+    assert!(
+        !known.contains_key(&root.join("generated/a.ts")),
+        "ignored paths stay out of the snapshot"
+    );
+
+    write(&root.join("src/edited.ts"), "yy");
+    std::fs::remove_file(root.join("src/gone.ts")).unwrap();
+    let tmp = root.join("src/.replaced.ts.tmp");
+    write(&tmp, "z");
+    age(&tmp);
+    std::fs::rename(&tmp, root.join("src/replaced.ts")).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            root.join("src/chmod.ts"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+    let added = root.join("src/added.ts");
+    write(&added, "n");
+    age(&added);
+    std::fs::rename(staged.parent().unwrap(), root.join("src/moved")).unwrap();
+    // Deleted and recreated under the same path, the freed inode possibly
+    // handed back: a new birth, and no watch.
+    std::fs::remove_dir_all(root.join("src/recreated")).unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+    write(&root.join("src/recreated/a.ts"), "xy");
+    write(&root.join("generated/b.ts"), "x");
+    write(&root.join("node_modules/dep/index.js"), "x");
+    write(&root.join("src/pkg/node_modules/a.js"), "x");
+
+    let found =
+        crate::watch::rescan_changes(std::slice::from_ref(&root), &ignored, &root, &cache, &known);
+    assert_eq!(
+        found.added,
+        [root.join("src/added.ts"), root.join("src/moved/inner.ts")]
+    );
+    assert_eq!(
+        found.changed,
+        [
+            root.join("src/edited.ts"),
+            root.join("src/recreated/a.ts"),
+            root.join("src/replaced.ts"),
+        ]
+    );
+    assert_eq!(found.removed, [root.join("src/gone.ts")]);
+    let mut new_dirs = vec![root.join("src/moved"), root.join("src/pkg")];
+    // Only a filesystem that keeps birth times can tell a reused inode.
+    if crate::watch::stamp(&root.join("src/recreated"))
+        .unwrap()
+        .born
+        .is_some()
+    {
+        new_dirs.push(root.join("src/recreated"));
+    }
+    assert_eq!(found.new_dirs, new_dirs);
+
+    // A subtree rescan reports only under it.
+    let sub =
+        crate::watch::rescan_changes(&[root.join("src/moved")], &ignored, &root, &cache, &known);
+    assert_eq!(sub.added, [root.join("src/moved/inner.ts")]);
+    assert_eq!(sub.new_dirs, [root.join("src/moved")]);
+    assert!(sub.changed.is_empty() && sub.removed.is_empty());
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+// Vite's CLI puts only the flags it was given in the inline config.
+#[test]
+fn cli_inline_carries_only_the_flags_passed() {
+    assert_eq!(cli_inline(None, None), serde_json::json!({}));
+    assert_eq!(
+        cli_inline(Some(4000), None),
+        serde_json::json!({ "server": { "port": 4000 } })
+    );
+    assert_eq!(
+        cli_inline(Some(4000), Some("0.0.0.0")),
+        serde_json::json!({ "server": { "port": 4000, "host": "0.0.0.0" } })
+    );
+}
+
+// Vite's canExternalizeFile reads `path.extname`: the query is part of the
+// extension, a leading dot is no extension, and a trailing dot is one.
+#[test]
+fn can_externalize_file_reads_the_extension_as_path_extname_does() {
+    for path in [
+        "/m/pkg/index.js",
+        "/m/pkg/a.mjs",
+        "/m/pkg/a.cjs",
+        "/m/pkg/bin",
+        "/m/pkg/.bin",
+    ] {
+        assert!(can_externalize_file(path), "{path}");
+    }
+    for path in [
+        "/m/pkg/a.css?url",
+        "/m/pkg/a.js?raw",
+        "/m/pkg/a.ts",
+        "/m/pkg/a.json",
+        "/m/pkg/a.",
+    ] {
+        assert!(!can_externalize_file(path), "{path}");
+    }
+}
+
+// Vite's bareImportRE and getNpmPackageName: a drive letter, a URL or a `#`
+// import is never bare; an `@scope` with no name skips the external lists,
+// and `noExternal` matches the package name, not a subpath.
+#[test]
+fn ssr_externalizes_reads_specifiers_as_vite_does() {
+    for spec in ["pkg", "@s/pkg/x", "_p", "node:fs"] {
+        assert!(crate::ssr::is_bare_import(spec), "{spec}");
+    }
+    for spec in ["./x", "/x", "#internal", "C:/x", "https://x/y", "é"] {
+        assert!(!crate::ssr::is_bare_import(spec), "{spec}");
+    }
+    let externals = oj_config::SsrExternals {
+        no_external: vec!["@s".into(), "pkg/sub".into()],
+        ..Default::default()
+    };
+    let js = "/m/node_modules/x/index.js";
+    assert!(crate::ssr::ssr_externalizes(&externals, "@s", js));
+    assert!(crate::ssr::ssr_externalizes(&externals, "pkg/sub/x", js));
+    // createIsExternal: an exact `ssr.external` id is external before the
+    // bareImportRE check, unless it is relative or absolute.
+    let exact = oj_config::SsrExternals {
+        external: vec!["#db".into(), "./local".into(), "/abs".into()],
+        ..Default::default()
+    };
+    let app = "/m/src/db.js";
+    assert!(crate::ssr::ssr_externalizes(&exact, "#db", app));
+    assert!(!crate::ssr::ssr_externalizes(&exact, "#other", app));
+    assert!(!crate::ssr::ssr_externalizes(&exact, "./local", app));
+    assert!(!crate::ssr::ssr_externalizes(&exact, "/abs", app));
+}
+
+// Expected strings are Vite's own svgToDataURL (plugins/asset.ts) run on the
+// same inputs: URL-encoded markup, base64 when the svg holds text or nested
+// quotes.
+#[test]
+fn svg_data_urls_match_vites_svg_to_data_url() {
+    let cases = [
+        (
+            r#"<svg xmlns="http://www.w3.org/2000/svg"></svg>"#,
+            "data:image/svg+xml,%3csvg%20xmlns='http://www.w3.org/2000/svg'%3e%3c/svg%3e",
+        ),
+        (
+            "  <svg viewBox=\"0 0 10 10\">\n  <path d=\"M0 0h10v10z\" fill=\"#f00\"/>\n  <g>  </g> 50%</svg>\n",
+            "data:image/svg+xml,%3csvg%20viewBox='0%200%2010%2010'%3e%3cpath%20d='M0%200h10v10z'%20fill='%23f00'/%3e%3cg%3e%3c/g%3e%2050%25%3c/svg%3e",
+        ),
+        (
+            "<svg><text>Hi</text></svg>",
+            "data:image/svg+xml;base64,PHN2Zz48dGV4dD5IaTwvdGV4dD48L3N2Zz4=",
+        ),
+        (
+            r#"<svg a="it's"></svg>"#,
+            "data:image/svg+xml;base64,PHN2ZyBhPSJpdCdzIj48L3N2Zz4=",
+        ),
+    ];
+    for (svg, want) in cases {
+        assert_eq!(svg_to_data_url(svg.as_bytes()), want, "{svg}");
+    }
+}
+
+// Vite's dev fileToDevUrl: an svg under assetsInlineLimit inlines unless
+// `?no-inline` or a fragment says otherwise; every other URL takes
+// `server.origin` and the base.
+#[test]
+fn dev_asset_urls_inline_small_svgs_and_prefix_origin_and_base() {
+    let dir = tempfile::tempdir().unwrap();
+    let small = dir.path().join("icon.svg");
+    std::fs::write(&small, "<svg></svg>").unwrap();
+    let big = dir.path().join("big.svg");
+    std::fs::write(&big, format!("<svg>{}</svg>", "<g/>".repeat(1100))).unwrap();
+    let lfs = dir.path().join("lfs.svg");
+    std::fs::write(&lfs, "version https://git-lfs.github.com/spec/v1\n").unwrap();
+    let png = dir.path().join("pic.png");
+    std::fs::write(&png, [0u8; 4]).unwrap();
+
+    let urls = DevAssetUrls::new(Some("https://cdn.example/"), Some("/app/"), None);
+    assert_eq!(
+        urls.file_url("client", &small, "/src/icon.svg?url")
+            .unwrap(),
+        "data:image/svg+xml,%3csvg%3e%3c/svg%3e"
+    );
+    assert_eq!(
+        urls.file_url("client", &small, "/src/icon.svg?no-inline")
+            .unwrap(),
+        "https://cdn.example/app/src/icon.svg?no-inline"
+    );
+    assert_eq!(
+        urls.file_url("client", &small, "/src/icon.svg#a").unwrap(),
+        "https://cdn.example/app/src/icon.svg#a"
+    );
+    assert_eq!(
+        urls.file_url("client", &big, "/src/big.svg").unwrap(),
+        "https://cdn.example/app/src/big.svg"
+    );
+    assert_eq!(
+        urls.file_url("client", &lfs, "/src/lfs.svg").unwrap(),
+        "https://cdn.example/app/src/lfs.svg"
+    );
+    assert_eq!(
+        urls.file_url("client", &png, "/src/pic.png?url&t=5")
+            .unwrap(),
+        "https://cdn.example/app/src/pic.png?t=5"
+    );
+
+    let limit = DevAssetUrls::new(None, Some("./"), Some(0));
+    assert_eq!(
+        limit.file_url("client", &small, "/src/icon.svg").unwrap(),
+        "/src/icon.svg"
+    );
+    let external = DevAssetUrls::new(None, Some("https://cdn.example/sub/"), None);
+    assert_eq!(external.join("/a.png"), "/sub/a.png");
+}
+
+/// A root with `dual` (`main` server.js, `browser` browser.js) and `cond`
+/// (`exports` with a `custom` condition) installed.
+fn resolve_fixture() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let write = |rel: &str, body: &str| {
+        let path = dir.path().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    };
+    write(
+        "node_modules/dual/package.json",
+        r#"{"name":"dual","main":"server.js","browser":"browser.js"}"#,
+    );
+    write("node_modules/dual/server.js", "");
+    write("node_modules/dual/browser.js", "");
+    write(
+        "node_modules/cond/package.json",
+        r#"{"name":"cond","exports":{"custom":"./custom.js","default":"./default.js"}}"#,
+    );
+    write("node_modules/cond/custom.js", "");
+    write("node_modules/cond/default.js", "");
+    dir
+}
+
+/// The file `spec` resolves to from the root, as `<package>/<file>`.
+fn resolved(resolver: &OjResolver, root: &Path, spec: &str) -> String {
+    let path = resolver.resolve(root, spec).unwrap();
+    let parts: Vec<_> = path.iter().rev().take(2).collect();
+    format!(
+        "{}/{}",
+        parts[1].to_string_lossy(),
+        parts[0].to_string_lossy()
+    )
+}
+
+fn config(json: &str) -> oj_config::OjConfig {
+    serde_json::from_str(json).unwrap()
+}
+
+#[test]
+fn a_server_environment_resolves_with_its_own_conditions_not_the_ssr_ones() {
+    let dir = resolve_fixture();
+    let root = dir.path().canonicalize().unwrap();
+    let cfg =
+        config(r#"{ "environments": { "worker": { "resolve": { "conditions": ["custom"] } } } }"#);
+    let worker = environment_resolver(&root, &cfg, "worker", true, true, None);
+    assert_eq!(resolved(&worker, &root, "cond"), "cond/custom.js");
+    assert_eq!(resolved(&worker, &root, "dual"), "dual/server.js");
+    let ssr = environment_resolver(&root, &cfg, "ssr", true, true, None);
+    assert_eq!(resolved(&ssr, &root, "cond"), "cond/default.js");
+}
+
+#[test]
+fn a_webworker_ssr_target_keeps_the_client_resolve_defaults() {
+    let dir = resolve_fixture();
+    let root = dir.path().canonicalize().unwrap();
+    let cfg = config(r#"{ "ssr": { "target": "webworker" } }"#);
+    let ssr = environment_resolver(&root, &cfg, "ssr", true, true, None);
+    assert_eq!(resolved(&ssr, &root, "dual"), "dual/browser.js");
+    let other = environment_resolver(&root, &cfg, "worker", true, true, None);
+    assert_eq!(resolved(&other, &root, "dual"), "dual/server.js");
+}
+
+#[test]
+fn reported_environment_options_win_over_the_config_and_defaults() {
+    let dir = resolve_fixture();
+    let root = dir.path().canonicalize().unwrap();
+    // The config names the defaults explicitly; the reported lists still win.
+    let cfg = config(
+        r#"{ "environments": { "ssr": { "resolve": { "conditions": ["default"], "mainFields": ["main"] } } } }"#,
+    );
+    let reported = plugins::ReportedResolve {
+        conditions: Some(vec!["custom".into()]),
+        main_fields: Some(vec!["browser".into(), "module".into()]),
+        ..Default::default()
+    };
+    let ssr = environment_resolver(&root, &cfg, "ssr", true, true, Some(&reported));
+    assert_eq!(resolved(&ssr, &root, "cond"), "cond/custom.js");
+    assert_eq!(resolved(&ssr, &root, "dual"), "dual/browser.js");
+}
+
+// Vite's createIsBuiltin over nodeLikeBuiltins: an exact builtinModules name
+// or the `node:` / `bun:` namespace; a subpath of a builtin name is not one.
+#[test]
+fn ssr_builtins_match_vites_node_like_builtins() {
+    for spec in [
+        "events",
+        "fs",
+        "fs/promises",
+        "node:events",
+        "bun:sqlite",
+        "_http_agent",
+    ] {
+        assert!(crate::ssr::is_ssr_builtin(spec), "{spec}");
+    }
+    for spec in ["events/x", "fs/extra", "eventsx", "@scope/fs"] {
+        assert!(!crate::ssr::is_ssr_builtin(spec), "{spec}");
+    }
+}
+
+// Vite's preAlias `matches`: the find itself or anything under `find/`.
+#[test]
+fn alias_finds_match_as_vites_pattern_matcher() {
+    let finds = vec!["react".to_string(), "@/".to_string()];
+    assert!(crate::ssr::matches_alias(&finds, "react"));
+    assert!(crate::ssr::matches_alias(&finds, "react/jsx-runtime"));
+    assert!(crate::ssr::matches_alias(&finds, "@/lib/x"));
+    assert!(!crate::ssr::matches_alias(&finds, "react-dom"));
+    assert!(!crate::ssr::matches_alias(&finds, "@scope/x"));
+    // A RegExp find matches as it tests: `^react$` leaves the subpath.
+    let regex = vec![oj_resolver::alias::regex_find("^react$", "")];
+    assert!(crate::ssr::matches_alias(&regex, "react"));
+    assert!(!crate::ssr::matches_alias(&regex, "react/jsx-runtime"));
+}
+
+// Vite's encodeURIPath and decodedBase: the path encoded as encodeURI does,
+// the query kept; the base decoded before it is joined.
+#[test]
+fn dev_asset_urls_encode_the_path_and_decode_the_base() {
+    assert_eq!(
+        encode_uri_path("/src/my pic.png?v=1 2"),
+        "/src/my%20pic.png?v=1 2"
+    );
+    assert_eq!(encode_uri_path("/src/é.png"), "/src/%C3%A9.png");
+    assert_eq!(
+        encode_uri_path("data:image/png;base64,a b"),
+        "data:image/png;base64,a b"
+    );
+    let urls = DevAssetUrls::new(None, Some("/my%20app/"), None);
+    assert_eq!(urls.join("/a.png"), "/my app/a.png");
+    assert_eq!(encode_uri_path(&urls.join("/a.png")), "/my%20app/a.png");
+    assert_eq!(
+        asset_export_url("/a.png?import&url&t=5&v=2"),
+        "/a.png?t=5&v=2"
+    );
+}
+
+// Vite's dev css url rewrite (rewriteCssUrls, doUrlReplace, urlResolver,
+// rewriteCssImageSet): a public file is the raw base plus its decoded path,
+// never inlined; a root file as fileToUrl names it (a small svg inlined) with
+// its HMR `t=`; quotes kept as written, added only when the new url needs
+// them; `@import`, `my-url(...)`, external, data and unresolvable urls as
+// written; inside a string the url is rewritten without breaking it.
+#[test]
+fn served_sheet_urls_follow_vites_url_rewrite() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("public")).unwrap();
+    std::fs::write(root.join("src/i.svg"), "<svg></svg>").unwrap();
+    std::fs::write(root.join("src/p.png"), "png").unwrap();
+    std::fs::write(root.join("src/my file.png"), "png").unwrap();
+    std::fs::write(root.join("public/l.svg"), "<svg></svg>").unwrap();
+    std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+    std::fs::write(root.join("node_modules/pkg/img.png"), "png").unwrap();
+    let urls = DevAssetUrls::new(Some("https://cdn"), Some("/my%20app/"), None);
+    let stamp = |file: &std::path::Path| u64::from(file.ends_with("p.png")) * 7;
+    let rewrite = |css: &str| {
+        crate::css_urls::CssUrls {
+            root: &root,
+            public_dir: Some(&root.join("public")),
+            urls: &urls,
+            env: "client",
+            stamp: &stamp,
+            dir: Some(&root.join("src")),
+            // A root-relative alias target, and an absolute one.
+            alias: &|spec| {
+                spec.strip_prefix("@/")
+                    .map(|rest| format!("/src/{rest}"))
+                    .or_else(|| {
+                        spec.strip_prefix("~abs/")
+                            .map(|rest| format!("{}/src/{rest}", root.display()))
+                    })
+            },
+            // The package's file where its `exports` would point.
+            package: &|_, spec| Some(root.join("node_modules").join(spec)).filter(|p| p.is_file()),
+        }
+        .rewrite(css)
+        .unwrap()
+        .0
+    };
+    let cases = [
+        ("a{b:url(/src/i.svg)}", r#"a{b:url("data:image/svg+xml,%3csvg%3e%3c/svg%3e")}"#),
+        ("a{b:url('/src/p.png')}", "a{b:url('https://cdn/my app/src/p.png?t=7')}"),
+        ("a{b:url(/src/p.png#x)}", r#"a{b:url("https://cdn/my app/src/p.png?t=7#x")}"#),
+        ("a{b:url(/src/my%20file.png)}", r#"a{b:url("https://cdn/my app/src/my file.png")}"#),
+        // encodeURI changes `%20`, so doUrlReplace adds quotes.
+        ("a{b:url(/l.svg)}", r#"a{b:url("https://cdn/my%20app/l.svg")}"#),
+        ("@import url(/src/x.css);", "@import url(/src/x.css);"),
+        ("a{b:my-url(/src/p.png)}", "a{b:my-url(/src/p.png)}"),
+        ("a{b:url(/missing.png) url(https://x/y.png) url(data:a,b) url(#f)}", "a{b:url(/missing.png) url(https://x/y.png) url(data:a,b) url(#f)}"),
+        (
+            "a{b:image-set(\"/src/p.png\" 1x, url(/l.svg) 2x)}",
+            "a{b:image-set(url(\"https://cdn/my app/src/p.png?t=7\") 1x, url(\"https://cdn/my%20app/l.svg\") 2x)}",
+        ),
+        // Relative to the sheet, and through an alias.
+        ("a{b:url(./p.png)}", r#"a{b:url("https://cdn/my app/src/p.png?t=7")}"#),
+        ("a{b:url(@/p.png)}", r#"a{b:url("https://cdn/my app/src/p.png?t=7")}"#),
+        ("a{b:url(~abs/p.png)}", r#"a{b:url("https://cdn/my app/src/p.png?t=7")}"#),
+        // A package's file, from a node_modules above the sheet.
+        ("a{b:url(pkg/img.png)}", r#"a{b:url("https://cdn/my app/node_modules/pkg/img.png")}"#),
+        // A `/*` inside a string opens no comment.
+        (r#"a{c:"/*"} b{b:url(/src/p.png)} d{c:"*/"}"#, r#"a{c:"/*"} b{b:url("https://cdn/my app/src/p.png?t=7")} d{c:"*/"}"#),
+        // An unclosed quote with a multibyte character keeps it whole.
+        (r#"a{b:image-set("café)}"#, r#"a{b:image-set("café)}"#),
+        // A comment is not a declaration.
+        ("/* url(/src/p.png) */a{b:url(/src/p.png)}", r#"/* url(/src/p.png) */a{b:url("https://cdn/my app/src/p.png?t=7")}"#),
+        // Only an ASCII punctuation escape unescapes (JS `\W`).
+        (r"a{b:url(/src/my\ file.png)}", r#"a{b:url("https://cdn/my app/src/my file.png")}"#),
+    ];
+    for (css, want) in cases {
+        assert_eq!(rewrite(css), want, "{css}");
+    }
+    // A url inside a string is rewritten as Vite rewrites it, unquoted when
+    // the new url needs no quotes, so the string stays whole.
+    let plain = DevAssetUrls::new(None, Some("/app/"), None);
+    let out = crate::css_urls::CssUrls {
+        root: &root,
+        public_dir: Some(&root.join("public")),
+        urls: &plain,
+        env: "client",
+        stamp: &|_| 0,
+        dir: None,
+        alias: &|_| None,
+        package: &|_, _| None,
+    }
+    .rewrite(
+        "a::before{content:\"url(/l.svg)\"} a{b:url(/src/p.png) url(/src/i.svg) url(/src/p.png)}",
+    )
+    .unwrap();
+    assert_eq!(
+        out.0,
+        "a::before{content:\"url(/app/l.svg)\"} a{b:url(/app/src/p.png) url(\"data:image/svg+xml,%3csvg%3e%3c/svg%3e\") url(/app/src/p.png)}"
+    );
+    // The sheet's asset deps: each named root file once, no public file.
+    assert_eq!(out.1, vec![root.join("src/i.svg"), root.join("src/p.png")]);
+    // A malformed escape fails the sheet, as decodeURI throws.
+    let malformed = crate::css_urls::CssUrls {
+        root: &root,
+        public_dir: None,
+        urls: &plain,
+        env: "client",
+        stamp: &|_| 0,
+        dir: None,
+        alias: &|_| None,
+        package: &|_, _| None,
+    }
+    .rewrite("a{b:url(/src/%E0%A4%A.png)}");
+    assert!(malformed.is_err_and(|e| e.contains("URI malformed")));
+}
+
+// vite:worker's dev transform: a `worker_file` module of type module imports
+// the env module (importAnalysis joins the base), classic loads it with
+// importScripts under the base, ignore inlines it; any other request is none.
+#[test]
+fn worker_file_preludes_follow_vites_worker_transform() {
+    let env = "/* env */";
+    assert_eq!(
+        worker_file_prelude("/src/w.js?worker_file&type=module", "/app", env).as_deref(),
+        Some("import \"/app/@vite/env\"\n;\n")
+    );
+    assert_eq!(
+        worker_file_prelude("/src/w.js?worker_file&type=classic", "", env).as_deref(),
+        Some("importScripts(\"/@vite/env\")\n;\n")
+    );
+    assert_eq!(
+        worker_file_prelude("/src/w.js?worker_file&type=ignore", "", env).as_deref(),
+        Some("/* env */;\n")
+    );
+    assert_eq!(worker_file_prelude("/src/w.js?worker", "", env), None);
+    assert_eq!(worker_file_prelude("/src/w.js", "", env), None);
+}
+
+// Vite's /@vite/env: the client's user defines, sorted, without
+// `import.meta.env.*`, string values as written and others as JSON.
+#[test]
+fn the_vite_env_module_assigns_the_clients_user_defines() {
+    let cfg: oj_config::OjConfig = serde_json::from_str(
+        r#"{ "define": { "__B__": "\"b\"", "__A__": 1, "import.meta.env.X": "1" },
+             "environments": { "client": { "define": { "app.flag": true } } } }"#,
+    )
+    .unwrap();
+    let js = vite_env_module(&cfg);
+    assert!(
+        js.contains(r#"const defines = {"__A__": 1, "__B__": "b", "app.flag": true};"#),
+        "{js}"
+    );
+    assert!(js.contains("target[segment] = defines[key];"), "{js}");
+}
+
+// A function `assetsInlineLimit` decides first; when it returns nothing the
+// default 4096 bytes apply, not a configured number, and an environment's own
+// number is its limit (Vite's shouldInline on environment.config.build). A
+// function that throws fails the URL.
+#[test]
+fn a_function_inline_limit_decides_before_the_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let small = dir.path().join("small.svg");
+    std::fs::write(&small, "<svg></svg>").unwrap();
+    let never = dir.path().join("never.svg");
+    std::fs::write(&never, "<svg></svg>").unwrap();
+    let big = dir.path().join("big.svg");
+    std::fs::write(&big, format!("<svg>{}</svg>", "<g/>".repeat(1100))).unwrap();
+    let boom = dir.path().join("boom.svg");
+    std::fs::write(&boom, "<svg></svg>").unwrap();
+    let mut urls = DevAssetUrls::new(None, None, Some(1)).with_environments(None, true);
+    urls.decider = Some(InlineDecider(std::sync::Arc::new(
+        |env: &str, file: &std::path::Path| match (env, file.file_name().and_then(|n| n.to_str())) {
+            (_, Some("boom.svg")) => Err("assetsInlineLimit threw".into()),
+            ("ssr", _) => Ok(InlineRule::Limit(0)),
+            (_, Some("big.svg")) => Ok(InlineRule::Decide(true)),
+            (_, Some("never.svg")) => Ok(InlineRule::Decide(false)),
+            _ => Ok(InlineRule::Limit(4096)),
+        },
+    )));
+    let client = |file: &std::path::Path, url: &str| urls.file_url("client", file, url);
+    assert!(client(&big, "/big.svg")
+        .unwrap()
+        .starts_with("data:image/svg+xml"));
+    assert_eq!(client(&never, "/never.svg").unwrap(), "/never.svg");
+    assert!(client(&small, "/small.svg")
+        .unwrap()
+        .starts_with("data:image/svg+xml"));
+    assert_eq!(
+        client(&small, "/small.svg?no-inline").unwrap(),
+        "/small.svg?no-inline"
+    );
+    assert_eq!(
+        urls.file_url("ssr", &small, "/small.svg").unwrap(),
+        "/small.svg"
+    );
+    assert_eq!(
+        client(&boom, "/boom.svg").unwrap_err(),
+        "assetsInlineLimit threw"
+    );
+}
+
+// Vite's `[?&]inline\b` and `[?&]no-inline\b`: a parameter that starts with
+// the word and continues with a non-word character counts.
+#[test]
+fn inline_params_match_as_vites_word_bounded_regexes() {
+    for url in [
+        "/a.png?inline",
+        "/a.png?x&inline=1",
+        "/a.png?inline-x",
+        "/a.png?inline.x",
+    ] {
+        assert!(has_word_param(url, "inline"), "{url}");
+    }
+    for url in [
+        "/a.png?inlinex",
+        "/a.png?no-inline",
+        "/a.png",
+        "/a.png?x=inline",
+    ] {
+        assert!(!has_word_param(url, "inline"), "{url}");
+    }
+    assert_eq!(query_asset_kind(Some("inline-x")), Some("inline"));
+}
+
+// A prelude of N lines moves every generated line of the map down by N.
+#[test]
+fn a_prelude_shifts_the_source_map_down() {
+    let map = r#"{"version":3,"mappings":"AAAA;AACA","sources":["w.js"]}"#;
+    let shifted: serde_json::Value =
+        serde_json::from_str(&crate::serve::shift_map_lines(map, 2)).unwrap();
+    assert_eq!(shifted["mappings"], ";;AAAA;AACA");
+}
+
+// vite:worker's dev load always names a `?worker` import's worker `module`;
+// only oj's own rewrite of `new Worker(new URL(...), opts)` passes a type.
+#[tokio::test]
+async fn a_user_type_parameter_does_not_change_a_workers_type() {
+    let dir = tempfile::tempdir().unwrap();
+    let w = dir.path().join("w.js");
+    std::fs::write(&w, "").unwrap();
+    let urls = DevAssetUrls::default();
+    let user = asset_module(&w, "/w.js?worker&type=classic", "worker", &urls, "client")
+        .await
+        .unwrap();
+    assert!(
+        user.contains(r#""/w.js?worker_file&type=module""#),
+        "{user}"
+    );
+    let ours = asset_module(
+        &w,
+        "/w.js?worker&url&worker_type=classic",
+        "url",
+        &urls,
+        "client",
+    )
+    .await
+    .unwrap();
+    assert!(
+        ours.contains(r#""/w.js?worker_file&type=classic""#),
+        "{ours}"
+    );
+}
+
+// createIsBuiltin's RegExp entries: `i`, `m` and `s` keep their meaning, a
+// sticky pattern matches only at the start, and `g`/`u` change nothing a
+// single test sees.
+#[test]
+fn ssr_builtin_patterns_keep_their_regexp_flags() {
+    let re = |source: &str, flags: &str| crate::ssr::js_regex(source, flags).unwrap();
+    assert!(re("^NODE:", "i").is_match("node:fs"));
+    assert!(!re("^NODE:", "").is_match("node:fs"));
+    assert!(re("^fs$", "m").is_match("x\nfs"));
+    assert!(re("a.b", "s").is_match("a\nb"));
+    assert!(re("fs", "y").is_match("fs/promises"));
+    assert!(!re("fs", "y").is_match("node:fs"));
+    assert!(re("fs", "gu").is_match("node:fs"));
+}
+
+// A runner-backed ssr environment's builtins describe its runtime (workerd),
+// so oj's Node consumer keeps Node's defaults rather than externalize only
+// `cloudflare:*`.
+#[test]
+fn a_runner_backed_ssr_environment_keeps_nodes_builtins() {
+    let cfg = |runner_backed: bool| oj_config::OjConfig {
+        ssr: Some(serde_json::json!({
+            "runnerBacked": runner_backed,
+            "builtins": ["cloudflare:workers", { "regex": "^cloudflare:", "flags": "" }],
+        })),
+        ..Default::default()
+    };
+    assert!(crate::ssr::Builtin::ssr_list(&cfg(true)).is_none());
+    let list = crate::ssr::Builtin::ssr_list(&cfg(false)).unwrap();
+    assert!(list.iter().any(|b| b.matches("cloudflare:sockets")));
+    assert!(!list.iter().any(|b| b.matches("node:fs")));
+}
+
+// @rollup/plugin-alias on a specifier Node will load: an exact find, a find
+// followed by a subpath, a `/`-ended prefix; a longer name sharing the find's
+// prefix is another package.
+#[test]
+fn an_aliased_external_hands_node_the_alias_target() {
+    let aliases = [
+        ("my-fs".to_string(), "node:fs".to_string()),
+        ("lib/".to_string(), "real-lib/dist/".to_string()),
+    ];
+    let apply = |spec| crate::ssr::apply_alias(&aliases, spec);
+    assert_eq!(apply("my-fs"), "node:fs");
+    assert_eq!(apply("my-fs/promises"), "node:fs/promises");
+    assert_eq!(apply("my-fsx"), "my-fsx");
+    assert_eq!(apply("lib/a.js"), "real-lib/dist/a.js");
+    assert_eq!(apply("react"), "react");
+    let regex = [(
+        oj_resolver::alias::regex_find("^my-(.*)$", ""),
+        "node:$1".to_string(),
+    )];
+    assert_eq!(crate::ssr::apply_alias(&regex, "my-path"), "node:path");
+}
+
+#[test]
+fn preload_hints_name_the_exact_import_url() {
+    let entries: HashMap<String, String> = [(
+        "react.mjs".to_string(),
+        "/@oj-deps/react.mjs?v=1d335a14".to_string(),
+    )]
+    .into();
+    assert_eq!(
+        preload_href("/src/main.tsx", &entries, false),
+        "/src/main.tsx"
+    );
+    assert_eq!(
+        preload_href("/src/a.css", &entries, false),
+        "/src/a.css?import"
+    );
+    // A pre-bundled entry preloads under the URL importers name it by now,
+    // not the session's base version, so the preload and the later import
+    // hit one immutable cache entry and a rerun leaves no stale hint.
+    assert_eq!(
+        preload_href("/@oj-deps/react.mjs", &entries, false),
+        "/@oj-deps/react.mjs?v=1d335a14"
+    );
+    assert_eq!(
+        preload_href("/@oj-deps/chunk-AB12CD.mjs", &entries, false),
+        "/@oj-deps/chunk-AB12CD.mjs",
+        "dep files import chunks bare"
+    );
+    assert_eq!(
+        preload_href("/@oj-deps/react.mjs", &HashMap::new(), false),
+        "/@oj-deps/react.mjs",
+        "no entry, no query"
+    );
+    assert_eq!(
+        preload_href("/@id/6e6f6465", &entries, false),
+        "/@id/6e6f6465",
+        "stubs are unversioned"
+    );
+    // The bare asset url is the `<img src>`'s raw file; the import is `?url`.
+    assert_eq!(
+        preload_href("/src/assets/hero.png", &entries, false),
+        "/src/assets/hero.png?url"
+    );
+    assert_eq!(
+        preload_href("/src/logo.svg", &entries, false),
+        "/src/logo.svg?url"
+    );
+    assert_eq!(
+        preload_href("/src/logo.svg", &entries, true),
+        "/src/logo.svg",
+        "a transform plugin may componentize a bare svg import"
+    );
+    assert_eq!(
+        preload_href("/node_modules/pkg/icon.png", &entries, false),
+        "/node_modules/pkg/icon.png",
+        "a dependency's asset import is not marked"
+    );
+}
+
+/// A graph of `(importer, imports)` edges, as the dev server records them
+/// (static imports only).
+fn graph_of(edges: &[(&str, &[&str])]) -> oj_graph::ModuleGraph {
+    let mut graph = oj_graph::ModuleGraph::new();
+    for (importer, imports) in edges {
+        graph.set_imports(Path::new(importer), imports);
+    }
+    graph
+}
+
+/// A page preloads the static imports its module scripts reach, breadth
+/// first: never a module only an `import()` reaches (the graph knows the lazy
+/// route once it loaded, with no edge to it), another page's modules, the
+/// files a stylesheet inlined, the page's own inline style or oj's runtime.
+/// A cycle ends, and an entry is not preloaded (its script fetches it).
+#[test]
+fn a_page_preloads_what_its_scripts_import_statically() {
+    let graph = graph_of(&[
+        (
+            "/src/main.js",
+            &[
+                "/src/b.js",
+                "/src/style.css",
+                "/src/data.json",
+                "/@oj/client.js",
+                "/index.html?html-proxy&index=0.css",
+            ],
+        ),
+        ("/src/b.js", &["/src/a.js"]),
+        ("/src/a.js", &["/src/main.js"]),
+        ("/src/style.css", &["/src/partial.css"]),
+        ("/src/lazy.js", &["/src/lazy-only.js"]),
+        ("/src/about.js", &["/src/a.js", "/src/only-about.js"]),
+    ]);
+    assert_eq!(
+        static_preloads(&graph, &["/src/main.js".to_string()]),
+        ["/src/b.js", "/src/data.json", "/src/style.css", "/src/a.js"]
+    );
+    assert_eq!(
+        static_preloads(&graph, &["/src/about.js".to_string()]),
+        [
+            "/src/a.js",
+            "/src/only-about.js",
+            "/src/main.js",
+            "/src/b.js",
+            "/src/data.json",
+            "/src/style.css"
+        ],
+        "another page reaches what its own imports reach, the root's entry included"
+    );
+    assert_eq!(
+        static_preloads(&graph, &["/src/unknown.js".to_string()]),
+        Vec::<String>::new(),
+        "a script the graph does not know yet preloads nothing"
+    );
+}
+
+/// The page's module scripts as the graph names them: without the base or a
+/// query oj adds, its own inline modules as served, never oj's runtime or a
+/// classic script.
+#[test]
+fn a_pages_module_entries_are_its_scripts_as_the_graph_names_them() {
+    let html = r#"<head>
+<script type="module" src="/app/@oj/client.js"></script>
+<script type="module" src="/app/src/main.js?t=123"></script>
+<script type=module src='/app/index.html?html-proxy&index=0.js'></script>
+<script src="/app/src/classic.js"></script>
+<script type="module">inline()</script>
+</head>"#;
+    assert_eq!(
+        page_module_entries(html, "/app/"),
+        ["/src/main.js", "/index.html?html-proxy&index=0.js"]
+    );
+    assert_eq!(
+        page_module_entries(r#"<script type="module" src="/src/main.js"></script>"#, "/"),
+        ["/src/main.js"]
+    );
+}
+
+// Vite's module runner resolves an external with fetchModule's tryNodeResolve:
+// mainFields ["main"] (never `module`), the external conditions with `import`,
+// extensions .js/.cjs/.json, a subdirectory's package.json, and dedupe from
+// the root.
+#[test]
+fn the_ssr_external_resolver_picks_what_vites_module_runner_loads() {
+    let root = std::env::temp_dir().join(format!("oj-ssr-external-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let write = |path: &str, body: &str| {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    };
+    write("package.json", "{}");
+    write(
+        "node_modules/two-builds/package.json",
+        r#"{"name":"two-builds","main":"index.cjs.js","module":"index.es.js"}"#,
+    );
+    write("node_modules/two-builds/index.cjs.js", "");
+    write("node_modules/two-builds/index.es.js", "");
+    write(
+        "node_modules/conditional/package.json",
+        r#"{"name":"conditional","exports":{".":{"browser":"./browser.js","node":{"import":"./node.mjs","require":"./node.cjs"},"default":"./default.js"}}}"#,
+    );
+    for file in ["browser.js", "node.mjs", "node.cjs", "default.js"] {
+        write(&format!("node_modules/conditional/{file}"), "");
+    }
+    write("node_modules/deep/package.json", r#"{"name":"deep"}"#);
+    write(
+        "node_modules/deep/sub/package.json",
+        r#"{"main":"index.cjs.js","module":"index.es.js"}"#,
+    );
+    write("node_modules/deep/sub/index.cjs.js", "");
+    write("node_modules/deep/sub/index.es.js", "");
+    write("node_modules/deep/lib/x.cjs", "");
+    write(
+        "node_modules/host/node_modules/two-builds/package.json",
+        r#"{"name":"two-builds","main":"nested.js"}"#,
+    );
+    write("node_modules/host/node_modules/two-builds/nested.js", "");
+    write("node_modules/host/index.js", "");
+    let root = root.canonicalize().unwrap();
+    let pick = |config: &str, from: &str, spec: &str| -> PathBuf {
+        let config: oj_config::OjConfig = serde_json::from_str(config).unwrap();
+        ssr_external_resolver(&root, &config)
+            .resolve(&root.join(from), spec)
+            .unwrap()
+    };
+    let nm = root.join("node_modules");
+    assert_eq!(
+        pick("{}", "src", "two-builds"),
+        nm.join("two-builds/index.cjs.js")
+    );
+    assert_eq!(
+        pick("{}", "src", "conditional"),
+        nm.join("conditional/node.mjs")
+    );
+    assert_eq!(
+        pick("{}", "src", "deep/sub"),
+        nm.join("deep/sub/index.cjs.js")
+    );
+    assert_eq!(pick("{}", "src", "deep/lib/x"), nm.join("deep/lib/x.cjs"));
+    // From inside a dependency: its nested copy, unless deduped to the root's.
+    let host = "node_modules/host";
+    assert_eq!(
+        pick("{}", host, "two-builds"),
+        nm.join("host/node_modules/two-builds/nested.js")
+    );
+    assert_eq!(
+        pick(
+            r#"{"resolve":{"dedupe":["two-builds"]}}"#,
+            host,
+            "two-builds"
+        ),
+        nm.join("two-builds/index.cjs.js")
+    );
+    // Custom external conditions replace the defaults.
+    assert_eq!(
+        pick(
+            r#"{"resolve":{"externalConditions":["browser"]}}"#,
+            "src",
+            "conditional"
+        ),
+        nm.join("conditional/browser.js")
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// An aliased import is never external (Vite's createIsExternal checks
+// matchAlias first), so its spec is the alias's to answer.
+#[test]
+fn an_aliased_specifier_is_never_resolved_as_an_external() {
+    let aliases = vec![
+        ("turndown".to_string(), "/vendor/turndown.js".to_string()),
+        ("@lib/".to_string(), "/src/lib/".to_string()),
+    ];
+    for spec in ["turndown", "turndown/sub", "@lib/x"] {
+        assert!(ssr::aliased(&aliases, spec), "{spec}");
+    }
+    for spec in ["turndown-plugin", "dompurify"] {
+        assert!(!ssr::aliased(&aliases, spec), "{spec}");
+    }
+}
+
+// Vite's chokidar `ignored` default: `**/.git/**`, `**/node_modules/**`,
+// `**/test-results/**` and the cache dir (resolveChokidarOptions).
+#[test]
+fn the_watcher_ignores_what_vites_chokidar_ignores_by_default() {
+    let root = Path::new("/app");
+    let cache = Path::new("/app/node_modules/.vite");
+    for p in [
+        "/app/test-results/run/trace.zip",
+        "/app/e2e/test-results/x.json",
+    ] {
+        assert!(
+            crate::watch::watch_excluded(&[], root, cache, Path::new(p)),
+            "{p}"
+        );
+    }
+    for p in ["/app/src/test-results.ts", "/app/src/main.ts"] {
+        assert!(
+            !crate::watch::watch_excluded(&[], root, cache, Path::new(p)),
+            "{p}"
+        );
+    }
 }

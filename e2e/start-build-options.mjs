@@ -19,9 +19,7 @@ const repo = path.join(here, "..");
 const app = path.join(here, "fixtures", "start-app");
 const oj = path.join(repo, "target", "debug", "oj");
 
-const installed =
-  fs.existsSync(path.join(app, "node_modules", "@tanstack", "react-start")) &&
-  fs.existsSync(path.join(app, "node_modules", "rolldown"));
+const installed = fs.existsSync(path.join(app, "node_modules", "@tanstack", "react-start"));
 if (!installed) {
   console.log("SKIP start-build-options: fixture deps not installed");
   console.log("  enable with: (cd e2e/fixtures/start-app && npm install)");
@@ -72,6 +70,25 @@ try {
   if (!code.includes("sourceMappingURL=")) throw new Error("client chunk has no sourceMappingURL comment");
   if (!fs.readFileSync(path.join(out, "server.mjs"), "utf8").includes('const BASE = "/app/"')) {
     throw new Error("server.mjs does not know the base");
+  }
+
+  // The baked manifest must carry the shape UNION across start-server-core
+  // versions: 1.167 and earlier build the client entry script tag from the
+  // top-level `clientEntry` (a missing field renders `import(undefined)` and a
+  // page that never hydrates) and read css from per-route `assets`; 1.168+
+  // read per-route `scripts`/`css`. The server build bakes the manifest in, so
+  // scan every emitted server chunk, not one file by name.
+  const serverChunks = fs
+    .readdirSync(out, { recursive: true })
+    .filter((f) => String(f).endsWith(".mjs"))
+    .map((f) => fs.readFileSync(path.join(out, String(f)), "utf8"));
+  for (const [key, field] of [
+    ["clientEntry", new RegExp(`"clientEntry"\\s*:\\s*"/app/assets/${clientJs.replace(/[.$]/g, "\\$&")}"`)],
+    ["assets", /"assets"\s*:/],
+  ]) {
+    if (!serverChunks.some((code) => field.test(code))) {
+      throw new Error(`the baked server manifest lost the pre-1.168 ${key} field`);
+    }
   }
 
   const port = 6510;

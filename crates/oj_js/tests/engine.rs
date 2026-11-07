@@ -185,6 +185,42 @@ async fn eval_path_and_call_work() {
 }
 
 #[tokio::test]
+async fn strings_cross_the_boundary_unchanged() {
+    let root = app_root();
+    std::fs::write(
+        root.path().join("job.mjs"),
+        r#"
+        export function echo(text) { return text; }
+        export function units(text) { return [typeof text, text.length]; }
+        export function loneSurrogate() { return "a\uD800b"; }
+        "#,
+    )
+    .unwrap();
+    let engine = engine(root.path());
+    let text = "\"quoted\"\n\\ \u{2028} é 🙂 \u{0} </script>";
+
+    let value = engine
+        .call("job.mjs", "echo", vec![serde_json::json!(text)], None)
+        .await
+        .unwrap();
+    assert_eq!(value, serde_json::json!(text));
+
+    let value = engine
+        .call("job.mjs", "units", vec![serde_json::json!(text)], None)
+        .await
+        .unwrap();
+    let utf16 = text.encode_utf16().count();
+    assert_eq!(value, serde_json::json!(["string", utf16]));
+
+    // Not representable in Rust: replaced, not dropped to null.
+    let value = engine
+        .call("job.mjs", "loneSurrogate", Vec::new(), None)
+        .await
+        .unwrap();
+    assert_eq!(value, serde_json::json!("a\u{FFFD}b"));
+}
+
+#[tokio::test]
 async fn js_errors_are_reported_not_fatal() {
     let root = app_root();
     let engine = engine(root.path());
@@ -393,6 +429,74 @@ async fn deadline_terminates_an_infinite_loop_call() {
     );
     let value = engine.call("spin.mjs", "ok", vec![], None).await.unwrap();
     assert_eq!(value, serde_json::json!("alive"));
+}
+
+#[tokio::test]
+async fn a_parked_deadline_never_terminates_another_calls_js() {
+    // The parked call's deadline passes while another call holds the loop in
+    // synchronous JS. Only the parked call may expire; the busy one must
+    // finish, not die with "execution terminated".
+    let root = app_root();
+    std::fs::write(
+        root.path().join("mix.mjs"),
+        "export function hang() { return new Promise(() => {}); }\n\
+         export function busy() { const end = Date.now() + 1000; while (Date.now() < end) {} return 'done'; }\n\
+         export function ok() { return 'alive'; }\n",
+    )
+    .unwrap();
+    let engine = engine(root.path());
+    let (parked, busy) = within(async {
+        tokio::join!(
+            engine.call("mix.mjs", "hang", vec![], Some(Duration::from_millis(300))),
+            async {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                engine.call("mix.mjs", "busy", vec![], None).await
+            },
+        )
+    })
+    .await;
+    assert_eq!(busy.unwrap(), serde_json::json!("done"));
+    assert!(
+        matches!(parked, Err(EngineError::Deadline)),
+        "expected Deadline, got {parked:?}"
+    );
+    let value = engine.call("mix.mjs", "ok", vec![], None).await.unwrap();
+    assert_eq!(value, serde_json::json!("alive"));
+}
+
+#[tokio::test]
+async fn a_setup_deadline_never_terminates_a_parked_calls_continuation() {
+    // Evaluating a module with top-level await drives the event loop, so a
+    // parked call's continuation runs inside another call's setup. The
+    // setup's deadline must not kill it: a killed continuation never
+    // settles, and its call would hang forever.
+    let root = app_root();
+    std::fs::write(
+        root.path().join("parked.mjs"),
+        "export async function slow() { await new Promise((r) => setTimeout(r, 100)); \
+         const end = Date.now() + 800; while (Date.now() < end) {} return 'done'; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.path().join("tla.mjs"),
+        "await new Promise((r) => setTimeout(r, 1500));\nexport function a() { return 'a'; }\n",
+    )
+    .unwrap();
+    let engine = engine(root.path());
+    let (parked, late) = within(async {
+        tokio::join!(engine.call("parked.mjs", "slow", vec![], None), async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            engine
+                .call("tla.mjs", "a", vec![], Some(Duration::from_millis(200)))
+                .await
+        })
+    })
+    .await;
+    assert_eq!(parked.unwrap(), serde_json::json!("done"));
+    assert!(
+        matches!(late, Err(EngineError::Deadline)),
+        "expected Deadline, got {late:?}"
+    );
 }
 
 #[tokio::test]
@@ -754,6 +858,9 @@ async fn code_cache_persists_and_later_engines_still_run() {
     let value = engine.call("main.mjs", "run", vec![], None).await.unwrap();
     assert_eq!(value, serde_json::json!("hello cache"));
     drop(engine);
+    // A dropped engine's entries land on a writer thread; the exit flush
+    // waits for it.
+    oj_js::code_cache::flush_at_exit();
     let entries = std::fs::read_dir(&cache_dir)
         .expect("cache dir was created")
         .count();
@@ -768,6 +875,7 @@ async fn code_cache_persists_and_later_engines_still_run() {
     let value = engine.call("main.mjs", "run", vec![], None).await.unwrap();
     assert_eq!(value, serde_json::json!("hello cache"));
     drop(engine);
+    oj_js::code_cache::flush_at_exit();
     assert_eq!(std::fs::read_dir(&cache_dir).unwrap().count(), entries);
 
     // An edited source must not execute stale bytecode.

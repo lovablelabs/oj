@@ -37,6 +37,19 @@ pub fn with_main_fallback(mut fields: Vec<String>) -> Vec<String> {
     fields
 }
 
+/// The export conditions as rolldown takes them: without the ones its resolver
+/// adds per import kind (`import` for an import, `require` for a `require()`,
+/// `default` for both). Vite's getConditions pushes `import` or `require` by
+/// the importer's kind; a list that already carries `import` would hand a
+/// `require()` the ESM build of a dual package, and the CJS caller gets a
+/// namespace where it expects the module's value.
+pub fn rolldown_conditions(conditions: Vec<String>) -> Vec<String> {
+    conditions
+        .into_iter()
+        .filter(|c| !matches!(c.as_str(), "import" | "require" | "default"))
+        .collect()
+}
+
 /// Vite's TS-output remap (`isPossibleTsOutput`): `./x.js` with no such file
 /// resolves to its TypeScript source. The real extension leads, so an existing
 /// `.js` wins over a sibling `.ts`. Applies to every filesystem path.
@@ -59,6 +72,26 @@ pub fn default_extension_alias() -> Vec<(String, Vec<String>)> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rolldown_conditions_leave_the_per_kind_ones_to_rolldown() {
+        let list = [
+            "browser",
+            "import",
+            "module",
+            "development",
+            "default",
+            "require",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(
+            super::rolldown_conditions(list),
+            ["browser", "module", "development"]
+                .map(String::from)
+                .to_vec()
+        );
+    }
+
     use super::*;
 
     #[test]

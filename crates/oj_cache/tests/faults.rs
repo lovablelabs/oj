@@ -238,6 +238,7 @@ fn an_entry_is_only_ever_published_whole() {
         watch_files: vec!["\\\\?\\C:\\x".into()],
         import_bindings: Vec::new(),
         hot: None,
+        stylex_rules: Vec::new(),
     };
     f.cache.put(&key, &written);
     assert_eq!(f.cache.get(&key), Some(written));

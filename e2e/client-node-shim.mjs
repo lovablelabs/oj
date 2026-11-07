@@ -84,8 +84,8 @@ const routeTreePath = path.join(app, "src", "routeTree.ts");
 const routeTree = fs
   .readFileSync(routeTreePath, "utf8")
   .replace("import { rootRoute }", 'import { shimProbeRoute } from "./routes/shim-probe";\nimport { rootRoute }')
-  .replace("requestUrlRoute]", "requestUrlRoute, shimProbeRoute]");
-if (!routeTree.includes("shimProbeRoute]")) throw new Error("could not register the test route");
+  .replace("rootRoute.addChildren([", "rootRoute.addChildren([shimProbeRoute, ");
+if (!routeTree.includes("addChildren([shimProbeRoute, ")) throw new Error("could not register the test route");
 fs.writeFileSync(routeTreePath, routeTree);
 
 const port = 5221;

@@ -14,6 +14,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { rpcSidecar, tmpProject } from "./harness.mjs";
@@ -534,13 +535,10 @@ test("create retries failed resolutions, delete prunes, legacy hooks and hook er
     assert.equal(seen.workerSends[2].type, "error");
     assert.ok(seen.workerSends[2].err.message.includes("hook exploded"), "the error payload carries the message");
 
-    // Legacy handleHotUpdate: dispatched for the client environment on updates
-    // only, as in Vite.
-    assert.ok(
-      seen.legacy.some((f) => f.endsWith("errfile.ts")),
-      "legacy hook ran for the update",
-    );
-    assert.ok(!seen.legacy.some((f) => f.endsWith("new.ts")), "legacy hook is not called for create events");
+    // The client environment is the dev server's own: its hooks (the legacy
+    // handleHotUpdate among them) run in its pass, once per environment as in
+    // Vite, never again here.
+    assert.ok(!seen.legacy.length, "the client environment's hooks ran a second time");
   } finally {
     host.close();
     fx.cleanup();
@@ -638,6 +636,8 @@ test("invalidate dedup: content identity, atomic-save create, read errors", asyn
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ changes: [{ path: p, type }] }),
+        // A host wedged by a change fails the test instead of hanging it.
+        signal: AbortSignal.timeout(10_000),
       });
       // Change invalidations answer 200 with a matched count (resyncs keep
       // 204); a deduped repeat send may legitimately report 0.
@@ -686,6 +686,22 @@ test("invalidate dedup: content identity, atomic-save create, read errors", asyn
     seen = await probe();
     const ghostEmits = seen.emits.filter((e) => e === "change:ghost.ts");
     assert.equal(ghostEmits.length, 2, "a read error processes every time");
+
+    // A file no runner graph knows (miniflare's trace-store database, which
+    // a worker rewrites on every request and grows to gigabytes) is
+    // identified by its stat and never read, as Vite never reads one. A FIFO
+    // blocks any read forever: reading it would wedge the host right here.
+    const store = path.join(fx.root, ".wrangler", "state", "trace.sqlite");
+    fs.mkdirSync(path.dirname(store), { recursive: true });
+    execFileSync("mkfifo", [store]);
+    await invalidate(store, "update");
+    await invalidate(store, "update");
+    seen = await (await fetch(`http://127.0.0.1:${port}/__probe`, { signal: AbortSignal.timeout(10_000) })).json();
+    assert.deepEqual(
+      seen.emits.filter((e) => e === "change:trace.sqlite"),
+      ["change:trace.sqlite"],
+      "an unread file still dedups its repeated send by stat",
+    );
   } finally {
     host.close();
     fx.cleanup();

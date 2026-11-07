@@ -1,5 +1,7 @@
 import { defineConfig } from "oj";
 export default defineConfig({
+  // The tsconfig `paths` (`@/*`) through Vite 8's own resolver.
+  resolve: { tsconfigPaths: true },
   virtualModules: {
     "virtual:oj-info": 'export const tool = "oj"; export default { version: 9 };',
   },

@@ -120,8 +120,9 @@ version = "0.167.0"
 # `use deno_napi::...` in the unchanged sources keeps resolving. Use the same
 # registry identity as oj_js so local checks share its NAPI exports and hooks.
 [dependencies.deno_napi]
-package = "oj_deno_napi"
-version = "=0.2.22"
+package = "adaptive-oj-deno-napi"
+version = "0.4.5"
+path = "../oj_deno_napi"
 
 [dependencies.deno_net]
 version = "0.251.0"
@@ -145,8 +146,9 @@ version = "=0.6.4"
 version = "0.118.0"
 
 [dependencies.deno_process]
-package = "oj_deno_process"
-version = "=0.2.22"
+package = "adaptive-oj-deno-process"
+version = "0.4.5"
+path = "../oj_deno_process"
 
 [dependencies.deno_resolver]
 version = "0.90.0"
@@ -216,8 +218,13 @@ features = ["kv"]
 version = "0.97.0"
 features = ["sync"]
 
+# notify resolves to oj_notify (upstream 9.0.0-rc.6 + the FSEvents fix that
+# keeps pending events across watch changes), so the runtime's watchFs and
+# oj's watcher share one copy. The path is stripped on publish.
 [dependencies.notify]
-version = "8.2.0"
+package = "oj_notify"
+version = "0.4.5"
+path = "../oj_notify"
 
 [dependencies.once_cell]
 version = "1.17.1"

@@ -36,6 +36,13 @@ pub(crate) fn json_to_v8<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     value: &serde_json::Value,
 ) -> Result<v8::Local<'s, v8::Value>, EngineError> {
+    // Hook arguments are mostly strings (module code, ids, maps): one copy
+    // into V8 instead of an escape, a copy and a JSON.parse.
+    if let serde_json::Value::String(text) = value {
+        return v8::String::new(scope, text)
+            .map(Into::into)
+            .ok_or_else(|| EngineError::Js("argument is too large for V8".into()));
+    }
     let text = serde_json::to_string(value).map_err(js_err)?;
     let text = v8::String::new(scope, &text)
         .ok_or_else(|| EngineError::Js("argument is too large for V8".into()))?;
@@ -48,6 +55,11 @@ pub(crate) fn v8_to_json(
     scope: &mut v8::PinScope<'_, '_>,
     value: v8::Local<v8::Value>,
 ) -> serde_json::Value {
+    // The plugin host replies with one JSON string; escaping it again only
+    // to parse it straight back would cost two passes over the payload.
+    if value.is_string() {
+        return serde_json::Value::String(value.to_rust_string_lossy(scope));
+    }
     v8::json::stringify(scope, value)
         .map(|text| text.to_rust_string_lossy(scope))
         .and_then(|text| serde_json::from_str(&text).ok())

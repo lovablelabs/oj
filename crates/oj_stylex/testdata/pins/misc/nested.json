@@ -1,0 +1,5317 @@
+{
+ "consts": [
+  {
+   "name": "mined constsNested-001",
+   "constants": {
+    "$obj": [
+     [
+      "colors",
+      {
+       "$obj": [
+        [
+         "primary",
+         "#0057ff"
+        ],
+        [
+         "secondary",
+         "#8b5cf6"
+        ]
+       ]
+      }
+     ],
+     [
+      "spacing",
+      {
+       "$obj": [
+        [
+         "small",
+         "4px"
+        ],
+        [
+         "large",
+         "16px"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "colors.primary",
+      "#0057ff"
+     ],
+     [
+      "colors.secondary",
+      "#8b5cf6"
+     ],
+     [
+      "spacing.small",
+      "4px"
+     ],
+     [
+      "spacing.large",
+      "16px"
+     ]
+    ]
+   },
+   "expectedNestedJs": {
+    "$obj": [
+     [
+      "colors",
+      {
+       "$obj": [
+        [
+         "primary",
+         "#0057ff"
+        ],
+        [
+         "secondary",
+         "#8b5cf6"
+        ]
+       ]
+      }
+     ],
+     [
+      "spacing",
+      {
+       "$obj": [
+        [
+         "small",
+         "4px"
+        ],
+        [
+         "large",
+         "16px"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "expectedRules": [
+    {
+     "className": "x173cq3t",
+     "constKey": "x173cq3t",
+     "constVal": "#0057ff",
+     "ltr": "",
+     "rtl": null,
+     "priority": 0
+    },
+    {
+     "className": "x1b4b8gi",
+     "constKey": "x1b4b8gi",
+     "constVal": "#8b5cf6",
+     "ltr": "",
+     "rtl": null,
+     "priority": 0
+    },
+    {
+     "className": "xklx9ov",
+     "constKey": "xklx9ov",
+     "constVal": "4px",
+     "ltr": "",
+     "rtl": null,
+     "priority": 0
+    },
+    {
+     "className": "x1xanidj",
+     "constKey": "x1xanidj",
+     "constVal": "16px",
+     "ltr": "",
+     "rtl": null,
+     "priority": 0
+    }
+   ]
+  },
+  {
+   "name": "mined constsNested-002 deep",
+   "constants": {
+    "$obj": [
+     [
+      "theme",
+      {
+       "$obj": [
+        [
+         "colors",
+         {
+          "$obj": [
+           [
+            "brand",
+            {
+             "$obj": [
+              [
+               "primary",
+               "#0057ff"
+              ]
+             ]
+            }
+           ]
+          ]
+         }
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "theme.colors.brand.primary",
+      "#0057ff"
+     ]
+    ]
+   },
+   "expectedNestedJs": {
+    "$obj": [
+     [
+      "theme",
+      {
+       "$obj": [
+        [
+         "colors",
+         {
+          "$obj": [
+           [
+            "brand",
+            {
+             "$obj": [
+              [
+               "primary",
+               "#0057ff"
+              ]
+             ]
+            }
+           ]
+          ]
+         }
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "expectedRules": [
+    {
+     "className": "x166p495",
+     "constKey": "x166p495",
+     "constVal": "#0057ff",
+     "ltr": "",
+     "rtl": null,
+     "priority": 0
+    }
+   ]
+  },
+  {
+   "name": "mined constsNested-003 default groups",
+   "constants": {
+    "$obj": [
+     [
+      "background",
+      {
+       "$obj": [
+        [
+         "default",
+         "#00FF00"
+        ],
+        [
+         "hovered",
+         "#0000FF"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "background.default",
+      "#00FF00"
+     ],
+     [
+      "background.hovered",
+      "#0000FF"
+     ]
+    ]
+   },
+   "expectedNestedJs": {
+    "$obj": [
+     [
+      "background",
+      {
+       "$obj": [
+        [
+         "default",
+         "#00FF00"
+        ],
+        [
+         "hovered",
+         "#0000FF"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "expectedRules": [
+    {
+     "className": "x1pm3dcm",
+     "constKey": "x1pm3dcm",
+     "constVal": "#00FF00",
+     "ltr": "",
+     "rtl": null,
+     "priority": 0
+    },
+    {
+     "className": "x1s2k59m",
+     "constKey": "x1s2k59m",
+     "constVal": "#0000FF",
+     "ltr": "",
+     "rtl": null,
+     "priority": 0
+    }
+   ]
+  },
+  {
+   "name": "mined constsNested-004 numbers",
+   "constants": {
+    "$obj": [
+     [
+      "sizes",
+      {
+       "$obj": [
+        [
+         "small",
+         4
+        ],
+        [
+         "large",
+         16
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "sizes.small",
+      4
+     ],
+     [
+      "sizes.large",
+      16
+     ]
+    ]
+   },
+   "expectedNestedJs": {
+    "$obj": [
+     [
+      "sizes",
+      {
+       "$obj": [
+        [
+         "small",
+         4
+        ],
+        [
+         "large",
+         16
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "expectedRules": [
+    {
+     "className": "x6t77dh",
+     "constKey": "x6t77dh",
+     "constVal": 4,
+     "ltr": "",
+     "rtl": null,
+     "priority": 0
+    },
+    {
+     "className": "x1tbyyp1",
+     "constKey": "x1tbyyp1",
+     "constVal": 16,
+     "ltr": "",
+     "rtl": null,
+     "priority": 0
+    }
+   ]
+  },
+  {
+   "name": "mixed flat and nested",
+   "constants": {
+    "$obj": [
+     [
+      "flat",
+      "x"
+     ],
+     [
+      "group",
+      {
+       "$obj": [
+        [
+         "a",
+         "1"
+        ],
+        [
+         "b",
+         2
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "flat",
+      "x"
+     ],
+     [
+      "group.a",
+      "1"
+     ],
+     [
+      "group.b",
+      2
+     ]
+    ]
+   },
+   "expectedNestedJs": {
+    "$obj": [
+     [
+      "flat",
+      "x"
+     ],
+     [
+      "group",
+      {
+       "$obj": [
+        [
+         "a",
+         "1"
+        ],
+        [
+         "b",
+         2
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "expectedRules": [
+    {
+     "className": "x14dgfzg",
+     "constKey": "x14dgfzg",
+     "constVal": "x",
+     "ltr": "",
+     "rtl": null,
+     "priority": 0
+    },
+    {
+     "className": "xqh01wv",
+     "constKey": "xqh01wv",
+     "constVal": "1",
+     "ltr": "",
+     "rtl": null,
+     "priority": 0
+    },
+    {
+     "className": "xxxgyey",
+     "constKey": "xxxgyey",
+     "constVal": 2,
+     "ltr": "",
+     "rtl": null,
+     "priority": 0
+    }
+   ]
+  },
+  {
+   "name": "drops null bool array object-free",
+   "constants": {
+    "$obj": [
+     [
+      "a",
+      {
+       "$obj": [
+        [
+         "b",
+         null
+        ],
+        [
+         "c",
+         true
+        ],
+        [
+         "d",
+         [
+          "x"
+         ]
+        ],
+        [
+         "e",
+         "kept"
+        ],
+        [
+         "f",
+         5
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "a.e",
+      "kept"
+     ],
+     [
+      "a.f",
+      5
+     ]
+    ]
+   },
+   "expectedNestedJs": {
+    "$obj": [
+     [
+      "a",
+      {
+       "$obj": [
+        [
+         "e",
+         "kept"
+        ],
+        [
+         "f",
+         5
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "expectedRules": [
+    {
+     "className": "x19bzxh9",
+     "constKey": "x19bzxh9",
+     "constVal": "kept",
+     "ltr": "",
+     "rtl": null,
+     "priority": 0
+    },
+    {
+     "className": "xq4qvvw",
+     "constKey": "xq4qvvw",
+     "constVal": 5,
+     "ltr": "",
+     "rtl": null,
+     "priority": 0
+    }
+   ]
+  },
+  {
+   "name": "empty object",
+   "constants": {
+    "$obj": []
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": []
+   },
+   "expectedNestedJs": {
+    "$obj": []
+   },
+   "expectedRules": []
+  },
+  {
+   "name": "empty group vanishes",
+   "constants": {
+    "$obj": [
+     [
+      "g",
+      {
+       "$obj": []
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": []
+   },
+   "expectedNestedJs": {
+    "$obj": []
+   },
+   "expectedRules": []
+  },
+  {
+   "name": "array arg index keys",
+   "constants": [
+    "a",
+    [
+     "b",
+     "c"
+    ]
+   ],
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "0",
+      "a"
+     ]
+    ]
+   },
+   "expectedNestedJs": {
+    "$obj": [
+     [
+      "0",
+      "a"
+     ]
+    ]
+   },
+   "expectedRules": [
+    {
+     "className": "x9e079p",
+     "constKey": "x9e079p",
+     "constVal": "a",
+     "ltr": "",
+     "rtl": null,
+     "priority": 0
+    }
+   ]
+  },
+  {
+   "name": "custom-prop top key skips hash",
+   "constants": {
+    "$obj": [
+     [
+      "--x",
+      "y"
+     ],
+     [
+      "g",
+      {
+       "$obj": [
+        [
+         "--inner",
+         "z"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "--x",
+      "y"
+     ],
+     [
+      "g.--inner",
+      "z"
+     ]
+    ]
+   },
+   "expectedNestedJs": {
+    "$obj": [
+     [
+      "--x",
+      "y"
+     ],
+     [
+      "g",
+      {
+       "$obj": [
+        [
+         "--inner",
+         "z"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "expectedRules": [
+    {
+     "className": "x",
+     "constKey": "x",
+     "constVal": "y",
+     "ltr": "",
+     "rtl": null,
+     "priority": 0
+    },
+    {
+     "className": "xamc1fe",
+     "constKey": "xamc1fe",
+     "constVal": "z",
+     "ltr": "",
+     "rtl": null,
+     "priority": 0
+    }
+   ]
+  },
+  {
+   "name": "numeric keys reorder",
+   "constants": {
+    "$obj": [
+     [
+      "2",
+      "b"
+     ],
+     [
+      "10",
+      "a"
+     ],
+     [
+      "g",
+      {
+       "$obj": [
+        [
+         "1",
+         "c"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "2",
+      "b"
+     ],
+     [
+      "10",
+      "a"
+     ],
+     [
+      "g.1",
+      "c"
+     ]
+    ]
+   },
+   "expectedNestedJs": {
+    "$obj": [
+     [
+      "2",
+      "b"
+     ],
+     [
+      "10",
+      "a"
+     ],
+     [
+      "g",
+      {
+       "$obj": [
+        [
+         "1",
+         "c"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "expectedRules": [
+    {
+     "className": "x150mhyf",
+     "constKey": "x150mhyf",
+     "constVal": "b",
+     "ltr": "",
+     "rtl": null,
+     "priority": 0
+    },
+    {
+     "className": "xoz4qa5",
+     "constKey": "xoz4qa5",
+     "constVal": "a",
+     "ltr": "",
+     "rtl": null,
+     "priority": 0
+    },
+    {
+     "className": "x1ps4w4j",
+     "constKey": "x1ps4w4j",
+     "constVal": "c",
+     "ltr": "",
+     "rtl": null,
+     "priority": 0
+    }
+   ]
+  },
+  {
+   "name": "export name changes hashes",
+   "constants": {
+    "$obj": [
+     [
+      "g",
+      {
+       "$obj": [
+        [
+         "a",
+         "1"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "other",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "g.a",
+      "1"
+     ]
+    ]
+   },
+   "expectedNestedJs": {
+    "$obj": [
+     [
+      "g",
+      {
+       "$obj": [
+        [
+         "a",
+         "1"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "expectedRules": [
+    {
+     "className": "xhep1s1",
+     "constKey": "xhep1s1",
+     "constVal": "1",
+     "ltr": "",
+     "rtl": null,
+     "priority": 0
+    }
+   ]
+  },
+  {
+   "name": "prefix option",
+   "constants": {
+    "$obj": [
+     [
+      "g",
+      {
+       "$obj": [
+        [
+         "a",
+         "1"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    },
+    "classNamePrefix": "pfx"
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "g.a",
+      "1"
+     ]
+    ]
+   },
+   "expectedNestedJs": {
+    "$obj": [
+     [
+      "g",
+      {
+       "$obj": [
+        [
+         "a",
+         "1"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "expectedRules": [
+    {
+     "className": "pfx1fmv35k",
+     "constKey": "pfx1fmv35k",
+     "constVal": "1",
+     "ltr": "",
+     "rtl": null,
+     "priority": 0
+    }
+   ]
+  },
+  {
+   "name": "debug classnames varsafe dots",
+   "constants": {
+    "$obj": [
+     [
+      "grp",
+      {
+       "$obj": [
+        [
+         "my-key",
+         "1"
+        ],
+        [
+         "2xl",
+         "b"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    },
+    "debug": true,
+    "enableDebugClassNames": true
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "grp.my-key",
+      "1"
+     ],
+     [
+      "grp.2xl",
+      "b"
+     ]
+    ]
+   },
+   "expectedNestedJs": {
+    "$obj": [
+     [
+      "grp",
+      {
+       "$obj": [
+        [
+         "my-key",
+         "1"
+        ],
+        [
+         "2xl",
+         "b"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "expectedRules": [
+    {
+     "className": "grp_my_key-xzkbgm1",
+     "constKey": "grp_my_key-xzkbgm1",
+     "constVal": "1",
+     "ltr": "",
+     "rtl": null,
+     "priority": 0
+    },
+    {
+     "className": "grp_2xl-xn1xd47",
+     "constKey": "grp_2xl-xn1xd47",
+     "constVal": "b",
+     "ltr": "",
+     "rtl": null,
+     "priority": 0
+    }
+   ]
+  },
+  {
+   "name": "proto scalar dropped",
+   "constants": {
+    "$obj": [
+     [
+      "__proto__",
+      "red"
+     ],
+     [
+      "ok",
+      "blue"
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "ok",
+      "blue"
+     ]
+    ]
+   },
+   "expectedNestedJs": {
+    "$obj": [
+     [
+      "ok",
+      "blue"
+     ]
+    ]
+   },
+   "expectedRules": [
+    {
+     "className": "x16t3vzx",
+     "constKey": "x16t3vzx",
+     "constVal": "blue",
+     "ltr": "",
+     "rtl": null,
+     "priority": 0
+    }
+   ]
+  },
+  {
+   "name": "proto namespace dropped",
+   "constants": {
+    "$obj": [
+     [
+      "__proto__",
+      {
+       "$obj": [
+        [
+         "x",
+         "1"
+        ]
+       ]
+      }
+     ],
+     [
+      "ok",
+      "blue"
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "ok",
+      "blue"
+     ]
+    ]
+   },
+   "expectedNestedJs": {
+    "$obj": [
+     [
+      "ok",
+      "blue"
+     ]
+    ]
+   },
+   "expectedRules": [
+    {
+     "className": "x16t3vzx",
+     "constKey": "x16t3vzx",
+     "constVal": "blue",
+     "ltr": "",
+     "rtl": null,
+     "priority": 0
+    }
+   ]
+  },
+  {
+   "name": "dot key rejected",
+   "constants": {
+    "$obj": [
+     [
+      "a.b",
+      "x"
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedError": {
+    "message": "Key \"a.b\" must not contain the \".\" character. Use nested objects instead of dots in key names. See: https://www.designtokens.org/tr/drafts/format/#character-restrictions",
+    "code": "NestedKeySeparator",
+    "messageExact": true
+   }
+  },
+  {
+   "name": "dot key nested rejected",
+   "constants": {
+    "$obj": [
+     [
+      "a",
+      {
+       "$obj": [
+        [
+         "b.c",
+         "x"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedError": {
+    "message": "Key \"b.c\" must not contain the \".\" character. Use nested objects instead of dots in key names. See: https://www.designtokens.org/tr/drafts/format/#character-restrictions",
+    "code": "NestedKeySeparator",
+    "messageExact": true
+   }
+  },
+  {
+   "name": "dot key rejected before value drop",
+   "constants": {
+    "$obj": [
+     [
+      "a.b",
+      null
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedError": {
+    "message": "Key \"a.b\" must not contain the \".\" character. Use nested objects instead of dots in key names. See: https://www.designtokens.org/tr/drafts/format/#character-restrictions",
+    "code": "NestedKeySeparator",
+    "messageExact": true
+   }
+  },
+  {
+   "name": "string arg",
+   "constants": "ab",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedError": {
+    "message": "unstable_defineConstsNested() can only accept an object.",
+    "code": "NonStyleObject",
+    "messageExact": true
+   }
+  },
+  {
+   "name": "no module resolution",
+   "constants": {
+    "$obj": [
+     [
+      "a",
+      "x"
+     ]
+    ]
+   },
+   "options": {},
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedError": {
+    "message": "Unable to generate hash for unstable_defineConstsNested(). Check that the file has a valid extension and that unstable_moduleResolution is configured.",
+    "code": "CannotGenerateHash",
+    "messageExact": true
+   }
+  }
+ ],
+ "vars": [
+  {
+   "name": "mined varsNested-001",
+   "nested": {
+    "$obj": [
+     [
+      "button",
+      {
+       "$obj": [
+        [
+         "primary",
+         {
+          "$obj": [
+           [
+            "background",
+            "#00FF00"
+           ],
+           [
+            "text",
+            "#111111"
+           ]
+          ]
+         }
+        ],
+        [
+         "secondary",
+         {
+          "$obj": [
+           [
+            "background",
+            "#FF0000"
+           ]
+          ]
+         }
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "button.primary.background",
+      "#00FF00"
+     ],
+     [
+      "button.primary.text",
+      "#111111"
+     ],
+     [
+      "button.secondary.background",
+      "#FF0000"
+     ]
+    ]
+   },
+   "flatJsOutput": {
+    "$obj": [
+     [
+      "button.primary.background",
+      "var(--x1kydtzk)"
+     ],
+     [
+      "button.primary.text",
+      "var(--x1tbkzp4)"
+     ],
+     [
+      "button.secondary.background",
+      "var(--xcp4t1k)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "nestedJsOutput": {
+    "$obj": [
+     [
+      "button",
+      {
+       "$obj": [
+        [
+         "primary",
+         {
+          "$obj": [
+           [
+            "background",
+            "var(--x1kydtzk)"
+           ],
+           [
+            "text",
+            "var(--x1tbkzp4)"
+           ]
+          ]
+         }
+        ],
+        [
+         "secondary",
+         {
+          "$obj": [
+           [
+            "background",
+            "var(--xcp4t1k)"
+           ]
+          ]
+         }
+        ]
+       ]
+      }
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--x1kydtzk:#00FF00;--x1tbkzp4:#111111;--xcp4t1k:#FF0000;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "name": "mined varsNested-002 deep",
+   "nested": {
+    "$obj": [
+     [
+      "theme",
+      {
+       "$obj": [
+        [
+         "colors",
+         {
+          "$obj": [
+           [
+            "brand",
+            {
+             "$obj": [
+              [
+               "primary",
+               "blue"
+              ],
+              [
+               "secondary",
+               "lightblue"
+              ]
+             ]
+            }
+           ]
+          ]
+         }
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "theme.colors.brand.primary",
+      "blue"
+     ],
+     [
+      "theme.colors.brand.secondary",
+      "lightblue"
+     ]
+    ]
+   },
+   "flatJsOutput": {
+    "$obj": [
+     [
+      "theme.colors.brand.primary",
+      "var(--x166p495)"
+     ],
+     [
+      "theme.colors.brand.secondary",
+      "var(--x9xae42)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "nestedJsOutput": {
+    "$obj": [
+     [
+      "theme",
+      {
+       "$obj": [
+        [
+         "colors",
+         {
+          "$obj": [
+           [
+            "brand",
+            {
+             "$obj": [
+              [
+               "primary",
+               "var(--x166p495)"
+              ],
+              [
+               "secondary",
+               "var(--x9xae42)"
+              ]
+             ]
+            }
+           ]
+          ]
+         }
+        ]
+       ]
+      }
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--x166p495:blue;--x9xae42:lightblue;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "name": "mined varsNested-003 conditional",
+   "nested": {
+    "$obj": [
+     [
+      "button",
+      {
+       "$obj": [
+        [
+         "color",
+         {
+          "$obj": [
+           [
+            "default",
+            "blue"
+           ],
+           [
+            "@media (prefers-color-scheme: dark)",
+            "lightblue"
+           ]
+          ]
+         }
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "button.color",
+      {
+       "$obj": [
+        [
+         "default",
+         "blue"
+        ],
+        [
+         "@media (prefers-color-scheme: dark)",
+         "lightblue"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "flatJsOutput": {
+    "$obj": [
+     [
+      "button.color",
+      "var(--xye1sz4)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "nestedJsOutput": {
+    "$obj": [
+     [
+      "button",
+      {
+       "$obj": [
+        [
+         "color",
+         "var(--xye1sz4)"
+        ]
+       ]
+      }
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--xye1sz4:blue;}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "xoe0upw-1lveb7",
+     "constKey": null,
+     "constVal": null,
+     "ltr": "@media (prefers-color-scheme: dark){:root, .xoe0upw{--xye1sz4:lightblue;}}",
+     "rtl": null,
+     "priority": 0.2
+    }
+   ]
+  },
+  {
+   "name": "mined varsNested-004 mixed",
+   "nested": {
+    "$obj": [
+     [
+      "color",
+      "red"
+     ],
+     [
+      "button",
+      {
+       "$obj": [
+        [
+         "bg",
+         "green"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "color",
+      "red"
+     ],
+     [
+      "button.bg",
+      "green"
+     ]
+    ]
+   },
+   "flatJsOutput": {
+    "$obj": [
+     [
+      "color",
+      "var(--x4yred2)"
+     ],
+     [
+      "button.bg",
+      "var(--x181xr79)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "nestedJsOutput": {
+    "$obj": [
+     [
+      "color",
+      "var(--x4yred2)"
+     ],
+     [
+      "button",
+      {
+       "$obj": [
+        [
+         "bg",
+         "var(--x181xr79)"
+        ]
+       ]
+      }
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--x4yred2:red;--x181xr79:green;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "name": "mined varsNested-008 nested conditional",
+   "nested": {
+    "$obj": [
+     [
+      "color",
+      {
+       "$obj": [
+        [
+         "primary",
+         {
+          "$obj": [
+           [
+            "default",
+            "blue"
+           ],
+           [
+            "@media (prefers-color-scheme: dark)",
+            {
+             "$obj": [
+              [
+               "default",
+               "lightblue"
+              ],
+              [
+               "@supports (color: oklch(0 0 0))",
+               "oklch(0.7 -0.3 -0.4)"
+              ]
+             ]
+            }
+           ]
+          ]
+         }
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "color.primary",
+      {
+       "$obj": [
+        [
+         "default",
+         "blue"
+        ],
+        [
+         "@media (prefers-color-scheme: dark)",
+         {
+          "$obj": [
+           [
+            "default",
+            "lightblue"
+           ],
+           [
+            "@supports (color: oklch(0 0 0))",
+            "oklch(0.7 -0.3 -0.4)"
+           ]
+          ]
+         }
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "flatJsOutput": {
+    "$obj": [
+     [
+      "color.primary",
+      "var(--x2m90cx)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "nestedJsOutput": {
+    "$obj": [
+     [
+      "color",
+      {
+       "$obj": [
+        [
+         "primary",
+         "var(--x2m90cx)"
+        ]
+       ]
+      }
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--x2m90cx:blue;}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "xoe0upw-1lveb7",
+     "constKey": null,
+     "constVal": null,
+     "ltr": "@media (prefers-color-scheme: dark){:root, .xoe0upw{--x2m90cx:lightblue;}}",
+     "rtl": null,
+     "priority": 0.2
+    },
+    {
+     "className": "xoe0upw-7iokyd",
+     "constKey": null,
+     "constVal": null,
+     "ltr": "@supports (color: oklch(0 0 0)){@media (prefers-color-scheme: dark){:root, .xoe0upw{--x2m90cx:oklch(0.7 -0.3 -0.4);}}}",
+     "rtl": null,
+     "priority": 0.3
+    }
+   ]
+  },
+  {
+   "name": "number leaf dropped",
+   "nested": {
+    "$obj": [
+     [
+      "a",
+      5
+     ],
+     [
+      "b",
+      "kept"
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "b",
+      "kept"
+     ]
+    ]
+   },
+   "flatJsOutput": {
+    "$obj": [
+     [
+      "b",
+      "var(--x16dsmzz)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "nestedJsOutput": {
+    "$obj": [
+     [
+      "b",
+      "var(--x16dsmzz)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--x16dsmzz:kept;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "name": "array leaf dropped",
+   "nested": {
+    "$obj": [
+     [
+      "a",
+      [
+       "x"
+      ]
+     ],
+     [
+      "b",
+      "kept"
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "b",
+      "kept"
+     ]
+    ]
+   },
+   "flatJsOutput": {
+    "$obj": [
+     [
+      "b",
+      "var(--x16dsmzz)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "nestedJsOutput": {
+    "$obj": [
+     [
+      "b",
+      "var(--x16dsmzz)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--x16dsmzz:kept;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "name": "null leaf dropped",
+   "nested": {
+    "$obj": [
+     [
+      "a",
+      null
+     ],
+     [
+      "b",
+      "kept"
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "b",
+      "kept"
+     ]
+    ]
+   },
+   "flatJsOutput": {
+    "$obj": [
+     [
+      "b",
+      "var(--x16dsmzz)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "nestedJsOutput": {
+    "$obj": [
+     [
+      "b",
+      "var(--x16dsmzz)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--x16dsmzz:kept;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "name": "conditional reorders default first",
+   "nested": {
+    "$obj": [
+     [
+      "c",
+      {
+       "$obj": [
+        [
+         "@media (min-width: 100px)",
+         "d"
+        ],
+        [
+         "default",
+         "b"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "c",
+      {
+       "$obj": [
+        [
+         "default",
+         "b"
+        ],
+        [
+         "@media (min-width: 100px)",
+         "d"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "flatJsOutput": {
+    "$obj": [
+     [
+      "c",
+      "var(--xd7ugea)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "nestedJsOutput": {
+    "$obj": [
+     [
+      "c",
+      "var(--xd7ugea)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--xd7ugea:b;}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "xoe0upw-19q0ang",
+     "constKey": null,
+     "constVal": null,
+     "ltr": "@media (min-width: 100px){:root, .xoe0upw{--xd7ugea:d;}}",
+     "rtl": null,
+     "priority": 0.2
+    }
+   ]
+  },
+  {
+   "name": "conditional coerces numbers and arrays",
+   "nested": {
+    "$obj": [
+     [
+      "c",
+      {
+       "$obj": [
+        [
+         "default",
+         5
+        ],
+        [
+         "@media (min-width: 10px)",
+         [
+          1,
+          "x"
+         ]
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "c",
+      {
+       "$obj": [
+        [
+         "default",
+         "5"
+        ],
+        [
+         "@media (min-width: 10px)",
+         "1,x"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "flatJsOutput": {
+    "$obj": [
+     [
+      "c",
+      "var(--xd7ugea)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "nestedJsOutput": {
+    "$obj": [
+     [
+      "c",
+      "var(--xd7ugea)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--xd7ugea:5;}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "xoe0upw-ow06p5",
+     "constKey": null,
+     "constVal": null,
+     "ltr": "@media (min-width: 10px){:root, .xoe0upw{--xd7ugea:1,x;}}",
+     "rtl": null,
+     "priority": 0.2
+    }
+   ]
+  },
+  {
+   "name": "conditional coerces null and bool",
+   "nested": {
+    "$obj": [
+     [
+      "c",
+      {
+       "$obj": [
+        [
+         "default",
+         null
+        ],
+        [
+         "@media (min-width: 10px)",
+         true
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "c",
+      {
+       "$obj": [
+        [
+         "default",
+         ""
+        ],
+        [
+         "@media (min-width: 10px)",
+         "true"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "flatJsOutput": {
+    "$obj": [
+     [
+      "c",
+      "var(--xd7ugea)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "nestedJsOutput": {
+    "$obj": [
+     [
+      "c",
+      "var(--xd7ugea)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--xd7ugea:;}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "xoe0upw-ow06p5",
+     "constKey": null,
+     "constVal": null,
+     "ltr": "@media (min-width: 10px){:root, .xoe0upw{--xd7ugea:true;}}",
+     "rtl": null,
+     "priority": 0.2
+    }
+   ]
+  },
+  {
+   "name": "default-undefined is a namespace",
+   "nested": {
+    "$obj": [
+     [
+      "c",
+      {
+       "$obj": [
+        [
+         "default",
+         {
+          "$undefined": true
+         }
+        ],
+        [
+         "x",
+         "y"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "c.x",
+      "y"
+     ]
+    ]
+   },
+   "flatJsOutput": {
+    "$obj": [
+     [
+      "c.x",
+      "var(--x822hzf)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "nestedJsOutput": {
+    "$obj": [
+     [
+      "c",
+      {
+       "$obj": [
+        [
+         "x",
+         "var(--x822hzf)"
+        ]
+       ]
+      }
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--x822hzf:y;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "name": "default plus non-at key is a namespace",
+   "nested": {
+    "$obj": [
+     [
+      "c",
+      {
+       "$obj": [
+        [
+         "default",
+         "a"
+        ],
+        [
+         "hovered",
+         "b"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "c.default",
+      "a"
+     ],
+     [
+      "c.hovered",
+      "b"
+     ]
+    ]
+   },
+   "flatJsOutput": {
+    "$obj": [
+     [
+      "c.default",
+      "var(--x1yfg0pa)"
+     ],
+     [
+      "c.hovered",
+      "var(--x7ozjwk)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "nestedJsOutput": {
+    "$obj": [
+     [
+      "c",
+      {
+       "$obj": [
+        [
+         "default",
+         "var(--x1yfg0pa)"
+        ],
+        [
+         "hovered",
+         "var(--x7ozjwk)"
+        ]
+       ]
+      }
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--x1yfg0pa:a;--x7ozjwk:b;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "name": "empty groups vanish",
+   "nested": {
+    "$obj": [
+     [
+      "g",
+      {
+       "$obj": []
+      }
+     ],
+     [
+      "kept",
+      "x"
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "kept",
+      "x"
+     ]
+    ]
+   },
+   "flatJsOutput": {
+    "$obj": [
+     [
+      "kept",
+      "var(--xs0dk4x)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "nestedJsOutput": {
+    "$obj": [
+     [
+      "kept",
+      "var(--xs0dk4x)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--xs0dk4x:x;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "name": "types leaf stays a leaf",
+   "nested": {
+    "$obj": [
+     [
+      "a",
+      {
+       "$obj": [
+        [
+         "b",
+         {
+          "$cssType": {
+           "fn": "color",
+           "value": "red"
+          }
+         }
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "a.b",
+      {
+       "$cssType": {
+        "fn": "color",
+        "value": "red"
+       }
+      }
+     ]
+    ]
+   },
+   "flatJsOutput": {
+    "$obj": [
+     [
+      "a.b",
+      "var(--xjobmjk)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "nestedJsOutput": {
+    "$obj": [
+     [
+      "a",
+      {
+       "$obj": [
+        [
+         "b",
+         "var(--xjobmjk)"
+        ]
+       ]
+      }
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xjobmjk",
+     "constKey": null,
+     "constVal": null,
+     "ltr": "@property --xjobmjk { syntax: \"<color>\"; inherits: true; initial-value: red }",
+     "rtl": null,
+     "priority": 0
+    },
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--xjobmjk:red;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "name": "types leaf with conditional value",
+   "nested": {
+    "$obj": [
+     [
+      "a",
+      {
+       "$cssType": {
+        "fn": "length",
+        "value": {
+         "$obj": [
+          [
+           "default",
+           "8px"
+          ],
+          [
+           "@media (min-width: 10px)",
+           "16px"
+          ]
+         ]
+        }
+       }
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "a",
+      {
+       "$cssType": {
+        "fn": "length",
+        "value": {
+         "$obj": [
+          [
+           "default",
+           "8px"
+          ],
+          [
+           "@media (min-width: 10px)",
+           "16px"
+          ]
+         ]
+        }
+       }
+      }
+     ]
+    ]
+   },
+   "flatJsOutput": {
+    "$obj": [
+     [
+      "a",
+      "var(--xvuqt75)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "nestedJsOutput": {
+    "$obj": [
+     [
+      "a",
+      "var(--xvuqt75)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xvuqt75",
+     "constKey": null,
+     "constVal": null,
+     "ltr": "@property --xvuqt75 { syntax: \"<length>\"; inherits: true; initial-value: 8px }",
+     "rtl": null,
+     "priority": 0
+    },
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--xvuqt75:8px;}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "xoe0upw-ow06p5",
+     "constKey": null,
+     "constVal": null,
+     "ltr": "@media (min-width: 10px){:root, .xoe0upw{--xvuqt75:16px;}}",
+     "rtl": null,
+     "priority": 0.2
+    }
+   ]
+  },
+  {
+   "name": "debug varsafe names with dots",
+   "nested": {
+    "$obj": [
+     [
+      "grp",
+      {
+       "$obj": [
+        [
+         "my-key",
+         "red"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    },
+    "debug": true,
+    "enableDebugClassNames": true
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "grp.my-key",
+      "red"
+     ]
+    ]
+   },
+   "flatJsOutput": {
+    "$obj": [
+     [
+      "grp.my-key",
+      "var(--grp_my_key-xzkbgm1)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "nestedJsOutput": {
+    "$obj": [
+     [
+      "grp",
+      {
+       "$obj": [
+        [
+         "my-key",
+         "var(--grp_my_key-xzkbgm1)"
+        ]
+       ]
+      }
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--grp_my_key-xzkbgm1:red;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "name": "types inside conditional leaf",
+   "nested": {
+    "$obj": [
+     [
+      "c",
+      {
+       "$obj": [
+        [
+         "default",
+         "blue"
+        ],
+        [
+         "@media print",
+         {
+          "$cssType": {
+           "fn": "color",
+           "value": "red"
+          }
+         }
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "c",
+      {
+       "$obj": [
+        [
+         "default",
+         "blue"
+        ],
+        [
+         "@media print",
+         {
+          "$obj": [
+           [
+            "default",
+            ""
+           ],
+           [
+            "value",
+            "red"
+           ],
+           [
+            "syntax",
+            "<color>"
+           ]
+          ]
+         }
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "flatJsOutput": {
+    "$obj": [
+     [
+      "c",
+      "var(--xd7ugea)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "nestedJsOutput": {
+    "$obj": [
+     [
+      "c",
+      "var(--xd7ugea)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--xd7ugea:blue;}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "xoe0upw-bdddrq",
+     "constKey": null,
+     "constVal": null,
+     "ltr": "@media print{:root, .xoe0upw{--xd7ugea:;}}",
+     "rtl": null,
+     "priority": 0.2
+    },
+    {
+     "className": "xoe0upw-p89yx8",
+     "constKey": null,
+     "constVal": null,
+     "ltr": "value{@media print{:root, .xoe0upw{--xd7ugea:red;}}}",
+     "rtl": null,
+     "priority": 0.3
+    },
+    {
+     "className": "xoe0upw-9hdzme",
+     "constKey": null,
+     "constVal": null,
+     "ltr": "syntax{@media print{:root, .xoe0upw{--xd7ugea:<color>;}}}",
+     "rtl": null,
+     "priority": 0.3
+    }
+   ]
+  },
+  {
+   "name": "types number inside conditional leaf",
+   "nested": {
+    "$obj": [
+     [
+      "c",
+      {
+       "$obj": [
+        [
+         "default",
+         "blue"
+        ],
+        [
+         "@media print",
+         {
+          "$cssType": {
+           "fn": "length",
+           "value": 4
+          }
+         }
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "c",
+      {
+       "$obj": [
+        [
+         "default",
+         "blue"
+        ],
+        [
+         "@media print",
+         {
+          "$obj": [
+           [
+            "default",
+            ""
+           ],
+           [
+            "value",
+            "4px"
+           ],
+           [
+            "syntax",
+            "<length>"
+           ]
+          ]
+         }
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "flatJsOutput": {
+    "$obj": [
+     [
+      "c",
+      "var(--xd7ugea)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "nestedJsOutput": {
+    "$obj": [
+     [
+      "c",
+      "var(--xd7ugea)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--xd7ugea:blue;}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "xoe0upw-bdddrq",
+     "constKey": null,
+     "constVal": null,
+     "ltr": "@media print{:root, .xoe0upw{--xd7ugea:;}}",
+     "rtl": null,
+     "priority": 0.2
+    },
+    {
+     "className": "xoe0upw-p89yx8",
+     "constKey": null,
+     "constVal": null,
+     "ltr": "value{@media print{:root, .xoe0upw{--xd7ugea:4px;}}}",
+     "rtl": null,
+     "priority": 0.3
+    },
+    {
+     "className": "xoe0upw-9hdzme",
+     "constKey": null,
+     "constVal": null,
+     "ltr": "syntax{@media print{:root, .xoe0upw{--xd7ugea:<length>;}}}",
+     "rtl": null,
+     "priority": 0.3
+    }
+   ]
+  },
+  {
+   "name": "proto scalar dropped",
+   "nested": {
+    "$obj": [
+     [
+      "__proto__",
+      "red"
+     ],
+     [
+      "ok",
+      "blue"
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "ok",
+      "blue"
+     ]
+    ]
+   },
+   "flatJsOutput": {
+    "$obj": [
+     [
+      "ok",
+      "var(--x16t3vzx)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "nestedJsOutput": {
+    "$obj": [
+     [
+      "ok",
+      "var(--x16t3vzx)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--x16t3vzx:blue;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "name": "proto namespace dropped",
+   "nested": {
+    "$obj": [
+     [
+      "__proto__",
+      {
+       "$obj": [
+        [
+         "x",
+         "red"
+        ]
+       ]
+      }
+     ],
+     [
+      "ok",
+      "blue"
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "ok",
+      "blue"
+     ]
+    ]
+   },
+   "flatJsOutput": {
+    "$obj": [
+     [
+      "ok",
+      "var(--x16t3vzx)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "nestedJsOutput": {
+    "$obj": [
+     [
+      "ok",
+      "var(--x16t3vzx)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--x16t3vzx:blue;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "name": "proto deep intermediate dropped",
+   "nested": {
+    "$obj": [
+     [
+      "a",
+      {
+       "$obj": [
+        [
+         "__proto__",
+         {
+          "$obj": [
+           [
+            "b",
+            "red"
+           ]
+          ]
+         }
+        ]
+       ]
+      }
+     ],
+     [
+      "ok",
+      "blue"
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "ok",
+      "blue"
+     ]
+    ]
+   },
+   "flatJsOutput": {
+    "$obj": [
+     [
+      "ok",
+      "var(--x16t3vzx)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "nestedJsOutput": {
+    "$obj": [
+     [
+      "ok",
+      "var(--x16t3vzx)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--x16t3vzx:blue;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "name": "proto conditional leaf dropped",
+   "nested": {
+    "$obj": [
+     [
+      "__proto__",
+      {
+       "$obj": [
+        [
+         "default",
+         "red"
+        ],
+        [
+         "@media print",
+         "blue"
+        ]
+       ]
+      }
+     ],
+     [
+      "ok",
+      "green"
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "ok",
+      "green"
+     ]
+    ]
+   },
+   "flatJsOutput": {
+    "$obj": [
+     [
+      "ok",
+      "var(--x16t3vzx)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "nestedJsOutput": {
+    "$obj": [
+     [
+      "ok",
+      "var(--x16t3vzx)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--x16t3vzx:green;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "name": "fn in conditional leaf default",
+   "nested": {
+    "$obj": [
+     [
+      "c",
+      {
+       "$obj": [
+        [
+         "default",
+         {
+          "$fn": true
+         }
+        ],
+        [
+         "@media print",
+         "blue"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "c",
+      {
+       "$obj": [
+        [
+         "default",
+         "(...args) => {\n        const identifierEntries = identParams.map((ident, index) => [ident, args[index]]);\n        const identifiersObj = Object.fromEntries(identifierEntries);\n        const result = evaluate(evaluatedExpr, state.traversalState, {\n          ...state.functions,\n          identifiers: {\n            ...state.functions.identifiers,\n            ...identifiersObj\n          }\n        });\n        if (!result.confident) {\n          throw new Error(result.reason ?? NON_CONSTANT);\n        }\n        return result.value;\n      }"
+        ],
+        [
+         "@media print",
+         "blue"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "flatJsOutput": {
+    "$obj": [
+     [
+      "c",
+      "var(--xd7ugea)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "nestedJsOutput": {
+    "$obj": [
+     [
+      "c",
+      "var(--xd7ugea)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--xd7ugea:(...args) => {\n        const identifierEntries = identParams.map((ident, index) => [ident, args[index]]);\n        const identifiersObj = Object.fromEntries(identifierEntries);\n        const result = evaluate(evaluatedExpr, state.traversalState, {\n          ...state.functions,\n          identifiers: {\n            ...state.functions.identifiers,\n            ...identifiersObj\n          }\n        });\n        if (!result.confident) {\n          throw new Error(result.reason ?? NON_CONSTANT);\n        }\n        return result.value;\n      };}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "xoe0upw-bdddrq",
+     "constKey": null,
+     "constVal": null,
+     "ltr": "@media print{:root, .xoe0upw{--xd7ugea:blue;}}",
+     "rtl": null,
+     "priority": 0.2
+    }
+   ]
+  },
+  {
+   "name": "fn at at-rule position",
+   "nested": {
+    "$obj": [
+     [
+      "c",
+      {
+       "$obj": [
+        [
+         "default",
+         "blue"
+        ],
+        [
+         "@media print",
+         {
+          "$fn": true
+         }
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "c",
+      {
+       "$obj": [
+        [
+         "default",
+         "blue"
+        ],
+        [
+         "@media print",
+         "(...args) => {\n        const identifierEntries = identParams.map((ident, index) => [ident, args[index]]);\n        const identifiersObj = Object.fromEntries(identifierEntries);\n        const result = evaluate(evaluatedExpr, state.traversalState, {\n          ...state.functions,\n          identifiers: {\n            ...state.functions.identifiers,\n            ...identifiersObj\n          }\n        });\n        if (!result.confident) {\n          throw new Error(result.reason ?? NON_CONSTANT);\n        }\n        return result.value;\n      }"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "flatJsOutput": {
+    "$obj": [
+     [
+      "c",
+      "var(--xd7ugea)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "nestedJsOutput": {
+    "$obj": [
+     [
+      "c",
+      "var(--xd7ugea)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--xd7ugea:blue;}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "xoe0upw-bdddrq",
+     "constKey": null,
+     "constVal": null,
+     "ltr": "@media print{:root, .xoe0upw{--xd7ugea:(...args) => {\n        const identifierEntries = identParams.map((ident, index) => [ident, args[index]]);\n        const identifiersObj = Object.fromEntries(identifierEntries);\n        const result = evaluate(evaluatedExpr, state.traversalState, {\n          ...state.functions,\n          identifiers: {\n            ...state.functions.identifiers,\n            ...identifiersObj\n          }\n        });\n        if (!result.confident) {\n          throw new Error(result.reason ?? NON_CONSTANT);\n        }\n        return result.value;\n      };}}",
+     "rtl": null,
+     "priority": 0.2
+    }
+   ]
+  },
+  {
+   "name": "fn top-level dropped",
+   "nested": {
+    "$obj": [
+     [
+      "c",
+      {
+       "$fn": true
+      }
+     ],
+     [
+      "ok",
+      "blue"
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "ok",
+      "blue"
+     ]
+    ]
+   },
+   "flatJsOutput": {
+    "$obj": [
+     [
+      "ok",
+      "var(--x16t3vzx)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "nestedJsOutput": {
+    "$obj": [
+     [
+      "ok",
+      "var(--x16t3vzx)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--x16t3vzx:blue;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "name": "fn below at-rule sub-object",
+   "nested": {
+    "$obj": [
+     [
+      "c",
+      {
+       "$obj": [
+        [
+         "default",
+         "a"
+        ],
+        [
+         "@media print",
+         {
+          "$obj": [
+           [
+            "default",
+            {
+             "$fn": true
+            }
+           ]
+          ]
+         }
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "c",
+      {
+       "$obj": [
+        [
+         "default",
+         "a"
+        ],
+        [
+         "@media print",
+         {
+          "$obj": [
+           [
+            "default",
+            "(...args) => {\n        const identifierEntries = identParams.map((ident, index) => [ident, args[index]]);\n        const identifiersObj = Object.fromEntries(identifierEntries);\n        const result = evaluate(evaluatedExpr, state.traversalState, {\n          ...state.functions,\n          identifiers: {\n            ...state.functions.identifiers,\n            ...identifiersObj\n          }\n        });\n        if (!result.confident) {\n          throw new Error(result.reason ?? NON_CONSTANT);\n        }\n        return result.value;\n      }"
+           ]
+          ]
+         }
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "flatJsOutput": {
+    "$obj": [
+     [
+      "c",
+      "var(--xd7ugea)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "nestedJsOutput": {
+    "$obj": [
+     [
+      "c",
+      "var(--xd7ugea)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--xd7ugea:a;}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "xoe0upw-bdddrq",
+     "constKey": null,
+     "constVal": null,
+     "ltr": "@media print{:root, .xoe0upw{--xd7ugea:(...args) => {\n        const identifierEntries = identParams.map((ident, index) => [ident, args[index]]);\n        const identifiersObj = Object.fromEntries(identifierEntries);\n        const result = evaluate(evaluatedExpr, state.traversalState, {\n          ...state.functions,\n          identifiers: {\n            ...state.functions.identifiers,\n            ...identifiersObj\n          }\n        });\n        if (!result.confident) {\n          throw new Error(result.reason ?? NON_CONSTANT);\n        }\n        return result.value;\n      };}}",
+     "rtl": null,
+     "priority": 0.2
+    }
+   ]
+  },
+  {
+   "name": "fn in array leaf element",
+   "nested": {
+    "$obj": [
+     [
+      "c",
+      {
+       "$obj": [
+        [
+         "default",
+         [
+          1,
+          {
+           "$fn": true
+          }
+         ]
+        ],
+        [
+         "@media print",
+         "blue"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedFlat": {
+    "$obj": [
+     [
+      "c",
+      {
+       "$obj": [
+        [
+         "default",
+         "1,(...args) => {\n        const identifierEntries = identParams.map((ident, index) => [ident, args[index]]);\n        const identifiersObj = Object.fromEntries(identifierEntries);\n        const result = evaluate(evaluatedExpr, state.traversalState, {\n          ...state.functions,\n          identifiers: {\n            ...state.functions.identifiers,\n            ...identifiersObj\n          }\n        });\n        if (!result.confident) {\n          throw new Error(result.reason ?? NON_CONSTANT);\n        }\n        return result.value;\n      }"
+        ],
+        [
+         "@media print",
+         "blue"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "flatJsOutput": {
+    "$obj": [
+     [
+      "c",
+      "var(--xd7ugea)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "nestedJsOutput": {
+    "$obj": [
+     [
+      "c",
+      "var(--xd7ugea)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--xd7ugea:1,(...args) => {\n        const identifierEntries = identParams.map((ident, index) => [ident, args[index]]);\n        const identifiersObj = Object.fromEntries(identifierEntries);\n        const result = evaluate(evaluatedExpr, state.traversalState, {\n          ...state.functions,\n          identifiers: {\n            ...state.functions.identifiers,\n            ...identifiersObj\n          }\n        });\n        if (!result.confident) {\n          throw new Error(result.reason ?? NON_CONSTANT);\n        }\n        return result.value;\n      };}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "xoe0upw-bdddrq",
+     "constKey": null,
+     "constVal": null,
+     "ltr": "@media print{:root, .xoe0upw{--xd7ugea:blue;}}",
+     "rtl": null,
+     "priority": 0.2
+    }
+   ]
+  },
+  {
+   "name": "dot key rejected",
+   "nested": {
+    "$obj": [
+     [
+      "a.b",
+      "x"
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedError": {
+    "message": "Key \"a.b\" must not contain the \".\" character. Use nested objects instead of dots in key names. See: https://www.designtokens.org/tr/drafts/format/#character-restrictions",
+    "code": "NestedKeySeparator",
+    "messageExact": true
+   }
+  },
+  {
+   "name": "dot key below conditional-looking group",
+   "nested": {
+    "$obj": [
+     [
+      "a",
+      {
+       "$obj": [
+        [
+         "b.c",
+         {
+          "$obj": [
+           [
+            "default",
+            "x"
+           ]
+          ]
+         }
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "exportName": "tokens",
+   "canonicalFileName": "tokens.stylex.ts",
+   "expectedError": {
+    "message": "Key \"b.c\" must not contain the \".\" character. Use nested objects instead of dots in key names. See: https://www.designtokens.org/tr/drafts/format/#character-restrictions",
+    "code": "NestedKeySeparator",
+    "messageExact": true
+   }
+  }
+ ],
+ "theme": [
+  {
+   "name": "mined themeNested-001 full override",
+   "nestedVars": {
+    "$obj": [
+     [
+      "button",
+      {
+       "$obj": [
+        [
+         "primary",
+         {
+          "$obj": [
+           [
+            "background",
+            "#00FF00"
+           ]
+          ]
+         }
+        ],
+        [
+         "secondary",
+         {
+          "$obj": [
+           [
+            "background",
+            "#FF0000"
+           ]
+          ]
+         }
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "nestedOverrides": {
+    "$obj": [
+     [
+      "button",
+      {
+       "$obj": [
+        [
+         "primary",
+         {
+          "$obj": [
+           [
+            "background",
+            "#0000FF"
+           ]
+          ]
+         }
+        ],
+        [
+         "secondary",
+         {
+          "$obj": [
+           [
+            "background",
+            "#FFFF00"
+           ]
+          ]
+         }
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "expectedFlatVars": {
+    "$obj": [
+     [
+      "button.primary.background",
+      "#00FF00"
+     ],
+     [
+      "button.secondary.background",
+      "#FF0000"
+     ]
+    ]
+   },
+   "expectedFlatOverrides": {
+    "$obj": [
+     [
+      "button.primary.background",
+      "#0000FF"
+     ],
+     [
+      "button.secondary.background",
+      "#FFFF00"
+     ]
+    ]
+   },
+   "nestedTokensJs": {
+    "$obj": [
+     [
+      "button",
+      {
+       "$obj": [
+        [
+         "primary",
+         {
+          "$obj": [
+           [
+            "background",
+            "var(--x1kydtzk)"
+           ]
+          ]
+         }
+        ],
+        [
+         "secondary",
+         {
+          "$obj": [
+           [
+            "background",
+            "var(--xcp4t1k)"
+           ]
+          ]
+         }
+        ]
+       ]
+      }
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "flatTokensJs": {
+    "$obj": [
+     [
+      "button.primary.background",
+      "var(--x1kydtzk)"
+     ],
+     [
+      "button.secondary.background",
+      "var(--xcp4t1k)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "themeJs": {
+    "$obj": [
+     [
+      "xoe0upw",
+      "xqdjgvo xoe0upw"
+     ],
+     [
+      "$$css",
+      true
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--x1kydtzk:#00FF00;--xcp4t1k:#FF0000;}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "xqdjgvo",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ".xqdjgvo, .xqdjgvo:root{--x1kydtzk:#0000FF;--xcp4t1k:#FFFF00;}",
+     "rtl": null,
+     "priority": 0.5
+    }
+   ]
+  },
+  {
+   "name": "mined themeNested-002 partial override",
+   "nestedVars": {
+    "$obj": [
+     [
+      "button",
+      {
+       "$obj": [
+        [
+         "bg",
+         "red"
+        ],
+        [
+         "fg",
+         "white"
+        ]
+       ]
+      }
+     ],
+     [
+      "panel",
+      {
+       "$obj": [
+        [
+         "bg",
+         "gray"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "nestedOverrides": {
+    "$obj": [
+     [
+      "button",
+      {
+       "$obj": [
+        [
+         "bg",
+         "green"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "expectedFlatVars": {
+    "$obj": [
+     [
+      "button.bg",
+      "red"
+     ],
+     [
+      "button.fg",
+      "white"
+     ],
+     [
+      "panel.bg",
+      "gray"
+     ]
+    ]
+   },
+   "expectedFlatOverrides": {
+    "$obj": [
+     [
+      "button.bg",
+      "green"
+     ]
+    ]
+   },
+   "nestedTokensJs": {
+    "$obj": [
+     [
+      "button",
+      {
+       "$obj": [
+        [
+         "bg",
+         "var(--x181xr79)"
+        ],
+        [
+         "fg",
+         "var(--x14kmzee)"
+        ]
+       ]
+      }
+     ],
+     [
+      "panel",
+      {
+       "$obj": [
+        [
+         "bg",
+         "var(--x1hvjb8c)"
+        ]
+       ]
+      }
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "flatTokensJs": {
+    "$obj": [
+     [
+      "button.bg",
+      "var(--x181xr79)"
+     ],
+     [
+      "button.fg",
+      "var(--x14kmzee)"
+     ],
+     [
+      "panel.bg",
+      "var(--x1hvjb8c)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "themeJs": {
+    "$obj": [
+     [
+      "xoe0upw",
+      "xfmtybm xoe0upw"
+     ],
+     [
+      "$$css",
+      true
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--x181xr79:red;--x14kmzee:white;--x1hvjb8c:gray;}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "xfmtybm",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ".xfmtybm, .xfmtybm:root{--x181xr79:green;}",
+     "rtl": null,
+     "priority": 0.5
+    }
+   ]
+  },
+  {
+   "name": "mined themeNested-003 conditional override",
+   "nestedVars": {
+    "$obj": [
+     [
+      "color",
+      {
+       "$obj": [
+        [
+         "accent",
+         "blue"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "nestedOverrides": {
+    "$obj": [
+     [
+      "color",
+      {
+       "$obj": [
+        [
+         "accent",
+         {
+          "$obj": [
+           [
+            "default",
+            "navy"
+           ],
+           [
+            "@media (prefers-color-scheme: dark)",
+            "cyan"
+           ]
+          ]
+         }
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "expectedFlatVars": {
+    "$obj": [
+     [
+      "color.accent",
+      "blue"
+     ]
+    ]
+   },
+   "expectedFlatOverrides": {
+    "$obj": [
+     [
+      "color.accent",
+      {
+       "$obj": [
+        [
+         "default",
+         "navy"
+        ],
+        [
+         "@media (prefers-color-scheme: dark)",
+         "cyan"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "nestedTokensJs": {
+    "$obj": [
+     [
+      "color",
+      {
+       "$obj": [
+        [
+         "accent",
+         "var(--x1rlp7dk)"
+        ]
+       ]
+      }
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "flatTokensJs": {
+    "$obj": [
+     [
+      "color.accent",
+      "var(--x1rlp7dk)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "themeJs": {
+    "$obj": [
+     [
+      "xoe0upw",
+      "x321qum xoe0upw"
+     ],
+     [
+      "$$css",
+      true
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--x1rlp7dk:blue;}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "x321qum",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ".x321qum, .x321qum:root{--x1rlp7dk:navy;}",
+     "rtl": null,
+     "priority": 0.5
+    },
+    {
+     "className": "x321qum-1lveb7",
+     "constKey": null,
+     "constVal": null,
+     "ltr": "@media (prefers-color-scheme: dark){.x321qum, .x321qum:root{--x1rlp7dk:cyan;}}",
+     "rtl": null,
+     "priority": 0.6000000000000001
+    }
+   ]
+  },
+  {
+   "name": "override conditional reorders default first",
+   "nestedVars": {
+    "$obj": [
+     [
+      "c",
+      {
+       "$obj": [
+        [
+         "v",
+         "blue"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "nestedOverrides": {
+    "$obj": [
+     [
+      "c",
+      {
+       "$obj": [
+        [
+         "v",
+         {
+          "$obj": [
+           [
+            "@media (min-width: 10px)",
+            "red"
+           ],
+           [
+            "default",
+            "green"
+           ]
+          ]
+         }
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "expectedFlatVars": {
+    "$obj": [
+     [
+      "c.v",
+      "blue"
+     ]
+    ]
+   },
+   "expectedFlatOverrides": {
+    "$obj": [
+     [
+      "c.v",
+      {
+       "$obj": [
+        [
+         "default",
+         "green"
+        ],
+        [
+         "@media (min-width: 10px)",
+         "red"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "nestedTokensJs": {
+    "$obj": [
+     [
+      "c",
+      {
+       "$obj": [
+        [
+         "v",
+         "var(--x1chnn3b)"
+        ]
+       ]
+      }
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "flatTokensJs": {
+    "$obj": [
+     [
+      "c.v",
+      "var(--x1chnn3b)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "themeJs": {
+    "$obj": [
+     [
+      "xoe0upw",
+      "xe35m1d xoe0upw"
+     ],
+     [
+      "$$css",
+      true
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--x1chnn3b:blue;}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "xe35m1d",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ".xe35m1d, .xe35m1d:root{--x1chnn3b:green;}",
+     "rtl": null,
+     "priority": 0.5
+    },
+    {
+     "className": "xe35m1d-ow06p5",
+     "constKey": null,
+     "constVal": null,
+     "ltr": "@media (min-width: 10px){.xe35m1d, .xe35m1d:root{--x1chnn3b:red;}}",
+     "rtl": null,
+     "priority": 0.6000000000000001
+    }
+   ]
+  },
+  {
+   "name": "types override unwraps to value",
+   "nestedVars": {
+    "$obj": [
+     [
+      "a",
+      {
+       "$obj": [
+        [
+         "b",
+         "red"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "nestedOverrides": {
+    "$obj": [
+     [
+      "a",
+      {
+       "$obj": [
+        [
+         "b",
+         {
+          "$cssType": {
+           "fn": "color",
+           "value": "green"
+          }
+         }
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "expectedFlatVars": {
+    "$obj": [
+     [
+      "a.b",
+      "red"
+     ]
+    ]
+   },
+   "expectedFlatOverrides": {
+    "$obj": [
+     [
+      "a.b",
+      "green"
+     ]
+    ]
+   },
+   "nestedTokensJs": {
+    "$obj": [
+     [
+      "a",
+      {
+       "$obj": [
+        [
+         "b",
+         "var(--xjobmjk)"
+        ]
+       ]
+      }
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "flatTokensJs": {
+    "$obj": [
+     [
+      "a.b",
+      "var(--xjobmjk)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "themeJs": {
+    "$obj": [
+     [
+      "xoe0upw",
+      "xeos866 xoe0upw"
+     ],
+     [
+      "$$css",
+      true
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--xjobmjk:red;}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "xeos866",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ".xeos866, .xeos866:root{--xjobmjk:green;}",
+     "rtl": null,
+     "priority": 0.5
+    }
+   ]
+  },
+  {
+   "name": "types override with conditional value unwraps",
+   "nestedVars": {
+    "$obj": [
+     [
+      "a",
+      {
+       "$obj": [
+        [
+         "b",
+         "8px"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "nestedOverrides": {
+    "$obj": [
+     [
+      "a",
+      {
+       "$obj": [
+        [
+         "b",
+         {
+          "$cssType": {
+           "fn": "length",
+           "value": {
+            "$obj": [
+             [
+              "default",
+              "4px"
+             ],
+             [
+              "@media (min-width: 10px)",
+              "2px"
+             ]
+            ]
+           }
+          }
+         }
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "expectedFlatVars": {
+    "$obj": [
+     [
+      "a.b",
+      "8px"
+     ]
+    ]
+   },
+   "expectedFlatOverrides": {
+    "$obj": [
+     [
+      "a.b",
+      {
+       "$obj": [
+        [
+         "default",
+         "4px"
+        ],
+        [
+         "@media (min-width: 10px)",
+         "2px"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "nestedTokensJs": {
+    "$obj": [
+     [
+      "a",
+      {
+       "$obj": [
+        [
+         "b",
+         "var(--xjobmjk)"
+        ]
+       ]
+      }
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "flatTokensJs": {
+    "$obj": [
+     [
+      "a.b",
+      "var(--xjobmjk)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "themeJs": {
+    "$obj": [
+     [
+      "xoe0upw",
+      "xops0me xoe0upw"
+     ],
+     [
+      "$$css",
+      true
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--xjobmjk:8px;}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "xops0me",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ".xops0me, .xops0me:root{--xjobmjk:4px;}",
+     "rtl": null,
+     "priority": 0.5
+    },
+    {
+     "className": "xops0me-ow06p5",
+     "constKey": null,
+     "constVal": null,
+     "ltr": "@media (min-width: 10px){.xops0me, .xops0me:root{--xjobmjk:2px;}}",
+     "rtl": null,
+     "priority": 0.6000000000000001
+    }
+   ]
+  },
+  {
+   "name": "non-string non-leaf override values coerce",
+   "nestedVars": {
+    "$obj": [
+     [
+      "a",
+      {
+       "$obj": [
+        [
+         "b",
+         "x"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "nestedOverrides": {
+    "$obj": [
+     [
+      "a",
+      {
+       "$obj": [
+        [
+         "b",
+         {
+          "$obj": [
+           [
+            "default",
+            5
+           ],
+           [
+            "@media (min-width: 10px)",
+            null
+           ]
+          ]
+         }
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "expectedFlatVars": {
+    "$obj": [
+     [
+      "a.b",
+      "x"
+     ]
+    ]
+   },
+   "expectedFlatOverrides": {
+    "$obj": [
+     [
+      "a.b",
+      {
+       "$obj": [
+        [
+         "default",
+         "5"
+        ],
+        [
+         "@media (min-width: 10px)",
+         ""
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "nestedTokensJs": {
+    "$obj": [
+     [
+      "a",
+      {
+       "$obj": [
+        [
+         "b",
+         "var(--xjobmjk)"
+        ]
+       ]
+      }
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "flatTokensJs": {
+    "$obj": [
+     [
+      "a.b",
+      "var(--xjobmjk)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "themeJs": {
+    "$obj": [
+     [
+      "xoe0upw",
+      "xqffbq5 xoe0upw"
+     ],
+     [
+      "$$css",
+      true
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--xjobmjk:x;}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "xqffbq5",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ".xqffbq5, .xqffbq5:root{--xjobmjk:5;}",
+     "rtl": null,
+     "priority": 0.5
+    },
+    {
+     "className": "xqffbq5-ow06p5",
+     "constKey": null,
+     "constVal": null,
+     "ltr": "@media (min-width: 10px){.xqffbq5, .xqffbq5:root{--xjobmjk:;}}",
+     "rtl": null,
+     "priority": 0.6000000000000001
+    }
+   ]
+  },
+  {
+   "name": "empty overrides",
+   "nestedVars": {
+    "$obj": [
+     [
+      "a",
+      {
+       "$obj": [
+        [
+         "b",
+         "x"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "nestedOverrides": {
+    "$obj": []
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "expectedFlatVars": {
+    "$obj": [
+     [
+      "a.b",
+      "x"
+     ]
+    ]
+   },
+   "expectedFlatOverrides": {
+    "$obj": []
+   },
+   "nestedTokensJs": {
+    "$obj": [
+     [
+      "a",
+      {
+       "$obj": [
+        [
+         "b",
+         "var(--xjobmjk)"
+        ]
+       ]
+      }
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "flatTokensJs": {
+    "$obj": [
+     [
+      "a.b",
+      "var(--xjobmjk)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "themeJs": {
+    "$obj": [
+     [
+      "xoe0upw",
+      "xph554m xoe0upw"
+     ],
+     [
+      "$$css",
+      true
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--xjobmjk:x;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "name": "proto override dropped",
+   "nestedVars": {
+    "$obj": [
+     [
+      "ok",
+      "blue"
+     ]
+    ]
+   },
+   "nestedOverrides": {
+    "$obj": [
+     [
+      "__proto__",
+      "x"
+     ],
+     [
+      "ok",
+      "red"
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "expectedFlatVars": {
+    "$obj": [
+     [
+      "ok",
+      "blue"
+     ]
+    ]
+   },
+   "expectedFlatOverrides": {
+    "$obj": [
+     [
+      "ok",
+      "red"
+     ]
+    ]
+   },
+   "nestedTokensJs": {
+    "$obj": [
+     [
+      "ok",
+      "var(--x16t3vzx)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "flatTokensJs": {
+    "$obj": [
+     [
+      "ok",
+      "var(--x16t3vzx)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "themeJs": {
+    "$obj": [
+     [
+      "xoe0upw",
+      "x1lefckq xoe0upw"
+     ],
+     [
+      "$$css",
+      true
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--x16t3vzx:blue;}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "x1lefckq",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ".x1lefckq, .x1lefckq:root{--x16t3vzx:red;}",
+     "rtl": null,
+     "priority": 0.5
+    }
+   ]
+  },
+  {
+   "name": "fn in override conditional leaf",
+   "nestedVars": {
+    "$obj": [
+     [
+      "c",
+      "blue"
+     ]
+    ]
+   },
+   "nestedOverrides": {
+    "$obj": [
+     [
+      "c",
+      {
+       "$obj": [
+        [
+         "default",
+         {
+          "$fn": true
+         }
+        ],
+        [
+         "@media print",
+         "x"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "expectedFlatVars": {
+    "$obj": [
+     [
+      "c",
+      "blue"
+     ]
+    ]
+   },
+   "expectedFlatOverrides": {
+    "$obj": [
+     [
+      "c",
+      {
+       "$obj": [
+        [
+         "default",
+         "(...args) => {\n        const identifierEntries = identParams.map((ident, index) => [ident, args[index]]);\n        const identifiersObj = Object.fromEntries(identifierEntries);\n        const result = evaluate(evaluatedExpr, state.traversalState, {\n          ...state.functions,\n          identifiers: {\n            ...state.functions.identifiers,\n            ...identifiersObj\n          }\n        });\n        if (!result.confident) {\n          throw new Error(result.reason ?? NON_CONSTANT);\n        }\n        return result.value;\n      }"
+        ],
+        [
+         "@media print",
+         "x"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "nestedTokensJs": {
+    "$obj": [
+     [
+      "c",
+      "var(--xd7ugea)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "flatTokensJs": {
+    "$obj": [
+     [
+      "c",
+      "var(--xd7ugea)"
+     ],
+     [
+      "__varGroupHash__",
+      "xoe0upw"
+     ]
+    ]
+   },
+   "themeJs": {
+    "$obj": [
+     [
+      "xoe0upw",
+      "xp2m6sk xoe0upw"
+     ],
+     [
+      "$$css",
+      true
+     ]
+    ]
+   },
+   "rules": [
+    {
+     "className": "xoe0upw",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ":root, .xoe0upw{--xd7ugea:blue;}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "xp2m6sk",
+     "constKey": null,
+     "constVal": null,
+     "ltr": ".xp2m6sk, .xp2m6sk:root{--xd7ugea:(...args) => {\n        const identifierEntries = identParams.map((ident, index) => [ident, args[index]]);\n        const identifiersObj = Object.fromEntries(identifierEntries);\n        const result = evaluate(evaluatedExpr, state.traversalState, {\n          ...state.functions,\n          identifiers: {\n            ...state.functions.identifiers,\n            ...identifiersObj\n          }\n        });\n        if (!result.confident) {\n          throw new Error(result.reason ?? NON_CONSTANT);\n        }\n        return result.value;\n      };}",
+     "rtl": null,
+     "priority": 0.5
+    },
+    {
+     "className": "xp2m6sk-bdddrq",
+     "constKey": null,
+     "constVal": null,
+     "ltr": "@media print{.xp2m6sk, .xp2m6sk:root{--xd7ugea:x;}}",
+     "rtl": null,
+     "priority": 0.6000000000000001
+    }
+   ]
+  },
+  {
+   "name": "dot key in overrides rejected",
+   "nestedVars": {
+    "$obj": [
+     [
+      "a",
+      {
+       "$obj": [
+        [
+         "b",
+         "x"
+        ]
+       ]
+      }
+     ]
+    ]
+   },
+   "nestedOverrides": {
+    "$obj": [
+     [
+      "a.b",
+      "y"
+     ]
+    ]
+   },
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "/fake/root"
+    }
+   },
+   "expectedError": {
+    "message": "Key \"a.b\" must not contain the \".\" character. Use nested objects instead of dots in key names. See: https://www.designtokens.org/tr/drafts/format/#character-restrictions",
+    "code": "NestedKeySeparator",
+    "messageExact": true
+   }
+  }
+ ]
+}

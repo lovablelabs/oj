@@ -1,0 +1,1 @@
+{ "compilerOptions": { "strict": true, "target": "es2022", "module": "esnext", "moduleResolution": "bundler" }, "files": ["main.ts", "types.d.ts", "other.ts"] }

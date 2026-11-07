@@ -27,6 +27,8 @@ pub async fn ssr_dev(
     entry: String,
     port: Option<u16>,
     host: Option<String>,
+    typecheck: bool,
+    rolldown: tokio::runtime::Handle,
 ) -> anyhow::Result<()> {
     // Before boot: a signal while plugins are still spawning must still sweep.
     let host_slot = std::sync::Arc::new(std::sync::OnceLock::new());
@@ -39,7 +41,9 @@ pub async fn ssr_dev(
         enable_cache: false,
         no_cache: false,
         lazy: false,
+        typecheck,
         mode: None,
+        rolldown,
     }
     .build_app()
     .await?;
@@ -82,13 +86,15 @@ pub async fn ssr_dev(
         engine,
     });
 
-    let app = built.router.layer(axum::middleware::from_fn_with_state(
-        Arc::clone(&ssr_state),
-        ssr_route,
-    ));
+    let app = built
+        .router
+        .clone()
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&ssr_state),
+            ssr_route,
+        ));
 
-    let (listener, port) =
-        oj_server::bind_dev_listener(built.host, built.port, built.strict_port).await?;
+    let (listener, port) = built.bind_listener().await?;
     if let Some(host) = built.plugin_host.clone() {
         let _ = host_slot.set(host);
     }
@@ -98,9 +104,19 @@ pub async fn ssr_dev(
         Some(u) => println!("  client: {u} (hydration + hmr on)"),
         None => println!("  client: none (SSR only; add a *-client entry to hydrate)"),
     }
-    let url = format!("http://localhost:{}/", port);
+    let url = format!(
+        "{}://localhost:{}/",
+        oj_server::tls::url_scheme(built.https.as_ref()),
+        port
+    );
     println!("  {}", oj_server::link(&url, &oj_server::cell(&url)));
-    axum::serve(listener, app).await?;
+    // Outermost, around this server's own routes too.
+    let app = oj_server::otel::traced(
+        app,
+        oj_server::tls::url_scheme(built.https.as_ref()),
+        built.base.as_deref(),
+    );
+    built.serve(listener, app).await?;
     Ok(())
 }
 
@@ -213,7 +229,8 @@ async fn ssr_route(State(state): State<Arc<SsrState>>, req: Request, next: Next)
 
 fn classify(req: &Request, proxy_prefixes: &[String]) -> Route {
     let path = req.uri().path();
-    if path.starts_with("/@") || path.starts_with("/__") {
+    // Vite reserves no `/__` prefix: only oj's own endpoints skip SSR.
+    if path.starts_with("/@") || oj_server::is_dev_server_path(path) {
         return Route::Pass;
     }
     if path.rsplit('/').next().is_some_and(|seg| seg.contains('.')) {
@@ -427,8 +444,12 @@ mod tests {
         };
         assert!(route("GET", "/@oj/client.js"), "internal urls pass through");
         assert!(
-            route("GET", "/__oj_fn"),
-            "double-underscore urls pass through"
+            route("GET", "/__hmr_gate"),
+            "oj's own endpoints pass through"
+        );
+        assert!(
+            !route("GET", "/__component/preview/Badge"),
+            "an app page under /__ is rendered, Vite reserves no /__ prefix"
         );
         assert!(route("GET", "/src/App.tsx"), "a file url passes through");
         assert!(

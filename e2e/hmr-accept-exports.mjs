@@ -88,6 +88,9 @@ try {
         "oj must compare the importers' used names against the accepted list.",
     );
   }
+  // A reload is seen as soon as the new document exists, before its module
+  // runs: read the importer's value once that page is ready.
+  await page2.waitForFunction(() => window.__READY, null, { timeout: 20000 });
   const b = await page2.evaluate(() => window.__b);
   if (b !== "b2") throw new Error(`the unlisted export never reached the importer: window.__b = ${JSON.stringify(b)}`);
   console.log("hmr-accept-exports: unlisted-export edit propagates past the partial boundary");

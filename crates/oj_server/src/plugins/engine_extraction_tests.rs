@@ -97,20 +97,15 @@ export default { base };"#);
 #[test]
 fn truncated_observed_reads_serve_but_never_cache() {
     let _g = lock();
-    // Cap the recorder at one path; the config reads two .json files, so the
-    // dep stamp is incomplete and the result must not be cached.
-    std::env::set_var("OJ_OBSERVED_READS_MAX", "1");
+    // The recorder caps at 512 paths; the config probes 513 missing .json
+    // files, so the dep stamp is incomplete and the result must not be cached.
     let dir = app(r#"import fs from "node:fs";
-const a = JSON.parse(fs.readFileSync(new URL("./a.json", import.meta.url), "utf8"));
-const b = JSON.parse(fs.readFileSync(new URL("./b.json", import.meta.url), "utf8"));
-export default { base: a.base + b.base };"#);
+for (let i = 0; i <= 512; i++) fs.existsSync(new URL(`./m${i}.json`, import.meta.url));
+export default { base: "/t/" };"#);
     let root = dir.path();
-    std::fs::write(root.join("a.json"), r#"{"base":"/a"}"#).unwrap();
-    std::fs::write(root.join("b.json"), r#"{"base":"/b"}"#).unwrap();
-    let result = extract_vite_values_with(root, None, "serve", "development", true);
-    std::env::remove_var("OJ_OBSERVED_READS_MAX");
-    let v = result.expect("the result is still served");
-    assert_eq!(v.base.as_deref(), Some("/a/b"));
+    let v = extract_vite_values_with(root, None, "serve", "development", true)
+        .expect("the result is still served");
+    assert_eq!(v.base.as_deref(), Some("/t/"));
     assert!(
         extraction_store(root)
             .lookup(&root.join("vite.config.mjs"), "serve", "development")
@@ -119,8 +114,10 @@ export default { base: a.base + b.base };"#);
     );
 }
 
+// Production extraction is UNBOUNDED (Vite loads configs with no timeout);
+// the explicit bound stays available and still terminates a wedged job.
 #[test]
-fn a_config_that_never_finishes_is_terminated_at_the_deadline() {
+fn a_config_that_never_finishes_is_terminated_at_an_explicit_bound() {
     let _g = lock();
     let dir = app("await new Promise(() => {});\nexport default {};");
     let root = dir.path();
@@ -131,12 +128,12 @@ fn a_config_that_never_finishes_is_terminated_at_the_deadline() {
         "serve",
         "development",
         true,
-        extraction_timeout_from(Some("2")),
+        Some(std::time::Duration::from_secs(2)),
     );
     assert!(result.is_none(), "a wedged config evaluation is a failure");
     assert!(
         started.elapsed() < std::time::Duration::from_secs(30),
-        "the deadline must end the wait, not the config's leisure"
+        "the explicit bound must end the wait, not the config's leisure"
     );
 }
 
@@ -176,6 +173,42 @@ export default { base: "/loud/" };"#);
         "stdout prints are dropped, as the old subprocess capture dropped them: {}",
         hit.stderr
     );
+}
+
+#[test]
+fn worker_config_warns_only_in_an_spa_build() {
+    let _g = lock();
+    let config = r#"export default { worker: { format: "es" } };"#;
+    let warning = "worker config is not applied";
+    let spa = app(config);
+    let root = spa.path();
+    let vite = root.join("vite.config.mjs");
+    extract_vite_values_with(root, None, "build", "production", true).unwrap();
+    let hit = extraction_store(root)
+        .lookup(&vite, "build", "production@spa-build")
+        .expect("an SPA build's extraction is cached under its own key");
+    assert!(hit.stderr.contains(warning), "{}", hit.stderr);
+    // Dev bundles no worker, so `worker` is nothing oj leaves out there.
+    extract_vite_values_with(root, None, "serve", "development", true).unwrap();
+    let hit = extraction_store(root)
+        .lookup(&vite, "serve", "development")
+        .expect("cached");
+    assert!(!hit.stderr.contains(warning), "{}", hit.stderr);
+
+    // The Start build bundles workers with `worker` applied.
+    let start = app(config);
+    let root = start.path();
+    std::fs::create_dir_all(root.join("src/routes")).unwrap();
+    std::fs::write(
+        root.join("package.json"),
+        r#"{"name":"fx","version":"1.0.0","type":"module","dependencies":{"@tanstack/react-start":"*"}}"#,
+    )
+    .unwrap();
+    extract_vite_values_with(root, None, "build", "production", true).unwrap();
+    let hit = extraction_store(root)
+        .lookup(&root.join("vite.config.mjs"), "build", "production")
+        .expect("cached");
+    assert!(!hit.stderr.contains(warning), "{}", hit.stderr);
 }
 
 #[test]
@@ -258,8 +291,10 @@ fn engine_jobs_can_spawn_child_processes() {
         dir.path().join("spawn-job.mjs"),
         r#"import { execFileSync, spawn } from "node:child_process";
 export async function run() {
-  const sync = execFileSync("/bin/echo", ["sync-child"], { encoding: "utf8" }).trim();
-  const child = spawn("/bin/echo", ["piped-child"]);
+  // An explicit cwd: tests share one process, whose cwd a parallel test's
+  // plugin host may have moved into a temp dir it then deleted.
+  const sync = execFileSync("/bin/echo", ["sync-child"], { encoding: "utf8", cwd: "/" }).trim();
+  const child = spawn("/bin/echo", ["piped-child"], { cwd: "/" });
   let piped = "";
   child.stdout.on("data", (d) => { piped += d.toString(); });
   const code = await new Promise((resolve) => child.on("close", resolve));
@@ -276,7 +311,7 @@ export async function run() {
         &dir.path().join("spawn-job.mjs"),
         "run",
         serde_json::json!({}),
-        std::time::Duration::from_secs(30),
+        Some(std::time::Duration::from_secs(30)),
     )
     .expect("child_process must work under the embedded engine");
     assert_eq!(out["sync"], "sync-child");
@@ -304,4 +339,123 @@ fn engine_job_envelope_round_trips_every_outcome() {
             _ => panic!("outcome {outcome:?} came back as {back:?}"),
         }
     }
+}
+
+/// Extraction counts the config's plugins the host would run (every one
+/// outside oj's native set, `apply` ignored, async and nested factories
+/// flattened), and a later boot reads the count from the cache.
+#[test]
+fn extraction_counts_the_plugins_a_host_would_run() {
+    let _g = lock();
+    let native = r#"[{ name: "vite:react-babel" }, { name: "vite:react:config-post" }, [Promise.resolve({ name: "vite:react-refresh-fbm" })], { name: "vite:react-virtual-preamble" }]"#;
+    let dir = app(&format!("export default {{ plugins: {native} }};"));
+    let v = extract_vite_values_with(dir.path(), None, "serve", "development", true).unwrap();
+    assert_eq!(v.active_plugins, Some(0), "only native plugins");
+    assert_eq!(
+        cached_active_plugins(dir.path(), None, "development"),
+        Some(0)
+    );
+
+    let dir = app(&format!(
+        "export default {{ plugins: [...{native}, {{ name: \"mine\", apply: \"build\" }}] }};"
+    ));
+    let v = extract_vite_values_with(dir.path(), None, "serve", "development", true).unwrap();
+    assert_eq!(
+        v.active_plugins,
+        Some(1),
+        "an app plugin, even build-only, counts"
+    );
+}
+
+/// The process env with `vars` set over it, as a later launch would see it.
+fn env_with(vars: &[(&str, &str)]) -> oj_env::Env {
+    let mut all: Vec<(String, String)> = oj_env::get()
+        .vars()
+        .filter(|(k, _)| !vars.iter().any(|(n, _)| n == k))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    all.extend(vars.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+    oj_env::Env::from_vars(all)
+}
+
+/// Whether the cached extraction of `root` serves a launch with `env`.
+fn serves(root: &Path, config: &str, env: &oj_env::Env) -> bool {
+    extraction_store(root)
+        .lookup_in(env, &root.join(config), "serve", "development")
+        .is_some()
+}
+
+fn cached_output(root: &Path, config: &str) -> serde_json::Value {
+    let hit = extraction_store(root)
+        .lookup(&root.join(config), "serve", "development")
+        .expect("cached");
+    serde_json::from_str(&hit.output).unwrap()
+}
+
+// Vite evaluates the config on every start, so a var the config reads is an
+// input of the extraction like a file it imports: another value, or the var
+// appearing, is a cache miss. Vars it never read, and the ones oj's own
+// extractor reads (NODE_ENV), are not.
+#[test]
+fn a_var_the_config_reads_keys_the_cached_extraction() {
+    let _g = lock();
+    let dir = app(
+        r#"const api = process.env.OJ_EXTRACT_TEST_API_URL ?? "none";
+const flag = "OJ_EXTRACT_TEST_FLAG" in process.env;
+export default { define: { __API__: JSON.stringify(api), __FLAG__: String(flag) } };"#,
+    );
+    let root = dir.path();
+    let v = extract_vite_values_with(root, None, "serve", "development", true).unwrap();
+    assert_eq!(
+        v.define.as_ref().and_then(|d| d.get("__API__")),
+        Some(&serde_json::json!("\"none\""))
+    );
+    let json = cached_output(root, "vite.config.mjs");
+    assert_eq!(
+        json["__envReads"],
+        serde_json::json!(["OJ_EXTRACT_TEST_API_URL", "OJ_EXTRACT_TEST_FLAG"]),
+        "only the config's own reads"
+    );
+    assert_eq!(json["__envEnumerated"], false);
+    let config = "vite.config.mjs";
+    assert!(serves(root, config, &env_with(&[])));
+    assert!(
+        !serves(
+            root,
+            config,
+            &env_with(&[("OJ_EXTRACT_TEST_API_URL", "https://b")])
+        ),
+        "a var the config read changed"
+    );
+    assert!(
+        !serves(root, config, &env_with(&[("OJ_EXTRACT_TEST_FLAG", "")])),
+        "a var the config probed appeared"
+    );
+    assert!(serves(
+        root,
+        config,
+        &env_with(&[("OJ_EXTRACT_TEST_UNREAD", "1")])
+    ));
+}
+
+// A config that copies the env may put any var into its result.
+#[test]
+fn a_config_that_copies_the_env_keys_on_all_of_it() {
+    let _g = lock();
+    let dir = app(r#"const all = { ...process.env };
+export default { define: { __API__: JSON.stringify(all.OJ_EXTRACT_TEST_API_URL ?? "") } };"#);
+    let root = dir.path();
+    extract_vite_values_with(root, None, "serve", "development", true).unwrap();
+    assert_eq!(
+        cached_output(root, "vite.config.mjs")["__envEnumerated"],
+        true
+    );
+    let config = "vite.config.mjs";
+    assert!(serves(root, config, &env_with(&[])));
+    assert!(!serves(
+        root,
+        config,
+        &env_with(&[("OJ_EXTRACT_TEST_ANY", "1")])
+    ));
+    assert!(serves(root, config, &env_with(&[("OLDPWD", "/elsewhere")])));
 }

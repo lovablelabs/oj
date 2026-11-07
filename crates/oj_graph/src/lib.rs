@@ -26,6 +26,11 @@ pub struct ModuleNode {
     /// second invalidate for the same update is ignored, and one for a module
     /// no update ever touched has nothing to escalate.
     pub last_hmr_invalidation_received: bool,
+    /// When a file change last hard-invalidated this module (Vite's
+    /// `lastInvalidationTimestamp`): a strictly increasing stamp, 0 until then.
+    /// Part of the compile cache key, so the next request re-transforms it,
+    /// and a compile already in flight cannot be served for it.
+    pub last_invalidation_timestamp: u64,
     /// Dependencies this module accepts updates for via
     /// `import.meta.hot.accept(deps, cb)` (Vite's `acceptedHmrDeps`): an update
     /// of one of them stops here with this module as the boundary.
@@ -42,6 +47,8 @@ pub struct ModuleNode {
 #[derive(Debug, Default)]
 pub struct ModuleGraph {
     modules: HashMap<PathBuf, ModuleNode>,
+    /// The last `last_invalidation_timestamp` handed out.
+    invalidation_stamp: u64,
 }
 
 impl ModuleGraph {
@@ -246,6 +253,63 @@ impl ModuleGraph {
         dirty
     }
 
+    /// Vite's `moduleGraph.onFileChange`, run on every change whether HMR is
+    /// on or not: the changed module is hard-invalidated, then each importer
+    /// that does not accept it is invalidated in turn. An importer for which
+    /// `soft` holds (Vite: a JS importer) is soft-invalidated, only its import
+    /// timestamps to refresh, which takes no work here; any other (a
+    /// stylesheet, whose output inlines its deps) is hard-invalidated, even
+    /// when reached through a soft one. Returns the hard-invalidated modules.
+    pub fn invalidate_on_change(
+        &mut self,
+        changed: &Path,
+        soft: impl Fn(&Path) -> bool,
+    ) -> Vec<PathBuf> {
+        if !self.modules.contains_key(changed) {
+            return Vec::new();
+        }
+        self.invalidation_stamp += 1;
+        let stamp = self.invalidation_stamp;
+        let mut hard: Vec<PathBuf> = Vec::new();
+        let mut seen_hard: HashSet<PathBuf> = HashSet::new();
+        let mut seen_soft: HashSet<PathBuf> = HashSet::new();
+        let mut stack: Vec<(PathBuf, bool)> = vec![(changed.to_path_buf(), false)];
+        while let Some((path, is_soft)) = stack.pop() {
+            // Vite's `seen` check: a module is revisited only to move it from
+            // soft to hard.
+            if seen_hard.contains(&path) || (is_soft && !seen_soft.insert(path.clone())) {
+                continue;
+            }
+            let Some(node) = self.modules.get_mut(&path) else {
+                continue;
+            };
+            if !is_soft {
+                seen_hard.insert(path.clone());
+                node.last_invalidation_timestamp = stamp;
+                hard.push(path.clone());
+            }
+            let importers: Vec<PathBuf> = node.importers.iter().cloned().collect();
+            for importer in importers {
+                let accepts = self
+                    .modules
+                    .get(&importer)
+                    .is_some_and(|n| n.accepted_hmr_deps.contains(&path));
+                if !accepts {
+                    let importer_soft = soft(&importer);
+                    stack.push((importer, importer_soft));
+                }
+            }
+        }
+        hard
+    }
+
+    pub fn invalidation_timestamp(&self, path: &Path) -> u64 {
+        self.modules
+            .get(path)
+            .map(|n| n.last_invalidation_timestamp)
+            .unwrap_or(0)
+    }
+
     pub fn hmr_timestamp(&self, path: &Path) -> u64 {
         self.modules
             .get(path)
@@ -273,6 +337,60 @@ impl ModuleGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_change_hard_invalidates_the_stylesheets_that_inline_it() {
+        // main.tsx -> app.css -> theme.css; Button.tsx -> app.css (a scanned
+        // source); App.tsx -> Button.tsx, and App accepts Button.
+        let mut g = ModuleGraph::new();
+        let p = Path::new;
+        g.add_import(p("/src/main.tsx"), p("/src/app.css"));
+        g.add_import(p("/src/app.css"), p("/src/theme.css"));
+        g.add_import(p("/src/app.css"), p("/src/Button.tsx"));
+        g.add_import(p("/src/App.tsx"), p("/src/Button.tsx"));
+        g.set_accepted_deps(p("/src/App.tsx"), &[PathBuf::from("/src/Button.tsx")]);
+        let soft = |m: &Path| !m.to_string_lossy().ends_with(".css");
+
+        let mut hard = g.invalidate_on_change(p("/src/theme.css"), soft);
+        hard.sort();
+        assert_eq!(
+            hard,
+            vec![
+                PathBuf::from("/src/app.css"),
+                PathBuf::from("/src/theme.css")
+            ]
+        );
+        let first = g.invalidation_timestamp(p("/src/app.css"));
+        assert!(first > 0);
+        assert_eq!(
+            g.invalidation_timestamp(p("/src/main.tsx")),
+            0,
+            "a JS importer is soft"
+        );
+
+        let mut hard = g.invalidate_on_change(p("/src/Button.tsx"), soft);
+        hard.sort();
+        assert_eq!(
+            hard,
+            vec![
+                PathBuf::from("/src/Button.tsx"),
+                PathBuf::from("/src/app.css")
+            ]
+        );
+        assert!(
+            g.invalidation_timestamp(p("/src/app.css")) > first,
+            "stamps only grow"
+        );
+        assert_eq!(
+            g.invalidation_timestamp(p("/src/App.tsx")),
+            0,
+            "accepting importer untouched"
+        );
+
+        assert!(g
+            .invalidate_on_change(p("/src/unknown.css"), soft)
+            .is_empty());
+    }
 
     #[test]
     fn stamp_update_marks_the_chain_up_to_the_boundary() {

@@ -6,17 +6,8 @@
 //! the node sidecars). One lazily spawned engine per kind.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use oj_js::{EngineConfig, EngineError, JsEngine};
-
-/// Per-request deadline in dev, matching the old sidecar's request timeout.
-pub const DEV_DEADLINE: Duration = Duration::from_secs(20);
-/// Per-request deadline for the build's one-shot compiles (the old path had
-/// none and could hang forever; that was a bug, not a contract).
-pub const BUILD_DEADLINE: Duration = Duration::from_secs(60);
-/// Per-request deadline for the Start server's stylesheet host.
-pub const START_DEADLINE: Duration = Duration::from_secs(30);
 
 const TAILWIND_JS: &str = include_str!("assets/css-tailwind.mjs");
 const PREPROCESS_JS: &str = include_str!("assets/css-preprocess.mjs");
@@ -31,7 +22,8 @@ const MISSING_PACKAGE_MARKER: &str = "OJ_MISSING_PACKAGE ";
 /// (Tailwind's config loader is a known per-compile module leak): a memory-limit
 /// failure fails the running compile and swaps in a fresh engine, so the NEXT
 /// compile runs on a clean heap. Callers hold this struct in once-cells; the
-/// swap lives inside so every one of them heals.
+/// swap lives inside so every one of them heals. Compiles run unbounded, like
+/// Vite's CSS pipeline: elapsed time never fails a compile.
 pub struct CssEngine {
     /// Compiles hold the read guard across the whole engine call on purpose:
     /// cloning an Arc under a short lock would let a replaced engine's isolate
@@ -41,7 +33,6 @@ pub struct CssEngine {
     script: String,
     base: String,
     kind: &'static str,
-    deadline: Duration,
     memory_limit_bytes: usize,
     /// Plugin-host parity: bounded revive attempts with spacing, so an app that
     /// outgrows the cap fails compiles instead of respawning isolates forever.
@@ -70,10 +61,46 @@ struct EngineSpec {
     postcss_config: Option<String>,
 }
 
+/// What a Tailwind/PostCSS compile read besides its own source: PostCSS
+/// `dependency` files and `dir-dependency` globs, and Tailwind v4's
+/// `onDependency` files. Other engines report none.
+#[derive(Debug, Default, PartialEq)]
+pub struct CssDeps {
+    pub files: Vec<PathBuf>,
+    /// `(dir, glob)`: the files under `dir` matching `glob`.
+    pub dirs: Vec<(PathBuf, String)>,
+}
+
+impl CssDeps {
+    fn of(value: &serde_json::Value) -> Self {
+        let paths = |key: &str| {
+            value[key]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str().map(PathBuf::from))
+                .collect::<Vec<_>>()
+        };
+        let dirs = value["dirDeps"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|d| {
+                let dir = d["dir"].as_str()?;
+                let glob = d["glob"].as_str().unwrap_or("**");
+                Some((PathBuf::from(dir), glob.to_string()))
+            })
+            .collect();
+        CssDeps {
+            files: paths("deps"),
+            dirs,
+        }
+    }
+}
+
 impl CssEngine {
     pub async fn tailwind(
         root: &Path,
-        deadline: Duration,
         registry: Option<oj_js::EngineRegistry>,
     ) -> anyhow::Result<std::sync::Arc<Self>> {
         let postcss_config =
@@ -86,7 +113,6 @@ impl CssEngine {
                 kind: "tailwind",
                 postcss_config,
             },
-            deadline,
             shared_memory_limit(),
             registry,
         )
@@ -95,7 +121,6 @@ impl CssEngine {
 
     pub async fn preprocess(
         root: &Path,
-        deadline: Duration,
         registry: Option<oj_js::EngineRegistry>,
     ) -> anyhow::Result<std::sync::Arc<Self>> {
         Self::spawn(
@@ -106,7 +131,6 @@ impl CssEngine {
                 kind: "css preprocessor",
                 postcss_config: None,
             },
-            deadline,
             shared_memory_limit(),
             registry,
         )
@@ -115,7 +139,6 @@ impl CssEngine {
 
     pub async fn svelte(
         root: &Path,
-        deadline: Duration,
         registry: Option<oj_js::EngineRegistry>,
     ) -> anyhow::Result<std::sync::Arc<Self>> {
         Self::spawn(
@@ -126,7 +149,6 @@ impl CssEngine {
                 kind: "svelte compiler",
                 postcss_config: None,
             },
-            deadline,
             shared_memory_limit(),
             registry,
         )
@@ -138,7 +160,6 @@ impl CssEngine {
     async fn spawn(
         root: &Path,
         spec: EngineSpec,
-        deadline: Duration,
         memory_limit_bytes: usize,
         registry: Option<oj_js::EngineRegistry>,
     ) -> anyhow::Result<std::sync::Arc<Self>> {
@@ -154,7 +175,7 @@ impl CssEngine {
         }
         std::fs::write(&script, js)?;
 
-        let engine = Self::spawn_engine(root, deadline, memory_limit_bytes, registry.clone())
+        let engine = Self::spawn_engine(root, memory_limit_bytes, registry.clone())
             .await
             .map_err(|e| anyhow::anyhow!("cannot start the {kind} engine: {e}"))?;
         Ok(std::sync::Arc::new(CssEngine {
@@ -166,7 +187,6 @@ impl CssEngine {
             script: script.to_string_lossy().into_owned(),
             base: root.display().to_string(),
             kind,
-            deadline,
             memory_limit_bytes,
             revive_attempts: std::sync::atomic::AtomicU32::new(0),
             last_revive: std::sync::Mutex::new(None),
@@ -177,14 +197,13 @@ impl CssEngine {
 
     async fn spawn_engine(
         root: &Path,
-        deadline: Duration,
         memory_limit_bytes: usize,
         registry: Option<oj_js::EngineRegistry>,
     ) -> Result<JsEngine, EngineError> {
         let config = EngineConfig {
             root: root.to_path_buf(),
             memory_limit_bytes: Some(memory_limit_bytes),
-            default_deadline: Some(deadline),
+            default_deadline: None,
             code_cache_dir: Some(crate::engine_code_cache_dir(root)),
             registry,
         };
@@ -215,14 +234,7 @@ impl CssEngine {
         if let Ok(mut last) = self.last_revive.lock() {
             *last = Some(std::time::Instant::now());
         }
-        match Self::spawn_engine(
-            &self.root,
-            self.deadline,
-            self.memory_limit_bytes,
-            self.registry.clone(),
-        )
-        .await
-        {
+        match Self::spawn_engine(&self.root, self.memory_limit_bytes, self.registry.clone()).await {
             Ok(fresh) => {
                 slot.generation += 1;
                 slot.engine = fresh;
@@ -259,7 +271,17 @@ impl CssEngine {
         options: serde_json::Value,
     ) -> Result<String, String> {
         let from = absolute_from(&self.base, from);
-        self.request(css, from, options, true).await
+        Ok(self.request(css, from, options, true).await?.0)
+    }
+
+    /// [`compile`](Self::compile) plus the files the compile read.
+    pub async fn compile_tracked(
+        &self,
+        css: &str,
+        from: &str,
+    ) -> Result<(String, CssDeps), String> {
+        let from = absolute_from(&self.base, from);
+        self.request(css, from, serde_json::Value::Null, true).await
     }
 
     /// Compiles from an absolute file path (build and Start host know the file,
@@ -271,8 +293,10 @@ impl CssEngine {
         options: serde_json::Value,
         dev: bool,
     ) -> Result<String, String> {
-        self.request(css, from.to_string_lossy().into_owned(), options, dev)
-            .await
+        Ok(self
+            .request(css, from.to_string_lossy().into_owned(), options, dev)
+            .await?
+            .0)
     }
 
     async fn request(
@@ -281,7 +305,7 @@ impl CssEngine {
         from: String,
         options: serde_json::Value,
         dev: bool,
-    ) -> Result<String, String> {
+    ) -> Result<(String, CssDeps), String> {
         let request = serde_json::json!({
             "base": self.base,
             "css": css,
@@ -300,7 +324,11 @@ impl CssEngine {
             )
         };
         match result {
-            Ok(serde_json::Value::String(css)) => Ok(css),
+            Ok(serde_json::Value::String(css)) => Ok((css, CssDeps::default())),
+            Ok(out) if out["css"].is_string() => {
+                let deps = CssDeps::of(&out);
+                Ok((out["css"].as_str().unwrap_or_default().to_string(), deps))
+            }
             Ok(other) => Err(format!(
                 "{} compile produced no output ({other})",
                 self.kind
@@ -311,7 +339,7 @@ impl CssEngine {
                 if matches!(e, EngineError::MemoryLimit | EngineError::Closed) {
                     self.revive(generation, &e).await;
                 }
-                Err(map_engine_error(self.kind, self.deadline, e))
+                Err(map_engine_error(self.kind, e))
             }
         }
     }
@@ -323,15 +351,13 @@ fn shared_memory_limit() -> usize {
     crate::plugins::plugin_host_memory_mb() * 1024 * 1024
 }
 
-fn map_engine_error(kind: &str, deadline: Duration, e: EngineError) -> String {
+fn map_engine_error(kind: &str, e: EngineError) -> String {
     match e {
         EngineError::Js(message) => match missing_package(&message) {
             Some(package) => format!("{kind} compile failed (is {package} installed?)"),
             None => strip_stack(&message).to_string(),
         },
-        EngineError::Deadline => {
-            format!("{kind} compile timed out after {}s", deadline.as_secs())
-        }
+        EngineError::Deadline => format!("{kind} compile timed out"),
         EngineError::MemoryLimit => format!("{kind} compile exceeded the JS memory limit"),
         EngineError::Boot(e) => format!("cannot start the {kind} engine: {e}"),
         EngineError::Closed => format!("the {kind} engine is shut down"),
@@ -369,6 +395,7 @@ fn absolute_from(base: &str, from: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn absolute_from_roots_urls_at_base() {
@@ -396,7 +423,7 @@ mod tests {
             "Uncaught (in promise) Error: OJ_MISSING_PACKAGE less: Cannot find module 'less'\n    at load (file:///x/.oj-cache/css-preprocess.mjs:20:11)".into(),
         );
         assert_eq!(
-            map_engine_error("css preprocessor", DEV_DEADLINE, err),
+            map_engine_error("css preprocessor", err),
             "css preprocessor compile failed (is less installed?)"
         );
         let err = EngineError::Js(
@@ -404,7 +431,7 @@ mod tests {
                 .into(),
         );
         assert_eq!(
-            map_engine_error("tailwind", DEV_DEADLINE, err),
+            map_engine_error("tailwind", err),
             "tailwind compile failed (is tailwindcss installed?)"
         );
     }
@@ -416,23 +443,15 @@ mod tests {
                 .into(),
         );
         assert_eq!(
-            map_engine_error("tailwind", DEV_DEADLINE, err),
+            map_engine_error("tailwind", err),
             "CssSyntaxError: /app/src/a.css:1:1: Unclosed block"
         );
     }
 
     #[test]
-    fn limits_map_to_the_timeout_shape() {
+    fn a_blown_heap_maps_to_the_memory_limit_message() {
         assert_eq!(
-            map_engine_error("tailwind", DEV_DEADLINE, EngineError::Deadline),
-            "tailwind compile timed out after 20s"
-        );
-        assert_eq!(
-            map_engine_error("svelte compiler", BUILD_DEADLINE, EngineError::Deadline),
-            "svelte compiler compile timed out after 60s"
-        );
-        assert_eq!(
-            map_engine_error("tailwind", DEV_DEADLINE, EngineError::MemoryLimit),
+            map_engine_error("tailwind", EngineError::MemoryLimit),
             "tailwind compile exceeded the JS memory limit"
         );
     }
@@ -461,9 +480,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_missing_preprocessor_reports_the_install_hint_through_the_engine() {
         let root = app_root();
-        let engine = CssEngine::preprocess(root.path(), DEV_DEADLINE, None)
-            .await
-            .unwrap();
+        let engine = CssEngine::preprocess(root.path(), None).await.unwrap();
         let err = engine
             .compile(".box { color: red }", "/src/a.less")
             .await
@@ -472,28 +489,29 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_hung_compile_hits_the_deadline_and_the_engine_survives() {
+    async fn a_slow_compile_is_never_cut_off_and_its_neighbors_finish() {
+        // Elapsed time never fails a compile: one compile holds the shared
+        // isolate in synchronous JS after an await while another is parked,
+        // and both come back with output.
         let root = app_root();
         stub_less(
             root.path(),
-            "module.exports = { FileManager: class {}, render(css) { if (css.includes('hang')) { for (;;) {} } return Promise.resolve({ css: css + '/*ok*/' }); } };",
+            "module.exports = { FileManager: class {}, async render(css) { \
+             await new Promise((r) => setTimeout(r, 100)); \
+             if (css.includes('slow')) { const end = Date.now() + 1500; while (Date.now() < end) {} } \
+             return { css: css + '/*ok*/' }; } };",
         );
-        let engine = CssEngine::preprocess(root.path(), Duration::from_secs(1), None)
-            .await
-            .unwrap();
-        // Outer guard: this test's failure mode is an infinite hang (the
-        // deadline never classifying), which must fail fast, not wedge CI.
-        let err = tokio::time::timeout(
-            Duration::from_secs(10),
-            engine.compile(".hang {}", "/src/a.less"),
-        )
+        let engine = CssEngine::preprocess(root.path(), None).await.unwrap();
+        let (slow, fine) = tokio::time::timeout(Duration::from_secs(20), async {
+            tokio::join!(
+                engine.compile(".slow {}", "/src/a.less"),
+                engine.compile(".fine {}", "/src/b.less"),
+            )
+        })
         .await
-        .expect("the compile deadline never fired: the engine is wedged")
-        .unwrap_err();
-        assert_eq!(err, "css preprocessor compile timed out after 1s");
-        // The isolate is un-poisoned: the next request compiles.
-        let out = engine.compile(".fine {}", "/src/a.less").await.unwrap();
-        assert_eq!(out, ".fine {}/*ok*/");
+        .expect("the compiles never settled: the engine is wedged");
+        assert_eq!(slow.unwrap(), ".slow {}/*ok*/");
+        assert_eq!(fine.unwrap(), ".fine {}/*ok*/");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -515,7 +533,6 @@ mod tests {
                 kind: "css preprocessor",
                 postcss_config: None,
             },
-            DEV_DEADLINE,
             128 * 1024 * 1024,
             None,
         )

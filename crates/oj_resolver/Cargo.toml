@@ -12,6 +12,7 @@ name = "oj_resolver"
 
 [dependencies]
 oxc_resolver.workspace = true
+regress = "0.12"
 serde_json.workspace = true
 thiserror.workspace = true
 

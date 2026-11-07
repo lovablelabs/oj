@@ -37,6 +37,28 @@ Dev serves file-based routes with streaming SSR and client hydration, keeps Fast
 
 Solid Start apps use the same interface (`oj dev web`, `oj build web`); see `SOLID.md` for ongoing fork notes.
 
+## Type checking
+
+`oj typecheck` is `tsc` on [tsrs](https://github.com/oxc-project/tsrs) (the Rust port of the TypeScript 7 compiler, built into oj). It takes the arguments `tsc` (tsgo) takes and prints and exits as TypeScript 7.0's does, so a build that calls tsgo can call `oj typecheck` in its place. The lib files are TypeScript 7.1's (default target ES2026), listed as `bundled:///libs/...`.
+
+`oj dev --typecheck` keeps a checker warm beside the dev server, and `oj dev-typecheck` asks it. It checks the way `tsc -b --noEmit` does, prints tsc's `file(line,col): error TSn: message` lines and exits 0 when clean, 2 on type errors and 1 when it cannot check.
+
+```sh
+oj typecheck -p web/tsconfig.json --noEmit       # tsc's own command line, output and exit codes
+oj dev web --typecheck                           # dev server that keeps a checker warm for ./web
+oj dev-typecheck web                             # asks that server
+oj dev-typecheck web --changed src/App.tsx       # names a file just written, so the answer covers it
+oj dev-typecheck web --json                      # the report as JSON
+```
+
+How the warm checker works:
+
+- `oj dev --typecheck` starts a checker in a child `oj` process beside the dev server, so a crash or hang in it never takes the server down; the next check starts a new one. It opens the projects `tsc -b` would build from the root `tsconfig.json` once the server has served its first page and been quiet for a second (sooner when a check is requested), so it never competes with that page, and the dev server's watcher forwards every change to it. Once changes settle it checks again, so a request usually finds a current report.
+- Every dev server writes its address (app root, pid, host, port and whether it runs `--typecheck`) to `.oj-cache/v1/dev-server.json`; apps that share an `OJ_CACHE_DIR` share the file, and a server without `--typecheck` leaves a live `--typecheck` server's entry in place. `oj dev-typecheck <dir>` reads it and posts to the server's `/@oj/typecheck`, which answers only local callers (not browsers or the preview proxy). Files named with `--changed` are re-read before the answer, so it never waits on the watcher. It does not check on its own: with no dev server running for that root it says `no dev server found`, with one started without `--typecheck` it says `dev server was started without --typecheck`, and it cannot reach a server that runs over https; all exit 1. With no root named it asks about the root `oj dev` would serve.
+- After an edit, only the files it affects are checked again, as `tsc --watch` does: each project keeps an incremental program whose per-file results carry over to the next one. An edit that leaves a file's exported types unchanged re-checks only that file. An edit that changes them also re-checks every file that imports it, directly or not, which can be most of an app for a widely shared module.
+- That needs each file's declaration signature, which the checker records in the background once it has heard nothing (no change, no check) for a second after a check; a burst of edits records once, after it. A check that arrives while it records stops it before the next file. It leaves out the files whose declaration emit is slow: the TanStack Router route tree (`tsr.config.json`'s `generatedRouteTree`, `src/routeTree.gen.ts` by default), whose one declaration types every route, and any file it once took a second or more to emit. A change to one of those re-checks the files that import it.
+- An edit to a tsconfig, `package.json` or a lockfile opens the projects again from scratch.
+
 ## Quickstart
 
 Run `oj` in any app. Usable today from a local checkout (see
@@ -60,6 +82,12 @@ Once published, the same CLI comes from crates.io instead:
 cargo install adaptive-oj --locked              # install the `oj` CLI
 ```
 
+Or with [Homebrew](https://formulae.brew.sh/formula/lovable-oj) (upstream release):
+
+```sh
+brew install lovable-oj
+```
+
 Or with Nix:
 
 ```sh
@@ -74,7 +102,7 @@ Windows MSVC x64/arm64.
 
 ## Benchmarks
 
-Generated fanout-10 React component trees, measured save-to-paint with Playwright against Vite 8.2.1 (Rolldown-based) on an M-series Mac, in both its default dev mode (vite) and its experimental bundled dev mode (vite-fbm). p50/p95 over 5 cold+warm restart cycles and 10 HMR edits.
+Generated fanout-10 React component trees, measured save-to-paint with Playwright against Vite 8.3.5 (Rolldown-based) on an Apple M5 Max, in both its default dev mode (vite) and its experimental bundled dev mode (vite-fbm). p50/p95 over 5 cold+warm restart cycles and 10 HMR edits. Measured with oj 0.2.46.
 
 Memory is measured over the whole process tree, and reported two ways: resident set (tree RSS) and macOS physical footprint, which excludes clean and reclaimable resident pages and so bounds retained memory. Forced-GC RSS is not a column because it cannot be measured symmetrically (Node exposes an external GC handle through its inspector; embedded V8 does not) — for reference, forcing GC before measuring lowered vite's tree RSS by roughly a third in our runs, still well above its footprint. Methodology corrections owe to [#202](https://github.com/lovablelabs/oj/issues/202).
 
@@ -82,29 +110,29 @@ Memory is measured over the whole process tree, and reported two ways: resident 
 
 | tool | cold start | warm start | reload | HMR | tree RSS | footprint |
 |---|---|---|---|---|---|---|
-| **oj** | **661/756ms** | **433/460ms** | **232/238ms** | **55/59ms** | **139MB** | **96MB** |
-| vite | 769/780ms | 724/728ms | 229/232ms | 54/92ms | 405MB | 325MB |
-| vite-fbm | 341/344ms | 340/342ms | 54/56ms | 55/59ms | 357MB | 288MB |
+| **oj** | **466/558ms** | **321/327ms** | **166/168ms** | **57/59ms** | **180MB** | **136MB** |
+| vite | 641/648ms | 600/606ms | 167/167ms | 38/76ms | 398MB | 338MB |
+| vite-fbm | 317/356ms | 317/323ms | 47/48ms | 56/59ms | 357MB | 306MB |
 
 **5,000 components (p50/p95):**
 
 | tool | cold start | warm start | reload | HMR | tree RSS | footprint |
 |---|---|---|---|---|---|---|
-| **oj** | **1711/1744ms** | **1477/1509ms** | **1037/1056ms** | **59/62ms** | **187MB** | **145MB** |
-| vite | 2966/3396ms | 2793/3020ms | 1002/1099ms | 55/60ms | 903MB | 699MB |
-| vite-fbm | 959/973ms | 954/969ms | 167/172ms | 57/61ms | 974MB | 770MB |
+| **oj** | **1280/1451ms** | **1024/1038ms** | **722/726ms** | **61/62ms** | **398MB** | **146MB** |
+| vite | 2312/2321ms | 2133/2153ms | 710/713ms | 156/158ms | 848MB | 731MB |
+| vite-fbm | 989/995ms | 998/1000ms | 177/179ms | 60/67ms | 978MB | 931MB |
 
 **10,000 components (p50/p95):**
 
 | tool | cold start | warm start | reload | HMR | tree RSS | footprint |
 |---|---|---|---|---|---|---|
-| **oj** | **4168/4487ms** | **3898/4075ms** | **2934/3115ms** | **59/184ms** | **231MB** | **190MB** |
-| vite | 6983/7413ms | 6479/7037ms | 2400/2454ms | 83/266ms | 1465MB | 1126MB |
-| vite-fbm | 1593/2130ms | 1585/1705ms | 307/329ms | 60/69ms | 1761MB | 1229MB |
+| **oj** | **2380/2395ms** | **1929/1942ms** | **1431/1452ms** | **66/175ms** | **684MB** | **201MB** |
+| vite | 4554/4559ms | 4163/4185ms | 1383/1407ms | 152/157ms | 1414MB | 1331MB |
+| vite-fbm | 1379/1381ms | 1373/1378ms | 266/273ms | 67/72ms | 1740MB | 1741MB |
 
-oj wins cold and warm start against Vite's default dev at every size (~1.7x at 10k). HMR is a wash across all three. oj's decisive, consistent win is memory: 96-190MB footprint against Vite's 288MB-1.2GB, roughly 3x at 1k growing to 6x at 10k, measured over whole process trees.
+Against Vite's default dev, oj starts faster at every size: cold 1.4x at 1k to 1.9x at 10k, warm 1.9x to 2.2x. Reload is level with it. Vite's experimental bundled dev starts faster than oj and reloads far faster, because it serves one bundle instead of thousands of modules. HMR matches bundled dev at every size, and beats default dev from 5k up (default dev is faster at 1k). Memory is oj's largest and most consistent win: a 136-201MB footprint against Vite's 306MB-1.7GB, from 2.5x less than default dev at 1k to 6.6x less at 10k, measured over whole process trees.
 
-Production builds (`oj build` vs `vite build`) land at parity: same engine (Rolldown), byte-identical output sizes.
+Production builds (`oj build` vs `vite build`) produce the same output on the 10,000-component app. `oj build` is currently slower there: 697ms against Vite's 476ms with oj's cache cleared before each build, 523ms against 479ms primed (median of 7 interleaved runs).
 
 ## Reference reading
 
@@ -124,36 +152,16 @@ cargo test --workspace                            # rust unit tests
 node --test e2e/unit/*.test.mjs                   # js unit tests (adapter helpers)
 node e2e/run.mjs                                  # browser e2e suite
 node e2e/ssr-dev.mjs                              # SSR dev e2e, e2e/ssr-prod.mjs for the built server
-node e2e/start.mjs                                # tanstack start integration (see e2e/fixtures/start-app)
+cargo test -p oj --test start                     # tanstack start integration (see e2e/fixtures/start-app)
 node e2e/dep-optimize.mjs                         # dependency pre-bundle + cjs interop integration
-node e2e/assets.mjs                               # asset url imports + new URL(import.meta.url)
-node e2e/dynamic-import.mjs                       # dynamic import with variables (glob switch)
-node e2e/wasm.mjs                                 # wasm ?init instantiation (dev + build)
-node e2e/query-assets.mjs                         # ?url/?raw/?inline/?init asset queries
-node e2e/rolldown-options.mjs                     # build.rollupOptions filenames + external
-node e2e/preprocessors.mjs                        # less + stylus css (installs both, then dev+build)
-node e2e/assets-inline.mjs                        # assetsInlineLimit: small assets become data uris
+cargo test -p oj --bin oj plugin_api_tests       # build plugin API, rollupOptions, ssr, css and assetsDir options (in-process)
+cargo test -p oj_server --test dev                # dev server config, css, plugin hooks, ws and HMR sockets (in-process)
 node e2e/config-proxy.mjs                         # adopt vite.config server.proxy + ignored-config warnings
 node e2e/proxy-regex-context.mjs                  # server.proxy "^..." regex contexts (path + query), like Vite
-node e2e/config-function.mjs                      # oj.config function form ({ command, mode }) => config
-node e2e/build-target-raw-inline.mjs              # build.target downleveling + ?raw/?inline in build
-node e2e/manual-chunks.mjs                        # rollupOptions output.manualChunks vendor splitting
-node e2e/svgr.mjs                                 # svg as react component (?react), installs react
-node e2e/worker-modes.mjs                         # ?worker in dev and production build
-node e2e/html-entry.mjs                           # relative index.html script entry (src="src/x")
-node e2e/svelte.mjs                               # svelte 5 components in dev and build
-node e2e/build-mode.mjs                           # build --mode (import.meta.env.MODE + .env.<mode>)
-node e2e/hmr-protocol.mjs                         # hmr client derives wss (behind https proxy)
 node e2e/hmr-overlay-recovery.mjs                 # startup compile error: buffered overlay, reload on first update
 node e2e/hmr-json-update.mjs                      # editing an imported .json hot-updates its boundary (?t= stamp)
 node e2e/hmr-unresolved-import.mjs                # missing ./import fails with an overlay; creating the file recovers
 node e2e/host-binding.mjs                         # dev/preview --host + server.host bind all interfaces
-node e2e/plugin-ws.mjs                             # plugin server.ws custom events (send/on) round-trip
-node e2e/plugin-ws-execute.mjs                     # post -> ws broadcast -> client reply -> collect (bridge execute)
-node e2e/plugin-middleware.mjs                     # configureServer post body forwarding + transformIndexHtml
-node e2e/hmr-gate.mjs                              # hmr gate holds updates until POST /__hmr_flush
-node e2e/config-flag.mjs                           # oj dev --config <path> loads an override config
-node e2e/config-wrapper.mjs                        # vite.config that calls an external defineConfig wrapper
 node e2e/awkward-paths.mjs                         # percent-encoded filenames served, traversal contained
 node bench/generate.mjs 1000                      # generate a benchmark app (then npm i inside it)
 node bench/run.mjs 1000                           # p50/p95 benchmark vs vite

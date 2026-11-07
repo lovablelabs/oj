@@ -10,8 +10,8 @@
 //! module. Compared to the node loader:
 //! - TS/JSX stripping, `define`/`import.meta.env`, `import.meta.glob` and the
 //!   plugin transform chain come from the same Rust pipeline the SSR runner
-//!   uses (`SsrBridge::transform_module`), replacing rolldown `transformSync`
-//!   + `glob-transform.mjs` + the FIFO plugin bridge.
+//!   uses (`SsrBridge::transform_module`), replacing the node loader's
+//!   rolldown `transformSync`, glob transform and FIFO plugin bridge.
 //! - CSS-module class names come from the Rust side (`oj_css`), replacing the
 //!   loader's SipHash mirror.
 //! - CJS facades, directory-entry recovery and extension probing inside
@@ -138,9 +138,6 @@ fn pkg_name_of_path(path: &str) -> Option<String> {
     Some(first.to_string())
 }
 
-/// Base64url without padding (Node's `Buffer.toString("base64url")`), the
-/// server-function id encoding shared with gen-resolver.mjs and the client
-/// bundle.
 /// Decodes the bootstrap's standard base64 (Node `Buffer.toString("base64")`,
 /// padded); oj owns both ends, so malformed input decodes to empty.
 fn base64_decode(s: &str) -> Vec<u8> {
@@ -460,8 +457,23 @@ fn ext_of(path: &str) -> &str {
     }
 }
 
+/// Whether a resolved dependency file may stay external to an SSR bundle
+/// (a stylesheet, JSON or raw TypeScript bundles through the plugins instead).
+pub(crate) use oj_server::can_externalize_file;
+
+/// A source file the runtime cannot load natively from node_modules: Node and
+/// byonm refuse to strip types there, and nothing executes raw JSX.
+pub(crate) fn ts_source_ext(path: &str) -> bool {
+    matches!(
+        ext_of(path).to_ascii_lowercase().as_str(),
+        "ts" | "mts" | "cts" | "tsx" | "jsx"
+    )
+}
+
 fn src_lang(path: &str) -> Option<&'static str> {
-    match ext_of(path) {
+    // Case-insensitive, like `ts_source_ext`: a claimed `Badge.TSX` must also
+    // compile, not fall back to the runtime it was claimed away from.
+    match ext_of(path).to_ascii_lowercase().as_str() {
         "ts" | "mts" | "cts" => Some("ts"),
         "tsx" => Some("tsx"),
         "jsx" => Some("jsx"),
@@ -488,6 +500,8 @@ pub(crate) struct CjsCache {
     pkg_is_module: Mutex<std::collections::HashMap<PathBuf, bool>>,
     /// file → (mtime at sniff time, is-CJS verdict).
     verdicts: Mutex<std::collections::HashMap<PathBuf, (std::time::SystemTime, bool)>>,
+    /// file → (mtime at scan time, calls an undeclared `require`).
+    requires: Mutex<std::collections::HashMap<PathBuf, (std::time::SystemTime, bool)>>,
 }
 
 impl CjsCache {
@@ -558,6 +572,122 @@ impl CjsCache {
     }
 }
 
+impl CjsCache {
+    /// Whether `path` is an ES module that calls a `require` it never
+    /// declares: a bundler-only build no ESM runtime can evaluate (turndown's
+    /// `module` entry requires its Node DOM parser on first use), cached per
+    /// path + mtime.
+    fn esm_calls_require(&self, path: &str) -> bool {
+        if !(path.ends_with(".js") || path.ends_with(".mjs")) || self.is_cjs_file(path) {
+            return false;
+        }
+        let file = Path::new(path);
+        let mtime = std::fs::metadata(file).ok().and_then(|m| m.modified().ok());
+        if let Some(mtime) = mtime {
+            if let Some((seen, verdict)) = self.requires.lock().unwrap().get(file) {
+                if *seen == mtime {
+                    return *verdict;
+                }
+            }
+        }
+        let verdict = std::fs::read_to_string(file)
+            .map(|src| calls_undeclared_require(&src))
+            .unwrap_or(false);
+        if let Some(mtime) = mtime {
+            self.requires
+                .lock()
+                .unwrap()
+                .insert(file.to_path_buf(), (mtime, verdict));
+        }
+        verdict
+    }
+}
+
+/// Whether module code calls a `require` no scope of its own declares (a
+/// `createRequire` result or a wrapper's parameter is declared): directly,
+/// through a member (`require.resolve(id)`, esbuild's `__require` shim
+/// calling `require.apply`) or as `(0, require)(id)`. A call guarded by
+/// `typeof require` counts too: Node's entry, which it then gets, is Vite's
+/// pick anyway.
+fn calls_undeclared_require(src: &str) -> bool {
+    use oxc_ast::ast::{CallExpression, Expression};
+    use oxc_ast_visit::{walk, Visit};
+
+    struct Scan<'s> {
+        scoping: &'s oxc_semantic::Scoping,
+        calls: bool,
+    }
+    impl Scan<'_> {
+        fn global_require(&self, expr: &Expression) -> bool {
+            match expr.without_parentheses() {
+                Expression::Identifier(id) => {
+                    id.name == "require"
+                        && id
+                            .reference_id
+                            .get()
+                            .is_some_and(|r| self.scoping.get_reference(r).symbol_id().is_none())
+                }
+                Expression::SequenceExpression(seq) => seq
+                    .expressions
+                    .last()
+                    .is_some_and(|e| self.global_require(e)),
+                _ => false,
+            }
+        }
+    }
+    impl<'a> Visit<'a> for Scan<'_> {
+        fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
+            let callee = it.callee.without_parentheses();
+            let object = match callee {
+                Expression::StaticMemberExpression(m) => Some(&m.object),
+                Expression::ComputedMemberExpression(m) => Some(&m.object),
+                _ => None,
+            };
+            if self.global_require(callee) || object.is_some_and(|o| self.global_require(o)) {
+                self.calls = true;
+            }
+            walk::walk_call_expression(self, it);
+        }
+    }
+
+    static WORD: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let word = WORD.get_or_init(|| regex::Regex::new(r"\brequire\b").expect("require regex"));
+    if !word.is_match(src) {
+        return false;
+    }
+    let allocator = oxc_allocator::Allocator::default();
+    let parsed = oxc_parser::Parser::new(&allocator, src, oxc_span::SourceType::mjs()).parse();
+    if !parsed.diagnostics.is_empty() {
+        return false;
+    }
+    let semantic = oxc_semantic::SemanticBuilder::new()
+        .build(&parsed.program)
+        .semantic;
+    let mut scan = Scan {
+        scoping: semantic.scoping(),
+        calls: false,
+    };
+    scan.visit_program(&parsed.program);
+    scan.calls
+}
+
+/// The package a bare specifier names (`@scope/name` or `name`), or None for
+/// a relative, absolute, `#` or builtin one.
+fn bare_package(spec: &str) -> Option<&str> {
+    if spec.starts_with('.') || spec.starts_with('/') || spec.starts_with('#') {
+        return None;
+    }
+    if oj_server::is_node_builtin(spec) || spec.contains(':') {
+        return None;
+    }
+    let segments = if spec.starts_with('@') { 2 } else { 1 };
+    let end = spec
+        .match_indices('/')
+        .nth(segments - 1)
+        .map_or(spec.len(), |(i, _)| i);
+    Some(&spec[..end])
+}
+
 fn has_esm_syntax(src: &str) -> bool {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let re = RE.get_or_init(|| {
@@ -621,9 +751,10 @@ fn classify_id(abs: &str, intent: Option<&'static str>, svg_react: bool) -> Stri
     if oj_server::is_style_ext(&ext) {
         return format!("{clean}?ojasset=css");
     }
-    // wasm is asset-classified like the loader (URL export only).
+    // wasm is asset-classified like the loader (URL export only). A plain
+    // import is `asset`: served like `?url`, but its id has no query.
     if oj_server::is_importable_asset_ext(&ext) || ext == "wasm" {
-        return format!("{clean}?ojasset=url");
+        return format!("{abs}?ojasset=asset");
     }
     abs.to_string()
 }
@@ -643,12 +774,84 @@ fn split_intent(spec: &str) -> (String, Option<&'static str>, bool) {
         // inlines when the environment is bundled), so `&url` wins whenever it
         // appears -- the build's precedence is the reverse (inline first).
         "worker" | "worker&inline" => "worker",
-        "worker&url" | "worker&inline&url" => "worker-url",
+        "worker&url" | "worker&inline&url" => match worker_type_of(spec) {
+            "classic" => "worker-url:classic",
+            "ignore" => "worker-url:ignore",
+            _ => "worker-url",
+        },
         "sharedworker" | "sharedworker&inline" => "sharedworker",
-        "sharedworker&url" | "sharedworker&inline&url" => "sharedworker-url",
+        "sharedworker&url" | "sharedworker&inline&url" => match worker_type_of(spec) {
+            "classic" => "sharedworker-url:classic",
+            "ignore" => "sharedworker-url:ignore",
+            _ => "sharedworker-url",
+        },
         _ => return (spec.to_string(), None, false),
     };
     (clean, Some(tag), false)
+}
+
+/// The worker type oj's rewrite of `new Worker(new URL(...), opts)` carries
+/// (`worker_type=`, see oj_compiler's glob/meta_glob), else `module`: what an
+/// import of `./w.ts?worker` always is in Vite's dev.
+fn worker_type_of(spec: &str) -> &'static str {
+    let query = spec.split_once('?').map_or("", |(_, q)| q);
+    match query
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("worker_type="))
+    {
+        Some("classic") => "classic",
+        Some("ignore") => "ignore",
+        _ => "module",
+    }
+}
+
+/// The `#tanstack-start-entry` target: the app's `src/start.*` when one
+/// exists, else the bundled stub. Upstream resolves this entry the same way
+/// (`startFilePath ?? defaultEntryPaths.start` in start-plugin-core's
+/// planning.ts), and its default entry is exactly the stub's content
+/// (`export const startInstance = undefined`). Resolving to the stub while a
+/// real `src/start.ts` exists silently drops the app's `createStart` options:
+/// request middleware server-side and function middleware on every server-fn
+/// call. The app's package.json `imports` still wins over both in
+/// `resolve_inner`.
+fn start_entry_target(root: &Path, cache: &Path) -> PathBuf {
+    start_file(root).unwrap_or_else(|| cache.join("start-entry.ts"))
+}
+
+/// Upstream's `src/start` lookup (start-plugin-core's resolveStartEntryPlan):
+/// exsolve with these extensions in this order, no directory index.
+const START_ENTRY_EXTS: [&str; 6] = [".ts", ".js", ".mts", ".mjs", ".tsx", ".jsx"];
+
+fn start_file(root: &Path) -> Option<PathBuf> {
+    START_ENTRY_EXTS
+        .iter()
+        .map(|ext| root.join(format!("src/start{ext}")))
+        .find(|p| p.is_file())
+}
+
+/// The app's own start entry when one exists: the `package.json`
+/// `imports["#tanstack-start-entry"]` target first (it wins over the
+/// convention in `resolve_inner` and in the client bundle's probe), then the
+/// `src/start.*` ladder. `None` means the framework-default stub serves.
+/// Presence is a config-time input (upstream resolves it once in its plugin's
+/// `config` hook), so the dev watcher restarts on a flip of this answer.
+pub(crate) fn app_start_entry(root: &Path) -> Option<PathBuf> {
+    let declared = std::fs::read_to_string(root.join("package.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| {
+            v.get("imports")?
+                .get("#tanstack-start-entry")?
+                .as_str()
+                .map(String::from)
+        });
+    if let Some(target) = declared {
+        let p = root.join(target);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    start_file(root)
 }
 
 /// The Start framework-seam aliases (the retired node loader's ALIASES map):
@@ -662,7 +865,10 @@ fn framework_aliases(
 ) -> Vec<(String, PathBuf)> {
     vec![
         ("#tanstack-router-entry".into(), root.join("src/router")),
-        ("#tanstack-start-entry".into(), cache.join("start-entry.ts")),
+        (
+            "#tanstack-start-entry".into(),
+            start_entry_target(root, cache),
+        ),
         (
             "#tanstack-start-plugin-adapters".into(),
             cache.join("plugin-adapters.ts"),
@@ -755,13 +961,7 @@ impl StartHost {
                     return;
                 };
                 if let Err(e) = host.build_start().await {
-                    let name = e
-                        .split_once("[plugin:")
-                        .and_then(|(_, rest)| rest.split_once(']'))
-                        .map(|(name, _)| name.to_string())
-                        .unwrap_or_else(|| "unknown".into());
-                    let msg = e.lines().next().unwrap_or(&e).to_string();
-                    eprintln!("oj: plugin \"{name}\" buildStart failed (skipped): {msg}");
+                    eprintln!("{}", crate::start_bundle::host::build_start_skipped(&e));
                 }
             })
             .await;
@@ -851,7 +1051,18 @@ impl StartHost {
         // extension inference, and a directory's package.json entry under
         // the server mainFields — where plain Node 500s with
         // ERR_MODULE_NOT_FOUND on every request before first render.
-        if importer_id.contains("/node_modules/") && !is_plugin_shaped {
+        // A dependency module the host claimed for the pipeline is past this:
+        // Vite never externalizes a relative or absolute specifier
+        // (createIsExternal), so the imports of a module it transformed go
+        // through the plugins too, and a component library's
+        // `import "./select.css"` reaches the css pipeline instead of the
+        // runtime loading the stylesheet as JavaScript. A builtin still
+        // short-circuits first, as in Vite, so an installed polyfill package
+        // of the same name never shadows it.
+        if importer_id.contains("/node_modules/")
+            && !is_plugin_shaped
+            && (!self.claims_dependency(&importer_id) || oj_server::is_node_builtin(spec))
+        {
             let bare = !spec.starts_with('.')
                 && !spec.starts_with('/')
                 && !spec.starts_with('#')
@@ -860,6 +1071,11 @@ impl StartHost {
                 if let Ok(StartResolution::Dependency(p)) =
                     self.bridge.resolve_start(&importer_id, spec).await
                 {
+                    if let Some(node) =
+                        self.vite_external_instead(&importer_id, spec, &p.to_string_lossy())
+                    {
+                        return Ok(Some(node));
+                    }
                     if let Ok(u) = url::Url::from_file_path(&p) {
                         return Ok(Some(HostResolved::External(u.to_string())));
                     }
@@ -883,9 +1099,17 @@ impl StartHost {
 
         let (clean, intent, svg_react) = split_intent(spec);
 
-        // A /-prefixed id resolves against the project root (Vite's asSrc),
-        // then against publicDir; a real absolute fs path falls through.
+        // Vite resolves an import once, as written: every resolveId hook sees
+        // its query (`x.css?url`), and the intent is the answer's own query.
+        // A /-prefixed id first goes to the `pre` hooks, then resolves against
+        // the project root (Vite's asSrc) and publicDir; a real absolute fs
+        // path falls through.
         if clean.starts_with('/') {
+            if clean != spec {
+                if let Some(hit) = self.bridge.resolve_start_pre(&importer_id, spec).await? {
+                    return self.resolved(hit, spec, &importer_id, generation);
+                }
+            }
             let rel = clean.trim_start_matches('/');
             let public_hit = || {
                 self.public_dir
@@ -898,25 +1122,68 @@ impl StartHost {
             }
         }
 
-        match self.bridge.resolve_start(&importer_id, &clean).await {
-            Ok(StartResolution::Module(id)) => {
-                if Path::new(&id).is_absolute() {
-                    let tagged = classify_id(&id, intent, svg_react);
-                    // A CommonJS file (a linked `file:` dependency, a .cjs
-                    // module) is Node's to load: byonm gives it require
-                    // semantics and lexed named exports, like the node
-                    // loader's fall-through did.
-                    if tagged == id && self.cjs.is_cjs_file(&id) {
-                        if let Ok(u) = url::Url::from_file_path(&id) {
-                            return Ok(Some(HostResolved::External(u.to_string())));
-                        }
+        let resolution = self
+            .bridge
+            .resolve_start(&importer_id, spec)
+            .await
+            .map_err(|e| format!("{e} (imported from {importer_id})"))?;
+        self.resolved(resolution, spec, &importer_id, generation)
+    }
+
+    /// The file Vite's module runner would load for the bare `spec`, in
+    /// place of the ESM build `file` the resolver picked, when that build
+    /// calls an undeclared `require`. Vite loads every external as fetchModule
+    /// resolves it (tryNodeResolve: mainFields ["main"], the external
+    /// conditions), so turndown runs as its CommonJS `main` there; the
+    /// `module` entry oj prefers for externals throws "require is not
+    /// defined" on import. None (the picked file stands) for an aliased
+    /// import, which Vite never externalizes, or another package's file.
+    fn vite_external_instead(
+        &self,
+        importer: &str,
+        spec: &str,
+        file: &str,
+    ) -> Option<HostResolved> {
+        let package = bare_package(spec)?;
+        if pkg_name_of_path(file).as_deref() != Some(package) || !self.cjs.esm_calls_require(file) {
+            return None;
+        }
+        let vite = self.bridge.resolve_external(importer, spec)?;
+        let url = url::Url::from_file_path(&vite).ok()?;
+        Some(HostResolved::External(url.to_string()))
+    }
+
+    /// The host's answer for `spec`, resolved to `resolution`: the intent and
+    /// svg `?react` read off the resolved id's own query, which a plugin may
+    /// have rewritten (Vite's import analysis uses the id it got).
+    fn resolved(
+        &self,
+        resolution: StartResolution,
+        spec: &str,
+        importer_id: &str,
+        generation: u64,
+    ) -> Result<Option<HostResolved>, String> {
+        let importer_id = importer_id.to_string();
+        match resolution {
+            StartResolution::Module(id) if Path::new(&id).is_absolute() => {
+                let (file, intent, svg_react) = split_intent(&id);
+                let tagged = classify_id(&file, intent, svg_react);
+                // A CommonJS file (a linked `file:` dependency, a .cjs
+                // module) is Node's to load: byonm gives it require
+                // semantics and lexed named exports, like the node
+                // loader's fall-through did.
+                if tagged == file && file == id && self.cjs.is_cjs_file(&file) {
+                    if let Ok(u) = url::Url::from_file_path(&file) {
+                        return Ok(Some(HostResolved::External(u.to_string())));
                     }
                     return Ok(Some(self.module_url(&tagged, importer_id, generation)));
                 }
                 Ok(Some(self.module_url(&id, importer_id, generation)))
             }
-            Ok(StartResolution::Dependency(p)) => {
-                let abs = p.to_string_lossy().into_owned();
+            // A plugin's module id, used as is.
+            StartResolution::Module(id) => Ok(Some(self.module_url(&id, importer_id, generation))),
+            StartResolution::Dependency(p) => {
+                let (abs, intent, svg_react) = split_intent(&p.to_string_lossy());
                 let ext = ext_of(&abs).to_ascii_lowercase();
                 if svg_react
                     || intent.is_some()
@@ -927,27 +1194,48 @@ impl StartHost {
                     let id = classify_id(&abs, intent, svg_react);
                     return Ok(Some(self.module_url(&id, importer_id, generation)));
                 }
+                // A dependency the pipeline claims (`ssr.noExternal`, raw TS)
+                // is a module of the graph like an app module: Vite's module
+                // runner evaluates noExternal dependencies itself and clears
+                // them with the app on every SSR reload (hmrHandler
+                // full-reload: evaluatedModules.clear()). Versioned, with its
+                // importer edges, an app edit re-evaluates the dependency
+                // modules above it; TanStack's start-server-core caches the
+                // app's router entry in module state (`entriesPromise`) and
+                // would otherwise keep serving the first one.
+                if self.claims_dependency(&abs) {
+                    return Ok(Some(self.module_url(&abs, importer_id, generation)));
+                }
+                if let Some(node) = self.vite_external_instead(&importer_id, spec, &abs) {
+                    return Ok(Some(node));
+                }
                 // Hand the engine the exact file the Vite-style resolver
                 // picked (mainFields, extension probing, exports conditions,
                 // legacy directory entries); byonm loads it with Node
                 // semantics (CJS translation included).
-                match url::Url::from_file_path(&p) {
+                match url::Url::from_file_path(&abs) {
                     Ok(u) => Ok(Some(HostResolved::External(u.to_string()))),
-                    Err(_) => Ok(Some(HostResolved::External(clean))),
+                    Err(_) => Ok(Some(HostResolved::External(abs))),
                 }
             }
-            Ok(StartResolution::Bare(spec)) => {
+            StartResolution::Bare(bare) => {
+                // Unresolved, the name is Node's without the intent query;
+                // a plugin's own answer (a remote URL) stands as it is.
+                let bare = if bare == spec {
+                    split_intent(spec).0
+                } else {
+                    bare
+                };
                 // A scheme Node's loader would reject (an un-aliased
                 // `cloudflare:*`) becomes an empty module instead of taking
                 // the server down; `node:` and bare npm names stay external.
-                if let Ok(u) = url::Url::parse(&spec) {
+                if let Ok(u) = url::Url::parse(&bare) {
                     if u.scheme().len() > 1 && u.scheme() != "node" {
-                        return Ok(Some(HostResolved::Url(self.stub_specifier(&spec))));
+                        return Ok(Some(HostResolved::Url(self.stub_specifier(&bare))));
                     }
                 }
-                Ok(Some(HostResolved::External(spec)))
+                Ok(Some(HostResolved::External(bare)))
             }
-            Err(e) => Err(format!("{e} (imported from {importer_id})")),
         }
     }
 
@@ -967,6 +1255,15 @@ impl StartHost {
         let module = self.load_id(&id).await?;
         self.graph.record_loaded_in_generation(&id, generation);
         Ok(Some(module))
+    }
+
+    /// A node_modules file the host loads through the transform pipeline
+    /// instead of leaving it to the runtime.
+    fn claims_dependency(&self, path: &str) -> bool {
+        path.contains("/node_modules/")
+            && (ts_source_ext(path) || self.no_external.matches_path(path))
+            && src_lang(path).is_some()
+            && !self.cjs.is_cjs_file(path)
     }
 
     async fn load_unversioned(&self, specifier: &str) -> Result<Option<HostModule>, String> {
@@ -996,11 +1293,15 @@ impl StartHost {
             }));
         }
         // `ssr.noExternal` dependencies run through the pipeline (Vite
-        // bundles them through its plugins); everything else is byonm's.
-        if !self.no_external.matches_path(&path_str) {
-            return Ok(None);
-        }
-        if src_lang(&path_str).is_none() || self.cjs.is_cjs_file(&path_str) {
+        // bundles them through its plugins); everything else is byonm's —
+        // except TypeScript/JSX sources, which the runtime refuses to
+        // type-strip under node_modules. Vite never externalizes those either
+        // (canExternalizeFile allows only js/mjs/cjs), so they take the
+        // pipeline unconditionally. A claimed file reached here was imported
+        // natively by an unclaimed dependency (resolve_inner versions every
+        // other claimed import), so it shares that importer's lifetime, as a
+        // native import of a noExternal package does under Vite.
+        if !self.claims_dependency(&path_str) {
             return Ok(None);
         }
         self.ensure_plugins_started().await;
@@ -1042,14 +1343,54 @@ impl StartHost {
             let code = loaded.unwrap_or_else(|| {
                 format!(
                     "export default {};",
-                    json_str(&format!("/@oj-start/fs{clean}"))
+                    json_str(&format!(
+                        "{}/@oj-start/fs{clean}",
+                        self.bridge.start_url_base()
+                    ))
                 )
             });
             return Ok(js(code));
         }
 
         if let Some(kind) = query.as_deref().and_then(|q| q.strip_prefix("ojasset=")) {
-            return Ok(js(self.asset_module(&clean, kind).await?));
+            let code = self.asset_module(&clean, kind).await?;
+            return Ok(js(self.asset_transform(&clean, kind, code).await?));
+        }
+
+        // An asset under a query no intent names (vite-imagetools'
+        // `x.webp?w=768`): the load hooks Vite runs before vite:asset see the
+        // full id; unclaimed, it is the file's served URL, as vite:asset's.
+        if is_path
+            && query.is_some()
+            && oj_server::is_importable_asset_ext(&ext_of(&clean).to_ascii_lowercase())
+        {
+            let loaded = match self.bridge.plugin_host().await {
+                Some(host) if host.hook_wants_load(id) => {
+                    host.load_pre(id).await.map_err(|e| format!("{id}: {e}"))?
+                }
+                _ => None,
+            };
+            return match loaded {
+                Some(code) => self
+                    .bridge
+                    .transform_module(id, code, true, true)
+                    .await
+                    .map(js)
+                    .map_err(|e| e.to_string()),
+                None => {
+                    // A named intent inlines/embeds per vite:asset (?raw the
+                    // text, ?inline a data URI); only an unnamed query
+                    // (imagetools `?w=...`) names the served URL. Fork parity:
+                    // the old classifier named the kind, the new pipeline's
+                    // resolve path keeps the written query.
+                    let kind = match query.as_deref() {
+                        Some("raw") => "raw",
+                        Some("inline") => "inline",
+                        _ => "url",
+                    };
+                    Ok(js(self.asset_module(&clean, kind).await?))
+                }
+            };
         }
 
         if !is_path {
@@ -1078,7 +1419,7 @@ impl StartHost {
                 Some(host) => host
                     .transform(&raw, id, "{}")
                     .await
-                    .map(|(code, _, _, _)| code)
+                    .map(|t| t.code)
                     .map_err(|e| e.to_string())?,
                 None => return Err(format!("no plugin compiles {clean}")),
             };
@@ -1099,8 +1440,17 @@ impl StartHost {
         // Vite runs load before the fs read, but only plugins whose filter can
         // claim the id are consulted; the gate skips the per-module isolate RPC
         // for everything else (the whole server graph on the first render).
+        // The full id first, as Vite's load sees it: a plugin's load may key
+        // on its own query (`?tsr-split=...`); then the file.
         let plugin_loaded = match self.bridge.plugin_host().await {
-            Some(host) if host.hook_wants_load(id) => host.load(id).await.ok().flatten(),
+            Some(host) if query.is_some() && host.hook_wants_load(id) => {
+                match host.load(id).await.ok().flatten() {
+                    Some(code) => Some(code),
+                    None if host.hook_wants_load(&clean) => host.load(&clean).await.ok().flatten(),
+                    None => None,
+                }
+            }
+            Some(host) if host.hook_wants_load(&clean) => host.load(&clean).await.ok().flatten(),
             Some(_) => {
                 if oj_server::plugins::hook_gate_debug() {
                     eprintln!("oj: hook gate skipped start load for {id}");
@@ -1131,10 +1481,27 @@ impl StartHost {
                 .strip_prefix(&format!("{}/", self.root.to_string_lossy()))
                 .unwrap_or(&clean)
                 .to_string();
-            rewrite_server_fns(&raw, &rel, self.framework)
+            // Fork: the Solid flavor keeps its own server-fn rewrite (the rpc
+            // import follows the Solid Start package); React follows the
+            // pipeline's rewrites.
+            if self.framework == StartFramework::Solid {
+                rewrite_server_fns(&raw, &rel, self.framework)
+            } else {
+                let raw = oj_compiler::env_fns::rewrite_env_fns(
+                    &raw,
+                    &clean,
+                    oj_compiler::env_fns::Env::Server,
+                )
+                .map_err(|e| format!("{clean}: {e}"))?
+                .unwrap_or(raw);
+                oj_compiler::server_fns::rewrite_server(&raw, &rel).unwrap_or(raw)
+            }
         } else {
             raw
         };
+        // The plugins see the id with its query, as Vite's transforms do: a
+        // route's `?tsr-split=component` is what TanStack's code splitter
+        // compiles into the split-off component, from the route file's code.
         let code = self
             .bridge
             .transform_module(id, raw, from_plugin, true)
@@ -1143,14 +1510,41 @@ impl StartHost {
         Ok(js(code))
     }
 
-    /// A file's URL on the dev pipeline, as Vite's `fileToUrl` in dev. Vite
-    /// additionally tags worker URLs `?worker_file&type=module` for its own
-    /// serving pipeline; oj's pipeline serves the compiled module without the
-    /// marker (verified in-browser by e2e/start-ssr-worker-url.mjs).
+    /// A file's URL on the dev pipeline, as Vite's `fileToUrl` in dev.
     fn dev_url(&self, path: &str) -> String {
+        let base = self.bridge.start_url_base();
         match Path::new(path).strip_prefix(&self.root) {
-            Ok(rel) => format!("/{}", rel.to_string_lossy()),
-            Err(_) => format!("/@fs{path}"),
+            Ok(rel) => format!("{base}/{}", rel.to_string_lossy()),
+            Err(_) => format!("{base}/@fs{path}"),
+        }
+    }
+
+    /// The SSR environment's plugin transforms over an asset's module, under
+    /// Vite's id for it (`/abs/x.css?url`): vite:asset's JS goes through the
+    /// whole chain, as any module. A stylesheet's `?inline` and a CSS import
+    /// ran their own slots already.
+    async fn asset_transform(
+        &self,
+        path: &str,
+        kind: &str,
+        code: String,
+    ) -> Result<String, String> {
+        let style = oj_server::is_style_ext(&ext_of(path).to_ascii_lowercase());
+        if !matches!(kind, "raw" | "url" | "asset") && !(kind == "inline" && !style) {
+            return Ok(code);
+        }
+        // A plain asset import's id is the file's, as Vite's.
+        let id = match kind {
+            "asset" => path.to_string(),
+            _ => format!("{path}?{kind}"),
+        };
+        match self.bridge.plugin_host().await {
+            Some(host) if host.hook_wants_transform(&id, &code) => host
+                .transform(&code, &id, "{}")
+                .await
+                .map(|t| t.code)
+                .map_err(|e| format!("plugin transform error for {id}:\n{e}")),
+            _ => Ok(code),
         }
     }
 
@@ -1164,9 +1558,9 @@ impl StartHost {
             "inline" => {
                 let ext = ext_of(path).to_ascii_lowercase();
                 if oj_server::is_style_ext(&ext) {
-                    let text =
-                        std::fs::read_to_string(path).map_err(|e| format!("read {path}: {e}"))?;
-                    Ok(format!("export default {};", json_str(&text)))
+                    // Vite's `?inline` sheet: compiled, as the client bundle
+                    // inlines it.
+                    self.bridge.start_dev_inline_style(Path::new(path)).await
                 } else {
                     let bytes = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
                     let url = format!(
@@ -1185,12 +1579,16 @@ impl StartHost {
                     .await
                     .map_err(|e| e.to_string())
             }
-            // Vite's unbundled worker load: the worker file's dev URL, bare
-            // for `&url`, else wrapped in a constructor. It is the URL the
-            // client pipeline serves the compiled worker at (root-relative,
-            // `/@fs` outside the root), so a rendered value hydrates as is.
-            "worker-url" | "sharedworker-url" => {
-                Ok(format!("export default {};", json_str(&self.dev_url(path))))
+            // Vite's unbundled worker load: the worker file's dev URL with
+            // `worker_file&type=<type>` (its type `module`, or the one the
+            // `new Worker` options gave), bare for `&url`, else wrapped in a
+            // constructor. It is the URL the client pipeline serves the
+            // compiled worker at, its env prelude included, so a rendered
+            // value hydrates as is.
+            k if k.starts_with("worker-url") || k.starts_with("sharedworker-url") => {
+                let worker_type = k.split_once(':').map_or("module", |(_, t)| t);
+                let url = format!("{}?worker_file&type={worker_type}", self.dev_url(path));
+                Ok(format!("export default {};", json_str(&url)))
             }
             "worker" | "sharedworker" => {
                 let ctor = if kind == "sharedworker" {
@@ -1198,15 +1596,19 @@ impl StartHost {
                 } else {
                     "Worker"
                 };
+                let url = format!("{}?worker_file&type=module", self.dev_url(path));
                 Ok(format!(
                     "export default function WorkerWrapper(options) {{ return new {ctor}({}, {{ type: \"module\", name: options?.name }}); }}",
-                    json_str(&self.dev_url(path))
+                    json_str(&url)
                 ))
             }
             // "url" and anything unrecognized: the served-URL module.
             _ => Ok(format!(
                 "export default {};",
-                json_str(&format!("/@oj-start/fs{path}"))
+                json_str(&format!(
+                    "{}/@oj-start/fs{path}",
+                    self.bridge.start_url_base()
+                ))
             )),
         }
     }
@@ -1473,6 +1875,7 @@ impl StartEngine {
 
     /// The write lock excludes handle calls. The graph's generation gate also
     /// excludes detached workers of the retired isolate after the reset.
+    /// Fork: kept for the explicit respawn path.
     fn respawn(&self, engine: &mut EngineSlot) {
         let generation = self.host.graph().generation() + 1;
         match engine
@@ -1487,21 +1890,45 @@ impl StartEngine {
             Err(e) => eprintln!("{e}"),
         }
     }
+
+    /// A watch batch's revalidation: drops every stale record, as
+    /// [`revalidate`](Self::revalidate) does, but reports only whether a
+    /// changed file of the batch was one the engine served (the caller
+    /// reloads the browser then). A record that went stale behind the
+    /// watcher's back is still re-imported.
+    pub async fn revalidate_for(&self, changed: &[PathBuf]) -> bool {
+        let (dropped, hit) = self.host.graph().invalidate_for(changed);
+        if dropped > 0 {
+            self.host.graph().bump(&self.entry_id);
+        }
+        self.maybe_respawn().await;
+        hit
+    }
+
+    async fn maybe_respawn(&self) {
+        if !self.host.graph().should_respawn() {
+            return;
+        }
+        let mut engine = self.engine.write().await;
+        if !self.host.graph().should_respawn() {
+            return; // another reload already respawned
+        }
+        // Fork: spawn_engine threads the module generation (3-arg kept).
+        match spawn_engine(&self.root, &self.host, self.host.graph().generation()) {
+            Ok(fresh) => {
+                *engine = EngineSlot::new(fresh);
+                self.host.graph().reset_after_respawn();
+                eprintln!("oj start: engine respawned for fresh server modules");
+            }
+            Err(e) => eprintln!("{e}"),
+        }
+    }
 }
 
-/// The engine the Start one-shot scripts (route-tree generation, the
-/// server-fn resolver, the client bundle, the production build) run on. No
-/// module host: the scripts import rolldown's napi binding and the app's
-/// plugins with plain byonm semantics, exactly as they did under node. Each
-/// script exports `run(env)`; the env values that used to be spawn env travel
-/// as the argument.
-///
-/// Hosted only in processes that EXIT after their scripts (`oj build`, the
-/// `oj start-script` child the dev server spawns per rebundle): rolldown's
-/// binding retains native memory per `build()` invocation that neither
-/// closing the bundler nor tearing the isolate down releases, so a long-lived
-/// process must never run these scripts on its own engine (measured ~650MB
-/// retained per client rebundle on an ~18k-module app).
+/// The engine Start's codegen scripts (route-tree generation) and the build's
+/// prerender run on: the app's packages load with plain byonm semantics, as
+/// under node. Each script exports `run(env)`; the env values that used to be
+/// spawn env travel as the argument.
 pub struct ScriptEngine {
     engine: JsEngine,
     /// The env shadow ran on the isolate (once, before the first script).
@@ -1716,7 +2143,9 @@ export default { async fetch(req) {
             enable_cache: false,
             no_cache: true,
             lazy: true,
+            typecheck: false,
             mode: None,
+            rolldown: tokio::runtime::Handle::current(),
         }
         .build_app()
         .await
@@ -2034,6 +2463,18 @@ export default { async fetch(req) {
             ("./w.ts?worker&inline", "worker"),
             ("./w.ts?sharedworker", "sharedworker"),
             ("./w.ts?sharedworker&url", "sharedworker-url"),
+            // oj's rewrite of `new Worker(new URL(...), opts)` carries the type.
+            ("./w.ts?worker&url&worker_type=module", "worker-url"),
+            (
+                "./w.ts?worker&url&worker_type=classic",
+                "worker-url:classic",
+            ),
+            (
+                "./w.ts?sharedworker&url&worker_type=ignore",
+                "sharedworker-url:ignore",
+            ),
+            // A user `type=` is not the worker's type.
+            ("./w.ts?worker&url&type=classic", "worker-url"),
         ] {
             assert_eq!(
                 split_intent(spec),
@@ -2072,6 +2513,28 @@ export default { async fetch(req) {
     }
 
     #[test]
+    fn only_javascript_dependency_files_stay_external() {
+        for js in [
+            "/n/node_modules/p/i.js",
+            "/n/node_modules/p/i.mjs",
+            "/n/node_modules/p/i.cjs",
+            "/n/node_modules/p/bin",
+        ] {
+            assert!(can_externalize_file(js), "{js}");
+        }
+        for other in [
+            "/n/node_modules/p/select.css",
+            "/n/node_modules/p/x.module.scss",
+            "/n/node_modules/p/data.json",
+            "/n/node_modules/p/index.ts",
+            "/n/node_modules/p/icon.tsx",
+            "/n/node_modules/p/x.css?inline",
+        ] {
+            assert!(!can_externalize_file(other), "{other}");
+        }
+    }
+
+    #[test]
     fn classification_tags_assets_styles_and_sources() {
         assert_eq!(classify_id("/a/b.css", None, false), "/a/b.css?ojasset=css");
         assert_eq!(
@@ -2080,7 +2543,7 @@ export default { async fetch(req) {
         );
         assert_eq!(
             classify_id("/a/hero.png", None, false),
-            "/a/hero.png?ojasset=url"
+            "/a/hero.png?ojasset=asset"
         );
         assert_eq!(
             classify_id("/a/n.txt", Some("raw"), false),
@@ -2100,7 +2563,7 @@ export default { async fetch(req) {
         );
         assert_eq!(
             classify_id("/a/m.wasm", None, false),
-            "/a/m.wasm?ojasset=url"
+            "/a/m.wasm?ojasset=asset"
         );
     }
 
@@ -2150,7 +2613,9 @@ export default { async fetch(req) {
             enable_cache: false,
             no_cache: true,
             lazy: true,
+            typecheck: false,
             mode: None,
+            rolldown: tokio::runtime::Handle::current(),
         }
         .build_app()
         .await
@@ -2288,6 +2753,107 @@ export default { async fetch(req) {
         );
     }
 
+    #[test]
+    fn a_module_build_needs_a_bundler_when_it_calls_an_undeclared_require() {
+        // turndown's `module` build, and a call at the top level.
+        assert!(calls_undeclared_require(
+            "function f() {\n  var d = require('domino');\n  return d;\n}\nexport default f();\n"
+        ));
+        assert!(calls_undeclared_require(
+            "const x = require('./x.cjs');\nexport { x };\n"
+        ));
+        // A guarded call still needs one; Node's entry is Vite's pick anyway.
+        assert!(calls_undeclared_require(
+            "export const d = typeof require === 'function' ? require('d') : null;\n"
+        ));
+        // Its own require: createRequire, a parameter, a function.
+        assert!(!calls_undeclared_require(
+            "import { createRequire } from 'node:module';\nconst require = createRequire(import.meta.url);\nexport const x = require('./x.cjs');\n"
+        ));
+        assert!(!calls_undeclared_require(
+            "export function load(require) { return require('x'); }\n"
+        ));
+        assert!(!calls_undeclared_require(
+            "function require(id) { return id; }\nexport const x = require('x');\n"
+        ));
+        // A declaration in one scope leaves another's call undeclared: a
+        // wrapper's `require` parameter beside a top-level call.
+        assert!(calls_undeclared_require(
+            "function wrap(exports, require) { return require('a'); }\nconst d = require('d');\nexport { d, wrap };\n"
+        ));
+        // esbuild's shim, through `require.apply`; a member call; a sequence.
+        assert!(calls_undeclared_require(
+            "var __require = (x => typeof require !== 'undefined' ? require : x)(function (x) {\n  if (typeof require !== 'undefined') return require.apply(this, arguments);\n  throw Error('Dynamic require of \"' + x + '\" is not supported');\n});\nvar d = __require('d');\nexport { d };\n"
+        ));
+        assert!(calls_undeclared_require(
+            "export const p = require.resolve('x');\n"
+        ));
+        assert!(calls_undeclared_require(
+            "export const x = (0, require)('x');\n"
+        ));
+        assert!(calls_undeclared_require(
+            "export const x = require?.('x');\n"
+        ));
+        // No call: a mention, a member, a property, a string.
+        assert!(!calls_undeclared_require("export const x = 1;\n"));
+        assert!(!calls_undeclared_require(
+            "export const required = true;\nexport function f() { return required; }\n"
+        ));
+        assert!(!calls_undeclared_require(
+            "export const r = typeof require;\nexport const y = module.require('y');\nexport const s = 'require(x)';\nexport const o = { require: 1 };\n"
+        ));
+        // Unparseable code is left as it was.
+        assert!(!calls_undeclared_require("export const = require('x'"));
+    }
+
+    #[test]
+    fn a_bare_specifier_names_its_package() {
+        assert_eq!(bare_package("turndown"), Some("turndown"));
+        assert_eq!(bare_package("turndown/lib/x.js"), Some("turndown"));
+        assert_eq!(bare_package("@scope/pkg"), Some("@scope/pkg"));
+        assert_eq!(bare_package("@scope/pkg/sub"), Some("@scope/pkg"));
+        for spec in [
+            "./x",
+            "../x",
+            "/abs/x",
+            "#lib/x",
+            "node:fs",
+            "fs",
+            "virtual:x",
+        ] {
+            assert_eq!(bare_package(spec), None, "{spec}");
+        }
+    }
+
+    #[test]
+    fn only_an_es_module_is_scanned_for_require() {
+        let dir = std::env::temp_dir().join(format!("oj-esmreq-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("package.json"), "{}").unwrap();
+        let cache = CjsCache::default();
+        let esm = dir.join("index.es.js");
+        std::fs::write(&esm, "var d = require('d');\nexport default d;\n").unwrap();
+        let cjs = dir.join("index.cjs.js");
+        std::fs::write(&cjs, "module.exports = require('d');\n").unwrap();
+        let mjs = dir.join("index.mjs");
+        std::fs::write(&mjs, "export const d = require('d');\n").unwrap();
+        assert!(cache.esm_calls_require(&esm.to_string_lossy()));
+        assert!(cache.esm_calls_require(&mjs.to_string_lossy()));
+        assert!(
+            !cache.esm_calls_require(&cjs.to_string_lossy()),
+            "CommonJS has require"
+        );
+        assert!(!cache.esm_calls_require("/whatever/x.cjs"));
+        // Keyed on the mtime: a reinstalled build is scanned again.
+        std::fs::write(&esm, "export default 1;\n").unwrap();
+        let f = std::fs::OpenOptions::new().append(true).open(&esm).unwrap();
+        f.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
+            .unwrap();
+        assert!(!cache.esm_calls_require(&esm.to_string_lossy()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // The framework seam, from the consumer's side: start-server-core imports
     // these by bare specifier and expects the bundler to answer; one the host
     // does not map fails every document request. (The old node loader had the
@@ -2338,6 +2904,109 @@ export default { async fetch(req) {
                 .find(|(find, _)| find == "@tanstack/solid-start/server-entry")
                 .map(|(_, target)| target.as_path()),
             Some(cache.join("server-entry-solid.tsx").as_path())
+        );
+    }
+
+    // Upstream resolves `#tanstack-start-entry` to the app's `src/start.*`
+    // before its bundled default (planning.ts: `startFilePath ??
+    // defaultEntryPaths.start`); the stub stands in only for the default.
+    // Falling to the stub while a real src/start.ts exists silently drops the
+    // app's createStart middleware: request middleware server-side, and
+    // function middleware on every server-fn call (an app attaching auth
+    // there gets Unauthorized from every authed server fn).
+    #[test]
+    fn the_start_entry_alias_prefers_the_apps_src_start() {
+        let root = std::env::temp_dir().join(format!("oj-startentry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let cache = root.join(".oj-cache/v1/start");
+
+        let stub = start_entry_target(&root, &cache);
+        assert_eq!(
+            stub,
+            cache.join("start-entry.ts"),
+            "no src/start.* means the framework-default stub"
+        );
+
+        std::fs::write(
+            root.join("src/start.ts"),
+            "export const startInstance = 1;\n",
+        )
+        .unwrap();
+        assert_eq!(
+            start_entry_target(&root, &cache),
+            root.join("src/start.ts"),
+            "an existing src/start.* wins"
+        );
+    }
+
+    // Upstream's ladder, not probe(): .js outranks .tsx, and a src/start/
+    // directory index is not a start entry (upstream serves its default).
+    #[test]
+    fn start_file_follows_the_framework_ladder() {
+        let root = std::env::temp_dir().join(format!("oj-startladder-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src/start")).unwrap();
+        std::fs::write(root.join("src/start/index.ts"), "").unwrap();
+        assert_eq!(start_file(&root), None, "a directory index is not an entry");
+
+        std::fs::write(root.join("src/start.tsx"), "").unwrap();
+        assert_eq!(start_file(&root), Some(root.join("src/start.tsx")));
+        std::fs::write(root.join("src/start.js"), "").unwrap();
+        assert_eq!(
+            start_file(&root),
+            Some(root.join("src/start.js")),
+            ".js outranks .tsx"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // app_start_entry is the presence probe the dev watcher restarts on: it
+    // answers which file the start entry resolves to right now, `None` for
+    // the stub. A package.json `imports` target outranks the src/start
+    // convention, matching resolve_inner and the client bundle's probe.
+    #[test]
+    fn app_start_entry_tracks_presence_and_imports() {
+        let root = std::env::temp_dir().join(format!("oj-startpresence-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+
+        assert_eq!(app_start_entry(&root), None, "no entry means the stub");
+
+        std::fs::write(
+            root.join("src/start.ts"),
+            "export const startInstance = 1;\n",
+        )
+        .unwrap();
+        assert_eq!(
+            app_start_entry(&root),
+            Some(root.join("src/start.ts")),
+            "a created src/start.ts flips the answer"
+        );
+
+        std::fs::create_dir_all(root.join("app")).unwrap();
+        std::fs::write(
+            root.join("app/entry.ts"),
+            "export const startInstance = 2;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            r##"{ "imports": { "#tanstack-start-entry": "./app/entry.ts" } }"##,
+        )
+        .unwrap();
+        assert_eq!(
+            app_start_entry(&root),
+            Some(root.join("./app/entry.ts")),
+            "a declared imports target outranks the convention"
+        );
+
+        std::fs::remove_file(root.join("package.json")).unwrap();
+        std::fs::remove_file(root.join("src/start.ts")).unwrap();
+        assert_eq!(
+            app_start_entry(&root),
+            None,
+            "a delete flips back to the stub"
         );
     }
 
@@ -2392,6 +3061,54 @@ export default { async fetch(req) {
             std::env::var("NODE_ENV").ok(),
             node_env_before,
             "the script's NODE_ENV write must not alter oj's real env"
+        );
+    }
+
+    // The Start runner's bootstrap primes process.env (init's env, the TSS
+    // defaults) on its own shadow too: a leak would ride a restart's exec into
+    // the next boot as shell env, re-keying the client bundle cache and
+    // outranking edited .env files.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_runner_env_priming_does_not_leak_into_the_oj_process() {
+        let dir = std::env::temp_dir().join(format!("oj-runnerenv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bootstrap = dir.join("start-bootstrap.mjs");
+        std::fs::write(&bootstrap, START_BOOTSTRAP_JS).unwrap();
+        let probe = dir.join("probe.mjs");
+        std::fs::write(
+            &probe,
+            "export function read() { return process.env.OJ_RUNNER_ENV_PROBE ?? null; }\n",
+        )
+        .unwrap();
+        let engine = JsEngine::spawn(EngineConfig::new(&dir), None, None).unwrap();
+        let fn_base_before = std::env::var("TSS_SERVER_FN_BASE").ok();
+        engine
+            .call(
+                bootstrap.to_string_lossy().into_owned(),
+                "init",
+                vec![serde_json::json!({ "OJ_RUNNER_ENV_PROBE": "primed" })],
+                None,
+            )
+            .await
+            .expect("the bootstrap init runs");
+        let seen = engine
+            .call(probe.to_string_lossy().into_owned(), "read", vec![], None)
+            .await
+            .unwrap();
+        assert_eq!(
+            seen,
+            serde_json::json!("primed"),
+            "the runner sees its primed env"
+        );
+        assert!(
+            std::env::var("OJ_RUNNER_ENV_PROBE").is_err(),
+            "init's priming must stay on the isolate's shadow"
+        );
+        assert_eq!(
+            std::env::var("TSS_SERVER_FN_BASE").ok(),
+            fn_base_before,
+            "the TSS defaults must not alter oj's real env"
         );
     }
 

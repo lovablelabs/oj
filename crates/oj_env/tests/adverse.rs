@@ -39,6 +39,16 @@ KEEP=kept
 }
 
 #[test]
+fn any_nonempty_key_loads_like_node_parse_env() {
+    // Vite 8 reads .env through node:util's parseEnv, which accepts `*`,
+    // spaces and non-ASCII in keys (verified against vite 8.2.1's loadEnv);
+    // the dotenv package's `[\w.-]+` charset was the Vite 7 era.
+    let out = parse("*=c\nK Y=v\nclé=v\n%X%=v\nA-b.9_=ok\n", &base());
+    let keys: Vec<&str> = out.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(keys, vec!["*", "K Y", "clé", "%X%", "A-b.9_"]);
+}
+
+#[test]
 fn self_and_mutual_references_terminate_and_do_not_recurse() {
     // Expansion only sees variables defined *before* the current line, so a
     // self-reference resolves to empty rather than looping.
@@ -58,6 +68,25 @@ fn expansion_is_one_pass_not_recursive() {
     assert_eq!(
         m["VIA"], "$INNER",
         "a stored `$INNER` must not be re-expanded on use"
+    );
+}
+
+#[test]
+fn a_doubling_expansion_chain_is_capped_not_fatal() {
+    // Billion-laughs shape (the fuzz_dotenv OOM input): each line doubles the
+    // previous one, demanding gigabytes within 30 lines. Every expanded value
+    // is hard-capped, which also bounds every later line it feeds.
+    let mut src = format!("A={}\n", "x".repeat(2048));
+    let mut prev = 'A';
+    for c in ['B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M'] {
+        src.push_str(&format!("{c}=${prev}${prev}\n"));
+        prev = c;
+    }
+    let m = map(&src);
+    assert!(
+        m["M"].len() <= 2 * 128 * 1024,
+        "capped, not exponential: {} bytes",
+        m["M"].len()
     );
 }
 
@@ -94,10 +123,12 @@ fn non_ascii_values_survive_byte_for_byte() {
 
 #[test]
 fn non_ascii_keys_and_multibyte_boundaries_are_intact() {
-    let m = map("TÍTULO=hola\nX=${TÍTULO}\n");
+    // Node's parseEnv loads `TÍTULO`, so Vite 8 does too. Known gap: oj's `$`
+    // name scan is ASCII-only, so `${TÍTULO}` is not a reference here, where
+    // Vite 8's dotenv-expand resolves it ("holay"); whatever it does, it must
+    // not split a UTF-8 character.
+    let m = map("TÍTULO=hola\nX=${TÍTULO}y\n");
     assert_eq!(m["TÍTULO"], "hola");
-    // `$` name scanning is ASCII-only, so a multibyte name is not a reference;
-    // whatever it does, it must not split a UTF-8 character.
     assert!(m["X"].is_char_boundary(m["X"].len()));
 }
 
@@ -212,10 +243,24 @@ fn html_percent_soup_is_left_alone() {
     }
     assert_eq!(replace_html_env("%T%%T%", &env), "TitleTitle");
     assert_eq!(replace_html_env("100%% of %T%", &env), "100%% of Title");
-    // Documented divergence from Vite's `/%(\S+?)%/g`: that regex consumes
-    // `%%T%` as an unknown key and leaves `%%T%%` untouched, while oj rescans
-    // from the inner `%` and substitutes. Only adjacent percents differ.
-    assert_eq!(replace_html_env("%%T%%", &env), "%Title%");
+    // Vite's `/%(\S+?)%/g` consumes a matched placeholder whether or not the
+    // key is known: `%%T%` matches with key `%T` (the `%` after the opener is
+    // key content, `\S+?` must consume something), is not in the map, and is
+    // left whole -- its closing `%` never opens the next match.
+    assert_eq!(replace_html_env("%%T%%", &env), "%%T%%");
+    // Same consumption rule with a plain unknown key: the regex eats
+    // `%UNKNOWN%` whole, so `KNOWN%` is left without an opener. The old
+    // rescan-from-inside substituted here; Vite does not.
+    env.insert("KNOWN".to_string(), "value".to_string());
+    assert_eq!(
+        replace_html_env("%UNKNOWN%KNOWN%", &env),
+        "%UNKNOWN%KNOWN%",
+        "an unknown placeholder's closing % must not open the next match"
+    );
+    // Overlapping placeholders: the left-to-right scan takes %T% first, and
+    // the shared % is gone before %KNOWN...% could match (the fuzz_html_env
+    // crash input, found as %KNOWN%RECURSIVE%T).
+    assert_eq!(replace_html_env("%T%KNOWN%X", &env), "TitleKNOWN%X");
 }
 
 #[test]

@@ -13,29 +13,70 @@ members = [
     "crates/oj_server",
     "crates/oj",
     "crates/oj_js",
+    "crates/oj_stylex",
+    "crates/fru",
     "crates/oj_wasm",
     "crates/oj_deno_napi",
+    "crates/oj_notify",
     "crates/oj_deno_runtime",
     "crates/oj_deno_snapshots",
+    "crates/typecheck/oj_*",
 ]
 
 [workspace.package]
-version = "0.2.23"
+version = "0.4.5"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/david1gp/oj"
 
 [workspace.dependencies]
-oj_compiler = { package = "adaptive-oj-compiler", version = "0.2.23", path = "crates/oj_compiler" }
-oj_resolver = { package = "adaptive-oj-resolver", version = "0.2.23", path = "crates/oj_resolver" }
-oj_graph = "=0.2.22"
-oj_cache = { package = "adaptive-oj-cache", version = "0.2.23", path = "crates/oj_cache" }
-oj_css = "=0.2.22"
-oj_diag = "=0.2.22"
-oj_env = { package = "adaptive-oj-env", version = "0.2.23", path = "crates/oj_env" }
-oj_config = { package = "adaptive-oj-config", version = "0.2.23", path = "crates/oj_config" }
-oj_server = { package = "adaptive-oj-server", version = "0.2.23", path = "crates/oj_server" }
-oj_js = "=0.2.22"
+# Fork: the published crates keep their `adaptive-oj-*` names on the upstream
+# version train; every key still resolves to the local path.
+oj_compiler = { package = "adaptive-oj-compiler", version = "0.4.5", path = "crates/oj_compiler" }
+oj_resolver = { package = "adaptive-oj-resolver", version = "0.4.5", path = "crates/oj_resolver" }
+oj_graph = { package = "adaptive-oj-graph", version = "0.4.5", path = "crates/oj_graph" }
+oj_cache = { package = "adaptive-oj-cache", version = "0.4.5", path = "crates/oj_cache" }
+oj_css = { package = "adaptive-oj-css", version = "0.4.5", path = "crates/oj_css" }
+oj_diag = { package = "adaptive-oj-diag", version = "0.4.5", path = "crates/oj_diag" }
+oj_env = { package = "adaptive-oj-env", version = "0.4.5", path = "crates/oj_env" }
+oj_config = { package = "adaptive-oj-config", version = "0.4.5", path = "crates/oj_config" }
+oj_server = { package = "adaptive-oj-server", version = "0.4.5", path = "crates/oj_server" }
+oj_js = { package = "adaptive-oj-js", version = "0.4.5", path = "crates/oj_js" }
+oj_typecheck = { version = "0.4.5", path = "crates/typecheck/oj_typecheck" }
+# tsrs:begin (tools/vendor-tsrs.py) deps
+tsrs_api = { package = "oj_tsrs_api", version = "0.4.5", path = "crates/typecheck/oj_tsrs_api" }
+tsrs_api_codec = { package = "oj_tsrs_api_codec", version = "0.4.5", path = "crates/typecheck/oj_tsrs_api_codec" }
+tsrs_api_transport = { package = "oj_tsrs_api_transport", version = "0.4.5", path = "crates/typecheck/oj_tsrs_api_transport" }
+tsrs_ast = { package = "oj_tsrs_ast", version = "0.4.5", path = "crates/typecheck/oj_tsrs_ast" }
+tsrs_astnav = { package = "oj_tsrs_astnav", version = "0.4.5", path = "crates/typecheck/oj_tsrs_astnav" }
+tsrs_binder = { package = "oj_tsrs_binder", version = "0.4.5", path = "crates/typecheck/oj_tsrs_binder" }
+tsrs_checker = { package = "oj_tsrs_checker", version = "0.4.5", path = "crates/typecheck/oj_tsrs_checker" }
+tsrs_compiler = { package = "oj_tsrs_compiler", version = "0.4.5", path = "crates/typecheck/oj_tsrs_compiler" }
+tsrs_contentmapper = { package = "oj_tsrs_contentmapper", version = "0.4.5", path = "crates/typecheck/oj_tsrs_contentmapper" }
+tsrs_core = { package = "oj_tsrs_core", version = "0.4.5", path = "crates/typecheck/oj_tsrs_core" }
+tsrs_declarations = { package = "oj_tsrs_declarations", version = "0.4.5", path = "crates/typecheck/oj_tsrs_declarations" }
+tsrs_diagnostics = { package = "oj_tsrs_diagnostics", version = "0.4.5", path = "crates/typecheck/oj_tsrs_diagnostics" }
+tsrs_execute = { package = "oj_tsrs_execute", version = "0.4.5", path = "crates/typecheck/oj_tsrs_execute" }
+tsrs_fswatch = { package = "oj_tsrs_fswatch", version = "0.4.5", path = "crates/typecheck/oj_tsrs_fswatch" }
+tsrs_incremental = { package = "oj_tsrs_incremental", version = "0.4.5", path = "crates/typecheck/oj_tsrs_incremental" }
+tsrs_ipc = { package = "oj_tsrs_ipc", version = "0.4.5", path = "crates/typecheck/oj_tsrs_ipc" }
+tsrs_ls = { package = "oj_tsrs_ls", version = "0.4.5", path = "crates/typecheck/oj_tsrs_ls" }
+tsrs_lsproto = { package = "oj_tsrs_lsproto", version = "0.4.5", path = "crates/typecheck/oj_tsrs_lsproto" }
+tsrs_module = { package = "oj_tsrs_module", version = "0.4.5", path = "crates/typecheck/oj_tsrs_module" }
+tsrs_modulespecifiers = { package = "oj_tsrs_modulespecifiers", version = "0.4.5", path = "crates/typecheck/oj_tsrs_modulespecifiers" }
+tsrs_parser = { package = "oj_tsrs_parser", version = "0.4.5", path = "crates/typecheck/oj_tsrs_parser" }
+tsrs_printer = { package = "oj_tsrs_printer", version = "0.4.5", path = "crates/typecheck/oj_tsrs_printer" }
+tsrs_project = { package = "oj_tsrs_project", version = "0.4.5", path = "crates/typecheck/oj_tsrs_project" }
+tsrs_projectutil = { package = "oj_tsrs_projectutil", version = "0.4.5", path = "crates/typecheck/oj_tsrs_projectutil" }
+tsrs_pseudochecker = { package = "oj_tsrs_pseudochecker", version = "0.4.5", path = "crates/typecheck/oj_tsrs_pseudochecker" }
+tsrs_scanner = { package = "oj_tsrs_scanner", version = "0.4.5", path = "crates/typecheck/oj_tsrs_scanner" }
+tsrs_sourcemap = { package = "oj_tsrs_sourcemap", version = "0.4.5", path = "crates/typecheck/oj_tsrs_sourcemap" }
+tsrs_spanmap = { package = "oj_tsrs_spanmap", version = "0.4.5", path = "crates/typecheck/oj_tsrs_spanmap" }
+tsrs_transformers = { package = "oj_tsrs_transformers", version = "0.4.5", path = "crates/typecheck/oj_tsrs_transformers" }
+tsrs_tsoptions = { package = "oj_tsrs_tsoptions", version = "0.4.5", path = "crates/typecheck/oj_tsrs_tsoptions" }
+tsrs_vfs = { package = "oj_tsrs_vfs", version = "0.4.5", path = "crates/typecheck/oj_tsrs_vfs" }
+# tsrs:end deps
+oj_stylex = { version = "0.4.5", path = "crates/oj_stylex" }
 
 # oj-maintained forks of deno_napi 0.190.0 and deno_runtime 0.267.0 (published
 # to crates.io under these names), carrying oj's napi finalizer-registry patch:
@@ -44,28 +85,29 @@ oj_js = "=0.2.22"
 # hundreds of thousands of live references — it dominated one-shot rebundle
 # children. See crates/oj_deno_napi/lib.rs. Consumers rename them back via the
 # dependency key so `use deno_napi::`/`use deno_runtime::` stay unchanged; a
-# published oj resolves them by version from crates.io. Keep the verified
-# upstream 0.2.22 dependency train together; the local copies are nonpublishable.
-oj_deno_napi = "=0.2.22"
-oj_deno_process = "=0.2.22"
-oj_deno_runtime = "=0.2.22"
-oj_deno_snapshots = "=0.2.22"
+# published oj resolves them by version from crates.io. Fork: local adaptive
+# names on the 0.4.5 train.
+oj_deno_napi = { package = "adaptive-oj-deno-napi", version = "0.4.5", path = "crates/oj_deno_napi" }
+oj_deno_process = { package = "adaptive-oj-deno-process", version = "0.4.5", path = "crates/oj_deno_process" }
+oj_deno_runtime = { package = "adaptive-oj-deno-runtime", version = "0.4.5", path = "crates/oj_deno_runtime" }
+oj_deno_snapshots = { package = "adaptive-oj-deno-snapshots", version = "0.4.5", path = "crates/oj_deno_snapshots" }
 
-oxc_allocator = "0.146.0"
-oxc_parser = "0.146.0"
-oxc_ast = "0.146.0"
-oxc_ast_visit = "0.146.0"
-oxc_span = "0.146.0"
-oxc_semantic = "0.146.0"
-oxc_transformer = "0.146.0"
-oxc_transformer_plugins = "0.146.0"
-oxc_minifier = "0.146.0"
-oxc_ecmascript = "0.146.0"
-oxc_syntax = "0.146.0"
-oxc_codegen = "0.146.0"
-oxc_diagnostics = "0.146.0"
-oxc_sourcemap = "8.1.2"
-oxc_resolver = "11.24.2"
+oxc_allocator = "0.157.0"
+oxc_parser = "0.157.0"
+oxc_ast = "0.157.0"
+oxc_ast_visit = "0.157.0"
+oxc_span = "0.157.0"
+oxc_semantic = "0.157.0"
+oxc_transformer = "0.157.0"
+oxc_transformer_plugins = "0.157.0"
+oxc_minifier = "0.157.0"
+oxc_ecmascript = "0.157.0"
+oxc_syntax = "0.157.0"
+oxc_str = "0.157.0"
+oxc_codegen = "0.157.0"
+oxc_diagnostics = "0.157.0"
+oxc_sourcemap = "9.0.0"
+oxc_resolver = "11.24.3"
 base64 = "0.22"
 
 anyhow = "1.0.104"
@@ -78,7 +120,10 @@ serde_json = "1.0.151"
 tokio = { version = "1.53.1", features = ["full"] }
 axum = { version = "0.8.9", features = ["ws"] }
 tower = { version = "0.5.3", features = ["util"] }
-notify = "8.2.0"
+# oj-maintained fork of notify 9.0.0-rc.6 (published to crates.io under this
+# name), carrying the unreleased upstream FSEvents fix that keeps pending
+# events across watch changes. See crates/oj_notify/README.md.
+notify = { package = "oj_notify", version = "0.4.5", path = "crates/oj_notify" }
 clap = { version = "4.6.6", features = ["derive"] }
 
 # test-only
@@ -100,18 +145,16 @@ codegen-units = 1
 adaptive-oj = { opt-level = 3 }
 adaptive-oj-compiler = { opt-level = 3 }
 adaptive-oj-css = { opt-level = 3 }
-oj_css = { opt-level = 3 }
 adaptive-oj-resolver = { opt-level = 3 }
 adaptive-oj-graph = { opt-level = 3 }
-oj_graph = { opt-level = 3 }
 adaptive-oj-server = { opt-level = 3 }
 adaptive-oj-cache = { opt-level = 3 }
 adaptive-oj-diag = { opt-level = 3 }
-oj_diag = { opt-level = 3 }
 adaptive-oj-env = { opt-level = 3 }
 adaptive-oj-config = { opt-level = 3 }
 adaptive-oj-js = { opt-level = 3 }
-oj_js = { opt-level = 3 }
+oj_stylex = { opt-level = 3 }
+fru = { opt-level = 3 }
 oxc = { opt-level = 3 }
 oxc_allocator = { opt-level = 3 }
 oxc_ast = { opt-level = 3 }
@@ -172,10 +215,8 @@ v8 = { opt-level = 3 }
 # deno_fs/deno_io: the one-shot rebundle child funnels every napi call, sync
 # fs op and chunk write through these.
 adaptive-oj-deno-napi = { opt-level = 3 }
-oj_deno_napi = { opt-level = 3 }
 deno_node = { opt-level = 3 }
 adaptive-oj-deno-runtime = { opt-level = 3 }
-oj_deno_runtime = { opt-level = 3 }
 # Vanilla deno_runtime stays in the graph as deno_snapshots' build-dependency.
 deno_runtime = { opt-level = 3 }
 deno_web = { opt-level = 3 }
@@ -191,7 +232,7 @@ ryu = { opt-level = 3 }
 memchr = { opt-level = 3 }
 simdutf8 = { opt-level = 3 }
 blake3 = { opt-level = 3 }
-notify = { opt-level = 3 }
+oj_notify = { opt-level = 3 }
 notify-types = { opt-level = 3 }
 axum = { opt-level = 3 }
 axum-core = { opt-level = 3 }
@@ -220,3 +261,85 @@ rustc-hash = { opt-level = 3 }
 dashmap = { opt-level = 3 }
 parking_lot = { opt-level = 3 }
 mio = { opt-level = 3 }
+# Fat LTO keeps a z crate's size attributes, so a non-generic hot loop stays
+# size-optimized even when an opt-level 3 crate calls it. These are those
+# loops: lightningcss's tokenizer and number printing, the gzip size report
+# and Start chunk compression, oxc_resolver's package.json parse, inline
+# sourcemap base64, module-specifier URLs, rolldown's hook filters and chunk
+# hashes, its rayon pool, and the deno resolver and permission checks every
+# engine import and fs op passes.
+cssparser = { opt-level = 3 }
+cssparser-color = { opt-level = 3 }
+dtoa = { opt-level = 3 }
+dtoa-short = { opt-level = 3 }
+parcel_sourcemap = { opt-level = 3 }
+flate2 = { opt-level = 3 }
+zlib-rs = { opt-level = 3 }
+miniz_oxide = { opt-level = 3 }
+crc32fast = { opt-level = 3 }
+adler2 = { opt-level = 3 }
+simd-adler32 = { opt-level = 3 }
+simd-json = { opt-level = 3 }
+value-trait = { opt-level = 3 }
+halfbrown = { opt-level = 3 }
+base64 = { opt-level = 3 }
+base64-simd = { opt-level = 3 }
+vsimd = { opt-level = 3 }
+url = { opt-level = 3 }
+percent-encoding = { opt-level = 3 }
+idna = { opt-level = 3 }
+regex = { opt-level = 3 }
+regex-automata = { opt-level = 3 }
+regex-syntax = { opt-level = 3 }
+aho-corasick = { opt-level = 3 }
+regress = { opt-level = 3 }
+xxhash-rust = { opt-level = 3 }
+rayon = { opt-level = 3 }
+rayon-core = { opt-level = 3 }
+crossbeam-deque = { opt-level = 3 }
+crossbeam-epoch = { opt-level = 3 }
+crossbeam-utils = { opt-level = 3 }
+parking_lot_core = { opt-level = 3 }
+compact_str = { opt-level = 3 }
+ryu-js = { opt-level = 3 }
+foldhash = { opt-level = 3 }
+sourcemap = { opt-level = 3 }
+deno_permissions = { opt-level = 3 }
+node_resolver = { opt-level = 3 }
+deno_resolver = { opt-level = 3 }
+deno_package_json = { opt-level = 3 }
+deno_path_util = { opt-level = 3 }
+sys_traits = { opt-level = 3 }
+# tsrs:begin (tools/vendor-tsrs.py) profile
+oj_tsrs_api = { opt-level = 3 }
+oj_tsrs_api_codec = { opt-level = 3 }
+oj_tsrs_api_transport = { opt-level = 3 }
+oj_tsrs_ast = { opt-level = 3 }
+oj_tsrs_astnav = { opt-level = 3 }
+oj_tsrs_binder = { opt-level = 3 }
+oj_tsrs_checker = { opt-level = 3 }
+oj_tsrs_compiler = { opt-level = 3 }
+oj_tsrs_contentmapper = { opt-level = 3 }
+oj_tsrs_core = { opt-level = 3 }
+oj_tsrs_declarations = { opt-level = 3 }
+oj_tsrs_diagnostics = { opt-level = 3 }
+oj_tsrs_execute = { opt-level = 3 }
+oj_tsrs_fswatch = { opt-level = 3 }
+oj_tsrs_incremental = { opt-level = 3 }
+oj_tsrs_ipc = { opt-level = 3 }
+oj_tsrs_ls = { opt-level = 3 }
+oj_tsrs_lsproto = { opt-level = 3 }
+oj_tsrs_module = { opt-level = 3 }
+oj_tsrs_modulespecifiers = { opt-level = 3 }
+oj_tsrs_parser = { opt-level = 3 }
+oj_tsrs_printer = { opt-level = 3 }
+oj_tsrs_project = { opt-level = 3 }
+oj_tsrs_projectutil = { opt-level = 3 }
+oj_tsrs_pseudochecker = { opt-level = 3 }
+oj_tsrs_scanner = { opt-level = 3 }
+oj_tsrs_sourcemap = { opt-level = 3 }
+oj_tsrs_spanmap = { opt-level = 3 }
+oj_tsrs_transformers = { opt-level = 3 }
+oj_tsrs_tsoptions = { opt-level = 3 }
+oj_tsrs_vfs = { opt-level = 3 }
+# tsrs:end profile

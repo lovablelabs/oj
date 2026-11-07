@@ -1,0 +1,753 @@
+[
+ {
+  "name": "basic",
+  "constants": {
+   "$obj": [
+    [
+     "bg",
+     "red"
+    ],
+    [
+     "size",
+     12
+    ]
+   ]
+  },
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   }
+  },
+  "canonicalFileName": "tokens.stylex.ts",
+  "exportName": "tokens",
+  "expectedRules": [
+   {
+    "className": "xvfom18",
+    "constKey": "xvfom18",
+    "constVal": "red",
+    "ltr": "",
+    "rtl": null,
+    "priority": 0
+   },
+   {
+    "className": "xr2id04",
+    "constKey": "xr2id04",
+    "constVal": 12,
+    "ltr": "",
+    "rtl": null,
+    "priority": 0
+   }
+  ]
+ },
+ {
+  "name": "camelCase key",
+  "constants": {
+   "$obj": [
+    [
+     "myColor",
+     "red"
+    ]
+   ]
+  },
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   }
+  },
+  "canonicalFileName": "tokens.stylex.ts",
+  "exportName": "tokens",
+  "expectedRules": [
+   {
+    "className": "xqrwzb",
+    "constKey": "xqrwzb",
+    "constVal": "red",
+    "ltr": "",
+    "rtl": null,
+    "priority": 0
+   }
+  ]
+ },
+ {
+  "name": "digit-leading key",
+  "constants": {
+   "$obj": [
+    [
+     "2xl",
+     "32px"
+    ]
+   ]
+  },
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   }
+  },
+  "canonicalFileName": "tokens.stylex.ts",
+  "exportName": "tokens",
+  "expectedRules": [
+   {
+    "className": "x1v5zn7q",
+    "constKey": "x1v5zn7q",
+    "constVal": "32px",
+    "ltr": "",
+    "rtl": null,
+    "priority": 0
+   }
+  ]
+ },
+ {
+  "name": "weird chars key",
+  "constants": {
+   "$obj": [
+    [
+     "foo-bar baz.q",
+     "1px"
+    ]
+   ]
+  },
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   }
+  },
+  "canonicalFileName": "tokens.stylex.ts",
+  "exportName": "tokens",
+  "expectedRules": [
+   {
+    "className": "xmrueh5",
+    "constKey": "xmrueh5",
+    "constVal": "1px",
+    "ltr": "",
+    "rtl": null,
+    "priority": 0
+   }
+  ]
+ },
+ {
+  "name": "custom-prop keys skip hash",
+  "constants": {
+   "$obj": [
+    [
+     "--already",
+     "x"
+    ],
+    [
+     "--",
+     "y"
+    ],
+    [
+     "---z",
+     "w"
+    ]
+   ]
+  },
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   }
+  },
+  "canonicalFileName": "tokens.stylex.ts",
+  "exportName": "tokens",
+  "expectedRules": [
+   {
+    "className": "already",
+    "constKey": "already",
+    "constVal": "x",
+    "ltr": "",
+    "rtl": null,
+    "priority": 0
+   },
+   {
+    "className": "",
+    "constKey": "",
+    "constVal": "y",
+    "ltr": "",
+    "rtl": null,
+    "priority": 0
+   },
+   {
+    "className": "-z",
+    "constKey": "-z",
+    "constVal": "w",
+    "ltr": "",
+    "rtl": null,
+    "priority": 0
+   }
+  ]
+ },
+ {
+  "name": "numeric keys reorder",
+  "constants": {
+   "$obj": [
+    [
+     "2",
+     "b"
+    ],
+    [
+     "10",
+     "a"
+    ],
+    [
+     "zz",
+     "c"
+    ]
+   ]
+  },
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   }
+  },
+  "canonicalFileName": "tokens.stylex.ts",
+  "exportName": "tokens",
+  "expectedRules": [
+   {
+    "className": "x150mhyf",
+    "constKey": "x150mhyf",
+    "constVal": "b",
+    "ltr": "",
+    "rtl": null,
+    "priority": 0
+   },
+   {
+    "className": "xoz4qa5",
+    "constKey": "xoz4qa5",
+    "constVal": "a",
+    "ltr": "",
+    "rtl": null,
+    "priority": 0
+   },
+   {
+    "className": "x1ifbxx",
+    "constKey": "x1ifbxx",
+    "constVal": "c",
+    "ltr": "",
+    "rtl": null,
+    "priority": 0
+   }
+  ]
+ },
+ {
+  "name": "number values",
+  "constants": {
+   "$obj": [
+    [
+     "f",
+     10.5
+    ],
+    [
+     "neg",
+     -3
+    ],
+    [
+     "exp",
+     1e+21
+    ],
+    [
+     "zero",
+     0
+    ]
+   ]
+  },
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   }
+  },
+  "canonicalFileName": "tokens.stylex.ts",
+  "exportName": "tokens",
+  "expectedRules": [
+   {
+    "className": "x1xx49h9",
+    "constKey": "x1xx49h9",
+    "constVal": 10.5,
+    "ltr": "",
+    "rtl": null,
+    "priority": 0
+   },
+   {
+    "className": "x4550vp",
+    "constKey": "x4550vp",
+    "constVal": -3,
+    "ltr": "",
+    "rtl": null,
+    "priority": 0
+   },
+   {
+    "className": "x1hszv2i",
+    "constKey": "x1hszv2i",
+    "constVal": 1e+21,
+    "ltr": "",
+    "rtl": null,
+    "priority": 0
+   },
+   {
+    "className": "xqxv45d",
+    "constKey": "xqxv45d",
+    "constVal": 0,
+    "ltr": "",
+    "rtl": null,
+    "priority": 0
+   }
+  ]
+ },
+ {
+  "name": "null value",
+  "constants": {
+   "$obj": [
+    [
+     "bg",
+     null
+    ]
+   ]
+  },
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   }
+  },
+  "canonicalFileName": "tokens.stylex.ts",
+  "exportName": "tokens",
+  "expectedRules": [
+   {
+    "className": "xvfom18",
+    "constKey": "xvfom18",
+    "constVal": null,
+    "ltr": "",
+    "rtl": null,
+    "priority": 0
+   }
+  ]
+ },
+ {
+  "name": "bool value",
+  "constants": {
+   "$obj": [
+    [
+     "bg",
+     true
+    ]
+   ]
+  },
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   }
+  },
+  "canonicalFileName": "tokens.stylex.ts",
+  "exportName": "tokens",
+  "expectedRules": [
+   {
+    "className": "xvfom18",
+    "constKey": "xvfom18",
+    "constVal": true,
+    "ltr": "",
+    "rtl": null,
+    "priority": 0
+   }
+  ]
+ },
+ {
+  "name": "nested object value",
+  "constants": {
+   "$obj": [
+    [
+     "bg",
+     {
+      "$obj": [
+       [
+        "x",
+        1
+       ]
+      ]
+     }
+    ]
+   ]
+  },
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   }
+  },
+  "canonicalFileName": "tokens.stylex.ts",
+  "exportName": "tokens",
+  "expectedRules": [
+   {
+    "className": "xvfom18",
+    "constKey": "xvfom18",
+    "constVal": {
+     "x": 1
+    },
+    "ltr": "",
+    "rtl": null,
+    "priority": 0
+   }
+  ]
+ },
+ {
+  "name": "array constants",
+  "constants": [
+   "a",
+   "b"
+  ],
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   }
+  },
+  "canonicalFileName": "tokens.stylex.ts",
+  "exportName": "tokens",
+  "expectedRules": [
+   {
+    "className": "x9e079p",
+    "constKey": "x9e079p",
+    "constVal": "a",
+    "ltr": "",
+    "rtl": null,
+    "priority": 0
+   },
+   {
+    "className": "x1g50zy5",
+    "constKey": "x1g50zy5",
+    "constVal": "b",
+    "ltr": "",
+    "rtl": null,
+    "priority": 0
+   }
+  ]
+ },
+ {
+  "name": "empty object",
+  "constants": {
+   "$obj": []
+  },
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   }
+  },
+  "canonicalFileName": "tokens.stylex.ts",
+  "exportName": "tokens",
+  "expectedRules": []
+ },
+ {
+  "name": "debug alone still hashes",
+  "constants": {
+   "$obj": [
+    [
+     "myColor",
+     "red"
+    ]
+   ]
+  },
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   },
+   "debug": true
+  },
+  "canonicalFileName": "tokens.stylex.ts",
+  "exportName": "tokens",
+  "expectedRules": [
+   {
+    "className": "xqrwzb",
+    "constKey": "xqrwzb",
+    "constVal": "red",
+    "ltr": "",
+    "rtl": null,
+    "priority": 0
+   }
+  ]
+ },
+ {
+  "name": "debug classnames",
+  "constants": {
+   "$obj": [
+    [
+     "myColor",
+     "red"
+    ],
+    [
+     "2xl",
+     "32px"
+    ],
+    [
+     "ké y",
+     "x"
+    ]
+   ]
+  },
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   },
+   "debug": true,
+   "enableDebugClassNames": true
+  },
+  "canonicalFileName": "tokens.stylex.ts",
+  "exportName": "tokens",
+  "expectedRules": [
+   {
+    "className": "myColor-xqrwzb",
+    "constKey": "myColor-xqrwzb",
+    "constVal": "red",
+    "ltr": "",
+    "rtl": null,
+    "priority": 0
+   },
+   {
+    "className": "_2xl-x1v5zn7q",
+    "constKey": "_2xl-x1v5zn7q",
+    "constVal": "32px",
+    "ltr": "",
+    "rtl": null,
+    "priority": 0
+   },
+   {
+    "className": "k__y-x16j7xh0",
+    "constKey": "k__y-x16j7xh0",
+    "constVal": "x",
+    "ltr": "",
+    "rtl": null,
+    "priority": 0
+   }
+  ]
+ },
+ {
+  "name": "debug classnames custom-prop key",
+  "constants": {
+   "$obj": [
+    [
+     "--already",
+     "x"
+    ]
+   ]
+  },
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   },
+   "debug": true,
+   "enableDebugClassNames": true
+  },
+  "canonicalFileName": "tokens.stylex.ts",
+  "exportName": "tokens",
+  "expectedRules": [
+   {
+    "className": "already",
+    "constKey": "already",
+    "constVal": "x",
+    "ltr": "",
+    "rtl": null,
+    "priority": 0
+   }
+  ]
+ },
+ {
+  "name": "prefix",
+  "constants": {
+   "$obj": [
+    [
+     "bg",
+     "red"
+    ]
+   ]
+  },
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   },
+   "classNamePrefix": "pfx"
+  },
+  "canonicalFileName": "tokens.stylex.ts",
+  "exportName": "tokens",
+  "expectedRules": [
+   {
+    "className": "pfxvfom18",
+    "constKey": "pfxvfom18",
+    "constVal": "red",
+    "ltr": "",
+    "rtl": null,
+    "priority": 0
+   }
+  ]
+ },
+ {
+  "name": "export name changes hash",
+  "constants": {
+   "$obj": [
+    [
+     "bg",
+     "red"
+    ]
+   ]
+  },
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   }
+  },
+  "canonicalFileName": "tokens.stylex.ts",
+  "exportName": "other",
+  "expectedRules": [
+   {
+    "className": "x15wapux",
+    "constKey": "x15wapux",
+    "constVal": "red",
+    "ltr": "",
+    "rtl": null,
+    "priority": 0
+   }
+  ]
+ },
+ {
+  "name": "const file extension",
+  "constants": {
+   "$obj": [
+    [
+     "bg",
+     "red"
+    ]
+   ]
+  },
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   }
+  },
+  "canonicalFileName": "tokens.stylex.const.ts",
+  "exportName": "tokens",
+  "expectedRules": [
+   {
+    "className": "x1ojsaz9",
+    "constKey": "x1ojsaz9",
+    "constVal": "red",
+    "ltr": "",
+    "rtl": null,
+    "priority": 0
+   }
+  ]
+ },
+ {
+  "name": "deep path canonical",
+  "constants": {
+   "$obj": [
+    [
+     "bg",
+     "red"
+    ]
+   ]
+  },
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   }
+  },
+  "canonicalFileName": "deep/nested/t.stylex.ts",
+  "exportName": "tokens",
+  "expectedRules": [
+   {
+    "className": "x12k4ua7",
+    "constKey": "x12k4ua7",
+    "constVal": "red",
+    "ltr": "",
+    "rtl": null,
+    "priority": 0
+   }
+  ]
+ },
+ {
+  "name": "non-object value",
+  "constants": "x",
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   }
+  },
+  "canonicalFileName": "tokens.stylex.ts",
+  "exportName": "tokens",
+  "expectedError": {
+   "message": "defineConsts() can only accept an object.",
+   "code": "NonStyleObject",
+   "messageExact": true
+  }
+ },
+ {
+  "name": "package canonical",
+  "constants": {
+   "$obj": [
+    [
+     "bg",
+     "red"
+    ]
+   ]
+  },
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   }
+  },
+  "canonicalFileName": "named-pkg:src/tokens.stylex.ts",
+  "exportName": "tokens",
+  "expectedRules": [
+   {
+    "className": "xqk6yf9",
+    "constKey": "xqk6yf9",
+    "constVal": "red",
+    "ltr": "",
+    "rtl": null,
+    "priority": 0
+   }
+  ]
+ },
+ {
+  "name": "nameless package canonical is undefined-literal",
+  "constants": {
+   "$obj": [
+    [
+     "bg",
+     "red"
+    ]
+   ]
+  },
+  "options": {
+   "unstable_moduleResolution": {
+    "type": "commonJS",
+    "rootDir": "/fake/root"
+   }
+  },
+  "canonicalFileName": "undefined:tokens.stylex.ts",
+  "exportName": "tokens",
+  "expectedRules": [
+   {
+    "className": "xziv2fl",
+    "constKey": "xziv2fl",
+    "constVal": "red",
+    "ltr": "",
+    "rtl": null,
+    "priority": 0
+   }
+  ]
+ }
+]

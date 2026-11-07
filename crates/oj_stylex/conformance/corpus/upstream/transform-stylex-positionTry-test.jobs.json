@@ -1,0 +1,51 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/transform-stylex-positionTry-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs only — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "upstream/positionTry-positiontry-object-001",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const name = stylex.positionTry({\n          positionAnchor: '--anchor',\n          top: '0',\n          left: '0',\n          width: '100px',\n          height: '100px'\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["positionTry"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/positionTry-local-constants-used-in-posi-002",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const SIZE = '100px';\n        export const name = stylex.positionTry({\n          positionAnchor: '--anchor',\n          top: '0',\n          left: '0',\n          width: SIZE,\n          height: SIZE\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["positionTry"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/positionTry-positiontry-value-used-withi-003",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const SIZE = '100px';\n        const name = stylex.positionTry({\n          top: '0',\n          left: '0',\n          width: SIZE,\n          height: SIZE\n        });\n        export const styles = stylex.create({\n          root: {\n            positionTryFallbacks: name,\n          }\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["positionTry", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/positionTry-positiontry-object-used-inli-004",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const styles = stylex.create({\n          root: {\n            positionTryFallbacks: stylex.positionTry({\n              positionAnchor: '--anchor',\n              top: '0',\n              left: '0',\n              width: '100px',\n              height: '100px'\n            }),\n          },\n        });\n      ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["positionTry", "create"],
+      "expect": "ok"
+    }
+  ]
+}

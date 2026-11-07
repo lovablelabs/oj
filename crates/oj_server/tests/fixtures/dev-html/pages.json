@@ -1,0 +1,61 @@
+[
+  {
+    "name": "a real index.html with inline modules",
+    "file": "index.html",
+    "url": "/index.html",
+    "originalUrl": "/",
+    "html": "<!doctype html>\n<html lang=\"en\">\n  <head lang=\"en\">\n    <meta charset=\"UTF-8\" />\n    <title><!--pre--> %MODE% %VITE_MISSING%</title>\n    <script type=\"module\">\n      import React from \"react\";\n      import \"./src/a.js\";\n      console.log(React, \"</div>\");\n    </script>\n  </head>\n  <body>\n    <!-- <script type=\"module\">commented()</script> -->\n    <div id=\"root\"></div>\n    <script type=\"module\" src=\"/src/main.ts\"></script>\n    <script type=module>\n      import { b } from \"/src/b.js\";\n    </script>\n  </body>\n</html>\n"
+  },
+  {
+    "name": "a virtual page a middleware serves (the canvas preview shape)",
+    "url": "/__component/preview/Badge",
+    "originalUrl": "/__component/preview/Badge",
+    "html": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"UTF-8\" />\n  <title>Preview: Badge</title>\n</head>\n<body>\n  <div id=\"component-root\"></div>\n  <script type=\"module\">\n    import React from \"react\";\n    import ReactDOM from \"react-dom/client\";\n    import \"@/styles.css\";\n  </script>\n</body>\n</html>\n"
+  },
+  {
+    "name": "a SPA fallback for a nested route with relative urls",
+    "file": "index.html",
+    "url": "/index.html",
+    "originalUrl": "/dashboard/settings",
+    "html": "<html><head>\n<link rel=\"icon\" href=\"./favicon.svg\">\n<meta property=\"og:image\" content=\"./og.png\">\n<meta name=\"description\" content=\"./not-an-asset\">\n<script type=\"importmap\">{\"imports\":{}}</script>\n</head>\n<body>\n<img src=\"./a.png\" srcset=\"./a.png 1x, ./a@2x.png 2x\" alt=\"a\">\n<img vite-ignore src=\"./ignored.png\">\n<script vite-ignore type=\"module\" src=\"./ignored.js\"></script>\n<script type=\"module\" src='./src/main.tsx'></script>\n<script>window.go = () => import('./src/lazy.js'); // import('./commented.js')</script>\n<template><script type=\"module\">templated()</script></template>\n</body></html>\n"
+  },
+  {
+    "name": "inline styles and style attributes with urls",
+    "file": "index.html",
+    "url": "/index.html",
+    "originalUrl": "/",
+    "html": "<html><head>\n<style>body { margin: 0 }</style>\n<script type=\"module\">import \"/src/a.js\"</script>\n</head><body>\n<div style=\"background: url('/bg.png')\"></div>\n<p style=\"color: red\"></p>\n<script type=\"module\">import \"/src/b.js\"</script>\n<span style='background: url(\"/a.png\"), url(/b.png)'></span>\n<style></style>\n<style>.b { color: blue }</style>\n</body></html>\n"
+  },
+  {
+    "name": "a page without head or body",
+    "url": "/bare.html",
+    "originalUrl": "/bare.html",
+    "html": "<script type=\"module\">bare()</script><p>hi</p>"
+  },
+  {
+    "name": "a virtual page under a trailing slash",
+    "url": "/nested/",
+    "originalUrl": "/nested/",
+    "html": "<!doctype html><html><head><title>n</title></head><body><script type=\"module\">import \"./x.js\"</script><img src=\"./n.png\"></body></html>"
+  },
+  {
+    "name": "attributes in every spelling and srcset shapes",
+    "file": "index.html",
+    "url": "/index.html",
+    "originalUrl": "/",
+    "html": "<!DOCTYPE html>\n<HTML>\n<HEAD>\n<LINK REL=stylesheet HREF=/a.css>\n<link rel=\"modulepreload\" href=\"/src/m.js\">\n<meta name=\"msapplication-TileImage\" content=\"/tile.png\">\n<meta property=\" og:video \" content=\"/v.mp4\">\n<link rel=\"preload\" as=\"image\" imagesrcset=\"/w.png 100w,/x.png    200w\">\n</HEAD>\n<BODY>\n<img alt=\"&lt;a&gt; &amp; &#39;b&#x27;\" src=\"/i.png\" srcset=\"/i.png, /i@2x.png 2x,data:image/png;base64,AAA= 3x\">\n<picture><source srcset=\"image-set(&quot;/s.png&quot; 1x) 1x, /t.png 2x\"></picture>\n<video src=\"/v.mp4\" poster=\"/p.png\"></video>\n<svg><use href=\"/sprite.svg#a\"></use><image xlink:href=\"/img.svg\"></image></svg>\n<object data=\"/o.pdf\"></object><audio src=\"\"></audio>\n<script src=\"/src/classic.js\"></script>\n<script>\n  const a = import(\"/src/a.js\"); const b = x.import(\"/no.js\"); const c = [...import('/spread.js')];\n  const d = `import(\"/tpl.js\")`; /* import(\"/c.js\") */ const e = importx(\"/n.js\");\n</script>\n<script type=\"module\" src=\"/src/main.ts\" async></script>\n</BODY>\n</HTML>\n"
+  },
+  {
+    "name": "an import map after a module script, env values",
+    "file": "index.html",
+    "url": "/index.html",
+    "originalUrl": "/about",
+    "html": "<html><head>\n  <script type=\"module\" src=\"./src/main.js\"></script>\n  <script type=\"importmap\">\n    {\"imports\": {\"a\": \"/a.js\"}}\n  </script>\n  <title>%VITE_TITLE% %BASE_URL% %MODE% %DEV% %PROD% %UNDEFINED_KEY%</title>\n</head><body><a href=\"./x\">x</a><img src=a.png></body></html>\n"
+  },
+  {
+    "name": "only a doctype and text",
+    "url": "/doc.html",
+    "originalUrl": "/doc.html",
+    "html": "<!doctype html>\n<p>%VITE_TITLE%</p><script type=\"module\">only()</script>\n"
+  }
+]

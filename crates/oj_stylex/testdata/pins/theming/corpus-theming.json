@@ -1,0 +1,1731 @@
+{
+ "skipped": [
+  "upstream/defineVars-tokens-object-haste-003",
+  "upstream/defineVars-tokens-object-026",
+  "upstream/createTheme-theme-object-haste-002",
+  "upstream/createTheme-stylex-env-override-for-part-007",
+  "upstream/createTheme-adds-debug-data-haste-016",
+  "upstream/createTheme-adds-debug-data-for-npm-pack-017",
+  "upstream/createTheme-adds-style-injection-019"
+ ],
+ "records": [
+  {
+   "id": "upstream/defineVars-tokens-as-null-001",
+   "filename": "vars.stylex.js",
+   "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: null,\n          nextColor: {\n            default: null\n          },\n          otherColor: {\n            default: null,\n            '@media (prefers-color-scheme: dark)': null,\n            '@media print': null,\n          },\n        });\n      ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": []
+  },
+  {
+   "id": "upstream/defineVars-tokens-object-002",
+   "filename": "vars.stylex.js",
+   "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: 'red',\n          nextColor: {\n            default: 'green'\n          },\n          otherColor: {\n            default: 'blue',\n            '@media (prefers-color-scheme: dark)': 'lightblue',\n            '@media print': 'white',\n          },\n        });\n      ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "x1xu5ct6",
+     "ltr": ":root, .x1xu5ct6{--x1top4w9:red;--x1jvhhir:green;--x1mnphin:blue;}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "x1xu5ct6-1lveb7",
+     "ltr": "@media (prefers-color-scheme: dark){:root, .x1xu5ct6{--x1mnphin:lightblue;}}",
+     "rtl": null,
+     "priority": 0.2
+    },
+    {
+     "className": "x1xu5ct6-bdddrq",
+     "ltr": "@media print{:root, .x1xu5ct6{--x1mnphin:white;}}",
+     "rtl": null,
+     "priority": 0.2
+    }
+   ]
+  },
+  {
+   "id": "upstream/defineVars-tokens-object-deep-in-file-t-004",
+   "filename": "src/css/vars.stylex.js",
+   "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: 'red'\n        });\n      ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "x1u46eu1",
+     "ltr": ":root, .x1u46eu1{--x12q23p2:red;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "id": "upstream/defineVars-tokens-object-with-nested-ru-005",
+   "filename": "vars.stylex.js",
+   "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: {\n            default: 'blue',\n            '@media (prefers-color-scheme: dark)': {\n              default: 'lightblue',\n              '@supports (color: oklab(0 0 0))': 'oklab(0.7 -0.3 -0.4)',\n            }\n          },\n        });\n      ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "x1xu5ct6",
+     "ltr": ":root, .x1xu5ct6{--x1top4w9:blue;}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "x1xu5ct6-1lveb7",
+     "ltr": "@media (prefers-color-scheme: dark){:root, .x1xu5ct6{--x1top4w9:lightblue;}}",
+     "rtl": null,
+     "priority": 0.2
+    },
+    {
+     "className": "x1xu5ct6-1e6ryz3",
+     "ltr": "@supports (color: oklab(0 0 0)){@media (prefers-color-scheme: dark){:root, .x1xu5ct6{--x1top4w9:oklab(0.7 -0.3 -0.4);}}}",
+     "rtl": null,
+     "priority": 0.3
+    }
+   ]
+  },
+  {
+   "id": "upstream/defineVars-literal-tokens-object-006",
+   "filename": "vars.stylex.js",
+   "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          '--color': 'red',\n          '--otherColor': {\n            default: 'blue',\n            ':hover': 'lightblue',\n          },\n        });\n      ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "x1xu5ct6",
+     "ltr": ":root, .x1xu5ct6{--color:red;--otherColor:blue;}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "x1xu5ct6-1tdxo4z",
+     "ltr": ":hover{:root, .x1xu5ct6{--otherColor:lightblue;}}",
+     "rtl": null,
+     "priority": 0.2
+    }
+   ]
+  },
+  {
+   "id": "upstream/defineVars-local-variable-tokens-object-007",
+   "filename": "vars.stylex.js",
+   "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const tokens = {\n          '--color': 'red',\n          '--nextColor': {\n            default: 'green'\n          },\n          '--otherColor': {\n            default: 'blue',\n            '@media (prefers-color-scheme: dark)': 'lightblue',\n            '@media print': 'white',\n          },\n        };\n        export const vars = stylex.defineVars(tokens)\n      ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "x1xu5ct6",
+     "ltr": ":root, .x1xu5ct6{--color:red;--nextColor:green;--otherColor:blue;}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "x1xu5ct6-1lveb7",
+     "ltr": "@media (prefers-color-scheme: dark){:root, .x1xu5ct6{--otherColor:lightblue;}}",
+     "rtl": null,
+     "priority": 0.2
+    },
+    {
+     "className": "x1xu5ct6-bdddrq",
+     "ltr": "@media print{:root, .x1xu5ct6{--otherColor:white;}}",
+     "rtl": null,
+     "priority": 0.2
+    }
+   ]
+  },
+  {
+   "id": "upstream/defineVars-local-variables-used-in-toke-008",
+   "filename": "vars.stylex.js",
+   "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const COLOR = 'red';\n        export const vars = stylex.defineVars({\n          color: COLOR\n        });\n      ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "x1xu5ct6",
+     "ltr": ":root, .x1xu5ct6{--x1top4w9:red;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "id": "upstream/defineVars-template-literals-used-in-to-009",
+   "filename": "vars.stylex.js",
+   "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const NUMBER = 10;\n        export const vars = stylex.defineVars({\n          size: `${NUMBER}rem`\n        });\n      ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "x1xu5ct6",
+     "ltr": ":root, .x1xu5ct6{--x1p6522a:10rem;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "id": "upstream/defineVars-expressions-used-in-tokens-o-010",
+   "filename": "vars.stylex.js",
+   "source": "\n        import * as stylex from '@stylexjs/stylex';\n        const NUMBER = 10;\n        export const vars = stylex.defineVars({\n          radius: NUMBER * 2\n        });\n      ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "x1xu5ct6",
+     "ltr": ":root, .x1xu5ct6{--xf92t3j:20;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "id": "upstream/defineVars-stylex-types-used-in-tokens-011",
+   "filename": "vars.stylex.js",
+   "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: stylex.types.color({\n            default: 'red',\n            '@media (prefers-color-scheme: dark)': 'white',\n            '@media print': 'black',\n          })\n        });\n      ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "x1top4w9",
+     "ltr": "@property --x1top4w9 { syntax: \"<color>\"; inherits: true; initial-value: red }",
+     "rtl": null,
+     "priority": 0
+    },
+    {
+     "className": "x1xu5ct6",
+     "ltr": ":root, .x1xu5ct6{--x1top4w9:red;}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "x1xu5ct6-1lveb7",
+     "ltr": "@media (prefers-color-scheme: dark){:root, .x1xu5ct6{--x1top4w9:white;}}",
+     "rtl": null,
+     "priority": 0.2
+    },
+    {
+     "className": "x1xu5ct6-bdddrq",
+     "ltr": "@media print{:root, .x1xu5ct6{--x1top4w9:black;}}",
+     "rtl": null,
+     "priority": 0.2
+    }
+   ]
+  },
+  {
+   "id": "upstream/defineVars-same-group-references-inside-012",
+   "filename": "vars.stylex.js",
+   "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const colors = stylex.defineVars({\n          text: 'black',\n          textMuted: () => `color-mix(${colors.text}, transparent 50%)`,\n          textSubtle: () => `color-mix(${colors.textMuted}, white 10%)`,\n        });\n      ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "xvz5cfq",
+     "ltr": ":root, .xvz5cfq{--xsdnhob:black;--xo02tt5:color-mix(var(--xsdnhob), transparent 50%);--xm7d8h7:color-mix(var(--xo02tt5), white 10%);}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "id": "upstream/defineVars-same-group-references-can-po-013",
+   "filename": "vars.stylex.js",
+   "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const colors = stylex.defineVars({\n          textMuted: () => `color-mix(${colors.text}, transparent 50%)`,\n          text: 'black',\n        });\n      ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "xvz5cfq",
+     "ltr": ":root, .xvz5cfq{--xo02tt5:color-mix(var(--xsdnhob), transparent 50%);--xsdnhob:black;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "id": "upstream/defineVars-nested-function-leaves-resol-014",
+   "filename": "vars.stylex.js",
+   "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const colors = stylex.defineVars({\n          text: 'black',\n          textMuted: () => ({\n            default: `color-mix(${colors.text}, transparent 50%)`,\n            '@media (prefers-color-scheme: dark)': `color-mix(${colors.text}, white 20%)`,\n          }),\n        });\n      ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "xvz5cfq",
+     "ltr": ":root, .xvz5cfq{--xsdnhob:black;--xo02tt5:color-mix(var(--xsdnhob), transparent 50%);}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "xvz5cfq-1lveb7",
+     "ltr": "@media (prefers-color-scheme: dark){:root, .xvz5cfq{--xo02tt5:color-mix(var(--xsdnhob), white 20%);}}",
+     "rtl": null,
+     "priority": 0.2
+    }
+   ]
+  },
+  {
+   "id": "upstream/defineVars-function-values-can-mix-same-015",
+   "filename": "vars.stylex.js",
+   "source": "\n          import * as stylex from '@stylexjs/stylex';\n\n          export const base = stylex.defineVars({\n            overlay: 'rgba(0 0 0 / 0.3)',\n          });\n\n          export const colors = stylex.defineVars({\n            text: 'black',\n            textMuted: () =>\n              `color-mix(${colors.text}, ${base.overlay} 20%)`,\n          });\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "x1qdhsps",
+     "ltr": ":root, .x1qdhsps{--x13tvccu:rgba(0 0 0 / 0.3);}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "xvz5cfq",
+     "ltr": ":root, .xvz5cfq{--xsdnhob:black;--xo02tt5:color-mix(var(--xsdnhob), var(--x13tvccu) 20%);}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "id": "upstream/defineVars-function-values-can-referenc-016",
+   "filename": "vars.stylex.js",
+   "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const colors = stylex.defineVars({\n          accent: stylex.types.color('red'),\n          accentGlow: () => `color-mix(${colors.accent}, white 15%)`,\n        });\n      ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "x1h8g6e8",
+     "ltr": "@property --x1h8g6e8 { syntax: \"<color>\"; inherits: true; initial-value: red }",
+     "rtl": null,
+     "priority": 0
+    },
+    {
+     "className": "xvz5cfq",
+     "ltr": ":root, .xvz5cfq{--x1h8g6e8:red;--x64b5sz:color-mix(var(--x1h8g6e8), white 15%);}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "id": "upstream/defineVars-function-values-can-return-s-017",
+   "filename": "vars.stylex.js",
+   "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const colors = stylex.defineVars({\n          accent: () => stylex.types.color('red'),\n        });\n      ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "x1h8g6e8",
+     "ltr": "@property --x1h8g6e8 { syntax: \"<color>\"; inherits: true; initial-value: red }",
+     "rtl": null,
+     "priority": 0
+    },
+    {
+     "className": "xvz5cfq",
+     "ltr": ":root, .xvz5cfq{--x1h8g6e8:red;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "id": "upstream/defineVars-function-values-can-return-n-018",
+   "filename": "vars.stylex.js",
+   "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const colors = stylex.defineVars({\n          accent: () => ({\n            default: 'red',\n            '@media (prefers-color-scheme: dark)': 'blue',\n          }),\n        });\n      ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "xvz5cfq",
+     "ltr": ":root, .xvz5cfq{--x1h8g6e8:red;}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "xvz5cfq-1lveb7",
+     "ltr": "@media (prefers-color-scheme: dark){:root, .xvz5cfq{--x1h8g6e8:blue;}}",
+     "rtl": null,
+     "priority": 0.2
+    }
+   ]
+  },
+  {
+   "id": "upstream/defineVars-multiple-variables-objects-s-019",
+   "filename": "vars.stylex.js",
+   "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: 'red'\n        });\n        export const otherVars = stylex.defineVars({\n          otherColor: 'orange'\n        });\n      ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "x1xu5ct6",
+     "ltr": ":root, .x1xu5ct6{--x1top4w9:red;}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "x182kee2",
+     "ltr": ":root, .x182kee2{--x1xqwjkx:orange;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "id": "upstream/defineVars-multiple-variables-objects-d-020",
+   "filename": "vars.stylex.js",
+   "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: 'red'\n        });\n        export const otherVars = stylex.defineVars({\n          otherColor: vars.color\n        });\n      ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "x1xu5ct6",
+     "ltr": ":root, .x1xu5ct6{--x1top4w9:red;}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "x182kee2",
+     "ltr": ":root, .x182kee2{--x1xqwjkx:var(--x1top4w9);}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "id": "upstream/defineVars-multiple-variables-objects-d-021",
+   "filename": "vars.stylex.js",
+   "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const vars = stylex.defineVars({\n          color: 'red'\n        });\n      ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "x1xu5ct6",
+     "ltr": ":root, .x1xu5ct6{--x1top4w9:red;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "id": "upstream/defineVars-multiple-variables-objects-d-022",
+   "filename": "vars.stylex.js",
+   "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const otherVars = stylex.defineVars({\n          otherColor: 'orange'\n        });\n      ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "x182kee2",
+     "ltr": ":root, .x182kee2{--x1xqwjkx:orange;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "id": "upstream/defineVars-tokens-object-includes-debug-023",
+   "filename": "vars.stylex.js",
+   "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({\n            color: {\n              default: 'blue',\n              '@media (prefers-color-scheme: dark)': {\n                default: 'lightblue',\n                '@supports (color: oklab(0 0 0))': 'oklab(0.7 -0.3 -0.4)',\n              }\n            },\n            otherColor: 'green'\n          });\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    },
+    "debug": true,
+    "enableDebugClassNames": true
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "x1xu5ct6",
+     "ltr": ":root, .x1xu5ct6{--color-x1top4w9:blue;--otherColor-x1mnphin:green;}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "x1xu5ct6-1lveb7",
+     "ltr": "@media (prefers-color-scheme: dark){:root, .x1xu5ct6{--color-x1top4w9:lightblue;}}",
+     "rtl": null,
+     "priority": 0.2
+    },
+    {
+     "className": "x1xu5ct6-1e6ryz3",
+     "ltr": "@supports (color: oklab(0 0 0)){@media (prefers-color-scheme: dark){:root, .x1xu5ct6{--color-x1top4w9:oklab(0.7 -0.3 -0.4);}}}",
+     "rtl": null,
+     "priority": 0.3
+    }
+   ]
+  },
+  {
+   "id": "upstream/defineVars-tokens-object-includes-debug-024",
+   "filename": "vars.stylex.js",
+   "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({\n            '10': 'green',\n            '1.5 pixels': 'blue',\n            'corner#radius': 'purple',\n            '@@primary': 'pink'\n          });\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    },
+    "debug": true,
+    "enableDebugClassNames": true
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "x1xu5ct6",
+     "ltr": ":root, .x1xu5ct6{--_10-x1ca32pf:green;--_1_5_pixels-xc3dw28:blue;--corner_radius-x14o2g28:purple;--__primary-x1xj8xwn:pink;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "id": "upstream/defineVars-tokens-object-025",
+   "filename": "vars.stylex.js",
+   "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({\n            color: 'red',\n            nextColor: 'green',\n            otherColor: 'blue'\n          });\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    },
+    "dev": true,
+    "enableDebugClassNames": true
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "x1xu5ct6",
+     "ltr": ":root, .x1xu5ct6{--color-x1top4w9:red;--nextColor-x1jvhhir:green;--otherColor-x1mnphin:blue;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "id": "upstream/defineVars-processes-tokens-in-files-wi-027",
+   "filename": "src/vars/default.cssvars.js",
+   "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({\n            color: 'red'\n          });\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "themeFileExtension": "cssvars",
+     "type": "commonJS"
+    },
+    "debug": true,
+    "enableDebugClassNames": true
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "x18p5xcc",
+     "ltr": ":root, .x18p5xcc{--color-x4jy5s:red;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "id": "upstream/validation-defineVars-invalid-export-not-bound-001",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const styles = stylex.defineVars({});\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedError": {
+    "message": "The return value of defineVars() must be bound to a named export.",
+    "code": "NonExportNamedDeclaration",
+    "messageExact": true
+   }
+  },
+  {
+   "id": "upstream/validation-defineVars-invalid-export-not-bound-002",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import * as stylex from '@stylexjs/stylex';\n          stylex.defineVars({});\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedError": {
+    "message": "defineVars() calls must be bound to a bare variable.",
+    "code": "UnboundCallValue",
+    "messageExact": true
+   }
+  },
+  {
+   "id": "upstream/validation-defineVars-invalid-argument-none-003",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars();\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedError": {
+    "message": "defineVars() should have 1 argument.",
+    "code": "IllegalArgumentLength",
+    "messageExact": true
+   }
+  },
+  {
+   "id": "upstream/validation-defineVars-invalid-argument-too-many-004",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({}, {});\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedError": {
+    "message": "defineVars() should have 1 argument.",
+    "code": "IllegalArgumentLength",
+    "messageExact": true
+   }
+  },
+  {
+   "id": "upstream/validation-defineVars-invalid-argument-number-005",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars(1);\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedError": {
+    "message": "defineVars() can only accept an object.",
+    "code": "NonStyleObject",
+    "messageExact": true
+   }
+  },
+  {
+   "id": "upstream/validation-defineVars-invalid-argument-string-006",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars('1');\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedError": {
+    "message": "defineVars() can only accept an object.",
+    "code": "NonStyleObject",
+    "messageExact": true
+   }
+  },
+  {
+   "id": "upstream/validation-defineVars-invalid-argument-non-static-007",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars(genStyles());\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedError": {
+    "message": "Only static values are allowed inside of a defineVars() call.",
+    "code": "NonStaticValue",
+    "messageExact": true
+   }
+  },
+  {
+   "id": "upstream/validation-defineVars-valid-argument-object-008",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({});\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": []
+  },
+  {
+   "id": "upstream/validation-defineVars-valid-export-separate-const-009",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const vars = stylex.defineVars({});\n          export { vars };\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": []
+  },
+  {
+   "id": "upstream/validation-defineVars-invalid-export-re-export-fro-010",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const vars = stylex.defineVars({});\n          export { vars } from './other.stylex.js';\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedError": {
+    "message": "The return value of defineVars() must be bound to a named export.",
+    "code": "NonExportNamedDeclaration",
+    "messageExact": true
+   }
+  },
+  {
+   "id": "upstream/validation-defineVars-invalid-export-renamed-re-ex-011",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const vars = stylex.defineVars({});\n          export { vars as otherVars } from './other.stylex.js';\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedError": {
+    "message": "The return value of defineVars() must be bound to a named export.",
+    "code": "NonExportNamedDeclaration",
+    "messageExact": true
+   }
+  },
+  {
+   "id": "upstream/validation-defineVars-invalid-export-default-expor-012",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const vars = stylex.defineVars({});\n          export default vars;\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedError": {
+    "message": "The return value of defineVars() must be bound to a named export.",
+    "code": "NonExportNamedDeclaration",
+    "messageExact": true
+   }
+  },
+  {
+   "id": "upstream/validation-defineVars-invalid-export-renamed-expor-013",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const vars = stylex.defineVars({});\n          export { vars as themeVars };\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedError": {
+    "message": "The return value of defineVars() must be bound to a named export.",
+    "code": "NonExportNamedDeclaration",
+    "messageExact": true
+   }
+  },
+  {
+   "id": "upstream/validation-defineVars-invalid-key-non-static-014",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({\n            [labelColor]: 'red',\n          });\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedError": {
+    "message": "Only static values are allowed inside of a defineVars() call.",
+    "code": "NonStaticValue",
+    "messageExact": true
+   }
+  },
+  {
+   "id": "upstream/validation-defineVars-invalid-value-non-static-015",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({\n            labelColor: labelColor,\n          });\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedError": {
+    "message": "Only static values are allowed inside of a defineVars() call.",
+    "code": "NonStaticValue",
+    "messageExact": true
+   }
+  },
+  {
+   "id": "upstream/validation-defineVars-invalid-value-non-static-016",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({\n            labelColor: labelColor(),\n          });\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedError": {
+    "message": "Only static values are allowed inside of a defineVars() call.",
+    "code": "NonStaticValue",
+    "messageExact": true
+   }
+  },
+  {
+   "id": "upstream/validation-defineVars-valid-value-number-017",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({\n            cornerRadius: 5,\n          });\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "xrlg2n7",
+     "ltr": ":root, .xrlg2n7{--xdovqbr:5;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "id": "upstream/validation-defineVars-valid-value-string-018",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({\n            labelColor: 'red',\n          });\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "xrlg2n7",
+     "ltr": ":root, .xrlg2n7{--x108xt3l:red;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "id": "upstream/validation-defineVars-valid-value-keyframes-019",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const vars = stylex.defineVars({\n            fadeIn: stylex.keyframes({\n              '0%': { opacity: 0 },\n              '100%': { opacity: 1}\n            }),\n          });\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "xekv6nw-B",
+     "ltr": "@keyframes xekv6nw-B{0%{opacity:0;}100%{opacity:1;}}",
+     "rtl": null,
+     "priority": 0
+    },
+    {
+     "className": "xrlg2n7",
+     "ltr": ":root, .xrlg2n7{--xn5acsu:xekv6nw-B;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "id": "upstream/validation-defineVars-valid-value-same-group-funct-020",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const colors = stylex.defineVars({\n            text: 'black',\n            textMuted: () => `color-mix(${colors.text}, transparent 50%)`,\n          });\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "xuvkvs3",
+     "ltr": ":root, .xuvkvs3{--xpyk33d:black;--xf01oy:color-mix(var(--xpyk33d), transparent 50%);}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "id": "upstream/validation-defineVars-invalid-function-value-param-021",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const colors = stylex.defineVars({\n            text: 'black',\n            textMuted: (value) => value,\n          });\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedError": {
+    "message": "Function values in defineVars() must be zero-argument and return a static value supported by defineVars().",
+    "code": "InvalidDefineVarsFunctionValue",
+    "messageExact": true
+   }
+  },
+  {
+   "id": "upstream/validation-defineVars-invalid-function-value-non-s-022",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const colors = stylex.defineVars({\n            text: 'black',\n            textMuted: () => getColor(colors.text),\n          });\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedError": {
+    "message": "Only static values are allowed inside of a defineVars() call.",
+    "code": "NonStaticValue",
+    "messageExact": true
+   }
+  },
+  {
+   "id": "upstream/validation-defineVars-valid-function-value-returns-023",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const colors = stylex.defineVars({\n            text: 'black',\n            textMuted: () => stylex.types.color('red'),\n          });\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "xf01oy",
+     "ltr": "@property --xf01oy { syntax: \"<color>\"; inherits: true; initial-value: red }",
+     "rtl": null,
+     "priority": 0
+    },
+    {
+     "className": "xuvkvs3",
+     "ltr": ":root, .xuvkvs3{--xpyk33d:black;--xf01oy:red;}",
+     "rtl": null,
+     "priority": 0.1
+    }
+   ]
+  },
+  {
+   "id": "upstream/validation-defineVars-valid-function-value-returns-024",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const colors = stylex.defineVars({\n            textMuted: () => ({\n              default: 'red',\n              '@media (prefers-color-scheme: dark)': 'blue',\n            }),\n          });\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "xuvkvs3",
+     "ltr": ":root, .xuvkvs3{--xf01oy:red;}",
+     "rtl": null,
+     "priority": 0.1
+    },
+    {
+     "className": "xuvkvs3-1lveb7",
+     "ltr": "@media (prefers-color-scheme: dark){:root, .xuvkvs3{--xf01oy:blue;}}",
+     "rtl": null,
+     "priority": 0.2
+    }
+   ]
+  },
+  {
+   "id": "upstream/validation-defineVars-invalid-same-group-reference-025",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const colors = stylex.defineVars({\n            text: 'black',\n            textMuted: () => colors.missing,\n          });\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedError": {
+    "message": "Unknown same-group reference \"missing\" found while resolving \"textMuted\" in defineVars().",
+    "code": "UnknownDefineVarsReference",
+    "messageExact": true
+   }
+  },
+  {
+   "id": "upstream/validation-defineVars-invalid-same-group-reference-026",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const colors = stylex.defineVars({\n            text: 'black',\n            textMuted: () => colors.textMuted,\n          });\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedError": {
+    "message": "Cyclic same-group references in defineVars() are not allowed: textMuted -> textMuted.",
+    "code": "CyclicDefineVarsReference",
+    "messageExact": true
+   }
+  },
+  {
+   "id": "upstream/validation-defineVars-invalid-same-group-reference-027",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const colors = stylex.defineVars({\n            a: () => colors.b,\n            b: () => colors.c,\n            c: () => colors.a,\n          });\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedError": {
+    "message": "Cyclic same-group references in defineVars() are not allowed: a -> b -> c -> a.",
+    "code": "CyclicDefineVarsReference",
+    "messageExact": true
+   }
+  },
+  {
+   "id": "upstream/createTheme-theme-object-001",
+   "filename": "test.js",
+   "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n        export const theme = stylex.createTheme(vars, {\n  color: {\n    default: 'green',\n    '@media (prefers-color-scheme: dark)': 'lightgreen',\n    '@media print': 'transparent',\n  },\n  otherColor: {\n    default: 'antiquewhite',\n    '@media (prefers-color-scheme: dark)': {\n      default: 'floralwhite',\n      '@supports (color: oklab(0 0 0))': 'oklab(0.7 -0.3 -0.4)',\n    }\n  },\n  radius: '6px'\n});\n      \n  ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "x10yrbfs",
+     "ltr": ".x10yrbfs, .x10yrbfs:root{--xwx8imx:green;--xaaua2w:antiquewhite;--xbbre8:6px;}",
+     "rtl": null,
+     "priority": 0.5
+    },
+    {
+     "className": "x10yrbfs-1lveb7",
+     "ltr": "@media (prefers-color-scheme: dark){.x10yrbfs, .x10yrbfs:root{--xwx8imx:lightgreen;--xaaua2w:floralwhite;}}",
+     "rtl": null,
+     "priority": 0.6000000000000001
+    },
+    {
+     "className": "x10yrbfs-1e6ryz3",
+     "ltr": "@supports (color: oklab(0 0 0)){@media (prefers-color-scheme: dark){.x10yrbfs, .x10yrbfs:root{--xaaua2w:oklab(0.7 -0.3 -0.4);}}}",
+     "rtl": null,
+     "priority": 0.7
+    },
+    {
+     "className": "x10yrbfs-bdddrq",
+     "ltr": "@media print{.x10yrbfs, .x10yrbfs:root{--xwx8imx:transparent;}}",
+     "rtl": null,
+     "priority": 0.6000000000000001
+    }
+   ]
+  },
+  {
+   "id": "upstream/createTheme-theme-object-deep-in-file-tr-003",
+   "filename": "test.js",
+   "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xt4ziaz)\",\n  otherColor: \"var(--x1e3it8h)\",\n  radius: \"var(--x1onrunl)\",\n  __varGroupHash__: \"x1xohuxq\"\n};\n    \n        export const theme = stylex.createTheme(vars, {\n  color: {\n    default: 'green',\n    '@media (prefers-color-scheme: dark)': 'lightgreen',\n    '@media print': 'transparent',\n  },\n  otherColor: {\n    default: 'antiquewhite',\n    '@media (prefers-color-scheme: dark)': {\n      default: 'floralwhite',\n      '@supports (color: oklab(0 0 0))': 'oklab(0.7 -0.3 -0.4)',\n    }\n  },\n  radius: '6px'\n});\n      \n  ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "x1qn30me",
+     "ltr": ".x1qn30me, .x1qn30me:root{--xt4ziaz:green;--x1e3it8h:antiquewhite;--x1onrunl:6px;}",
+     "rtl": null,
+     "priority": 0.5
+    },
+    {
+     "className": "x1qn30me-1lveb7",
+     "ltr": "@media (prefers-color-scheme: dark){.x1qn30me, .x1qn30me:root{--xt4ziaz:lightgreen;--x1e3it8h:floralwhite;}}",
+     "rtl": null,
+     "priority": 0.6000000000000001
+    },
+    {
+     "className": "x1qn30me-1e6ryz3",
+     "ltr": "@supports (color: oklab(0 0 0)){@media (prefers-color-scheme: dark){.x1qn30me, .x1qn30me:root{--x1e3it8h:oklab(0.7 -0.3 -0.4);}}}",
+     "rtl": null,
+     "priority": 0.7
+    },
+    {
+     "className": "x1qn30me-bdddrq",
+     "ltr": "@media print{.x1qn30me, .x1qn30me:root{--xt4ziaz:transparent;}}",
+     "rtl": null,
+     "priority": 0.6000000000000001
+    }
+   ]
+  },
+  {
+   "id": "upstream/createTheme-literal-tokens-theme-object-004",
+   "filename": "test.js",
+   "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  \"--color\": \"var(--color)\",\n  \"--otherColor\": \"var(--otherColor)\",\n  \"--radius\": \"var(--radius)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n        export const theme = stylex.createTheme(vars, {\n          '--color': 'green',\n          '--otherColor': 'purple',\n          '--radius': 6\n        });\n      \n  ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "x1l2ihi1",
+     "ltr": ".x1l2ihi1, .x1l2ihi1:root{--color:green;--otherColor:purple;--radius:6;}",
+     "rtl": null,
+     "priority": 0.5
+    }
+   ]
+  },
+  {
+   "id": "upstream/createTheme-local-variable-theme-object-005",
+   "filename": "test.js",
+   "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n        const themeObj = {\n  color: {\n    default: 'green',\n    '@media (prefers-color-scheme: dark)': 'lightgreen',\n    '@media print': 'transparent',\n  },\n  otherColor: {\n    default: 'antiquewhite',\n    '@media (prefers-color-scheme: dark)': {\n      default: 'floralwhite',\n      '@supports (color: oklab(0 0 0))': 'oklab(0.7 -0.3 -0.4)',\n    }\n  },\n  radius: '6px'\n};\n        export const theme = stylex.createTheme(vars, themeObj);\n      \n  ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "x10yrbfs",
+     "ltr": ".x10yrbfs, .x10yrbfs:root{--xwx8imx:green;--xaaua2w:antiquewhite;--xbbre8:6px;}",
+     "rtl": null,
+     "priority": 0.5
+    },
+    {
+     "className": "x10yrbfs-1lveb7",
+     "ltr": "@media (prefers-color-scheme: dark){.x10yrbfs, .x10yrbfs:root{--xwx8imx:lightgreen;--xaaua2w:floralwhite;}}",
+     "rtl": null,
+     "priority": 0.6000000000000001
+    },
+    {
+     "className": "x10yrbfs-1e6ryz3",
+     "ltr": "@supports (color: oklab(0 0 0)){@media (prefers-color-scheme: dark){.x10yrbfs, .x10yrbfs:root{--xaaua2w:oklab(0.7 -0.3 -0.4);}}}",
+     "rtl": null,
+     "priority": 0.7
+    },
+    {
+     "className": "x10yrbfs-bdddrq",
+     "ltr": "@media print{.x10yrbfs, .x10yrbfs:root{--xwx8imx:transparent;}}",
+     "rtl": null,
+     "priority": 0.6000000000000001
+    }
+   ]
+  },
+  {
+   "id": "upstream/createTheme-local-variables-used-in-them-006",
+   "filename": "test.js",
+   "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n        const RADIUS = 10;\n        export const theme = stylex.createTheme(vars, {\n          radius: RADIUS\n        });\n      \n  ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "x1s6ff5p",
+     "ltr": ".x1s6ff5p, .x1s6ff5p:root{--xbbre8:10;}",
+     "rtl": null,
+     "priority": 0.5
+    }
+   ]
+  },
+  {
+   "id": "upstream/createTheme-template-literals-used-in-th-008",
+   "filename": "test.js",
+   "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n        const name = 'light';\n        export const theme = stylex.createTheme(vars, {\n          color: `${name}green`\n        });\n      \n  ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "xp8mj21",
+     "ltr": ".xp8mj21, .xp8mj21:root{--xwx8imx:lightgreen;}",
+     "rtl": null,
+     "priority": 0.5
+    }
+   ]
+  },
+  {
+   "id": "upstream/createTheme-expressions-used-in-theme-ob-009",
+   "filename": "test.js",
+   "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n        const RADIUS = 10;\n        export const theme = stylex.createTheme(vars, {\n          radius: RADIUS * 2\n        });\n      \n  ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "x1et03wi",
+     "ltr": ".x1et03wi, .x1et03wi:root{--xbbre8:20;}",
+     "rtl": null,
+     "priority": 0.5
+    }
+   ]
+  },
+  {
+   "id": "upstream/createTheme-stylex-types-used-in-theme-o-010",
+   "filename": "test.js",
+   "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n       const RADIUS = 10;\n        export const theme = stylex.createTheme(vars, {\n          color: stylex.types.color({\n            default: 'green',\n            '@media (prefers-color-scheme: dark)': 'lightgreen',\n            '@media print': 'transparent',\n          }),\n          otherColor: stylex.types.color({\n            default: 'antiquewhite',\n            '@media (prefers-color-scheme: dark)': 'floralwhite',\n          }),\n          radius: stylex.types.length({ default: RADIUS * 2 })\n        });\n      \n  ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "x5gq8ml",
+     "ltr": ".x5gq8ml, .x5gq8ml:root{--xwx8imx:green;--xaaua2w:antiquewhite;--xbbre8:20px;}",
+     "rtl": null,
+     "priority": 0.5
+    },
+    {
+     "className": "x5gq8ml-1lveb7",
+     "ltr": "@media (prefers-color-scheme: dark){.x5gq8ml, .x5gq8ml:root{--xwx8imx:lightgreen;--xaaua2w:floralwhite;}}",
+     "rtl": null,
+     "priority": 0.6000000000000001
+    },
+    {
+     "className": "x5gq8ml-bdddrq",
+     "ltr": "@media print{.x5gq8ml, .x5gq8ml:root{--xwx8imx:transparent;}}",
+     "rtl": null,
+     "priority": 0.6000000000000001
+    }
+   ]
+  },
+  {
+   "id": "upstream/createTheme-multiple-theme-objects-same-011",
+   "filename": "test.js",
+   "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n        export const theme = stylex.createTheme(vars, {\n  color: {\n    default: 'green',\n    '@media (prefers-color-scheme: dark)': 'lightgreen',\n    '@media print': 'transparent',\n  },\n  otherColor: {\n    default: 'antiquewhite',\n    '@media (prefers-color-scheme: dark)': {\n      default: 'floralwhite',\n      '@supports (color: oklab(0 0 0))': 'oklab(0.7 -0.3 -0.4)',\n    }\n  },\n  radius: '6px'\n});\n        export const otherTheme = stylex.createTheme(vars, {\n          color: 'skyblue',\n          radius: '8px',\n        });\n      \n  ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "x10yrbfs",
+     "ltr": ".x10yrbfs, .x10yrbfs:root{--xwx8imx:green;--xaaua2w:antiquewhite;--xbbre8:6px;}",
+     "rtl": null,
+     "priority": 0.5
+    },
+    {
+     "className": "x10yrbfs-1lveb7",
+     "ltr": "@media (prefers-color-scheme: dark){.x10yrbfs, .x10yrbfs:root{--xwx8imx:lightgreen;--xaaua2w:floralwhite;}}",
+     "rtl": null,
+     "priority": 0.6000000000000001
+    },
+    {
+     "className": "x10yrbfs-1e6ryz3",
+     "ltr": "@supports (color: oklab(0 0 0)){@media (prefers-color-scheme: dark){.x10yrbfs, .x10yrbfs:root{--xaaua2w:oklab(0.7 -0.3 -0.4);}}}",
+     "rtl": null,
+     "priority": 0.7
+    },
+    {
+     "className": "x10yrbfs-bdddrq",
+     "ltr": "@media print{.x10yrbfs, .x10yrbfs:root{--xwx8imx:transparent;}}",
+     "rtl": null,
+     "priority": 0.6000000000000001
+    },
+    {
+     "className": "xw6msop",
+     "ltr": ".xw6msop, .xw6msop:root{--xwx8imx:skyblue;--xbbre8:8px;}",
+     "rtl": null,
+     "priority": 0.5
+    }
+   ]
+  },
+  {
+   "id": "upstream/createTheme-multiple-theme-objects-diffe-012",
+   "filename": "test.js",
+   "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--x103gslp)\",\n  otherColor: \"var(--x1e7put6)\",\n  radius: \"var(--xm3n3tg)\",\n  __varGroupHash__: \"x1ngxneg\"\n};\n    \n        export const theme = stylex.createTheme(vars, {\n  color: {\n    default: 'green',\n    '@media (prefers-color-scheme: dark)': 'lightgreen',\n    '@media print': 'transparent',\n  },\n  otherColor: {\n    default: 'antiquewhite',\n    '@media (prefers-color-scheme: dark)': {\n      default: 'floralwhite',\n      '@supports (color: oklab(0 0 0))': 'oklab(0.7 -0.3 -0.4)',\n    }\n  },\n  radius: '6px'\n});\n      \n  ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "x1k4bs7r",
+     "ltr": ".x1k4bs7r, .x1k4bs7r:root{--x103gslp:green;--x1e7put6:antiquewhite;--xm3n3tg:6px;}",
+     "rtl": null,
+     "priority": 0.5
+    },
+    {
+     "className": "x1k4bs7r-1lveb7",
+     "ltr": "@media (prefers-color-scheme: dark){.x1k4bs7r, .x1k4bs7r:root{--x103gslp:lightgreen;--x1e7put6:floralwhite;}}",
+     "rtl": null,
+     "priority": 0.6000000000000001
+    },
+    {
+     "className": "x1k4bs7r-1e6ryz3",
+     "ltr": "@supports (color: oklab(0 0 0)){@media (prefers-color-scheme: dark){.x1k4bs7r, .x1k4bs7r:root{--x1e7put6:oklab(0.7 -0.3 -0.4);}}}",
+     "rtl": null,
+     "priority": 0.7
+    },
+    {
+     "className": "x1k4bs7r-bdddrq",
+     "ltr": "@media print{.x1k4bs7r, .x1k4bs7r:root{--x103gslp:transparent;}}",
+     "rtl": null,
+     "priority": 0.6000000000000001
+    }
+   ]
+  },
+  {
+   "id": "upstream/createTheme-themes-are-indifferent-to-or-013",
+   "filename": "test.js",
+   "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n        export const theme = stylex.createTheme(vars, {\n          radius: '6px',\n          otherColor: {\n            default: 'antiquewhite',\n            '@media (prefers-color-scheme: dark)': {\n              default: 'floralwhite',\n              '@supports (color: oklab(0 0 0))': 'oklab(0.7 -0.3 -0.4)',\n            }\n          },\n          color: {\n            default: 'green',\n            '@media (prefers-color-scheme: dark)': 'lightgreen',\n            '@media print': 'transparent',\n          }\n        });\n      \n  ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "x10yrbfs",
+     "ltr": ".x10yrbfs, .x10yrbfs:root{--xwx8imx:green;--xaaua2w:antiquewhite;--xbbre8:6px;}",
+     "rtl": null,
+     "priority": 0.5
+    },
+    {
+     "className": "x10yrbfs-1lveb7",
+     "ltr": "@media (prefers-color-scheme: dark){.x10yrbfs, .x10yrbfs:root{--xwx8imx:lightgreen;--xaaua2w:floralwhite;}}",
+     "rtl": null,
+     "priority": 0.6000000000000001
+    },
+    {
+     "className": "x10yrbfs-1e6ryz3",
+     "ltr": "@supports (color: oklab(0 0 0)){@media (prefers-color-scheme: dark){.x10yrbfs, .x10yrbfs:root{--xaaua2w:oklab(0.7 -0.3 -0.4);}}}",
+     "rtl": null,
+     "priority": 0.7
+    },
+    {
+     "className": "x10yrbfs-bdddrq",
+     "ltr": "@media print{.x10yrbfs, .x10yrbfs:root{--xwx8imx:transparent;}}",
+     "rtl": null,
+     "priority": 0.6000000000000001
+    }
+   ]
+  },
+  {
+   "id": "upstream/createTheme-adds-debug-data-014",
+   "filename": "html/js/components/Foo.react.js",
+   "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n          export const theme = stylex.createTheme(vars, {\n            color: 'orange'\n          });\n        \n  ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    },
+    "debug": true
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "xowvtgn",
+     "ltr": ".xowvtgn, .xowvtgn:root{--xwx8imx:orange;}",
+     "rtl": null,
+     "priority": 0.5
+    }
+   ]
+  },
+  {
+   "id": "upstream/createTheme-adds-debug-data-for-npm-pack-015",
+   "filename": "js/node_modules/npm-package/dist/components/Foo.react.js",
+   "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n          export const theme = stylex.createTheme(vars, {\n            color: 'orange'\n          });\n        \n  ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    },
+    "debug": true
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "xowvtgn",
+     "ltr": ".xowvtgn, .xowvtgn:root{--xwx8imx:orange;}",
+     "rtl": null,
+     "priority": 0.5
+    }
+   ]
+  },
+  {
+   "id": "upstream/createTheme-adds-dev-data-018",
+   "filename": "html/js/components/Foo.react.js",
+   "source": "\n    import * as stylex from '@stylexjs/stylex';\nexport const vars = {\n  color: \"var(--xwx8imx)\",\n  otherColor: \"var(--xaaua2w)\",\n  radius: \"var(--xbbre8)\",\n  __varGroupHash__: \"xop34xu\"\n};\n    \n          export const theme = stylex.createTheme(vars, {\n            color: 'orange'\n          });\n        \n  ",
+   "options": {
+    "unstable_moduleResolution": {
+     "rootDir": "<CORPUSROOT>",
+     "type": "commonJS"
+    },
+    "dev": true
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "xowvtgn",
+     "ltr": ".xowvtgn, .xowvtgn:root{--xwx8imx:orange;}",
+     "rtl": null,
+     "priority": 0.5
+    }
+   ]
+  },
+  {
+   "id": "upstream/validation-createTheme-must-be-bound-to-a-variable-001",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import stylex from 'stylex';\n          stylex.createTheme({__varGroupHash__: 'x568ih9'}, {});\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedError": {
+    "message": "createTheme() calls must be bound to a bare variable.",
+    "code": "UnboundCallValue",
+    "messageExact": true
+   }
+  },
+  {
+   "id": "upstream/validation-createTheme-it-must-have-two-arguments-002",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import stylex from 'stylex';\n          const variables = stylex.createTheme();\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedError": {
+    "message": "createTheme() should have 2 arguments.",
+    "code": "IllegalArgumentLength",
+    "messageExact": true
+   }
+  },
+  {
+   "id": "upstream/validation-createTheme-it-must-have-two-arguments-003",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import stylex from 'stylex';\n          const variables = stylex.createTheme({});\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedError": {
+    "message": "createTheme() should have 2 arguments.",
+    "code": "IllegalArgumentLength",
+    "messageExact": true
+   }
+  },
+  {
+   "id": "upstream/validation-createTheme-it-must-have-two-arguments-004",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import stylex from 'stylex';\n          const variables = stylex.createTheme(genStyles(), {});\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedError": {
+    "message": "Only static values are allowed inside of a createTheme() call.",
+    "code": "NonStaticValue",
+    "messageExact": true
+   }
+  },
+  {
+   "id": "upstream/validation-createTheme-it-must-have-two-arguments-005",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import stylex from 'stylex';\n          const variables = stylex.createTheme({}, {});\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedError": {
+    "message": "Can only override variables theme created with defineVars().",
+    "code": "ThemeWithoutVarGroup",
+    "messageExact": true
+   }
+  },
+  {
+   "id": "upstream/validation-createTheme-it-must-have-two-arguments-006",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import stylex from 'stylex';\n          const variables = stylex.createTheme({__varGroupHash__: 'x568ih9'}, genStyles());\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedError": {
+    "message": "Only static values are allowed inside of a createTheme() call.",
+    "code": "NonStaticValue",
+    "messageExact": true
+   }
+  },
+  {
+   "id": "upstream/validation-createTheme-it-must-have-two-arguments-007",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import stylex from 'stylex';\n          const variables = stylex.createTheme({__varGroupHash__: 'x568ih9'}, {});\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": []
+  },
+  {
+   "id": "upstream/validation-createTheme-variable-keys-must-be-a-stat-008",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import stylex from 'stylex';\n          const variables = stylex.createTheme(\n            {__varGroupHash__: 'x568ih9', labelColor: 'var(--labelColorHash)'},\n            {[labelColor]: 'red',});\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedError": {
+    "message": "Only static values are allowed inside of a createTheme() call.",
+    "code": "NonStaticValue",
+    "messageExact": true
+   }
+  },
+  {
+   "id": "upstream/validation-createTheme-values-must-be-static-number-009",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import stylex from 'stylex';\n          const variables = stylex.createTheme(\n            {__varGroupHash__: 'x568ih9', cornerRadius: 'var(--cornerRadiusHash)'},\n            {cornerRadius: 5,}\n          );\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "xk7v0qh",
+     "ltr": ".xk7v0qh, .xk7v0qh:root{--cornerRadiusHash:5;}",
+     "rtl": null,
+     "priority": 0.5
+    }
+   ]
+  },
+  {
+   "id": "upstream/validation-createTheme-values-must-be-static-number-010",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import stylex from 'stylex';\n          const variables = stylex.createTheme(\n            {__varGroupHash__: 'x568ih9', labelColor: 'var(--labelColorHash)'},\n            {labelColor: 'red',}\n          );\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedRules": [
+    {
+     "className": "x1t0e2x1",
+     "ltr": ".x1t0e2x1, .x1t0e2x1:root{--labelColorHash:red;}",
+     "rtl": null,
+     "priority": 0.5
+    }
+   ]
+  },
+  {
+   "id": "upstream/validation-createTheme-values-must-be-static-number-011",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import stylex from 'stylex';\n          const variables = stylex.createTheme(\n            {__varGroupHash__: 'x568ih9', labelColor: 'var(--labelColorHash)'},\n            {labelColor: labelColor,}\n          );\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedError": {
+    "message": "Only static values are allowed inside of a createTheme() call.",
+    "code": "NonStaticValue",
+    "messageExact": true
+   }
+  },
+  {
+   "id": "upstream/validation-createTheme-values-must-be-static-number-012",
+   "filename": "TestTheme.stylex.js",
+   "source": "\n          import stylex from 'stylex';\n          const variables = stylex.createTheme(\n            {__varGroupHash__: 'x568ih9', labelColor: 'var(--labelColorHash)'},\n            {labelColor: labelColor(),}\n          );\n        ",
+   "options": {
+    "unstable_moduleResolution": {
+     "type": "commonJS",
+     "rootDir": "<CORPUSROOT>"
+    }
+   },
+   "mode": "prod",
+   "expectedError": {
+    "message": "Only static values are allowed inside of a createTheme() call.",
+    "code": "NonStaticValue",
+    "messageExact": true
+   }
+  }
+ ]
+}

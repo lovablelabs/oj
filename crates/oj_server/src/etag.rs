@@ -3,7 +3,7 @@
 
 //! Conditional-request validators, shared by the module server and Start dev.
 
-use axum::http::{HeaderMap, header};
+use axum::http::{header, HeaderMap};
 
 /// Weak: the plain and gzip bodies of one representation share it, and a
 /// strong validator must differ between content codings (RFC 9110 8.8.1).

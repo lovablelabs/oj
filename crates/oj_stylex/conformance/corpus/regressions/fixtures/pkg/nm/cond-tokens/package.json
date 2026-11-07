@@ -1,0 +1,10 @@
+{
+  "name": "cond-tokens",
+  "exports": {
+    "./theme.stylex": {
+      "browser": "./out/browser.stylex.js",
+      "node": "./out/node.stylex.js",
+      "default": "./out/default.stylex.js"
+    }
+  }
+}

@@ -164,6 +164,33 @@ impl VersionGraph {
     /// re-imports fresh instances along the chain. Removing a record as it is
     /// visited IS the visited set: a re-pushed id finds no record and stops.
     pub(crate) fn invalidate(&self) -> usize {
+        self.invalidate_seeded().0
+    }
+
+    /// [`invalidate`](Self::invalidate), answering also whether a changed
+    /// file the walk started from is one of `changed` (a watch batch's paths,
+    /// either spelling). Vite acts on a watcher event through the modules of
+    /// that event's file alone (`getModulesByFile`): a recorded file that
+    /// changed without the watcher reporting it (an output oj itself rewrote,
+    /// an ignored path) is re-imported, but is no hit for the batch.
+    pub(crate) fn invalidate_for(&self, changed: &[PathBuf]) -> (usize, bool) {
+        let (dropped, seeds) = self.invalidate_seeded();
+        let spelled: HashSet<PathBuf> = changed
+            .iter()
+            .flat_map(|p| [Some(p.clone()), std::fs::canonicalize(p).ok()])
+            .flatten()
+            .collect();
+        let hit = seeds.iter().any(|id| {
+            let file = Path::new(id.split('?').next().unwrap_or(id));
+            spelled.contains(file)
+                || std::fs::canonicalize(file).is_ok_and(|real| spelled.contains(&real))
+        });
+        (dropped, hit)
+    }
+
+    /// The walk behind both: how many records it dropped, and the ids of the
+    /// changed files it started from.
+    fn invalidate_seeded(&self) -> (usize, Vec<String>) {
         // The seed scan stats every recorded file; do that OUTSIDE the lock,
         // so resolves never queue behind hundreds of filesystem calls. A
         // module that loads between snapshot and walk is caught by the next
@@ -176,11 +203,12 @@ impl VersionGraph {
                 .map(|(id, rec)| (id.clone(), rec.mtime))
                 .collect()
         };
-        let mut stack: Vec<String> = recorded
+        let seeds: Vec<String> = recorded
             .into_iter()
             .filter(|(id, mtime)| mtime_of(id) != *mtime)
             .map(|(id, _)| id)
             .collect();
+        let mut stack = seeds.clone();
         let mut graph = self.graph.lock().unwrap();
         let mut dropped = 0;
         while let Some(id) = stack.pop() {
@@ -192,7 +220,7 @@ impl VersionGraph {
             stack.extend(rec.importers);
         }
         graph.stale += dropped;
-        dropped
+        (dropped, seeds)
     }
 
     pub(crate) fn should_respawn(&self) -> bool {
@@ -268,6 +296,20 @@ pub(crate) fn versioned_id(specifier: &str) -> Option<String> {
     }
 }
 
+/// A node_modules file the SSR host loads through the transform pipeline
+/// instead of leaving it to the runtime.
+fn claims_dependency(id: &str) -> bool {
+    id.contains("/node_modules/") && crate::start_host::ts_source_ext(id)
+}
+
+/// Whether an importer's imports start from Node semantics: a dependency the
+/// runtime loaded itself. One the pipeline served (versioned: `ssr.noExternal`,
+/// or a file Node cannot take) resolves through the pipeline instead, as
+/// Vite's runner fetches every import of a module it did not externalize.
+fn node_resolves_imports_of(importer: &str) -> bool {
+    importer_id(importer).contains("/node_modules/") && versioned_id(importer).is_none()
+}
+
 /// The module id an importer specifier stands for (version stripped), for
 /// resolver context and importer-graph edges.
 pub(crate) fn importer_id(specifier: &str) -> String {
@@ -293,8 +335,37 @@ impl SsrHost {
     ) -> Result<Option<HostResolved>, String> {
         let importer_id = importer_id(importer);
         // node_modules internals resolve with plain Node semantics, as
-        // they did when the runner imported externals natively.
-        if importer_id.contains("/node_modules/") {
+        // they did when the runner imported externals natively — except a
+        // relative specifier with no exact file on disk (an extensionless
+        // import inside a dependency shipping raw TypeScript, which only the
+        // pipeline can serve): the Vite-style resolver finishes that edge
+        // with its extension inference, as the Start host does. A dependency
+        // module the pipeline transformed (a raw-TS source) asks the pipeline
+        // first: Vite never externalizes a relative or absolute specifier
+        // (createIsExternal), so its `import "./select.css"` reaches the css
+        // pipeline instead of the runtime loading the stylesheet as JS.
+        if node_resolves_imports_of(importer) {
+            if claims_dependency(&importer_id) {
+                if let Ok(SsrResolution::Module(id)) =
+                    self.bridge.resolve(&importer_id, specifier).await
+                {
+                    let spec = self.graph.edge_specifier(&id, importer_id);
+                    return Ok(Some(HostResolved::Url(spec)));
+                }
+            }
+            if specifier.starts_with("./") || specifier.starts_with("../") {
+                if let Some(dir) = Path::new(&importer_id).parent() {
+                    if !crate::ssr_dev::normalize_path(&dir.join(specifier)).is_file() {
+                        if let Ok(oj_server::StartResolution::Dependency(p)) =
+                            self.bridge.resolve_start(&importer_id, specifier).await
+                        {
+                            if let Ok(u) = url::Url::from_file_path(&p) {
+                                return Ok(Some(HostResolved::External(u.to_string())));
+                            }
+                        }
+                    }
+                }
+            }
             return Ok(Some(HostResolved::External(specifier.to_string())));
         }
         match self.bridge.resolve(&importer_id, specifier).await? {
@@ -308,7 +379,7 @@ impl SsrHost {
 
     async fn load_import(&self, specifier: &str) -> Result<Option<HostModule>, String> {
         let Some(id) = versioned_id(specifier) else {
-            return Ok(None);
+            return self.load_dependency_ts(specifier).await;
         };
         let code = self
             .bridge
@@ -316,6 +387,35 @@ impl SsrHost {
             .await
             .map_err(|e| e.to_string())?;
         self.graph.record_loaded(&id);
+        Ok(Some(HostModule {
+            code,
+            module_type: HostModuleType::JavaScript,
+        }))
+    }
+
+    /// A dependency file the runtime resolved itself (byonm): TypeScript/JSX
+    /// sources still go through the transform pipeline — the runtime refuses
+    /// to type-strip under node_modules, and Vite never externalizes a
+    /// resolved file it cannot hand to Node (canExternalizeFile allows only
+    /// js/mjs/cjs). Deliberately not recorded in the version graph: edits to
+    /// dependencies don't invalidate, as Vite doesn't watch node_modules.
+    async fn load_dependency_ts(&self, specifier: &str) -> Result<Option<HostModule>, String> {
+        let Some(path) = url::Url::parse(specifier)
+            .ok()
+            .filter(|u| u.scheme() == "file")
+            .and_then(|u| u.to_file_path().ok())
+        else {
+            return Ok(None);
+        };
+        let id = path.to_string_lossy().into_owned();
+        if !claims_dependency(&id) {
+            return Ok(None);
+        }
+        let code = self
+            .bridge
+            .load_module(&id)
+            .await
+            .map_err(|e| e.to_string())?;
         Ok(Some(HostModule {
             code,
             module_type: HostModuleType::JavaScript,
@@ -565,10 +665,64 @@ mod tests {
         assert_eq!(versioned_id("node:path"), None);
     }
 
+    // A `noExternal` dependency the pipeline served must not hand its own
+    // imports back to Node: Vite's runner fetches them all through the pipeline.
+    #[test]
+    fn only_a_dependency_the_runtime_loaded_resolves_with_node() {
+        let dep = "/app/node_modules/nox/index.js";
+        assert!(node_resolves_imports_of(
+            "file:///app/node_modules/nox/index.js"
+        ));
+        assert!(!node_resolves_imports_of(&specifier(dep, 2)));
+        assert!(!node_resolves_imports_of(&specifier("/app/src/main.js", 1)));
+    }
+
     // The shared version graph drives both hosts' warm reload: a changed file
     // bumps itself and every transitive importer (their next specifiers are
     // new), an explicit bump forces one id fresh, and untouched subtrees keep
     // their versions (cached instances).
+    // Vite acts on a watcher event through that event's file's modules: a
+    // recorded file rewritten behind the watcher's back (an output oj wrote
+    // itself, like the client manifest after a hot update catches up) is
+    // re-imported on the next batch, but is no hit for a batch that never
+    // named it, so an unrelated event cannot reload the page.
+    #[test]
+    fn a_batch_hits_only_through_its_own_paths() {
+        let dir = std::env::temp_dir().join(format!("oj-vgraph-for-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (manifest, page) = (dir.join("manifest.json"), dir.join("page.ts"));
+        let stray = dir.join(".DS_Store");
+        for f in [&manifest, &page] {
+            std::fs::write(f, "1").unwrap();
+        }
+        let graph = VersionGraph::default();
+        for f in [&manifest, &page] {
+            let id = f.to_string_lossy().into_owned();
+            let _ = graph.edge_specifier(&id, "entry".into());
+            graph.record_loaded(&id);
+        }
+        let touch = |f: &Path| {
+            let t = std::fs::metadata(f).unwrap().modified().unwrap()
+                + std::time::Duration::from_secs(5);
+            std::fs::File::options()
+                .write(true)
+                .open(f)
+                .unwrap()
+                .set_modified(t)
+                .unwrap();
+        };
+
+        touch(&manifest);
+        let (dropped, hit) = graph.invalidate_for(&[stray]);
+        assert_eq!(dropped, 1, "the rewritten output is still re-imported");
+        assert!(!hit, "an unrelated batch hit through a file it never named");
+
+        touch(&page);
+        assert_eq!(graph.invalidate_for(std::slice::from_ref(&page)), (1, true));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn version_graph_invalidates_changed_files_and_their_importers() {
         let dir = std::env::temp_dir().join(format!("oj-vgraph-{}", std::process::id()));

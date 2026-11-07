@@ -81,7 +81,12 @@ pub fn compile_sass_collecting(
         Some(data) if !data.is_empty() => format!("{data}\n{prepared}"),
         _ => prepared,
     };
-    let out = grass::from_string(source, &options).map_err(|e| format!("sass error: {e}"));
+    // Dart Sass's `compileString(...).css` ends at the last rule; grass adds a
+    // newline. What Sass returns is what Vite hands PostCSS, whose CSS-module
+    // names hash it.
+    let out = grass::from_string(source, &options)
+        .map(|css| css.strip_suffix('\n').map(str::to_string).unwrap_or(css))
+        .map_err(|e| format!("sass error: {e}"));
     deps.append(&mut fs.seen.borrow_mut());
     out
 }
@@ -340,6 +345,26 @@ fn collapse_phantom_dirs(p: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Dart Sass 1.93 `compileString(src).css` for each source (expanded
+    // style), the text Vite hands PostCSS.
+    #[test]
+    fn sass_output_is_dart_sass_text() {
+        for (src, dart) in [
+            ("", ""),
+            ("$c: red;\n.s { color: $c; }\n", ".s {\n  color: red;\n}"),
+            (
+                ".a { .b { color: red } }\n/* c */\n.d{x:1}",
+                ".a .b {\n  color: red;\n}\n\n/* c */\n.d {\n  x: 1;\n}",
+            ),
+            (
+                "@use \"sass:math\";\n.a { w: math.div(10px, 3); }",
+                ".a {\n  w: 3.3333333333px;\n}",
+            ),
+        ] {
+            assert_eq!(compile_sass(src, None).unwrap(), dart, "{src:?}");
+        }
+    }
     use crate::*;
 
     fn strip_sass_import_ext(source: &str) -> String {

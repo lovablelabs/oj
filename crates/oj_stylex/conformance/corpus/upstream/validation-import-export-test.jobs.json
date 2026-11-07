@@ -1,0 +1,81 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/validation-import-export-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs only — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "upstream/validation-import-export-valid-import-non-stylex-001",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import classnames from 'classnames';\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-import-export", "validation"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-import-export-valid-import-named-export-of-002",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export const styles = stylex.create({});\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-import-export", "validation", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-import-export-valid-import-default-export-003",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          export default stylex.create({});\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-import-export", "validation", "create"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-import-export-valid-import-positiontry-nam-004",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import { positionTry } from '@stylexjs/stylex';\n          const positionName = positionTry({});\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-import-export", "validation", "positionTry"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-import-export-valid-import-positiontry-fro-005",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const positionName = stylex.positionTry({});\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-import-export", "validation", "positionTry"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-import-export-valid-import-viewtransitionc-006",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import { viewTransitionClass } from '@stylexjs/stylex';\n          const transitionCls = viewTransitionClass({});\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-import-export", "validation", "viewTransitionClass"],
+      "expect": "ok"
+    },
+    {
+      "id": "upstream/validation-import-export-valid-import-viewtransitionc-007",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import * as stylex from '@stylexjs/stylex';\n          const transitionCls = stylex.viewTransitionClass({});\n        ",
+      "options": {},
+      "mode": "prod",
+      "tags": ["validation-import-export", "validation", "viewTransitionClass"],
+      "expect": "ok"
+    }
+  ]
+}

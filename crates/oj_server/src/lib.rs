@@ -20,9 +20,12 @@ use oj_cache::{CachedModule, PersistentCache};
 
 pub mod css_engine;
 pub mod etag;
+pub mod load_error;
 pub mod optimize;
 pub mod plugins;
+mod prebundle;
 mod preseed;
+pub mod rolldown_runtime;
 pub use preseed::PACKAGE_MANAGER_LOCKFILES;
 pub mod sidecar;
 pub mod svgr;
@@ -35,6 +38,7 @@ pub use ui::*;
 mod client_js;
 use client_js::*;
 mod assets_serve;
+mod css_urls;
 use assets_serve::*;
 mod rewrite;
 use rewrite::*;
@@ -51,6 +55,9 @@ use crawl::*;
 mod debug;
 use debug::*;
 mod diagnostics;
+mod typecheck;
+pub use typecheck::{check_via_server as typecheck_via_server, serve_worker as typecheck_worker};
+pub mod otel;
 use diagnostics::*;
 mod css_serve;
 pub use css_serve::*;
@@ -60,10 +67,30 @@ mod hmr;
 pub use hmr::*;
 mod watch;
 pub use watch::*;
+
+const HMR_WS_PATH: &str = "/__ws";
+const HMR_FLUSH_PATH: &str = "/__hmr_flush";
+const HMR_GATE_PATH: &str = "/__hmr_gate";
+
+/// The `/__` paths the dev server itself serves. Everything else under `/__`
+/// is the app's, as in Vite, which reserves no such prefix: a framework route
+/// or a plugin middleware page (`/__component/preview/X`) must reach them.
+pub fn is_dev_server_path(path: &str) -> bool {
+    matches!(path, HMR_WS_PATH | HMR_FLUSH_PATH | HMR_GATE_PATH)
+}
+mod dev_html;
 mod html;
+pub mod tls;
 pub use html::*;
 mod ssr;
+mod style_file;
+pub mod stylex;
+pub use assets_serve::inline_url_under;
 pub use ssr::*;
+pub use style_file::{
+    compile_style_file, needs_css_compile, needs_preprocess_engine, read_style_source,
+    start_dev_inline_style, start_dev_url_base, style_slot, StyleInputs, StyleModule, StyleSlots,
+};
 mod middleware;
 mod preview;
 mod proxy;
@@ -77,7 +104,12 @@ pub use proxy::*;
 use sidecar::is_tailwind_css;
 use tokio::sync::broadcast;
 
-const CLIENT_JS: &str = include_str!("assets/client.js");
+// The overlay is its own asset so the Start live-reload client serves the
+// same element; the SPA client carries (and exports) it inline.
+const CLIENT_JS: &str = concat!(
+    include_str!("assets/error-overlay.js"),
+    include_str!("assets/client.js")
+);
 pub const OJ_ROUTES_JS: &str = include_str!("assets/oj-routes.js");
 const SERVER_FN_JS: &str = include_str!("assets/server-fn.js");
 const LINGUI_MACRO_SHIM_JS: &str = include_str!("assets/lingui-macro-shim.mjs");
@@ -97,6 +129,38 @@ const START_ASSETS: &[(&str, &str)] = &[
         include_str!("assets/start/resolve-pkg.mjs"),
     ),
     (
+        "vite-globs.mjs",
+        include_str!("assets/start/vite-globs.mjs"),
+    ),
+    ("glob-libs.mjs", include_str!("assets/start/glob-libs.mjs")),
+    ("cf-server.mjs", include_str!("assets/start/cf-server.mjs")),
+    (
+        "cf-workers.mjs",
+        include_str!("assets/start/cf-workers.mjs"),
+    ),
+    (
+        "cf-server-worker.mjs",
+        include_str!("assets/start/cf-server-worker.mjs"),
+    ),
+    ("generate.mjs", include_str!("assets/start/generate.mjs")),
+    ("fn-stubs.mjs", include_str!("assets/start/fn-stubs.mjs")),
+    // Fork: Solid Start pipeline scripts (kept; the Solid dev/prod path
+    // still drives bundle-client/build/cf-build via ScriptEngine).
+    (
+        "solid-transform.mjs",
+        include_str!("assets/start/solid-transform.mjs"),
+    ),
+    ("start-pkg.mjs", include_str!("assets/start/start-pkg.mjs")),
+    (
+        "bundle-client.mjs",
+        include_str!("assets/start/bundle-client.mjs"),
+    ),
+    ("build.mjs", include_str!("assets/start/build.mjs")),
+    // Fork: kept pipeline helpers (upstream dropped them from the asset
+    // list with the scripts' Rust replacements; the Solid path and
+    // START_BUILD_SCRIPTS still embed them).
+    ("cf-build.mjs", include_str!("assets/start/cf-build.mjs")),
+    (
         "rolldown-assets.mjs",
         include_str!("assets/start/rolldown-assets.mjs"),
     ),
@@ -108,36 +172,17 @@ const START_ASSETS: &[(&str, &str)] = &[
         "glob-transform.mjs",
         include_str!("assets/start/glob-transform.mjs"),
     ),
-    ("cf-server.mjs", include_str!("assets/start/cf-server.mjs")),
-    (
-        "cf-workers.mjs",
-        include_str!("assets/start/cf-workers.mjs"),
-    ),
-    (
-        "cf-server-worker.mjs",
-        include_str!("assets/start/cf-server-worker.mjs"),
-    ),
-    ("cf-build.mjs", include_str!("assets/start/cf-build.mjs")),
-    ("generate.mjs", include_str!("assets/start/generate.mjs")),
-    (
-        "gen-resolver.mjs",
-        include_str!("assets/start/gen-resolver.mjs"),
-    ),
-    ("fn-stubs.mjs", include_str!("assets/start/fn-stubs.mjs")),
-    (
-        "solid-transform.mjs",
-        include_str!("assets/start/solid-transform.mjs"),
-    ),
-    ("start-pkg.mjs", include_str!("assets/start/start-pkg.mjs")),
-    (
-        "bundle-client.mjs",
-        include_str!("assets/start/bundle-client.mjs"),
-    ),
-    ("build.mjs", include_str!("assets/start/build.mjs")),
+    ("prerender.mjs", include_str!("assets/start/prerender.mjs")),
+    ("error-overlay.js", include_str!("assets/error-overlay.js")),
     (
         "live-reload.js",
         include_str!("assets/start/live-reload.js"),
     ),
+    (
+        "hmr-runtime.js",
+        include_str!("assets/start/hmr-runtime.js"),
+    ),
+    ("react-refresh-runtime.js", REFRESH_RUNTIME_JS),
     (
         "server-entry.tsx",
         include_str!("assets/start/server-entry.tsx"),
@@ -219,22 +264,6 @@ pub fn engine_code_cache_dir(root: &Path) -> PathBuf {
         .join(oj_js::engine_abi_key())
 }
 
-pub fn node_compile_cache(root: &Path) -> std::ffi::OsString {
-    oj_env::get()
-        .knobs
-        .node_compile_cache
-        .clone()
-        .unwrap_or_else(|| oj_cache::cache_root(root).join("v8").into_os_string())
-}
-
-pub fn node_compile_cache_opt_in(root: &Path) -> Option<std::ffi::OsString> {
-    let v = oj_env::get().knobs.v8_compile_cache.as_ref()?;
-    if v.is_empty() || v == "0" {
-        return None;
-    }
-    Some(node_compile_cache(root))
-}
-
 pub fn prepare_cache_root(root: &Path) {
     let dir = oj_cache::cache_base(root);
     if std::fs::create_dir_all(&dir).is_err() {
@@ -273,11 +302,17 @@ pub fn write_start_assets(dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// A TanStack Start app: `@tanstack/react-start` in its package.json, and
+/// Start's default routes directory or a Vite config that calls
+/// `tanstackStart()` (whose `router.routesDirectory` may move the routes).
 pub fn is_tanstack_start_app(root: &Path) -> bool {
-    root.join("src/routes").is_dir()
-        && std::fs::read_to_string(root.join("package.json"))
-            .map(|s| s.contains("@tanstack/react-start"))
-            .unwrap_or(false)
+    let depends = std::fs::read_to_string(root.join("package.json"))
+        .is_ok_and(|s| s.contains("@tanstack/react-start"));
+    depends
+        && (root.join("src/routes").is_dir()
+            || plugins::vite_config_file(root, None)
+                .and_then(|f| std::fs::read_to_string(f).ok())
+                .is_some_and(|s| s.contains("tanstackStart(")))
 }
 
 /// A TanStack Start app on SolidJS (`@tanstack/solid-start`): same file-based
@@ -384,9 +419,14 @@ pub struct DevServer {
     pub no_cache: bool,
     /// Skip the eager graph crawl; compile modules on demand (Vite's default).
     pub lazy: bool,
+    /// `--typecheck`: keep a TypeScript checker warm for `/@oj/typecheck`.
+    pub typecheck: bool,
     /// Vite's `--mode` for `serve` (default `development`): selects `.env.<mode>`,
     /// `import.meta.env.MODE`, and the mode plugin `config` hooks see.
     pub mode: Option<String>,
+    /// The runtime the dep optimizer's rolldown runs on (see
+    /// [`rolldown_runtime`]).
+    pub rolldown: tokio::runtime::Handle,
 }
 
 struct ServerState {
@@ -401,12 +441,21 @@ struct ServerState {
     /// `require()` specifiers of a directly-served CommonJS dep (Vite's getConditions).
     require_resolver: Arc<OjResolver>,
     ssr_resolver: Arc<OjResolver>,
+    /// How Vite's module runner resolves a bare import it externalizes.
+    ssr_external_resolver: Arc<OjResolver>,
+    /// The ssr environment's aliases: Vite never externalizes an aliased import.
+    ssr_aliases: Vec<(String, String)>,
     cache: PersistentCache,
     memory: Mutex<MemoryCache>,
     mtime_keys: Mutex<HashMap<String, (std::time::SystemTime, u64, String)>>,
     compile_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     crawl_done: tokio::sync::watch::Receiver<bool>,
     fs_allow: Arc<Mutex<std::collections::HashSet<PathBuf>>>,
+    /// What each module the ssr pipeline served imports, as its own code
+    /// says: only those resolutions are safe module paths. By file, then by
+    /// module id: a route file is its own module and the ones its queries
+    /// make (`?tsr-split=component`), each with its own imports.
+    ssr_imports: Mutex<crate::ssr::ModuleImports>,
     /// `server.fs.strict` (default true). When false the allow list is not
     /// consulted for `/@fs/` paths; the deny list always is, as in Vite.
     fs_strict: bool,
@@ -417,15 +466,37 @@ struct ServerState {
     preprocess: tokio::sync::OnceCell<std::sync::Arc<CssEngine>>,
     svelte: tokio::sync::OnceCell<std::sync::Arc<CssEngine>>,
     tailwind_urls: Mutex<std::collections::HashSet<String>>,
+    /// A stylesheet's "post" plugin output by the id they saw, with a hash of
+    /// what they were given: they run once per change, as Vite's module
+    /// transform, not per request.
+    css_post: Mutex<HashMap<String, (u64, String)>>,
+    tailwind_sheets: css_serve::TailwindSheets,
     has_postcss: bool,
     scss_additional_data: Option<String>,
     sass_additional_data: Option<String>,
     css_config: Option<oj_config::CssConfig>,
+    /// `ssr.external` / `ssr.noExternal` for the dev ssr environment. The
+    /// webworker target is dropped: it bundles everything only in a build.
+    ssr_externals: oj_config::SsrExternals,
+    /// The top-level `resolve.alias` finds (Vite's `config.resolve.alias`).
+    alias_finds: Vec<String>,
+    /// The same with their replacements, for a specifier Node is handed.
+    aliases: Vec<(String, String)>,
+    /// The ssr environment's resolved `resolve.builtins`; None for Vite's
+    /// default (nodeLikeBuiltins, see [`ssr::is_ssr_builtin`]).
+    ssr_builtins: Option<Vec<ssr::Builtin>>,
+    /// Dev asset URLs: `server.origin` and base prefix, svg inline limit.
+    asset_urls: assets_serve::DevAssetUrls,
+    /// Vite's `/@vite/env` module (see [`assets_serve::vite_env_module`]).
+    vite_env_js: String,
     /// `html.cspNonce`: stamped on every served page's script/style/link tags.
     csp_nonce: Option<String>,
     /// `resolve.alias`, root and public dir as seen by `@import`/`@use`/`url()`
     /// specifiers inside stylesheets (Vite's CSS resolvers).
     css_resolve: oj_css::CssResolveConfig,
+    /// The client `resolve.alias`, which an aliased `import.meta.glob` pattern
+    /// resolves through.
+    glob_alias: Arc<[(String, String)]>,
     preload_snapshot: Vec<String>,
     proxy: Vec<(String, oj_config::ProxyEntry)>,
     /// Per `proxy` entry: the compiled pattern of a `^` (regex) context, `None`
@@ -449,6 +520,10 @@ struct ServerState {
     canon_memo: Mutex<std::collections::HashMap<String, PathBuf>>,
     jsx_overrides: std::collections::BTreeMap<String, String>,
     jsx: oj_compiler::JsxConfig,
+    /// The config's `@stylexjs/unplugin`, run natively (see [`stylex`]).
+    stylex: Option<Arc<oj_stylex::plugin::StylexPlugin>>,
+    /// The last processed dev stylesheet and what it was built from.
+    stylex_css: Mutex<Option<(stylex::SheetStamp, String)>>,
     /// The `import.meta.env` / `define` replacements every dev compile applies.
     import_meta_env: Arc<oj_compiler::ImportMetaEnv>,
     host_policy: HostPolicy,
@@ -460,38 +535,56 @@ struct ServerState {
     /// compares across dev server restarts.
     started_at_ms: u64,
     hmr_enabled: bool,
-    /// The CLI's `--config` file (resolved against root), for the lazily
-    /// spawned SSR host's plugin-source pick.
-    config_file: Option<PathBuf>,
+    /// The files whose change restarts the server ([`restart_files`]).
+    restart_files: Vec<PathBuf>,
+    restarter: Arc<watch::Restarter>,
     /// The engines the debug GC endpoint fans over (plugin hosts, CSS, SSR,
     /// Start, addon keeper); every long-lived spawn joins it.
     engine_registry: oj_js::EngineRegistry,
     plugins: Option<std::sync::Arc<PluginHost>>,
     plugin_serve: Arc<PluginServe>,
-    plugins_ssr: tokio::sync::OnceCell<Option<std::sync::Arc<PluginHost>>>,
-    /// Watcher events the lazily spawned SSR host could not take yet, plus
-    /// the dispatch-order lock; see [`SsrWatchQueue`].
-    ssr_watch: Arc<SsrWatchQueue>,
-    ssr_plugin_config: String,
+    /// The ssr environment's container on `plugins`, opened at boot as Vite's
+    /// createServer creates every environment before it listens.
+    plugins_ssr: Option<std::sync::Arc<PluginHost>>,
     plugin_watched: Arc<Mutex<std::collections::HashSet<PathBuf>>>,
+    /// The files the ssr pipeline compiled: the ssr environment's module
+    /// graph, which its hotUpdate reads.
+    ssr_modules: Mutex<std::collections::HashSet<PathBuf>>,
     /// Into the watcher thread's inbox (`WatchMsg`): directories of files
     /// served from outside the root (`ensure_watched_file`).
     watch_tx: std::sync::mpsc::Sender<WatchMsg>,
     watch_feed: WatchFeed,
+    /// `--typecheck`: the warm checker `/@oj/typecheck` asks.
+    typecheck: Option<Arc<typecheck::Typecheck>>,
     plugins_use_module_parsed: bool,
     plugins_have_transform: bool,
     plugins_have_load: bool,
+    /// Some active plugin has `resolveId`: an import oj cannot resolve may
+    /// still be one a plugin serves (`/@id/`), else it fails like Vite's.
+    plugins_have_resolve_id: bool,
+    /// A bare import goes to the `pre` plugins' resolveId before oj's resolver
+    /// when one of these matches it; `None` offers every one.
+    pre_resolve_id_res: Option<Vec<plugins::HookFilter>>,
+    /// [`Self::pre_resolve_id_res`] for the ssr environment.
+    ssr_pre_resolve_id_res: Option<Vec<plugins::HookFilter>>,
+    /// (bare specifier, file) pairs oj's resolver gave a plugin's `this.resolve`.
+    resolver_answers: Mutex<std::collections::HashSet<(String, String)>>,
     // A dep is transformed only when its source matches one of these (the plugins'
     // own transform `filter.code` patterns); app source always goes through.
-    dep_transform_res: Vec<regex::Regex>,
+    dep_transform_res: Vec<plugins::HookFilter>,
     // A dep goes through plugin `load` only when its path matches one of these
     // (the plugins' own object-form load `filter.id` patterns).
-    dep_load_res: Vec<regex::Regex>,
+    dep_load_res: Vec<plugins::HookFilter>,
     // A relative or absolute import is offered to plugin `resolveId` before oj's
     // resolver when it matches one of these (object-form resolveId `filter.id`).
-    resolve_id_res: Vec<regex::Regex>,
-    plugins_watch_change: bool,
-    plugins_hot_update: bool,
+    resolve_id_res: Vec<plugins::HookFilter>,
+    /// A plugin hooks `transformIndexHtml`: dev pages run the host's transform,
+    /// its hooks interleaved with Vite's; otherwise oj's native one (dev_html).
+    plugins_have_transform_index_html: bool,
+    /// The inline modules the native dev HTML transform lifted out of pages.
+    html_proxy: dev_html::HtmlProxyCache,
+    /// `envPrefix`, for the HTML env hook's undefined-variable warning.
+    env_prefixes: Vec<String>,
     html_env: std::collections::BTreeMap<String, String>,
     parsed_fired: Mutex<std::collections::HashSet<String>>,
     rt: tokio::runtime::Handle,
@@ -513,9 +606,10 @@ struct ServerState {
     client_js: Bytes,
     /// Validator for `/@oj/client.js` (fixed per process).
     client_js_etag: String,
+    oj_paths: OjPublicPaths,
     /// Per module url, the `import.meta.glob` patterns it expands (absolute): a file
     /// created or deleted under one recompiles + hot-updates the module (Vite parity).
-    glob_importers: Mutex<HashMap<String, Vec<glob::Pattern>>>,
+    glob_importers: Mutex<HashMap<String, Vec<oj_compiler::glob::GlobMatcher>>>,
     /// Vite's `appType` (`spa` | `mpa` | `custom`): whether an unmatched
     /// navigation falls back to `index.html`, and whether html is served at all.
     app_type: String,
@@ -682,11 +776,11 @@ fn spawn_late_plugin_serve(plugin_serve: Arc<PluginServe>, host: Arc<PluginHost>
                     }
                 }
                 _ = recheck.tick() => {}
-                _ = tokio::time::sleep_until(host.init_deadline_at()), if await_init => {
+                _ = tokio::time::sleep_until(host.init_warn_at()), if await_init => {
                     if !host.is_initialized() {
                         eprintln!(
-                            "oj: warning: the plugin host did not finish initializing within {}s; plugin-served routes are inactive until it does",
-                            plugins::plugin_init_timeout().as_secs()
+                            "oj: warning: the plugin host has not finished initializing after {}s; plugin-served routes are inactive until it does",
+                            plugins::INIT_WARN.as_secs()
                         );
                     }
                     warned = true;
@@ -709,7 +803,7 @@ async fn catch_up_resync(host: &Arc<PluginHost>, p: u16) {
         return;
     }
     println!("  plugin middleware: worker environment resync enqueued");
-    let bound = plugins::plugin_rpc_timeout();
+    let bound = plugins::PROBE_WINDOW;
     let enqueued_at = std::time::Instant::now();
     if await_resync_completion(&mut done, baseline, bound).await {
         println!("  plugin middleware: worker environments resynced (full reload)");
@@ -748,6 +842,8 @@ pub struct BuiltApp {
     /// Live plugin-middleware state (port + runner environments), shared with
     /// the router's state; a slow plugin host activates it after boot.
     pub plugin_serve: Arc<PluginServe>,
+    /// This server's restarts, checked before they replace it.
+    pub restarter: Arc<Restarter>,
     pub root: PathBuf,
     pub started: Instant,
     /// Sender for the `/__ws` broadcast: the channel the editor reads
@@ -757,12 +853,72 @@ pub struct BuiltApp {
     pub plugin_host: Option<Arc<PluginHost>>,
     /// `server.open`: launch the browser once bound.
     pub open: bool,
+    /// `server.https`: serve TLS with ALPN h2 + http/1.1 (Vite's secure dev
+    /// server shape) instead of plain http.
+    pub https: Option<oj_config::HttpsConfig>,
+    /// `base`, `None` for `/`.
+    pub base: Option<String>,
     /// The HMR gate (the editor-driven hold), when enabled: the Start
     /// server holds its page reload behind it like the plain path holds updates.
     pub hmr_gate: Option<HmrGateHandle>,
     /// The SSR resolve/load pipeline, for the in-process SSR module runner.
     pub ssr: SsrBridge,
     pub watch_feed: WatchFeed,
+    watch_tx: std::sync::mpsc::Sender<WatchMsg>,
+    watch_ready: tokio::sync::watch::Receiver<bool>,
+    typecheck: Option<Arc<typecheck::Typecheck>>,
+}
+
+impl BuiltApp {
+    /// Resolves once the watcher covers the root (chokidar's `ready`), or
+    /// once it failed to start.
+    pub async fn watcher_ready(&self) {
+        let _ = self.watch_ready.clone().wait_for(|ready| *ready).await;
+    }
+
+    /// The dev listener, bound only once the watcher covers the root. Vite
+    /// creates its watcher in createServer, before listen, so an edit made
+    /// after the server first answers is always seen; binding earlier lost
+    /// one that landed in between (a `.env` edit right after a restart).
+    pub async fn bind_listener(&self) -> anyhow::Result<(tokio::net::TcpListener, u16)> {
+        self.watcher_ready().await;
+        let (listener, port) = bind_dev_listener(self.host, self.port, self.strict_port).await?;
+        if let Some(typecheck) = &self.typecheck {
+            typecheck.warm_after_first_serve();
+        }
+        typecheck::advertise(
+            &self.root,
+            self.host,
+            port,
+            self.https.is_some(),
+            self.typecheck.is_some(),
+        );
+        Ok((listener, port))
+    }
+
+    /// Serves `app` (this app's router, possibly wrapped) on the listener
+    /// `bind_listener` returned, counting its requests for the type checker,
+    /// whose first check waits for the first page.
+    pub async fn serve(
+        &self,
+        listener: tokio::net::TcpListener,
+        app: axum::Router,
+    ) -> anyhow::Result<()> {
+        let app = match &self.typecheck {
+            Some(typecheck) => typecheck.count_requests(app),
+            None => app,
+        };
+        tls::serve_router(listener, app, self.https.as_ref()).await
+    }
+
+    /// Stops the file watcher and returns once it is gone, so nothing under
+    /// the root (its removal included) can reach HMR or a restart after.
+    pub fn close_watcher(&self) {
+        let (ack, done) = std::sync::mpsc::channel();
+        if self.watch_tx.send(WatchMsg::Close(ack)).is_ok() {
+            let _ = done.recv_timeout(Duration::from_secs(10));
+        }
+    }
 }
 
 pub async fn bind_dev_listener(
@@ -884,8 +1040,11 @@ struct PluginFile {
     label: String,
 }
 
+/// The app's plugin file. Without one there is no plugin host: Vite's dev
+/// HTML transform runs natively (dev_html).
 fn plugin_file(root: &Path, config_file: Option<&Path>) -> Option<PluginFile> {
-    match plugins::plugin_source(root, config_file)? {
+    let source = plugins::plugin_source(root, config_file)?;
+    match source {
         plugins::PluginSource::OjPlugins(p) => Some(PluginFile {
             label: p.file_name().unwrap().to_string_lossy().into_owned(),
             path: p,
@@ -899,25 +1058,125 @@ fn plugin_file(root: &Path, config_file: Option<&Path>) -> Option<PluginFile> {
     }
 }
 
-/// Handed to buildEnvironments and vite.resolveConfig verbatim: the deps
-/// pre-seed child must resolve with the SAME string or cache hashes cannot match.
-const HOST_ENV_MODE: &str = "dev";
-
-/// The plugin host spawn payloads for the client and ssr environments.
-struct PluginHostPayloads {
-    client: String,
-    ssr: String,
+/// An empty `oj.plugins.mjs` in the cache, for a host with no plugin file:
+/// `server.proxy` runs in the host.
+fn empty_plugin_file(root: &Path) -> Option<PluginFile> {
+    let path = oj_cache::cache_root(root).join("empty.plugins.mjs");
+    std::fs::create_dir_all(path.parent()?).ok()?;
+    std::fs::write(&path, "export default [];\n").ok()?;
+    Some(PluginFile {
+        path,
+        format: PluginsFormat::Oj,
+        label: "no plugin file".to_string(),
+    })
 }
 
-fn plugin_host_payloads(
+/// Before any engine can spawn: reap children a SIGKILLed predecessor (OOM
+/// kill, supervisor escalation) left behind and start this process's file;
+/// plugin-hook children register (own process group each) so restarts and
+/// shutdown can kill whole plugin-spawned trees. Repeating it is harmless.
+fn prepare_engines(root: &Path) {
+    prepare_cache_root(root);
+    child_groups::init_registry(&oj_cache::cache_root(root).join("children"));
+    deno_process::oj_hook::set(child_groups::register, child_groups::unregister);
+    // The engine's own signal path (deno_signals) exits the process itself on an
+    // unhandled SIGHUP/SIGTERM/SIGINT, beating the tokio shutdown task; sweep there
+    // too or a supervisor restart strands every plugin child (workerd) on pid 1.
+    deno_process::oj_hook::set_shutdown_sweep(|| {
+        child_groups::kill_all();
+    });
+}
+
+/// The plugin host's engine, booting and importing vite while the config is
+/// read, instead of after. Not when the last evaluation found no plugin to
+/// host (the boot then drops the host, once the config confirms it). A fresh
+/// evaluation runs on it and the host takes the run over: the config and its
+/// hooks run once, as in Vite.
+fn host_prewarm(
+    root: &Path,
+    config_file: Option<&Path>,
+    mode: &str,
+    registry: &oj_js::EngineRegistry,
+) -> Option<plugins::HostPrewarm> {
+    let warm = plugin_file(root, config_file)
+        .filter(|f| f.format == PluginsFormat::Vite)
+        .filter(|_| plugins::cached_active_plugins(root, config_file, mode) != Some(0))
+        .and_then(|_| PluginHost::prewarm(root, Some(registry.clone())))?;
+    warm.offer_to_extraction(root);
+    Some(warm)
+}
+
+/// A host engine started before the dev server builds (Start reads the config
+/// alongside), which the build takes.
+struct EarlyHost {
+    root: PathBuf,
+    registry: oj_js::EngineRegistry,
+    prewarm: Option<plugins::HostPrewarm>,
+}
+
+static EARLY_HOST: std::sync::Mutex<Option<EarlyHost>> = std::sync::Mutex::new(None);
+
+/// Starts the dev server's plugin host engine now, offered to the config's
+/// first evaluation, for a caller that reads the config before the dev server
+/// builds (Start): that evaluation is the host's, as Vite resolves once.
+pub fn start_host_engine_early(
+    root: &Path,
+    config_file: Option<&Path>,
+    mode: &str,
+    port: Option<u16>,
+    host: Option<&str>,
+) {
+    prepare_engines(root);
+    plugins::set_cli_inline(root, cli_inline(port, host));
+    let registry = oj_js::EngineRegistry::new();
+    let prewarm = host_prewarm(root, config_file, mode, &registry);
+    *EARLY_HOST.lock().unwrap_or_else(|e| e.into_inner()) = Some(EarlyHost {
+        root: root.to_path_buf(),
+        registry,
+        prewarm,
+    });
+}
+
+fn take_early_host(root: &Path) -> Option<EarlyHost> {
+    let mut slot = EARLY_HOST.lock().unwrap_or_else(|e| e.into_inner());
+    if slot.as_ref().is_some_and(|e| e.root == root) {
+        slot.take()
+    } else {
+        None
+    }
+}
+
+/// The dev host's environment mode (Vite's `environment.mode`).
+const HOST_ENV_MODE: &str = "dev";
+
+/// The inline config a Vite CLI run with these flags would carry (cli.ts:
+/// `server: cleanGlobalCLIOptions(options)`): only what was passed.
+fn cli_inline(port: Option<u16>, host: Option<&str>) -> serde_json::Value {
+    let mut server = serde_json::Map::new();
+    if let Some(port) = port {
+        server.insert("port".into(), port.into());
+    }
+    if let Some(host) = host {
+        server.insert("host".into(), host.into());
+    }
+    if server.is_empty() {
+        return serde_json::json!({});
+    }
+    serde_json::json!({ "server": server })
+}
+
+/// The dev plugin host's spawn payload (its own environment is the client).
+#[allow(clippy::too_many_arguments)]
+fn plugin_host_payload(
     root: &Path,
     config: &oj_config::OjConfig,
     server_cfg: &oj_config::ServerConfig,
     dev_mode: &str,
     port: u16,
+    cli: &serde_json::Value,
     format: PluginsFormat,
     is_start: bool,
-) -> PluginHostPayloads {
+) -> String {
     let mut cfg = serde_json::json!({
         "config": {
             "root": root.display().to_string(),
@@ -946,48 +1205,70 @@ fn plugin_host_payloads(
         // configHash matches and a cold boot never re-optimizes in-host (server.restart()).
         "preseedIncludePath": oj_cache::cache_root(root).join("preseed-include.json").to_string_lossy(),
         "ojStartMode": is_start,
+        // `--debug boot`: the host's own `[oj-phase]` lines.
+        "bootPhases": oj_env::get().knobs.boot_phases,
+        // What the command line set (`--port`, `--host`): Vite's CLI puts these in
+        // the inline config its config hooks run under.
+        "cliInline": cli,
     });
     if format == PluginsFormat::Vite {
         // The extractor's verdict rides the spawn payload: TRUE is authoritative, FALSE
         // falls through to the host's own declaration check; omitted for oj plugin files.
         cfg["runnerBacked"] = serde_json::json!(oj_config::ssr_runner_backed(config));
     }
-    let client = cfg.to_string();
-    cfg["environment"]["name"] = serde_json::json!("ssr");
-    PluginHostPayloads {
-        client,
-        ssr: cfg.to_string(),
-    }
+    cfg.to_string()
 }
 
 /// Spawn the client plugin host. Nothing left after native filtering = an idle
 /// process on the hot path: drop it (dropping the Arc kills it). EXCEPT with
 /// `server.proxy`: a function rewrite/configure/bypass needs a JS home.
+#[allow(clippy::too_many_arguments)]
 async fn spawn_plugin_host(
     root: &Path,
     file: &PluginFile,
     payload: &str,
     registry: &oj_js::EngineRegistry,
+    prewarm: Option<plugins::HostPrewarm>,
     keep_for_proxy: bool,
+    is_start: bool,
+    boot_preseed: Option<tokio::sync::watch::Receiver<bool>>,
 ) -> anyhow::Result<Option<Arc<PluginHost>>> {
     let label = &file.label;
-    let host = match PluginHost::spawn(root, &file.path, payload, Some(registry.clone())).await {
-        Ok(host) => host,
-        Err(e) => {
-            eprintln!("oj: plugin host failed to start: {e}");
-            return Ok(None);
-        }
-    };
-    let plugin_count = host.plugin_count().await;
-    if plugin_count == 0 && !keep_for_proxy {
+    // Vite's createServer creates and inits every environment before its
+    // configureServer hooks run, the ssr one included: the host's own init
+    // opens the ssr container (the framework plugins oj reimplements left out
+    // under Start).
+    let spawned = PluginHost::spawn_dev(
+        root,
+        &file.path,
+        payload,
+        Some(registry.clone()),
+        prewarm,
+        &[("ssr", is_start)],
+        boot_preseed,
+    )
+    .await;
+    // A config whose plugins cannot load fails the boot, as it fails Vite's
+    // createServer: never a server running without the app's plugins.
+    let host = spawned.map_err(|e| anyhow::anyhow!("the plugin host failed to start: {e}"))?;
+    let count = host.plugin_count().await;
+    // A plugin that fails the host's init (a throwing config hook, an
+    // environment it cannot apply to) fails the boot, as it fails Vite's
+    // createServer: never a server running without the app's plugins.
+    if *host.host_gone_updates().borrow() {
         host.shutdown();
-        println!("  plugins: {label} (none active after native filtering; served natively)");
-        return Ok(None);
+        anyhow::bail!("the plugin host failed to initialize (see the error above)");
     }
-    if plugin_count == 0 {
-        // Kept only to host `server.proxy` in the middleware stack.
-        println!("  plugins: {label} (none active; host kept for server.proxy)");
-        return Ok(Some(host));
+    // With no plugin active in any environment, the dev HTML transform runs
+    // natively and the host goes, unless it hosts `server.proxy`.
+    if count == 0 && host.top_level_plugin_count().await == 0 {
+        if keep_for_proxy {
+            println!("  plugins: {label} (none active; host kept for server.proxy or build.assetsInlineLimit)");
+            return Ok(Some(host));
+        }
+        host.shutdown();
+        println!("  plugins: {label} (none active; served natively)");
+        return Ok(None);
     }
     println!("  plugins: {label}");
     Ok(Some(host))
@@ -1022,18 +1303,24 @@ struct PluginCaps {
     use_module_parsed: bool,
     have_transform: bool,
     have_load: bool,
-    dep_transform_res: Vec<regex::Regex>,
-    dep_load_res: Vec<regex::Regex>,
-    resolve_id_res: Vec<regex::Regex>,
-    watch_change: bool,
-    hot_update: bool,
+    have_resolve_id: bool,
+    pre_resolve_id_res: Option<Vec<plugins::HookFilter>>,
+    dep_transform_res: Vec<plugins::HookFilter>,
+    dep_load_res: Vec<plugins::HookFilter>,
+    resolve_id_res: Vec<plugins::HookFilter>,
+    have_transform_index_html: bool,
 }
 
-fn compile_filters(patterns: &[String]) -> Vec<regex::Regex> {
-    patterns
-        .iter()
-        .filter_map(|s| regex::Regex::new(s).ok())
-        .collect()
+/// The bare imports a host's `pre` resolveId hooks may claim: `None` offers
+/// every one. A pattern oj cannot carry offers every one, never none.
+async fn pre_resolve_filters(
+    host: &PluginHost,
+    have_resolve_id: bool,
+) -> Option<Vec<plugins::HookFilter>> {
+    if !have_resolve_id {
+        return Some(Vec::new());
+    }
+    host.pre_resolve_id_filters().await
 }
 
 impl PluginCaps {
@@ -1041,22 +1328,25 @@ impl PluginCaps {
         let use_module_parsed = host.has_module_parsed().await;
         let have_transform = host.has_transform().await;
         let have_load = host.has_load().await;
-        let dep_transform_res = compile_filters(&host.dep_transform_filters().await);
-        let dep_load_res = compile_filters(&host.dep_load_filters().await);
-        let resolve_id_res = compile_filters(&host.resolve_id_filters().await);
+        let have_resolve_id = host.has_resolve_id().await;
+        let pre_resolve_id_res = pre_resolve_filters(host, have_resolve_id).await;
+        let dep_transform_res = host.dep_transform_filters().await;
+        let dep_load_res = host.dep_load_filters().await;
+        let resolve_id_res = host.resolve_id_filters().await;
         // Prime the per-plugin filter plan (hook_wants_* gates read it live): a filtered
         // hook's RPC is skipped for app modules its filter can never claim.
         let _ = host.build_hook_plan().await;
-        let (watch_change, hot_update) = host.hmr_hooks().await;
+        let have_transform_index_html = host.has_transform_index_html().await;
         PluginCaps {
             use_module_parsed,
             have_transform,
             have_load,
+            have_resolve_id,
+            pre_resolve_id_res,
             dep_transform_res,
             dep_load_res,
             resolve_id_res,
-            watch_change,
-            hot_update,
+            have_transform_index_html,
         }
     }
 }
@@ -1145,7 +1435,60 @@ fn hmr_setup(
     }
 }
 
-fn client_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
+/// Waits on a plugin host answer from synchronous code (an asset URL is named
+/// both in async handlers and on a compile's blocking thread). A multi-thread
+/// runtime blocks in place; elsewhere (a current-thread runtime, no runtime)
+/// a scoped thread drives the future on a runtime of its own.
+fn block_on_host<T: Send>(
+    f: impl std::future::Future<Output = Result<T, String>> + Send,
+) -> Result<T, String> {
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread {
+            return tokio::task::block_in_place(|| handle.block_on(f));
+        }
+    }
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| format!("assetsInlineLimit: {e}"))?
+                    .block_on(f)
+            })
+            .join()
+            .unwrap_or_else(|_| Err("assetsInlineLimit: the waiting thread panicked".into()))
+    })
+}
+
+/// How the app's Vite applies tsconfig `paths`: vite-tsconfig-paths among
+/// the plugins (with `resolve.tsconfigPaths` too, Vite's own resolver after
+/// it), Vite 8's own `resolve.tsconfigPaths`, or neither, where Vite's dev
+/// server applies none. Plugins unknown (no plugin host
+/// ran) count as none: Vite with no config applies no `paths`.
+pub fn tsconfig_paths(config: &oj_config::OjConfig) -> oj_resolver::TsconfigPaths {
+    let resolve = config.resolve.as_ref();
+    let plugin = resolve.and_then(|r| r.tsconfig_paths_plugin) == Some(true);
+    let native = resolve.and_then(|r| r.tsconfig_paths) == Some(true);
+    match (plugin, native) {
+        (true, true) => oj_resolver::TsconfigPaths::PluginNative,
+        (true, false) => oj_resolver::TsconfigPaths::Plugin,
+        (false, true) => oj_resolver::TsconfigPaths::Native,
+        (false, false) => oj_resolver::TsconfigPaths::Neither,
+    }
+}
+
+/// Vite's top-level `tsconfig` option, as a path.
+pub fn tsconfig_file(config: &oj_config::OjConfig) -> Option<PathBuf> {
+    config
+        .resolve
+        .as_ref()
+        .and_then(|r| r.tsconfig_file.as_deref())
+        .map(PathBuf::from)
+}
+
+/// The client environment's resolver, as the dev server builds it.
+pub fn client_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
     OjResolver::with_settings(
         root,
         oj_resolver::ResolveSettings {
@@ -1156,14 +1499,65 @@ fn client_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
             main_fields: oj_config::resolve_main_fields(config),
             preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
             server: false,
+            tsconfig_paths: tsconfig_paths(config),
+            tsconfig_file: tsconfig_file(config),
         },
     )
 }
 
-/// Feeds the unbundled Node SSR path. Conditions never cross runtimes: a
-/// runner-backed ssr environment's list describes workerd, so this Node
-/// consumer takes Vite's Node server defaults instead.
-fn ssr_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
+/// A dev environment's resolver for plugins (`this.resolve`, `this.load`), with
+/// the options Vite gives that environment (`resolveEnvironmentResolveOptions`).
+/// Unlike [`ssr_resolver`] nothing is adjusted for the Node runtime: a
+/// runner-backed environment's conditions are what its plugins see in Vite.
+/// `reported` is the environment's resolved conditions and mainFields when the
+/// plugin host has Vite's resolved config; else the config's own lists and the
+/// consumer's defaults answer.
+pub(crate) fn environment_resolver(
+    root: &Path,
+    config: &oj_config::OjConfig,
+    name: &str,
+    consumer_server: bool,
+    dev: bool,
+    reported: Option<&plugins::ReportedResolve>,
+) -> OjResolver {
+    // Vite's isSsrTargetWebworkerEnvironment keeps the client defaults.
+    let server =
+        consumer_server && !(name == "ssr" && oj_config::ssr_externals(config).webworker());
+    let reported_list = |pick: fn(&plugins::ReportedResolve) -> &Option<Vec<String>>| {
+        reported.and_then(|r| pick(r).clone())
+    };
+    let conditions = match reported_list(|r| &r.conditions) {
+        Some(list) => oj_config::reported_conditions(list, dev),
+        None => oj_config::environment_resolve_conditions(config, name, server, dev),
+    };
+    let main_fields = reported_list(|r| &r.main_fields)
+        .or_else(|| oj_config::environment_main_fields(config, name));
+    let extensions = reported_list(|r| &r.extensions)
+        .or_else(|| oj_config::environment_extensions(config, name));
+    let dedupe =
+        reported_list(|r| &r.dedupe).unwrap_or_else(|| oj_config::environment_dedupe(config, name));
+    OjResolver::with_settings(
+        root,
+        oj_resolver::ResolveSettings {
+            conditions,
+            // Vite gives every environment the top-level alias.
+            alias: oj_config::top_level_alias(config),
+            dedupe,
+            extensions,
+            main_fields,
+            preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
+            server,
+            tsconfig_paths: tsconfig_paths(config),
+            tsconfig_file: tsconfig_file(config),
+        },
+    )
+}
+
+/// Feeds the unbundled Node SSR path, and the SSR build's externalization
+/// probe (Vite resolves a dependency before externalizing it). Conditions
+/// never cross runtimes: a runner-backed ssr environment's list describes
+/// workerd, so this Node consumer takes Vite's Node server defaults instead.
+pub fn ssr_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
     OjResolver::with_settings(
         root,
         oj_resolver::ResolveSettings {
@@ -1175,10 +1569,39 @@ fn ssr_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
             alias: oj_config::resolve_alias(config, "ssr"),
             dedupe: oj_config::resolve_dedupe(config),
             extensions: oj_config::resolve_extensions(config),
-            main_fields: oj_config::resolve_main_fields(config),
+            // The ssr environment's own list only: environments never inherit
+            // the top-level mainFields in Vite, and a resolved config carries
+            // the CLIENT defaults there (`browser` first).
+            main_fields: oj_config::ssr_resolve_main_fields(config),
             preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
             // Vite's server environment: no `browser` main field or remap.
             server: true,
+            tsconfig_paths: tsconfig_paths(config),
+            tsconfig_file: tsconfig_file(config),
+        },
+    )
+}
+
+/// How Vite's module runner resolves a bare import it externalizes
+/// (fetchModule's tryNodeResolve): mainFields `["main"]`, the ssr external
+/// conditions with `import` (getConditions), extensions `.js`, `.cjs` and
+/// `.json`, `resolve.dedupe`, and no alias (an aliased import is never
+/// external).
+pub fn ssr_external_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
+    let mut conditions = oj_config::ssr_external_conditions(config, true);
+    conditions.push("import".to_string());
+    OjResolver::with_settings(
+        root,
+        oj_resolver::ResolveSettings {
+            conditions,
+            alias: Vec::new(),
+            dedupe: oj_config::resolve_dedupe(config),
+            extensions: Some([".js", ".cjs", ".json"].map(String::from).to_vec()),
+            main_fields: Some(vec!["main".to_string()]),
+            preserve_symlinks: oj_config::resolve_preserve_symlinks(config),
+            server: true,
+            tsconfig_paths: oj_resolver::TsconfigPaths::Off,
+            tsconfig_file: None,
         },
     )
 }
@@ -1207,6 +1630,17 @@ fn fs_allow_list(
     for r in roots {
         insert_allow_root(&mut set, r);
     }
+    // Every node_modules on the root's lookup path: a bare import resolves
+    // into one, and Vite serves whatever its resolver resolved (its safe
+    // module paths). Allowing a dep's package only once its importer compiled
+    // made a reload after a restart 403: the browser fetches the imports it
+    // remembers before the new process has compiled their importer.
+    for dir in root.ancestors() {
+        let node_modules = dir.join("node_modules");
+        if node_modules.is_dir() {
+            insert_allow_root(&mut set, node_modules);
+        }
+    }
     set
 }
 
@@ -1217,6 +1651,7 @@ fn optimized_deps(
     node_env: &str,
     host: Option<Arc<plugins::PluginHost>>,
     plugin_names: Vec<String>,
+    rolldown: &tokio::runtime::Handle,
 ) -> optimize::OptimizedDeps {
     let (include, exclude, entries) = oj_config::optimize_deps_lists(config);
     optimize::OptimizedDeps::prepare(
@@ -1224,6 +1659,10 @@ fn optimized_deps(
         env!("CARGO_PKG_VERSION"),
         optimize::OptimizeInput {
             no_discovery: config.optimize_deps.as_ref().and_then(|o| o.no_discovery),
+            hold_until_crawl_end: config
+                .optimize_deps
+                .as_ref()
+                .and_then(|o| o.hold_until_crawl_end),
             include,
             exclude,
             entries,
@@ -1246,8 +1685,11 @@ fn optimized_deps(
             node_env: node_env.to_string(),
             plugin_names,
             needs_interop: oj_config::optimize_deps_needs_interop(config),
+            tsconfig_paths: tsconfig_paths(config),
+            tsconfig_file: tsconfig_file(config),
         },
         host,
+        rolldown,
     )
 }
 
@@ -1256,6 +1698,7 @@ fn spawn_state_tasks(
     state: &Arc<ServerState>,
     mut write_rx: tokio::sync::mpsc::Receiver<(String, Arc<CachedModule>)>,
     watch_rx: std::sync::mpsc::Receiver<WatchMsg>,
+    watch_ready: tokio::sync::watch::Sender<bool>,
 ) {
     if let Some(host) = &state.plugins {
         host.set_ws_sender(state.reload_tx.clone());
@@ -1267,6 +1710,20 @@ fn spawn_state_tasks(
                 handle_plugin_server_event(&st, &ev).await;
             }
         });
+        let (rpc_tx, mut rpc_rx) = tokio::sync::mpsc::unbounded_channel();
+        host.set_rpc_request_sender(rpc_tx);
+        let st = Arc::clone(state);
+        tokio::spawn(async move {
+            while let Some(rpc) = rpc_rx.recv().await {
+                let st = Arc::clone(&st);
+                tokio::spawn(async move {
+                    let result = answer_host_rpc(&st, &rpc).await;
+                    if let Some(host) = &st.plugins {
+                        host.rpc_reply(rpc.id, result);
+                    }
+                });
+            }
+        });
     }
     {
         let state = Arc::clone(state);
@@ -1276,7 +1733,28 @@ fn spawn_state_tasks(
             }
         });
     }
-    spawn_watcher(Arc::clone(state), watch_rx);
+    spawn_watcher(Arc::clone(state), watch_rx, watch_ready);
+}
+
+/// The plugin host's async reverse RPC: `htmlStyle(id, code)` compiles an
+/// inline style of a page the host is transforming.
+async fn answer_host_rpc(
+    state: &Arc<ServerState>,
+    rpc: &plugins::HostRpc,
+) -> Result<serde_json::Value, String> {
+    let arg = |i: usize| rpc.args.get(i).and_then(|v| v.as_str()).unwrap_or("");
+    match rpc.method.as_str() {
+        "htmlStyle" => css_serve::compile_html_style(state, arg(0), arg(1).to_string())
+            .await
+            .map(serde_json::Value::String),
+        // Settles once the dependency scan knows the deps (Vite's
+        // `depsOptimizer.scanProcessing`).
+        "depScan" => {
+            state.optimized.ready().await;
+            Ok(serde_json::Value::Bool(true))
+        }
+        other => Err(format!("unknown host rpc: {other}")),
+    }
 }
 
 /// `server.warmup`: precompile the client files.
@@ -1308,37 +1786,70 @@ fn build_router(
     server_cfg: &oj_config::ServerConfig,
     hmr_ws_path: &str,
 ) -> Router {
-    let mut app = Router::new()
-        .route("/@oj/client.js", get(serve_client_js))
-        .route(
-            "/@oj/refresh-runtime.js",
-            get(|| async { js(REFRESH_RUNTIME_JS) }),
-        )
-        .route(
-            "/@oj/refresh-preamble.js",
-            get(|| async { js(REFRESH_PREAMBLE_JS) }),
-        )
-        .route("/@oj/routes.js", get(serve_oj_routes))
-        // OJ_DEBUG_MEM=1: force a full V8 collection in every live engine so memory
-        // probes measure retained heap (issue #202). 404 unless enabled.
-        .route("/@oj/debug/gc", get(debug_gc))
-        .route("/@oj/debug/mem", get(debug_mem_stats))
-        .route("/@oj/diagnostics", get(serve_diagnostics))
-        .route("/@oj/server-fn.js", get(|| async { js(SERVER_FN_JS) }))
-        .route(
-            "/@oj/lingui-macro-shim.js",
-            get(|| async { js(LINGUI_MACRO_SHIM_JS) }),
-        )
-        .route("/@ssr-resolve", get(ssr_resolve))
-        .route("/@ssr-module", get(ssr_module))
-        .route("/__ws", get(ws_upgrade))
-        .route("/__hmr_flush", post(hmr_flush))
-        .route("/__hmr_gate", get(hmr_gate_status))
-        .fallback(serve_fallback);
+    let mut app =
+        Router::new()
+            .route("/@oj/client.js", get(serve_client_js))
+            .route(
+                "/@vite/env",
+                get(|State(state): State<Arc<ServerState>>| async move {
+                    js(state.vite_env_js.clone())
+                }),
+            )
+            .route(
+                "/@oj/refresh-runtime.js",
+                get(|State(state): State<Arc<ServerState>>| async move {
+                    js(state.oj_paths.refresh_runtime_js.clone())
+                }),
+            )
+            .route(
+                "/@react-refresh",
+                get(|State(state): State<Arc<ServerState>>| async move {
+                    js(state.oj_paths.react_refresh_js.clone())
+                }),
+            )
+            .route(
+                "/@oj/refresh-preamble.js",
+                get(|State(state): State<Arc<ServerState>>| async move {
+                    js(state.oj_paths.refresh_preamble_js.clone())
+                }),
+            )
+            .route("/@oj/routes.js", get(serve_oj_routes))
+            // `--debug mem`: force a full V8 collection in every live engine so memory
+            // probes measure retained heap (issue #202). 404 unless enabled.
+            .route("/@oj/debug/gc", get(debug_gc))
+            .route("/@oj/debug/mem", get(debug_mem_stats))
+            .route("/@oj/diagnostics", get(serve_diagnostics))
+            .route(
+                "/@oj/typecheck",
+                get(typecheck::serve_typecheck).post(typecheck::serve_typecheck),
+            )
+            .route("/@oj/server-fn.js", get(|| async { js(SERVER_FN_JS) }))
+            .route(
+                "/@oj/lingui-macro-shim.js",
+                get(|| async { js(LINGUI_MACRO_SHIM_JS) }),
+            )
+            .route("/@ssr-resolve", get(ssr_resolve))
+            .route("/@ssr-module", get(ssr_module))
+            .route(HMR_WS_PATH, get(ws_upgrade))
+            .route(HMR_FLUSH_PATH, post(hmr_flush))
+            .route(HMR_GATE_PATH, get(hmr_gate_status))
+            .fallback(serve_fallback);
     // `server.hmr.path`: the client dials this path instead of /__ws (Vite
     // serves its socket at base + hmr.path).
-    if hmr_ws_path != "/__ws" && hmr_ws_path != "/" && !hmr_ws_path.starts_with("/@oj/") {
+    if hmr_ws_path != HMR_WS_PATH && hmr_ws_path != "/" && !hmr_ws_path.starts_with("/@oj/") {
         app = app.route(hmr_ws_path, get(ws_upgrade));
+    }
+    // The base strip must run before route matching. A layer runs after its
+    // router picked a route, so it sits on an outer router whose only route is
+    // the inner one, which then matches the stripped path.
+    if let Some(base) = state.base.clone() {
+        let routes = app.with_state(Arc::clone(&state));
+        app = Router::new()
+            .fallback_service(routes)
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::<str>::from(base),
+                base_middleware,
+            ));
     }
     // Layer order is reversed at request time (last added runs first). Vite's
     // sequence is cors, host validation, proxy: proxied requests bypass neither gate.
@@ -1404,16 +1915,16 @@ impl DevServer {
         let host_slot: Arc<std::sync::OnceLock<Arc<PluginHost>>> = Arc::default();
         tokio::spawn(close_plugins_on_shutdown(host_slot.clone()));
         let built = self.build_app().await?;
-        let (listener, port) = bind_dev_listener(built.host, built.port, built.strict_port).await?;
+        let (listener, port) = built.bind_listener().await?;
         println!("  {} dev server", oj_brand());
         println!("  root: {}", built.root.display());
-        if is_tanstack_solid_start_app(&built.root) {
-            println!(
-                "  solid-start detected: oj serves transformed modules + HMR glue only; \
-                 the Start SSR HTML shell is not yet supported (see SOLID.md)"
-            );
-        }
-        let url = format!("http://localhost:{}/", port);
+        // Fork: solid-start detection note removed (stale since the fork's SSR
+        // completion); StartFramework dispatch lives in crates/oj.
+        let url = format!(
+            "{}://localhost:{}/",
+            tls::url_scheme(built.https.as_ref()),
+            port
+        );
         println!("  {}", link(&url, &cell(&url)));
         if !built.proxy_prefixes.is_empty() {
             println!("  proxy: {}", built.proxy_prefixes.join(", "));
@@ -1425,17 +1936,19 @@ impl DevServer {
         if built.open {
             open_browser(&url);
         }
-        axum::serve(listener, built.router).await?;
+        let router = otel::traced(
+            built.router.clone(),
+            tls::url_scheme(built.https.as_ref()),
+            built.base.as_deref(),
+        );
+        built.serve(listener, router).await?;
         Ok(())
     }
 
-    /// On-disk module cache: experimental, off by default (--enable-cache /
-    /// OJ_ENABLE_CACHE=1); --no-cache / OJ_NO_CACHE=1 forces it off.
+    /// On-disk module cache: experimental, off by default (--enable-cache);
+    /// --no-cache forces it off.
     fn persistent_cache_enabled(&self) -> bool {
-        let knobs = &oj_env::get().knobs;
-        let enabled = self.enable_cache || knobs.enable_cache;
-        let forced_off = self.no_cache || knobs.no_cache;
-        enabled && !forced_off
+        self.enable_cache && !self.no_cache
     }
 
     fn dev_mode(&self) -> String {
@@ -1446,6 +1959,16 @@ impl DevServer {
     }
 
     pub async fn build_app(self) -> anyhow::Result<BuiltApp> {
+        self.build_app_with(|_| {}).await
+    }
+
+    /// [`DevServer::build_app`], handing `on_plugin_host` the plugin host the
+    /// moment it is up (`None` when the app runs none), before the rest of the
+    /// build: other environments open their containers on it meanwhile.
+    pub async fn build_app_with(
+        self,
+        on_plugin_host: impl FnOnce(Option<Arc<PluginHost>>) + Send,
+    ) -> anyhow::Result<BuiltApp> {
         let root = self
             .root
             .canonicalize()
@@ -1462,12 +1985,59 @@ impl DevServer {
         });
 
         boot_phase("build_app begin");
-        prepare_cache_root(&root);
-        // Before any engine can spawn: reap children a SIGKILLed predecessor
-        // (OOM kill, supervisor escalation) left behind, then start our file.
-        child_groups::init_registry(&oj_cache::cache_root(&root).join("children"));
+        prepare_engines(&root);
         let dev_mode = self.dev_mode();
-        let config = load_dev_config(&root, config_file.as_deref(), &dev_mode)?;
+        plugins::set_cli_inline(&root, cli_inline(self.port, self.host.as_deref()));
+        let early = take_early_host(&root);
+        let engine_registry = early
+            .as_ref()
+            .map(|e| e.registry.clone())
+            .unwrap_or_default();
+        let plugin_file = plugin_file(&root, config_file.as_deref());
+        // The plugin host's engine boots and imports vite while the config is
+        // extracted, instead of after: neither needs the other until the host's
+        // payload, which the extracted values build.
+        // Not when the last extraction found no plugin to host (the boot
+        // then drops the host below, once the config confirms it).
+        let prewarm = match early {
+            Some(early) => early.prewarm,
+            None => host_prewarm(&root, config_file.as_deref(), &dev_mode, &engine_registry),
+        };
+        let config = load_dev_config(&root, config_file.as_deref(), &dev_mode);
+        plugins::withdraw_host_engine(&root);
+        let config = config?;
+        let has_proxy = config
+            .server
+            .as_ref()
+            .and_then(|s| s.proxy.as_ref())
+            .is_some_and(|p| !p.is_empty());
+        // A function `build.assetsInlineLimit` (top-level or an environment's)
+        // lives in the plugin host, which dev asks per file, so the host
+        // stays even with no plugin to run.
+        let build_cfg = config.build.as_ref();
+        let inline_limit_fn = build_cfg
+            .and_then(|b| b.assets_inline_limit_fn)
+            .unwrap_or(false)
+            || build_cfg
+                .and_then(|b| b.assets_inline_limit_envs.as_ref())
+                .and_then(|e| e.as_object())
+                .is_some_and(|e| e.values().any(|v| v == "fn"));
+        // Every plugin the config declares is one oj does natively (its
+        // React plugin, say): no host, and the prewarmed engine goes.
+        let (plugin_file, prewarm) = match plugin_file {
+            Some(f)
+                if f.format == PluginsFormat::Vite
+                    && config.vite_active_plugins == Some(0)
+                    && !has_proxy
+                    && !inline_limit_fn =>
+            {
+                println!("  plugins: {} (none active; served natively)", f.label);
+                (None, None)
+            }
+            other => (other, prewarm),
+        };
+        let plugin_file =
+            plugin_file.or_else(|| has_proxy.then(|| empty_plugin_file(&root)).flatten());
 
         let env_dir = config
             .env_dir
@@ -1484,17 +2054,8 @@ impl DevServer {
             ),
             config: &config,
         };
-        let mut defines = client_defines.build(&[]);
+        let defines = client_defines.build(&[]);
 
-        // BEFORE any engine boots: plugin-hook children register here (own process
-        // group each) so restarts and shutdown can kill whole plugin-spawned trees.
-        deno_process::oj_hook::set(child_groups::register, child_groups::unregister);
-        // The engine's own signal path (deno_signals) exits the process itself on an
-        // unhandled SIGHUP/SIGTERM/SIGINT, beating the tokio shutdown task; sweep there
-        // too or a supervisor restart strands every plugin child (workerd) on pid 1.
-        deno_process::oj_hook::set_shutdown_sweep(|| {
-            child_groups::kill_all();
-        });
         let server_cfg = config.server.clone().unwrap_or_default();
         let port = self.port.or(server_cfg.port).unwrap_or(5199);
         let strict_port = oj_config::server_strict_port(&config);
@@ -1514,43 +2075,130 @@ impl DevServer {
         // TanStack Start owns its module graph and SSR; oj runs the plugin host only
         // for configureServer middleware, in start mode so lifecycle hooks are tolerated.
         let is_start = is_tanstack_start_app(&root);
-        let plugin_file = plugin_file(&root, config_file.as_deref());
-        let payloads = plugin_host_payloads(
+        let payload = plugin_host_payload(
             &root,
             &config,
             &server_cfg,
             &dev_mode,
             port,
+            &cli_inline(self.port, self.host.as_deref()),
             plugin_file.as_ref().map_or(PluginsFormat::Oj, |f| f.format),
             is_start,
         );
         // Optimizer quarantine: a cold deps cache would run Vite's dep optimizer (rolldown,
         // process-scoped native retention) inside oj; pre-seed in a one-shot child so the
-        // host finds the caches warm and never builds in-process (see preseed.rs).
-        if plugin_file
+        // host finds the caches warm and never builds in-process (see preseed.rs). The
+        // host starts alongside it: only building its environments waits for the seed.
+        let boot_preseed = (plugin_file
             .as_ref()
             .is_some_and(|f| f.format == PluginsFormat::Vite)
-            && oj_config::ssr_runner_backed(&config)
-        {
-            preseed::preseed_server_deps(&root, HOST_ENV_MODE).await;
-        }
+            && oj_config::ssr_runner_backed(&config))
+        .then(|| preseed::spawn_boot_preseed(&root, &dev_mode));
+        // Before the host: a runner environment's boot-time imports (the
+        // Cloudflare plugin's, from configureServer) compile StyleX through it.
+        let stylex = stylex::plugin_for(&root, &config, "serve").map_err(|e| anyhow::anyhow!(e))?;
         boot_phase("plugin host spawning");
-        let engine_registry = oj_js::EngineRegistry::new();
+        // A realm the config already ran in without a run to take over is
+        // no host's: a fresh engine then.
+        let prewarm = prewarm.filter(|_| plugins::host_engine_reusable(&root, "serve", &dev_mode));
         let plugin_host = match &plugin_file {
             Some(file) => {
-                let keep_for_proxy = server_cfg.proxy.as_ref().is_some_and(|p| !p.is_empty());
                 spawn_plugin_host(
                     &root,
                     file,
-                    &payloads.client,
+                    &payload,
                     &engine_registry,
-                    keep_for_proxy,
+                    prewarm,
+                    has_proxy || inline_limit_fn,
+                    is_start,
+                    boot_preseed,
                 )
                 .await?
             }
             None => None,
         };
         boot_phase("plugin host ready");
+        // Vite runs the configResolved hooks on the resolved config it then
+        // serves from (resolveConfig), so their edits reach everything below.
+        // A run the host took over read the values before them: read again.
+        let reread = match &plugin_host {
+            Some(host) => match host.resolved_values().await {
+                Some(values) => plugins::store_resolved_values(&root, &values),
+                // A host of its own resolve: what a kept run stored goes.
+                None => {
+                    plugins::forget_kept_run(&root);
+                    false
+                }
+            },
+            None => false,
+        };
+        let config = if reread {
+            match load_dev_config(&root, config_file.as_deref(), &dev_mode) {
+                Ok(config) => config,
+                Err(e) => {
+                    if let Some(host) = &plugin_host {
+                        host.shutdown();
+                    }
+                    return Err(e);
+                }
+            }
+        } else {
+            config
+        };
+        let build_cfg = config.build.as_ref();
+        let inline_limit_fn = build_cfg
+            .and_then(|b| b.assets_inline_limit_fn)
+            .unwrap_or(false)
+            || build_cfg
+                .and_then(|b| b.assets_inline_limit_envs.as_ref())
+                .and_then(|e| e.as_object())
+                .is_some_and(|e| e.values().any(|v| v == "fn"));
+        let env_dir = config
+            .env_dir
+            .as_deref()
+            .map(|d| root.join(d))
+            .unwrap_or_else(|| root.clone());
+        let client_defines = ClientDefines {
+            app: oj_env::AppEnv::resolve(
+                oj_env::get(),
+                &env_dir,
+                &dev_mode,
+                oj_config::env_prefixes(&config),
+                "development",
+            ),
+            config: &config,
+        };
+        let mut defines = if reread {
+            client_defines.build(&[])
+        } else {
+            defines
+        };
+        let server_cfg = config.server.clone().unwrap_or_default();
+        let (port, strict_port, host, proxy, proxy_regex) = if reread {
+            let proxy: Vec<(String, oj_config::ProxyEntry)> = server_cfg
+                .proxy
+                .clone()
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+            let proxy_regex: Vec<Option<regex::Regex>> = proxy
+                .iter()
+                .map(|(ctx, _)| proxy_context_regex(ctx))
+                .collect();
+            // These values were resolved under the command line's (Vite's
+            // inline config): a hook that set the port or host afterwards
+            // wins, as in Vite.
+            (
+                server_cfg.port.or(self.port).unwrap_or(5199),
+                oj_config::server_strict_port(&config),
+                resolve_host(server_cfg.host.as_deref().or(self.host.as_deref())),
+                proxy,
+                proxy_regex,
+            )
+        } else {
+            (port, strict_port, host, proxy, proxy_regex)
+        };
+        on_plugin_host(plugin_host.clone());
         let plugin_names = match &plugin_host {
             Some(host) => host.plugin_names().await,
             None => Vec::new(),
@@ -1581,8 +2229,18 @@ impl DevServer {
             defines,
             dedup_defines_last_wins(oj_config::environment_defines(&config, "ssr")),
         ));
+        let client_resolver = Arc::new(client_resolver(&root, &config));
+        let ssr_resolver = Arc::new(ssr_resolver(&root, &config));
         if let Some(host) = &plugin_host {
             host.set_import_meta_env(Arc::clone(&import_meta_env));
+            // Before buildStart, whose `this.resolve` already answers per environment.
+            host.set_resolvers(plugins::EnvResolvers {
+                root: root.clone(),
+                config: Arc::new(config.clone()),
+                client: Arc::clone(&client_resolver),
+                production: client_defines.app.node_env() == "production",
+                optimized_dep: Default::default(),
+            });
             // Vite awaits the client buildStart while initing the server, after
             // config resolution, so the defines are final for any `this.load`.
             // A rejection fails startup rather than serving. A host kept only
@@ -1595,6 +2253,31 @@ impl DevServer {
             }
             caps = PluginCaps::probe(host).await;
         }
+        // What a restart of this server boots from, checked before it replaces it.
+        let restarter = Arc::new(watch::Restarter::new(
+            root.clone(),
+            config_file.clone(),
+            dev_mode.clone(),
+            is_start,
+        ));
+        // The ssr container the host's init opened, its
+        // `environments.ssr.define` (and config()-hook deltas) layered over
+        // the shared define for SSR compiles.
+        let plugins_ssr = plugin_host
+            .as_ref()
+            .and_then(|host| host.environment("ssr"));
+        if let Some(ssr) = &plugins_ssr {
+            ssr.build_hook_plan().await;
+            let ssr_defines = ssr.config_defines().await;
+            if !ssr_defines.is_empty() {
+                import_meta_env.merge_ssr(ssr_defines);
+            }
+            boot_phase("ssr environment open");
+        }
+        let ssr_pre_resolve_id_res = match &plugins_ssr {
+            Some(ssr) => pre_resolve_filters(ssr, ssr.has_resolve_id().await).await,
+            None => Some(Vec::new()),
+        };
 
         let jsx = jsx_config_of(&config);
         let jsx_overrides = match &plugin_host {
@@ -1630,8 +2313,8 @@ impl DevServer {
         let (crawl_tx, crawl_rx) = tokio::sync::watch::channel(false);
         let (write_tx, write_rx) = tokio::sync::mpsc::channel::<(String, Arc<CachedModule>)>(65536);
         let (watch_tx, watch_rx) = std::sync::mpsc::channel::<WatchMsg>();
+        let (watch_ready_tx, watch_ready) = tokio::sync::watch::channel(false);
         let public_dir = oj_config::public_dir(&config, &root);
-        let client_resolver = Arc::new(client_resolver(&root, &config));
         let css_resolve = oj_css::CssResolveConfig {
             root: root.clone(),
             public_dir: public_dir.clone().unwrap_or_default(),
@@ -1640,11 +2323,44 @@ impl DevServer {
             // are resolved once from it); dev output is never minified.
             targets: oj_config::build_css_targets(&config),
             minify: false,
+            production: false,
             modules: css_modules_options(&config),
+            lightning: css_lightning_options(&config),
         };
+        if let Some(plugin) = &stylex {
+            stylex::notify_clients(plugin, reload_tx.clone());
+        }
+        let mut asset_urls = assets_serve::DevAssetUrls::new(
+            config.server.as_ref().and_then(|s| s.origin.as_deref()),
+            config.base.as_deref(),
+            config.build.as_ref().and_then(|b| b.assets_inline_limit),
+        )
+        .with_environments(
+            config
+                .build
+                .as_ref()
+                .and_then(|b| b.assets_inline_limit_envs.as_ref()),
+            config
+                .build
+                .as_ref()
+                .and_then(|b| b.assets_inline_limit_fn)
+                .unwrap_or(false),
+        );
+        if let Some(host) = plugin_host.clone().filter(|_| inline_limit_fn) {
+            asset_urls.decider = Some(assets_serve::InlineDecider(Arc::new(move |env, file| {
+                let host = Arc::clone(&host);
+                let (env, file) = (env.to_string(), file.to_path_buf());
+                // Waits as long as the host takes, as Vite's call never fails.
+                let answer =
+                    block_on_host(async move { host.assets_inline_limit(&env, &file).await })?;
+                Ok(match answer {
+                    Ok(inline) => assets_serve::InlineRule::Decide(inline),
+                    Err(limit) => assets_serve::InlineRule::Limit(limit),
+                })
+            })));
+        }
         let state = Arc::new(ServerState {
             persistent_cache,
-            config_file: config_file.clone(),
             engine_registry: engine_registry.clone(),
             root: root.clone(),
             public_dir,
@@ -1652,12 +2368,16 @@ impl DevServer {
             graph: Mutex::new(ModuleGraph::new()),
             require_resolver: Arc::new(client_resolver.require_variant()),
             resolver: client_resolver,
-            ssr_resolver: Arc::new(ssr_resolver(&root, &config)),
+            ssr_resolver,
+            ssr_external_resolver: Arc::new(ssr_external_resolver(&root, &config)),
+            ssr_aliases: oj_config::resolve_alias(&config, "ssr"),
             cache: PersistentCache::new(oj_cache::cache_root(&root), env!("CARGO_PKG_VERSION"))
                 .with_salt_extra(&installed.digest)
                 // A cached compile embeds the JSX runtime import; a changed
                 // importSource/runtime must not serve the old module.
-                .with_salt_extra(&format!("jsx={jsx:?}")),
+                .with_salt_extra(&format!("jsx={jsx:?}"))
+                // A cached module embeds its asset URLs (origin, base, inlined svgs).
+                .with_salt_extra(&format!("asset-urls={asset_urls:?}")),
             memory: Mutex::new(MemoryCache::new(memory_cache_budget())),
             mtime_keys: Mutex::new(HashMap::new()),
             compile_locks: Mutex::new(HashMap::new()),
@@ -1666,13 +2386,29 @@ impl DevServer {
             preprocess: tokio::sync::OnceCell::new(),
             svelte: tokio::sync::OnceCell::new(),
             tailwind_urls: Mutex::new(std::collections::HashSet::new()),
+            css_post: Mutex::new(HashMap::new()),
+            tailwind_sheets: Default::default(),
             has_postcss: has_postcss_config(&root),
             scss_additional_data: oj_config::css_additional_data(&config, "scss"),
             sass_additional_data: oj_config::css_additional_data(&config, "sass"),
             css_config: config.css.clone(),
+            asset_urls: asset_urls.clone(),
+            vite_env_js: assets_serve::vite_env_module(&config),
+            ssr_builtins: ssr::Builtin::ssr_list(&config),
+            alias_finds: oj_config::top_level_alias(&config)
+                .into_iter()
+                .map(|(find, _)| find)
+                .collect(),
+            aliases: oj_config::top_level_alias(&config),
+            ssr_externals: oj_config::SsrExternals {
+                target: None,
+                ..oj_config::ssr_externals(&config)
+            },
+            glob_alias: Arc::from(css_resolve.alias.clone()),
             css_resolve,
             csp_nonce: oj_config::html_csp_nonce(&config),
             fs_allow: Arc::new(Mutex::new(fs_allow_list(&root, &server_cfg))),
+            ssr_imports: Mutex::default(),
             fs_strict,
             fs_deny: compile_fs_deny(&oj_config::server_fs_deny(&config)),
             dir_cache: Arc::new(Mutex::new(DirCache::new())),
@@ -1680,7 +2416,7 @@ impl DevServer {
             preload_snapshot: load_graph_snapshot(&root),
             proxy,
             proxy_regex,
-            http: reqwest::Client::new(),
+            http: plugin_mw::browser_hop_client(false),
             http_insecure: std::sync::OnceLock::new(),
             proxy_tls: [std::sync::OnceLock::new(), std::sync::OnceLock::new()],
             virtual_ids: Arc::new(
@@ -1695,6 +2431,8 @@ impl DevServer {
             virtual_modules: config.virtual_modules.clone().unwrap_or_default(),
             jsx_overrides,
             jsx,
+            stylex,
+            stylex_css: Mutex::new(None),
             import_meta_env,
             host_policy: HostPolicy::from_config(&server_cfg, self.host.as_deref()),
             hmr_gate,
@@ -1704,26 +2442,37 @@ impl DevServer {
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0),
             hmr_enabled: hmr.enabled,
+            restart_files: restart_files(&root, &env_dir, &dev_mode, config_file.as_deref()),
+            restarter: Arc::clone(&restarter),
             plugins: plugin_host.clone(),
             plugin_serve: Arc::clone(&plugin_serve),
-            plugins_ssr: tokio::sync::OnceCell::new(),
-            ssr_watch: Arc::new(SsrWatchQueue::default()),
-            ssr_plugin_config: payloads.ssr,
+            plugins_ssr,
             plugin_watched: Arc::new(Mutex::new(std::collections::HashSet::new())),
-            watch_tx,
+            ssr_modules: Mutex::default(),
+            watch_tx: watch_tx.clone(),
             watch_feed: WatchFeed::default(),
+            typecheck: if self.typecheck {
+                typecheck::Typecheck::start(&root)
+            } else {
+                None
+            },
             plugins_use_module_parsed: caps.use_module_parsed,
             plugins_have_transform: caps.have_transform,
             plugins_have_load: caps.have_load,
+            plugins_have_resolve_id: caps.have_resolve_id,
+            pre_resolve_id_res: caps.pre_resolve_id_res,
+            ssr_pre_resolve_id_res,
+            resolver_answers: Mutex::default(),
             dep_transform_res: caps.dep_transform_res,
             dep_load_res: caps.dep_load_res,
             resolve_id_res: caps.resolve_id_res,
-            plugins_watch_change: caps.watch_change,
-            plugins_hot_update: caps.hot_update,
+            plugins_have_transform_index_html: caps.have_transform_index_html,
+            html_proxy: Default::default(),
+            env_prefixes: oj_config::env_prefixes(&config),
             html_env: installed.html_env,
             parsed_fired: Mutex::new(std::collections::HashSet::new()),
             rt: tokio::runtime::Handle::current(),
-            base: config.base.clone().filter(|b| b != "/"),
+            base: dev_base(config.base.as_deref()),
             buffered_frame: Mutex::new(None),
             resolve_failed: Mutex::new(std::collections::HashSet::new()),
             client_js_etag: format!(
@@ -1731,6 +2480,7 @@ impl DevServer {
                 &blake3::hash(hmr.client_js.as_bytes()).to_hex()[..16]
             ),
             client_js: Bytes::from(hmr.client_js),
+            oj_paths: OjPublicPaths::new(dev_base(config.base.as_deref()).as_deref()),
             glob_importers: Mutex::new(HashMap::new()),
             app_type,
             watch_ignored,
@@ -1743,6 +2493,7 @@ impl DevServer {
                 client_defines.app.node_env(),
                 plugin_host.clone(),
                 plugin_names,
+                &self.rolldown,
             )),
             optimize_view: {
                 let (_include, exclude, _entries) = oj_config::optimize_deps_lists(&config);
@@ -1752,12 +2503,47 @@ impl DevServer {
                 ))
             },
         });
-        spawn_state_tasks(&state, write_rx, watch_rx);
+        spawn_state_tasks(&state, write_rx, watch_rx, watch_ready_tx);
         // A dep re-optimization that changed previously served chunks (or
         // whose batch failed) commits a new map: drop every compiled module
         // (their rewrites carry the old URLs) and reload the page, Vite's
         // "optimized dependencies changed. reloading". A commit that left
         // served chunks byte-identical never reaches here.
+        state.optimized.set_crawl_end(state.crawl_done.clone());
+        if let Some(host) = &state.plugins {
+            let weak = Arc::downgrade(&state);
+            // vite:resolve's tryOptimizedResolve, then finalizeBareSpecifier.
+            host.set_optimized_dep(Box::new(move |source, dir, resolved| {
+                use plugins::OptimizedAnswer;
+                let Some(state) = weak.upgrade() else {
+                    return OptimizedAnswer::File;
+                };
+                if !is_bare_specifier(source) {
+                    return OptimizedAnswer::File;
+                }
+                if state.optimized.scan_pending() {
+                    return OptimizedAnswer::ScanPending;
+                }
+                if let Some(id) = optimized_dep_id(&state, source) {
+                    return OptimizedAnswer::Id(id);
+                }
+                // A missed dep is registered and answers with its future
+                // bundle; one that skips optimization is versioned.
+                if may_register_import(&state, dir, source) {
+                    if let Some(meta) = register_missing_import(&state, source, resolved) {
+                        return OptimizedAnswer::Id(dep_id_of(&state, &meta));
+                    }
+                } else if is_optimizable_dep_file(resolved) && !source.contains('?') {
+                    let version = state.optimized.browser_version();
+                    if !version.is_empty() {
+                        return OptimizedAnswer::Id(format!("{}?v={version}", resolved.display()));
+                    }
+                }
+                let answer = (source.to_string(), resolved.display().to_string());
+                state.resolver_answers.lock().unwrap().insert(answer);
+                OptimizedAnswer::File
+            }));
+        }
         {
             let weak = Arc::downgrade(&state);
             state.optimized.set_on_commit(Box::new(move |newly| {
@@ -1778,6 +2564,9 @@ impl DevServer {
                 );
             }));
         }
+        if let Some(typecheck) = &state.typecheck {
+            typecheck.follow(&state.watch_feed);
+        }
         spawn_warmup(&state, &config);
         if self.lazy {
             // Lazy mode (Vite's default): compile on demand. Mark the crawl "done" so
@@ -1795,8 +2584,9 @@ impl DevServer {
             state: Arc::clone(&state),
         };
         let watch_feed = state.watch_feed.clone();
+        let typecheck = state.typecheck.clone();
+        let base = state.base.clone();
         let router = build_router(state, &server_cfg, &hmr.ws_path);
-
         Ok(BuiltApp {
             router,
             host,
@@ -1804,14 +2594,20 @@ impl DevServer {
             strict_port,
             proxy_prefixes,
             plugin_serve,
+            restarter,
             root,
             started,
             reload_tx,
             plugin_host,
             open,
+            https: server_cfg.https.clone(),
+            base,
             hmr_gate,
             ssr,
             watch_feed,
+            watch_tx,
+            watch_ready,
+            typecheck,
         })
     }
 }
@@ -1889,19 +2685,9 @@ pub async fn close_plugins_on_shutdown(host: Arc<std::sync::OnceLock<Arc<PluginH
     };
     // A signal during boot finds no host yet: skip the hooks, still sweep.
     if let Some(host) = host.get() {
-        if tokio::time::timeout(Duration::from_secs(5), async {
-            if let Err(e) = host.close_dev_server().await {
-                eprintln!("oj: dev server close on shutdown failed: {e}");
-            }
-            if let Err(e) = host.build_end(None).await {
-                eprintln!("oj: plugin buildEnd on close failed: {e}");
-            }
-            if let Err(e) = host.close_bundle().await {
-                eprintln!("oj: plugin closeBundle on close failed: {e}");
-            }
-        })
-        .await
-        .is_err()
+        if tokio::time::timeout(Duration::from_secs(5), close_plugins(host))
+            .await
+            .is_err()
         {
             eprintln!("oj: plugin close on shutdown timed out after 5s; killing plugin children");
         }
@@ -1909,7 +2695,32 @@ pub async fn close_plugins_on_shutdown(host: Arc<std::sync::OnceLock<Arc<PluginH
     // Own-group children no longer sit in the terminal's foreground group, so
     // the signal that ends oj never reaches them; forward it.
     child_groups::kill_all();
+    otel::shutdown();
     std::process::exit(code);
+}
+
+/// Vite's server.close() for the plugins: the dev server's close, then
+/// buildEnd and closeBundle. Failures are reported, never fatal.
+pub async fn close_plugins(host: &PluginHost) {
+    if let Err(e) = host.close_dev_server().await {
+        eprintln!("oj: dev server close on shutdown failed: {e}");
+    }
+    // Vite closes every environment's container at once (allSettled):
+    // buildEnd by buildStart's rule (the ssr one only for the plugins that
+    // start per environment), then closeBundle for all, handed buildEnd's error.
+    let ssr = host.environment("ssr");
+    tokio::join!(
+        close_environment("client", Some(host)),
+        close_environment("ssr", ssr.as_deref())
+    );
+}
+
+async fn close_environment(env: &str, container: Option<&PluginHost>) {
+    if let Some(container) = container {
+        if let Err(e) = container.close_environment().await {
+            eprintln!("oj: plugin close ({env}) failed: {e}");
+        }
+    }
 }
 
 pub fn resolve_host(host: Option<&str>) -> std::net::IpAddr {
@@ -1929,8 +2740,17 @@ async fn serve_oj_routes(State(state): State<Arc<ServerState>>) -> Response {
     let compile_opts = dev_compile_opts(&state);
     let compiled = tokio::task::spawn_blocking(move || {
         let dir = root.clone();
-        let mut rewrite =
-            |s: &str| rewrite_specifier(&root, &dir, &resolver, &fs_allow, &dir_cache, s, true);
+        let mut rewrite = |s: &str| {
+            rewrite_specifier(
+                &root,
+                crate::rewrite::Importer::dir(&dir),
+                &resolver,
+                &fs_allow,
+                &dir_cache,
+                s,
+                true,
+            )
+        };
         oj_compiler::compile_module(&synthetic, OJ_ROUTES_JS, &compile_opts, Some(&mut rewrite))
             .map(|o| o.code_with_inline_map())
             .map_err(|e| format!("{e}"))
@@ -1962,6 +2782,15 @@ fn dev_compile_opts(state: &ServerState) -> oj_compiler::CompileOptions {
     let mut opts = oj_compiler::CompileOptions::dev();
     opts.jsx = state.jsx.clone();
     opts.env = Some(Arc::clone(&state.import_meta_env));
+    opts.root = Some(state.root.clone());
+    opts.alias = Arc::clone(&state.glob_alias);
+    // With `resolve.tsconfigPaths`, Vite's resolve plugin maps a glob through
+    // the importer's tsconfig `paths` after the aliases.
+    let resolver = Arc::clone(&state.resolver);
+    opts.glob_paths = Some(oj_compiler::GlobPaths(Arc::new(
+        move |importer, pattern| resolver.glob_mapped(importer, pattern),
+    )));
+    opts.stylex = state.stylex.clone();
     opts
 }
 

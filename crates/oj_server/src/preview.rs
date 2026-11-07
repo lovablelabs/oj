@@ -18,6 +18,8 @@ pub struct PreviewOptions {
     pub spa_fallback: bool,
     /// `build.assetsDir`: hashed files under it are immutable.
     pub assets_dir: String,
+    /// `preview.https ?? server.https`: TLS with ALPN h2 + http/1.1.
+    pub https: Option<oj_config::HttpsConfig>,
 }
 
 /// The static preview server's per-request state.
@@ -40,7 +42,9 @@ pub(crate) async fn preview_host_check(
     next.run(req).await
 }
 
-pub async fn preview(opts: PreviewOptions) -> anyhow::Result<()> {
+/// The router `oj preview` serves (Vite's preview middleware stack over the
+/// build dir), with the canonical dir; binding is the caller's.
+pub fn preview_router(opts: &PreviewOptions) -> anyhow::Result<(Router, PathBuf)> {
     let dir = opts.dir.canonicalize().with_context(|| {
         format!(
             "build dir not found: {} (run `oj build` first)",
@@ -87,6 +91,11 @@ pub async fn preview(opts: PreviewOptions) -> anyhow::Result<()> {
             preview_host_check,
         ));
     }
+    Ok((app, dir))
+}
+
+pub async fn preview(opts: PreviewOptions) -> anyhow::Result<()> {
+    let (app, dir) = preview_router(&opts)?;
     let (listener, port) = bind_dev_listener(
         resolve_host(opts.host.as_deref()),
         opts.port,
@@ -95,7 +104,11 @@ pub async fn preview(opts: PreviewOptions) -> anyhow::Result<()> {
     .await?;
     println!("  {} preview", oj_brand());
     println!("  serving: {}", dir.display());
-    let url = format!("http://localhost:{port}{}", opts.base);
+    let url = format!(
+        "{}://localhost:{port}{}",
+        tls::url_scheme(opts.https.as_ref()),
+        opts.base
+    );
     println!("  {}", link(&url, &cell(&url)));
     if let Some(path) = &opts.open {
         let target = if path.starts_with("http://") || path.starts_with("https://") {
@@ -113,7 +126,7 @@ pub async fn preview(opts: PreviewOptions) -> anyhow::Result<()> {
         };
         open_browser(&target);
     }
-    axum::serve(listener, app).await?;
+    tls::serve_router(listener, app, opts.https.as_ref()).await?;
     Ok(())
 }
 

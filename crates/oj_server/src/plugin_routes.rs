@@ -3,6 +3,10 @@ use super::*;
 // Rollup contract: a resolveId path IS the module, an empty `load` means read
 // from disk. Redirect to the normal dep URL so fs.allow/bundling/rewriting apply.
 pub(crate) fn serve_resolved_from_disk(state: &Arc<ServerState>, id: &str) -> Option<Response> {
+    // A pre-bundle id from `this.resolve`, at the URL importers name it by now.
+    if let Some(url) = optimized_url_of(state, id) {
+        return Some(Redirect::temporary(&url).into_response());
+    }
     let resolved = Path::new(id);
     if !resolved.is_absolute() || !resolved.is_file() {
         return None;
@@ -28,6 +32,7 @@ fn js_response(body: String) -> Response {
 }
 
 /// Loads a resolved plugin id, falling back to the file on disk.
+#[allow(clippy::result_large_err, reason = "the Err is the handler's response")]
 async fn load_plugin_id(state: &Arc<ServerState>, id: &str) -> Result<String, Response> {
     let Some(host) = &state.plugins else {
         return Err((StatusCode::NOT_FOUND, "oj: no plugin host").into_response());
@@ -54,15 +59,53 @@ async fn compile_plugin_source(
     let resolver = Arc::clone(&state.resolver);
     let fs_allow = Arc::clone(&state.fs_allow);
     let dir_cache = Arc::clone(&state.dir_cache);
-    let compile_opts = dev_compile_opts(state);
-    tokio::task::spawn_blocking(move || {
+    let mut compile_opts = dev_compile_opts(state);
+    // StyleX compiles the loaded source under its id (its hashes derive from
+    // it, and its rules are recorded there), not under the synthetic path the
+    // compile below uses.
+    compile_opts.stylex = None;
+    let stylex_id = importer.trim_start_matches('\0').to_string();
+    let st = Arc::clone(state);
+    // Its bare imports reach the `pre` resolveId hooks as app source's do.
+    let dep_map = state.optimized.ready().await;
+    let claimed = pre_resolve_bare(state, Path::new(&importer), &source, &dep_map).await;
+    let claim_state = Arc::clone(state);
+    let compiled = tokio::task::spawn_blocking(move || {
+        let (source, stylex_rules) = match crate::stylex::pre_transform(&st, &stylex_id, &source)? {
+            Some(pre) => (pre.code, Some((stylex_id, pre.rules))),
+            None => (source, None),
+        };
         let mut rewrite = |spec: &str| {
+            // A claim wins over the pre-bundle, as in app modules; a bundle or an
+            // answer oj's resolver gave maps onto its pre-bundle URL.
+            if let Some(answer) = claimed.get(spec) {
+                if answer.external {
+                    return Some(answer.id.clone());
+                }
+                let optimized = &claim_state.optimized;
+                let meta = optimized_file(&claim_state, &answer.id)
+                    .and_then(|file| optimized.entry_by_file(file))
+                    .or_else(|| answer.resolver.then(|| optimized.meta_now(spec)).flatten());
+                return Some(match meta {
+                    Some(meta) if !meta.needs_interop => meta.url,
+                    _ => pre_resolved_url(&claim_state, &answer.id),
+                });
+            }
+            if let Some(url) = optimized_url_of(&claim_state, spec) {
+                return Some(url);
+            }
             if let Some(url) = pre(spec) {
                 return Some(url);
             }
-            if let Some(url) =
-                rewrite_specifier(&root, &root, &resolver, &fs_allow, &dir_cache, spec, true)
-            {
+            if let Some(url) = rewrite_specifier(
+                &root,
+                crate::rewrite::Importer::dir(&root),
+                &resolver,
+                &fs_allow,
+                &dir_cache,
+                spec,
+                true,
+            ) {
                 return Some(url);
             }
             is_bare_specifier(spec).then(|| {
@@ -80,11 +123,16 @@ async fn compile_plugin_source(
             &compile_opts,
             Some(&mut rewrite),
         )
-        .map(|o| o.code_with_inline_map())
+        .map(|o| (o.code_with_inline_map(), stylex_rules))
         .map_err(|e| format!("{e}"))
     })
     .await
-    .unwrap_or_else(|e| Err(format!("compile task failed: {e}")))
+    .unwrap_or_else(|e| Err(format!("compile task failed: {e}")))?;
+    let (code, stylex_rules) = compiled;
+    if let Some((id, rules)) = stylex_rules {
+        crate::stylex::record_id(state, &id, &rules);
+    }
+    Ok(code)
 }
 
 fn compiled_response(compiled: Result<String, String>) -> Response {
@@ -251,12 +299,13 @@ pub(crate) async fn serve_plugin_load_fallback(
     if is_css {
         let url = id_path.to_string();
         let body = format!(
-            "import {{ createHotContext as __oj_hot, updateStyle as __oj_updateStyle }} from \"/@oj/client.js\";\n\
+            "import {{ createHotContext as __oj_hot, updateStyle as __oj_updateStyle }} from {client:?};\n\
              import.meta.hot = __oj_hot({url:?});\n\
              __oj_updateStyle({url:?}, {css});\n\
              export default void 0;\n\
              import.meta.hot.accept(() => {{}});\n",
             css = serde_json::Value::String(source),
+            client = state.oj_paths.client,
         );
         return Some(js_response(body));
     }

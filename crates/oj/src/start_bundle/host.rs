@@ -1,0 +1,1100 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Raphael Amorim
+
+//! The app's Vite plugins inside a Start bundle: one plugin host per Vite
+//! environment (client, ssr, or the Cloudflare Worker's), driven from
+//! rolldown the way Vite's plugin container is driven from its bundler.
+//!
+//! resolveId keeps Vite's order around its core resolver: the hooks that run
+//! before it (`enforce: "pre"`, `order: "pre"`) see every specifier first,
+//! rolldown's own resolution comes next, and the remaining hooks see only
+//! what it left, each answer kept whole (`external` included). A plugin's
+//! `this.resolve` that no plugin answers ends in this bundle's resolution
+//! (the host's `bundlerResolve` reverse RPC), as it ends in Rollup's.
+
+use std::borrow::Cow;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+use oj_server::plugins::{HostTransform, PluginHost, ResolvedId};
+use rolldown_common::{ModuleType, ResolvedExternal};
+use rolldown_plugin::{
+    HookLoadArgs, HookLoadOutput, HookLoadReturn, HookRenderChunkArgs, HookRenderChunkOutput,
+    HookRenderChunkReturn, HookResolveIdArgs, HookResolveIdOutput, HookResolveIdReturn,
+    HookTransformArgs, HookTransformOutput, HookTransformReturn, Plugin, PluginContext,
+    PluginContextResolveOptions, SharedLoadPluginContext, SharedTransformPluginContext,
+};
+
+use super::facts::Facts;
+use super::Command;
+use crate::build::bundle_graph::{graph_fields, module_code_as_js, RolldownGraph};
+use crate::build::EmitState;
+
+/// The rolldown context a host's `this.resolve` fallback resolves through:
+/// the bundle the host currently serves (set at its buildStart).
+#[derive(Clone, Default)]
+pub(crate) struct BundlerCtx {
+    ctx: Arc<Mutex<Option<PluginContext>>>,
+    /// Where a buildApp hook's `buildEnvironments` requests go while
+    /// `oj build` runs the hooks.
+    builds: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedSender<oj_server::plugins::HostRpc>>>>,
+}
+
+impl BundlerCtx {
+    fn set(&self, ctx: &PluginContext) {
+        *self
+            .ctx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ctx.clone());
+    }
+
+    fn get(&self) -> Option<PluginContext> {
+        self.ctx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The `buildEnvironments` requests from here on; the caller answers
+    /// each with `rpc_reply`.
+    pub fn build_requests(
+        &self,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<oj_server::plugins::HostRpc> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        *self
+            .builds
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tx);
+        rx
+    }
+
+    fn build_sender(
+        &self,
+    ) -> Option<tokio::sync::mpsc::UnboundedSender<oj_server::plugins::HostRpc>> {
+        self.builds
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+/// Answers `host`'s reverse RPCs for as long as it lives: `bundlerResolve`
+/// through the bundle in `ctx` (`{ fallback: true }` while no bundle runs,
+/// so oj's resolver answers instead).
+pub(crate) fn serve_bundler_resolve(host: &Arc<PluginHost>) -> BundlerCtx {
+    let ctx = BundlerCtx::default();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<oj_server::plugins::HostRpc>();
+    host.set_rpc_request_sender(tx);
+    let weak = Arc::downgrade(host);
+    let slot = ctx.clone();
+    tokio::spawn(async move {
+        while let Some(rpc) = rx.recv().await {
+            let Some(host) = weak.upgrade() else {
+                return;
+            };
+            if rpc.method == "buildEnvironments" {
+                match slot.build_sender() {
+                    Some(tx) => {
+                        let _ = tx.send(rpc);
+                    }
+                    None => host.rpc_reply(rpc.id, Err("no build is running".into())),
+                }
+                continue;
+            }
+            let slot = slot.clone();
+            tokio::spawn(async move {
+                let result = answer(&rpc, slot.get()).await;
+                host.rpc_reply(rpc.id, result);
+            });
+        }
+    });
+    ctx
+}
+
+async fn answer(
+    rpc: &oj_server::plugins::HostRpc,
+    ctx: Option<PluginContext>,
+) -> Result<serde_json::Value, String> {
+    if rpc.method != "bundlerResolve" {
+        return Err(format!("unknown host rpc: {}", rpc.method));
+    }
+    let Some(ctx) = ctx else {
+        return Ok(serde_json::json!({ "fallback": true }));
+    };
+    let arg = |i: usize| rpc.args.get(i).and_then(|v| v.as_str()).unwrap_or("");
+    let (source, importer) = (arg(0), arg(1));
+    let is_entry = rpc.args.get(2).and_then(|v| v.as_bool()).unwrap_or(false);
+    let resolved = ctx
+        .resolve(
+            source,
+            (!importer.is_empty()).then_some(importer),
+            Some(PluginContextResolveOptions {
+                is_entry,
+                skip_self: true,
+                ..Default::default()
+            }),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(match resolved {
+        Ok(r) => serde_json::json!({
+            "id": r.id.as_str(),
+            "external": !matches!(r.external, ResolvedExternal::Bool(false)),
+        }),
+        Err(_) => serde_json::Value::Null,
+    })
+}
+
+/// A stylesheet id oj's asset plugin compiles (an import or `?inline`), the
+/// ids Vite's vite:css takes; `?raw`, `?url` and workers load as JS.
+fn is_compiled_stylesheet(id: &str) -> bool {
+    // A plugin-served sheet's `\0` id names a stylesheet as well.
+    let id = id.trim_start_matches('\0');
+    let path = id.split('?').next().unwrap_or(id);
+    match super::assets::asset_tag(id, false) {
+        Some(super::assets::AssetTag::Css) => true,
+        Some(super::assets::AssetTag::Inline) => super::assets::is_style_path(path),
+        _ => false,
+    }
+}
+
+/// A stylesheet id with no file behind it, which only a plugin can serve.
+pub(crate) fn is_served_stylesheet(id: &str) -> bool {
+    let clean = id.split(['?', '#']).next().unwrap_or(id);
+    !id.starts_with("\0oj-")
+        && super::assets::is_style_path(clean.trim_start_matches('\0'))
+        && !Path::new(clean).is_file()
+}
+
+/// A Start bundle's view of one plugin host.
+pub(crate) struct StartHostPlugin {
+    host: Arc<PluginHost>,
+    bundler_ctx: BundlerCtx,
+    emit: Arc<EmitState>,
+    command: Command,
+    root: PathBuf,
+    pre: bool,
+    post: bool,
+    /// Lowers the TS and JSX plugins read as module code.
+    jsx: oj_compiler::JsxConfig,
+    /// A build reports rolldown's moduleParsed.
+    module_parsed: bool,
+    module_parsed_enabled: Arc<tokio::sync::OnceCell<bool>>,
+    render_chunk_enabled: Arc<tokio::sync::OnceCell<bool>>,
+    warned_virtual: Mutex<HashSet<String>>,
+    map_warnings: Arc<crate::build::MapWarnings>,
+    /// Start's compiler, run in its Vite slot: between the host's
+    /// "before-compile" and "after-compile" transforms (`compilePhaseOf`).
+    compile: Option<Arc<super::code::StartCodePlugin>>,
+}
+
+impl std::fmt::Debug for StartHostPlugin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("StartHostPlugin")
+    }
+}
+
+impl StartHostPlugin {
+    pub fn new(
+        host: Arc<PluginHost>,
+        bundler_ctx: BundlerCtx,
+        facts: &Facts,
+        command: Command,
+        root: &Path,
+        emit: Arc<EmitState>,
+        jsx: oj_compiler::JsxConfig,
+    ) -> Self {
+        Self {
+            host,
+            jsx,
+            bundler_ctx,
+            emit,
+            command,
+            root: root.to_path_buf(),
+            pre: facts.resolve_id_pre > 0,
+            post: facts.resolve_id_post > 0,
+            module_parsed: false,
+            module_parsed_enabled: Arc::new(tokio::sync::OnceCell::new()),
+            render_chunk_enabled: Arc::new(tokio::sync::OnceCell::new()),
+            warned_virtual: Mutex::new(HashSet::new()),
+            map_warnings: Arc::default(),
+            compile: None,
+        }
+    }
+
+    /// Runs `compile` (Start's compiler) where TanStack's `enforce: "pre"`
+    /// compiler sits in Vite: after the `order: "pre"` hooks and the "pre"
+    /// plugins listed before it, before the rest. A plugin after it (Start's
+    /// import protection among them) sees the compiled module, without the
+    /// server functions' handlers or what only they imported.
+    pub fn compiling(mut self, compile: super::code::StartCodePlugin) -> Self {
+        self.compile = Some(Arc::new(compile));
+        self
+    }
+
+    /// Reports rolldown's moduleParsed to the host (a build), its code as JS.
+    pub fn with_module_parsed(mut self) -> Self {
+        self.module_parsed = true;
+        self
+    }
+
+    /// A plugin's buildStart threw. `oj build` fails, as `vite build` does.
+    /// The dev server logs it once per host and bundles on: the host settles
+    /// buildStart once per session, so failing here would fail every later
+    /// rebundle too, with nothing the user could fix short of a restart.
+    fn build_start_failed(&self, host: &Arc<PluginHost>, e: &str) -> anyhow::Result<()> {
+        if self.command == Command::Build {
+            anyhow::bail!("plugin buildStart failed:\n{e}");
+        }
+        static LOGGED: std::sync::LazyLock<Mutex<HashSet<usize>>> =
+            std::sync::LazyLock::new(Default::default);
+        let key = Arc::as_ptr(host) as usize;
+        if LOGGED.lock().unwrap_or_else(|p| p.into_inner()).insert(key) {
+            eprintln!("{}", build_start_skipped(e));
+        }
+        Ok(())
+    }
+}
+
+/// The dev server's line for a buildStart it skipped, naming the plugin from
+/// the host's `[plugin:<name>]` prefix: one line, whichever environment's
+/// container ran the hook first (they share one host, which settles
+/// buildStart once).
+pub(crate) fn build_start_skipped(e: &str) -> String {
+    let name = e
+        .split_once("[plugin:")
+        .and_then(|(_, rest)| rest.split_once(']'))
+        .map(|(name, _)| name.to_string())
+        .unwrap_or_else(|| "unknown".into());
+    let msg = e.lines().next().unwrap_or(e);
+    format!(
+        "{}: plugin \"{name}\" buildStart failed (skipped): {msg}",
+        oj_server::oj_brand()
+    )
+}
+
+/// A plugin resolveId answer as rolldown's.
+fn hook_output(r: ResolvedId) -> HookResolveIdOutput {
+    let external = match r.external.as_ref() {
+        Some(serde_json::Value::String(s)) if s == "absolute" => Some(ResolvedExternal::Absolute),
+        Some(serde_json::Value::String(s)) if s == "relative" => Some(ResolvedExternal::Relative),
+        _ if r.is_external() => Some(ResolvedExternal::Bool(true)),
+        _ => None,
+    };
+    HookResolveIdOutput {
+        external,
+        side_effects: r.module_side_effects.map(|s| {
+            if s {
+                rolldown_common::side_effects::HookSideEffects::True
+            } else {
+                rolldown_common::side_effects::HookSideEffects::False
+            }
+        }),
+        ..HookResolveIdOutput::from_id(r.id)
+    }
+}
+
+/// Specifiers oj's own plugins own: asset imports, which Vite's core
+/// resolver answers before a normal plugin's resolveId sees them. A plain
+/// stylesheet one the core resolver misses (`virtual:theme.css`) is a
+/// plugin's to resolve, as in Vite.
+fn asset_owned(spec: &str) -> bool {
+    !matches!(
+        super::assets::asset_tag(spec, false),
+        None | Some(super::assets::AssetTag::Css)
+    )
+}
+
+/// The language of a file read for an id, by the file's extension: `.mts` and
+/// `.cts` are TypeScript, never JSX.
+fn file_module_type(path: &str) -> ModuleType {
+    match Path::new(path).extension().and_then(|e| e.to_str()) {
+        Some("ts" | "mts" | "cts") => ModuleType::Ts,
+        Some("tsx") => ModuleType::Tsx,
+        Some("jsx") => ModuleType::Jsx,
+        _ => ModuleType::Js,
+    }
+}
+
+/// The language of plugin-loaded code: a tolerant superset, since a load may
+/// return JSX for any id: TSX for a TypeScript-family id (types and JSX both
+/// parse), JSX otherwise.
+fn plugin_module_type(id: &str) -> ModuleType {
+    let path = id.split(['?', '#']).next().unwrap_or(id);
+    match Path::new(path).extension().and_then(|e| e.to_str()) {
+        Some("ts" | "mts" | "cts" | "tsx") => ModuleType::Tsx,
+        Some("json") => ModuleType::Json,
+        Some("css") => ModuleType::Js,
+        _ => ModuleType::Jsx,
+    }
+}
+
+fn is_script(path: &str) -> bool {
+    matches!(
+        Path::new(path).extension().and_then(|e| e.to_str()),
+        Some("js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" | "mts" | "cts")
+    )
+}
+
+/// The file a module under a query comes from (`/abs/route.tsx` for
+/// `/abs/route.tsx?tsr-split=component`), when it is one on disk: Vite's
+/// module graph files every module under `cleanUrl(id)` (`fileToModulesMap`)
+/// and a change to that file updates all of them (`getModulesByFile`). The
+/// bundler only maps a file to the module whose id it is, so the transform
+/// makes the file its dependency (`addWatchFile`), and an edit to the route
+/// updates its split component too.
+fn file_behind_query(id: &str) -> Option<&str> {
+    if id.starts_with('\0') {
+        return None;
+    }
+    let clean = id.split(['?', '#']).next().unwrap_or(id);
+    (clean.len() < id.len() && Path::new(clean).is_absolute() && Path::new(clean).is_file())
+        .then_some(clean)
+}
+
+fn is_app_source(path: &str) -> bool {
+    !path.contains("/node_modules/")
+        && matches!(
+            Path::new(path).extension().and_then(|e| e.to_str()),
+            Some("js" | "jsx" | "mjs" | "ts" | "tsx")
+        )
+}
+
+impl Plugin for StartHostPlugin {
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed("oj:start-plugins")
+    }
+
+    fn register_hook_usage(&self) -> rolldown_plugin::HookUsage {
+        hook_usage(self.command, self.module_parsed)
+    }
+
+    /// Rolldown's dev engine runs this for each changed file before it
+    /// rebuilds or computes an update: Start's import protection forgets what
+    /// it learned about the file there, ahead of the recompile (see
+    /// `importProtectionChanged` in the host).
+    async fn watch_change(
+        &self,
+        _ctx: &rolldown_plugin::PluginContext,
+        path: &str,
+        _event: rolldown_common::WatcherChangeKind,
+    ) -> rolldown_plugin::HookNoopReturn {
+        if let Err(e) = self
+            .host
+            .import_protection_changed(&[path.to_string()])
+            .await
+        {
+            eprintln!(
+                "{}: import protection did not take the change: {e}",
+                oj_server::oj_brand()
+            );
+        }
+        Ok(())
+    }
+
+    async fn build_start(
+        &self,
+        ctx: &PluginContext,
+        _args: &rolldown_plugin::HookBuildStartArgs<'_>,
+    ) -> rolldown_plugin::HookNoopReturn {
+        self.bundler_ctx.set(ctx);
+        self.host
+            .set_bundle_graph(RolldownGraph::new(ctx, self.jsx.clone()));
+        // Before any module loads: a plugin compiling on startup (i18n
+        // catalogs) has its state ready for the loads it serves. The host runs
+        // buildStart once per session, as Vite's container does.
+        match self.host.build_start().await {
+            Ok(chunks) => crate::build::forward_emitted_chunks(ctx, &chunks, &self.emit),
+            Err(e) => self.build_start_failed(&self.host, &e)?,
+        }
+        Ok(())
+    }
+
+    /// Rolldown's moduleParsed (every module, node_modules included, with
+    /// the resolved imports) as Rollup's ModuleInfo. Rolldown's code is the
+    /// code as loaded, and oj lowers TS and JSX inside rolldown rather than
+    /// in a plugin as vite:oxc does, so the code is lowered here.
+    async fn module_parsed(
+        &self,
+        _ctx: &PluginContext,
+        info: Arc<rolldown_common::ModuleInfo>,
+        _module: &rolldown_common::NormalModule,
+    ) -> rolldown_plugin::HookNoopReturn {
+        if !self.module_parsed {
+            return Ok(());
+        }
+        let host = Arc::clone(&self.host);
+        if !*self
+            .module_parsed_enabled
+            .get_or_init(|| async { host.has_module_parsed().await })
+            .await
+        {
+            return Ok(());
+        }
+        let mut json = graph_fields(&info);
+        json["code"] = info
+            .code
+            .as_deref()
+            .map(|code| module_code_as_js(&info.id, code, &self.jsx))
+            .into();
+        self.host
+            .bundle_module_parsed(&json.to_string())
+            .await
+            .map_err(|e| anyhow::anyhow!("plugin moduleParsed failed:\n{e}"))
+    }
+
+    fn resolve_id(
+        &self,
+        ctx: &PluginContext,
+        args: &HookResolveIdArgs<'_>,
+    ) -> impl std::future::Future<Output = HookResolveIdReturn> + Send {
+        let spec = args.specifier.to_string();
+        let importer = args.importer.map(str::to_string);
+        let is_entry = args.is_entry;
+        let kind = args.kind;
+        // oj's own module ids are answered by the plugins that minted them.
+        let ours = spec.starts_with("\0oj-");
+        let wants = !ours && self.host.hook_wants_resolve_id(&spec);
+        let (pre, post) = (self.pre && wants, self.post && wants && !asset_owned(&spec));
+        let host = Arc::clone(&self.host);
+        let ctx = ctx.clone();
+        async move {
+            if !pre && !post {
+                return Ok(None);
+            }
+            let importer_str = importer.as_deref().unwrap_or("");
+            let fail = |e: String| anyhow::anyhow!("plugin resolveId failed for {spec}:\n{e}");
+            if pre {
+                if let Some(r) = host
+                    .resolve_id_phase(&spec, importer_str, "pre", is_entry)
+                    .await
+                    .map_err(fail)?
+                {
+                    return Ok(Some(hook_output(r)));
+                }
+            }
+            if !post {
+                return Ok(None);
+            }
+            // The core resolver (everything after this plugin) first; the
+            // remaining hooks only see what it left.
+            let core = ctx
+                .resolve(
+                    &spec,
+                    importer.as_deref(),
+                    Some(PluginContextResolveOptions {
+                        import_kind: kind,
+                        is_entry,
+                        skip_self: true,
+                        ..Default::default()
+                    }),
+                )
+                .await?;
+            if let Ok(found) = core {
+                return Ok(Some(HookResolveIdOutput::from_resolved_id(found)));
+            }
+            Ok(host
+                .resolve_id_phase(&spec, importer_str, "post", is_entry)
+                .await
+                .map_err(fail)?
+                .map(hook_output))
+        }
+    }
+
+    fn load(
+        &self,
+        _ctx: SharedLoadPluginContext,
+        args: &HookLoadArgs<'_>,
+    ) -> impl std::future::Future<Output = HookLoadReturn> + Send {
+        let id = args.id.to_string();
+        let plugin = self.name();
+        let host = Arc::clone(&self.host);
+        let wants = !id.starts_with("\0oj-") && self.host.hook_wants_load(&id);
+        let dev = self.command == Command::Serve;
+        let root = self.root.clone();
+        let warned = !self
+            .warned_virtual
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id.clone());
+        async move {
+            if id.starts_with("\0oj-") {
+                return Ok(None);
+            }
+            let clean = id.split(['?', '#']).next().unwrap_or(&id).to_string();
+            let on_disk = !id.starts_with('\0')
+                && Path::new(&clean).is_absolute()
+                && Path::new(&clean).is_file();
+            let fail = |e: String| {
+                oj_server::load_error::load_failed(plugin.clone(), &id, anyhow::anyhow!(e))
+            };
+            // A stylesheet a plugin serves with no file behind it (a virtual
+            // sheet, UnoCSS's layers): oj's asset plugin loads it through the
+            // plugins' load and compiles it like a file, as vite:css does.
+            if wants && is_served_stylesheet(&id) {
+                return Ok(None);
+            }
+            // `?raw`, `?worker`, an image, a stylesheet: oj's asset plugin
+            // loads those, as vite:asset does, after the hooks Vite runs
+            // before it (vite-imagetools' `x.webp?w=768`).
+            let asset = on_disk
+                .then(|| super::assets::asset_tag(&id, false))
+                .flatten();
+            if let Some(tag) = asset {
+                if !wants || matches!(tag, super::assets::AssetTag::Css) {
+                    return Ok(None);
+                }
+                return Ok(host
+                    .load_pre(&id)
+                    .await
+                    .map_err(fail)?
+                    .map(|code| HookLoadOutput {
+                        code: arcstr::ArcStr::from(code),
+                        module_type: Some(ModuleType::Js),
+                        ..Default::default()
+                    }));
+            }
+            let mut code = None;
+            if wants {
+                // The FULL id first: a plugin's load keys on its own query
+                // (`?tsr-split=...`), Vite's contract; then the file.
+                code = host.load(&id).await.map_err(fail)?;
+                if code.is_none() && on_disk && id != clean && is_app_source(&clean) {
+                    code = host.load(&clean).await.map_err(fail)?;
+                }
+            }
+            if let Some(code) = code {
+                let module_type = if on_disk && is_app_source(&clean) {
+                    file_module_type(&clean)
+                } else {
+                    plugin_module_type(&id)
+                };
+                return Ok(Some(HookLoadOutput {
+                    code: arcstr::ArcStr::from(code),
+                    module_type: Some(module_type),
+                    ..Default::default()
+                }));
+            }
+            // Rollup's contract: a resolved id no load claims is read from
+            // disk, the file behind its query (`/abs/route.ts?tsr-split=x`).
+            if on_disk && id != clean && is_script(&clean) {
+                let source = std::fs::read_to_string(&clean).map_err(|e| fail(e.to_string()))?;
+                return Ok(Some(HookLoadOutput {
+                    code: arcstr::ArcStr::from(source),
+                    module_type: Some(file_module_type(&clean)),
+                    ..Default::default()
+                }));
+            }
+            // A plugin virtual nothing loaded. The dev bundle stubs it with
+            // an empty module so the page still boots (a virtual that needs
+            // the build's full graph); a build fails on it, as Vite's does.
+            if dev && !on_disk && !Path::new(&clean).is_absolute() {
+                if !warned {
+                    eprintln!(
+                        "oj: plugin virtual \"{id}\" produced no content in the dev client bundle; emitting an empty module. This virtual likely needs the full build graph oj does not run in dev."
+                    );
+                }
+                return Ok(Some(HookLoadOutput {
+                    code: arcstr::ArcStr::from(empty_virtual_stub(&root, &id)),
+                    module_type: Some(ModuleType::Js),
+                    ..Default::default()
+                }));
+            }
+            Ok(None)
+        }
+    }
+
+    fn transform(
+        &self,
+        ctx: SharedTransformPluginContext,
+        args: &HookTransformArgs<'_>,
+    ) -> impl std::future::Future<Output = HookTransformReturn> + Send {
+        let id: &str = args.id;
+        let code: &str = args.code;
+        // oj's own modules take no plugin transform. A `.svg` takes them
+        // all, as in Vite: its load (svgr's, or the asset URL) only produced
+        // the module's code, which the transforms then see.
+        let eligible = !id.starts_with("\0oj-");
+        if let Some(file) = file_behind_query(id) {
+            ctx.add_watch_file(file);
+        }
+        let pass = eligible && self.host.hook_wants_transform(id, code);
+        let host = Arc::clone(&self.host);
+        let emit = Arc::clone(&self.emit);
+        let sourcemap = ctx.inner.options().is_sourcemap_enabled();
+        let warnings = (self.command == Command::Build).then(|| Arc::clone(&self.map_warnings));
+        // oj's asset plugin compiled a stylesheet through its "pre" and
+        // "normal" transforms; the module standing in for it gets the "post"
+        // ones, as Vite's vite:css-post output does.
+        let phase = is_compiled_stylesheet(id).then_some("post");
+        // Start's compiler, for a module it can change: the plugins' chain
+        // splits around it. Any other module takes the whole chain in one
+        // call, as the compile would leave it as it is.
+        let compile = self
+            .compile
+            .clone()
+            .filter(|c| phase.is_none() && c.may_compile(id, code));
+        async move {
+            let fail = |e: String| anyhow::anyhow!("plugin transform failed for {id}:\n{e}");
+            let t = match (phase, compile) {
+                (Some(phase), _) => {
+                    if !pass {
+                        return Ok(None);
+                    }
+                    host.transform_phase(code, id, phase).await.map_err(fail)?
+                }
+                (None, None) => {
+                    if !pass {
+                        return Ok(None);
+                    }
+                    host.transform(code, id, "{}").await.map_err(fail)?
+                }
+                (None, Some(compile)) => {
+                    let mut t = if pass {
+                        host.transform_phase(code, id, "before-compile")
+                            .await
+                            .map_err(fail)?
+                    } else {
+                        HostTransform::unchanged(code)
+                    };
+                    if let Some(out) = compile.compile(&ctx, &t.code, id).await? {
+                        // Start's compiler returns its map (generateFromAst);
+                        // oj's edits keep every line, so a line map stands in.
+                        // Should one ever move lines, the chain breaks instead
+                        // of pointing at lines that are not there.
+                        if out.matches('\n').count() == t.code.matches('\n').count() {
+                            t.maps.push(oj_compiler::line_map_json(id, &t.code, &out));
+                            t.map_plugins
+                                .push("tanstack-start-core::server-fn".to_string());
+                        } else if t.map_broken.is_none() {
+                            t.map_broken = Some("tanstack-start-core::server-fn".to_string());
+                        }
+                        t.code = out;
+                    }
+                    // Once the first phase ran, the rest of the chain runs too:
+                    // it finishes the module's info (moduleParsed), whether or
+                    // not a later plugin wants the compiled code.
+                    if pass || (eligible && host.hook_wants_transform(id, &t.code)) {
+                        let prior = serde_json::json!({
+                            "original": code,
+                            "maps": t.maps,
+                            "broken": t.map_broken.is_some(),
+                        })
+                        .to_string();
+                        let rest = host
+                            .transform_phase_after(&t.code, id, "after-compile", &prior)
+                            .await
+                            .map_err(fail)?;
+                        t.then(rest);
+                    }
+                    t
+                }
+            };
+            crate::build::forward_emitted_chunks(&ctx.inner, &t.chunks, &emit);
+            Ok((t.code != code).then(|| HookTransformOutput {
+                map: crate::build::host_chain_map(
+                    sourcemap,
+                    &t,
+                    crate::build::ChainHook::Transform,
+                    warnings.as_deref(),
+                ),
+                code: Some(t.code),
+                ..Default::default()
+            }))
+        }
+    }
+
+    async fn build_end(
+        &self,
+        _ctx: &PluginContext,
+        args: Option<&rolldown_plugin::HookBuildEndArgs<'_>>,
+    ) -> rolldown_plugin::HookNoopReturn {
+        let error = args.map(|a| {
+            a.errors
+                .iter()
+                .map(|e| e.to_diagnostic().to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
+        self.host
+            .build_end(error.as_deref())
+            .await
+            .map_err(|e| anyhow::anyhow!("plugin buildEnd failed:\n{e}"))
+    }
+
+    async fn render_start(
+        &self,
+        _ctx: &PluginContext,
+        _args: &rolldown_plugin::HookRenderStartArgs<'_>,
+    ) -> rolldown_plugin::HookNoopReturn {
+        self.host
+            .render_start()
+            .await
+            .map_err(|e| anyhow::anyhow!("plugin renderStart failed:\n{e}"))
+    }
+
+    fn render_chunk(
+        &self,
+        _ctx: &PluginContext,
+        args: &HookRenderChunkArgs<'_>,
+    ) -> impl std::future::Future<Output = HookRenderChunkReturn> + Send {
+        let host = Arc::clone(&self.host);
+        let enabled = Arc::clone(&self.render_chunk_enabled);
+        let code = Arc::clone(&args.code);
+        let sourcemap = args.options.is_sourcemap_enabled();
+        let warnings = (self.command == Command::Build).then(|| Arc::clone(&self.map_warnings));
+        let chunk_json = if enabled.get() == Some(&false) {
+            String::new()
+        } else {
+            crate::build::serialize_rendered_chunk(&args.chunk)
+        };
+        async move {
+            let on = *enabled
+                .get_or_init(|| async { host.has_render_chunk().await })
+                .await;
+            if !on {
+                return Ok(None);
+            }
+            match host
+                .render_chunk(&code, &chunk_json)
+                .await
+                .map_err(|e| anyhow::anyhow!("plugin renderChunk failed:\n{e}"))?
+            {
+                t if t.code != *code => Ok(Some(HookRenderChunkOutput {
+                    map: crate::build::host_chain_map(
+                        sourcemap,
+                        &t,
+                        crate::build::ChainHook::RenderChunk,
+                        warnings.as_deref(),
+                    ),
+                    code: t.code,
+                })),
+                _ => Ok(None),
+            }
+        }
+    }
+
+    async fn generate_bundle(
+        &self,
+        ctx: &PluginContext,
+        args: &mut rolldown_plugin::HookGenerateBundleArgs<'_>,
+    ) -> rolldown_plugin::HookNoopReturn {
+        // `this.getFileName(ref)` of a chunk a plugin emitted reads the hashed
+        // name rolldown gave it.
+        let refs: Vec<(String, String)> = self
+            .emit
+            .chunk_refs
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(a, b)| (a.clone(), b.clone()))
+            .collect();
+        if !refs.is_empty() {
+            let mut map = serde_json::Map::new();
+            for (oj_ref, rd_ref) in refs {
+                if let Ok(name) = ctx.get_file_name(&rd_ref) {
+                    map.insert(oj_ref, serde_json::Value::String(name.to_string()));
+                }
+            }
+            if !map.is_empty() {
+                let _ = self
+                    .host
+                    .seed_chunk_names(&serde_json::Value::Object(map).to_string())
+                    .await;
+            }
+        }
+        if !self.host.has_generate_bundle().await {
+            return Ok(());
+        }
+        let bundle_json =
+            crate::build::serialize_bundle_with_vite_manifest(args.bundle, &self.root);
+        let mutated = self
+            .host
+            .generate_bundle(&bundle_json, args.is_write)
+            .await
+            .map_err(|e| anyhow::anyhow!("plugin generateBundle failed:\n{e}"))?;
+        if let Some(mutated) = mutated {
+            crate::build::apply_bundle_mutations(args.bundle, &mutated);
+        }
+        Ok(())
+    }
+
+    async fn write_bundle(
+        &self,
+        _ctx: &PluginContext,
+        args: &mut rolldown_plugin::HookWriteBundleArgs<'_>,
+    ) -> rolldown_plugin::HookNoopReturn {
+        if !self.host.has_write_bundle().await {
+            return Ok(());
+        }
+        let bundle_json = crate::build::serialize_bundle(args.bundle);
+        self.host
+            .write_bundle(&bundle_json, true)
+            .await
+            .map_err(|e| anyhow::anyhow!("plugin writeBundle failed:\n{e}"))
+    }
+}
+
+/// A module for a plugin virtual nothing loaded in dev: every name the app
+/// imports from it, as `undefined`, so the importers still link.
+pub(crate) fn empty_virtual_stub(root: &Path, id: &str) -> String {
+    let original = id.trim_start_matches('\0');
+    let pattern = format!(
+        r#"import\s+(?:type\s+)?[^;{{]*\{{([^}}]*)\}}[^;]*?from\s*["']{}["']"#,
+        regex::escape(original)
+    );
+    let mut names: Vec<String> = Vec::new();
+    if let Ok(re) = regex::Regex::new(&pattern) {
+        let mut stack = vec![root.join("src")];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            let mut entries: Vec<_> = entries.flatten().collect();
+            entries.sort_by_key(|e| e.file_name());
+            for e in entries {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if name == "node_modules" || name.starts_with('.') {
+                    continue;
+                }
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                    continue;
+                }
+                if !matches!(
+                    p.extension().and_then(|x| x.to_str()),
+                    Some("ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "mts" | "cts")
+                ) {
+                    continue;
+                }
+                let Ok(src) = std::fs::read_to_string(&p) else {
+                    continue;
+                };
+                if !src.contains(original) {
+                    continue;
+                }
+                for caps in re.captures_iter(&src) {
+                    for spec in caps[1].split(',') {
+                        let spec = spec.trim();
+                        if spec.is_empty() || spec.starts_with("type ") {
+                            continue;
+                        }
+                        let name = spec.split(" as ").next().unwrap_or("").trim();
+                        let ident = !name.is_empty()
+                            && name
+                                .chars()
+                                .next()
+                                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_' || c == '$')
+                            && name
+                                .chars()
+                                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$');
+                        if ident && name != "default" && !names.iter().any(|n| n == name) {
+                            names.push(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut out = String::from("export default undefined;\n");
+    for n in names {
+        out.push_str(&format!("export const {n} = undefined;\n"));
+    }
+    out
+}
+
+/// The rolldown hooks a Start bundle's host plugin takes, for `command`.
+fn hook_usage(command: Command, module_parsed: bool) -> rolldown_plugin::HookUsage {
+    use rolldown_plugin::HookUsage;
+    let mut usage =
+        HookUsage::ResolveId | HookUsage::Load | HookUsage::Transform | HookUsage::BuildStart;
+    // The dev engine's watchChange, before each rebuild or update: Start's
+    // import protection forgets the changed files there (see
+    // `StartHostPlugin::watch_change`). Without it rolldown never calls the
+    // hook.
+    if command == Command::Serve {
+        usage |= HookUsage::WatchChange;
+    }
+    // Vite's dev server runs no output-generation hook; the dev bundles
+    // run over the dev server's own plugin instances.
+    if command == Command::Build {
+        usage |= HookUsage::RenderStart
+            | HookUsage::BuildEnd
+            | HookUsage::RenderChunk
+            | HookUsage::GenerateBundle
+            | HookUsage::WriteBundle;
+        if module_parsed {
+            usage |= HookUsage::ModuleParsed;
+        }
+    }
+    usage
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The dev engine calls watchChange only on plugins that register it, and
+    // Start's import protection learns of an edit there before the rebuild.
+    #[test]
+    fn the_dev_bundle_takes_watch_change_and_a_build_does_not() {
+        use rolldown_plugin::HookUsage;
+        assert!(hook_usage(Command::Serve, false).contains(HookUsage::WatchChange));
+        assert!(!hook_usage(Command::Build, true).contains(HookUsage::WatchChange));
+    }
+
+    /// A skipped buildStart names its plugin, from either environment's
+    /// container, and keeps only the error's first line.
+    #[test]
+    fn a_skipped_build_start_names_its_plugin() {
+        let line = build_start_skipped(
+            "Error: [plugin:fixture-fresh-module] boom-from-buildStart\n    at ojRun (plugin-host.mjs:1:1)",
+        );
+        assert!(
+            line.ends_with(
+                ": plugin \"fixture-fresh-module\" buildStart failed (skipped): Error: [plugin:fixture-fresh-module] boom-from-buildStart"
+            ),
+            "{line}"
+        );
+        assert!(build_start_skipped("boom").contains("plugin \"unknown\" buildStart failed"));
+    }
+
+    /// Vite files a module under `cleanUrl(id)`: a route's split component
+    /// and shared bindings come from the route file, and an edit to it is
+    /// theirs too. A module without a query is the file's own (the bundler
+    /// maps it already); a virtual id or a file that is not there has none.
+    #[test]
+    fn a_queried_module_comes_from_its_file() {
+        let dir = std::env::temp_dir().join(format!("oj-file-behind-query-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let route = dir.join("map.tsx");
+        std::fs::write(&route, "export {};\n").unwrap();
+        let file = route.to_string_lossy().into_owned();
+        for id in [
+            format!("{file}?tsr-split=component"),
+            format!("{file}?tsr-shared=1"),
+            format!("{file}#x"),
+        ] {
+            assert_eq!(file_behind_query(&id), Some(file.as_str()), "{id}");
+        }
+        assert_eq!(file_behind_query(&file), None);
+        assert_eq!(
+            file_behind_query(&format!("\0{file}?tsr-split=component")),
+            None
+        );
+        assert_eq!(file_behind_query("virtual:x?tsr-split=component"), None);
+        let gone = dir.join("gone.tsx").to_string_lossy().into_owned();
+        assert_eq!(
+            file_behind_query(&format!("{gone}?tsr-split=component")),
+            None
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The ids vite:css and vite:css-post take (CSS_LANGS_RE, not `?raw`,
+    /// `?url` or a worker): their module gets only the "post" transforms.
+    /// A stylesheet id no file stands behind is a plugin's to serve; a plain
+    /// one the core resolver misses is a plugin's to resolve (Vite asks the
+    /// normal plugins after its resolver), other asset imports are oj's.
+    #[test]
+    fn plugin_served_stylesheets_reach_the_plugins() {
+        assert!(is_served_stylesheet("\0virtual:theme.css"));
+        assert!(is_served_stylesheet("/__uno.css"));
+        assert!(is_served_stylesheet("\0virtual:theme.css?inline"));
+        assert!(!is_served_stylesheet("\0virtual:data.js"));
+        assert!(!is_served_stylesheet("\0oj-shim.css"));
+        assert!(!asset_owned("virtual:theme.css"));
+        assert!(!asset_owned("./a.css"));
+        assert!(asset_owned("./a.css?raw"));
+        assert!(asset_owned("./a.png"));
+        assert!(is_compiled_stylesheet("\0virtual:theme.css"));
+    }
+
+    #[test]
+    fn compiled_stylesheets_are_the_ids_vites_css_plugins_take() {
+        for id in [
+            "/app/a.css",
+            "/app/a.scss",
+            "/app/m.module.css",
+            "/app/b.less?inline",
+            "/app/c.pcss",
+            "/app/d.sss",
+        ] {
+            assert!(is_compiled_stylesheet(id), "{id}");
+        }
+        for id in [
+            "/app/a.css?raw",
+            "/app/a.css?url",
+            "/app/a.css?worker",
+            "/app/a.png?inline",
+            "/app/a.ts",
+        ] {
+            assert!(!is_compiled_stylesheet(id), "{id}");
+        }
+    }
+
+    #[test]
+    fn plugin_loads_parse_tolerantly_and_files_as_themselves() {
+        assert_eq!(plugin_module_type("virtual:routes"), ModuleType::Jsx);
+        assert_eq!(plugin_module_type("/a/b.ts?x"), ModuleType::Tsx);
+        assert_eq!(plugin_module_type("/a/b.mts"), ModuleType::Tsx);
+        assert_eq!(plugin_module_type("\0data.json"), ModuleType::Json);
+        assert_eq!(file_module_type("/a/b.mts"), ModuleType::Ts);
+        assert_eq!(file_module_type("/a/b.jsx"), ModuleType::Jsx);
+        assert_eq!(file_module_type("/a/b.mjs"), ModuleType::Js);
+    }
+
+    #[test]
+    fn module_parsed_reads_typescript_and_jsx_as_js() {
+        let jsx = oj_compiler::JsxConfig::default();
+        let tsx = module_code_as_js(
+            "/app/src/a.tsx",
+            "const n: number = 1;\nexport const A = () => <p>{n}</p>;\n",
+            &jsx,
+        );
+        assert!(!tsx.contains(": number") && !tsx.contains("<p>"), "{tsx}");
+        assert!(tsx.contains("react/jsx-runtime"), "{tsx}");
+        // A query keeps the file's own kind.
+        let ts = module_code_as_js("/app/src/b.ts?v=1", "let x: string = \"\";\n", &jsx);
+        assert!(!ts.contains(": string"), "{ts}");
+        // JS and virtual modules are reported as loaded.
+        let js = "export const y = 1;\n";
+        assert_eq!(
+            module_code_as_js("/app/node_modules/p/index.js", js, &jsx),
+            js
+        );
+        assert_eq!(module_code_as_js("\0virtual:x", js, &jsx), js);
+        // A module that does not lower is reported as loaded too.
+        let broken = "const = ;";
+        assert_eq!(module_code_as_js("/app/src/c.ts", broken, &jsx), broken);
+    }
+
+    #[test]
+    fn an_empty_virtual_exports_every_name_the_app_imports() {
+        let dir = std::env::temp_dir().join(format!("oj-start-stub-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src/deep")).unwrap();
+        std::fs::write(
+            dir.join("src/a.ts"),
+            "import { one, two as t, type Skip } from \"virtual:thing\";\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("src/deep/b.tsx"),
+            "import def, { three } from 'virtual:thing';\nimport { other } from 'virtual:else';\n",
+        )
+        .unwrap();
+        let stub = empty_virtual_stub(&dir, "\0virtual:thing");
+        assert!(stub.starts_with("export default undefined;\n"), "{stub}");
+        for name in ["one", "two", "three"] {
+            assert!(
+                stub.contains(&format!("export const {name} = undefined;")),
+                "{stub}"
+            );
+        }
+        assert!(!stub.contains("Skip") && !stub.contains("other"), "{stub}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

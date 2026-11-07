@@ -7,10 +7,10 @@ import path from "node:path";
 import { rpcSidecar, tmpProject } from "./harness.mjs";
 
 // Vite's ctx.resolve runs the container's resolveId chain (skipping the caller
-// unless skipSelf: false) before its own resolver, and ctx.load runs the plugins'
-// load + transform chain before reading the file. The host used to go straight
-// to the Rust resolver and the disk, so a sibling plugin's virtual id came back
-// null / threw.
+// unless skipSelf: false), in which its own resolver sits after the `pre`
+// plugins and before the normal ones, and ctx.load runs the plugins' load +
+// transform chain before reading the file. A normal sibling's virtual id is
+// asked of the Rust resolver first and still resolves to the sibling's id.
 const pluginsSource = `export default [
   {
     name: "virt",
@@ -54,7 +54,7 @@ async function drive(host, fx, msg) {
   return { frame, rpcs };
 }
 
-test("ctx.resolve and ctx.load consult sibling plugins before the Rust resolver and disk", async () => {
+test("ctx.resolve and ctx.load reach sibling plugins around the Rust resolver and before disk", async () => {
   const fx = tmpProject({ prefix: "oj-ctxchain-" });
   fx.write("a.js", "export const A = 1;\n");
   fx.write("main.js", "import './a.js';\n");
@@ -84,7 +84,10 @@ test("ctx.resolve and ctx.load consult sibling plugins before the Rust resolver 
     assert.equal(probe.selfKept, "\0self", "skipSelf: false lets the caller resolve its own id");
     assert.equal(probe.disk, path.join(fx.root, "a.js"), "ids no plugin claims still reach the Rust resolver");
     const resolveRpcs = rpcs.filter((r) => r.method === "resolve").map((r) => r.args[0]);
-    assert.ok(!resolveRpcs.includes("virtual:msg"), "a plugin-resolved id never round-trips to Rust");
+    assert.ok(
+      resolveRpcs.includes("virtual:msg"),
+      "a normal plugin's id is asked of the Rust resolver first (vite:resolve precedes it)",
+    );
     assert.ok(!rpcs.some((r) => r.method === "moduleInfo"), "a plugin-loaded id never hits the disk reader");
     assert.ok(resolveRpcs.includes("./a.js"), "unclaimed ids fall through to the Rust resolver");
   } finally {

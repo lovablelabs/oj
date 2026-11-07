@@ -7,6 +7,7 @@ pub struct ViteValues {
     pub public_dir: Option<oj_config::BoolOrString>,
     pub port: Option<u16>,
     pub host: Option<String>,
+    pub origin: Option<String>,
     pub hmr_disabled: bool,
     pub fs_allow: Option<Vec<String>>,
     pub fs_strict: Option<bool>,
@@ -21,6 +22,10 @@ pub struct ViteValues {
     pub headers: Option<serde_json::Map<String, serde_json::Value>>,
     pub rollup_options: Option<serde_json::Value>,
     pub assets_inline_limit: Option<u64>,
+    /// `build.assetsInlineLimit` is a function (kept in the plugin host).
+    pub assets_inline_limit_fn: bool,
+    /// Each environment's own `build.assetsInlineLimit`: a number, or "fn".
+    pub assets_inline_limit_envs: Option<serde_json::Map<String, serde_json::Value>>,
     pub proxy: Option<serde_json::Value>,
     pub dedupe: Option<Vec<String>>,
     pub optimize_deps: Option<serde_json::Value>,
@@ -55,20 +60,17 @@ pub struct ViteValues {
     pub app_type: Option<String>,
     /// `html` block (`cspNonce`).
     pub html: Option<serde_json::Value>,
-}
-
-/// Bound on config extraction (default 60s, `OJ_EXTRACT_TIMEOUT` raises it):
-/// a config hook that opens a socket or timer must not wedge boot forever.
-pub(crate) fn extraction_timeout() -> std::time::Duration {
-    extraction_timeout_from(oj_env::get().knobs.extract_timeout.as_deref())
-}
-
-pub(crate) fn extraction_timeout_from(raw: Option<&str>) -> std::time::Duration {
-    let secs = raw
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|s| *s > 0)
-        .unwrap_or(60);
-    std::time::Duration::from_secs(secs)
+    /// The config's plugins the plugin host would run (none of oj's native
+    /// set); an over-count. None when extraction could not read the list.
+    pub active_plugins: Option<usize>,
+    /// The config's `@stylexjs/unplugin` (`{ options }`), which oj runs natively.
+    pub stylex: Option<serde_json::Value>,
+    /// The routes directory and route tree TanStack Start's router generator
+    /// ran with (`startRouter`).
+    pub start_router: Option<oj_config::StartRouterPaths>,
+    /// Why the app's Vite failed to resolve the config (a throwing plugin
+    /// hook), which fails Vite's createServer.
+    pub resolve_error: Option<String>,
 }
 
 /// The oj executable one-shot engine jobs run in, set once by the binary's main.
@@ -85,16 +87,19 @@ pub const PARENT_PID_ENV: &str = "OJ_PARENT_PID";
 
 /// Runs one export of an oj-owned module on a short-lived JS engine: in a child
 /// `oj engine-job` process when [`engine_jobs_via_subprocess`] ran, in-process otherwise.
+/// `deadline: None` runs the job unbounded, the Vite shape for config loading
+/// and the dep pre-bundle (neither has a timeout there): the wait just logs
+/// progress, and only child death fails it. Tests pass a bound.
 pub(crate) fn run_engine_job(
     root: &Path,
     module: &Path,
     export: &str,
     payload: serde_json::Value,
-    timeout: std::time::Duration,
+    deadline: Option<std::time::Duration>,
 ) -> Result<serde_json::Value, oj_js::EngineError> {
     match ENGINE_JOB_EXE.get() {
-        Some(exe) => run_engine_job_subprocess(exe, root, module, export, &payload, timeout),
-        None => run_engine_job_in_process(root, module, export, payload, timeout),
+        Some(exe) => run_engine_job_subprocess(exe, root, module, export, &payload, deadline),
+        None => run_engine_job_in_process(root, module, export, payload, deadline),
     }
 }
 
@@ -105,11 +110,11 @@ pub fn run_engine_job_in_process(
     module: &Path,
     export: &str,
     payload: serde_json::Value,
-    timeout: std::time::Duration,
+    deadline: Option<std::time::Duration>,
 ) -> Result<serde_json::Value, oj_js::EngineError> {
     let run = move || {
         let mut config = oj_js::EngineConfig::new(root);
-        config.default_deadline = Some(timeout);
+        config.default_deadline = deadline;
         config.code_cache_dir = Some(crate::engine_code_cache_dir(root));
         let engine = oj_js::JsEngine::spawn(config, None, None)?;
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -129,6 +134,203 @@ pub fn run_engine_job_in_process(
             s.spawn(run)
                 .join()
                 .expect("engine job thread must not panic")
+        })
+    } else {
+        run()
+    }
+}
+
+/// The plugin host's engine, started ahead of its host, offered to this
+/// boot's config extraction: a fresh evaluation runs there and the host takes
+/// the run over (the config evaluated and its hooks run once, as Vite's one
+/// `resolveConfig` serves its server). By app root, as is the command line's
+/// inline config: one process may boot several apps (the tests do).
+static HOST_ENGINE: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<PathBuf, std::sync::Arc<oj_js::JsEngine>>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// The command line's inline config an app resolves under (`--port`,
+/// `--host`): Vite's config hooks see it, so an evaluation under it is
+/// stored apart from one without.
+static CLI_INLINE: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<PathBuf, serde_json::Value>>,
+> = std::sync::LazyLock::new(Default::default);
+
+pub fn set_cli_inline(root: &Path, cli: serde_json::Value) {
+    let mut map = CLI_INLINE.lock().unwrap_or_else(|e| e.into_inner());
+    if cli.as_object().is_some_and(|o| !o.is_empty()) {
+        map.insert(root.to_path_buf(), cli);
+    } else {
+        map.remove(root);
+    }
+}
+
+fn cli_inline(root: &Path) -> Option<serde_json::Value> {
+    CLI_INLINE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(root)
+        .cloned()
+}
+
+pub(crate) fn offer_host_engine(root: &Path, engine: std::sync::Arc<oj_js::JsEngine>) {
+    HOST_ENGINE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(root.to_path_buf(), engine);
+}
+
+/// Ends the offer for `root` (its config is read): an engine the boot drops
+/// is not kept alive here.
+pub fn withdraw_host_engine(root: &Path) {
+    HOST_ENGINE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(root);
+}
+
+/// Per root, what the extraction left on the offered engine: `Some` when the
+/// host may take the run over (for that command and mode), `None` when the
+/// config ran there without a run to take (it failed, or was cut off).
+/// What a run the host takes over stored, by root: its values are read
+/// before the host runs the configResolved hooks, so the host's reading
+/// after them replaces them (see [`store_resolved_values`]).
+struct KeptRun {
+    vite: PathBuf,
+    command: String,
+    keys: Vec<String>,
+    json: serde_json::Value,
+    stderr: String,
+}
+
+type KeptRuns = std::collections::HashMap<PathBuf, KeptRun>;
+static KEPT_RUNS: std::sync::LazyLock<std::sync::Mutex<KeptRuns>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// A run the host engine kept that no host took over (a fresh host ran its
+/// own resolve): the values it stored were read with configResolved hidden,
+/// so they go, and the next start reads the config again.
+pub fn forget_kept_run(root: &Path) {
+    let Some(run) = KEPT_RUNS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(root)
+    else {
+        return;
+    };
+    let store = extraction_store(root);
+    for key in &run.keys {
+        store.forget(&run.vite, &run.command, key);
+    }
+}
+
+/// Drops what [`store_resolved_values`] holds for `root` in this process,
+/// so its next read is the store's (tests of the stored copy).
+#[doc(hidden)]
+pub fn forget_resolved_values(root: &Path) {
+    RESOLVED_VALUES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|(r, _, _), _| r != root);
+}
+
+/// The config's values as its host read them after the configResolved hooks
+/// (Vite runs those on the resolved config it then serves from), over what
+/// the run it took over stored: stored again under the same keys. Whether
+/// they changed, so the caller reads its config again.
+pub fn store_resolved_values(root: &Path, values: &serde_json::Value) -> bool {
+    let Some(run) = KEPT_RUNS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(root)
+    else {
+        return false;
+    };
+    let (Some(stored), Some(fresh)) = (run.json.as_object(), values.as_object()) else {
+        return false;
+    };
+    let mut merged = stored.clone();
+    for (key, value) in fresh {
+        if !key.starts_with("__") {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
+    if &merged == stored {
+        return false;
+    }
+    let json = serde_json::Value::Object(merged);
+    let store = extraction_store(root);
+    let mut held = RESOLVED_VALUES.lock().unwrap_or_else(|e| e.into_inner());
+    for key in &run.keys {
+        store_extraction(&store, &run.vite, &run.command, key, &json, &run.stderr);
+        // Read from here this start, a store that declined the entry included.
+        held.insert(
+            (root.to_path_buf(), run.command.clone(), key.clone()),
+            json.clone(),
+        );
+    }
+    true
+}
+
+/// [`store_resolved_values`]' values, for this process's next read of the
+/// same config (by root, command and store key).
+type HeldValues = std::collections::HashMap<(PathBuf, String, String), serde_json::Value>;
+static RESOLVED_VALUES: std::sync::LazyLock<std::sync::Mutex<HeldValues>> =
+    std::sync::LazyLock::new(Default::default);
+
+type EngineRuns = std::collections::HashMap<PathBuf, Option<(String, String)>>;
+static ENGINE_RUN: std::sync::LazyLock<std::sync::Mutex<EngineRuns>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Whether the host engine offered for `root` may become its host for
+/// `command` and `mode`: untouched by the extraction, or holding a run for
+/// exactly those. A realm the config already ran in otherwise gets no host
+/// (its module state would see the config twice); the caller starts a fresh
+/// engine.
+pub fn host_engine_reusable(root: &Path, command: &str, mode: &str) -> bool {
+    match ENGINE_RUN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(root)
+    {
+        None => true,
+        Some(Some((c, m))) => c == command && m == mode,
+        Some(None) => false,
+    }
+}
+
+fn take_host_engine(root: &Path) -> Option<std::sync::Arc<oj_js::JsEngine>> {
+    HOST_ENGINE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(root)
+}
+
+/// `export` of `module` on `engine`, blocking (a scoped thread inside tokio).
+fn run_on_engine(
+    engine: &oj_js::JsEngine,
+    module: &Path,
+    export: &str,
+    payload: serde_json::Value,
+    deadline: Option<std::time::Duration>,
+) -> Result<serde_json::Value, oj_js::EngineError> {
+    let run = move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| oj_js::EngineError::Boot(e.to_string()))?;
+        rt.block_on(engine.call(
+            module.to_string_lossy().into_owned(),
+            export,
+            vec![payload],
+            deadline,
+        ))
+    };
+    if tokio::runtime::Handle::try_current().is_ok() {
+        std::thread::scope(|s| {
+            s.spawn(run)
+                .join()
+                .expect("extraction thread must not panic")
         })
     } else {
         run()
@@ -184,7 +386,7 @@ pub(crate) fn run_engine_job_subprocess(
     module: &Path,
     export: &str,
     payload: &serde_json::Value,
-    timeout: std::time::Duration,
+    deadline: Option<std::time::Duration>,
 ) -> Result<serde_json::Value, oj_js::EngineError> {
     static JOB_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = JOB_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -207,7 +409,8 @@ pub(crate) fn run_engine_job_subprocess(
         .arg("--export")
         .arg(export)
         .arg("--timeout-secs")
-        .arg(timeout.as_secs().max(1).to_string())
+        // 0 = unbounded; a bounded job's child enforces the deadline itself.
+        .arg(deadline.map_or(0, |t| t.as_secs().max(1)).to_string())
         .arg("--result")
         .arg(&result_file)
         .env(PARENT_PID_ENV, std::process::id().to_string())
@@ -219,6 +422,11 @@ pub(crate) fn run_engine_job_subprocess(
                 job_cwd.display()
             ))
         })?;
+    // Vite loads the config and runs the optimizer in-process, so neither
+    // outlives the server. Registered, the child dies in the dev server's
+    // shutdown or restart sweep; unregistered, it ran until its parent poll
+    // noticed, up to 200ms of writes into the app's code cache.
+    let _registered = RegisteredChild::new(child.id());
     {
         use std::io::Write;
         let mut stdin = child.stdin.take().expect("piped stdin");
@@ -236,19 +444,35 @@ pub(crate) fn run_engine_job_subprocess(
         }
         // Dropping closes the pipe; the child's read_to_string completes.
     }
-    // The child enforces `timeout` itself; the grace covers spawn and result
-    // writing, then a wedged child is killed.
-    let deadline = std::time::Instant::now() + timeout + std::time::Duration::from_secs(15);
+    // A bounded job's child enforces the deadline itself; the grace covers
+    // spawn and result writing, then a wedged child is killed. An unbounded
+    // job waits however long the work takes (Vite's shape for config loading
+    // and the pre-bundle) and logs progress so a hang is visible.
+    let started = std::time::Instant::now();
+    let kill_at = deadline.map(|t| started + t + std::time::Duration::from_secs(15));
+    let mut next_log = started + std::time::Duration::from_secs(30);
+    let exited = child_exit_signal(&child);
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if std::time::Instant::now() >= deadline => {
+            Ok(None) if kill_at.is_some_and(|at| std::time::Instant::now() >= at) => {
                 let _ = child.kill();
                 let _ = child.wait();
                 let _ = std::fs::remove_file(&result_file);
                 return Err(oj_js::EngineError::Deadline);
             }
-            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(25)),
+            Ok(None) => {
+                let now = std::time::Instant::now();
+                if kill_at.is_none() && now >= next_log {
+                    eprintln!(
+                        "oj: the {export} engine job is still running ({}s)…",
+                        started.elapsed().as_secs()
+                    );
+                    next_log += std::time::Duration::from_secs(30);
+                }
+                let wake = kill_at.map_or(next_log, |at| at.min(next_log));
+                let _ = exited.recv_timeout(wake.saturating_duration_since(now).min(EXIT_NAP));
+            }
             Err(e) => {
                 let _ = std::fs::remove_file(&result_file);
                 return Err(boot(format!(
@@ -267,6 +491,66 @@ pub(crate) fn run_engine_job_subprocess(
     let envelope: serde_json::Value =
         serde_json::from_str(&envelope).map_err(|e| boot(format!("engine job result: {e}")))?;
     engine_job_outcome(envelope)
+}
+
+/// An engine job child in the shutdown sweep's registry until it is reaped.
+struct RegisteredChild(u32);
+
+impl RegisteredChild {
+    fn new(pid: u32) -> Self {
+        crate::register_child(pid);
+        Self(pid)
+    }
+}
+
+impl Drop for RegisteredChild {
+    fn drop(&mut self) {
+        crate::unregister_child(self.0);
+    }
+}
+
+/// Longest sleep between exit checks. Unix wakes on exit itself, so it only
+/// bounds how late the deadline and progress checks run.
+#[cfg(unix)]
+const EXIT_NAP: std::time::Duration = std::time::Duration::MAX;
+#[cfg(not(unix))]
+const EXIT_NAP: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// Fires once `child` has exited, without reaping it: the zombie keeps the pid,
+/// so the caller can still kill and `wait` the `Child` it owns.
+fn child_exit_signal(child: &std::process::Child) -> std::sync::mpsc::Receiver<()> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    #[cfg(unix)]
+    {
+        let pid = child.id();
+        let _ = std::thread::Builder::new()
+            .name("oj-job-wait".into())
+            .spawn(move || {
+                loop {
+                    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+                    let rc = unsafe {
+                        libc::waitid(
+                            libc::P_PID,
+                            pid as libc::id_t,
+                            &mut info,
+                            libc::WEXITED | libc::WNOWAIT,
+                        )
+                    };
+                    if rc == 0
+                        || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR)
+                    {
+                        break;
+                    }
+                }
+                let _ = tx.send(());
+            });
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child;
+        std::mem::forget(tx);
+    }
+    rx
 }
 
 /// Evaluate the app's `vite.config` for `command` ("serve" | "build") and `mode`.
@@ -289,64 +573,250 @@ pub(crate) fn extract_vite_values_with(
     mode: &str,
     mode_explicit: bool,
 ) -> Option<ViteValues> {
-    extract_vite_values_timed(
-        root,
-        config,
-        command,
-        mode,
-        mode_explicit,
-        extraction_timeout(),
-    )
+    // Unbounded, as Vite's own config load is: a slow config evaluation
+    // delays boot (with progress logged) instead of losing its values.
+    extract_vite_values_timed(root, config, command, mode, mode_explicit, None)
 }
 
-/// [`extract_vite_values_with`] bounded by `timeout` instead of `OJ_EXTRACT_TIMEOUT`.
+/// Keyed per (config, command, mode); a default-mode evaluation gets its own
+/// key. `worker` options reach only a build's worker bundles, which an SPA
+/// build makes without them (the Start build applies them, dev bundles none),
+/// so only an SPA build warns; its stderr is cached apart.
+fn extraction_mode_key(root: &Path, mode: &str, mode_explicit: bool, spa_build: bool) -> String {
+    let mut key = if mode_explicit {
+        mode.to_string()
+    } else {
+        format!("{mode}@default")
+    };
+    if let Some(cli) = cli_inline(root) {
+        key.push_str(&format!("@cli={cli}"));
+    }
+    if spa_build {
+        format!("{key}@spa-build")
+    } else {
+        key
+    }
+}
+
+/// The active plugin count the last dev extraction of this config recorded,
+/// while its inputs are unchanged: known before the config is evaluated
+/// again, so a boot that needs no plugin host never starts its engine.
+pub(crate) fn cached_active_plugins(
+    root: &Path,
+    config: Option<&Path>,
+    mode: &str,
+) -> Option<usize> {
+    if plugins_file(root).is_some() {
+        return None;
+    }
+    let vite = vite_config_file(root, config)?;
+    if let Some(json) = super::static_config::static_extraction(root, &vite, "serve", mode) {
+        return json.get("activePlugins")?.as_u64().map(|n| n as usize);
+    }
+    let hit = extraction_store(root).lookup(
+        &vite,
+        "serve",
+        &extraction_mode_key(root, mode, true, false),
+    )?;
+    let json: serde_json::Value = serde_json::from_str(&hit.output).ok()?;
+    json.get("activePlugins")?.as_u64().map(|n| n as usize)
+}
+
+/// [`extract_vite_values_with`] with the evaluation bound explicit (tests).
 pub(crate) fn extract_vite_values_timed(
     root: &Path,
     config: Option<&Path>,
     command: &str,
     mode: &str,
     mode_explicit: bool,
-    timeout: std::time::Duration,
+    timeout: Option<std::time::Duration>,
 ) -> Option<ViteValues> {
+    extraction(root, config, command, mode, mode_explicit, timeout, false).map(|(v, _)| v)
+}
+
+/// A restart's evaluation: always fresh, as Vite's restartServer resolves the
+/// config again whatever it read, and stored for the next boot. With whether
+/// its output differs from what the cache held.
+pub(crate) fn reextract_vite_values(
+    root: &Path,
+    config: Option<&Path>,
+    command: &str,
+    mode: &str,
+) -> Option<(ViteValues, bool)> {
+    extraction(root, config, command, mode, true, None, true)
+}
+
+fn extraction(
+    root: &Path,
+    config: Option<&Path>,
+    command: &str,
+    mode: &str,
+    mode_explicit: bool,
+    timeout: Option<std::time::Duration>,
+    fresh: bool,
+) -> Option<(ViteValues, bool)> {
     if plugins_file(root).is_some() {
         return None;
     }
-    // Keyed per (config, command, mode); a default-mode evaluation gets its own key.
-    let mode_key = if mode_explicit {
-        mode.to_string()
-    } else {
-        format!("{mode}@default")
-    };
+    let spa_build = command == "build" && !crate::is_tanstack_start_app(root);
+    let mode_key = extraction_mode_key(root, mode, mode_explicit, spa_build);
     let mode_key = mode_key.as_str();
     let vite = vite_config_file(root, config)?;
+    if !fresh {
+        let held = RESOLVED_VALUES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&(
+                root.to_path_buf(),
+                command.to_string(),
+                mode_key.to_string(),
+            ))
+            .cloned();
+        if let Some(json) = held {
+            return Some((parse_vite_values(&json), false));
+        }
+        if let Some(json) = super::static_config::static_extraction(root, &vite, command, mode) {
+            crate::boot_phase("vite-extract static (no engine)");
+            return Some((parse_vite_values(&json), false));
+        }
+    }
+    // Concurrent boot callers asking for one key wait on a single evaluation
+    // and take its outcome, a failed one included, as Vite resolves the config
+    // once per start. A caller arriving after it finished runs its own, and so
+    // does a restart's.
+    let flight = extraction_flight(&vite, command, mode_key);
+    let seen = flight.finished.load(std::sync::atomic::Ordering::Acquire);
+    let mut outcome = flight.outcome.lock().unwrap_or_else(|e| e.into_inner());
+    if !fresh && flight.finished.load(std::sync::atomic::Ordering::Acquire) != seen {
+        return outcome
+            .as_ref()
+            .map(|json| (parse_vite_values(json), false));
+    }
+    let ran = run_extraction(
+        root,
+        &vite,
+        command,
+        mode,
+        mode_explicit,
+        mode_key,
+        spa_build,
+        timeout,
+        fresh,
+    );
+    *outcome = ran.as_ref().map(|(json, _)| json.clone());
+    flight
+        .finished
+        .fetch_add(1, std::sync::atomic::Ordering::Release);
+    ran.map(|(json, changed)| (parse_vite_values(&json), changed))
+}
+
+/// A dev boot's reading of `vite` both ways: Rust's (None when it declines
+/// the config) and a fresh engine evaluation, for the parity test.
+/// Rust's reading of `vite` alone (None when it declines), for tests of
+/// what it declines before evaluation could run.
+#[doc(hidden)]
+pub fn static_extraction(root: &Path, vite: &Path) -> Option<serde_json::Value> {
+    super::static_config::static_extraction(root, vite, "serve", "development")
+}
+
+#[doc(hidden)]
+pub fn static_and_engine_extraction(
+    root: &Path,
+    vite: &Path,
+) -> (Option<serde_json::Value>, Option<serde_json::Value>) {
+    let read = super::static_config::static_extraction(root, vite, "serve", "development");
+    let mode_key = extraction_mode_key(root, "development", true, false);
+    let evaluated = run_extraction(
+        root,
+        vite,
+        "serve",
+        "development",
+        true,
+        &mode_key,
+        false,
+        None,
+        true,
+    )
+    .map(|(json, _)| json);
+    (read, evaluated)
+}
+
+/// One evaluation of the config's values: the store's copy when it has one
+/// (unless `fresh`), else the extractor run in an engine (and stored), with
+/// whether its output differs from the store's. `None` when the config fails
+/// to evaluate.
+#[allow(clippy::too_many_arguments)]
+fn run_extraction(
+    root: &Path,
+    vite: &Path,
+    command: &str,
+    mode: &str,
+    mode_explicit: bool,
+    mode_key: &str,
+    spa_build: bool,
+    timeout: Option<std::time::Duration>,
+    fresh: bool,
+) -> Option<(serde_json::Value, bool)> {
     let store = extraction_store(root);
-    if let Some(hit) = store.lookup(&vite, command, mode_key) {
+    let mut held = None;
+    if let Some(hit) = store.lookup(vite, command, mode_key) {
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&hit.output) {
-            print_extraction_stderr(&hit.stderr);
-            let _ = CONFIG_DEPS.set(hit.deps);
-            crate::boot_phase("vite-extract cache hit");
-            return Some(parse_vite_values(&json));
+            if fresh {
+                held = Some(json);
+            } else {
+                print_extraction_stderr(&hit.stderr);
+                let _ = CONFIG_DEPS.set(hit.deps);
+                crate::boot_phase("vite-extract cache hit");
+                return Some((json, false));
+            }
         }
     }
     let cache = oj_cache::cache_root(root);
     let _ = std::fs::create_dir_all(&cache);
     let script = materialize_extract_script(&cache)?;
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "vite": vite.to_string_lossy(),
         "root": root.to_string_lossy(),
         "command": command,
         "mode": mode,
         "modeKind": if mode_explicit { "explicit" } else { "default" },
+        "spaBuild": spa_build,
         "cacheDir": cache.to_string_lossy(),
     });
+    // A fresh evaluation supersedes what this process held for the root.
+    forget_resolved_values(root);
+    // Vite's config hooks see the command line's values, whichever engine runs.
+    payload["cliInline"] = cli_inline(root).unwrap_or_else(|| serde_json::json!({}));
+    let host = take_host_engine(root);
+    if host.is_some() {
+        payload["keep"] = true.into();
+    }
     // The result is the call's return value: config code that prints cannot corrupt it.
-    let json = match run_engine_job(root, &script, "extract", payload, timeout) {
+    let ran = match &host {
+        Some(engine) => run_on_engine(engine, &script, "extract", payload, timeout),
+        None => run_engine_job(root, &script, "extract", payload, timeout),
+    };
+    if host.is_some() {
+        // What the host engine now holds: a kept run for this command and
+        // mode, or a realm the config already ran in that no host may take.
+        let kept = ran.as_ref().ok().and_then(|json| {
+            let k = json.get("__kept")?;
+            Some((
+                k.get("command")?.as_str()?.to_string(),
+                k.get("mode")?.as_str()?.to_string(),
+            ))
+        });
+        ENGINE_RUN
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(root.to_path_buf(), kept);
+    }
+    let json = match ran {
         Ok(json) => json,
         Err(oj_js::EngineError::Deadline) => {
             eprintln!(
-                "oj: extracting {}: the config evaluation did not finish within {}s and was killed (raise OJ_EXTRACT_TIMEOUT for slower configs)",
+                "oj: extracting {}: the config evaluation hit its bound and was killed",
                 vite.display(),
-                timeout.as_secs()
             );
             return None;
         }
@@ -367,10 +837,73 @@ pub(crate) fn extract_vite_values_timed(
     if json.get("__ok").and_then(|v| v.as_bool()) != Some(true) {
         return None;
     }
-    store_extraction(&store, &vite, command, mode_key, &json, &stderr);
+    // Whether the host took the run over is this start's alone.
+    let kept = json.get("__kept").is_some();
+    let mut json = json;
+    if let Some(o) = json.as_object_mut() {
+        o.remove("__kept");
+    }
+    store_extraction(&store, vite, command, mode_key, &json, &stderr);
+    let mut keys = vec![mode_key.to_string()];
+    // A default mode the config named itself resolved under that mode, as
+    // Vite resolves once (`mode = inline.mode || config.mode`): a reload
+    // under it reads this evaluation instead of running the config again.
+    if !mode_explicit {
+        if let Some(named) = json
+            .get("mode")
+            .and_then(|m| m.as_str())
+            .filter(|m| *m != mode)
+        {
+            let key = extraction_mode_key(root, named, true, spa_build);
+            store_extraction(&store, vite, command, &key, &json, &stderr);
+            keys.push(key);
+        }
+    }
+    if kept {
+        KEPT_RUNS.lock().unwrap_or_else(|e| e.into_inner()).insert(
+            root.to_path_buf(),
+            KeptRun {
+                vite: vite.to_path_buf(),
+                command: command.to_string(),
+                keys,
+                json: json.clone(),
+                stderr: stderr.clone(),
+            },
+        );
+    }
     EXTRACTION_RAN_FRESH.store(true, std::sync::atomic::Ordering::Relaxed);
     crate::boot_phase("vite-extract cache miss (engine ran)");
-    Some(parse_vite_values(&json))
+    let mut output = json.clone();
+    if let Some(obj) = output.as_object_mut() {
+        obj.remove("__stderr");
+    }
+    let changed = held.as_ref() != Some(&output);
+    Some((json, changed))
+}
+
+/// One (config, command, mode) extraction key in this process: the lock its
+/// evaluations run under, how many have finished, and the last one's outcome.
+#[derive(Default)]
+struct ExtractionFlight {
+    finished: std::sync::atomic::AtomicU64,
+    outcome: std::sync::Mutex<Option<serde_json::Value>>,
+}
+
+fn extraction_flight(
+    vite: &Path,
+    command: &str,
+    mode_key: &str,
+) -> std::sync::Arc<ExtractionFlight> {
+    type Flights = std::collections::HashMap<String, std::sync::Arc<ExtractionFlight>>;
+    static FLIGHTS: std::sync::LazyLock<std::sync::Mutex<Flights>> =
+        std::sync::LazyLock::new(Default::default);
+    let key = format!("{}\0{command}\0{mode_key}", vite.display());
+    FLIGHTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(key)
+        .or_default()
+        .clone()
 }
 
 /// Writes the extractor script into `cache`. Extractions run concurrently at
@@ -379,6 +912,8 @@ pub(crate) fn extract_vite_values_timed(
 fn materialize_extract_script(cache: &Path) -> Option<PathBuf> {
     static EXTRACT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = EXTRACT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    super::ensure_asset(cache, "vite-config-node.mjs", super::VITE_CONFIG_NODE_JS).ok()?;
+    super::ensure_asset(cache, "native-plugins.mjs", super::NATIVE_PLUGINS_JS).ok()?;
     let script = cache.join("oj-vite-extract.mjs");
     if std::fs::read(&script).ok().as_deref() != Some(VITE_EXTRACT_JS.as_bytes()) {
         let tmp = cache.join(format!(
@@ -426,7 +961,36 @@ fn store_extraction(
     if let Some(obj) = stored.as_object_mut() {
         obj.remove("__stderr");
     }
-    store.store(vite, command, mode_key, &deps, &stored.to_string(), stderr);
+    let env_reads = env_reads_of(json);
+    store.store(
+        vite,
+        command,
+        mode_key,
+        &deps,
+        &env_reads,
+        &stored.to_string(),
+        stderr,
+    );
+}
+
+/// The env the evaluation read (`__envReads`, `__envEnumerated`,
+/// `__envPrefixes` from vite-extract.mjs), which the cache stamps by value.
+fn env_reads_of(json: &serde_json::Value) -> oj_cache::config_extract::EnvReads {
+    let strings = |key: &str| -> Vec<String> {
+        json.get(key)
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| s.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    oj_cache::config_extract::EnvReads {
+        names: strings("__envReads"),
+        prefixes: strings("__envPrefixes"),
+        enumerated: json.get("__envEnumerated").and_then(|v| v.as_bool()) == Some(true),
+    }
 }
 
 /// Whether any config extraction ran the engine (cache miss): caches derived
@@ -555,6 +1119,7 @@ pub(crate) fn parse_vite_values(json: &serde_json::Value) -> ViteValues {
         },
         port: json.get("port").and_then(|v| v.as_u64()).map(|p| p as u16),
         host: str_field(json, "host"),
+        origin: str_field(json, "origin"),
         hmr_disabled: json.get("hmr").and_then(|v| v.as_bool()) == Some(false),
         fs_allow: json.get("fsAllow").and_then(string_list),
         fs_strict: json.get("fsStrict").and_then(|v| v.as_bool()),
@@ -564,6 +1129,12 @@ pub(crate) fn parse_vite_values(json: &serde_json::Value) -> ViteValues {
         headers: json.get("headers").and_then(|v| v.as_object()).cloned(),
         rollup_options: non_null(json, "rollupOptions"),
         assets_inline_limit: json.get("assetsInlineLimit").and_then(|v| v.as_u64()),
+        assets_inline_limit_fn: json.get("assetsInlineLimitFn").and_then(|v| v.as_bool())
+            == Some(true),
+        assets_inline_limit_envs: json
+            .get("assetsInlineLimitEnvs")
+            .and_then(|v| v.as_object())
+            .cloned(),
         proxy: non_null(json, "proxy"),
         dedupe: json.get("dedupe").and_then(string_list),
         optimize_deps: non_null(json, "optimizeDeps"),
@@ -583,6 +1154,18 @@ pub(crate) fn parse_vite_values(json: &serde_json::Value) -> ViteValues {
         preview: non_null(json, "preview"),
         app_type: str_field(json, "appType"),
         html: non_null(json, "html"),
+        active_plugins: json
+            .get("activePlugins")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize),
+        stylex: non_null(json, "stylex"),
+        start_router: json.get("startRouter").and_then(|v| {
+            Some(oj_config::StartRouterPaths {
+                routes_directory: v.get("routesDirectory")?.as_str()?.into(),
+                generated_route_tree: v.get("generatedRouteTree")?.as_str()?.into(),
+            })
+        }),
+        resolve_error: str_field(json, "resolveError"),
     }
 }
 
@@ -598,6 +1181,7 @@ pub fn adopt_vite_config_values(
         return no_values_verdict(root, config_file);
     };
     merge_vite_values(config, v);
+    exclude_stylex_dependencies(config, root, command);
     Ok(())
 }
 
@@ -614,6 +1198,7 @@ pub fn adopt_vite_config_values_default_mode(
         return no_values_verdict(root, config_file);
     };
     merge_vite_values(config, v);
+    exclude_stylex_dependencies(config, root, command);
     Ok(())
 }
 
@@ -637,8 +1222,39 @@ fn no_values_verdict(root: &Path, config_file: Option<&Path>) -> Result<(), Stri
     Ok(())
 }
 
+/// The `@stylexjs/unplugin` `config` hook, which oj runs natively (the config
+/// only ever sees oj's stand-in for the plugin): the app's dependencies on
+/// StyleX join `optimizeDeps.exclude`. The plugin's `apply` drops it, hook
+/// included, under `serve` with `devMode: 'off'`.
+fn exclude_stylex_dependencies(config: &mut oj_config::OjConfig, root: &Path, command: &str) {
+    let Some(stylex) = &config.vite_stylex else {
+        return;
+    };
+    let options = stylex.get("options").cloned().unwrap_or_default();
+    if command == "serve" && options.get("devMode").and_then(|v| v.as_str()) == Some("off") {
+        return;
+    }
+    let packages = oj_stylex::plugin::dependency_packages(&options, root);
+    if packages.is_empty() {
+        return;
+    }
+    let exclude = config
+        .optimize_deps
+        .get_or_insert_with(Default::default)
+        .exclude
+        .get_or_insert_with(Vec::new);
+    for package in packages {
+        if !exclude.contains(&package) {
+            exclude.push(package);
+        }
+    }
+}
+
 /// Fills every field oj's own config left unset from the vite.config values.
 pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues) {
+    config.vite_active_plugins = v.active_plugins;
+    config.vite_stylex = v.stylex;
+    config.vite_start_router = v.start_router;
     if config.base.is_none() {
         config.base = v.base;
     }
@@ -662,6 +1278,7 @@ pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues)
         ServerBasics {
             port: v.port,
             host: v.host,
+            origin: v.origin,
             headers: v.headers,
             fs_allow: v.fs_allow,
             fs_strict: v.fs_strict,
@@ -684,13 +1301,23 @@ pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues)
     }
     if let Some(valias) = v.alias {
         if !valias.is_empty() {
+            // The resolved config's list is the one Vite matches against:
+            // mergeAlias put plugin entries ahead of the user's when either
+            // side is an array, and an object key a plugin set overrides the
+            // user's value. It leads, in its order; what the static read had
+            // and the resolved list could not carry (a regex find) follows.
             let rc = config.resolve.get_or_insert_with(Default::default);
-            let map = rc.alias.get_or_insert_with(Default::default);
+            let written = rc.alias.take().unwrap_or_default();
+            let mut list = oj_config::AliasList::default();
             for (find, replacement) in valias {
                 if let Some(s) = replacement.as_str() {
-                    map.entry(find).or_insert_with(|| s.to_string());
+                    list.insert_if_absent(find, s.to_string());
                 }
             }
+            for (find, replacement) in written.0 {
+                list.insert_if_absent(find, replacement);
+            }
+            rc.alias = Some(list);
         }
     }
     if let Some(ro) = v.rollup_options {
@@ -702,6 +1329,16 @@ pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues)
     if let Some(limit) = v.assets_inline_limit {
         let build = config.build.get_or_insert_with(Default::default);
         build.assets_inline_limit.get_or_insert(limit);
+    }
+    if v.assets_inline_limit_fn {
+        let build = config.build.get_or_insert_with(Default::default);
+        build.assets_inline_limit_fn.get_or_insert(true);
+    }
+    if let Some(envs) = v.assets_inline_limit_envs.filter(|e| !e.is_empty()) {
+        let build = config.build.get_or_insert_with(Default::default);
+        build
+            .assets_inline_limit_envs
+            .get_or_insert(serde_json::Value::Object(envs));
     }
     if let Some(proxy) = v.proxy {
         let sc = config.server.get_or_insert_with(Default::default);
@@ -781,10 +1418,11 @@ pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues)
     }
 }
 
-/// The vite.config's `server.{port,host,headers,fs.allow,fs.strict}`.
+/// The vite.config's `server.{port,host,origin,headers,fs.allow,fs.strict}`.
 struct ServerBasics {
     port: Option<u16>,
     host: Option<String>,
+    origin: Option<String>,
     headers: Option<serde_json::Map<String, serde_json::Value>>,
     fs_allow: Option<Vec<String>>,
     fs_strict: Option<bool>,
@@ -793,6 +1431,7 @@ struct ServerBasics {
 fn merge_server_basics(config: &mut oj_config::OjConfig, v: ServerBasics) {
     if v.port.is_none()
         && v.host.is_none()
+        && v.origin.is_none()
         && v.headers.is_none()
         && v.fs_allow.is_none()
         && v.fs_strict.is_none()
@@ -805,6 +1444,9 @@ fn merge_server_basics(config: &mut oj_config::OjConfig, v: ServerBasics) {
     }
     if sc.host.is_none() {
         sc.host = v.host;
+    }
+    if sc.origin.is_none() {
+        sc.origin = v.origin;
     }
     if v.fs_allow.is_some() || v.fs_strict.is_some() {
         let fs = sc.fs.get_or_insert_with(Default::default);
@@ -835,6 +1477,7 @@ fn merge_optimize_deps(config: &mut oj_config::OjConfig, od: serde_json::Value) 
     o.needs_interop = o.needs_interop.take().or(parsed.needs_interop);
     o.force = o.force.or(parsed.force);
     o.no_discovery = o.no_discovery.or(parsed.no_discovery);
+    o.hold_until_crawl_end = o.hold_until_crawl_end.or(parsed.hold_until_crawl_end);
     o.esbuild_options = o.esbuild_options.take().or(parsed.esbuild_options);
     o.rolldown_options = o.rolldown_options.take().or(parsed.rolldown_options);
 }
@@ -997,6 +1640,16 @@ fn merge_resolve_block(
     if rc.preserve_symlinks.is_none() {
         rc.preserve_symlinks = vr.get("preserveSymlinks").and_then(|b| b.as_bool());
     }
+    if rc.tsconfig_paths.is_none() {
+        rc.tsconfig_paths = vr.get("tsconfigPaths").and_then(|b| b.as_bool());
+    }
+    rc.tsconfig_paths_plugin = vr.get("tsconfigPathsPlugin").and_then(|b| b.as_bool());
+    if rc.tsconfig_file.is_none() {
+        rc.tsconfig_file = vr
+            .get("tsconfigFile")
+            .and_then(|f| f.as_str())
+            .map(str::to_string);
+    }
 }
 
 /// The extractor's `serverFlags`. Runs after the vite `fsStrict` value, so that
@@ -1055,6 +1708,14 @@ fn merge_server_flags(
     if sc.forward_console.is_none() {
         sc.forward_console = sf.get("forwardConsole").cloned();
     }
+    // server.https from the RESOLVED config, so a plugin that injects a
+    // certificate in its config hook (basic-ssl) turns TLS on, as under Vite.
+    if sc.https.is_none() {
+        sc.https = sf
+            .get("https")
+            .and_then(|h| serde_json::from_value::<oj_config::HttpsConfig>(h.clone()).ok())
+            .filter(|h| !h.key.is_empty() && !h.cert.is_empty());
+    }
     if sf.get("skipWebSocketTokenCheck").and_then(|b| b.as_bool()) == Some(true) {
         let legacy = config.legacy.get_or_insert_with(Default::default);
         if legacy.skip_web_socket_token_check.is_none() {
@@ -1085,5 +1746,103 @@ fn merge_css(config: &mut oj_config::OjConfig, css: &serde_json::Value) {
         if entry.additional_data.is_none() {
             entry.additional_data = Some(data.to_string());
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod exit_signal_tests {
+    use super::*;
+
+    #[test]
+    fn exit_signal_fires_on_exit_and_leaves_the_child_to_reap() {
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "sleep 0.2; exit 7"])
+            .spawn()
+            .unwrap();
+        let exited = child_exit_signal(&child);
+        assert!(
+            exited
+                .recv_timeout(std::time::Duration::from_millis(50))
+                .is_err(),
+            "fires only once the child exits"
+        );
+        exited
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("fires when the child exits");
+        let status = child
+            .try_wait()
+            .unwrap()
+            .expect("exited child reaps at once");
+        assert_eq!(status.code(), Some(7), "status survives the signal");
+    }
+
+    // A dev server's shutdown sweep kills a running engine job child, so it
+    // cannot keep writing into the app's cache after the server is gone.
+    #[test]
+    fn the_shutdown_sweep_kills_a_running_engine_job_child() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("fake-oj");
+        std::fs::write(&exe, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (exe2, root) = (exe.clone(), dir.path().to_path_buf());
+        std::thread::spawn(move || {
+            let out = run_engine_job_subprocess(
+                &exe2,
+                &root,
+                Path::new("job.mjs"),
+                "run",
+                &serde_json::Value::Null,
+                None,
+            );
+            let _ = tx.send(out);
+        });
+        let started = std::time::Instant::now();
+        let mut killed = 0;
+        while killed == 0 && started.elapsed() < std::time::Duration::from_secs(10) {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            killed = crate::watch::child_groups::kill_all();
+        }
+        assert!(killed >= 1, "the running job child was not in the sweep");
+        let out = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the job returns once its child is killed");
+        assert!(out.is_err(), "a killed job fails: {out:?}");
+    }
+}
+
+#[cfg(test)]
+mod host_engine_tests {
+    use super::*;
+
+    // An engine the extraction never ran on, or ran a kept run on for the
+    // host's command and mode, may become the host; one the config ran in
+    // without a run to take over may not.
+    #[test]
+    fn a_host_engine_is_reused_only_for_its_own_kept_run() {
+        let root = Path::new("/oj-test/host-engine-reuse");
+        assert!(
+            host_engine_reusable(root, "serve", "development"),
+            "untouched"
+        );
+        let set = |run: Option<(&str, &str)>| {
+            ENGINE_RUN.lock().unwrap().insert(
+                root.to_path_buf(),
+                run.map(|(c, m)| (c.to_string(), m.to_string())),
+            );
+        };
+        set(Some(("serve", "development")));
+        assert!(host_engine_reusable(root, "serve", "development"));
+        set(Some(("build", "staging")));
+        assert!(
+            !host_engine_reusable(root, "build", "production"),
+            "another mode"
+        );
+        set(None);
+        assert!(
+            !host_engine_reusable(root, "serve", "development"),
+            "a failed run"
+        );
     }
 }

@@ -39,12 +39,12 @@ test("css-tailwind.mjs runs the postcss config named on the request", async () =
       `module.exports = () => ({
         async process(css) {
           await new Promise((resolve) => setTimeout(resolve, 10));
-          return { css: css + "/*postcss-ran*/" };
+          return { css: css + "/*postcss-ran*/", messages: [] };
         },
       });`,
     );
     const { compile } = await load("css-tailwind.mjs");
-    const css = await compile({
+    const { css } = await compile({
       base,
       css: ".a { color: red }",
       from: join(base, "input.css"),

@@ -24,9 +24,15 @@ function spawnHost(fx, initial = {}) {
 }
 
 // The plugin file under test exposes what it observed through a `probe.js`
-// transform that returns the captured state as JSON.
+// transform that returns the captured state as JSON. The host's RPCs (a
+// `this.resolve` reaching Vite's own resolver) answer null, as a Rust
+// resolver that knows none of the probe's ids does.
 async function probe(host, fx) {
-  const res = await host.send({ id: 99, hook: "transform", args: ["", path.join(fx.root, "probe.js")] });
+  let res = await host.send({ id: 99, hook: "transform", args: ["", path.join(fx.root, "probe.js")] });
+  while (res.rpc != null) {
+    host.child.stdin.write(JSON.stringify({ rpcReply: res.rpc, result: null }) + "\n");
+    res = await host.nextFrame();
+  }
   if (res.error) throw new Error(res.error);
   return JSON.parse(JSON.parse(res.result).code);
 }
@@ -49,8 +55,10 @@ test("ConfigEnv carries isSsrBuild / isPreview and apply() sees the merged confi
   });
   try {
     const seen = await probe(host, fx);
-    assert.deepEqual(seen.apply.env, { command: "build", mode: "production", isSsrBuild: true, isPreview: false });
-    assert.deepEqual(seen.configEnv, { command: "build", mode: "production", isSsrBuild: true, isPreview: false });
+    // Even in the ssr environment's host: Vite takes isSsrBuild from the
+    // inline config's build.ssr alone, which an environment build never sets.
+    assert.deepEqual(seen.apply.env, { command: "build", mode: "production", isSsrBuild: false, isPreview: false });
+    assert.deepEqual(seen.configEnv, { command: "build", mode: "production", isSsrBuild: false, isPreview: false });
     assert.equal(seen.apply.mode, "production", "apply(config) carries mode like Vite's { ...config, mode }");
     assert.equal(seen.apply.root, fx.root, "apply(config) is the merged config, not an empty shape");
   } finally {
@@ -611,12 +619,20 @@ test("a relative root from a config hook still yields an absolute cacheDir", asy
 // environment.warmupRequest for every url on every environment that has one
 // (client included: Vite's clientFiles warm exactly it) and replies with what
 // started, fire-and-forget like Vite's warmup.ts.
-test("warmEnvironments dispatches warmupRequest per url and skips stand-ins", async () => {
+test("warmEnvironments warms each runner environment's own dev.warmup, never the client's", async () => {
   const fx = tmpProject({ prefix: "oj-parity-warm-" });
+  fx.write("src/routes/a.tsx", "export {};\n");
+  fx.write("src/routes/b.tsx", "export {};\n");
   fx.write(
     "oj.plugins.mjs",
     `export default [{
        name: "warm-probe",
+       config: () => ({
+         environments: {
+           ssr: { dev: { warmup: ["./src/router.tsx", "src/routes/*.tsx"] } },
+           client: { dev: { warmup: ["./src/client.tsx"] } },
+         },
+       }),
        configureServer(server) {
          globalThis.__warmed = [];
          server.environments.ssr = {
@@ -633,33 +649,22 @@ test("warmEnvironments dispatches warmupRequest per url and skips stand-ins", as
   );
   const host = spawnHost(fx, { env: { command: "serve", mode: "development" } });
   try {
-    const res = await host.send({
-      id: 41,
-      hook: "warmEnvironments",
-      args: [JSON.stringify(["/src/routes/index.tsx", "/src/router.tsx"])],
-    });
+    const res = await host.send({ id: 41, hook: "warmEnvironments", args: [] });
     assert.equal(res.error, undefined);
     const summary = JSON.parse(res.result);
-    assert.deepEqual(summary.environments.sort(), ["client", "ssr"]);
-    assert.equal(summary.started, 4);
+    assert.deepEqual(summary.environments, ["ssr"]);
+    assert.equal(summary.started, 3);
     const seen = await probe(host, fx);
-    assert.deepEqual(seen.sort(), [
-      "client:/src/router.tsx",
-      "client:/src/routes/index.tsx",
-      "ssr:/src/router.tsx",
-      "ssr:/src/routes/index.tsx",
-    ]);
+    assert.deepEqual(seen.sort(), ["ssr:/src/router.tsx", "ssr:/src/routes/a.tsx", "ssr:/src/routes/b.tsx"]);
   } finally {
     host.close();
     fx.cleanup();
   }
 });
 
-// Nothing to dispatch (an empty url list, or a host without a dev server)
-// means a null reply (Ok(None) on the Rust side), never a fabricated
-// zero-work summary. NOTE the host's default client/ssr environments are real
-// Vite DevEnvironments and DO carry warmupRequest, so an empty environment
-// set is not reachable through a plugin fixture; the url-less case is.
+// Nothing to dispatch (no environment lists a warmup file, or a host without
+// a dev server) means a null reply (Ok(None) on the Rust side), never a
+// fabricated zero-work summary.
 test("warmEnvironments replies null when there is nothing to warm", async () => {
   const fx = tmpProject({ prefix: "oj-parity-warm-none-" });
   fx.write("oj.plugins.mjs", `export default [{ name: "noop" }];\n`);
@@ -668,7 +673,7 @@ test("warmEnvironments replies null when there is nothing to warm", async () => 
     const res = await host.send({
       id: 42,
       hook: "warmEnvironments",
-      args: [JSON.stringify([])],
+      args: [],
     });
     assert.equal(res.error, undefined);
     assert.equal(res.result, null);

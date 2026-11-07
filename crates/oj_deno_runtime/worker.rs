@@ -580,6 +580,10 @@ impl MainWorker {
               );
             })
             .map(Cow::Owned);
+          // deno_core compiles uncached and arms no write on an error.
+          if data.is_none() && !cache.produces() {
+            return Err(JsErrorBox::generic("code cache miss"));
+          }
           Ok(SourceCodeCacheInfo {
             data,
             hash: source_hash,

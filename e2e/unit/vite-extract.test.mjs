@@ -170,13 +170,21 @@ test("warnUnsupported reports only options the user's config sets", () => {
     "",
   );
   const userSets = captureStderr(() =>
-    warnUnsupported({
-      worker: { format: "es" },
-      esbuild: { charset: "ascii" },
-      build: { terserOptions: { compress: true } },
-    }),
+    warnUnsupported(
+      {
+        worker: { format: "es" },
+        esbuild: { charset: "ascii" },
+        build: { terserOptions: { compress: true } },
+      },
+      true,
+    ),
   );
   assert.match(userSets, /worker config is not applied/);
+  // Dev bundles no worker and the Start build applies `worker`: no warning.
+  assert.doesNotMatch(
+    captureStderr(() => warnUnsupported({ worker: { format: "es" } })),
+    /worker/,
+  );
   assert.match(userSets, /esbuild options charset are not applied/);
   assert.match(userSets, /build.terserOptions is not applied/);
 

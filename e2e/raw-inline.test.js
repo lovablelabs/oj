@@ -14,11 +14,12 @@ const { chromium } = require("playwright");
       return { raw, inline };
     });
     console.log("?raw starts:", JSON.stringify(res.raw.slice(0, 14)));
-    console.log("?inline starts:", JSON.stringify(res.inline.slice(0, 24)));
+    console.log("?inline:", JSON.stringify(res.inline));
     if (typeof res.raw !== "string" || !res.raw.includes("$brand"))
       throw new Error("?raw wrong: " + res.raw.slice(0, 40));
-    if (!res.inline.startsWith("data:application/json;base64,"))
-      throw new Error("?inline wrong: " + res.inline.slice(0, 40));
+    // JSON is no asset: Vite's json plugin loads `?inline` as the JSON module
+    // (inline is no special query to it), never a data: URL.
+    if (res.inline?.appName !== "oj playground") throw new Error("?inline wrong: " + JSON.stringify(res.inline));
     console.log("RAW/INLINE VERIFIED");
   } finally {
     await browser.close();

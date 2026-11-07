@@ -5,18 +5,22 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::memo::{build_memo, write_memo};
+use super::memo::{build_memo, read_memo, verified_digests, write_memo};
 use super::{
-    hash_file, par_map, read_chunk_index, read_closure, read_css_urls, touch, ChunkIndexFile,
-    GenerationManifest, ManifestFile, PinnedBundle, StartBundleStore, ARTIFACTS, BLOBS_DIR,
-    CHUNKS_DIR, CLOSURE_FILE, KEEP_GENERATIONS, MANIFEST_FILE, START_BUNDLE_FORMAT,
+    hash_file, par_map, read_chunk_index, read_closure, read_css_urls, read_current, touch,
+    ChunkIndexFile, GenerationManifest, ManifestFile, PinnedBundle, StartBundleStore, ARTIFACTS,
+    BLOBS_DIR, CHUNKS_DIR, CLOSURE_FILE, KEEP_GENERATIONS, MANIFEST_FILE, START_BUNDLE_FORMAT,
 };
 
 impl StartBundleStore {
     pub fn persist(&self, start_dir: &Path) -> Option<(String, PinnedBundle)> {
         let files = read_closure(&start_dir.join(CLOSURE_FILE))?;
-        let digests = par_map(&files, |p| hash_file(p));
-        let key = self.key_from(&files, &digests).ok()?;
+        // A dev rebundle persists after every edit: files the current
+        // generation's memo still vouches for (same size and mtime, settled
+        // past its freshness window) keep their digest unread.
+        let memo = read_current(&self.dir).and_then(|key| read_memo(&self.dir.join(key)));
+        let digests = verified_digests(&files, memo.as_ref());
+        let key = self.key_from(&files, &digests.hashes).ok()?;
         let index = read_chunk_index(start_dir)?;
         let css_urls = read_css_urls(start_dir);
         let chunk_dir = start_dir.join(CHUNKS_DIR);

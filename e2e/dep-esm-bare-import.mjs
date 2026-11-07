@@ -108,8 +108,8 @@ const routeTreePath = path.join(app, "src", "routeTree.ts");
 const routeTree = fs
   .readFileSync(routeTreePath, "utf8")
   .replace("import { rootRoute }", 'import { gpuTierRoute } from "./routes/gpu-tier";\nimport { rootRoute }')
-  .replace("requestUrlRoute]", "requestUrlRoute, gpuTierRoute]");
-if (!routeTree.includes("gpuTierRoute]")) throw new Error("could not register the test route");
+  .replace("rootRoute.addChildren([", "rootRoute.addChildren([gpuTierRoute, ");
+if (!routeTree.includes("addChildren([gpuTierRoute, ")) throw new Error("could not register the test route");
 fs.writeFileSync(routeTreePath, routeTree);
 
 const port = 5217;

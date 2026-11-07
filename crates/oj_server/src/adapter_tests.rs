@@ -23,6 +23,33 @@ fn write_start_assets_writes_every_module_the_start_host_aliases() {
     }
 }
 
+// The manifest virtual serves every start-server-core shape at once: 1.168+
+// emits the client entry script tag from `routes.*.scripts`, while 1.167 and
+// earlier emit `import(<clientEntry>)` from the top-level field (a missing one
+// ships `import(undefined)` and a page that never hydrates) and read css from
+// per-route `assets`. Each version copies only the fields it knows.
+#[test]
+fn start_manifest_shims_serve_old_and_new_start_server_core_shapes() {
+    let dir = tmp("manifest-shapes");
+    write_start_assets(&dir).unwrap();
+    for name in ["manifest.ts", "manifest-dev.ts"] {
+        let src = std::fs::read_to_string(dir.join(name)).unwrap();
+        assert!(
+            src.contains("clientEntry:"),
+            "{name} lost the pre-1.168 clientEntry field"
+        );
+        assert!(
+            src.contains("scripts:"),
+            "{name} lost the 1.168+ scripts field"
+        );
+    }
+    let dev = std::fs::read_to_string(dir.join("manifest-dev.ts")).unwrap();
+    assert!(
+        dev.contains("assets:"),
+        "manifest-dev.ts lost the pre-1.168 per-route assets (css under old start-server-core)"
+    );
+}
+
 #[test]
 fn start_build_scripts_match_the_embedded_assets_in_cache_order() {
     let expected_names = [
@@ -127,14 +154,15 @@ fn the_ssr_module_endpoint_only_reads_the_project_and_its_dependencies() {
     for ok in [
         root.join("src/App.tsx"),
         root.join("node_modules/react/index.js"),
-        base.join("linked/node_modules/dep/index.js"),
         base.join("allowed/shared.ts"),
     ] {
         assert!(module_read_allowed(&root, &allow, &ok), "{ok:?} denied");
     }
 
     // Everything else, however it is spelled.
+    // A `node_modules` path outside them is not a dependency of the project.
     for denied in [
+        base.join("linked/node_modules/dep/index.js"),
         outside.join("secrets/id_rsa"),
         root.join("../elsewhere/secrets/id_rsa"),
         root.join("src/../../elsewhere/secrets/id_rsa"),
@@ -366,6 +394,24 @@ fn worker_beats_inline_in_asset_kind_classification() {
     assert_eq!(query_asset_kind(Some("worker")), Some("worker"));
 }
 
+/// Vite's rawRE takes `raw` anywhere in the query, and vite:asset reads it
+/// before `url` or `inline`; a worker query belongs to vite:worker first.
+#[test]
+fn raw_anywhere_in_the_query_classifies_as_raw() {
+    for q in [
+        "raw",
+        "v=1&raw",
+        "raw&v=1",
+        "raw&url",
+        "url&raw",
+        "inline&raw",
+    ] {
+        assert_eq!(query_asset_kind(Some(q)), Some("raw"), "{q}");
+    }
+    assert_eq!(query_asset_kind(Some("v=1&raw=1")), None);
+    assert_eq!(query_asset_kind(Some("worker&raw")), Some("worker"));
+}
+
 #[test]
 fn is_spa_navigation_rules() {
     let empty = HeaderMap::new();
@@ -373,6 +419,9 @@ fn is_spa_navigation_rules() {
     assert!(is_spa_navigation("projects/abc", &empty));
     assert!(!is_spa_navigation("main.js", &empty));
     assert!(!is_spa_navigation("@vite/client", &empty));
+    // Vite's htmlFallback reserves no `__` prefix (oj's own endpoints are
+    // routed before the fallback).
+    assert!(is_spa_navigation("__component/preview/Badge", &empty));
     assert!(!is_spa_navigation("src/App.tsx", &empty));
     assert!(!is_spa_navigation("node_modules/react/index.js", &empty));
     let mut html = HeaderMap::new();

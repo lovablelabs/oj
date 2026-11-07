@@ -1,0 +1,1154 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/transform-stylex-defineConsts-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs and upstream's own expected values — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "assertions/defineConsts-constants-are-unique-001-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import stylex from 'stylex';\n        export const breakpoints = stylex.defineConsts({ padding: '10px' });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toEqual",
+        "match": "exact",
+        "expected": "import stylex from 'stylex';\nexport const breakpoints = {\n  padding: \"10px\"\n};",
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "constants are unique",
+          "line": 106
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-constants-are-unique-002-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import stylex from 'stylex';\n        export const breakpoints = stylex.defineConsts({ padding: '10px' });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toEqual",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x2v75n0",
+            {
+              "constKey": "x2v75n0",
+              "constVal": "10px",
+              "ltr": "",
+              "rtl": null
+            },
+            0
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "constants are unique",
+          "line": 107
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-constants-object-003-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const breakpoints = stylex.defineConsts({\n          sm: '(min-width: 768px)',\n          md: '(min-width: 1024px)',\n          lg: '(min-width: 1280px)',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const breakpoints = {\n  sm: \"(min-width: 768px)\",\n  md: \"(min-width: 1024px)\",\n  lg: \"(min-width: 1280px)\"\n};",
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "constants object",
+          "line": 129
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-constants-object-004-rules",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const breakpoints = stylex.defineConsts({\n          sm: '(min-width: 768px)',\n          md: '(min-width: 1024px)',\n          lg: '(min-width: 1280px)',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "assert-rules"],
+      "assert": {
+        "kind": "rules",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata.stylex",
+        "expected": [
+          [
+            "x1izlsax",
+            {
+              "constKey": "x1izlsax",
+              "constVal": "(min-width: 768px)",
+              "ltr": "",
+              "rtl": null
+            },
+            0
+          ],
+          [
+            "xe5hjsi",
+            {
+              "constKey": "xe5hjsi",
+              "constVal": "(min-width: 1024px)",
+              "ltr": "",
+              "rtl": null
+            },
+            0
+          ],
+          [
+            "xmbwnbr",
+            {
+              "constKey": "xmbwnbr",
+              "constVal": "(min-width: 1280px)",
+              "ltr": "",
+              "rtl": null
+            },
+            0
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "constants object",
+          "line": 138
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-constants-object-haste-005-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "stylex/packages/TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const breakpoints = stylex.defineConsts({\n          sm: '(min-width: 768px)',\n          md: '(min-width: 1024px)',\n          lg: '(min-width: 1280px)',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const breakpoints = {\n  sm: \"(min-width: 768px)\",\n  md: \"(min-width: 1024px)\",\n  lg: \"(min-width: 1280px)\"\n};",
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "constants object (haste)",
+          "line": 191
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-constants-object-haste-006-rules",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "stylex/packages/TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const breakpoints = stylex.defineConsts({\n          sm: '(min-width: 768px)',\n          md: '(min-width: 1024px)',\n          lg: '(min-width: 1280px)',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "assert-rules"],
+      "assert": {
+        "kind": "rules",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata.stylex",
+        "expected": [
+          [
+            "x1izlsax",
+            {
+              "constKey": "x1izlsax",
+              "constVal": "(min-width: 768px)",
+              "ltr": "",
+              "rtl": null
+            },
+            0
+          ],
+          [
+            "xe5hjsi",
+            {
+              "constKey": "xe5hjsi",
+              "constVal": "(min-width: 1024px)",
+              "ltr": "",
+              "rtl": null
+            },
+            0
+          ],
+          [
+            "xmbwnbr",
+            {
+              "constKey": "xmbwnbr",
+              "constVal": "(min-width: 1280px)",
+              "ltr": "",
+              "rtl": null
+            },
+            0
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "constants object (haste)",
+          "line": 200
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-constant-names-special-chara-007-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const sizes = stylex.defineConsts({\n          'font-size*large': '18px',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const sizes = {\n  \"font-size*large\": \"18px\"\n};",
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "constant names: special characters",
+          "line": 244
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-constant-names-special-chara-008-rules",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const sizes = stylex.defineConsts({\n          'font-size*large': '18px',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "assert-rules"],
+      "assert": {
+        "kind": "rules",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata.stylex",
+        "expected": [
+          [
+            "x4spo47",
+            {
+              "constKey": "x4spo47",
+              "constVal": "18px",
+              "ltr": "",
+              "rtl": null
+            },
+            0
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "constant names: special characters",
+          "line": 251
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-constant-names-number-009-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const levels = stylex.defineConsts({\n          1: 'one'\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const levels = {\n  \"1\": \"one\"\n};",
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "constant names: number",
+          "line": 275
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-constant-names-number-010-rules",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const levels = stylex.defineConsts({\n          1: 'one'\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "assert-rules"],
+      "assert": {
+        "kind": "rules",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata.stylex",
+        "expected": [
+          [
+            "xr91grk",
+            {
+              "constKey": "xr91grk",
+              "constVal": "one",
+              "ltr": "",
+              "rtl": null
+            },
+            0
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "constant names: number",
+          "line": 282
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-constant-names-prefix-preser-011-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const sizes = stylex.defineConsts({\n          '--small': '8px',\n          '--large': '24px',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nexport const sizes = {\n  \"--small\": \"8px\",\n  \"--large\": \"24px\"\n};",
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "constant names: -- prefix preserves user-authored name",
+          "line": 307
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-constant-names-prefix-preser-012-rules",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const sizes = stylex.defineConsts({\n          '--small': '8px',\n          '--large': '24px',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "assert-rules"],
+      "assert": {
+        "kind": "rules",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata.stylex",
+        "expected": [
+          [
+            "small",
+            {
+              "constKey": "small",
+              "constVal": "8px",
+              "ltr": "",
+              "rtl": null
+            },
+            0
+          ],
+          [
+            "large",
+            {
+              "constKey": "large",
+              "constVal": "24px",
+              "ltr": "",
+              "rtl": null
+            },
+            0
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "constant names: -- prefix preserves user-authored name",
+          "line": 315
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-adds-placeholder-for-constan-013-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "main.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { colors } from './constants.stylex';\n\n        export const styles = stylex.create({\n          root: {\n            backgroundColor: colors.background,\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nimport { colors } from './constants.stylex';\nexport const styles = {\n  root: {\n    kWkggS: \"xw8d3ix\",\n    $$css: true\n  }\n};",
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "adds placeholder for constant value from constants.stylex",
+          "line": 355
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-adds-placeholder-for-constan-014-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "main.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { colors } from './constants.stylex';\n\n        export const styles = stylex.create({\n          root: {\n            backgroundColor: colors.background,\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xw8d3ix",
+            {
+              "ltr": ".xw8d3ix{background-color:var(--x180gk19)}",
+              "rtl": null
+            },
+            3000
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "adds placeholder for constant value from constants.stylex",
+          "line": 366
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-adds-media-query-placeholder-015-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "main.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { breakpoints } from './constants.stylex';\n\n        export const styles = stylex.create({\n          root: {\n            color: {\n              default: 'red',\n              [breakpoints.small]: 'blue',\n            },\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nimport { breakpoints } from './constants.stylex';\nexport const styles = {\n  root: {\n    kMwMTN: \"x1e2nbdu xbs0o1n\",\n    $$css: true\n  }\n};",
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "adds media query placeholder from constants.stylex",
+          "line": 397
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-adds-media-query-placeholder-016-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "main.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { breakpoints } from './constants.stylex';\n\n        export const styles = stylex.create({\n          root: {\n            color: {\n              default: 'red',\n              [breakpoints.small]: 'blue',\n            },\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x1e2nbdu",
+            {
+              "ltr": ".x1e2nbdu{color:red}",
+              "rtl": null
+            },
+            3000
+          ],
+          [
+            "xbs0o1n",
+            {
+              "ltr": "var(--x1r2wpmh){.xbs0o1n.xbs0o1n{color:blue}}",
+              "rtl": null
+            },
+            6000
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "adds media query placeholder from constants.stylex",
+          "line": 408
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-works-with-dynamic-styles-co-017-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "main.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { colors } from './constants.stylex';\n\n        export const styles = stylex.create({\n          node: (padding) => ({\n            padding: padding,\n            color: colors.background,\n          }),\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nimport { colors } from './constants.stylex';\nconst _temp = {\n  kMwMTN: \"xy1iwrb\",\n  \"$$css\": true\n};\nexport const styles = {\n  node: padding => [_temp, {\n    kmVPX3: padding != null ? \"x1fozly0\" : padding,\n    $$css: true\n  }, {\n    \"--x-padding\": (val => typeof val === \"number\" ? val + \"px\" : val != null ? val : undefined)(padding)\n  }]\n};",
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "works with dynamic styles constants",
+          "line": 537
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-works-with-dynamic-styles-co-018-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "main.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { colors } from './constants.stylex';\n\n        export const styles = stylex.create({\n          node: (padding) => ({\n            padding: padding,\n            color: colors.background,\n          }),\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x1fozly0",
+            {
+              "ltr": ".x1fozly0{padding:var(--x-padding)}",
+              "rtl": null
+            },
+            1000
+          ],
+          [
+            "xy1iwrb",
+            {
+              "ltr": ".xy1iwrb{color:var(--x180gk19)}",
+              "rtl": null
+            },
+            3000
+          ],
+          [
+            "--x-padding",
+            {
+              "ltr": "@property --x-padding { syntax: \"*\"; inherits: false;}",
+              "rtl": null
+            },
+            0
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "works with dynamic styles constants",
+          "line": 554
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-works-with-dynamic-styles-at-019-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "main.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { breakpoints } from './constants.stylex';\n\n        export const styles = stylex.create({\n          node: (color) => ({\n            color: {\n              [breakpoints.small]: 'blue',\n              default: color,\n            },\n          }),\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nimport { breakpoints } from './constants.stylex';\nexport const styles = {\n  node: color => [{\n    kMwMTN: \"xbs0o1n \" + (color != null ? \"x3d248p\" : color),\n    $$css: true\n  }, {\n    \"--x-4xs81a\": color != null ? color : undefined\n  }]\n};",
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "works with dynamic styles at-rules",
+          "line": 601
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-works-with-dynamic-styles-at-020-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "main.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { breakpoints } from './constants.stylex';\n\n        export const styles = stylex.create({\n          node: (color) => ({\n            color: {\n              [breakpoints.small]: 'blue',\n              default: color,\n            },\n          }),\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "xbs0o1n",
+            {
+              "ltr": "var(--x1r2wpmh){.xbs0o1n.xbs0o1n{color:blue}}",
+              "rtl": null
+            },
+            6000
+          ],
+          [
+            "x3d248p",
+            {
+              "ltr": ".x3d248p{color:var(--x-4xs81a)}",
+              "rtl": null
+            },
+            3000
+          ],
+          [
+            "--x-4xs81a",
+            {
+              "ltr": "@property --x-4xs81a { syntax: \"*\"; inherits: false;}",
+              "rtl": null
+            },
+            0
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "works with dynamic styles at-rules",
+          "line": 614
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-adds-multiple-media-query-pl-021-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "main.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { breakpoints } from './constants.stylex';\n\n        export const styles = stylex.create({\n          root: {\n            color: {\n              default: 'red',\n              [breakpoints.small]: 'blue',\n              [breakpoints.big]: 'yellow',\n            },\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nimport { breakpoints } from './constants.stylex';\nexport const styles = {\n  root: {\n    kMwMTN: \"x1e2nbdu xbs0o1n x1ru35j7\",\n    $$css: true\n  }\n};",
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "adds multiple media query placeholders from constants.stylex",
+          "line": 662
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-adds-multiple-media-query-pl-022-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "main.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { breakpoints } from './constants.stylex';\n\n        export const styles = stylex.create({\n          root: {\n            color: {\n              default: 'red',\n              [breakpoints.small]: 'blue',\n              [breakpoints.big]: 'yellow',\n            },\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x1e2nbdu",
+            {
+              "ltr": ".x1e2nbdu{color:red}",
+              "rtl": null
+            },
+            3000
+          ],
+          [
+            "xbs0o1n",
+            {
+              "ltr": "var(--x1r2wpmh){.xbs0o1n.xbs0o1n{color:blue}}",
+              "rtl": null
+            },
+            6000
+          ],
+          [
+            "x1ru35j7",
+            {
+              "ltr": "var(--xr4bctk){.x1ru35j7.x1ru35j7{color:yellow}}",
+              "rtl": null
+            },
+            6000
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "adds multiple media query placeholders from constants.stylex",
+          "line": 673
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-adds-nested-media-query-plac-023-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "main.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { breakpoints, colors } from './constants.stylex';\n\n        export const styles = stylex.create({\n          root: {\n            color: {\n              default: 'black',\n              [breakpoints.big]: {\n                default: colors.red,\n                [breakpoints.small]: colors.blue,\n              },\n            },\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import * as stylex from '@stylexjs/stylex';\nimport { breakpoints, colors } from './constants.stylex';\nexport const styles = {\n  root: {\n    kMwMTN: \"x1mqxbix x1iobwbz xrf68et\",\n    $$css: true\n  }\n};",
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "adds nested media query placeholders from constants.stylex",
+          "line": 723
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-adds-nested-media-query-plac-024-metadata",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "main.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        import { breakpoints, colors } from './constants.stylex';\n\n        export const styles = stylex.create({\n          root: {\n            color: {\n              default: 'black',\n              [breakpoints.big]: {\n                default: colors.red,\n                [breakpoints.small]: colors.blue,\n              },\n            },\n          },\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        }
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "create", "assert-metadata"],
+      "assert": {
+        "kind": "metadata",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata",
+        "expected": [
+          [
+            "x1mqxbix",
+            {
+              "ltr": ".x1mqxbix{color:black}",
+              "rtl": null
+            },
+            3000
+          ],
+          [
+            "x1iobwbz",
+            {
+              "ltr": "var(--xr4bctk){.x1iobwbz.x1iobwbz{color:var(--x1itgfi6)}}",
+              "rtl": null
+            },
+            6000
+          ],
+          [
+            "xrf68et",
+            {
+              "ltr": "var(--x1r2wpmh){var(--xr4bctk){.xrf68et.xrf68et.xrf68et{color:var(--x9g651j)}}}",
+              "rtl": null
+            },
+            9000
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "adds nested media query placeholders from constants.stylex",
+          "line": 734
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-constants-object-with-runtim-025-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const breakpoints = stylex.defineConsts({\n          sm: '(min-width: 768px)',\n          md: '(min-width: 1024px)',\n          lg: '(min-width: 1280px)',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport * as stylex from '@stylexjs/stylex';\n_inject2({\n  ltr: \"\",\n  priority: 0,\n  constKey: \"x1izlsax\",\n  constVal: \"(min-width: 768px)\"\n});\n_inject2({\n  ltr: \"\",\n  priority: 0,\n  constKey: \"xe5hjsi\",\n  constVal: \"(min-width: 1024px)\"\n});\n_inject2({\n  ltr: \"\",\n  priority: 0,\n  constKey: \"xmbwnbr\",\n  constVal: \"(min-width: 1280px)\"\n});\nexport const breakpoints = {\n  sm: \"(min-width: 768px)\",\n  md: \"(min-width: 1024px)\",\n  lg: \"(min-width: 1280px)\"\n};",
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "constants object with runtimeInjection: true",
+          "line": 782
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-constants-object-with-runtim-026-rules",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const breakpoints = stylex.defineConsts({\n          sm: '(min-width: 768px)',\n          md: '(min-width: 1024px)',\n          lg: '(min-width: 1280px)',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "assert-rules"],
+      "assert": {
+        "kind": "rules",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "subject": "metadata.stylex",
+        "expected": [
+          [
+            "x1izlsax",
+            {
+              "constKey": "x1izlsax",
+              "constVal": "(min-width: 768px)",
+              "ltr": "",
+              "rtl": null
+            },
+            0
+          ],
+          [
+            "xe5hjsi",
+            {
+              "constKey": "xe5hjsi",
+              "constVal": "(min-width: 1024px)",
+              "ltr": "",
+              "rtl": null
+            },
+            0
+          ],
+          [
+            "xmbwnbr",
+            {
+              "constKey": "xmbwnbr",
+              "constVal": "(min-width: 1280px)",
+              "ltr": "",
+              "rtl": null
+            },
+            0
+          ]
+        ],
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "constants object with runtimeInjection: true",
+          "line": 811
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-numeric-constants-with-runti-027-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const sizes = stylex.defineConsts({\n          small: 8,\n          medium: 16,\n          large: 24,\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport * as stylex from '@stylexjs/stylex';\n_inject2({\n  ltr: \"\",\n  priority: 0,\n  constKey: \"x1mllmr4\",\n  constVal: 8\n});\n_inject2({\n  ltr: \"\",\n  priority: 0,\n  constKey: \"x1g9nw8d\",\n  constVal: 16\n});\n_inject2({\n  ltr: \"\",\n  priority: 0,\n  constKey: \"x1c5h197\",\n  constVal: 24\n});\nexport const sizes = {\n  small: 8,\n  medium: 16,\n  large: 24\n};",
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "numeric constants with runtimeInjection: true",
+          "line": 861
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-string-constants-with-runtim-028-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const colors = stylex.defineConsts({\n          primary: 'rebeccapurple',\n          secondary: 'coral',\n          tertiary: 'turquoise',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport * as stylex from '@stylexjs/stylex';\n_inject2({\n  ltr: \"\",\n  priority: 0,\n  constKey: \"xbx9tme\",\n  constVal: \"rebeccapurple\"\n});\n_inject2({\n  ltr: \"\",\n  priority: 0,\n  constKey: \"x1is3lfz\",\n  constVal: \"coral\"\n});\n_inject2({\n  ltr: \"\",\n  priority: 0,\n  constKey: \"x1uyqs0n\",\n  constVal: \"turquoise\"\n});\nexport const colors = {\n  primary: \"rebeccapurple\",\n  secondary: \"coral\",\n  tertiary: \"turquoise\"\n};",
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "string constants with runtimeInjection: true",
+          "line": 905
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-mixed-string-and-numeric-con-029-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const theme = stylex.defineConsts({\n          spacing: 16,\n          color: 'blue',\n          breakpoint: '(min-width: 768px)',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport * as stylex from '@stylexjs/stylex';\n_inject2({\n  ltr: \"\",\n  priority: 0,\n  constKey: \"xtp8oqr\",\n  constVal: 16\n});\n_inject2({\n  ltr: \"\",\n  priority: 0,\n  constKey: \"xzwxy2o\",\n  constVal: \"blue\"\n});\n_inject2({\n  ltr: \"\",\n  priority: 0,\n  constKey: \"x1dhodo0\",\n  constVal: \"(min-width: 768px)\"\n});\nexport const theme = {\n  spacing: 16,\n  color: \"blue\",\n  breakpoint: \"(min-width: 768px)\"\n};",
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "mixed string and numeric constants with runtimeInjection: true",
+          "line": 949
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-constants-with-special-chara-030-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const urls = stylex.defineConsts({\n          background: 'url(\"bg.png\")',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport * as stylex from '@stylexjs/stylex';\n_inject2({\n  ltr: \"\",\n  priority: 0,\n  constKey: \"x1abznok\",\n  constVal: \"url(\\\"bg.png\\\")\"\n});\nexport const urls = {\n  background: \"url(\\\"bg.png\\\")\"\n};",
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "constants with special characters with runtimeInjection: true",
+          "line": 991
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-constants-with-custom-inject-031-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const breakpoints = stylex.defineConsts({\n          sm: '(min-width: 768px)',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": "@custom/inject-path"
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@custom/inject-path\";\nvar _inject2 = _inject;\nimport * as stylex from '@stylexjs/stylex';\n_inject2({\n  ltr: \"\",\n  priority: 0,\n  constKey: \"x1izlsax\",\n  constVal: \"(min-width: 768px)\"\n});\nexport const breakpoints = {\n  sm: \"(min-width: 768px)\"\n};",
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "constants with custom inject path with runtimeInjection",
+          "line": 1021
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-haste-module-with-runtimeinj-032-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "stylex/packages/TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const breakpoints = stylex.defineConsts({\n          sm: '(min-width: 768px)',\n          md: '(min-width: 1024px)',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "type": "haste"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport * as stylex from '@stylexjs/stylex';\n_inject2({\n  ltr: \"\",\n  priority: 0,\n  constKey: \"x1izlsax\",\n  constVal: \"(min-width: 768px)\"\n});\n_inject2({\n  ltr: \"\",\n  priority: 0,\n  constKey: \"xe5hjsi\",\n  constVal: \"(min-width: 1024px)\"\n});\nexport const breakpoints = {\n  sm: \"(min-width: 768px)\",\n  md: \"(min-width: 1024px)\"\n};",
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "haste module with runtimeInjection: true",
+          "line": 1054
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-constants-with-numeric-keys-033-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const levels = stylex.defineConsts({\n          0: 'zero',\n          1: 'one',\n          2: 'two',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport * as stylex from '@stylexjs/stylex';\n_inject2({\n  ltr: \"\",\n  priority: 0,\n  constKey: \"x1t8zjeu\",\n  constVal: \"zero\"\n});\n_inject2({\n  ltr: \"\",\n  priority: 0,\n  constKey: \"xr91grk\",\n  constVal: \"one\"\n});\n_inject2({\n  ltr: \"\",\n  priority: 0,\n  constKey: \"x5diukc\",\n  constVal: \"two\"\n});\nexport const levels = {\n  \"0\": \"zero\",\n  \"1\": \"one\",\n  \"2\": \"two\"\n};",
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "constants with numeric keys with runtimeInjection: true",
+          "line": 1091
+        }
+      }
+    },
+    {
+      "id": "assertions/defineConsts-multiple-defineconsts-calls-034-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "TestTheme.stylex.js",
+      "source": "\n        import * as stylex from '@stylexjs/stylex';\n        export const breakpoints = stylex.defineConsts({\n          sm: '(min-width: 768px)',\n        });\n        export const colors = stylex.defineConsts({\n          primary: 'blue',\n        });\n      ",
+      "options": {
+        "unstable_moduleResolution": {
+          "rootDir": "<ROOT>",
+          "type": "commonJS"
+        },
+        "runtimeInjection": true
+      },
+      "mode": "prod",
+      "tags": ["defineConsts", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport * as stylex from '@stylexjs/stylex';\n_inject2({\n  ltr: \"\",\n  priority: 0,\n  constKey: \"x1izlsax\",\n  constVal: \"(min-width: 768px)\"\n});\nexport const breakpoints = {\n  sm: \"(min-width: 768px)\"\n};\n_inject2({\n  ltr: \"\",\n  priority: 0,\n  constKey: \"xbx9tme\",\n  constVal: \"blue\"\n});\nexport const colors = {\n  primary: \"blue\"\n};",
+        "site": {
+          "file": "transform-stylex-defineConsts-test.js",
+          "test": "multiple defineConsts calls with runtimeInjection: true",
+          "line": 1136
+        }
+      }
+    }
+  ]
+}

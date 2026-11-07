@@ -4,9 +4,13 @@
 mod build;
 mod ssr_dev;
 mod ssr_host;
+mod start_bundle;
 mod start_chunks;
 mod start_dev;
 mod start_host;
+mod start_hot;
+mod start_reloads;
+mod stylex_plugin;
 
 // Linking-only for now: build.rs exports the Node-API symbols these crates
 // define, so they must be part of the binary (rustc drops unused crates from
@@ -28,6 +32,37 @@ use clap::{Parser, Subcommand};
 struct Cli {
     #[command(subcommand)]
     command: Command,
+    /// Show debug logs: every oj scope, or only the comma-separated ones named
+    /// (`--debug=boot,mem`). Vite's `--debug`: adds `oj:<scope>` to `DEBUG`.
+    #[arg(
+        short,
+        long,
+        global = true,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "*",
+        value_name = "SCOPES"
+    )]
+    debug: Option<String>,
+}
+
+/// `DEBUG` with `--debug`'s scopes added, as Vite's bin does: `oj:*` for a bare
+/// flag, else `oj:<scope>` each. Scopes it already names are not repeated (a
+/// restart re-execs with both the flag and the `DEBUG` it set).
+fn debug_with_scopes(debug: Option<&str>, scopes: &str) -> String {
+    let mut names: Vec<String> = debug
+        .unwrap_or_default()
+        .split(',')
+        .filter(|n| !n.is_empty())
+        .map(str::to_owned)
+        .collect();
+    for scope in scopes.split(',').filter(|s| !s.is_empty()) {
+        let name = format!("oj:{scope}");
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names.join(",")
 }
 
 #[derive(Subcommand)]
@@ -45,11 +80,11 @@ enum Command {
         /// Vite's `--mode` for the dev server (default `development`).
         #[arg(long)]
         mode: Option<String>,
-        /// Enable the experimental on-disk module cache (also OJ_ENABLE_CACHE=1).
+        /// Enable the experimental on-disk module cache.
         /// Off by default; warm restarts then re-serve compiled modules from disk.
         #[arg(long)]
         enable_cache: bool,
-        /// Force the on-disk module cache off even if enabled (also OJ_NO_CACHE=1).
+        /// Force the on-disk module cache off even if enabled.
         #[arg(long)]
         no_cache: bool,
         /// Compile modules on demand instead of eagerly crawling the whole graph
@@ -58,6 +93,10 @@ enum Command {
         /// code-split so the first route needs only a fraction of the graph.
         #[arg(long)]
         lazy: bool,
+        /// Keep a TypeScript checker warm beside the dev server, for
+        /// `oj dev-typecheck` and `/@oj/typecheck`.
+        #[arg(long)]
+        typecheck: bool,
     },
     Compile {
         file: PathBuf,
@@ -75,14 +114,12 @@ enum Command {
         #[arg(long)]
         root: Option<PathBuf>,
     },
-    /// Internal: run one Start one-shot script (route-tree regen, the client
-    /// rebundle) to completion on a fresh embedded engine, in a process of its
-    /// own, then exit. The env pairs the script's `run(env)` receives arrive
-    /// as JSON on stdin (they used to be spawn env; argv would print values
-    /// in `ps`). A process per run on purpose: rolldown's binding retains
-    /// native memory per `build()` that neither closing the bundler nor
-    /// tearing the isolate down releases — only process exit reclaims it,
-    /// exactly as the retired per-run `node` spawns did.
+    /// Internal: run one Start one-shot script (route-tree regen) to
+    /// completion on a fresh embedded engine, in a process of its own, then
+    /// exit. The env pairs the script's `run(env)` receives arrive as JSON on
+    /// stdin (they used to be spawn env; argv would print values in `ps`). A
+    /// process per run keeps the generator's module state (and whatever the
+    /// app's packages hold) out of the dev server.
     #[command(name = "start-script", hide = true)]
     StartScript {
         script: PathBuf,
@@ -180,6 +217,39 @@ enum Command {
         /// Public base path (default: the config's `base`).
         #[arg(long)]
         base: Option<String>,
+    },
+    /// Ask the app's running `oj dev --typecheck` server for its warm,
+    /// incremental check (as `tsc -b --noEmit`). Exits 0 when clean, 2 on type
+    /// errors, 1 when it cannot check or no such server runs.
+    #[command(name = "dev-typecheck")]
+    DevTypecheck {
+        root: Option<PathBuf>,
+        /// A file changed since the server last saw it; re-read before the
+        /// check. Repeatable.
+        #[arg(long = "changed", value_name = "FILE")]
+        changed: Vec<PathBuf>,
+        /// Print the JSON report instead of tsc-style lines.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Internal: the dev server's `--typecheck` checker, in a process of its
+    /// own so nothing the checker does can take the server down. Speaks JSON
+    /// lines on stdin/stdout (see oj_server's typecheck module).
+    #[command(name = "typecheck-worker", hide = true)]
+    TypecheckWorker { root: PathBuf },
+    /// TypeScript's `tsc` on oj's built-in checker: takes tsc's command line
+    /// (`oj typecheck -p tsconfig.json --noEmit`) and prints and exits as tsc
+    /// does, for tools that call tsc or tsgo.
+    #[command(disable_help_flag = true)]
+    Typecheck {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// StyleX compiler: transform files, compile a project's sheet, or serve
+    /// the resident compiler protocol (the standalone `fru` command set).
+    Stylex {
+        #[command(subcommand)]
+        command: oj_stylex::cli::Command,
     },
 }
 
@@ -408,6 +478,16 @@ fn sniffed_manager_version(path: &std::path::Path, manager: &str, default_versio
     }
 }
 
+/// `oj dev`'s root when none is named: playground/ when it serves one.
+fn default_dev_root() -> PathBuf {
+    let playground = PathBuf::from("playground");
+    if playground.join("index.html").is_file() {
+        playground
+    } else {
+        PathBuf::from(".")
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     raise_fd_limit();
     // Every engine and one-shot child that loads the app's vite.config through
@@ -419,6 +499,23 @@ fn main() -> anyhow::Result<()> {
     // Vite's gate but survives this is_none check and the JS-side ??= belts).
     if std::env::var_os("VITE_CONFIG_NATIVE_IGNORE_WARNING").is_none() {
         std::env::set_var("VITE_CONFIG_NATIVE_IGNORE_WARNING", "true");
+    }
+    // The npm rolldown binding the plugin host loads (Vite 8 runs on it)
+    // ships mimalloc, which keeps the arena memory rolldown's idle worker
+    // threads freed (rolldown#10985, #11143): a Cloudflare Start app's dev
+    // server holds hundreds of MB of it after the worker environment's first
+    // compile. Purging freed arenas right away returns it, the workaround
+    // those issues measure. mimalloc reads it when the addon loads, before
+    // any engine exists; a user-set value wins.
+    if std::env::var_os("MIMALLOC_ARENA_PURGE_MULT").is_none() {
+        std::env::set_var("MIMALLOC_ARENA_PURGE_MULT", "0");
+    }
+    // `oj typecheck` takes tsc's command line, which clap cannot parse: every
+    // argument goes to the tsc driver as it is (`oj typecheck --help` is tsc's).
+    let mut args = std::env::args_os().skip(1);
+    if args.next().is_some_and(|arg| arg == "typecheck") {
+        let args = args.map(|arg| arg.to_string_lossy().into_owned()).collect();
+        std::process::exit(oj_typecheck::tsc(args).into());
     }
     // Vite sorts its lockfile-format preference by `npm_config_user_agent`
     // (optimizer/index.ts), which every package-manager launch sets and a
@@ -436,6 +533,20 @@ fn main() -> anyhow::Result<()> {
     // The parsed CLI is the single source for the app root: a second argv
     // parser would drift from clap the moment a flag is added.
     let cli = Cli::parse();
+    if let Some(scopes) = &cli.debug {
+        let debug = std::env::var("DEBUG").ok();
+        std::env::set_var("DEBUG", debug_with_scopes(debug.as_deref(), scopes));
+    }
+    // Synchronous and self-contained (its own worker threads, no engine), so
+    // it runs before any runtime exists, on an env snapshot of its own.
+    let cli = match cli.command {
+        Command::Stylex { command } => {
+            oj_env::init();
+            oj_stylex::cli::run(command);
+            return Ok(());
+        }
+        command => Cli { command, ..cli },
+    };
     // An EMPTY agent counts as unset: Vite's lockfile-preference sort treats
     // "" exactly like a missing agent (falsy), so leaving it would keep the
     // reversal this preset exists to fix.
@@ -461,7 +572,7 @@ fn main() -> anyhow::Result<()> {
     #[cfg(unix)]
     if matches!(
         std::env::args().nth(1).as_deref(),
-        Some("engine-job") | Some("start-script")
+        Some("engine-job") | Some("start-script") | Some("typecheck-worker")
     ) {
         reap_on_parent_death();
         std::env::remove_var(PARENT_PID_ENV);
@@ -471,14 +582,42 @@ fn main() -> anyhow::Result<()> {
     oj_env::init();
     oj_diag::set_json_output(oj_env::get().knobs.log_json);
     oj_diag::install_panic_hook();
+    // The dev server's type checker child: no runtime, no export of its own.
+    if let Command::TypecheckWorker { root } = &cli.command {
+        oj_server::typecheck_worker(root);
+        return Ok(());
+    }
+    // One-shot children inherit OJ_OTEL; the process that spawned them owns
+    // the export.
+    if !matches!(
+        cli.command,
+        Command::EngineJob { .. } | Command::StartScript { .. }
+    ) {
+        oj_server::otel::init();
+    }
+    // Commands that return (build, preview, a failed boot) and panics that
+    // unwind out of here; the dev server's exits shut down on their own paths.
+    let _otel = ShutdownOtelOnDrop;
+    // Rolldown's builds run beside the main runtime, on one sized like its
+    // npm binding's (see oj_server::rolldown_runtime). Dropped after the main
+    // runtime, outside async code.
+    let rolldown = oj_server::rolldown_runtime::build()?;
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(oj_compiler::COMPILE_STACK_SIZE)
         .build()?
-        .block_on(run(cli))
+        .block_on(run(cli, rolldown.handle().clone()))
 }
 
-async fn run(cli: Cli) -> anyhow::Result<()> {
+struct ShutdownOtelOnDrop;
+
+impl Drop for ShutdownOtelOnDrop {
+    fn drop(&mut self) {
+        oj_server::otel::shutdown();
+    }
+}
+
+async fn run(cli: Cli, rolldown: tokio::runtime::Handle) -> anyhow::Result<()> {
     // One-shot engine jobs (config extraction) run in `oj engine-job`
     // children: a native addon a job loads can crash the process when it is
     // re-initialized after an earlier engine died (napi-rs before 3.10).
@@ -496,19 +635,16 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             enable_cache,
             no_cache,
             lazy,
+            typecheck,
         } => {
-            let root = root.unwrap_or_else(|| {
-                let playground = PathBuf::from("playground");
-                if playground.join("index.html").is_file() {
-                    playground
-                } else {
-                    PathBuf::from(".")
-                }
-            });
+            let root = root.unwrap_or_else(default_dev_root);
             if let Some(entry) = ssr {
-                ssr_dev::ssr_dev(root, entry, port, host).await
+                ssr_dev::ssr_dev(root, entry, port, host, typecheck, rolldown).await
             } else if let Some(framework) = oj_server::start_framework(&root) {
-                start_dev::start_dev_with_framework(root, port, host, config, mode, framework).await
+                start_dev::start_dev_with_framework(
+                    root, port, host, config, mode, typecheck, rolldown, framework,
+                )
+                .await
             } else {
                 oj_server::DevServer {
                     root,
@@ -518,7 +654,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                     enable_cache,
                     no_cache,
                     lazy,
+                    typecheck,
                     mode,
+                    rolldown,
                 }
                 .run()
                 .await
@@ -541,6 +679,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             Ok(())
         }
         Command::StartScript { script, root } => {
+            // A one-shot child: the parent waits on its exit.
+            oj_js::code_cache::consume_only();
             let root = root.canonicalize().context("engine root not found")?;
             let mut buf = String::new();
             std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut buf)
@@ -557,6 +697,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             timeout_secs,
             result,
         } => {
+            oj_js::code_cache::consume_only();
             let mut buf = String::new();
             std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut buf)
                 .context("engine-job payload on stdin")?;
@@ -564,12 +705,13 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 serde_json::from_str(&buf).context("engine-job payload json")?;
             // A job failure travels inside the envelope; a nonzero exit is
             // reserved for the harness itself (or a native addon crash).
+            // 0 = unbounded (the spawner's wait owns patience and logging).
             let outcome = oj_server::plugins::run_engine_job_in_process(
                 &root,
                 &module,
                 &export,
                 payload,
-                std::time::Duration::from_secs(timeout_secs),
+                (timeout_secs > 0).then(|| std::time::Duration::from_secs(timeout_secs)),
             );
             let envelope = oj_server::plugins::engine_job_envelope(&outcome);
             std::fs::write(&result, serde_json::to_string(&envelope)?)
@@ -587,6 +729,54 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let output = oj_compiler::compile(&file, &source, &opts)?;
             println!("{}", output.code);
             Ok(())
+        }
+        Command::Typecheck { args } => std::process::exit(oj_typecheck::tsc(args).into()),
+        Command::DevTypecheck {
+            root,
+            changed,
+            json,
+        } => {
+            // The root `oj dev` serves when none is named.
+            let root = root.unwrap_or_else(default_dev_root);
+            // Relative to where the command runs, as any CLI path argument.
+            let changed: Vec<PathBuf> = changed
+                .iter()
+                .map(|p| std::path::absolute(p).unwrap_or_else(|_| p.clone()))
+                .collect();
+            let answer = match oj_server::typecheck_via_server(&root, &changed).await {
+                Ok(answer) => answer,
+                Err(e) => {
+                    eprintln!("oj dev-typecheck: {e}");
+                    std::process::exit(1)
+                }
+            };
+            // A closed stdout (`oj dev-typecheck | head`) ends the output, not the command.
+            use std::io::Write as _;
+            let mut stdout = std::io::stdout().lock();
+            let _ = if json {
+                writeln!(stdout, "{answer}")
+            } else {
+                write!(stdout, "{}", answer["text"].as_str().unwrap_or_default())
+            };
+            let code = match answer["status"].as_str() {
+                Some("ok") => 0,
+                Some("errors") => 2,
+                _ => {
+                    if !json {
+                        eprintln!(
+                            "oj dev-typecheck: {}",
+                            answer["reason"].as_str().unwrap_or("the check failed")
+                        );
+                    }
+                    1
+                }
+            };
+            let _ = stdout.flush();
+            std::process::exit(code)
+        }
+        Command::Stylex { .. } => unreachable!("`oj stylex` runs before the runtime starts"),
+        Command::TypecheckWorker { .. } => {
+            unreachable!("`oj typecheck-worker` runs before the runtime starts")
         }
         Command::Build {
             root,
@@ -617,11 +807,21 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let config = resolve_config_arg(&root, config);
             if let Some(framework) = oj_server::start_framework(&root) {
                 let mode = mode.unwrap_or_else(|| "production".to_string());
-                start_dev::start_build_with_framework(root, config, &mode, out, framework).await
+                start_dev::start_build_with_framework(
+                    root,
+                    config,
+                    &mode,
+                    out,
+                    empty_out_dir,
+                    rolldown,
+                    framework,
+                )
+                .await
             } else {
                 build::build(
                     root,
                     mode.as_deref(),
+                    &rolldown,
                     build::CliOptions {
                         out,
                         ssr,
@@ -736,6 +936,7 @@ fn preview_options(config: &oj_config::OjConfig, out_dir: PathBuf) -> oj_server:
         allowed_hosts: preview.allowed_hosts.or(server.allowed_hosts),
         spa_fallback: config.app_type.as_deref().unwrap_or("spa") == "spa",
         assets_dir: oj_config::build_assets_dir(config),
+        https: preview.https.or(server.https),
     }
 }
 
@@ -789,5 +990,48 @@ mod preview_tests {
         assert!(!o.strict_port, "an explicit preview.strictPort wins");
         assert!(o.spa_fallback);
         assert_eq!(o.base, "/");
+    }
+}
+
+#[cfg(test)]
+mod debug_flag_tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    fn debug_of(args: &[&str]) -> Option<String> {
+        Cli::try_parse_from(args).unwrap().debug
+    }
+
+    // Vite's `--debug [feat]`, with `=` so a bare flag never swallows the root.
+    #[test]
+    fn debug_is_a_global_flag_with_optional_scopes() {
+        Cli::command().debug_assert();
+        assert_eq!(debug_of(&["oj", "dev"]), None);
+        assert_eq!(debug_of(&["oj", "dev", "--debug"]).as_deref(), Some("*"));
+        assert_eq!(debug_of(&["oj", "--debug", "dev"]).as_deref(), Some("*"));
+        assert_eq!(debug_of(&["oj", "build", "-d"]).as_deref(), Some("*"));
+        assert_eq!(
+            debug_of(&["oj", "dev", "--debug=boot,mem", "web"]).as_deref(),
+            Some("boot,mem")
+        );
+        let Command::Dev { root, .. } = Cli::try_parse_from(["oj", "dev", "--debug", "web"])
+            .unwrap()
+            .command
+        else {
+            panic!("not dev");
+        };
+        assert_eq!(
+            root,
+            Some(PathBuf::from("web")),
+            "a bare --debug leaves the root"
+        );
+    }
+
+    #[test]
+    fn debug_scopes_add_to_the_debug_variable_once() {
+        assert_eq!(debug_with_scopes(None, "*"), "oj:*");
+        assert_eq!(debug_with_scopes(None, "boot,mem"), "oj:boot,oj:mem");
+        assert_eq!(debug_with_scopes(Some("vite:*"), "boot"), "vite:*,oj:boot");
+        assert_eq!(debug_with_scopes(Some("oj:boot"), "boot"), "oj:boot");
     }
 }

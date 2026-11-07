@@ -133,12 +133,20 @@ fn hostile_urls_do_not_change_the_module_classification() {
 #[test]
 fn css_module_class_names_are_scoped_even_when_they_collide() {
     // Two files with the same class name must not produce the same scoped name,
-    // or one stylesheet silently restyles the other.
+    // or one stylesheet silently restyles the other. Vite's default names hash
+    // the sheet's content alone, so only identical sheets (identical rules)
+    // share them.
     let source = ".button { color: red }";
     let a = compile_css("/src/A.module.css", source, false).unwrap();
-    let b = compile_css("/src/B.module.css", source, false).unwrap();
+    let b = compile_css("/src/B.module.css", ".button { color: blue }", false).unwrap();
     let (a_name, b_name) = (&a.exports.unwrap()[0].1, &b.exports.unwrap()[0].1);
     assert_ne!(a_name, b_name, "same scoped name in two modules");
+    let same = compile_css("/src/C.module.css", source, false).unwrap();
+    assert_eq!(
+        &same.exports.unwrap()[0].1,
+        a_name,
+        "identical sheets, as in Vite"
+    );
 
     // The same file twice is stable, or a warm cache would serve stale names.
     let again = compile_css("/src/A.module.css", source, false).unwrap();

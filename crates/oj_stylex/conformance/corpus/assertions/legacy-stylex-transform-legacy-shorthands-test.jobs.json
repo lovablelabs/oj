@@ -1,0 +1,1126 @@
+{
+  "header": {
+    "upstreamPath": "packages/@stylexjs/babel-plugin/__tests__/legacy/stylex-transform-legacy-shorthands-test.js",
+    "commit": "5f51b24444abced04b213726977b9d67339bb26d",
+    "license": "MIT",
+    "use": "differential test inputs and upstream's own expected values — never shipped",
+    "oracle": "@stylexjs/babel-plugin@0.19.0"
+  },
+  "jobs": [
+    {
+      "id": "assertions/legacy-legacy-shorthands-padding-with-longhand-proper-001-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              padding: 5,\n              paddingEnd: 10,\n            },\n\n            bar: {\n              padding: 2,\n              paddingStart: 10,\n            },\n          });\n          stylex(styles.foo, styles.bar);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x123j3cw{padding-top:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xs9asl8{padding-bottom:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xaso8d8{padding-left:5px}\",\n  rtl: \".xaso8d8{padding-right:5px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x2vl965{padding-right:10px}\",\n  rtl: \".x2vl965{padding-left:10px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1nn3v0j{padding-top:2px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x14vy60q{padding-right:2px}\",\n  rtl: \".x14vy60q{padding-left:2px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1120s5i{padding-bottom:2px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xe2zdcy{padding-left:10px}\",\n  rtl: \".xe2zdcy{padding-right:10px}\",\n  priority: 3000\n});\n\"x1nn3v0j x14vy60q x1120s5i xe2zdcy\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "padding: with longhand property collisions",
+          "line": 42
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-padding-with-null-longhand-p-002-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              padding: 5,\n              paddingEnd: 10,\n            },\n\n            bar: {\n              padding: 2,\n              paddingStart: null,\n            },\n          });\n          stylex(styles.foo, styles.bar);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x123j3cw{padding-top:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xs9asl8{padding-bottom:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xaso8d8{padding-left:5px}\",\n  rtl: \".xaso8d8{padding-right:5px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x2vl965{padding-right:10px}\",\n  rtl: \".x2vl965{padding-left:10px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1nn3v0j{padding-top:2px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x14vy60q{padding-right:2px}\",\n  rtl: \".x14vy60q{padding-left:2px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1120s5i{padding-bottom:2px}\",\n  priority: 4000\n});\n\"x1nn3v0j x14vy60q x1120s5i\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "padding: with null longhand property collisions",
+          "line": 103
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-bordercolor-basic-shorthand-003-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              borderColor: 'red blue green yellow'\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1uu1fcu{border-top-color:red}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xcejqfc{border-right-color:blue}\",\n  rtl: \".xcejqfc{border-left-color:blue}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1hnil3p{border-bottom-color:green}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xqzb60q{border-left-color:yellow}\",\n  rtl: \".xqzb60q{border-right-color:yellow}\",\n  priority: 3000\n});\n\"x1uu1fcu xcejqfc x1hnil3p xqzb60q\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "borderColor: basic shorthand",
+          "line": 159
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-borderwidth-basic-shorthand-004-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              borderWidth: '1px 2px 3px 4px'\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x178xt8z{border-top-width:1px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x1alpsbp{border-right-width:2px}\",\n  rtl: \".x1alpsbp{border-left-width:2px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x2x41l1{border-bottom-width:3px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x56jcm7{border-left-width:4px}\",\n  rtl: \".x56jcm7{border-right-width:4px}\",\n  priority: 3000\n});\n\"x178xt8z x1alpsbp x2x41l1 x56jcm7\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "borderWidth: basic shorthand",
+          "line": 196
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-padding-basic-shorthand-005-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            foo: {\n              padding: 5\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x123j3cw{padding-top:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x1gabggj{padding-right:5px}\",\n  rtl: \".x1gabggj{padding-left:5px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xs9asl8{padding-bottom:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xaso8d8{padding-left:5px}\",\n  rtl: \".xaso8d8{padding-right:5px}\",\n  priority: 3000\n});\nexport const styles = {\n  foo: {\n    kLKAdn: \"x123j3cw\",\n    kwRFfy: \"x1gabggj\",\n    kGO01o: \"xs9asl8\",\n    kZCmMZ: \"xaso8d8\",\n    $$css: true\n  }\n};\n\"x123j3cw x1gabggj xs9asl8 xaso8d8\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "padding: basic shorthand",
+          "line": 235
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-margin-basic-shorthand-006-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              margin: '10px 20px 30px 40px'\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1anpbxc{margin-top:10px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x3aesyq{margin-right:20px}\",\n  rtl: \".x3aesyq{margin-left:20px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x4n8cb0{margin-bottom:30px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x11hdunq{margin-left:40px}\",\n  rtl: \".x11hdunq{margin-right:40px}\",\n  priority: 3000\n});\n\"x1anpbxc x3aesyq x4n8cb0 x11hdunq\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "margin: basic shorthand",
+          "line": 281
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-paddinginline-basic-shorthan-007-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            foo: {\n              paddingInline: 5\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xaso8d8{padding-left:5px}\",\n  rtl: \".xaso8d8{padding-right:5px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1gabggj{padding-right:5px}\",\n  rtl: \".x1gabggj{padding-left:5px}\",\n  priority: 3000\n});\nexport const styles = {\n  foo: {\n    kZCmMZ: \"xaso8d8\",\n    kwRFfy: \"x1gabggj\",\n    kE3dHu: null,\n    kpe85a: null,\n    $$css: true\n  }\n};\n\"xaso8d8 x1gabggj\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "paddingInline: basic shorthand",
+          "line": 318
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-paddinginline-basic-multival-008-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            foo: {\n              paddingInline: \"5px 10px\"\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xaso8d8{padding-left:5px}\",\n  rtl: \".xaso8d8{padding-right:5px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x2vl965{padding-right:10px}\",\n  rtl: \".x2vl965{padding-left:10px}\",\n  priority: 3000\n});\nexport const styles = {\n  foo: {\n    kZCmMZ: \"xaso8d8\",\n    kwRFfy: \"x2vl965\",\n    kE3dHu: null,\n    kpe85a: null,\n    $$css: true\n  }\n};\n\"xaso8d8 x2vl965\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "paddingInline: basic multivalue shorthand",
+          "line": 356
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-padding-with-longhand-proper-009-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              padding: 5,\n              paddingInlineEnd: 10,\n            },\n\n            bar: {\n              padding: 2,\n              paddingInlineStart: 10,\n            },\n          });\n          stylex(styles.foo, styles.bar);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x123j3cw{padding-top:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xs9asl8{padding-bottom:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xaso8d8{padding-left:5px}\",\n  rtl: \".xaso8d8{padding-right:5px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x2vl965{padding-right:10px}\",\n  rtl: \".x2vl965{padding-left:10px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1nn3v0j{padding-top:2px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x14vy60q{padding-right:2px}\",\n  rtl: \".x14vy60q{padding-left:2px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1120s5i{padding-bottom:2px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xe2zdcy{padding-left:10px}\",\n  rtl: \".xe2zdcy{padding-right:10px}\",\n  priority: 3000\n});\n\"x1nn3v0j x14vy60q x1120s5i xe2zdcy\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "padding: with longhand property collisions",
+          "line": 394
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-padding-with-longhand-direct-010-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              padding: 5,\n              paddingInlineEnd: 10,\n            },\n\n            bar: {\n              padding: 2,\n              paddingInlineStart: 10,\n              paddingLeft: 22\n            },\n          });\n          stylex(styles.foo, styles.bar)\n          export const string = stylex(styles.foo, styles.bar, xstyle);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "debug": true,
+        "enableDebugClassNames": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".paddingTop-x123j3cw{padding-top:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".paddingBottom-xs9asl8{padding-bottom:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".paddingInlineStart-xaso8d8{padding-left:5px}\",\n  rtl: \".paddingInlineStart-xaso8d8{padding-right:5px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".paddingInlineEnd-x2vl965{padding-right:10px}\",\n  rtl: \".paddingInlineEnd-x2vl965{padding-left:10px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".paddingTop-x1nn3v0j{padding-top:2px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".paddingBottom-x1120s5i{padding-bottom:2px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".paddingLeft-xnljgj5{padding-left:22px}\",\n  priority: 4000\n});\nconst styles = {\n  foo: {\n    \"paddingTop-kLKAdn\": \"paddingTop-x123j3cw\",\n    \"paddingBottom-kGO01o\": \"paddingBottom-xs9asl8\",\n    \"paddingInlineStart-kZCmMZ\": \"paddingInlineStart-xaso8d8\",\n    \"paddingInlineEnd-kwRFfy\": \"paddingInlineEnd-x2vl965\",\n    $$css: \"@stylexjs/babel-plugin::4\"\n  },\n  bar: {\n    \"paddingTop-kLKAdn\": \"paddingTop-x1nn3v0j\",\n    \"paddingBottom-kGO01o\": \"paddingBottom-x1120s5i\",\n    \"paddingLeft-kE3dHu\": \"paddingLeft-xnljgj5\",\n    \"paddingInlineStart-kZCmMZ\": null,\n    \"paddingInlineEnd-kwRFfy\": null,\n    $$css: \"@stylexjs/babel-plugin::9\"\n  }\n};\n\"paddingTop-x1nn3v0j paddingBottom-x1120s5i paddingLeft-xnljgj5\";\nexport const string = stylex(styles.foo, styles.bar, xstyle);",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "padding: with longhand directional and logical property collisions",
+          "line": 455
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-padding-with-null-longhand-p-011-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              padding: 5,\n              paddingInlineEnd: 10,\n            },\n\n            bar: {\n              padding: 2,\n              paddingInlineStart: null,\n            },\n          });\n          stylex(styles.foo, styles.bar);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x123j3cw{padding-top:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xs9asl8{padding-bottom:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xaso8d8{padding-left:5px}\",\n  rtl: \".xaso8d8{padding-right:5px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x2vl965{padding-right:10px}\",\n  rtl: \".x2vl965{padding-left:10px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1nn3v0j{padding-top:2px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x14vy60q{padding-right:2px}\",\n  rtl: \".x14vy60q{padding-left:2px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1120s5i{padding-bottom:2px}\",\n  priority: 4000\n});\n\"x1nn3v0j x14vy60q x1120s5i\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "padding: with null longhand property collisions",
+          "line": 533
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-margininline-basic-shorthand-012-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            foo: {\n              marginInline: 5\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xpcyujq{margin-left:5px}\",\n  rtl: \".xpcyujq{margin-right:5px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xf6vk7d{margin-right:5px}\",\n  rtl: \".xf6vk7d{margin-left:5px}\",\n  priority: 3000\n});\nexport const styles = {\n  foo: {\n    keTefX: \"xpcyujq\",\n    k71WvV: \"xf6vk7d\",\n    koQZXg: null,\n    km5ZXQ: null,\n    $$css: true\n  }\n};\n\"xpcyujq xf6vk7d\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "marginInline: basic shorthand",
+          "line": 589
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-margininline-basic-multivalu-013-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            foo: {\n              marginInline: \"5px 10px\"\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xpcyujq{margin-left:5px}\",\n  rtl: \".xpcyujq{margin-right:5px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1sa5p1d{margin-right:10px}\",\n  rtl: \".x1sa5p1d{margin-left:10px}\",\n  priority: 3000\n});\nexport const styles = {\n  foo: {\n    keTefX: \"xpcyujq\",\n    k71WvV: \"x1sa5p1d\",\n    koQZXg: null,\n    km5ZXQ: null,\n    $$css: true\n  }\n};\n\"xpcyujq x1sa5p1d\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "marginInline: basic multivalue shorthand",
+          "line": 627
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-marginblock-basic-multivalue-014-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            foo: {\n              marginBlock: \"5px 10px\"\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1ok221b{margin-top:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xyorhqc{margin-bottom:10px}\",\n  priority: 4000\n});\nexport const styles = {\n  foo: {\n    keoZOQ: \"x1ok221b\",\n    k1K539: \"xyorhqc\",\n    $$css: true\n  }\n};\n\"x1ok221b xyorhqc\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "marginBlock: basic multivalue shorthand",
+          "line": 665
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-margin-with-longhand-propert-015-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              margin: 5,\n              marginInlineEnd: 10,\n            },\n\n            bar: {\n              margin: 2,\n              marginInlineStart: 10,\n            },\n          });\n          stylex(styles.foo, styles.bar);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1ok221b{margin-top:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xu06os2{margin-bottom:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xpcyujq{margin-left:5px}\",\n  rtl: \".xpcyujq{margin-right:5px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1sa5p1d{margin-right:10px}\",\n  rtl: \".x1sa5p1d{margin-left:10px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xr9ek0c{margin-top:2px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xnnr8r{margin-right:2px}\",\n  rtl: \".xnnr8r{margin-left:2px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xjpr12u{margin-bottom:2px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x1hm9lzh{margin-left:10px}\",\n  rtl: \".x1hm9lzh{margin-right:10px}\",\n  priority: 3000\n});\n\"xr9ek0c xnnr8r xjpr12u x1hm9lzh\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "margin: with longhand property collisions",
+          "line": 699
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-margin-with-null-longhand-pr-016-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              margin: 5,\n              marginInlineEnd: 10,\n            },\n\n            bar: {\n              margin: 2,\n              marginInlineStart: null,\n            },\n          });\n          stylex(styles.foo, styles.bar);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1ok221b{margin-top:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xu06os2{margin-bottom:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xpcyujq{margin-left:5px}\",\n  rtl: \".xpcyujq{margin-right:5px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1sa5p1d{margin-right:10px}\",\n  rtl: \".x1sa5p1d{margin-left:10px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xr9ek0c{margin-top:2px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xnnr8r{margin-right:2px}\",\n  rtl: \".xnnr8r{margin-left:2px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xjpr12u{margin-bottom:2px}\",\n  priority: 4000\n});\n\"xr9ek0c xnnr8r xjpr12u\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "margin: with null longhand property collisions",
+          "line": 760
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-border-basic-shorthand-017-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              border: '1px solid red'\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x122jhqu{border-top:1px solid red}\",\n  priority: 2000\n});\n_inject2({\n  ltr: \".xcmqxwo{border-right:1px solid red}\",\n  rtl: \".xcmqxwo{border-left:1px solid red}\",\n  priority: 2000\n});\n_inject2({\n  ltr: \".xql0met{border-bottom:1px solid red}\",\n  priority: 2000\n});\n_inject2({\n  ltr: \".x1lsjq1p{border-left:1px solid red}\",\n  rtl: \".x1lsjq1p{border-right:1px solid red}\",\n  priority: 2000\n});\n\"x122jhqu xcmqxwo xql0met x1lsjq1p\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "border: basic shorthand",
+          "line": 816
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-borderinlinecolor-basic-shor-018-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              borderInlineColor: 'red'\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1777cdg{border-left-color:red}\",\n  rtl: \".x1777cdg{border-right-color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x9cubbk{border-right-color:red}\",\n  rtl: \".x9cubbk{border-left-color:red}\",\n  priority: 3000\n});\n\"x1777cdg x9cubbk\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "borderInlineColor: basic shorthand",
+          "line": 853
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-borderinlinewidth-basic-shor-019-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              borderInlineWidth: 1\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xpilrb4{border-left-width:1px}\",\n  rtl: \".xpilrb4{border-right-width:1px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1lun4ml{border-right-width:1px}\",\n  rtl: \".x1lun4ml{border-left-width:1px}\",\n  priority: 3000\n});\n\"xpilrb4 x1lun4ml\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "borderInlineWidth: basic shorthand",
+          "line": 882
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-inset-basic-shorthand-020-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              inset: 10\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1eu8d0j{top:10px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xo2ifbc{right:10px}\",\n  rtl: \".xo2ifbc{left:10px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1jn9clo{bottom:10px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xi5uv41{left:10px}\",\n  rtl: \".xi5uv41{right:10px}\",\n  priority: 3000\n});\n\"x1eu8d0j xo2ifbc x1jn9clo xi5uv41\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "inset: basic shorthand",
+          "line": 911
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-inset-multivalue-shorthand-021-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              inset: '10px 20px 30px 40px'\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1eu8d0j{top:10px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x2ss2xj{right:20px}\",\n  rtl: \".x2ss2xj{left:20px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xwajptj{bottom:30px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x9pwknu{left:40px}\",\n  rtl: \".x9pwknu{right:40px}\",\n  priority: 3000\n});\n\"x1eu8d0j x2ss2xj xwajptj x9pwknu\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "inset: multivalue shorthand",
+          "line": 948
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-insetinline-basic-shorthand-022-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              insetInline: 10\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xi5uv41{left:10px}\",\n  rtl: \".xi5uv41{right:10px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xo2ifbc{right:10px}\",\n  rtl: \".xo2ifbc{left:10px}\",\n  priority: 3000\n});\n\"xi5uv41 xo2ifbc\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "insetInline: basic shorthand",
+          "line": 985
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-insetinline-multivalue-short-023-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              insetInline: '10px 20px'\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xi5uv41{left:10px}\",\n  rtl: \".xi5uv41{right:10px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x2ss2xj{right:20px}\",\n  rtl: \".x2ss2xj{left:20px}\",\n  priority: 3000\n});\n\"xi5uv41 x2ss2xj\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "insetInline: multivalue shorthand",
+          "line": 1014
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-insetblock-basic-shorthand-024-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              insetBlock: 10\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1eu8d0j{top:10px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x1jn9clo{bottom:10px}\",\n  priority: 4000\n});\n\"x1eu8d0j x1jn9clo\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "insetBlock: basic shorthand",
+          "line": 1043
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-insetblock-multivalue-shorth-025-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              insetBlock: '10px 20px'\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1eu8d0j{top:10px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xjnlgov{bottom:20px}\",\n  priority: 4000\n});\n\"x1eu8d0j xjnlgov\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "insetBlock: multivalue shorthand",
+          "line": 1070
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-liststyle-basic-shorthand-026-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            none: {\n              listStyle: 'none'\n            },\n            square: {\n              listStyle: 'square'\n            },\n            inside: {\n              listStyle: 'inside'\n            },\n            custom1: {\n              listStyle: '\"--\"'\n            },\n            custom2: {\n              listStyle: \"'=='\"\n            }\n          });\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "debug": true,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".listStyleType-x3ct3a4{list-style-type:none}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".listStyleType-x152237o{list-style-type:square}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".listStylePosition-x1cy9i3i{list-style-position:inside}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".listStyleType-x1jzm7bx{list-style-type:\\\"--\\\"}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".listStyleType-x1tpmu87{list-style-type:'=='}\",\n  priority: 3000\n});\nexport const styles = {\n  none: {\n    \"listStyleType-kH6xsr\": \"listStyleType-x3ct3a4\",\n    \"listStylePosition-kpqbRz\": null,\n    \"listStyleImage-khnUzm\": null,\n    $$css: \"@stylexjs/babel-plugin::4\"\n  },\n  square: {\n    \"listStyleType-kH6xsr\": \"listStyleType-x152237o\",\n    \"listStylePosition-kpqbRz\": null,\n    \"listStyleImage-khnUzm\": null,\n    $$css: \"@stylexjs/babel-plugin::7\"\n  },\n  inside: {\n    \"listStyleType-kH6xsr\": null,\n    \"listStylePosition-kpqbRz\": \"listStylePosition-x1cy9i3i\",\n    \"listStyleImage-khnUzm\": null,\n    $$css: \"@stylexjs/babel-plugin::10\"\n  },\n  custom1: {\n    \"listStyleType-kH6xsr\": \"listStyleType-x1jzm7bx\",\n    \"listStylePosition-kpqbRz\": null,\n    \"listStyleImage-khnUzm\": null,\n    $$css: \"@stylexjs/babel-plugin::13\"\n  },\n  custom2: {\n    \"listStyleType-kH6xsr\": \"listStyleType-x1tpmu87\",\n    \"listStylePosition-kpqbRz\": null,\n    \"listStyleImage-khnUzm\": null,\n    $$css: \"@stylexjs/babel-plugin::16\"\n  }\n};",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "listStyle: basic shorthand",
+          "line": 1097
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-liststyle-multi-value-shorth-027-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            one: {\n              listStyle: 'none inside'\n            },\n            two: {\n              listStyle: 'none square'\n            },\n            three: {\n              listStyle: 'simp-chinese-informal linear-gradient(90deg, white 100%)'\n            },\n            four: {\n              listStyle: 'outside \"+\" linear-gradient(90deg, white 100%)'\n            },\n          });\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "debug": true,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".listStyleType-x3ct3a4{list-style-type:none}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".listStylePosition-x1cy9i3i{list-style-position:inside}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".listStyleType-x152237o{list-style-type:square}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".listStyleImage-xnbnhf8{list-style-image:none}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".listStyleType-xl2um64{list-style-type:simp-chinese-informal}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".listStyleImage-x1qcowux{list-style-image:linear-gradient(90deg,white 100%)}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".listStyleType-xqkogtj{list-style-type:\\\"+\\\"}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".listStylePosition-x43c9pm{list-style-position:outside}\",\n  priority: 3000\n});\nexport const styles = {\n  one: {\n    \"listStyleType-kH6xsr\": \"listStyleType-x3ct3a4\",\n    \"listStylePosition-kpqbRz\": \"listStylePosition-x1cy9i3i\",\n    \"listStyleImage-khnUzm\": null,\n    $$css: \"@stylexjs/babel-plugin::4\"\n  },\n  two: {\n    \"listStyleType-kH6xsr\": \"listStyleType-x152237o\",\n    \"listStylePosition-kpqbRz\": null,\n    \"listStyleImage-khnUzm\": \"listStyleImage-xnbnhf8\",\n    $$css: \"@stylexjs/babel-plugin::7\"\n  },\n  three: {\n    \"listStyleType-kH6xsr\": \"listStyleType-xl2um64\",\n    \"listStylePosition-kpqbRz\": null,\n    \"listStyleImage-khnUzm\": \"listStyleImage-x1qcowux\",\n    $$css: \"@stylexjs/babel-plugin::10\"\n  },\n  four: {\n    \"listStyleType-kH6xsr\": \"listStyleType-xqkogtj\",\n    \"listStylePosition-kpqbRz\": \"listStylePosition-x43c9pm\",\n    \"listStyleImage-khnUzm\": \"listStyleImage-x1qcowux\",\n    $$css: \"@stylexjs/babel-plugin::13\"\n  }\n};",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "listStyle: multi-value shorthand",
+          "line": 1185
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-liststyle-with-longhand-coll-028-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            one: {\n              listStyle: 'none inside',\n              listStyleType: 'square'\n            },\n            two: {\n              listStyle: 'none georgian',\n              listStylePosition: 'outside'\n            },\n            three: {\n              listStyle: 'simp-chinese-informal linear-gradient(90deg, white 100%)',\n              listStylePosition: 'outside',\n              listStyleType: 'square',\n            },\n            four: {\n              listStyle: 'inside \"--\" linear-gradient(90deg, white 100%)',\n              listStylePosition: 'outside',\n              listStyleType: 'square',\n            },\n          });\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "debug": true,
+        "enableDebugClassNames": true,
+        "enableDevClassNames": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".listStylePosition-x1cy9i3i{list-style-position:inside}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".listStyleType-x152237o{list-style-type:square}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".listStyleType-x12kno0j{list-style-type:georgian}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".listStyleImage-xnbnhf8{list-style-image:none}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".listStylePosition-x43c9pm{list-style-position:outside}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".listStyleImage-x1qcowux{list-style-image:linear-gradient(90deg,white 100%)}\",\n  priority: 3000\n});\nexport const styles = {\n  one: {\n    \"listStylePosition-kpqbRz\": \"listStylePosition-x1cy9i3i\",\n    \"listStyleImage-khnUzm\": null,\n    \"listStyleType-kH6xsr\": \"listStyleType-x152237o\",\n    $$css: \"@stylexjs/babel-plugin::4\"\n  },\n  two: {\n    \"listStyleType-kH6xsr\": \"listStyleType-x12kno0j\",\n    \"listStyleImage-khnUzm\": \"listStyleImage-xnbnhf8\",\n    \"listStylePosition-kpqbRz\": \"listStylePosition-x43c9pm\",\n    $$css: \"@stylexjs/babel-plugin::8\"\n  },\n  three: {\n    \"listStyleImage-khnUzm\": \"listStyleImage-x1qcowux\",\n    \"listStylePosition-kpqbRz\": \"listStylePosition-x43c9pm\",\n    \"listStyleType-kH6xsr\": \"listStyleType-x152237o\",\n    $$css: \"@stylexjs/babel-plugin::12\"\n  },\n  four: {\n    \"listStyleImage-khnUzm\": \"listStyleImage-x1qcowux\",\n    \"listStylePosition-kpqbRz\": \"listStylePosition-x43c9pm\",\n    \"listStyleType-kH6xsr\": \"listStyleType-x152237o\",\n    $$css: \"@stylexjs/babel-plugin::17\"\n  }\n};",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "listStyle: with longhand collisions",
+          "line": 1276
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-liststyle-invalid-values-029-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            none: {\n              listStyle: 'none inherit'\n            },\n          });\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "propertyValidationMode": "throw"
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "any",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "listStyle: invalid values",
+          "line": 1365
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-liststyle-invalid-values-030-throws",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            none: {\n              listStyle: 'none var(--image)'\n            },\n          });\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true,
+        "propertyValidationMode": "throw"
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-throws"],
+      "assert": {
+        "kind": "throws",
+        "matcher": "toThrow",
+        "match": "any",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "listStyle: invalid values",
+          "line": 1378
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-padding-with-longhand-proper-031-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              padding: 5,\n              paddingEnd: 10,\n            },\n\n            bar: {\n              padding: 2,\n              paddingStart: 10,\n            },\n          });\n          stylex(styles.foo, styles.bar);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x123j3cw{padding-top:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xs9asl8{padding-bottom:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xaso8d8{padding-inline-start:5px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x2vl965{padding-inline-end:10px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1nn3v0j{padding-top:2px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x14vy60q{padding-inline-end:2px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1120s5i{padding-bottom:2px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xe2zdcy{padding-inline-start:10px}\",\n  priority: 3000\n});\n\"x1nn3v0j x14vy60q x1120s5i xe2zdcy\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "padding: with longhand property collisions",
+          "line": 1398
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-padding-with-null-longhand-p-032-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              padding: 5,\n              paddingEnd: 10,\n            },\n\n            bar: {\n              padding: 2,\n              paddingStart: null,\n            },\n          });\n          stylex(styles.foo, styles.bar);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x123j3cw{padding-top:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xs9asl8{padding-bottom:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xaso8d8{padding-inline-start:5px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x2vl965{padding-inline-end:10px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1nn3v0j{padding-top:2px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x14vy60q{padding-inline-end:2px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1120s5i{padding-bottom:2px}\",\n  priority: 4000\n});\n\"x1nn3v0j x14vy60q x1120s5i\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "padding: with null longhand property collisions",
+          "line": 1458
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-bordercolor-basic-shorthand-033-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              borderColor: 'red blue green yellow'\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1uu1fcu{border-top-color:red}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xcejqfc{border-inline-end-color:blue}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1hnil3p{border-bottom-color:green}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xqzb60q{border-inline-start-color:yellow}\",\n  priority: 3000\n});\n\"x1uu1fcu xcejqfc x1hnil3p xqzb60q\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "borderColor: basic shorthand",
+          "line": 1514
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-borderwidth-basic-shorthand-034-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              borderWidth: '1px 2px 3px 4px'\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x178xt8z{border-top-width:1px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x1alpsbp{border-inline-end-width:2px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x2x41l1{border-bottom-width:3px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x56jcm7{border-inline-start-width:4px}\",\n  priority: 3000\n});\n\"x178xt8z x1alpsbp x2x41l1 x56jcm7\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "borderWidth: basic shorthand",
+          "line": 1552
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-padding-basic-shorthand-035-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            foo: {\n              padding: 5\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x123j3cw{padding-top:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x1gabggj{padding-inline-end:5px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xs9asl8{padding-bottom:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xaso8d8{padding-inline-start:5px}\",\n  priority: 3000\n});\nexport const styles = {\n  foo: {\n    kLKAdn: \"x123j3cw\",\n    kwRFfy: \"x1gabggj\",\n    kGO01o: \"xs9asl8\",\n    kZCmMZ: \"xaso8d8\",\n    $$css: true\n  }\n};\n\"x123j3cw x1gabggj xs9asl8 xaso8d8\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "padding: basic shorthand",
+          "line": 1592
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-margin-basic-shorthand-036-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              margin: '10px 20px 30px 40px'\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1anpbxc{margin-top:10px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x3aesyq{margin-inline-end:20px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x4n8cb0{margin-bottom:30px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x11hdunq{margin-inline-start:40px}\",\n  priority: 3000\n});\n\"x1anpbxc x3aesyq x4n8cb0 x11hdunq\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "margin: basic shorthand",
+          "line": 1639
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-paddinginline-basic-shorthan-037-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            foo: {\n              paddingInline: 5\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xaso8d8{padding-inline-start:5px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1gabggj{padding-inline-end:5px}\",\n  priority: 3000\n});\nexport const styles = {\n  foo: {\n    kZCmMZ: \"xaso8d8\",\n    kwRFfy: \"x1gabggj\",\n    kE3dHu: null,\n    kpe85a: null,\n    $$css: true\n  }\n};\n\"xaso8d8 x1gabggj\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "paddingInline: basic shorthand",
+          "line": 1677
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-padding-with-longhand-proper-038-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              padding: 5,\n              paddingInlineEnd: 10,\n            },\n\n            bar: {\n              padding: 2,\n              paddingInlineStart: 10,\n            },\n          });\n          stylex(styles.foo, styles.bar);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x123j3cw{padding-top:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xs9asl8{padding-bottom:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xaso8d8{padding-inline-start:5px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x2vl965{padding-inline-end:10px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1nn3v0j{padding-top:2px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x14vy60q{padding-inline-end:2px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1120s5i{padding-bottom:2px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xe2zdcy{padding-inline-start:10px}\",\n  priority: 3000\n});\n\"x1nn3v0j x14vy60q x1120s5i xe2zdcy\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "padding: with longhand property collisions",
+          "line": 1716
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-paddingblock-basic-multivalu-039-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            foo: {\n              paddingBlock: \"5px 10px\"\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": true
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x123j3cw{padding-top:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x1a8lsjc{padding-bottom:10px}\",\n  priority: 4000\n});\nexport const styles = {\n  foo: {\n    kLKAdn: \"x123j3cw\",\n    kGO01o: \"x1a8lsjc\",\n    $$css: true\n  }\n};\n\"x123j3cw x1a8lsjc\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "paddingBlock: basic multivalue shorthand",
+          "line": 1776
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-padding-with-null-longhand-p-040-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              padding: 5,\n              paddingInlineEnd: 10,\n            },\n\n            bar: {\n              padding: 2,\n              paddingInlineStart: null,\n            },\n          });\n          stylex(styles.foo, styles.bar);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x123j3cw{padding-top:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xs9asl8{padding-bottom:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xaso8d8{padding-inline-start:5px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x2vl965{padding-inline-end:10px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1nn3v0j{padding-top:2px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x14vy60q{padding-inline-end:2px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1120s5i{padding-bottom:2px}\",\n  priority: 4000\n});\n\"x1nn3v0j x14vy60q x1120s5i\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "padding: with null longhand property collisions",
+          "line": 1810
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-margininline-basic-shorthand-041-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          export const styles = stylex.create({\n            foo: {\n              marginInline: 5\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xpcyujq{margin-inline-start:5px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xf6vk7d{margin-inline-end:5px}\",\n  priority: 3000\n});\nexport const styles = {\n  foo: {\n    keTefX: \"xpcyujq\",\n    k71WvV: \"xf6vk7d\",\n    koQZXg: null,\n    km5ZXQ: null,\n    $$css: true\n  }\n};\n\"xpcyujq xf6vk7d\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "marginInline: basic shorthand",
+          "line": 1866
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-margin-with-longhand-propert-042-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              margin: 5,\n              marginInlineEnd: 10,\n            },\n\n            bar: {\n              margin: 2,\n              marginInlineStart: 10,\n            },\n          });\n          stylex(styles.foo, styles.bar);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1ok221b{margin-top:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xu06os2{margin-bottom:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xpcyujq{margin-inline-start:5px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1sa5p1d{margin-inline-end:10px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xr9ek0c{margin-top:2px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xnnr8r{margin-inline-end:2px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xjpr12u{margin-bottom:2px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".x1hm9lzh{margin-inline-start:10px}\",\n  priority: 3000\n});\n\"xr9ek0c xnnr8r xjpr12u x1hm9lzh\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "margin: with longhand property collisions",
+          "line": 1905
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-margin-with-null-longhand-pr-043-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              margin: 5,\n              marginInlineEnd: 10,\n            },\n\n            bar: {\n              margin: 2,\n              marginInlineStart: null,\n            },\n          });\n          stylex(styles.foo, styles.bar);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1ok221b{margin-top:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xu06os2{margin-bottom:5px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xpcyujq{margin-inline-start:5px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1sa5p1d{margin-inline-end:10px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xr9ek0c{margin-top:2px}\",\n  priority: 4000\n});\n_inject2({\n  ltr: \".xnnr8r{margin-inline-end:2px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".xjpr12u{margin-bottom:2px}\",\n  priority: 4000\n});\n\"xr9ek0c xnnr8r xjpr12u\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "margin: with null longhand property collisions",
+          "line": 1965
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-border-basic-shorthand-044-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              border: '1px solid red'\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x122jhqu{border-top:1px solid red}\",\n  priority: 2000\n});\n_inject2({\n  ltr: \".xcmqxwo{border-inline-end:1px solid red}\",\n  priority: 2000\n});\n_inject2({\n  ltr: \".xql0met{border-bottom:1px solid red}\",\n  priority: 2000\n});\n_inject2({\n  ltr: \".x1lsjq1p{border-inline-start:1px solid red}\",\n  priority: 2000\n});\n\"x122jhqu xcmqxwo xql0met x1lsjq1p\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "border: basic shorthand",
+          "line": 2021
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-borderinlinecolor-basic-shor-045-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              borderInlineColor: 'red'\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".x1777cdg{border-inline-start-color:red}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x9cubbk{border-inline-end-color:red}\",\n  priority: 3000\n});\n\"x1777cdg x9cubbk\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "borderInlineColor: basic shorthand",
+          "line": 2059
+        }
+      }
+    },
+    {
+      "id": "assertions/legacy-legacy-shorthands-borderinlinewidth-basic-shor-046-code",
+      "root": "corpus/upstream/fixtures/default",
+      "filename": "test.js",
+      "source": "\n          import stylex from 'stylex';\n          const styles = stylex.create({\n            foo: {\n              borderInlineWidth: 1\n            }\n          });\n          stylex(styles.foo);\n        ",
+      "options": {
+        "runtimeInjection": true,
+        "styleResolution": "legacy-expand-shorthands",
+        "enableLogicalStylesPolyfill": false
+      },
+      "mode": "prod",
+      "tags": ["legacy-legacy-shorthands", "legacy", "create", "assert-code"],
+      "assert": {
+        "kind": "code",
+        "matcher": "toMatchInlineSnapshot",
+        "match": "exact",
+        "expected": "import _inject from \"@stylexjs/stylex/lib/stylex-inject\";\nvar _inject2 = _inject;\nimport stylex from 'stylex';\n_inject2({\n  ltr: \".xpilrb4{border-inline-start-width:1px}\",\n  priority: 3000\n});\n_inject2({\n  ltr: \".x1lun4ml{border-inline-end-width:1px}\",\n  priority: 3000\n});\n\"xpilrb4 x1lun4ml\";",
+        "site": {
+          "file": "legacy/stylex-transform-legacy-shorthands-test.js",
+          "test": "borderInlineWidth: basic shorthand",
+          "line": 2089
+        }
+      }
+    }
+  ]
+}

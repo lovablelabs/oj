@@ -1,0 +1,2003 @@
+{
+  "header": {
+    "oracle": "@stylexjs/babel-plugin@0.19.0 via transformSync (enableMediaQueryOrder default ON)",
+    "generator": "conformance/src/gen-pins-mq.mjs",
+    "corpus": "conformance/corpus/upstream/media-queries.json",
+    "semantics": {
+      "single": "one '@media …' key at depth>=1: parse -> normalize -> toString (always re-serialized)",
+      "siblings": "N '@media ' keys at depth>=1: earlier keys get ANDed not-clauses of later ones",
+      "topLevel": "condition-first keys at namespace top level (depth 0): verbatim, never parsed",
+      "error": "unparseable '@media ' key at depth>=1 fails the whole compile with this message"
+    }
+  },
+  "single": [
+    {
+      "input": "@media (max-width: 1440px)",
+      "emitted": "@media (max-width: 1440px)",
+      "className": "x1prsp3g"
+    },
+    {
+      "input": "@media (max-width: 1024px)",
+      "emitted": "@media (max-width: 1024px)",
+      "className": "x1bvgt5p"
+    },
+    {
+      "input": "@media (max-width: 768px)",
+      "emitted": "@media (max-width: 768px)",
+      "className": "xifjl2k"
+    },
+    {
+      "input": "@media (min-width: 1024.01px) and (max-width: 1440px)",
+      "emitted": "@media (min-width: 1024.01px) and (max-width: 1440px)",
+      "className": "xa0yrw0"
+    },
+    {
+      "input": "@media (min-width: 768.01px) and (max-width: 1024px)",
+      "emitted": "@media (min-width: 768.01px) and (max-width: 1024px)",
+      "className": "xczk0n3"
+    },
+    {
+      "input": "@media (max-height: 1024px)",
+      "emitted": "@media (max-height: 1024px)",
+      "className": "x16ip7hn"
+    },
+    {
+      "input": "@media (max-height: 768px)",
+      "emitted": "@media (max-height: 768px)",
+      "className": "x17t6ho7"
+    },
+    {
+      "input": "@media (min-height: 768.01px) and (max-height: 1024px)",
+      "emitted": "@media (min-height: 768.01px) and (max-height: 1024px)",
+      "className": "x1sesibk"
+    },
+    {
+      "input": "@media (max-width: 458px)",
+      "emitted": "@media (max-width: 458px)",
+      "className": "xqmdip9"
+    },
+    {
+      "input": "@media (min-width: 458.01px) and (max-width: 768px)",
+      "emitted": "@media (min-width: 458.01px) and (max-width: 768px)",
+      "className": "x1wvb87f"
+    },
+    {
+      "input": "@media (min-width: 768px)",
+      "emitted": "@media (min-width: 768px)",
+      "className": "x463vv0"
+    },
+    {
+      "input": "@media (min-width: 1024px)",
+      "emitted": "@media (min-width: 1024px)",
+      "className": "xuj8m6b"
+    },
+    {
+      "input": "@media (min-width: 1440px)",
+      "emitted": "@media (min-width: 1440px)",
+      "className": "xxv180d"
+    },
+    {
+      "input": "@media (min-width: 768px) and (max-width: 1023.99px)",
+      "emitted": "@media (min-width: 768px) and (max-width: 1023.99px)",
+      "className": "x143ziq"
+    },
+    {
+      "input": "@media (min-width: 1024px) and (max-width: 1439.99px)",
+      "emitted": "@media (min-width: 1024px) and (max-width: 1439.99px)",
+      "className": "xnewmvo"
+    },
+    {
+      "input": "@media (max-height: 1200px)",
+      "emitted": "@media (max-height: 1200px)",
+      "className": "xj8ofue"
+    },
+    {
+      "input": "@media (max-height: 900px)",
+      "emitted": "@media (max-height: 900px)",
+      "className": "xss728h"
+    },
+    {
+      "input": "@media (max-height: 600px)",
+      "emitted": "@media (max-height: 600px)",
+      "className": "xr078oi"
+    },
+    {
+      "input": "@media (min-height: 900.01px) and (max-height: 1200px)",
+      "emitted": "@media (min-height: 900.01px) and (max-height: 1200px)",
+      "className": "xn902x8"
+    },
+    {
+      "input": "@media (min-height: 600.01px) and (max-height: 900px)",
+      "emitted": "@media (min-height: 600.01px) and (max-height: 900px)",
+      "className": "x1slmx3v"
+    },
+    {
+      "input": "@media (min-height: 1200px) and (max-height: 1400px)",
+      "emitted": "@media (min-height: 1200px) and (max-height: 1400px)",
+      "className": "xfmizv8"
+    },
+    {
+      "input": "@media (color)",
+      "emitted": "@media (color)",
+      "className": "xz2cwcb"
+    },
+    {
+      "input": "@media (monochrome)",
+      "emitted": "@media (monochrome)",
+      "className": "xl1hj2t"
+    },
+    {
+      "input": "@media (color) and (not (monochrome))",
+      "emitted": "@media (color) and (not (monochrome))",
+      "className": "x1mrvd8d"
+    },
+    {
+      "input": "@media only screen and (max-width: 600px)",
+      "emitted": "@media only screen and (max-width: 600px)",
+      "className": "x136nl7e"
+    },
+    {
+      "input": "@media only screen and (max-width: 400px)",
+      "emitted": "@media only screen and (max-width: 400px)",
+      "className": "x1fdewuu"
+    },
+    {
+      "input": "@media screen, (max-width: 800px)",
+      "emitted": "@media (screen), (max-width: 800px)",
+      "className": "x8snq8c",
+      "refixError": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (max-width: 500px)",
+      "emitted": "@media (max-width: 500px)",
+      "className": "x1l2dsa5"
+    },
+    {
+      "input": "@media (screen) and (not (max-width: 500px)), (min-width: 500.01px) and (max-width: 800px)",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (min-width: 900px)",
+      "emitted": "@media (min-width: 900px)",
+      "className": "x1jplgqt"
+    },
+    {
+      "input": "@media (min-width: 500px) and (max-width: 899px) and (max-height: 300px)",
+      "emitted": "@media (min-width: 500px) and (max-width: 899px) and (max-height: 300px)",
+      "className": "xyd3l"
+    },
+    {
+      "input": "@media (min-width: 900px) and (not ((min-width: 500px) and (max-width: 899px) and (max-height: 300px)))",
+      "emitted": "@media (min-width: 900px) and (not ((min-width: 500px) and (max-width: 899px) and (max-height: 300px)))",
+      "className": "xciffpm"
+    },
+    {
+      "input": "@media screen and (min-width: 900px)",
+      "emitted": "@media (screen) and (min-width: 900px)",
+      "className": "x1o6iy4e",
+      "refixError": "Invalid media query syntax."
+    },
+    {
+      "input": "@media print and (max-width: 500px)",
+      "emitted": "@media (print) and (max-width: 500px)",
+      "className": "xttp6q0",
+      "refixError": "Invalid media query syntax."
+    },
+    {
+      "input": "@media screen and (min-width: 900px) and (not (print and (max-width: 500px)))",
+      "emitted": "@media ((screen) and (min-width: 900px) and (not (print))) or ((screen) and (min-width: 900px) and (not (max-width: 500px)))",
+      "className": "x1scftvq",
+      "refixError": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (min-width: 600px)",
+      "emitted": "@media (min-width: 600px)",
+      "className": "x17daqs1"
+    },
+    {
+      "input": "@media (max-width: 1440px) and (max-height: 900px)",
+      "emitted": "@media (max-width: 1440px) and (max-height: 900px)",
+      "className": "x1tmfacc"
+    },
+    {
+      "input": "@media (min-width: 1024.01px) and (max-width: 1440px) and (max-height: 900px)",
+      "emitted": "@media (min-width: 1024.01px) and (max-width: 1440px) and (max-height: 900px)",
+      "className": "xgxrmf9"
+    },
+    {
+      "input": "@media (max-height: 700px)",
+      "emitted": "@media (max-height: 700px)",
+      "className": "xcsfnla"
+    },
+    {
+      "input": "@media (max-height: 500px)",
+      "emitted": "@media (max-height: 500px)",
+      "className": "xabn62z"
+    },
+    {
+      "input": "@media (max-width: 1440px) and (min-height: 700.01px) and (max-height: 900px)",
+      "emitted": "@media (max-width: 1440px) and (min-height: 700.01px) and (max-height: 900px)",
+      "className": "x1rtn451"
+    },
+    {
+      "input": "@media (min-height: 500.01px) and (max-height: 700px)",
+      "emitted": "@media (min-height: 500.01px) and (max-height: 700px)",
+      "className": "x1grtvc7"
+    },
+    {
+      "input": "@media (max-width: 1440px) and (min-width: 900px)",
+      "emitted": "@media (min-width: 900px) and (max-width: 1440px)",
+      "className": "x7i388u"
+    },
+    {
+      "input": "@media (max-width: 800px) and (min-width: 600px)",
+      "emitted": "@media (min-width: 600px) and (max-width: 800px)",
+      "className": "xsg0hsd"
+    },
+    {
+      "input": "@media (min-width: 900px) and (max-width: 1440px)",
+      "emitted": "@media (min-width: 900px) and (max-width: 1440px)",
+      "className": "x7i388u"
+    },
+    {
+      "input": "@media (min-width: 600px) and (max-width: 800px)",
+      "emitted": "@media (min-width: 600px) and (max-width: 800px)",
+      "className": "xsg0hsd"
+    },
+    {
+      "input": "@media (max-width: 500px) and (min-width: 400px)",
+      "emitted": "@media (min-width: 400px) and (max-width: 500px)",
+      "className": "x8njkhw"
+    },
+    {
+      "input": "@media (min-width: 400px) and (max-width: 500px)",
+      "emitted": "@media (min-width: 400px) and (max-width: 500px)",
+      "className": "x8njkhw"
+    },
+    {
+      "input": "@media (max-width: 1040px) and (min-width: 600px)",
+      "emitted": "@media (min-width: 600px) and (max-width: 1040px)",
+      "className": "x1g5pa3x"
+    },
+    {
+      "input": "@media (min-width: 1040.01px) and (max-width: 1440px)",
+      "emitted": "@media (min-width: 1040.01px) and (max-width: 1440px)",
+      "className": "x1wgjwcm"
+    },
+    {
+      "input": "@media (min-width: 600px) and (max-width: 1040px)",
+      "emitted": "@media (min-width: 600px) and (max-width: 1040px)",
+      "className": "x1g5pa3x"
+    },
+    {
+      "input": "@media (max-width: 1100px) and (min-width: 1000px)",
+      "emitted": "@media (min-width: 1000px) and (max-width: 1100px)",
+      "className": "xijg8hx"
+    },
+    {
+      "input": "@media ((min-width: 900px) and (max-width: 999.99px)) or ((min-width: 1100.01px) and (max-width: 1440px))",
+      "emitted": "@media (min-width: 900px) and (max-width: 999.99px), (min-width: 1100.01px) and (max-width: 1440px)",
+      "className": "x19bsixa"
+    },
+    {
+      "input": "@media (min-width: 1000px) and (max-width: 1100px)",
+      "emitted": "@media (min-width: 1000px) and (max-width: 1100px)",
+      "className": "xijg8hx"
+    },
+    {
+      "input": "@media (max-width: 1050px) and (min-width: 1010px)",
+      "emitted": "@media (min-width: 1010px) and (max-width: 1050px)",
+      "className": "x18a2ggq"
+    },
+    {
+      "input": "@media ((min-width: 1000px) and (max-width: 1009.99px)) or ((min-width: 1050.01px) and (max-width: 1100px))",
+      "emitted": "@media (min-width: 1000px) and (max-width: 1009.99px), (min-width: 1050.01px) and (max-width: 1100px)",
+      "className": "xxoni5r"
+    },
+    {
+      "input": "@media (min-width: 1010px) and (max-width: 1050px)",
+      "emitted": "@media (min-width: 1010px) and (max-width: 1050px)",
+      "className": "x18a2ggq"
+    },
+    {
+      "input": "@media (max-width: 90em) and (min-width: 60em)",
+      "emitted": "@media (min-width: 60em) and (max-width: 90em)",
+      "className": "xsfjy3w"
+    },
+    {
+      "input": "@media (max-width: 70em) and (min-width: 65em)",
+      "emitted": "@media (min-width: 65em) and (max-width: 70em)",
+      "className": "x5sr00n"
+    },
+    {
+      "input": "@media ((min-width: 60em) and (max-width: 64.99em)) or ((min-width: 70.01em) and (max-width: 90em))",
+      "emitted": "@media (min-width: 60em) and (max-width: 64.99em), (min-width: 70.01em) and (max-width: 90em)",
+      "className": "x1qjyx33"
+    },
+    {
+      "input": "@media (min-width: 65em) and (max-width: 70em)",
+      "emitted": "@media (min-width: 65em) and (max-width: 70em)",
+      "className": "x5sr00n"
+    },
+    {
+      "input": "@media (max-width: 1200px) and (min-height: 50vh)",
+      "emitted": "@media (max-width: 1200px) and (min-height: 50vh)",
+      "className": "x1m6a2au"
+    },
+    {
+      "input": "@media (max-width: 800px) and (min-height: 30vh)",
+      "emitted": "@media (max-width: 800px) and (min-height: 30vh)",
+      "className": "xeal9f1"
+    },
+    {
+      "input": "@media (min-width: 800.01px) and (max-width: 1200px) and (min-height: 50vh)",
+      "emitted": "@media (min-width: 800.01px) and (max-width: 1200px) and (min-height: 50vh)",
+      "className": "x1e75664"
+    },
+    {
+      "input": "@media (min-width: 768px) and (max-width: 1200px)",
+      "emitted": "@media (min-width: 768px) and (max-width: 1200px)",
+      "className": "x5n0sa7"
+    },
+    {
+      "input": "@media (min-width: 50em)",
+      "emitted": "@media (min-width: 50em)",
+      "className": "xnorgxh"
+    },
+    {
+      "input": "@media (min-width: 768px) and (max-width: 1200px) and (not (min-width: 50em))",
+      "emitted": "@media (min-width: 768px) and (max-width: 1200px) and (not (min-width: 50em))",
+      "className": "x1rudwcw"
+    },
+    {
+      "input": "@media (min-width: 768px) and (max-width: 1200em)",
+      "emitted": "@media (min-width: 768px) and (max-width: 1200em)",
+      "className": "x1qt92wa"
+    },
+    {
+      "input": "@media (min-width: 768px) and (max-width: 1200em) and (not (min-width: 50em))",
+      "emitted": "@media (min-width: 768px) and (max-width: 1200em) and (not (min-width: 50em))",
+      "className": "x1oyx3rj"
+    },
+    {
+      "input": "@media screen",
+      "emitted": "@media screen",
+      "className": "xlw99r8"
+    },
+    {
+      "input": "@media print",
+      "emitted": "@media print",
+      "className": "xbjrxft"
+    },
+    {
+      "input": "@media all",
+      "emitted": "@media all",
+      "className": "xxlj4e9"
+    },
+    {
+      "input": "@media only screen",
+      "emitted": "@media only screen",
+      "className": "x5wlnf7"
+    },
+    {
+      "input": "@media only print and (color)",
+      "emitted": "@media only print and (color)",
+      "className": "x1wpp2y0"
+    },
+    {
+      "input": "@media only screen and (max-width: 38em)",
+      "emitted": "@media only screen and (max-width: 38em)",
+      "className": "x15ljzm0"
+    },
+    {
+      "input": "@media not screen",
+      "emitted": "@media not screen",
+      "className": "xlfeakn"
+    },
+    {
+      "input": "@media not all and (monochrome)",
+      "emitted": "@media not all and (monochrome)",
+      "className": "xas4j0f"
+    },
+    {
+      "input": "@media (width: 100px)",
+      "emitted": "@media (width: 100px)",
+      "className": "x1sf1zl8"
+    },
+    {
+      "input": "@media (max-width: 50em)",
+      "emitted": "@media (max-width: 50em)",
+      "className": "x1g0sg4f"
+    },
+    {
+      "input": "@media (orientation: landscape)",
+      "emitted": "@media (orientation: landscape)",
+      "className": "x33u9pi"
+    },
+    {
+      "input": "@media (update: fast)",
+      "emitted": "@media (update: fast)",
+      "className": "x1ro3wb9"
+    },
+    {
+      "input": "@media (overflow-block: scroll)",
+      "emitted": "@media (overflow-block: scroll)",
+      "className": "xk4sql6"
+    },
+    {
+      "input": "@media (display-mode: fullscreen)",
+      "emitted": "@media (display-mode: fullscreen)",
+      "className": "xg21qyi"
+    },
+    {
+      "input": "@media (scripting: enabled)",
+      "emitted": "@media (scripting: enabled)",
+      "className": "xf6ppj2"
+    },
+    {
+      "input": "@media (hover: hover)",
+      "emitted": "@media (hover: hover)",
+      "className": "xmugtmq"
+    },
+    {
+      "input": "@media (any-hover: none)",
+      "emitted": "@media (any-hover: none)",
+      "className": "xcn1bgp"
+    },
+    {
+      "input": "@media (pointer: coarse)",
+      "emitted": "@media (pointer: coarse)",
+      "className": "xsslzru"
+    },
+    {
+      "input": "@media (any-pointer: fine)",
+      "emitted": "@media (any-pointer: fine)",
+      "className": "x1w35z0m"
+    },
+    {
+      "input": "@media (light-level: dim)",
+      "emitted": "@media (light-level: dim)",
+      "className": "x1eecaqb"
+    },
+    {
+      "input": "@media (inverted-colors: inverted)",
+      "emitted": "@media (inverted-colors: inverted)",
+      "className": "xf3uesq"
+    },
+    {
+      "input": "@media (prefers-reduced-motion: reduce)",
+      "emitted": "@media (prefers-reduced-motion: reduce)",
+      "className": "xszlhe2"
+    },
+    {
+      "input": "@media (prefers-contrast: more)",
+      "emitted": "@media (prefers-contrast: more)",
+      "className": "x17zrch"
+    },
+    {
+      "input": "@media (forced-colors: active)",
+      "emitted": "@media (forced-colors: active)",
+      "className": "x1u4j1qr"
+    },
+    {
+      "input": "@media (prefers-reduced-transparency: reduce)",
+      "emitted": "@media (prefers-reduced-transparency: reduce)",
+      "className": "xhec60o"
+    },
+    {
+      "input": "@media (min-width: calc(300px + 5em))",
+      "emitted": "@media (min-width: calc(300px + 5em))",
+      "className": "x1d4ktua"
+    },
+    {
+      "input": "@media (max-height: calc(100vh - 50px))",
+      "emitted": "@media (max-height: calc(100vh - 50px))",
+      "className": "x4rkl7q"
+    },
+    {
+      "input": "@media (aspect-ratio: 16 / 9)",
+      "emitted": "@media (aspect-ratio: 16 / 9)",
+      "className": "x14djybu"
+    },
+    {
+      "input": "@media (device-aspect-ratio: 16 / 9)",
+      "emitted": "@media (device-aspect-ratio: 16 / 9)",
+      "className": "x37q0zf"
+    },
+    {
+      "input": "@media (min-resolution: 150dpi)",
+      "emitted": "@media (min-resolution: 150dpi)",
+      "className": "x1dmzro3"
+    },
+    {
+      "input": "@media (max-resolution: 600dppx)",
+      "emitted": "@media (max-resolution: 600dppx)",
+      "className": "xbpbrkg"
+    },
+    {
+      "input": "@media (color-gamut: srgb)",
+      "emitted": "@media (color-gamut: srgb)",
+      "className": "x1dm4n66"
+    },
+    {
+      "input": "@media (display-mode: standalone)",
+      "emitted": "@media (display-mode: standalone)",
+      "className": "x1bj45x5"
+    },
+    {
+      "input": "@media (prefers-color-scheme: dark)",
+      "emitted": "@media (prefers-color-scheme: dark)",
+      "className": "xtqa24t"
+    },
+    {
+      "input": "@media (scripting: none)",
+      "emitted": "@media (scripting: none)",
+      "className": "xyc6f09"
+    },
+    {
+      "input": "@media (update: slow)",
+      "emitted": "@media (update: slow)",
+      "className": "x1xkk2u1"
+    },
+    {
+      "input": "@media (overflow-inline: none)",
+      "emitted": "@media (overflow-inline: none)",
+      "className": "xfd41d7"
+    },
+    {
+      "input": "@media (display-mode: minimal-ui)",
+      "emitted": "@media (display-mode: minimal-ui)",
+      "className": "xbb90da"
+    },
+    {
+      "input": "@media (hover: none)",
+      "emitted": "@media (hover: none)",
+      "className": "x1uy14ox"
+    },
+    {
+      "input": "@media (any-hover: hover)",
+      "emitted": "@media (any-hover: hover)",
+      "className": "x1ju6h36"
+    },
+    {
+      "input": "@media (pointer: none)",
+      "emitted": "@media (pointer: none)",
+      "className": "xf1vxlm"
+    },
+    {
+      "input": "@media (any-pointer: none)",
+      "emitted": "@media (any-pointer: none)",
+      "className": "x10kb48l"
+    },
+    {
+      "input": "@media (light-level: washed)",
+      "emitted": "@media (light-level: washed)",
+      "className": "xhn0lfa"
+    },
+    {
+      "input": "@media (inverted-colors: none)",
+      "emitted": "@media (inverted-colors: none)",
+      "className": "x1hypluz"
+    },
+    {
+      "input": "@media (prefers-reduced-motion: no-preference)",
+      "emitted": "@media (prefers-reduced-motion: no-preference)",
+      "className": "x13hmju2"
+    },
+    {
+      "input": "@media (prefers-contrast: no-preference)",
+      "emitted": "@media (prefers-contrast: no-preference)",
+      "className": "x1qxmc5r"
+    },
+    {
+      "input": "@media (forced-colors: none)",
+      "emitted": "@media (forced-colors: none)",
+      "className": "xf74bqr"
+    },
+    {
+      "input": "@media (prefers-reduced-transparency: no-preference)",
+      "emitted": "@media (prefers-reduced-transparency: no-preference)",
+      "className": "x1qt9hb2"
+    },
+    {
+      "input": "@media (color-index)",
+      "emitted": "@media (color-index)",
+      "className": "xpago8b"
+    },
+    {
+      "input": "@media (grid)",
+      "emitted": "@media (grid)",
+      "className": "xc8m9i5"
+    },
+    {
+      "input": "@media screen and (min-width: 400px)",
+      "emitted": "@media (screen) and (min-width: 400px)",
+      "className": "x1tpp8w0",
+      "refixError": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (min-height: 600px) and (orientation: landscape)",
+      "emitted": "@media (min-height: 600px) and (orientation: landscape)",
+      "className": "xo7a01a"
+    },
+    {
+      "input": "@media screen and (device-aspect-ratio: 16/9)",
+      "emitted": "@media (screen) and (device-aspect-ratio: 16 / 9)",
+      "className": "x1ueeiiv",
+      "refixError": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (min-aspect-ratio: 3/2) and (max-aspect-ratio: 16/9)",
+      "emitted": "@media (min-aspect-ratio: 3 / 2) and (max-aspect-ratio: 16 / 9)",
+      "className": "xirkitc"
+    },
+    {
+      "input": "@media (min-resolution: 300dpi) and (max-resolution: 600dpi)",
+      "emitted": "@media (min-resolution: 300dpi) and (max-resolution: 600dpi)",
+      "className": "x1pkvie6"
+    },
+    {
+      "input": "@media (min-width: 768px) and (max-width: 991px)",
+      "emitted": "@media (min-width: 768px) and (max-width: 991px)",
+      "className": "x1j61qbi"
+    },
+    {
+      "input": "@media (min-width: 1200px) and (orientation: landscape)",
+      "emitted": "@media (min-width: 1200px) and (orientation: landscape)",
+      "className": "x1sdlv7l"
+    },
+    {
+      "input": "@media (min-width: 992px) and (max-width: 1199px) and (pointer: fine)",
+      "emitted": "@media (min-width: 992px) and (max-width: 1199px) and (pointer: fine)",
+      "className": "xr8tqr5"
+    },
+    {
+      "input": "@media (min-width: 576px) and (max-width: 767px) and (hover: none)",
+      "emitted": "@media (min-width: 576px) and (max-width: 767px) and (hover: none)",
+      "className": "x1sikafc"
+    },
+    {
+      "input": "@media (orientation: landscape) and (pointer: fine)",
+      "emitted": "@media (orientation: landscape) and (pointer: fine)",
+      "className": "x2vjm3u"
+    },
+    {
+      "input": "@media (prefers-reduced-motion: reduce) and (update: slow)",
+      "emitted": "@media (prefers-reduced-motion: reduce) and (update: slow)",
+      "className": "x11w0vry"
+    },
+    {
+      "input": "@media (orientation: landscape) and (update: fast)",
+      "emitted": "@media (orientation: landscape) and (update: fast)",
+      "className": "x11x3sk1"
+    },
+    {
+      "input": "@media (orientation: portrait), (orientation: landscape)",
+      "emitted": "@media (orientation: portrait), (orientation: landscape)",
+      "className": "xim7ook"
+    },
+    {
+      "input": "@media (min-width: 500px) or (max-width: 600px)",
+      "emitted": "@media (min-width: 500px), (max-width: 600px)",
+      "className": "x1dxgrg6"
+    },
+    {
+      "input": "@media (width: 500px), (height: 400px)",
+      "emitted": "@media (width: 500px), (height: 400px)",
+      "className": "xdxwaqy"
+    },
+    {
+      "input": "@media (min-width: 576px), (orientation: portrait) and (max-width: 767px)",
+      "emitted": "@media (min-width: 576px), (orientation: portrait) and (max-width: 767px)",
+      "className": "x59bbpu"
+    },
+    {
+      "input": "@media (min-width: 768px) and (max-width: 991px), (orientation: landscape)",
+      "emitted": "@media (min-width: 768px) and (max-width: 991px), (orientation: landscape)",
+      "className": "x1i6qjl5"
+    },
+    {
+      "input": "@media (min-width: 992px) and (max-width: 1199px), (pointer: fine) and (hover: hover)",
+      "emitted": "@media (min-width: 992px) and (max-width: 1199px), (pointer: fine) and (hover: hover)",
+      "className": "x1s9del"
+    },
+    {
+      "input": "@media (min-width: 576px) and (max-width: 767px), (hover: none) and (any-pointer: coarse)",
+      "emitted": "@media (min-width: 576px) and (max-width: 767px), (hover: none) and (any-pointer: coarse)",
+      "className": "x1mwx7p"
+    },
+    {
+      "input": "@media (min-width: 576px), (orientation: portrait) and (max-width: 767px), (prefers-color-scheme: dark)",
+      "emitted": "@media (min-width: 576px), (orientation: portrait) and (max-width: 767px), (prefers-color-scheme: dark)",
+      "className": "xdc6bbt"
+    },
+    {
+      "input": "@media (min-width: 768px) and (max-width: 991px), (orientation: landscape) and (update: fast), (prefers-reduced-motion: reduce)",
+      "emitted": "@media (min-width: 768px) and (max-width: 991px), (orientation: landscape) and (update: fast), (prefers-reduced-motion: reduce)",
+      "className": "x3v6bw9"
+    },
+    {
+      "input": "@media (min-width: 992px) and (max-width: 1199px), (pointer: fine) and (hover: hover), (any-pointer: coarse) and (any-hover: none)",
+      "emitted": "@media (min-width: 992px) and (max-width: 1199px), (pointer: fine) and (hover: hover), (any-pointer: coarse) and (any-hover: none)",
+      "className": "x813994"
+    },
+    {
+      "input": "@media (min-width: 576px) and (max-width: 767px), (hover: none) and (any-pointer: coarse), (prefers-reduced-transparency: reduce) and (forced-colors: active)",
+      "emitted": "@media (min-width: 576px) and (max-width: 767px), (hover: none) and (any-pointer: coarse), (prefers-reduced-transparency: reduce) and (forced-colors: active)",
+      "className": "x1dnolsu"
+    },
+    {
+      "input": "@media (color) and (min-width: 400px), screen and (max-width: 700px)",
+      "emitted": "@media (color) and (min-width: 400px), (screen) and (max-width: 700px)",
+      "className": "x1hh8fll",
+      "refixError": "Invalid media query syntax."
+    },
+    {
+      "input": "@media not (not (not (min-width: 400px)))",
+      "emitted": "@media (not (min-width: 400px))",
+      "className": "xjiu23f"
+    },
+    {
+      "input": "@media not ((min-width: 500px) and (max-width: 600px) and (max-width: 400px))",
+      "emitted": "@media all",
+      "className": "xxlj4e9"
+    },
+    {
+      "input": "@media not all and (monochrome) and (min-width: 600px)",
+      "emitted": "@media not all and (monochrome) and (min-width: 600px)",
+      "className": "x1rwnzf8"
+    },
+    {
+      "input": "@media (max-width: 1440px) and (not (max-width: 1024px)) and (not (max-width: 768px)) and (not (max-width: 458px))",
+      "emitted": "@media (min-width: 1024.01px) and (max-width: 1440px)",
+      "className": "xa0yrw0"
+    },
+    {
+      "input": "@media (min-width: 400px) and ((max-width: 700px) and (orientation: landscape))",
+      "emitted": "@media (min-width: 400px) and (max-width: 700px) and (orientation: landscape)",
+      "className": "x6x2rob"
+    },
+    {
+      "input": "@media ((min-width: 400px) and ((max-width: 700px) and (orientation: landscape)))",
+      "emitted": "@media (min-width: 400px) and (max-width: 700px) and (orientation: landscape)",
+      "className": "x6x2rob"
+    },
+    {
+      "input": "@media (((min-width: 400px) and (max-width: 700px)) and ((orientation: landscape) and (hover: hover)))",
+      "emitted": "@media (min-width: 400px) and (max-width: 700px) and (orientation: landscape) and (hover: hover)",
+      "className": "x1cakuw0"
+    },
+    {
+      "input": "@media screen and ((min-width: 500px) and ((max-width: 800px) and (color)))",
+      "emitted": "@media (screen) and (min-width: 500px) and (max-width: 800px) and (color)",
+      "className": "x1c688mb",
+      "refixError": "Invalid media query syntax."
+    },
+    {
+      "input": "@media not (not (min-width: 400px))",
+      "emitted": "@media (min-width: 400px)",
+      "className": "x11vgzah"
+    },
+    {
+      "input": "@media not (not (not (hover: hover)))",
+      "emitted": "@media (not (hover: hover))",
+      "className": "xxry9ad"
+    },
+    {
+      "input": "@media not ((min-width: 600px) and (max-width: 900px))",
+      "emitted": "@media (not ((min-width: 600px) and (max-width: 900px)))",
+      "className": "x4ya33p"
+    },
+    {
+      "input": "@media not (not (not (not (update: fast))))",
+      "emitted": "@media (update: fast)",
+      "className": "x1ro3wb9"
+    },
+    {
+      "input": "@media not ((pointer: fine) and (hover: hover))",
+      "emitted": "@media (not ((pointer: fine) and (hover: hover)))",
+      "className": "xvt9zd4"
+    },
+    {
+      "input": "@media (width > 400px)",
+      "emitted": "@media (min-width: 400.01px)",
+      "className": "x1ot5djh"
+    },
+    {
+      "input": "@media (width >= 400px)",
+      "emitted": "@media (min-width: 400px)",
+      "className": "x11vgzah"
+    },
+    {
+      "input": "@media (400px < width)",
+      "emitted": "@media (min-width: 400.01px)",
+      "className": "x1ot5djh"
+    },
+    {
+      "input": "@media (400px <= width)",
+      "emitted": "@media (min-width: 400px)",
+      "className": "x11vgzah"
+    },
+    {
+      "input": "@media (1000px <= width <= 700px)",
+      "emitted": "@media not all",
+      "className": "xbmp1u0"
+    },
+    {
+      "input": "@media (400px <= width <= 700px)",
+      "emitted": "@media (min-width: 400px) and (max-width: 700px)",
+      "className": "xeuqw9b"
+    },
+    {
+      "input": "@media (400px < width <= 700px)",
+      "emitted": "@media (min-width: 400.01px) and (max-width: 700px)",
+      "className": "xxe0a3w"
+    },
+    {
+      "input": "@media (1000px >= width >= 700px)",
+      "emitted": "@media (min-width: 700px) and (max-width: 1000px)",
+      "className": "x2411rs"
+    },
+    {
+      "input": "@media (1000px > width >= 700px)",
+      "emitted": "@media (min-width: 700px) and (max-width: 999.99px)",
+      "className": "xzj56hh"
+    },
+    {
+      "input": "@media (1000px >= width > 700px)",
+      "emitted": "@media (min-width: 700.01px) and (max-width: 1000px)",
+      "className": "x6aj9ux"
+    },
+    {
+      "input": "@media (1000px > width > 700px)",
+      "emitted": "@media (min-width: 700.01px) and (max-width: 999.99px)",
+      "className": "xlqlmzu"
+    },
+    {
+      "input": "@media (min-width: 100px) and not (max-width: 200px)",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (min-width: 100px) and (not (max-width: 200px))",
+      "emitted": "@media (min-width: 200.01px)",
+      "className": "xhvgcuf"
+    },
+    {
+      "input": "@media (min-width: 200.01px)",
+      "emitted": "@media (min-width: 200.01px)",
+      "className": "xhvgcuf"
+    },
+    {
+      "input": "@media (min-width: 100px) and (min-width: 200px)",
+      "emitted": "@media (min-width: 200px)",
+      "className": "x1avq7nd"
+    },
+    {
+      "input": "@media (min-width: 200px)",
+      "emitted": "@media (min-width: 200px)",
+      "className": "x1avq7nd"
+    },
+    {
+      "input": "@media (max-width: 200px) and not (max-width: 300px)",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (not (max-width: 200px)) and (not (max-width: 300px))",
+      "emitted": "@media (min-width: 300.01px)",
+      "className": "x1j0j24t"
+    },
+    {
+      "input": "@media (min-width: 300.01px)",
+      "emitted": "@media (min-width: 300.01px)",
+      "className": "x1j0j24t"
+    },
+    {
+      "input": "@media (min-width: 100px) and not (max-width: 50px)",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (min-width: 100px) and (not (max-width: 50px))",
+      "emitted": "@media (min-width: 100px)",
+      "className": "x1jzan39"
+    },
+    {
+      "input": "@media (min-width: 100px)",
+      "emitted": "@media (min-width: 100px)",
+      "className": "x1jzan39"
+    },
+    {
+      "input": "@media (min-width: 100px) and not (max-width: 100px)",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (min-width: 100px) and (not (max-width: 100px))",
+      "emitted": "@media (min-width: 100.01px)",
+      "className": "x8tlecy"
+    },
+    {
+      "input": "@media (min-width: 100.01px)",
+      "emitted": "@media (min-width: 100.01px)",
+      "className": "x8tlecy"
+    },
+    {
+      "input": "@media (min-width: 100px) and not (max-width: 99.99px)",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (min-width: 100px) and (not (max-width: 99.99px))",
+      "emitted": "@media (min-width: 100px)",
+      "className": "x1jzan39"
+    },
+    {
+      "input": "@media (min-width: 100px) and (max-width: 500px) and (not (min-width: 600px)) => always-false",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (min-width: 100px) and (max-width: 500px) and (not (min-width: 600px))",
+      "emitted": "@media (min-width: 100px) and (max-width: 500px)",
+      "className": "x9h8bqh"
+    },
+    {
+      "input": "@media (min-width: 100px) and (max-width: 500px)",
+      "emitted": "@media (min-width: 100px) and (max-width: 500px)",
+      "className": "x9h8bqh"
+    },
+    {
+      "input": "@media (min-width: 100px) and (max-width: 500px) and (not (max-width: 200px)) => (min-width: 200.01px) and (max-width: 500px)",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (min-width: 100px) and (max-width: 500px) and (not (max-width: 200px))",
+      "emitted": "@media (min-width: 200.01px) and (max-width: 500px)",
+      "className": "x10ivmp0"
+    },
+    {
+      "input": "@media (min-width: 200.01px) and (max-width: 500px)",
+      "emitted": "@media (min-width: 200.01px) and (max-width: 500px)",
+      "className": "x10ivmp0"
+    },
+    {
+      "input": "@media (min-width: 100px) and (max-width: 500px) and (not (max-width: 200px)) and (not (min-width: 400px)) => (min-width: 200.01px) and (max-width: 399.99px)",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (min-width: 100px) and (max-width: 500px) and (not (max-width: 200px)) and (not (min-width: 400px))",
+      "emitted": "@media (min-width: 200.01px) and (max-width: 399.99px)",
+      "className": "x116rmls"
+    },
+    {
+      "input": "@media (min-width: 200.01px) and (max-width: 399.99px)",
+      "emitted": "@media (min-width: 200.01px) and (max-width: 399.99px)",
+      "className": "x116rmls"
+    },
+    {
+      "input": "@media (min-width: 100px) and (orientation: landscape) => should not simplify",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (min-width: 100px) and (orientation: landscape)",
+      "emitted": "@media (min-width: 100px) and (orientation: landscape)",
+      "className": "xvylr2"
+    },
+    {
+      "input": "@media (min-width: calc(100px + 2em)) and (max-width: 500px) => should not simplify",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (min-width: calc(100px + 2em)) and (max-width: 500px)",
+      "emitted": "@media (min-width: calc(100px + 2em)) and (max-width: 500px)",
+      "className": "x9k4j6s"
+    },
+    {
+      "input": "@media (-webkit-min-device-pixel-ratio: 2)",
+      "emitted": "@media (-webkit-min-device-pixel-ratio: 2)",
+      "className": "xx48259"
+    },
+    {
+      "input": "@media (-webkit-max-device-pixel-ratio: 1.5)",
+      "emitted": "@media (-webkit-max-device-pixel-ratio: 1.5)",
+      "className": "xtpz8cn"
+    },
+    {
+      "input": "@media (color-index: 256)",
+      "emitted": "@media (color-index: 256)",
+      "className": "xfmgub7"
+    },
+    {
+      "input": "@media (min-color-index: 256)",
+      "emitted": "@media (min-color-index: 256)",
+      "className": "x174ibm9"
+    },
+    {
+      "input": "@media (max-color-index: 65536)",
+      "emitted": "@media (max-color-index: 65536)",
+      "className": "xrm54rd"
+    },
+    {
+      "input": "@media (resolution: 300dpi)",
+      "emitted": "@media (resolution: 300dpi)",
+      "className": "x1153clm"
+    },
+    {
+      "input": "@media (resolution: 2dppx)",
+      "emitted": "@media (resolution: 2dppx)",
+      "className": "x14sh0ud"
+    },
+    {
+      "input": "@media (resolution: 1.5dpcm)",
+      "emitted": "@media (resolution: 1.5dpcm)",
+      "className": "x1przy3j"
+    },
+    {
+      "input": "@media (color-gamut: p3)",
+      "emitted": "@media (color-gamut: p3)",
+      "className": "xl0vxj9"
+    },
+    {
+      "input": "@media (color-gamut: rec2020)",
+      "emitted": "@media (color-gamut: rec2020)",
+      "className": "x1pyhbhf"
+    },
+    {
+      "input": "@media (video-color-gamut: srgb)",
+      "emitted": "@media (video-color-gamut: srgb)",
+      "className": "xe4dtle"
+    },
+    {
+      "input": "@media (video-color-gamut: p3)",
+      "emitted": "@media (video-color-gamut: p3)",
+      "className": "x16p5diy"
+    },
+    {
+      "input": "@media (video-color-gamut: rec2020)",
+      "emitted": "@media (video-color-gamut: rec2020)",
+      "className": "x1y1xh79"
+    },
+    {
+      "input": "@media",
+      "emitted": "@media",
+      "className": "x1j59bf1"
+    },
+    {
+      "input": "@media ",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media ()",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media not (min-width: )",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (width:)",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (min-width:)",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (max-width: )",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media and",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (min-width: 700px and max-width: 767px)",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (min-width:445px; max-width:768px)",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (width > )",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media ( > 600px)",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (600px > width) or",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (width < )",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (width <=)",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (>= width)",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (300px < width < )",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (width :)",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (: 600px)",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (width: #$%)",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (width: [])",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (min-width: var(--test))",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (min-width: var(--foo) and (max-width: 700px))",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (min-width: var(foo) and (max-width: 700px))",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (width @ 600px)",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media ((width: 600px) and)",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media and (min-width: 600px)",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media or (max-width: 1200px)",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (color) and",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (width: 600px",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media screen and (color",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media not (min-resolution: 300dpi",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (orientation: portrait",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media ((min-width: 300px) and (max-width: 1000px",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (hover: hover) and (pointer: fine",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (width: calc(100% - 50px",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (aspect-ratio: (16/9",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media screen and ((min-width: 640px",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media ((prefers-color-scheme: dark)",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (min-width:600px)",
+      "emitted": "@media (min-width: 600px)",
+      "className": "x17daqs1"
+    },
+    {
+      "input": "@media  (min-width: 600px)",
+      "emitted": "@media (min-width: 600px)",
+      "className": "x17daqs1"
+    },
+    {
+      "input": "@media (min-width : 600px)",
+      "emitted": "@media (min-width: 600px)",
+      "className": "x17daqs1"
+    },
+    {
+      "input": "@media ( min-width: 600px )",
+      "emitted": "@media (min-width: 600px)",
+      "className": "x17daqs1"
+    },
+    {
+      "input": "@media (MIN-WIDTH: 600px)",
+      "emitted": "@media (MIN-WIDTH: 600px)",
+      "className": "x1kss4ds"
+    },
+    {
+      "input": "@media NOT screen",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (max-width: 38EM)",
+      "emitted": "@media (max-width: 38EM)",
+      "className": "x13l2wsu"
+    },
+    {
+      "input": "@media (min-width: 600.00px)",
+      "emitted": "@media (min-width: 600px)",
+      "className": "x17daqs1"
+    },
+    {
+      "input": "@media (min-width: .5px)",
+      "emitted": "@media (min-width: 0.5px)",
+      "className": "x1jq6n6e"
+    },
+    {
+      "input": "@media (min-width: 1e3px)",
+      "emitted": "@media (min-width: 1000px)",
+      "className": "x17i1i33"
+    },
+    {
+      "input": "@media (min-width: +600px)",
+      "emitted": "@media (min-width: 600px)",
+      "className": "x17daqs1"
+    },
+    {
+      "input": "@media (min-width: -600px)",
+      "emitted": "@media (min-width: -600px)",
+      "className": "x1y1t6a6"
+    },
+    {
+      "input": "@media (min-width: 50%)",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (width>=600px)",
+      "emitted": "@media (min-width: 600px)",
+      "className": "x17daqs1"
+    },
+    {
+      "input": "@media (width > = 600px)",
+      "emitted": "@media (min-width: 600px)",
+      "className": "x17daqs1"
+    },
+    {
+      "input": "@media (600px<=width<=900px)",
+      "emitted": "@media (min-width: 600px) and (max-width: 900px)",
+      "className": "x8cd783"
+    },
+    {
+      "input": "@media (min-width: 600px)and (max-width: 900px)",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (min-width: 600px) and(max-width: 900px)",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (min-width: 600px) AND (max-width: 900px)",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (width: 500px) ,(height: 400px)",
+      "emitted": "@media (width: 500px), (height: 400px)",
+      "className": "xdxwaqy"
+    },
+    {
+      "input": "@media (width: 500px),(height: 400px)",
+      "emitted": "@media (width: 500px), (height: 400px)",
+      "className": "xdxwaqy"
+    },
+    {
+      "input": "@media (aspect-ratio:16/9)",
+      "emitted": "@media (aspect-ratio: 16 / 9)",
+      "className": "x14djybu"
+    },
+    {
+      "input": "@media (aspect-ratio: 16/ 9)",
+      "emitted": "@media (aspect-ratio: 16 / 9)",
+      "className": "x14djybu"
+    },
+    {
+      "input": "@media not (min-width: 400px)",
+      "emitted": "@media (not (min-width: 400px))",
+      "className": "xjiu23f"
+    },
+    {
+      "input": "@media (not (min-width: 400px))",
+      "emitted": "@media (not (min-width: 400px))",
+      "className": "xjiu23f"
+    },
+    {
+      "input": "@media ((min-width: 400px) and (max-width: 700px))",
+      "emitted": "@media (min-width: 400px) and (max-width: 700px)",
+      "className": "xeuqw9b"
+    },
+    {
+      "input": "@media ((min-width: 400px) or (max-width: 300px))",
+      "emitted": "@media (min-width: 400px), (max-width: 300px)",
+      "className": "xvpu4z3"
+    },
+    {
+      "input": "@media (min-width: 400px) or (max-width: 300px)",
+      "emitted": "@media (min-width: 400px), (max-width: 300px)",
+      "className": "xvpu4z3"
+    },
+    {
+      "input": "@media (min-width: 600px) and (max-width: 400px)",
+      "emitted": "@media not all",
+      "className": "xbmp1u0"
+    },
+    {
+      "input": "@media (min-width: 30em) and (max-width: 900px)",
+      "emitted": "@media (min-width: 30em) and (max-width: 900px)",
+      "className": "x71lqd4"
+    },
+    {
+      "input": "@media (foo: bar)",
+      "emitted": "@media (foo: bar)",
+      "className": "x1ory8vl"
+    },
+    {
+      "input": "@media (min-width: calc(2 * 300px))",
+      "emitted": "@media (min-width: calc(2 * 300px))",
+      "className": "xx08akp"
+    },
+    {
+      "input": "@media (min-width: calc(100px+2em))",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (min-width: calc((100px + 2em) * 2))",
+      "emitted": "@media (min-width: calc((100px + 2em) * 2))",
+      "className": "x16a87xj"
+    },
+    {
+      "input": "@media (min-width: calc(pi * 100px))",
+      "emitted": "@media (min-width: calc(pi * 100px))",
+      "className": "x1qcwsg5"
+    },
+    {
+      "input": "@media (device-aspect-ratio: 16       /      9)",
+      "emitted": "@media (device-aspect-ratio: 16 / 9)",
+      "className": "x37q0zf"
+    },
+    {
+      "input": "@media (min-resolution: 2x)",
+      "emitted": "@media (min-resolution: 2x)",
+      "className": "x1sqb6ro"
+    },
+    {
+      "input": "@media not print and (min-width: 600px)",
+      "emitted": "@media not print and (min-width: 600px)",
+      "className": "x1aqlq1a"
+    },
+    {
+      "input": "@media only screen, print",
+      "emitted": "@media only screen, (print)",
+      "className": "xqobod6",
+      "refixError": "Invalid media query syntax."
+    },
+    {
+      "input": "@media screen and (min-width: 400px) and (max-width: 700px)",
+      "emitted": "@media (screen) and (min-width: 400px) and (max-width: 700px)",
+      "className": "xwlictd",
+      "refixError": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (height < 600px)",
+      "emitted": "@media (max-height: 599.99px)",
+      "className": "x1351l5a"
+    },
+    {
+      "input": "@media (400px > width)",
+      "emitted": "@media (max-width: 399.99px)",
+      "className": "x1rlrib"
+    },
+    {
+      "input": "@media (400px >= width)",
+      "emitted": "@media (max-width: 400px)",
+      "className": "xypihiz"
+    },
+    {
+      "input": "@media (min-width foo)",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media not(min-width: 400px)",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (aspect-ratio: 1.5/2.5)",
+      "emitted": "@media (aspect-ratio: 1.5 / 2.5)",
+      "className": "xl6psz8"
+    },
+    {
+      "input": "@media (width: 16/9)",
+      "emitted": "@media (width: 16 / 9)",
+      "className": "xst8h3x"
+    },
+    {
+      "input": "@media (min-width: 0)",
+      "emitted": "@media (min-width: 0)",
+      "className": "x1s3w2hb"
+    },
+    {
+      "input": "@media (min-width: 000600px)",
+      "emitted": "@media (min-width: 600px)",
+      "className": "x17daqs1"
+    },
+    {
+      "input": "@media (min-width: 600px) ",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (min-width: /* c */ 600px)",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (not (width >= 600px))",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media ( not (min-width: 600px))",
+      "error": "Invalid media query syntax."
+    },
+    {
+      "input": "@media (min-width: calc(50%))",
+      "emitted": "@media (min-width: calc(50%))",
+      "className": "x131s8tj"
+    },
+    {
+      "input": "@media (min-width: calc(100px + 50%))",
+      "emitted": "@media (min-width: calc(100px + 50%))",
+      "className": "x1n0tln0"
+    },
+    {
+      "input": "@media\t(min-width: 600px)",
+      "emitted": "@media\t(min-width: 600px)",
+      "className": "xc23m0j"
+    },
+    {
+      "input": "@media (min-width: 600px)\t,\t(max-width: 900px)",
+      "emitted": "@media (min-width: 600px), (max-width: 900px)",
+      "className": "x1fgxcy1"
+    },
+    {
+      "input": "@media not  screen",
+      "emitted": "@media not screen",
+      "className": "xlfeakn"
+    },
+    {
+      "input": "@media (min-width: 1.5e2px)",
+      "emitted": "@media (min-width: 150px)",
+      "className": "xej3rrl"
+    },
+    {
+      "input": "@media (min-width: 600PX)",
+      "emitted": "@media (min-width: 600PX)",
+      "className": "xelly8d"
+    },
+    {
+      "input": "@media (min-width: 12345678901234567890px)",
+      "emitted": "@media (min-width: 12345678901234567000px)",
+      "className": "xm5i0pu"
+    },
+    {
+      "input": "@media (width < 16777217px)",
+      "emitted": "@media (max-width: 16777216.99px)",
+      "className": "x1p1sqge"
+    }
+  ],
+  "siblings": [
+    {
+      "inputs": [
+        "@media (max-width: 1440px)",
+        "@media (max-width: 1024px)",
+        "@media (max-width: 768px)"
+      ],
+      "emitted": [
+        "@media (min-width: 1024.01px) and (max-width: 1440px)",
+        "@media (min-width: 768.01px) and (max-width: 1024px)",
+        "@media (max-width: 768px)"
+      ],
+      "classNames": [
+        "xa0yrw0",
+        "x1sxy854",
+        "x1mmpjly"
+      ]
+    },
+    {
+      "inputs": [
+        "@media (max-width: 1440px)",
+        "@media (max-width: 1024px)",
+        "@media (max-width: 768px)",
+        "@media (max-width: 458px)"
+      ],
+      "emitted": [
+        "@media (min-width: 1024.01px) and (max-width: 1440px)",
+        "@media (min-width: 768.01px) and (max-width: 1024px)",
+        "@media (min-width: 458.01px) and (max-width: 768px)",
+        "@media (max-width: 458px)"
+      ],
+      "classNames": [
+        "xa0yrw0",
+        "x1sxy854",
+        "x1qhr955",
+        "x12x1z9c"
+      ]
+    },
+    {
+      "inputs": [
+        "@media (min-width: 600px)",
+        "@media (min-width: 900px)"
+      ],
+      "emitted": [
+        "@media (min-width: 600px) and (max-width: 899.99px)",
+        "@media (min-width: 900px)"
+      ],
+      "classNames": [
+        "xz6my08",
+        "x978k1e"
+      ]
+    },
+    {
+      "inputs": [
+        "@media (min-width: 600px)",
+        "@media (min-width: 900px)",
+        "@media (min-width: 1200px)"
+      ],
+      "emitted": [
+        "@media (min-width: 600px) and (max-width: 899.99px)",
+        "@media (min-width: 900px) and (max-width: 1199.99px)",
+        "@media (min-width: 1200px)"
+      ],
+      "classNames": [
+        "xz6my08",
+        "x1w8e3jv",
+        "xi3agqs"
+      ]
+    },
+    {
+      "inputs": [
+        "@media (max-height: 1024px)",
+        "@media (max-height: 768px)"
+      ],
+      "emitted": [
+        "@media (min-height: 768.01px) and (max-height: 1024px)",
+        "@media (max-height: 768px)"
+      ],
+      "classNames": [
+        "x1sesibk",
+        "x14rjjwh"
+      ]
+    },
+    {
+      "inputs": [
+        "@media (orientation: landscape)",
+        "@media (orientation: portrait)"
+      ],
+      "emitted": [
+        "@media (orientation: landscape) and (not (orientation: portrait))",
+        "@media (orientation: portrait)"
+      ],
+      "classNames": [
+        "x1htvu4e",
+        "x18zxrpz"
+      ]
+    },
+    {
+      "inputs": [
+        "@media (min-width: 600px)",
+        "@media (hover: hover)"
+      ],
+      "emitted": [
+        "@media (min-width: 600px) and (not (hover: hover))",
+        "@media (hover: hover)"
+      ],
+      "classNames": [
+        "xamxcs3",
+        "x1k5s9y9"
+      ]
+    },
+    {
+      "inputs": [
+        "@media (hover: hover)",
+        "@media (min-width: 600px)"
+      ],
+      "emitted": [
+        "@media (hover: hover) and (not (min-width: 600px))",
+        "@media (min-width: 600px)"
+      ],
+      "classNames": [
+        "x184tet4",
+        "x116ee3a"
+      ]
+    },
+    {
+      "inputs": [
+        "@media (min-width: 30em)",
+        "@media (min-width: 900px)"
+      ],
+      "emitted": [
+        "@media (min-width: 30em) and (not (min-width: 900px))",
+        "@media (min-width: 900px)"
+      ],
+      "classNames": [
+        "x1f347vv",
+        "x978k1e"
+      ]
+    },
+    {
+      "inputs": [
+        "@media screen and (min-width: 400px)",
+        "@media (max-width: 700px)"
+      ],
+      "emitted": [
+        "@media (screen) and (min-width: 400px) and (not (max-width: 700px))",
+        "@media (max-width: 700px)"
+      ],
+      "classNames": [
+        "xityvhf",
+        "x7xmfni"
+      ]
+    },
+    {
+      "inputs": [
+        "@media (min-width: 600px)",
+        "@media screen"
+      ],
+      "emitted": [
+        "@media (min-width: 600px) and (not (screen))",
+        "@media screen"
+      ],
+      "classNames": [
+        "x16j0d4r",
+        "xpe9tkb"
+      ]
+    },
+    {
+      "inputs": [
+        "@media (min-width: 600px)",
+        "@media not screen"
+      ],
+      "emitted": [
+        "@media (min-width: 600px) and (not not screen)",
+        "@media not screen"
+      ],
+      "classNames": [
+        "xkyavlj",
+        "xp44bs9"
+      ]
+    },
+    {
+      "inputs": [
+        "@media (min-width: 576px), (orientation: portrait)",
+        "@media (hover: none)"
+      ],
+      "emitted": [
+        "@media (min-width: 576px) and (not (hover: none)), (orientation: portrait) and (not (hover: none))",
+        "@media (hover: none)"
+      ],
+      "classNames": [
+        "xl3wqqn",
+        "x1skai6l"
+      ]
+    },
+    {
+      "inputs": [
+        "@media (min-width: 600px)",
+        "@media screen, (max-width: 800px)"
+      ],
+      "emitted": [
+        "@media (min-width: 600px) and (not ((screen) or (max-width: 800px)))",
+        "@media (screen), (max-width: 800px)"
+      ],
+      "classNames": [
+        "x1s4qpr0",
+        "x1boz0ro"
+      ]
+    },
+    {
+      "inputs": [
+        "@media (width >= 600px)",
+        "@media (600px <= width <= 900px)"
+      ],
+      "emitted": [
+        "@media (min-width: 900.01px)",
+        "@media (min-width: 600px) and (max-width: 900px)"
+      ],
+      "classNames": [
+        "x18urtxv",
+        "x1b0r7df"
+      ]
+    },
+    {
+      "inputs": [
+        "@media (width > 400px)",
+        "@media (width < 1000px)"
+      ],
+      "emitted": [
+        "@media (min-width: 1000px)",
+        "@media (max-width: 999.99px)"
+      ],
+      "classNames": [
+        "x17i1i33",
+        "x1eobmw7"
+      ]
+    },
+    {
+      "inputs": [
+        "@media (min-width: 100px) and (max-width: 500px)",
+        "@media (max-width: 200px)"
+      ],
+      "emitted": [
+        "@media (min-width: 200.01px) and (max-width: 500px)",
+        "@media (max-width: 200px)"
+      ],
+      "classNames": [
+        "x10ivmp0",
+        "x4q9i8o"
+      ]
+    },
+    {
+      "inputs": [
+        "@media (min-width: 100px) and (max-width: 500px)",
+        "@media (max-width: 200px)",
+        "@media (min-width: 400px)"
+      ],
+      "emitted": [
+        "@media (min-width: 200.01px) and (max-width: 399.99px)",
+        "@media (max-width: 200px)",
+        "@media (min-width: 400px)"
+      ],
+      "classNames": [
+        "x116rmls",
+        "x4q9i8o",
+        "x19y91cv"
+      ]
+    },
+    {
+      "inputs": [
+        "@media (min-width: 100px) and (max-width: 500px)",
+        "@media (min-width: 600px)"
+      ],
+      "emitted": [
+        "@media (min-width: 100px) and (max-width: 500px)",
+        "@media (min-width: 600px)"
+      ],
+      "classNames": [
+        "x9h8bqh",
+        "x116ee3a"
+      ]
+    },
+    {
+      "inputs": [
+        "@media not ((min-width: 500px) and (max-width: 600px))",
+        "@media (min-width: 1000px)"
+      ],
+      "emitted": [
+        "@media (max-width: 499.99px) or ((min-width: 600.01px) and (max-width: 999.99px))",
+        "@media (min-width: 1000px)"
+      ],
+      "classNames": [
+        "xagon12",
+        "xa5mmu"
+      ]
+    },
+    {
+      "inputs": [
+        "@media print",
+        "@media (min-width: 600px)"
+      ],
+      "emitted": [
+        "@media (print) and (not (min-width: 600px))",
+        "@media (min-width: 600px)"
+      ],
+      "classNames": [
+        "xry8tdr",
+        "x116ee3a"
+      ]
+    },
+    {
+      "inputs": [
+        "@media only screen and (max-width: 600px)",
+        "@media (max-width: 400px)"
+      ],
+      "emitted": [
+        "@media only screen and (max-width: 600px) and (not (max-width: 400px))",
+        "@media (max-width: 400px)"
+      ],
+      "classNames": [
+        "x1yk33nx",
+        "xsc3ahj"
+      ]
+    },
+    {
+      "inputs": [
+        "@media (aspect-ratio: 16/9)",
+        "@media (min-width: 600px)"
+      ],
+      "emitted": [
+        "@media (aspect-ratio: 16 / 9) and (not (min-width: 600px))",
+        "@media (min-width: 600px)"
+      ],
+      "classNames": [
+        "x1vqqfrk",
+        "x116ee3a"
+      ]
+    },
+    {
+      "inputs": [
+        "@media (min-width: calc(100px + 2em))",
+        "@media (min-width: 600px)"
+      ],
+      "emitted": [
+        "@media (min-width: calc(100px + 2em)) and (not (min-width: 600px))",
+        "@media (min-width: 600px)"
+      ],
+      "classNames": [
+        "x1bczr4b",
+        "x116ee3a"
+      ]
+    },
+    {
+      "inputs": [
+        "@media (min-width: 100px)",
+        "@media (max-width: 50px)"
+      ],
+      "emitted": [
+        "@media (min-width: 100px)",
+        "@media (max-width: 50px)"
+      ],
+      "classNames": [
+        "x1jzan39",
+        "xa7e7f3"
+      ]
+    },
+    {
+      "inputs": [
+        "@media (min-width: 600px)",
+        "@media (min-width:600px)"
+      ],
+      "emitted": [
+        "@media not all",
+        "@media (min-width: 600px)"
+      ],
+      "classNames": [
+        "xbmp1u0",
+        "x116ee3a"
+      ]
+    },
+    {
+      "inputs": [
+        "@media (max-width: 1440px) and (max-height: 900px)",
+        "@media (max-width: 1024px)"
+      ],
+      "emitted": [
+        "@media (min-width: 1024.01px) and (max-width: 1440px) and (max-height: 900px)",
+        "@media (max-width: 1024px)"
+      ],
+      "classNames": [
+        "xgxrmf9",
+        "x1kphafc"
+      ]
+    },
+    {
+      "inputs": [
+        "@media (prefers-reduced-motion: reduce)",
+        "@media (prefers-color-scheme: dark)"
+      ],
+      "emitted": [
+        "@media (prefers-reduced-motion: reduce) and (not (prefers-color-scheme: dark))",
+        "@media (prefers-color-scheme: dark)"
+      ],
+      "classNames": [
+        "x12jvftw",
+        "x199yeq9"
+      ]
+    },
+    {
+      "inputs": [
+        "@media (min-width: 600px)",
+        "@media (min-width foo)"
+      ],
+      "error": "Invalid media query syntax."
+    },
+    {
+      "inputs": [
+        "@media (min-width: 600px)",
+        "@media (200px <= width <= 900px)",
+        "@media (hover: hover)"
+      ],
+      "emitted": [
+        "@media ((min-width: 600px) and (not (hover: hover)) and (not (min-width: 200px))) or ((min-width: 600px) and (not (hover: hover)) and (not (max-width: 900px)))",
+        "@media (min-width: 200px) and (max-width: 900px) and (not (hover: hover))",
+        "@media (hover: hover)"
+      ],
+      "classNames": [
+        "x1cfj5b2",
+        "xq05hjn",
+        "xlhl6h2"
+      ]
+    },
+    {
+      "inputs": [
+        "@media (min-width: 40em)",
+        "@media (min-width: 700px)",
+        "@media (min-width: 60em)"
+      ],
+      "emitted": [
+        "@media (min-width: 40em) and (not (min-width: 700px)) and (not (min-width: 60em))",
+        "@media (min-width: 700px) and (not (min-width: 60em))",
+        "@media (min-width: 60em)"
+      ],
+      "classNames": [
+        "xpp25e7",
+        "x1tmfpkz",
+        "x18xjjqv"
+      ]
+    }
+  ],
+  "topLevel": [
+    {
+      "input": "@media (min-width:600px)",
+      "emitted": "@media (min-width:600px)",
+      "className": "x1hibt9l"
+    },
+    {
+      "input": "@media (min-width foo)",
+      "emitted": "@media (min-width foo)",
+      "className": "x1k49n7h"
+    },
+    {
+      "input": "@media (min-width: 600px)",
+      "emitted": "@media (min-width: 600px)",
+      "className": "x17daqs1"
+    },
+    {
+      "input": "@media anything at all !!",
+      "emitted": "@media anything at all !!",
+      "className": "xep3cwt"
+    }
+  ],
+  "nested": [
+    {
+      "outerInputs": [
+        "@media (max-width: 1440px)",
+        "@media (max-width: 768px)"
+      ],
+      "innerInputs": [
+        "@media (max-height: 1024px)",
+        "@media (max-height: 768px)"
+      ],
+      "ltrs": [
+        "@media (min-width: 768.01px) and (max-width: 1440px){@media (min-height: 768.01px) and (max-height: 1024px){.xq2xxq2.xq2xxq2.xq2xxq2{width:2px}}}",
+        "@media (min-width: 768.01px) and (max-width: 1440px){@media (max-height: 768px){.x1lwyggh.x1lwyggh.x1lwyggh{width:3px}}}",
+        "@media (max-width: 768px){.x1ymw4kz.x1ymw4kz{width:9px}}"
+      ]
+    }
+  ]
+}

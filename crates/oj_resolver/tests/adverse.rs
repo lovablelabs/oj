@@ -503,7 +503,17 @@ fn a_jsonc_tsconfig_is_understood() {
         "{\n  // the app\n  /* aliases */\n  \"compilerOptions\": {\n    \"baseUrl\": \".\",\n    \"paths\": { \"@/*\": [\"./src/*\"] },\n  },\n}",
     );
     tree.file("src/App.tsx", "");
-    let resolver = tree.resolver();
+    // `resolve.tsconfigPaths`: Vite's own resolver reads the tsconfig.
+    let resolver = oj_resolver::OjResolver::with_settings(
+        tree.root(),
+        oj_resolver::ResolveSettings {
+            conditions: ["browser", "import", "module", "development", "default"]
+                .map(String::from)
+                .to_vec(),
+            tsconfig_paths: oj_resolver::TsconfigPaths::Native,
+            ..Default::default()
+        },
+    );
     let src = tree.root().join("src");
     assert!(resolver
         .resolve(&src, "@/App")

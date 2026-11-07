@@ -1,0 +1,676 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Raphael Amorim
+
+//! `oj dev --typecheck`: the dev server's `/@oj/typecheck` and
+//! `oj dev-typecheck`; and `oj typecheck`, tsc's command line.
+
+#[allow(dead_code)]
+mod start_app;
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use start_app::Server;
+
+/// A plain app (no dependencies to install) whose `src/main.ts` has one type
+/// error, removed on drop.
+struct App(PathBuf);
+
+impl App {
+    fn new(name: &str) -> App {
+        let dir = std::env::temp_dir().join(format!("oj-tc-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let app = App(dir.canonicalize().unwrap());
+        app.write(
+            "index.html",
+            "<!doctype html><script type=\"module\" src=\"/src/main.ts\"></script>\n",
+        );
+        app.write(
+            "tsconfig.json",
+            r#"{ "compilerOptions": { "strict": true, "noEmit": true, "lib": ["ES2022", "DOM"] }, "include": ["src"] }"#,
+        );
+        app.write("src/main.ts", "export const n: number = 'one';\n");
+        app
+    }
+
+    fn write(&self, rel: &str, text: &str) {
+        let path = self.0.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+const MAIN_ERROR: &str =
+    "src/main.ts(1,14): error TS2322: Type 'string' is not assignable to type 'number'.\n";
+
+/// `oj dev-typecheck <root> [args]`: exit code and stdout.
+fn dev_typecheck(root: &Path, args: &[&str]) -> (i32, String) {
+    let (code, out, _) = dev_typecheck_with(root, args, &[]);
+    (code, out)
+}
+
+/// `oj dev-typecheck` with extra environment variables: exit code, stdout
+/// and stderr.
+fn dev_typecheck_with(root: &Path, args: &[&str], env: &[(&str, &str)]) -> (i32, String, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_oj"))
+        .arg("dev-typecheck")
+        .args(args)
+        .arg(root)
+        .envs(env.iter().copied())
+        .output()
+        .unwrap();
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+const NO_SERVER: &str = "oj dev-typecheck: no dev server found\n";
+
+/// One `POST /@oj/typecheck` with `body`: the status and the response body.
+fn post(server: &Server, body: &str) -> (u16, String) {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", server.port)).unwrap();
+    write!(
+        stream,
+        "POST /@oj/typecheck HTTP/1.0\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    let status = response
+        .split(' ')
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let body = response
+        .split_once("\r\n\r\n")
+        .map(|(_, b)| b.to_string())
+        .unwrap_or_default();
+    (status, body)
+}
+
+/// Polls `/@oj/typecheck` until `done` holds for its report.
+fn wait_for_report(
+    server: &Server,
+    what: &str,
+    done: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let (_, body) = server.request("GET", "/@oj/typecheck", &[]);
+        let report = json(&body);
+        if done(&report) {
+            return report;
+        }
+        assert!(std::time::Instant::now() < deadline, "{what}: {body}");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
+fn json(body: &str) -> serde_json::Value {
+    serde_json::from_str(body).unwrap_or_else(|e| panic!("{e}: {body}"))
+}
+
+#[test]
+fn the_dev_server_reports_type_errors_and_an_edit_named_in_the_request() {
+    let app = App::new("serve");
+    let server = Server::oj_dev_with_args(&app.0, &["--typecheck"], &[]);
+    let (status, body) = server.request("GET", "/@oj/typecheck", &[]);
+    assert_eq!(status, 200, "{body}");
+    let report = json(&body);
+    assert_eq!(report["status"], "errors", "{body}");
+    assert_eq!(report["text"], MAIN_ERROR);
+
+    // `oj dev-typecheck` asks this server (its generation moves on), and the
+    // file it names is re-read even when the watcher has not reported it.
+    app.write("src/main.ts", "export const n: number = 1;\n");
+    let (code, out) = dev_typecheck(&app.0, &["--changed", "src/main.ts", "--json"]);
+    let report = json(&out);
+    assert_eq!((code, report["status"].as_str()), (0, Some("ok")), "{out}");
+    assert!(report["generation"].as_u64() > Some(1), "{out}");
+}
+
+#[test]
+fn the_dev_server_picks_up_an_edit_from_the_watcher_alone() {
+    let app = App::new("watch");
+    let server = Server::oj_dev_with_args(&app.0, &["--typecheck"], &[]);
+    let (_, body) = server.request("GET", "/@oj/typecheck", &[]);
+    assert_eq!(json(&body)["status"], "errors", "{body}");
+    app.write("src/main.ts", "export const n: number = 1;\n");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let (_, body) = server.request("GET", "/@oj/typecheck", &[]);
+        if json(&body)["status"] == "ok" {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the edit never reached the checker: {body}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
+#[test]
+fn the_typecheck_route_refuses_browser_and_proxied_requests() {
+    let app = App::new("guard");
+    let server = Server::oj_dev_with_args(&app.0, &["--typecheck"], &[]);
+    let origin = [("Origin", server.url(""))];
+    assert_eq!(server.request("GET", "/@oj/typecheck", &origin).0, 403);
+    let proxied = [("X-Forwarded-Host", "preview.example".to_string())];
+    assert_eq!(server.request("GET", "/@oj/typecheck", &proxied).0, 403);
+}
+
+#[test]
+fn the_typecheck_route_is_absent_without_the_flag_even_with_the_old_env() {
+    let app = App::new("off");
+    let server = Server::oj_dev_with(&app.0, &[("OJ_TYPECHECK", "1")]);
+    assert_eq!(server.request("GET", "/@oj/typecheck", &[]).0, 404);
+}
+
+#[test]
+fn dev_typecheck_follows_edits_through_the_running_server_as_a_check_from_scratch_would() {
+    let app = App::new("follow");
+    app.write("src/main.ts", "export const n: number = 1;\n");
+    app.write("src/shape.ts", "export const shape = { size: 1 };\n");
+    app.write(
+        "src/use.ts",
+        "import { shape } from './shape';\nexport const size: number = shape.size;\n",
+    );
+    let _server = Server::oj_dev_with_args(&app.0, &["--typecheck"], &[]);
+    // tsc's own check of the app, from scratch: its text, and whether it failed.
+    let from_scratch = || {
+        let (code, out) = oj_typecheck(&app.0, &["-p", ".", "--pretty", "false"]);
+        (code != 0, out)
+    };
+    let (code, out) = dev_typecheck(&app.0, &["--json"]);
+    assert_eq!(
+        (code, json(&out)["status"].as_str()),
+        (0, Some("ok")),
+        "{out}"
+    );
+    let mut generation = json(&out)["generation"].as_u64().unwrap();
+    let edits: &[(&str, &str)] = &[
+        // An exported type changes: the file that imports it fails.
+        ("src/shape.ts", "export const shape = { size: 'one' };\n"),
+        // The exported types stay: the importer keeps its error.
+        (
+            "src/shape.ts",
+            "export const shape = { size: 'one' };\n// note\n",
+        ),
+        (
+            "src/use.ts",
+            "import { shape } from './shape';\nexport const size: string = shape.size;\n",
+        ),
+        ("src/shape.ts", "export const shape = { size: 1 };\n"),
+        ("src/main.ts", "export const n: number = 'one';\n"),
+        ("src/main.ts", "export const n: number = 1;\n"),
+        (
+            "src/use.ts",
+            "import { shape } from './shape';\nexport const size: number = shape.size;\n",
+        ),
+    ];
+    for (k, (file, text)) in edits.iter().enumerate() {
+        app.write(file, text);
+        let (code, out) = dev_typecheck(&app.0, &["--changed", file, "--json"]);
+        let report = json(&out);
+        let next = report["generation"].as_u64().unwrap_or(0);
+        assert!(
+            next > generation,
+            "edit {k}: the server did not answer: {out}"
+        );
+        generation = next;
+        let (scratch_failed, scratch_text) = from_scratch();
+        assert_eq!(
+            (code != 0, report["text"].as_str().unwrap_or_default()),
+            (scratch_failed, scratch_text.as_str()),
+            "edit {k}: {file}"
+        );
+    }
+}
+
+#[test]
+fn dev_typecheck_says_the_server_runs_without_the_flag() {
+    let app = App::new("plain-server");
+    let _server = Server::oj_dev(&app.0);
+    assert_eq!(
+        dev_typecheck_with(&app.0, &[], &[]),
+        (
+            1,
+            String::new(),
+            "oj dev-typecheck: dev server was started without --typecheck\n".to_string()
+        )
+    );
+}
+
+#[test]
+fn dev_typecheck_says_no_dev_server_runs() {
+    let app = App::new("cli");
+    assert_eq!(
+        dev_typecheck_with(&app.0, &[], &[]),
+        (1, String::new(), NO_SERVER.to_string())
+    );
+    // An address file left by a server that is gone is ignored.
+    let cache = app.0.join(".oj-cache/v1");
+    std::fs::create_dir_all(&cache).unwrap();
+    let stale = serde_json::json!({
+        "root": app.0, "pid": 999999, "host": "127.0.0.1", "port": 1, "https": false,
+        "typecheck": true,
+    });
+    std::fs::write(cache.join("dev-server.json"), stale.to_string()).unwrap();
+    assert_eq!(
+        dev_typecheck_with(&app.0, &[], &[]),
+        (1, String::new(), NO_SERVER.to_string())
+    );
+}
+
+#[test]
+fn a_post_body_names_the_changed_files_and_bad_json_is_refused() {
+    let app = App::new("post");
+    let server = Server::oj_dev_with_args(&app.0, &["--typecheck"], &[]);
+    app.write("src/main.ts", "export const n: number = 1;\n");
+    let body = serde_json::json!({ "changed": [app.0.join("src/main.ts")] }).to_string();
+    let (status, report) = post(&server, &body);
+    assert_eq!(
+        (status, json(&report)["status"].as_str()),
+        (200, Some("ok")),
+        "{report}"
+    );
+    assert_eq!(post(&server, "{not json").0, 400);
+}
+
+#[test]
+fn concurrent_requests_all_get_the_report() {
+    let app = App::new("concurrent");
+    let server = std::sync::Arc::new(Server::oj_dev_with_args(&app.0, &["--typecheck"], &[]));
+    let answers: Vec<_> = (0..8)
+        .map(|_| {
+            let server = std::sync::Arc::clone(&server);
+            std::thread::spawn(move || server.request("GET", "/@oj/typecheck", &[]))
+        })
+        .collect();
+    for answer in answers {
+        let (status, body) = answer.join().unwrap();
+        assert_eq!(
+            (status, json(&body)["text"].as_str()),
+            (200, Some(MAIN_ERROR)),
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn a_killed_checker_worker_is_replaced_and_the_dev_server_keeps_serving() {
+    let app = App::new("crash");
+    let server = Server::oj_dev_with_args(&app.0, &["--typecheck"], &[]);
+    let (_, body) = server.request("GET", "/@oj/typecheck", &[]);
+    assert_eq!(json(&body)["status"], "errors", "{body}");
+    let pattern = format!("typecheck-worker {}", app.0.display());
+    let killed = Command::new("pkill")
+        .args(["-9", "-f", &pattern])
+        .status()
+        .unwrap();
+    assert!(killed.success(), "no worker process for {pattern}");
+    let (status, body) = server.request("GET", "/@oj/typecheck", &[]);
+    assert_eq!(
+        (status, json(&body)["text"].as_str()),
+        (200, Some(MAIN_ERROR)),
+        "{body}"
+    );
+    assert_eq!(server.request("GET", "/index.html", &[]).0, 200);
+}
+
+#[test]
+fn the_checker_starts_only_after_the_first_page_is_served() {
+    let app = App::new("first-serve");
+    let server = Server::oj_dev_with_args(&app.0, &["--typecheck"], &[]);
+    let pattern = format!("typecheck-worker {}", app.0.display());
+    let worker = || {
+        Command::new("pgrep")
+            .args(["-f", &pattern])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    };
+    // Listening, but nothing served: no checker competes with the first page.
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert!(!worker(), "the checker started before any page was served");
+    assert_eq!(server.request("GET", "/index.html", &[]).0, 200);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !worker() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the checker never started after the first page"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn dev_typecheck_ignores_a_server_another_app_advertised_in_a_shared_cache_dir() {
+    let busy = App::new("shared-a");
+    let clean = App::new("shared-b");
+    clean.write("src/main.ts", "export const n: number = 1;\n");
+    let cache = std::env::temp_dir().join(format!("oj-tc-cache-{}", std::process::id()));
+    let cache_dir = cache.to_string_lossy().into_owned();
+    let env = [("OJ_CACHE_DIR", cache_dir.as_str())];
+    let _server = Server::oj_dev_with_args(&busy.0, &["--typecheck"], &env);
+    assert_eq!(
+        dev_typecheck_with(&busy.0, &[], &env),
+        (2, MAIN_ERROR.to_string(), String::new())
+    );
+    assert_eq!(
+        dev_typecheck_with(&clean.0, &[], &env),
+        (1, String::new(), NO_SERVER.to_string())
+    );
+    // A plain server for the other app in the same cache dir leaves the
+    // checker's address in place.
+    let _plain = Server::oj_dev_with(&clean.0, &env);
+    assert_eq!(
+        dev_typecheck_with(&busy.0, &[], &env),
+        (2, MAIN_ERROR.to_string(), String::new())
+    );
+    let _ = std::fs::remove_dir_all(&cache);
+}
+
+#[test]
+fn dev_typecheck_takes_an_address_without_the_typecheck_field_for_a_checker() {
+    // Older oj wrote the file only for `--typecheck` servers, without the
+    // field: it is asked, not reported as started without the flag.
+    let app = App::new("old-address");
+    let cache = app.0.join(".oj-cache/v1");
+    std::fs::create_dir_all(&cache).unwrap();
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = closed.local_addr().unwrap().port();
+    drop(closed);
+    let old = serde_json::json!({
+        "root": app.0, "pid": std::process::id(), "host": "127.0.0.1", "port": port,
+        "https": false,
+    });
+    std::fs::write(cache.join("dev-server.json"), old.to_string()).unwrap();
+    let (code, out, err) = dev_typecheck_with(&app.0, &[], &[]);
+    assert_eq!((code, out.as_str()), (1, ""));
+    assert!(
+        err.contains(&format!("127.0.0.1:{port}/@oj/typecheck")),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_server_for_an_app_without_tsconfig_answers_unavailable() {
+    let app = App::new("server-noconfig");
+    std::fs::remove_file(app.0.join("tsconfig.json")).unwrap();
+    let server = Server::oj_dev_with_args(&app.0, &["--typecheck"], &[]);
+    let (status, body) = server.request("GET", "/@oj/typecheck", &[]);
+    assert_eq!(
+        (status, json(&body)["status"].as_str()),
+        (200, Some("unavailable")),
+        "{body}"
+    );
+}
+
+#[test]
+fn a_tsconfig_edit_reaches_the_server_through_the_watcher() {
+    let app = App::new("watch-config");
+    app.write("src/main.ts", "export function f(x) { return x; }\n");
+    let server = Server::oj_dev_with_args(&app.0, &["--typecheck"], &[]);
+    wait_for_report(&server, "the implicit any", |r| r["status"] == "errors");
+    app.write(
+        "tsconfig.json",
+        r#"{ "compilerOptions": { "strict": false, "noEmit": true, "lib": ["ES2022", "DOM"] }, "include": ["src"] }"#,
+    );
+    wait_for_report(&server, "the config edit never reached the checker", |r| {
+        r["status"] == "ok"
+    });
+}
+
+#[test]
+fn a_directory_moved_away_takes_its_errors_with_it() {
+    let app = App::new("watch-move");
+    app.write("src/main.ts", "export const n = 1;\n");
+    app.write("src/comp/bad.ts", "export const b: number = 'b';\n");
+    let server = Server::oj_dev_with_args(&app.0, &["--typecheck"], &[]);
+    wait_for_report(&server, "the error in src/comp", |r| r["errorCount"] == 1);
+    let outside = std::env::temp_dir().join(format!("oj-tc-moved-{}", std::process::id()));
+    std::fs::rename(app.0.join("src/comp"), &outside).unwrap();
+    wait_for_report(&server, "the moved directory's error stayed", |r| {
+        r["status"] == "ok"
+    });
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+#[test]
+fn a_start_app_dev_server_answers_typecheck() {
+    let Some(app) = start_app::app("typecheck") else {
+        return;
+    };
+    let server = Server::oj_dev_with_args(&app.0, &["--typecheck"], &[]);
+    let (status, body) = server.request("GET", "/@oj/typecheck", &[]);
+    let report = json(&body);
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        matches!(report["status"].as_str(), Some("ok" | "errors")),
+        "{body}"
+    );
+    assert!(report["generation"].as_u64() >= Some(1), "{body}");
+}
+
+/// `oj typecheck` with tsc's command line `args`, in `dir`: exit code and
+/// stdout.
+fn oj_typecheck(dir: &Path, args: &[&str]) -> (i32, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_oj"))
+        .arg("typecheck")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+    )
+}
+
+#[test]
+fn oj_typecheck_reports_errors_and_exits_as_tsc_does() {
+    // The app's tsconfig sets noEmit: errors with nothing emitted exit 1, as
+    // in TypeScript 7.0 (7.1 exits 2).
+    let app = App::new("tsc-errors");
+    let (code, out) = oj_typecheck(&app.0, &["--project", "tsconfig.json", "--pretty", "false"]);
+    assert_eq!(code, 1, "{out}");
+    assert_eq!(out, MAIN_ERROR);
+    let (code, out) = oj_typecheck(
+        &app.0,
+        &[
+            "-p", ".", "--noEmit", "false", "--outDir", "out", "--pretty", "false",
+        ],
+    );
+    assert_eq!(code, 2, "{out}");
+
+    app.write("src/main.ts", "export const n: number = 1;\n");
+    let (code, out) = oj_typecheck(&app.0, &["-p", ".", "--pretty", "false"]);
+    assert_eq!((code, out.as_str()), (0, ""));
+}
+
+#[test]
+fn oj_typecheck_explains_files_as_tsc_does() {
+    let app = App::new("tsc-explain");
+    app.write(
+        "src/main.ts",
+        "import { m } from './dep';\nexport const n: number = m;\n",
+    );
+    app.write("src/dep.ts", "export const m = 1;\n");
+    let (code, out) = oj_typecheck(
+        &app.0,
+        &[
+            "--project",
+            "tsconfig.json",
+            "--noEmit",
+            "--explainFiles",
+            "--pretty",
+            "false",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.ends_with(
+            "src/dep.ts\n   Matched by include pattern 'src' in 'tsconfig.json'\n   Imported via './dep' from file 'src/main.ts'\n\
+             src/main.ts\n   Matched by include pattern 'src' in 'tsconfig.json'\n"
+        ),
+        "{out}"
+    );
+}
+
+#[test]
+fn oj_typecheck_explain_files_lists_module_augmentations() {
+    let app = App::new("tsc-explain-augment");
+    app.write(
+        "src/main.ts",
+        "import { p } from 'pkg';\nimport { m } from './dep';\nexport const n: number = m + p;\n\
+         declare module 'pkg' {\n  interface Extra {}\n}\n\
+         declare module './dep' {\n  interface Extra {}\n}\n\
+         declare module './other' {\n  interface Extra {}\n}\n",
+    );
+    app.write(
+        "node_modules/pkg/package.json",
+        r#"{ "name": "pkg", "version": "1.0.0", "types": "index.d.ts" }"#,
+    );
+    app.write(
+        "node_modules/pkg/index.d.ts",
+        "export declare const p: number;\n",
+    );
+    app.write("src/dep.ts", "export const m = 1;\n");
+    app.write("src/other.ts", "export const o = 1;\n");
+    let (code, out) = oj_typecheck(
+        &app.0,
+        &["-p", "tsconfig.json", "--explainFiles", "--pretty", "false"],
+    );
+    assert_eq!(code, 0, "{out}");
+    for block in [
+        "src/dep.ts\n   Matched by include pattern 'src' in 'tsconfig.json'\n   Imported via './dep' from file 'src/main.ts'\n   Augmented via './dep' from file 'src/main.ts'\n",
+        "   Imported via 'pkg' from file 'src/main.ts' with packageId 'pkg/index.d.ts@1.0.0'\n   Augmented via 'pkg' from file 'src/main.ts' with packageId 'pkg/index.d.ts@1.0.0'\n",
+        "src/other.ts\n   Matched by include pattern 'src' in 'tsconfig.json'\n   Augmented via './other' from file 'src/main.ts'\n",
+    ] {
+        assert!(out.contains(block), "{out}");
+    }
+}
+
+#[test]
+fn oj_typecheck_lists_an_augmentation_of_a_referenced_projects_module() {
+    // The augmented module is in the program as the referenced project's output.
+    let app = App::new("tsc-explain-refs");
+    app.write(
+        "lib/tsconfig.json",
+        r#"{ "compilerOptions": { "composite": true, "outDir": "dist", "rootDir": "src" }, "include": ["src"] }"#,
+    );
+    app.write("lib/src/x.ts", "export const x = 1;\n");
+    app.write("lib/dist/x.d.ts", "export declare const x = 1;\n");
+    app.write(
+        "app/tsconfig.json",
+        r#"{ "compilerOptions": { "noEmit": true }, "include": ["src"], "references": [{ "path": "../lib" }] }"#,
+    );
+    app.write(
+        "app/src/main.ts",
+        "import { x } from '../../lib/src/x';\nexport const y = x;\n\
+         declare module '../../lib/src/x' {\n  interface E {}\n}\n",
+    );
+    let (code, out) = oj_typecheck(
+        &app.0.join("app"),
+        &["-p", "tsconfig.json", "--explainFiles", "--pretty", "false"],
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains(
+            "../lib/dist/x.d.ts\n   Imported via '../../lib/src/x' from file 'src/main.ts'\n   Augmented via '../../lib/src/x' from file 'src/main.ts'\n"
+        ),
+        "{out}"
+    );
+}
+
+#[test]
+fn oj_typecheck_lists_an_augmentation_of_a_deduplicated_package_copy_under_that_copy() {
+    let app = App::new("tsc-explain-dedup");
+    app.write("src/main.ts", "import 'a';\nimport 'b';\n");
+    for dep in ["a", "b"] {
+        app.write(
+            &format!("node_modules/{dep}/package.json"),
+            &format!(r#"{{ "name": "{dep}", "version": "1.0.0", "types": "index.d.ts" }}"#),
+        );
+        app.write(
+            &format!("node_modules/{dep}/node_modules/pkg/package.json"),
+            r#"{ "name": "pkg", "version": "1.0.0", "types": "index.d.ts" }"#,
+        );
+        app.write(
+            &format!("node_modules/{dep}/node_modules/pkg/index.d.ts"),
+            "export interface P {}\n",
+        );
+    }
+    app.write("node_modules/a/index.d.ts", "export * from 'pkg';\n");
+    app.write(
+        "node_modules/b/index.d.ts",
+        "export * from 'pkg';\ndeclare module 'pkg' {\n  interface P {\n    b: 1;\n  }\n}\n",
+    );
+    let (code, out) = oj_typecheck(
+        &app.0,
+        &["-p", "tsconfig.json", "--explainFiles", "--pretty", "false"],
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains(
+            "node_modules/b/node_modules/pkg/index.d.ts\n   Imported via 'pkg' from file 'node_modules/b/index.d.ts' with packageId 'pkg/index.d.ts@1.0.0'\n   Augmented via 'pkg' from file 'node_modules/b/index.d.ts' with packageId 'pkg/index.d.ts@1.0.0'\n"
+        ),
+        "{out}"
+    );
+}
+
+#[test]
+fn oj_typecheck_takes_every_tsc_flag() {
+    let app = App::new("tsc-flags");
+    app.write("src/main.ts", "export const n: number = 1;\n");
+    let (code, out) = oj_typecheck(
+        &app.0,
+        &[
+            "-p",
+            "tsconfig.json",
+            "--noEmit",
+            "--listFiles",
+            "--checkers",
+            "2",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(out.ends_with("src/main.ts\n"), "{out}");
+}
+
+#[test]
+fn oj_typecheck_imports_the_jsx_runtime_into_jsx_files_only() {
+    // TypeScript 7.0 adds the implicit `react/jsx-runtime` import to .jsx and
+    // .tsx files, not to other JavaScript files.
+    let app = App::new("tsc-jsx-runtime");
+    app.write(
+        "tsconfig.json",
+        r#"{ "compilerOptions": { "allowJs": true, "jsx": "react-jsx", "module": "esnext", "moduleResolution": "bundler", "noEmit": true, "types": [] }, "include": ["src"] }"#,
+    );
+    std::fs::remove_file(app.0.join("src/main.ts")).unwrap();
+    app.write("src/a.mjs", "export const a = 1;\n");
+    app.write("src/b.jsx", "export const b = 1;\n");
+    app.write("node_modules/react/package.json", r#"{ "name": "react" }"#);
+    app.write(
+        "node_modules/react/jsx-runtime.d.ts",
+        "export declare const jsx: unknown;\n",
+    );
+    let (code, out) = oj_typecheck(&app.0, &["-p", ".", "--explainFiles"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("from file 'src/b.jsx'"), "{out}");
+    assert!(!out.contains("from file 'src/a.mjs'"), "{out}");
+}

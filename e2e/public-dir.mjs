@@ -135,9 +135,10 @@ async function get(url, headers = {}) {
         JSON.stringify(html),
       );
       const mod = await get(`${origin}/logo.svg?url`);
+      // Vite's dev fileToDevUrl inlines an svg under assetsInlineLimit, public or not.
       check(
         "?url on a public asset is still a module",
-        mod.status === 200 && /export default "\/logo\.svg"/.test(mod.body),
+        mod.status === 200 && /export default "data:image\/svg\+xml,/.test(mod.body),
         JSON.stringify(mod),
       );
     });

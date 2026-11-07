@@ -1,4 +1,6 @@
-//! `.env` files, read the way Vite's loadEnv does (dotenv + dotenv-expand).
+//! `.env` files, read the way Vite's loadEnv does. Vite 8 parses with
+//! `node:util`'s parseEnv (not the dotenv package) and expands with
+//! dotenv-expand.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -18,6 +20,9 @@ pub fn parse(contents: &str, base: &BTreeMap<String, String>) -> Vec<(String, St
             continue;
         };
         let key = key.trim();
+        // Any non-empty key loads: Vite 8 reads .env through node:util's
+        // parseEnv, which accepts `*`, spaces and non-ASCII in keys (the
+        // dotenv package's `[\w.-]+` charset is the Vite 7 era).
         if key.is_empty() {
             continue;
         }
@@ -51,8 +56,17 @@ fn parse_value(raw: &str, vars: &BTreeMap<String, String>) -> String {
     expand(raw[..end].trim(), vars)
 }
 
+/// Hard bound on the bytes a value gains through `$` references. A literal
+/// value is linear in the file, but expansion sees every previous line, so a
+/// doubling chain (`B=$A$A`, `C=$B$B`, ...) grows exponentially and a 1KB file
+/// can demand gigabytes; dotenv-expand has the same hole and takes the node
+/// process down with it. Real referenced values sit far below an OS
+/// environment string (~128KB), so the cap only ever cuts a bomb.
+const EXPANSION_CAP: usize = 128 * 1024;
+
 fn expand(input: &str, vars: &BTreeMap<String, String>) -> String {
     let mut out = String::with_capacity(input.len());
+    let mut ref_budget = EXPANSION_CAP;
     let bytes = input.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
@@ -79,7 +93,16 @@ fn expand(input: &str, vars: &BTreeMap<String, String>) -> String {
                 (end > start).then(|| (&input[start..end], end))
             };
             if let Some((name, next)) = reference {
-                out.push_str(vars.get(name).map(String::as_str).unwrap_or(""));
+                let val = vars.get(name).map(String::as_str).unwrap_or("");
+                if val.len() > ref_budget {
+                    eprintln!(
+                        "oj: warning: a .env value grew past {}KB through $ references and was truncated",
+                        EXPANSION_CAP / 1024
+                    );
+                    break;
+                }
+                ref_budget -= val.len();
+                out.push_str(val);
                 i = next;
                 continue;
             }
@@ -94,21 +117,27 @@ fn expand(input: &str, vars: &BTreeMap<String, String>) -> String {
     out
 }
 
-/// `.env`, `.env.local`, `.env.[mode]`, `.env.[mode].local` in `dir`, later
-/// files winning, each expanded against `env` and the files before it.
+/// The env files a mode loads from `dir`, in load order: Vite's
+/// getEnvFilesForMode (`.env`, `.env.local`, `.env.[mode]`, `.env.[mode].local`).
+pub fn env_files(dir: &Path, mode: &str) -> [std::path::PathBuf; 4] {
+    [
+        dir.join(".env"),
+        dir.join(".env.local"),
+        dir.join(format!(".env.{mode}")),
+        dir.join(format!(".env.{mode}.local")),
+    ]
+}
+
+/// [`env_files`] in order, later files winning, each expanded against `env`
+/// and the files before it.
 pub fn load_with(env: &Env, dir: &Path, mode: &str) -> Vec<(String, String)> {
     let mut base: BTreeMap<String, String> = env
         .vars()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
     let mut merged: BTreeMap<String, String> = BTreeMap::new();
-    for name in [
-        ".env".to_string(),
-        ".env.local".to_string(),
-        format!(".env.{mode}"),
-        format!(".env.{mode}.local"),
-    ] {
-        let Ok(contents) = std::fs::read_to_string(dir.join(name)) else {
+    for file in env_files(dir, mode) {
+        let Ok(contents) = std::fs::read_to_string(file) else {
             continue;
         };
         for (k, v) in parse(&contents, &base) {

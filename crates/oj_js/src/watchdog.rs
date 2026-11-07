@@ -129,9 +129,4 @@ impl DeadlineGuard {
     pub(crate) fn disarm(self) -> bool {
         !lock(&self.shared.state).armed.remove(&self.key)
     }
-
-    /// Whether the watchdog fired, without disarming it.
-    pub(crate) fn fired(&self) -> bool {
-        !lock(&self.shared.state).armed.contains(&self.key)
-    }
 }

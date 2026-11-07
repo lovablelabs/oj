@@ -3,8 +3,9 @@
 
 //! Structured dev-server diagnostics. Every noteworthy failure is recorded as
 //! an [`Event`] in a bounded in-memory ring (the dev server lists it at
-//! `/@oj/diagnostics`) and, when NDJSON output is on ([`set_json_output`]),
-//! printed as one machine-parsable stderr line a supervisor can ingest.
+//! `/@oj/diagnostics`), handed to each [`add_output`] (an exporter), and,
+//! when NDJSON output is on ([`set_json_output`]), printed as one
+//! machine-parsable stderr line a supervisor can ingest.
 //! Human stderr output is a separate concern: call sites keep their own
 //! `eprintln!` lines and [`emit`] prints nothing outside NDJSON mode, so
 //! recording an event never changes what a person reads in the terminal.
@@ -12,7 +13,7 @@
 use serde::Serialize;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Events kept; the oldest is dropped (and counted) past this.
 const RING_CAP: usize = 256;
@@ -172,10 +173,16 @@ struct Inner {
     dropped: u64,
 }
 
+/// An exporter of every event as it is emitted, folded repeats included: an
+/// output like the NDJSON line, run on the emitting thread outside the ring's
+/// lock, so it must stay cheap and hand any I/O to a thread of its own.
+pub type Output = Arc<dyn Fn(&Event) + Send + Sync>;
+
 #[derive(Default)]
 pub struct Diagnostics {
     json: AtomicBool,
     inner: Mutex<Inner>,
+    outputs: Mutex<Vec<Output>>,
 }
 
 impl Diagnostics {
@@ -233,6 +240,27 @@ impl Diagnostics {
             "dropped": inner.dropped,
         })
     }
+
+    /// Hands every later event to `output` (see [`Output`]).
+    pub fn add_output(&self, output: Output) {
+        self.outputs.lock().unwrap().push(output);
+    }
+
+    /// The outputs, then the ring; in NDJSON mode a fresh (non-folded) event
+    /// also prints one line to stderr. The outputs run with no lock held, so
+    /// one that emits an event of its own cannot deadlock.
+    pub fn emit(&self, event: Event) {
+        let outputs = {
+            let outputs = self.outputs.lock().unwrap();
+            (!outputs.is_empty()).then(|| outputs.clone())
+        };
+        for output in outputs.iter().flatten() {
+            output(&event);
+        }
+        if let Some(line) = self.record(event) {
+            eprintln!("{line}");
+        }
+    }
 }
 
 /// The process-wide ring every [`emit`] records into.
@@ -246,12 +274,14 @@ pub fn set_json_output(on: bool) {
     global().set_json_output(on);
 }
 
-/// Record into the process ring; in NDJSON mode a fresh (non-folded) event
-/// also prints one line to stderr.
+/// [`Diagnostics::add_output`] on the process ring.
+pub fn add_output(output: Output) {
+    global().add_output(output);
+}
+
+/// [`Diagnostics::emit`] on the process ring.
 pub fn emit(event: Event) {
-    if let Some(line) = global().record(event) {
-        eprintln!("{line}");
-    }
+    global().emit(event);
 }
 
 /// One stderr line for an event: the event's fields plus the `"oj":"diag"`
@@ -398,5 +428,36 @@ mod tests {
         let big = "x".repeat(DETAIL_CAP * 2);
         let e = Event::new(Kind::Panic, "p").detail(big);
         assert!(e.detail.unwrap().len() <= DETAIL_CAP + '…'.len_utf8());
+    }
+
+    // An exporter sees every occurrence (the ring folds repeats, a counter
+    // must not), and one that emits from inside its output cannot deadlock.
+    #[test]
+    fn outputs_get_every_event_and_may_emit_themselves() {
+        let diag = Arc::new(Diagnostics::new());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (log, inner) = (seen.clone(), Arc::downgrade(&diag));
+        diag.add_output(Arc::new(move |e: &Event| {
+            log.lock().unwrap().push(e.message.clone());
+            if e.message == "boom" {
+                if let Some(diag) = inner.upgrade() {
+                    diag.emit(event(Kind::CompileError, "echo"));
+                }
+            }
+        }));
+        for _ in 0..3 {
+            diag.emit(event(Kind::CompileError, "boom"));
+        }
+        assert_eq!(
+            *seen.lock().unwrap(),
+            ["boom", "echo", "boom", "echo", "boom", "echo"]
+        );
+        let snapshot = diag.snapshot(None);
+        assert_eq!(snapshot["counters"]["compile_error"], 6);
+        assert_eq!(
+            snapshot["events"].as_array().unwrap().len(),
+            6,
+            "boom and echo alternate"
+        );
     }
 }

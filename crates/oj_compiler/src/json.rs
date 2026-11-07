@@ -14,16 +14,21 @@ fn named_keys(value: &serde_json::Value) -> Vec<String> {
 }
 
 fn is_safe_export_name(name: &str) -> bool {
-    if name == "__proto__" {
+    // `__oj_json` is the module's own binding: a key with that exact name
+    // would redeclare it. Reachable through the default export, like every
+    // other skipped key.
+    if name == "__proto__" || name == "__oj_json" {
         return false;
     }
-    const RESERVED: &[&str] = &[
-        "default", "class", "const", "let", "var", "function", "return", "import", "export", "new",
-        "delete", "void", "typeof", "in", "of", "do", "if", "else", "switch", "case", "for",
-        "while", "break", "continue", "this", "super", "null", "true", "false", "enum", "await",
-        "yield",
-    ];
-    if RESERVED.contains(&name) {
+    // Vite 8's JSON plugin is rolldown's: its named-export filter
+    // (rolldown_utils::ecmascript::is_validate_assignee_identifier_name) is
+    // oxc's reserved words + global values (Infinity, NaN, globalThis,
+    // undefined) plus `arguments`/`eval`. pluginutils' wider list is the
+    // rollup era; Vite 8 does export `Object`, `Math` and friends.
+    if oxc_syntax::keyword::is_reserved_keyword_or_global_object(name)
+        || name == "arguments"
+        || name == "eval"
+    {
         return false;
     }
     let mut chars = name.chars();
@@ -122,6 +127,34 @@ mod tests {
                 "{ok} should export: {out}"
             );
         }
+        // Vite 8's (rolldown's) filter: `arguments` binds nothing in strict
+        // mode (the fuzz_json_module crash input); `eval`, reserved words and
+        // the global values Infinity/NaN/globalThis/undefined are skipped too.
+        // Plain globals (`Object`, `Math`) DO export, as under Vite 8, where
+        // shadowing them in module scope is legal.
+        let out = to_esm(
+            r#"{"arguments":{},"eval":1,"static":2,"NaN":3,"globalThis":4,"Object":5,"Math":6,"kept":7}"#,
+            "/r.json",
+        )
+        .unwrap();
+        assert!(!out.contains("export const arguments"), "{out}");
+        for skipped in ["eval", "static", "NaN", "globalThis"] {
+            assert!(
+                !out.contains(&format!("export const {skipped} ")),
+                "{skipped} must not export: {out}"
+            );
+        }
+        for kept in ["Object", "Math", "kept"] {
+            assert!(
+                out.contains(&format!("export const {kept} =")),
+                "{kept} should export like Vite 8: {out}"
+            );
+        }
+        // A key named like the module's own binding must not redeclare it
+        // (the round-7 fuzz crash input).
+        let out = to_esm(r#"{"__oj_json":{},"fine":1}"#, "/o.json").unwrap();
+        assert!(!out.contains("export const __oj_json"), "{out}");
+        assert!(out.contains("export const fine ="), "{out}");
     }
 
     #[test]

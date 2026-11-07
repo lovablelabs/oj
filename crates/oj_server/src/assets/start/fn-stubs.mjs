@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT
 
+// @tanstack/start-fn-stubs at run time, for the calls oj_compiler::env_fns
+// does not compile away (a factory passed through a binding it cannot see).
+
 const isServerRuntime = typeof document === "undefined";
 
 function make(clientImpl, serverImpl) {

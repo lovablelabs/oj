@@ -52,6 +52,8 @@ test("the extractor emits ssr.runnerBacked and rawResolve", () => {
   const base = mkdtempSync(join(tmpdir(), "oj-vite-extract-rb-"));
   try {
     copyFileSync(asset("vite-extract.mjs"), join(base, "vite-extract.mjs"));
+    copyFileSync(asset("vite-config-node.mjs"), join(base, "vite-config-node.mjs"));
+    copyFileSync(asset("native-plugins.mjs"), join(base, "native-plugins.mjs"));
     writeFileSync(join(base, "package.json"), JSON.stringify({ name: "rb-app", type: "module" }));
     // A raw plugin list nests, as a plugin factory's return does.
     writeFileSync(
@@ -90,6 +92,8 @@ test("the extractor emits ssr.runnerBacked and rawResolve", () => {
 function extractorDir(prefix) {
   const base = mkdtempSync(join(tmpdir(), prefix));
   copyFileSync(asset("vite-extract.mjs"), join(base, "vite-extract.mjs"));
+  copyFileSync(asset("vite-config-node.mjs"), join(base, "vite-config-node.mjs"));
+  copyFileSync(asset("native-plugins.mjs"), join(base, "native-plugins.mjs"));
   writeFileSync(
     join(base, "package.json"),
     JSON.stringify({ name: "fx", type: "module", dependencies: { vite: "*" } }),
@@ -113,6 +117,8 @@ test("extract() resolves even when a hook keeps the event loop alive", () => {
   const base = mkdtempSync(join(tmpdir(), "oj-vite-extract-exit-"));
   try {
     copyFileSync(asset("vite-extract.mjs"), join(base, "vite-extract.mjs"));
+    copyFileSync(asset("vite-config-node.mjs"), join(base, "vite-config-node.mjs"));
+    copyFileSync(asset("native-plugins.mjs"), join(base, "native-plugins.mjs"));
     writeFileSync(join(base, "package.json"), JSON.stringify({ name: "fx", type: "module" }));
     writeFileSync(
       join(base, "vite.config.mjs"),
@@ -140,6 +146,8 @@ test("config hooks see isSsrBuild false even when the file sets build.ssr under 
   const base = mkdtempSync(join(tmpdir(), "oj-vite-extract-ssrbuild-"));
   try {
     copyFileSync(asset("vite-extract.mjs"), join(base, "vite-extract.mjs"));
+    copyFileSync(asset("vite-config-node.mjs"), join(base, "vite-config-node.mjs"));
+    copyFileSync(asset("native-plugins.mjs"), join(base, "native-plugins.mjs"));
     writeFileSync(join(base, "package.json"), JSON.stringify({ name: "fx", type: "module" }));
     writeFileSync(
       join(base, "vite.config.mjs"),
@@ -347,6 +355,8 @@ const skipNoVite = hasRealVite ? false : "fixture vite not installed";
 function realViteDir(prefix) {
   const base = mkdtempSync(join(tmpdir(), prefix));
   copyFileSync(asset("vite-extract.mjs"), join(base, "vite-extract.mjs"));
+  copyFileSync(asset("vite-config-node.mjs"), join(base, "vite-config-node.mjs"));
+  copyFileSync(asset("native-plugins.mjs"), join(base, "native-plugins.mjs"));
   writeFileSync(
     join(base, "package.json"),
     JSON.stringify({ name: "fx", type: "module", dependencies: { vite: "*" } }),
@@ -553,6 +563,8 @@ test("config-shaped files the evaluation reads travel in __deps, custom names an
   const base = mkdtempSync(join(tmpdir(), "oj-vite-extract-wrangler-"));
   try {
     copyFileSync(asset("vite-extract.mjs"), join(base, "vite-extract.mjs"));
+    copyFileSync(asset("vite-config-node.mjs"), join(base, "vite-config-node.mjs"));
+    copyFileSync(asset("native-plugins.mjs"), join(base, "native-plugins.mjs"));
     writeFileSync(join(base, "package.json"), JSON.stringify({ name: "fx", type: "module" }));
     mkdirSync(join(base, "config"));
     mkdirSync(join(base, "node_modules"));
@@ -639,36 +651,35 @@ test("recorder overflow sets __depsTruncated; re-reads at the cap do not", () =>
   const base = mkdtempSync(join(tmpdir(), "oj-vite-extract-trunc-"));
   try {
     copyFileSync(asset("vite-extract.mjs"), join(base, "vite-extract.mjs"));
+    copyFileSync(asset("vite-config-node.mjs"), join(base, "vite-config-node.mjs"));
+    copyFileSync(asset("native-plugins.mjs"), join(base, "native-plugins.mjs"));
     writeFileSync(join(base, "package.json"), JSON.stringify({ name: "fx", type: "module" }));
-    writeFileSync(join(base, "a.json"), "{}");
-    writeFileSync(join(base, "b.json"), "{}");
-    writeFileSync(
-      join(base, "vite.config.mjs"),
-      `import fs from "node:fs";
-      fs.readFileSync(new URL("./a.json", import.meta.url), "utf8");
-      fs.readFileSync(new URL("./b.json", import.meta.url), "utf8");
-      export default { base: "/t/" };\n`,
-    );
-    writeFileSync(
-      join(base, "dupe.config.mjs"),
-      `import fs from "node:fs";
-      fs.readFileSync(new URL("./a.json", import.meta.url), "utf8");
-      fs.readFileSync(new URL("./a.json", import.meta.url), "utf8");
-      export default { base: "/d/" };\n`,
-    );
-    const run = (config, env) => JSON.parse(runExtractor(base, config, [], { env: { ...process.env, ...env } }));
-    const capped = run("vite.config.mjs", { OJ_OBSERVED_READS_MAX: "1" });
+    // The cap is 512 paths: `n` probes of missing .json files, then the
+    // first one again.
+    const config = (name, n) =>
+      writeFileSync(
+        join(base, name),
+        `import fs from "node:fs";
+        for (let i = 0; i < ${n}; i++) fs.existsSync(new URL(\`./m\${i}.json\`, import.meta.url));
+        fs.existsSync(new URL("./m0.json", import.meta.url));
+        export default { base: "/t/" };\n`,
+      );
+    config("vite.config.mjs", 513);
+    config("whole.config.mjs", 2);
+    config("dupe.config.mjs", 512);
+    const run = (name) => JSON.parse(runExtractor(base, name, []));
+    const capped = run("vite.config.mjs");
     assert.equal(capped.__ok, true);
     assert.equal(capped.__depsTruncated, true, "a dropped NEW path past the cap flags the emit");
-    const whole = run("vite.config.mjs", {});
+    const whole = run("whole.config.mjs");
     assert.equal(whole.__ok, true);
     assert.equal(whole.__depsTruncated, undefined, "no overflow, no flag");
     const real = fs.realpathSync(base);
-    assert.ok(whole.__deps.includes(join(real, "b.json")));
-    const dupe = run("dupe.config.mjs", { OJ_OBSERVED_READS_MAX: "1" });
+    assert.ok(whole.__deps.includes(join(real, "m1.json")));
+    const dupe = run("dupe.config.mjs");
     assert.equal(dupe.__ok, true);
     assert.equal(dupe.__depsTruncated, undefined, "re-reading a recorded path at the cap is not truncation");
-    assert.ok(dupe.__deps.includes(join(real, "a.json")));
+    assert.ok(dupe.__deps.includes(join(real, "m0.json")));
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
@@ -684,6 +695,8 @@ test("a config branching on NODE_ENV during module evaluation sees the command's
   const base = mkdtempSync(join(tmpdir(), "oj-vite-extract-nodeenv-"));
   try {
     copyFileSync(asset("vite-extract.mjs"), join(base, "vite-extract.mjs"));
+    copyFileSync(asset("vite-config-node.mjs"), join(base, "vite-config-node.mjs"));
+    copyFileSync(asset("native-plugins.mjs"), join(base, "native-plugins.mjs"));
     writeFileSync(join(base, "package.json"), JSON.stringify({ name: "fx", type: "module" }));
     writeFileSync(
       join(base, "vite.config.mjs"),
@@ -816,6 +829,8 @@ test("Vite server and optimizer settings survive actual config loading", () => {
   const base = mkdtempSync(join(tmpdir(), "oj-vite-extract-adopt-"));
   try {
     copyFileSync(asset("vite-extract.mjs"), join(base, "vite-extract.mjs"));
+    copyFileSync(asset("vite-config-node.mjs"), join(base, "vite-config-node.mjs"));
+    copyFileSync(asset("native-plugins.mjs"), join(base, "native-plugins.mjs"));
     writeFileSync(join(base, "package.json"), JSON.stringify({ name: "fx", type: "module" }));
     writeFileSync(
       join(base, "vite.config.mjs"),
