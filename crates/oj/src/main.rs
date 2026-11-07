@@ -73,7 +73,11 @@ enum Command {
         port: Option<u16>,
         #[arg(long)]
         ssr: Option<String>,
-        #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+        // Vite's `--host [host]`: a bare flag binds all interfaces, and the
+        // value takes both the space and `=` forms. No `require_equals`: it
+        // made `--host 127.0.0.1` parse the address as the root positional
+        // (`app root not found: 127.0.0.1`).
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
         host: Option<String>,
         #[arg(long)]
         config: Option<PathBuf>,
@@ -203,7 +207,9 @@ enum Command {
         out: Option<PathBuf>,
         #[arg(long)]
         port: Option<u16>,
-        #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+        // Same space-form fix as `dev --host`: `require_equals` stranded the
+        // value as the root positional.
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
         host: Option<String>,
         /// Use this vite.config instead of the one found in the root.
         #[arg(short = 'c', long)]
@@ -1033,5 +1039,61 @@ mod debug_flag_tests {
         assert_eq!(debug_with_scopes(None, "boot,mem"), "oj:boot,oj:mem");
         assert_eq!(debug_with_scopes(Some("vite:*"), "boot"), "vite:*,oj:boot");
         assert_eq!(debug_with_scopes(Some("oj:boot"), "boot"), "oj:boot");
+    }
+}
+
+#[cfg(test)]
+mod host_flag_tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    fn dev_of(args: &[&str]) -> (Option<PathBuf>, Option<String>) {
+        let Command::Dev { root, host, .. } = Cli::try_parse_from(args).unwrap().command else {
+            panic!("not dev: {args:?}");
+        };
+        (root, host)
+    }
+
+    fn preview_host_of(args: &[&str]) -> Option<String> {
+        let Command::Preview { host, .. } = Cli::try_parse_from(args).unwrap().command else {
+            panic!("not preview: {args:?}");
+        };
+        host
+    }
+
+    // `--host` takes the space form, the `=` form, and the bare flag, and
+    // never strands the value as the root positional (Vite parity).
+    #[test]
+    fn host_takes_a_space_separated_value() {
+        Cli::command().debug_assert();
+        assert_eq!(
+            dev_of(&["oj", "dev", "--port", "3199", "--host", "127.0.0.1"]),
+            (None, Some("127.0.0.1".to_string()))
+        );
+        assert_eq!(
+            dev_of(&["oj", "dev", "--host=127.0.0.1"]),
+            (None, Some("127.0.0.1".to_string()))
+        );
+        assert_eq!(
+            dev_of(&["oj", "dev", "--host"]),
+            (None, Some("true".to_string()))
+        );
+        assert_eq!(
+            dev_of(&["oj", "dev", "web", "--host", "127.0.0.1"]),
+            (Some(PathBuf::from("web")), Some("127.0.0.1".to_string()))
+        );
+        // A following flag is not swallowed as the value.
+        assert_eq!(
+            dev_of(&["oj", "dev", "--host", "--port", "3199"]),
+            (None, Some("true".to_string()))
+        );
+        assert_eq!(
+            preview_host_of(&["oj", "preview", "--host", "127.0.0.1"]),
+            Some("127.0.0.1".to_string())
+        );
+        assert_eq!(
+            preview_host_of(&["oj", "preview", "--host"]),
+            Some("true".to_string())
+        );
     }
 }
