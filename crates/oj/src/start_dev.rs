@@ -72,7 +72,9 @@ struct StartState {
     /// A page's `import.meta.hot.send` (event, JSON data), to the plugins'
     /// `server.ws.on(event)` listeners.
     to_plugins: ToPlugins,
-    css_host: Option<Arc<oj_server::css_engine::CssEngine>>,
+    /// The native tailwind fallback host, cold until the first sheet the
+    /// marker gate lets through (see `LazyCssHost`).
+    css_host: LazyCssHost,
     /// The dev mode (`oj dev --mode`), handed to every node script respawn.
     mode: String,
     /// The HMR gate, when the editor drives it: rebuilds still happen at once, the
@@ -141,6 +143,57 @@ struct StartState {
     /// saw. The first refresh started after that reloads the pages once its
     /// output is current (Vite's reload-needed flush).
     reload_wanted: std::sync::Mutex<Option<u64>>,
+}
+
+/// What the lazy native tailwind host spawns from, when the app uses
+/// tailwind at all (decided once at boot: the check reads package.json).
+struct CssBoot {
+    root: PathBuf,
+    registry: oj_js::EngineRegistry,
+}
+
+/// The native tailwind fallback host, spawned on the first sheet the marker
+/// gate lets through instead of at boot: the hosted `@tailwindcss/vite`
+/// (enforce pre) compiles every sheet, and the gate then skips native — an
+/// eagerly spawned isolate idles with a double-loaded toolchain for the
+/// whole session. Mirrors the lazy `OnceCell` the bundle/SSR engines use.
+struct LazyCssHost {
+    boot: Option<CssBoot>,
+    cell: tokio::sync::OnceCell<Option<Arc<oj_server::css_engine::CssEngine>>>,
+}
+
+impl LazyCssHost {
+    /// Cold: spawning waits for the first fallback compile (or never, when
+    /// the app has no tailwind).
+    fn cold(uses_tailwind: bool, root: &Path, registry: oj_js::EngineRegistry) -> Self {
+        LazyCssHost {
+            boot: uses_tailwind.then(|| CssBoot {
+                root: root.to_path_buf(),
+                registry,
+            }),
+            cell: tokio::sync::OnceCell::new(),
+        }
+    }
+
+    /// The fallback host, spawning it on first use. Zero behavior change:
+    /// the first filter-miss sheet still compiles natively, just later.
+    async fn get(&self) -> Option<Arc<oj_server::css_engine::CssEngine>> {
+        let boot = self.boot.as_ref()?;
+        self.cell
+            .get_or_init(|| async {
+                oj_server::css_engine::CssEngine::tailwind(&boot.root, Some(boot.registry.clone()))
+                    .await
+                    .ok()
+            })
+            .await
+            .clone()
+    }
+
+    /// Whether the app uses tailwind (never spawns the host): the relink
+    /// signal for hot runs, as the eager host's `is_some` was.
+    fn uses_tailwind(&self) -> bool {
+        self.boot.is_some()
+    }
 }
 
 impl StartState {
@@ -592,13 +645,10 @@ pub async fn start_dev_with_framework(
             oj_server::boot_phase("revalidate complete");
         });
     }
-    let css_host = if app_uses_tailwind(&root) {
-        oj_server::css_engine::CssEngine::tailwind(&root, Some(built.ssr.engine_registry()))
-            .await
-            .ok()
-    } else {
-        None
-    };
+    // The native tailwind host stays cold until the first fallback compile
+    // (see `LazyCssHost`): spawning it here idles an isolate with a
+    // double-loaded toolchain while the hosted plugin compiles every sheet.
+    let css_host = LazyCssHost::cold(app_uses_tailwind(&root), &root, built.ssr.engine_registry());
     // The resolved gate (the knob or `server.hmrGate`): a gate on drops the
     // boot's engine at the next rebundle.
     bundler.set_hot_enabled(built.hmr_gate.is_none());
@@ -1682,11 +1732,11 @@ async fn rebundle_worker(
         } else {
             Vec::new()
         };
-        if hot && !reload && (state.css_host.is_some() || !added.is_empty()) {
+        if hot && !reload && (state.css_host.uses_tailwind() || !added.is_empty()) {
             state
                 .bundler
                 .hot
-                .refresh_styles(state.css_host.is_some(), &added);
+                .refresh_styles(state.css_host.uses_tailwind(), &added);
         }
         // The hold was taken at the watcher event. A flush that came while this
         // run built released it, and the reload reaches the pages now, with
@@ -3244,9 +3294,15 @@ async fn css_body(state: &StartState, file: &Path) -> Option<Result<String, Stri
             Err(_) => return None,
         }
     };
-    let compiled = match state.css_host.as_ref().filter(|_| needs_css_compile(&src)) {
-        Some(host) => compile_css(host, &src, file).await,
-        None => None,
+    // The lazy fallback: only a sheet the marker gate lets through spawns
+    // the native host (see `LazyCssHost`).
+    let compiled = if needs_css_compile(&src) {
+        match state.css_host.get().await {
+            Some(host) => compile_css(&host, &src, file).await,
+            None => None,
+        }
+    } else {
+        None
     };
     if compiled.is_none() && !pipeline && slots.is_none() {
         return None;
@@ -5073,6 +5129,42 @@ mod tests {
         assert!(!app_uses_tailwind(&base));
         let none = tmp("tw-none");
         assert!(!app_uses_tailwind(&none));
+    }
+
+    /// The native tailwind host stays cold until the first fallback compile:
+    /// building the holder (what boot does) spawns nothing, the first `get`
+    /// spawns the isolate, and an app without tailwind never spawns.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn css_host_stays_cold_until_the_first_fallback_compile() {
+        let root = tmp("lazy-css");
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"dependencies":{"tailwindcss":"4"}}"#,
+        )
+        .unwrap();
+        let script = oj_cache::cache_root(&root).join("css-tailwind.mjs");
+        let host = LazyCssHost::cold(true, &root, oj_js::EngineRegistry::new());
+        assert!(
+            !script.exists(),
+            "boot writes no engine script, so no isolate spawns"
+        );
+        let first = host.get().await.expect("the fallback spawns on first use");
+        assert!(
+            script.exists(),
+            "the first fallback compile spawns the host"
+        );
+        let second = host.get().await.expect("the host stays up");
+        assert!(
+            std::sync::Arc::ptr_eq(&first, &second),
+            "one isolate for the session, not one per sheet"
+        );
+
+        let plain = LazyCssHost::cold(false, &root, oj_js::EngineRegistry::new());
+        assert!(!plain.uses_tailwind());
+        assert!(
+            plain.get().await.is_none(),
+            "an app without tailwind never spawns the host"
+        );
     }
 
     #[test]
