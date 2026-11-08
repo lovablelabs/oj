@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-11-08
+
 ### Changed
 
 - TanStack Start dev keeps hot updates behind a granular editor HMR gate (`OJ_HMR_FULL_RELOAD=false`). An edit is patched in place once the editor's `POST /__hmr_flush` releases it, keeping the page and its state. A gated server used to turn hot updates off, so every edit reloaded the page. A full-reload gate still reloads.
