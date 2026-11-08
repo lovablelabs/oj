@@ -81,10 +81,11 @@ impl HotUpdates {
             + 1
     }
 
-    /// `change` went out: every page hears which clients it covered (a patch
-    /// or nothing to patch). A page left out (its client registered while
-    /// the change was being built, or its patch never made it) is behind and
-    /// reloads; a page named in it has the change. After the change's
+    /// `change` went out: every page hears which clients it covered (a
+    /// patch, nothing to patch, or a patch held back for a build error the
+    /// overlay shows). A page left out (its client registered while the
+    /// change was being built) is behind and reloads; a page named in it has
+    /// the change. After the change's
     /// patches, through the same gate, so it never overtakes them.
     pub(crate) fn end_change(&self, change: u64, covered: &[String]) {
         let text = serde_json::json!({

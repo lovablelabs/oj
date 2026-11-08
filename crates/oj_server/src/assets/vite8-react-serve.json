@@ -264,6 +264,7 @@
     },
     "target": "node"
   },
+  "editorHmrGate": false,
   "stylex": null,
   "watchIgnored": null
 }

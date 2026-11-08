@@ -338,13 +338,14 @@ fn on_hmr_updates(
             continue;
         };
         // An import that never resolved fails the rebundle (the overlay),
-        // never the page that would run the patch.
+        // never the page that would run the patch. The page is still
+        // covered: the overlay is what it gets for this change, not a reload.
+        covered.push(u.client_id.clone());
         let importer = root.join(patch.changed_ids.first().map(String::as_str).unwrap_or(""));
         if let Some(err) = unresolved_in_patch(&patch.code, &importer.to_string_lossy(), declared) {
             *events.error.lock().unwrap() = Some(err);
             continue;
         }
-        covered.push(u.client_id.clone());
         hot.accept(&Patch {
             client: u.client_id,
             filename: patch.filename,
