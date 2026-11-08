@@ -433,7 +433,7 @@ pub(crate) const PLUGIN_HOST_RESPAWN_SPACING: std::time::Duration =
     std::time::Duration::from_secs(5);
 
 /// Plugin-host heap cap, Node parity: `OJ_PLUGIN_MEMORY_MB`, then NODE_OPTIONS
-/// `--max-old-space-size`, then 4096MB. Near-limit fails the call with MemoryLimit and revives on a fresh heap.
+/// `--max-old-space-size`, then 512MB. Near-limit fails the call with MemoryLimit and revives on a fresh heap.
 pub(crate) fn plugin_host_memory_mb() -> usize {
     let knobs = &oj_env::get().knobs;
     if let Some(mb) = knobs.plugin_memory_mb {
@@ -443,7 +443,7 @@ pub(crate) fn plugin_host_memory_mb() -> usize {
         .node_options
         .as_deref()
         .and_then(max_old_space_mb)
-        .unwrap_or(4096)
+        .unwrap_or(512)
 }
 
 /// The last `--max-old-space-size` in NODE_OPTIONS (last wins, like Node;

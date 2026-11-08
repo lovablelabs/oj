@@ -699,7 +699,7 @@ async fn addon_keeper_tolerates_unloadable_addons() {
 }
 
 // Heap cap mirrors NODE_OPTIONS --max-old-space-size (last wins, underscore
-// accepted, like Node), OJ_PLUGIN_MEMORY_MB above it, 4096 beneath.
+// accepted, like Node), OJ_PLUGIN_MEMORY_MB above it, 512 beneath.
 #[test]
 fn node_options_heap_cap_parses_like_node() {
     assert_eq!(max_old_space_mb("--max-old-space-size=8192"), Some(8192));
