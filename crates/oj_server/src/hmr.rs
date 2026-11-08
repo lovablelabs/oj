@@ -1600,6 +1600,37 @@ mod gate_tests {
     }
 
     #[test]
+    fn a_page_that_fetched_the_held_edit_keeps_its_revert_held() {
+        let d = dir("served-race");
+        let color = d.join("color.js");
+        std::fs::write(&color, "X").unwrap();
+        let (gate, content) = (gate(), ContentIndex::default());
+        content.settle(&color, Flushed);
+        // W lands and is held; a page fetches it anyway (a reload, another
+        // tab, a fetch racing the flush).
+        std::fs::write(&color, "W").unwrap();
+        gate.inner
+            .lock()
+            .unwrap()
+            .pending
+            .entry(color.clone())
+            .or_default()
+            .insert("change".to_string());
+        content.served(&color, crate::bytes_hash(b"W"));
+        // Back to X: the page showing W still needs it, so the hold stays.
+        std::fs::write(&color, "X").unwrap();
+        assert_eq!(
+            gate.drop_unchanged(&content, std::slice::from_ref(&color)),
+            vec![color.clone()]
+        );
+        assert!(
+            gate.inner.lock().unwrap().pending.contains_key(&color),
+            "the revert's hold was dropped while a page shows W"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn a_deleted_file_is_always_a_change() {
         let d = dir("delete");
         let gone = d.join("gone.ts");

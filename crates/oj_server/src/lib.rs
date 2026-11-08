@@ -64,7 +64,7 @@ pub use css_serve::*;
 mod plugin_mw;
 pub use plugin_mw::*;
 mod content_index;
-pub use content_index::{file_content_hash, Baseline, ContentIndex};
+pub use content_index::{bytes_hash, file_content_hash, Baseline, ContentIndex};
 mod hmr;
 pub use hmr::*;
 mod watch;

@@ -64,7 +64,14 @@ pub(crate) async fn ensure_module_as(
         Some(_) => None,
         None => file_stamp(file).await,
     };
+    let track = serves_tracked(state, file, preloaded.is_some());
     if let Some(hit) = warm_hit(state, url, stamp) {
+        // The cache serves the bytes its last load read (same stat).
+        if track && !state.content.served_again(file) {
+            if let Some(hash) = crate::file_content_hash(file) {
+                state.content.served(file, hash);
+            }
+        }
         return Ok(hit);
     }
 
@@ -73,6 +80,11 @@ pub(crate) async fn ensure_module_as(
         Some(source) => source,
         None => load_source(state, file, url, is_dep).await?,
     };
+    if track {
+        state
+            .content
+            .served(file, crate::bytes_hash(source.as_bytes()));
+    }
     record_glob_importer(state, file, url, &source);
     let transform_id = transform_id.map_or_else(|| hook_id(file, url), str::to_string);
     if ext == Some("css") && is_tailwind_css(&source) {
@@ -359,6 +371,16 @@ fn store_module(state: &ServerState, url: &str, key: &str, module: &Arc<CachedMo
 async fn file_stamp(file: &Path) -> Option<FileStamp> {
     let meta = tokio::fs::metadata(file).await.ok()?;
     meta.modified().ok().map(|mtime| (mtime, meta.len()))
+}
+
+/// Whether this serve counts toward what the pages may show, for the
+/// editor's HMR gate (`ContentIndex::served`): only with a gate, and only for
+/// a file of the app's own (not a dep, not a plugin-provided inline module).
+/// A plugin `load` that replaces the file's bytes records bytes no file
+/// has, which keeps a rewrite of the file from ever reading as no change:
+/// the safe side.
+fn serves_tracked(state: &ServerState, file: &Path, preloaded: bool) -> bool {
+    state.hmr_gate.is_some() && !preloaded && crate::hmr::gate_relevant(file)
 }
 
 /// The memory-cached module for an unchanged file, found without reading it.
