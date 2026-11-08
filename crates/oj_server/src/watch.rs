@@ -1345,6 +1345,13 @@ fn handle_batch(
     // Vite's handleHMRUpdate ends at a restart trigger: no hot update hook
     // and nothing to the browser for it (its watchChange still runs).
     let hot: Vec<PathBuf> = paths.iter().filter(|p| !restarts(p)).cloned().collect();
+    // Behind the editor's gate, a rewrite of what the last flush released
+    // reaches no page: the hmr-gate plugin's no-op rewrite filter. The
+    // watchers, watchChange and invalidation below still see it.
+    let hot = match &state.hmr_gate {
+        Some(gate) => gate.drop_unchanged(&state.content, &hot),
+        None => hot,
+    };
     let dispatch = state.hmr_enabled
         && !hot.is_empty()
         && !state

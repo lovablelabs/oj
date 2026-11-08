@@ -49,7 +49,9 @@ struct StartState {
     /// the framework's own router-generator plugin in the plugin host also
     /// rewrites the route tree on watchChange, and racing it per run would
     /// randomly hide a change it wrote first.
-    regen_hashes: std::sync::Mutex<std::collections::HashMap<PathBuf, Option<u64>>>,
+    /// The dev server's content index; the regen outputs' `Pushed` baseline
+    /// is what the worker environments last saw.
+    content: Arc<oj_server::ContentIndex>,
     bundle: std::sync::RwLock<Arc<oj_cache::start_bundle::PinnedBundle>>,
     /// Gzip bodies of the live client chunks, by content hash.
     gzip: crate::start_chunks::GzipCache,
@@ -592,15 +594,14 @@ pub async fn start_dev(
         css_host,
         mode: mode.clone(),
         runner_dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        regen_hashes: std::sync::Mutex::new(
-            regen_output_files(&routes.tree, &cache)
-                .into_iter()
-                .map(|p| {
-                    let h = file_content_hash(&p);
-                    (p, h)
-                })
-                .collect(),
-        ),
+        content: {
+            let content = Arc::clone(&built.content);
+            for p in regen_output_files(&routes.tree, &cache) {
+                content.read(&p);
+                content.settle(&p, oj_server::Baseline::Pushed);
+            }
+            content
+        },
         client_closure: std::sync::RwLock::new(load_client_closure(&cache)),
         client_glob_scopes: std::sync::RwLock::new(load_client_glob_scopes(&cache)),
         // A failed boot bundle rebundles on every next batch until one succeeds.
@@ -1158,27 +1159,21 @@ fn regen_output_files(tree: &Path, cache: &Path) -> [PathBuf; 2] {
     [tree.to_path_buf(), cache.join("server-fn-resolver.mjs")]
 }
 
-/// Content hash for regen-output change detection (None: missing/unreadable).
-fn file_content_hash(p: &Path) -> Option<u64> {
-    use std::hash::{Hash, Hasher};
-    let bytes = std::fs::read(p).ok()?;
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    bytes.hash(&mut h);
-    Some(h.finish())
-}
-
-/// The regen outputs whose content moved past `seen` (the hashes last pushed
-/// to the worker environments), as invalidate changes; `seen` is updated to
-/// the current content.
+/// The regen outputs whose content moved past their `Pushed` baseline (what
+/// the worker environments last saw), as invalidate changes; the baseline
+/// takes the current content.
 fn changed_regen_outputs(
     files: &[PathBuf],
-    seen: &mut std::collections::HashMap<PathBuf, Option<u64>>,
+    content: &oj_server::ContentIndex,
 ) -> Vec<(String, &'static str)> {
+    use oj_server::Baseline::Pushed;
     files
         .iter()
         .filter(|f| {
-            let current = file_content_hash(f);
-            match seen.insert((*f).clone(), current) {
+            let current = content.read(f);
+            let last = content.baseline(f, Pushed);
+            content.settle(f, Pushed);
+            match last {
                 Some(last) => current != last,
                 // Never seen (a config change moved the tree): only a file
                 // that exists is a change worth pushing.
@@ -1552,13 +1547,7 @@ async fn rebundle_worker(
         // rewrote them), and re-arm the lazy runner — a fallback request that
         // consumed the dirty flag mid-regen reloaded onto the old generated
         // files. Both before this run's browser reload.
-        let regen_changed = {
-            let mut seen = state
-                .regen_hashes
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            changed_regen_outputs(&regen_files, &mut seen)
-        };
+        let regen_changed = changed_regen_outputs(&regen_files, &state.content);
         if !regen_changed.is_empty() {
             if state.lazy_runner() {
                 state
@@ -4578,18 +4567,19 @@ mod tests {
         let missing = dir.join("never-written.mjs");
         std::fs::write(&tree, "tree v1").unwrap();
         let files = [tree.clone(), resolver.clone(), missing.clone()];
-        let mut seen: std::collections::HashMap<PathBuf, Option<u64>> = files
-            .iter()
-            .map(|p| (p.clone(), file_content_hash(p)))
-            .collect();
+        let seen = oj_server::ContentIndex::default();
+        for p in &files {
+            seen.read(p);
+            seen.settle(p, oj_server::Baseline::Pushed);
+        }
 
         // Nothing rewritten: no changes, even for the still-missing files.
-        assert!(changed_regen_outputs(&files, &mut seen).is_empty());
+        assert!(changed_regen_outputs(&files, &seen).is_empty());
 
         // A rewrite and a creation both count; the untouched missing file not.
         std::fs::write(&tree, "tree v2").unwrap();
         std::fs::write(&resolver, "resolver v1").unwrap();
-        let changed = changed_regen_outputs(&files, &mut seen);
+        let changed = changed_regen_outputs(&files, &seen);
         let paths: Vec<&str> = changed.iter().map(|(p, _)| p.as_str()).collect();
         assert_eq!(
             paths,
@@ -4599,13 +4589,13 @@ mod tests {
 
         // Same content written again: hashes match, no change detected.
         std::fs::write(&tree, "tree v2").unwrap();
-        assert!(changed_regen_outputs(&files, &mut seen).is_empty());
+        assert!(changed_regen_outputs(&files, &seen).is_empty());
 
         // A change the worker HAS seen (recorded above) never re-pushes, and a
         // change landing between runs (someone else's write) is caught on the
         // next pass.
         std::fs::write(&tree, "tree v3").unwrap();
-        let changed = changed_regen_outputs(&files, &mut seen);
+        let changed = changed_regen_outputs(&files, &seen);
         assert_eq!(changed.len(), 1);
         assert!(changed[0].0.ends_with("routeTree.gen.ts"));
     }

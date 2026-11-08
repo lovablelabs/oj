@@ -645,6 +645,9 @@ impl HmrGate {
                 held_reload,
             )
         };
+        for (p, _) in &entries {
+            state.content.settle(p, crate::Baseline::Flushed);
+        }
         let files: Vec<String> = entries
             .iter()
             .map(|(p, _)| p.display().to_string())
@@ -668,6 +671,31 @@ impl HmrGate {
             }
         }
         (files, count)
+    }
+
+    /// `paths` minus the files whose content is what the last flush released
+    /// (a rewrite of the same bytes: an editor regenerating a file before it
+    /// flushes, a formatter's no-op pass). The pages already have those, so
+    /// they are neither held nor pushed, and a hold still pending for one is
+    /// dropped: the file is back to what the pages show. Only a file a flush
+    /// released is read; a deleted one always counts as a change.
+    pub(crate) fn drop_unchanged(&self, content: &ContentIndex, paths: &[PathBuf]) -> Vec<PathBuf> {
+        let unchanged: Vec<&PathBuf> = paths
+            .iter()
+            .filter(|p| content.unchanged_since(p, crate::Baseline::Flushed))
+            .collect();
+        if unchanged.is_empty() {
+            return paths.to_vec();
+        }
+        let mut inner = self.inner.lock().unwrap();
+        for p in &unchanged {
+            inner.pending.remove(*p);
+        }
+        paths
+            .iter()
+            .filter(|p| !unchanged.contains(p))
+            .cloned()
+            .collect()
     }
 
     fn mode(&self) -> &'static str {
@@ -1449,4 +1477,105 @@ fn graph_update_targets(
     targets.sort();
     targets.dedup();
     Ok(targets)
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+    use crate::Baseline::Flushed;
+
+    fn gate() -> HmrGate {
+        HmrGate {
+            full_reload: true,
+            max_hold: Duration::from_secs(240),
+            inner: Mutex::new(GateInner::default()),
+            held_reload: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    fn dir(label: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("oj-gate-{}-{label}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn a_rewrite_of_the_flushed_content_reaches_no_page() {
+        let d = dir("noop");
+        let tree = d.join("routeTree.gen.ts");
+        std::fs::write(&tree, "export const routes = 1;\n").unwrap();
+        let (gate, content) = (gate(), ContentIndex::default());
+        content.settle(&tree, Flushed);
+
+        // The same bytes again: dropped.
+        std::fs::write(&tree, "export const routes = 1;\n").unwrap();
+        assert!(gate
+            .drop_unchanged(&content, std::slice::from_ref(&tree))
+            .is_empty());
+
+        // New bytes: a change, held as always.
+        std::fs::write(&tree, "export const routes = 2;\n").unwrap();
+        assert_eq!(
+            gate.drop_unchanged(&content, std::slice::from_ref(&tree)),
+            vec![tree.clone()]
+        );
+
+        // A file no flush released passes.
+        let other = d.join("never-flushed.ts");
+        assert_eq!(
+            gate.drop_unchanged(&content, std::slice::from_ref(&other)),
+            vec![other]
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_file_back_to_its_flushed_content_drops_its_pending_hold() {
+        let d = dir("revert");
+        let app = d.join("App.tsx");
+        std::fs::write(&app, "a").unwrap();
+        let (gate, content) = (gate(), ContentIndex::default());
+        content.settle(&app, Flushed);
+        // An edit is held, then reverted before the flush.
+        gate.inner
+            .lock()
+            .unwrap()
+            .pending
+            .entry(app.clone())
+            .or_default()
+            .insert("change".to_string());
+        std::fs::write(&app, "a").unwrap();
+        assert!(gate
+            .drop_unchanged(&content, std::slice::from_ref(&app))
+            .is_empty());
+        assert!(
+            gate.inner.lock().unwrap().pending.is_empty(),
+            "the pages already show this content: nothing is left to release"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_deleted_file_is_always_a_change() {
+        let d = dir("delete");
+        let gone = d.join("gone.ts");
+        std::fs::write(&gone, "x").unwrap();
+        let (gate, content) = (gate(), ContentIndex::default());
+        content.settle(&gone, Flushed);
+        std::fs::remove_file(&gone).unwrap();
+        assert_eq!(
+            gate.drop_unchanged(&content, std::slice::from_ref(&gone)),
+            vec![gone.clone()]
+        );
+        // Flushed while missing: recreated with the old bytes, it is new again.
+        content.read(&gone);
+        content.settle(&gone, Flushed);
+        std::fs::write(&gone, "x").unwrap();
+        assert_eq!(
+            gate.drop_unchanged(&content, std::slice::from_ref(&gone)),
+            vec![gone]
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }

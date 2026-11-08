@@ -342,6 +342,7 @@ jobs:
           node e2e/html-fallback-dev.mjs
           node e2e/hmr-glob-add-delete.mjs
           node e2e/hmr-gate-flush-grace.mjs
+          node e2e/hmr-gate-noop-rewrite.mjs
           node e2e/watch-config-deps-ignored.mjs
       - name: transformIndexHtml per-page ctx (dev + build) via the css fixture
         run: node e2e/html-transform-ctx.mjs
