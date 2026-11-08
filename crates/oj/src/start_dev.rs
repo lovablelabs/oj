@@ -597,7 +597,6 @@ pub async fn start_dev(
         content: {
             let content = Arc::clone(&built.content);
             for p in regen_output_files(&routes.tree, &cache) {
-                content.read(&p);
                 content.settle(&p, oj_server::Baseline::Pushed);
             }
             content
@@ -1170,9 +1169,8 @@ fn changed_regen_outputs(
     files
         .iter()
         .filter(|f| {
-            let current = content.read(f);
             let last = content.baseline(f, Pushed);
-            content.settle(f, Pushed);
+            let current = content.settle(f, Pushed);
             match last {
                 Some(last) => current != last,
                 // Never seen (a config change moved the tree): only a file
@@ -4569,7 +4567,6 @@ mod tests {
         let files = [tree.clone(), resolver.clone(), missing.clone()];
         let seen = oj_server::ContentIndex::default();
         for p in &files {
-            seen.read(p);
             seen.settle(p, oj_server::Baseline::Pushed);
         }
 

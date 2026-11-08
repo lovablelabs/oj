@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A write that lands just after an editor's flush that released nothing reaches the page. It used to be held until the gate's cap (four minutes), waiting for a flush that had already been sent. A flush that released something still holds the next write as before.
-- Behind an editor HMR gate, a rewrite of the bytes the last flush released (an editor regenerating a file before it flushes, a formatter's no-op pass) is neither held nor pushed, and an edit reverted to those bytes before the flush drops its hold. With a full-reload gate, each such rewrite used to reload the page on the next flush.
+- Behind an editor HMR gate, a rewrite of the bytes the pages already have (an editor regenerating a file before it flushes, a formatter's no-op pass) is neither held nor pushed, and an edit reverted to those bytes before the flush drops its hold. With a full-reload gate, each such rewrite used to reload the page on the next flush.
 
 ## [0.4.5] - 2026-11-06
 

@@ -1358,6 +1358,13 @@ fn handle_batch(
             .hmr_gate
             .as_ref()
             .is_some_and(|gate| gate.hold(state, &hot, false));
+    // Let through, the batch reaches the pages without a flush: what the
+    // gate compares rewrites against moves with it.
+    if dispatch {
+        if let Some(gate) = &state.hmr_gate {
+            gate.passed(&state.content, &hot);
+        }
+    }
     let (state, paths, created) = (Arc::clone(state), paths.to_vec(), created.clone());
     state.rt.clone().spawn(async move {
         // The watcher's listeners hear the change first (a plugin reloading

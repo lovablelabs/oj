@@ -8,6 +8,8 @@
 // cost a page reload on the next flush. An edit reverted to the flushed bytes
 // before the flush drops its hold the same way. A real change is still held
 // and released as before, and the server always serves what is on disk.
+// What the page has also moves when a change reaches it without a flush, so
+// a write back to older flushed bytes is never taken for a no-op.
 
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -116,8 +118,31 @@ try {
     must((await flush()).count === 1, `round ${round}: the real change was not released`);
     must(await reloaded(3000), `round ${round}: no reload for the real change`);
     await sleep(800);
+
+    // 5. A change that reaches the page without a flush (it lands right
+    //    after a flush that released nothing) moves what the page has: a
+    //    later write back to the flushed bytes is a change, not a no-op.
+    frames.length = 0;
+    const racing = flush();
+    await sleep(5);
+    fs.writeFileSync(file, content(`d${round}`));
+    must((await racing).count === 0, `round ${round}: the racing flush released something`);
+    must(await reloaded(3000), `round ${round}: the write after an empty flush did not reach the page`);
+    await sleep(800);
+    frames.length = 0;
+    fs.writeFileSync(file, content(`c${round}`));
+    await sleep(400);
+    must(
+      (await pending()) === 1,
+      `round ${round}: a write back to the flushed bytes was dropped while the page shows newer content`,
+    );
+    must((await flush()).count === 1, `round ${round}: the write back was not released`);
+    must(await reloaded(3000), `round ${round}: the write back never reached the page`);
+    await sleep(800);
   }
-  console.log("ok: rewrites of the flushed content are neither held nor reloaded; real changes still are");
+  console.log(
+    "ok: rewrites of what the page has are neither held nor reloaded; real changes, and writes back to older bytes, still are",
+  );
 } catch (e) {
   failed = true;
   console.error(String(e?.stack ?? e));

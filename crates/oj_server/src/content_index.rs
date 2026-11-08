@@ -26,7 +26,8 @@ pub fn file_content_hash(p: &Path) -> Option<u64> {
 /// What a consumer compares a file's content against.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Baseline {
-    /// The HMR gate: the content its last flush released to the pages.
+    /// The HMR gate: the content the pages have, as its last flush released
+    /// it or a batch it let through brought it.
     Flushed,
     /// Start: the content last pushed to the worker environments.
     Pushed,
@@ -67,12 +68,17 @@ impl ContentIndex {
         self.lock().get_mut(path).and_then(|f| *f.slot(b))
     }
 
-    /// `b`'s baseline takes `path`'s current content: the last read, or a
-    /// read now for a file never read.
-    pub fn settle(&self, path: &Path, b: Baseline) {
-        let known = self.lock().get(path).and_then(|f| f.current);
-        let current = known.unwrap_or_else(|| self.read(path));
-        *self.lock().entry(path.to_path_buf()).or_default().slot(b) = Some(current);
+    /// `b`'s baseline takes `path`'s content as read now (also the current
+    /// content), returned. Always a fresh read: a write landing after the
+    /// last read must not leave the baseline older than what `b`'s consumer
+    /// now has, or a later rewrite of the older bytes would read as no change.
+    pub fn settle(&self, path: &Path, b: Baseline) -> Option<u64> {
+        let hash = file_content_hash(path);
+        let mut files = self.lock();
+        let file = files.entry(path.to_path_buf()).or_default();
+        file.current = Some(hash);
+        *file.slot(b) = Some(hash);
+        hash
     }
 
     /// Whether `path` reads as what `b` last settled on. A file `b` never
@@ -131,6 +137,25 @@ mod tests {
         // Same length, likely the same mtime tick: still a change.
         std::fs::write(&f, "bg-tan-500").unwrap();
         assert!(!index.unchanged_since(&f, Baseline::Flushed));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn settling_reads_the_file_now_not_the_last_read() {
+        let d = dir("settle-fresh");
+        let f = d.join("App.tsx");
+        std::fs::write(&f, "A").unwrap();
+        let index = ContentIndex::default();
+        index.read(&f);
+        // Written after the last read: the baseline is what is on disk now.
+        std::fs::write(&f, "B").unwrap();
+        index.settle(&f, Baseline::Flushed);
+        assert!(index.unchanged_since(&f, Baseline::Flushed));
+        std::fs::write(&f, "A").unwrap();
+        assert!(
+            !index.unchanged_since(&f, Baseline::Flushed),
+            "A is older than what was settled"
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 
