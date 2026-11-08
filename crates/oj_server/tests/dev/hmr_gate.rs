@@ -319,13 +319,19 @@ async fn a_write_let_through_moves_what_the_pages_have() {
 }
 
 /// A flush that released something opens no window: the editor's next
-/// write is held, even right after it.
+/// write is held, even soon after it (well inside the window an empty flush
+/// would have opened).
 #[tokio::test(flavor = "multi_thread")]
 async fn a_write_right_after_a_flush_that_released_something_is_held() {
     let (app, server) = gated_app().await;
     app.write(&[(COLOR, &color("X"))]);
     wait_pending(&server, 1, "the edit to X").await;
     assert_eq!(flush(&server).await, 1);
+    // Past one tick of the file-time clock: Linux stamps a file's mtime
+    // from a coarse clock that can read a few milliseconds behind the
+    // flush's own timestamp, and the gate counts a write stamped before a
+    // flush as covered by it (released, not held), the safe side.
+    tokio::time::sleep(Duration::from_millis(50)).await;
     app.write(&[(COLOR, &color("Y"))]);
     wait_pending(&server, 1, "the next edit, right after a releasing flush").await;
     assert_eq!(flush(&server).await, 1);
