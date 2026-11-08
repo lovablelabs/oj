@@ -17,7 +17,7 @@ import assert from "node:assert/strict";
 const OJ = path.join(process.cwd(), "target", "debug", "oj");
 const PORT = 5327;
 
-execSync("cargo build -p oj", { stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { stdio: "inherit" });
 const app = fs.mkdtempSync(path.join(os.tmpdir(), "oj-hookgate-dev-"));
 
 let failed = false;

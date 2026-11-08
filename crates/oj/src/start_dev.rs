@@ -19,6 +19,7 @@ use tokio::sync::broadcast;
 
 use crate::start_chunks::{respond, Chunk};
 use crate::start_host::{StartEngine, StartRequest, StartResponse};
+use oj_server::StartFramework;
 
 struct StartState {
     /// The dev server's restarts, checked before they replace it.
@@ -71,7 +72,9 @@ struct StartState {
     /// A page's `import.meta.hot.send` (event, JSON data), to the plugins'
     /// `server.ws.on(event)` listeners.
     to_plugins: ToPlugins,
-    css_host: Option<Arc<oj_server::css_engine::CssEngine>>,
+    /// The native tailwind fallback host, cold until the first sheet the
+    /// marker gate lets through (see `LazyCssHost`).
+    css_host: LazyCssHost,
     /// The dev mode (`oj dev --mode`), handed to every node script respawn.
     mode: String,
     /// The HMR gate, when the editor drives it: rebuilds still happen at once, the
@@ -121,6 +124,9 @@ struct StartState {
     /// the generic pipeline serves (a dev worker script fetched by URL) are
     /// in no other graph the reload decision consults.
     ssr: oj_server::SsrBridge,
+    /// The TanStack Start flavor: watch-reload codegen (route tree) runs
+    /// with the same target the boot codegen used.
+    framework: StartFramework,
     /// Hot updates outrun the client output: a rebundle whose changes all
     /// went out as patches writes no output (on a large app that is most of
     /// the time between two saves), and the refresher brings it current once
@@ -137,6 +143,57 @@ struct StartState {
     /// saw. The first refresh started after that reloads the pages once its
     /// output is current (Vite's reload-needed flush).
     reload_wanted: std::sync::Mutex<Option<u64>>,
+}
+
+/// What the lazy native tailwind host spawns from, when the app uses
+/// tailwind at all (decided once at boot: the check reads package.json).
+struct CssBoot {
+    root: PathBuf,
+    registry: oj_js::EngineRegistry,
+}
+
+/// The native tailwind fallback host, spawned on the first sheet the marker
+/// gate lets through instead of at boot: the hosted `@tailwindcss/vite`
+/// (enforce pre) compiles every sheet, and the gate then skips native — an
+/// eagerly spawned isolate idles with a double-loaded toolchain for the
+/// whole session. Mirrors the lazy `OnceCell` the bundle/SSR engines use.
+struct LazyCssHost {
+    boot: Option<CssBoot>,
+    cell: tokio::sync::OnceCell<Option<Arc<oj_server::css_engine::CssEngine>>>,
+}
+
+impl LazyCssHost {
+    /// Cold: spawning waits for the first fallback compile (or never, when
+    /// the app has no tailwind).
+    fn cold(uses_tailwind: bool, root: &Path, registry: oj_js::EngineRegistry) -> Self {
+        LazyCssHost {
+            boot: uses_tailwind.then(|| CssBoot {
+                root: root.to_path_buf(),
+                registry,
+            }),
+            cell: tokio::sync::OnceCell::new(),
+        }
+    }
+
+    /// The fallback host, spawning it on first use. Zero behavior change:
+    /// the first filter-miss sheet still compiles natively, just later.
+    async fn get(&self) -> Option<Arc<oj_server::css_engine::CssEngine>> {
+        let boot = self.boot.as_ref()?;
+        self.cell
+            .get_or_init(|| async {
+                oj_server::css_engine::CssEngine::tailwind(&boot.root, Some(boot.registry.clone()))
+                    .await
+                    .ok()
+            })
+            .await
+            .clone()
+    }
+
+    /// Whether the app uses tailwind (never spawns the host): the relink
+    /// signal for hot runs, as the eager host's `is_some` was.
+    fn uses_tailwind(&self) -> bool {
+        self.boot.is_some()
+    }
 }
 
 impl StartState {
@@ -263,6 +320,29 @@ pub async fn start_dev(
     typecheck: bool,
     rolldown: tokio::runtime::Handle,
 ) -> anyhow::Result<()> {
+    start_dev_with_framework(
+        root,
+        port,
+        host,
+        config,
+        mode,
+        typecheck,
+        rolldown,
+        StartFramework::React,
+    )
+    .await
+}
+
+pub async fn start_dev_with_framework(
+    root: PathBuf,
+    port: Option<u16>,
+    host: Option<String>,
+    config: Option<PathBuf>,
+    mode: Option<String>,
+    typecheck: bool,
+    rolldown: tokio::runtime::Handle,
+    framework: StartFramework,
+) -> anyhow::Result<()> {
     let root = root
         .canonicalize()
         .map_err(|e| anyhow::anyhow!("app root not found: {}: {e}", root.display()))?;
@@ -327,16 +407,36 @@ pub async fn start_dev(
     // them concurrently would let the resolver scan half-written files and
     // persist a cache key over content that was still moving.
     // The scripts' env, resolved once and shared by boot and every rebundle.
+    // Fork: the Start flavor markers the `assets/start/*` scripts embed
+    // (package-name strings, codegen target) travel with it.
     let (script_vars, routes) = {
         let inputs = script_inputs(oj_env::get(), &root, config_file.as_deref(), "serve", &mode)?;
-        let vars: Arc<[(String, String)]> =
-            script_vars(oj_env::get(), &root, &inputs.app_env).into();
+        let mut vars = script_vars(oj_env::get(), &root, &inputs.app_env);
+        vars.push((
+            "OJ_START_PKG".to_string(),
+            framework.env_value().to_string(),
+        ));
+        vars.push((
+            "OJ_ROUTER_TARGET".to_string(),
+            framework.router_target().to_string(),
+        ));
+        vars.push((
+            "OJ_CLIENT_ENTRY".to_string(),
+            framework.client_entry_file().to_string(),
+        ));
+        vars.push((
+            "OJ_SERVER_ENTRY_FILE".to_string(),
+            framework.server_entry_file().to_string(),
+        ));
+        let vars: Arc<[(String, String)]> = vars.into();
         (vars, RoutePaths::of(&inputs.config, &root))
     };
     let route_tree = {
         let (root, cache, env) = (root.clone(), cache.clone(), Arc::clone(&script_vars));
         let routes = routes.clone();
-        tokio::task::spawn_blocking(move || generate_route_tree(&root, &routes, &cache, &env))
+        tokio::task::spawn_blocking(move || {
+            generate_route_tree(&root, &routes, &cache, &env, framework)
+        })
     };
     route_tree.await??;
     oj_server::boot_phase("route tree ready");
@@ -359,6 +459,7 @@ pub async fn start_dev(
             config: inputs.config,
             app_env: inputs.app_env,
             rolldown,
+            framework,
         };
         Arc::new(ClientBundler::new(start, config_file.clone()).on_dev_host(dev_host_rx))
     };
@@ -376,7 +477,8 @@ pub async fn start_dev(
                 return Ok(Ok(None));
             }
             tokio::task::spawn_blocking(move || {
-                bundle_client_entry_cached(&bundler, &cache, &mode).map(Some)
+                bundle_client_entry_cached(&bundler, &cache, &mode)
+                    .map(|(pinned, restored)| Some((pinned, restored)))
             })
             .await
         }
@@ -386,13 +488,17 @@ pub async fn start_dev(
     // the server up, as Vite's bundled dev does: pages render the overlay and
     // the next edit rebundles. Anything else (the bundler failing to load)
     // still aborts the boot.
-    let (pinned, boot_error) = match bundle_res? {
-        Ok(Some(pinned)) => (pinned, None),
-        Ok(None) => (oj_cache::start_bundle::PinnedBundle::empty(), None),
+    let (pinned, boot_error, bundle_restored) = match bundle_res? {
+        Ok(Some((pinned, restored))) => (pinned, None, restored),
+        Ok(None) => (oj_cache::start_bundle::PinnedBundle::empty(), None, false),
         Err(e) => match client_error_frame(&cache) {
             Some(frame) => {
                 eprintln!("  oj start: client bundle failed, serving the error overlay: {e:#}");
-                (oj_cache::start_bundle::PinnedBundle::empty(), Some(frame))
+                (
+                    oj_cache::start_bundle::PinnedBundle::empty(),
+                    Some(frame),
+                    false,
+                )
             }
             None => return Err(e),
         },
@@ -425,7 +531,7 @@ pub async fn start_dev(
             _ => true,
         };
         let entry = configured_start_server_entry(&config, &root)
-            .unwrap_or_else(|| cache.join("server-entry.tsx"));
+            .unwrap_or_else(|| cache.join(framework.server_entry_file()));
         let init_env = script_vars.to_vec();
         Arc::new(StartEngine::new(
             root.clone(),
@@ -435,6 +541,7 @@ pub async fn start_dev(
             oj_config::ssr_externals(&config),
             oj_config::public_dir(&config, &root),
             init_env,
+            framework,
         )?)
     };
     let loopback_port = spawn_engine_loopback(Arc::clone(&engine)).await?;
@@ -538,16 +645,31 @@ pub async fn start_dev(
             oj_server::boot_phase("revalidate complete");
         });
     }
-    let css_host = if app_uses_tailwind(&root) {
-        oj_server::css_engine::CssEngine::tailwind(&root, Some(built.ssr.engine_registry()))
-            .await
-            .ok()
-    } else {
-        None
-    };
+    // The native tailwind host stays cold until the first fallback compile
+    // (see `LazyCssHost`): spawning it here idles an isolate with a
+    // double-loaded toolchain while the hosted plugin compiles every sheet.
+    let css_host = LazyCssHost::cold(app_uses_tailwind(&root), &root, built.ssr.engine_registry());
     // The resolved gate (the knob or `server.hmrGate`): a gate on drops the
     // boot's engine at the next rebundle.
     bundler.set_hot_enabled(built.hmr_gate.is_none());
+    // A restored bundle is verified current but its hot session never
+    // started, so the first edit would pay the engine's initial full build
+    // (~290 modules re-transformed). Warm the session in the background: the
+    // build runs off the boot and edit paths, and an edit racing it waits
+    // out the same build through the session lock that it would otherwise
+    // start itself. A warmup failure only logs; the first edit then builds
+    // as before.
+    if bundle_restored && bundler.hot_enabled() {
+        let warm = Arc::clone(&bundler);
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = warm.bundle(&[], false) {
+                eprintln!(
+                    "{}: hot session warmup failed, the first edit builds instead: {e:#}",
+                    oj_server::oj_brand()
+                );
+            }
+        });
+    }
     // The dev urls' prefix under `base` (see oj_server::start_dev_url_base).
     let base = oj_server::start_dev_url_base(bundler.base());
     let state = Arc::new(StartState {
@@ -602,6 +724,7 @@ pub async fn start_dev(
         rebundles: Arc::new(std::sync::Mutex::new(None)),
         rebundle_wake: Arc::new(tokio::sync::Notify::new()),
         ssr: built.ssr.clone(),
+        framework,
         refresh_wake: tokio::sync::Notify::new(),
         urgent: std::sync::atomic::AtomicBool::new(false),
         refreshes: std::sync::atomic::AtomicU64::new(0),
@@ -669,7 +792,7 @@ pub async fn start_dev(
     {
         let (root, mode) = (root.clone(), mode.clone());
         tokio::task::spawn_blocking(move || {
-            start_bundle_store(&root, &mode)
+            start_bundle_store(&root, &mode, framework)
                 .prune(oj_cache::start_bundle::DEFAULT_PRUNE_BUDGET_BYTES);
         });
     }
@@ -1367,6 +1490,7 @@ async fn rebundle_worker(
         let client = {
             let (r, c, m) = (root.clone(), cache.clone(), state.mode.clone());
             let env = Arc::clone(&state.script_env);
+            let framework = state.framework;
             let bundler = Arc::clone(&state.bundler);
             let routes_prev = prev_routes.clone();
             let changed: Vec<PathBuf> = paths.clone();
@@ -1399,7 +1523,7 @@ async fn rebundle_worker(
                 let client_tree = c.join(crate::start_bundle::CLIENT_ROUTE_TREE);
                 let client_tree_before = std::fs::read(&client_tree).ok();
                 if routes_changed || shape_flipped {
-                    let _ = generate_route_tree(&r, &routes, &c, &env);
+                    let _ = generate_route_tree(&r, &routes, &c, &env, framework);
                 }
                 let client_tree_changed = std::fs::read(&client_tree).ok() != client_tree_before;
                 let mut inputs = inputs;
@@ -1555,12 +1679,18 @@ async fn rebundle_worker(
         }
         // The non-lazy runner reloads strictly after the regen completed (its
         // re-import must see the new generated files, as the inline loop
-        // guaranteed) and before the browser reload. A batch that bundled or
-        // regenerated reloads it whole, as before; one that did neither only
-        // revalidates, which drops exactly the stale records (and answers
-        // whether the engine served any of the changed files at all).
+        // guaranteed) and before the browser reload. A batch that changed a
+        // server fn or regenerated outputs reloads the engine whole, as
+        // before: those replace module identity (resolver manifest, route
+        // tree), not just content. Any other batch — including one the
+        // client bundled — only revalidates, which drops exactly the stale
+        // records (and answers whether the engine served any of the changed
+        // files at all). The Start runtime seam loads versioned through the
+        // pipeline (the framework's own `resolve.noExternal` plan), so the
+        // dropped chain reaches the runtime's cached router entries and the
+        // next request re-imports them in place, without a fresh isolate.
         let engine_hit = if !state.lazy_runner() {
-            if bundled || server_fn_changed || !regen_changed.is_empty() {
+            if server_fn_changed || !regen_changed.is_empty() {
                 state.engine.reload().await;
                 true
             } else {
@@ -1602,11 +1732,11 @@ async fn rebundle_worker(
         } else {
             Vec::new()
         };
-        if hot && !reload && (state.css_host.is_some() || !added.is_empty()) {
+        if hot && !reload && (state.css_host.uses_tailwind() || !added.is_empty()) {
             state
                 .bundler
                 .hot
-                .refresh_styles(state.css_host.is_some(), &added);
+                .refresh_styles(state.css_host.uses_tailwind(), &added);
         }
         // The hold was taken at the watcher event. A flush that came while this
         // run built released it, and the reload reaches the pages now, with
@@ -1859,13 +1989,25 @@ fn start_script_env(
     config_file: Option<&Path>,
     command: &str,
     mode: &str,
+    framework: StartFramework,
 ) -> anyhow::Result<Vec<(String, String)>> {
     let env = oj_env::get();
     let inputs = script_inputs(env, root, config_file, command, mode)?;
-    Ok(crate::start_bundle::dotenv_process_vars(
-        env,
-        &inputs.app_env,
-    ))
+    let mut vars = crate::start_bundle::dotenv_process_vars(env, &inputs.app_env);
+    // Fork: the Start flavor markers the `assets/start/*` scripts embed.
+    vars.push((
+        "OJ_START_PKG".to_string(),
+        framework.env_value().to_string(),
+    ));
+    vars.push((
+        "OJ_ROUTER_TARGET".to_string(),
+        framework.router_target().to_string(),
+    ));
+    vars.push((
+        "OJ_CLIENT_ENTRY".to_string(),
+        framework.client_entry_file().to_string(),
+    ));
+    Ok(vars)
 }
 
 /// The app's own TanStack Start server entry (`tanstackStart({ server: { entry } })`),
@@ -1934,6 +2076,27 @@ pub async fn start_build(
     empty_out_dir: bool,
     rolldown: tokio::runtime::Handle,
 ) -> anyhow::Result<()> {
+    start_build_with_framework(
+        root,
+        config_file,
+        mode,
+        out,
+        empty_out_dir,
+        rolldown,
+        StartFramework::React,
+    )
+    .await
+}
+
+pub async fn start_build_with_framework(
+    root: PathBuf,
+    config_file: Option<PathBuf>,
+    mode: &str,
+    out: Option<PathBuf>,
+    empty_out_dir: bool,
+    rolldown: tokio::runtime::Handle,
+    framework: StartFramework,
+) -> anyhow::Result<()> {
     let root = root
         .canonicalize()
         .map_err(|e| anyhow::anyhow!("app root not found: {}: {e}", root.display()))?;
@@ -1969,11 +2132,28 @@ pub async fn start_build(
     // The route tree is generated under the build's own config and env, as
     // the router plugin does inside a Vite build: no second evaluation.
     {
-        let gen_env = script_vars(oj_env::get(), &root, &app_env);
+        let mut gen_env = script_vars(oj_env::get(), &root, &app_env);
+        // Fork: the Start flavor markers the `assets/start/*` scripts embed.
+        gen_env.push((
+            "OJ_START_PKG".to_string(),
+            framework.env_value().to_string(),
+        ));
+        gen_env.push((
+            "OJ_ROUTER_TARGET".to_string(),
+            framework.router_target().to_string(),
+        ));
+        gen_env.push((
+            "OJ_CLIENT_ENTRY".to_string(),
+            framework.client_entry_file().to_string(),
+        ));
+        gen_env.push((
+            "OJ_SERVER_ENTRY_FILE".to_string(),
+            framework.server_entry_file().to_string(),
+        ));
         let (r, c) = (root.clone(), cache.clone());
         let routes = RoutePaths::of(&config, &root);
         tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-            generate_route_tree(&r, &routes, &c, &gen_env)?;
+            generate_route_tree(&r, &routes, &c, &gen_env, framework)?;
             generate_server_fn_resolver(&r, &c, false)
         })
         .await??;
@@ -1997,6 +2177,7 @@ pub async fn start_build(
         config,
         app_env,
         rolldown,
+        framework,
     };
     crate::start_bundle::prod::build(start, config_file, output).await?;
     println!(
@@ -2087,7 +2268,14 @@ fn generate_route_tree(
     routes: &RoutePaths,
     cache: &Path,
     script_env: &[(String, String)],
+    framework: StartFramework,
 ) -> anyhow::Result<()> {
+    // The codegen cache key includes the framework: a React tree and a Solid
+    // tree over the same routes differ (import sources, footer declaration).
+    let kind = match framework {
+        StartFramework::React => "route-tree",
+        StartFramework::Solid => "route-tree-solid",
+    };
     // The client's pruned tree (generate.mjs), beside the generated one.
     let client = cache.join(crate::start_bundle::CLIENT_ROUTE_TREE);
     let mut script_env = script_env.to_vec();
@@ -2103,14 +2291,7 @@ fn generate_route_tree(
         script_env.push((name.to_string(), path.to_string_lossy().into_owned()));
     }
     let script_env = script_env.as_slice();
-    let store = codegen_store(
-        root,
-        cache,
-        "route-tree",
-        Some("generate.mjs"),
-        None,
-        script_env,
-    );
+    let store = codegen_store(root, cache, kind, Some("generate.mjs"), None, script_env);
     let dest = routes.tree.as_path();
     let outputs = [
         ("routeTree.gen.ts", dest),
@@ -2305,13 +2486,21 @@ fn hot_styles_added(cache: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn start_bundle_store(root: &Path, mode: &str) -> oj_cache::start_bundle::StartBundleStore {
-    oj_cache::start_bundle::StartBundleStore::for_mode(
+fn start_bundle_store(
+    root: &Path,
+    mode: &str,
+    framework: StartFramework,
+) -> oj_cache::start_bundle::StartBundleStore {
+    oj_cache::start_bundle::StartBundleStore::for_mode_and_framework(
         root,
         env!("CARGO_PKG_VERSION"),
         oj_cache::integrity::VerifyMode::Standard,
         mode,
+        framework.router_target(),
     )
+    // Keep the builder's embedded dependency closure out of the app cache:
+    // restore runs before the builder on a cache hit.
+    .with_build_scripts(oj_server::start_build_scripts())
 }
 
 /// The client bundle's store, keyed by what the bundle depends on beyond its
@@ -2322,16 +2511,23 @@ fn keyed_bundle_store(
     root: &Path,
     mode: &str,
 ) -> oj_cache::start_bundle::StartBundleStore {
-    start_bundle_store(root, mode)
+    // Fork: the key carries the Start flavor (a React bundle and a Solid one
+    // over the same sources must never restore for each other).
+    start_bundle_store(root, mode, bundler.framework())
         .keyed_by_files(&bundler.cache_key_files())
         .keyed_by("defines", &bundler.cache_key_defines())
 }
 
+/// The boot client bundle, and whether it came from the cache: a restore
+/// verifies the pinned output without starting its hot session, so the first
+/// edit would pay the engine's initial full build. The caller warms the
+/// session in the background when this reports a restore (see the
+/// `bundle_restored` spawn).
 fn bundle_client_entry_cached(
     bundler: &ClientBundler,
     cache: &Path,
     mode: &str,
-) -> anyhow::Result<oj_cache::start_bundle::PinnedBundle> {
+) -> anyhow::Result<(oj_cache::start_bundle::PinnedBundle, bool)> {
     let root = bundler.root();
     let _ = std::fs::remove_file(cache.join(CLIENT_ERROR_FILE));
     let store = keyed_bundle_store(bundler, root, mode);
@@ -2360,7 +2556,7 @@ fn bundle_client_entry_cached(
                 stats.files,
                 stats.elapsed_ms
             );
-            return Ok(pinned);
+            return Ok((pinned, true));
         }
         Err(miss) => println!("  oj start: client bundle cache miss ({miss})"),
     }
@@ -2373,10 +2569,11 @@ fn bundle_client_entry_cached(
             key.get(..8).unwrap_or(&key),
             pinned.len()
         );
-        return Ok(pinned);
+        return Ok((pinned, false));
     }
     oj_cache::start_bundle::PinnedBundle::from_build_dir(cache)
         .ok_or_else(|| anyhow::anyhow!("client chunk index missing after successful bundle"))
+        .map(|pinned| (pinned, false))
 }
 
 // Client module count written by the client bundle, for update/boot narration.
@@ -3097,9 +3294,15 @@ async fn css_body(state: &StartState, file: &Path) -> Option<Result<String, Stri
             Err(_) => return None,
         }
     };
-    let compiled = match state.css_host.as_ref().filter(|_| needs_css_compile(&src)) {
-        Some(host) => compile_css(host, &src, file).await,
-        None => None,
+    // The lazy fallback: only a sheet the marker gate lets through spawns
+    // the native host (see `LazyCssHost`).
+    let compiled = if needs_css_compile(&src) {
+        match state.css_host.get().await {
+            Some(host) => compile_css(&host, &src, file).await,
+            None => None,
+        }
+    } else {
+        None
     };
     if compiled.is_none() && !pipeline && slots.is_none() {
         return None;
@@ -3267,6 +3470,23 @@ fn engine_response(resp: StartResponse) -> Response {
     out
 }
 
+fn engine_error_response(error: &str) -> Response {
+    let esc = |s: &str| {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+    };
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        format!(
+            "<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"UTF-8\" /><title>Error</title></head>\n<body><h1>Internal Server Error</h1><pre>{}</pre></body></html>\n",
+            esc(error)
+        ),
+    )
+        .into_response()
+}
+
 async fn forward(
     engine: &StartEngine,
     url_base: &str,
@@ -3281,24 +3501,9 @@ async fn forward(
         .await
     {
         Ok(resp) => inject_reload_client(engine_response(resp), url_base, stamp),
-        Err(e) => {
-            // The runner's 500 page shape (Vite's errorMiddleware): message +
-            // stack in an HTML page the overlay can read.
-            let esc = |s: &str| {
-                s.replace('&', "&amp;")
-                    .replace('<', "&lt;")
-                    .replace('>', "&gt;")
-            };
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-                format!(
-                    "<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"UTF-8\" /><title>Error</title></head>\n<body><h1>Internal Server Error</h1><pre>{}</pre></body></html>\n",
-                    esc(&e)
-                ),
-            )
-                .into_response()
-        }
+        // The runner's 500 page shape (Vite's errorMiddleware): message +
+        // stack in an HTML page the overlay can read.
+        Err(e) => engine_error_response(&e),
     }
 }
 
@@ -3569,6 +3774,50 @@ mod tests {
     }
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::{connect_async, tungstenite::Message as ClientMessage};
+
+    #[tokio::test]
+    async fn uncaught_start_handler_error_returns_escaped_html_500() {
+        let response = engine_error_response("route <broken> & failed");
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "text/html; charset=utf-8"
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("Internal Server Error"));
+        assert!(body.contains("route &lt;broken&gt; &amp; failed"));
+        assert!(!body.contains("route <broken> & failed"));
+    }
+
+    #[tokio::test]
+    async fn handled_start_framework_response_preserves_status_and_stream_body() {
+        let response = engine_response(StartResponse {
+            status: 200,
+            headers: vec![(
+                "content-type".to_owned(),
+                "multipart/mixed; boundary=solid-start-boundary".to_owned(),
+            )],
+            set_cookies: Vec::new(),
+            body: b"--solid-start-boundary\r\nroute content\r\n--solid-start-boundary--\r\n"
+                .to_vec(),
+        });
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "multipart/mixed; boundary=solid-start-boundary"
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(body.starts_with(b"--solid-start-boundary\r\n"));
+        assert!(body
+            .windows(b"route content".len())
+            .any(|w| w == b"route content"));
+        assert!(body.ends_with(b"--solid-start-boundary--\r\n"));
+    }
 
     // The watcher re-probes the start entry only for paths that can flip it:
     // the src/start.* ladder and any package.json (its `imports` may map the
@@ -4592,7 +4841,8 @@ mod tests {
         )
         .unwrap();
         std::fs::write(root.join(".env.staging"), "VITE_X=1\nAPP_Y=2\nSECRET_Z=3\n").unwrap();
-        let vars = start_script_env(&root, None, "serve", "staging").unwrap();
+        let vars =
+            start_script_env(&root, None, "serve", "staging", StartFramework::React).unwrap();
         let get = |k: &str| vars.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
         assert_eq!(get("VITE_X").as_deref(), Some("1"));
         assert_eq!(get("APP_Y").as_deref(), Some("2"));
@@ -4602,9 +4852,20 @@ mod tests {
 
         let plain = tmp("script-env-plain");
         std::fs::write(plain.join(".env"), "VITE_X=1\nDATABASE_URL=postgres://x\n").unwrap();
-        let vars = start_script_env(&plain, None, "serve", "development").unwrap();
+        let vars =
+            start_script_env(&plain, None, "serve", "development", StartFramework::React).unwrap();
         let names: Vec<&str> = vars.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(names, ["DATABASE_URL", "VITE_X"]);
+        // dotenv passthrough first, then the Start flavor markers.
+        assert_eq!(
+            names,
+            [
+                "DATABASE_URL",
+                "VITE_X",
+                "OJ_START_PKG",
+                "OJ_ROUTER_TARGET",
+                "OJ_CLIENT_ENTRY"
+            ]
+        );
     }
 
     // The static Cloudflare hint gates skipping the boot prewarm: true only
@@ -4868,6 +5129,42 @@ mod tests {
         assert!(!app_uses_tailwind(&base));
         let none = tmp("tw-none");
         assert!(!app_uses_tailwind(&none));
+    }
+
+    /// The native tailwind host stays cold until the first fallback compile:
+    /// building the holder (what boot does) spawns nothing, the first `get`
+    /// spawns the isolate, and an app without tailwind never spawns.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn css_host_stays_cold_until_the_first_fallback_compile() {
+        let root = tmp("lazy-css");
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"dependencies":{"tailwindcss":"4"}}"#,
+        )
+        .unwrap();
+        let script = oj_cache::cache_root(&root).join("css-tailwind.mjs");
+        let host = LazyCssHost::cold(true, &root, oj_js::EngineRegistry::new());
+        assert!(
+            !script.exists(),
+            "boot writes no engine script, so no isolate spawns"
+        );
+        let first = host.get().await.expect("the fallback spawns on first use");
+        assert!(
+            script.exists(),
+            "the first fallback compile spawns the host"
+        );
+        let second = host.get().await.expect("the host stays up");
+        assert!(
+            std::sync::Arc::ptr_eq(&first, &second),
+            "one isolate for the session, not one per sheet"
+        );
+
+        let plain = LazyCssHost::cold(false, &root, oj_js::EngineRegistry::new());
+        assert!(!plain.uses_tailwind());
+        assert!(
+            plain.get().await.is_none(),
+            "an app without tailwind never spawns the host"
+        );
     }
 
     #[test]

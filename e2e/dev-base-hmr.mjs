@@ -23,7 +23,7 @@ const { chromium } = createRequire(path.join(here, "x.js"))("playwright");
 const PORT = 6114;
 const ORIGIN = `http://localhost:${PORT}`;
 
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 const app = path.join(repo, "playground", ".e2e-dev-base-hmr");
 fs.rmSync(app, { recursive: true, force: true });

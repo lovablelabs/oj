@@ -25,7 +25,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const PORT = 6112;
 const DIALOG = 'div[role="dialog"][aria-label="Build error"]';
 
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 const app = path.join(repo, "playground", ".e2e-hmr-unresolved-import");
 fs.rmSync(app, { recursive: true, force: true });

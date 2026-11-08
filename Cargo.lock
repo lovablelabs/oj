@@ -3,6 +3,418 @@
 version = 4
 
 [[package]]
+name = "adaptive-oj"
+version = "0.4.5"
+dependencies = [
+ "adaptive-oj-cache",
+ "adaptive-oj-compiler",
+ "adaptive-oj-config",
+ "adaptive-oj-css",
+ "adaptive-oj-deno-napi",
+ "adaptive-oj-deno-runtime",
+ "adaptive-oj-deno-snapshots",
+ "adaptive-oj-diag",
+ "adaptive-oj-env",
+ "adaptive-oj-js",
+ "adaptive-oj-resolver",
+ "adaptive-oj-server",
+ "anyhow",
+ "arcstr",
+ "axum",
+ "base64 0.22.1",
+ "blake3",
+ "clap",
+ "deno_core",
+ "flate2",
+ "futures-util",
+ "libc",
+ "oj_notify",
+ "oj_stylex",
+ "oj_typecheck",
+ "oxc_allocator",
+ "oxc_ast",
+ "oxc_ast_visit",
+ "oxc_parser",
+ "oxc_semantic",
+ "oxc_sourcemap",
+ "oxc_span",
+ "oxc_syntax",
+ "regex",
+ "rolldown",
+ "rolldown-ariadne",
+ "rolldown_common",
+ "rolldown_dev",
+ "rolldown_dev_common",
+ "rolldown_devtools",
+ "rolldown_devtools_action",
+ "rolldown_ecmascript",
+ "rolldown_ecmascript_utils",
+ "rolldown_error",
+ "rolldown_fs",
+ "rolldown_fs_watcher",
+ "rolldown_plugin",
+ "rolldown_plugin_asset_module",
+ "rolldown_plugin_chunk_import_map",
+ "rolldown_plugin_copy_module",
+ "rolldown_plugin_data_url",
+ "rolldown_plugin_esm_external_require",
+ "rolldown_plugin_hmr",
+ "rolldown_plugin_lazy_compilation",
+ "rolldown_plugin_oxc_runtime",
+ "rolldown_plugin_utils",
+ "rolldown_resolver",
+ "rolldown_sourcemap",
+ "rolldown_std_utils",
+ "rolldown_tracing",
+ "rolldown_utils",
+ "serde",
+ "serde_json",
+ "string_wizard",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tokio-tungstenite",
+ "tower",
+ "url",
+]
+
+[[package]]
+name = "adaptive-oj-cache"
+version = "0.4.5"
+dependencies = [
+ "adaptive-oj-env",
+ "blake3",
+ "oj_stylex",
+ "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "adaptive-oj-compiler"
+version = "0.4.5"
+dependencies = [
+ "adaptive-oj-env",
+ "adaptive-oj-resolver",
+ "base64 0.22.1",
+ "glob",
+ "globset",
+ "memchr",
+ "oj_stylex",
+ "oxc_allocator",
+ "oxc_ast",
+ "oxc_ast_visit",
+ "oxc_codegen",
+ "oxc_ecmascript",
+ "oxc_minifier",
+ "oxc_parser",
+ "oxc_resolver",
+ "oxc_semantic",
+ "oxc_sourcemap",
+ "oxc_span",
+ "oxc_str",
+ "oxc_syntax",
+ "oxc_transformer",
+ "oxc_transformer_plugins",
+ "proptest",
+ "regex",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "url",
+]
+
+[[package]]
+name = "adaptive-oj-config"
+version = "0.4.5"
+dependencies = [
+ "adaptive-oj-env",
+ "oxc_allocator",
+ "oxc_codegen",
+ "oxc_parser",
+ "oxc_semantic",
+ "oxc_span",
+ "oxc_transformer",
+ "proptest",
+ "regex",
+ "rquickjs",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "adaptive-oj-css"
+version = "0.4.5"
+dependencies = [
+ "adaptive-oj-resolver",
+ "base64 0.22.1",
+ "browserslist-rs",
+ "grass",
+ "lightningcss",
+ "md-5",
+ "md4",
+ "oxc_resolver",
+ "parcel_sourcemap",
+ "proptest",
+ "regex",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "tempfile",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "adaptive-oj-deno-napi"
+version = "0.4.5"
+dependencies = [
+ "deno_core",
+ "deno_error",
+ "deno_node",
+ "deno_permissions",
+ "denort_helper",
+ "libc",
+ "libloading 0.7.4",
+ "libuv-sys-lite",
+ "log",
+ "napi_sym",
+ "object 0.36.7",
+ "thiserror 2.0.21",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "adaptive-oj-deno-process"
+version = "0.4.5"
+dependencies = [
+ "deno_core",
+ "deno_error",
+ "deno_fs",
+ "deno_io",
+ "deno_os",
+ "deno_path_util",
+ "deno_permissions",
+ "deno_process",
+ "deno_signals",
+ "deno_subprocess_windows",
+ "libc",
+ "log",
+ "memchr",
+ "nix 0.30.1",
+ "rand 0.8.5",
+ "serde",
+ "sys_traits",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "adaptive-oj-deno-runtime"
+version = "0.4.5"
+dependencies = [
+ "adaptive-oj-deno-napi",
+ "adaptive-oj-deno-process",
+ "async-trait",
+ "base64 0.22.1",
+ "boxed_error",
+ "color-print",
+ "deno_ast",
+ "deno_bundle_runtime",
+ "deno_cache",
+ "deno_canvas",
+ "deno_core",
+ "deno_cron",
+ "deno_crypto",
+ "deno_error",
+ "deno_features",
+ "deno_fetch",
+ "deno_ffi",
+ "deno_fs",
+ "deno_http",
+ "deno_image",
+ "deno_inspector_server",
+ "deno_io",
+ "deno_kv",
+ "deno_net",
+ "deno_node",
+ "deno_node_crypto",
+ "deno_node_sqlite",
+ "deno_os",
+ "deno_path_util",
+ "deno_permissions",
+ "deno_resolver",
+ "deno_signals",
+ "deno_telemetry",
+ "deno_terminal",
+ "deno_tls",
+ "deno_web",
+ "deno_webgpu",
+ "deno_webidl",
+ "deno_websocket",
+ "deno_webstorage",
+ "ed25519-dalek",
+ "encoding_rs",
+ "faster-hex",
+ "fastwebsockets",
+ "http",
+ "http-body-util",
+ "hyper",
+ "libc",
+ "log",
+ "nix 0.30.1",
+ "node_resolver",
+ "oj_notify",
+ "once_cell",
+ "qbsdiff",
+ "raw-window-handle",
+ "regex",
+ "rustyline",
+ "same-file",
+ "serde",
+ "serde_bytes",
+ "sha2",
+ "sys_traits",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-metrics",
+ "twox-hash",
+ "unicode-normalization",
+ "uuid",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "adaptive-oj-deno-snapshots"
+version = "0.4.5"
+dependencies = [
+ "deno_runtime",
+]
+
+[[package]]
+name = "adaptive-oj-diag"
+version = "0.4.5"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "adaptive-oj-env"
+version = "0.4.5"
+dependencies = [
+ "proptest",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "adaptive-oj-graph"
+version = "0.4.5"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
+name = "adaptive-oj-js"
+version = "0.4.5"
+dependencies = [
+ "adaptive-oj-deno-napi",
+ "adaptive-oj-deno-runtime",
+ "adaptive-oj-deno-snapshots",
+ "deno_config",
+ "deno_core",
+ "deno_error",
+ "deno_media_type",
+ "deno_package_json",
+ "deno_path_util",
+ "deno_resolver",
+ "libc",
+ "node_resolver",
+ "serde_json",
+ "sys_traits",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
+name = "adaptive-oj-resolver"
+version = "0.4.5"
+dependencies = [
+ "oxc_resolver",
+ "regress",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "adaptive-oj-server"
+version = "0.4.5"
+dependencies = [
+ "adaptive-oj-cache",
+ "adaptive-oj-compiler",
+ "adaptive-oj-config",
+ "adaptive-oj-css",
+ "adaptive-oj-deno-process",
+ "adaptive-oj-diag",
+ "adaptive-oj-env",
+ "adaptive-oj-graph",
+ "adaptive-oj-js",
+ "adaptive-oj-resolver",
+ "anyhow",
+ "arcstr",
+ "axum",
+ "blake3",
+ "deno_signals",
+ "futures-util",
+ "glob",
+ "globset",
+ "hyper",
+ "hyper-util",
+ "json-strip-comments",
+ "libc",
+ "num_cpus",
+ "oj_notify",
+ "oj_stylex",
+ "oj_typecheck",
+ "opentelemetry",
+ "opentelemetry_sdk",
+ "oxc_allocator",
+ "oxc_ast",
+ "oxc_parser",
+ "oxc_sourcemap",
+ "oxc_span",
+ "oxc_syntax",
+ "pathdiff",
+ "regex",
+ "reqwest",
+ "rolldown",
+ "rolldown_common",
+ "rolldown_error",
+ "rolldown_plugin",
+ "rolldown_utils",
+ "rustc-hash 2.1.3",
+ "rustls",
+ "rustls-pemfile",
+ "rustls-platform-verifier",
+ "serde",
+ "serde_json",
+ "simdutf8",
+ "sys_traits",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "tokio-tungstenite",
+ "tower",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4084,9 +4496,9 @@ dependencies = [
 name = "fru"
 version = "0.4.5"
 dependencies = [
+ "adaptive-oj-env",
  "clap",
  "mimalloc",
- "oj_env",
  "oj_stylex",
  "serde_json",
 ]
@@ -6285,344 +6697,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "oj"
-version = "0.4.5"
-dependencies = [
- "anyhow",
- "arcstr",
- "axum",
- "base64 0.22.1",
- "blake3",
- "clap",
- "deno_core",
- "flate2",
- "futures-util",
- "libc",
- "oj_cache",
- "oj_compiler",
- "oj_config",
- "oj_css",
- "oj_deno_napi",
- "oj_diag",
- "oj_env",
- "oj_js",
- "oj_notify",
- "oj_resolver",
- "oj_server",
- "oj_stylex",
- "oj_typecheck",
- "oxc_allocator",
- "oxc_ast",
- "oxc_ast_visit",
- "oxc_parser",
- "oxc_semantic",
- "oxc_sourcemap",
- "oxc_span",
- "oxc_syntax",
- "regex",
- "rolldown",
- "rolldown-ariadne",
- "rolldown_common",
- "rolldown_dev",
- "rolldown_dev_common",
- "rolldown_devtools",
- "rolldown_devtools_action",
- "rolldown_ecmascript",
- "rolldown_ecmascript_utils",
- "rolldown_error",
- "rolldown_fs",
- "rolldown_fs_watcher",
- "rolldown_plugin",
- "rolldown_plugin_asset_module",
- "rolldown_plugin_chunk_import_map",
- "rolldown_plugin_copy_module",
- "rolldown_plugin_data_url",
- "rolldown_plugin_esm_external_require",
- "rolldown_plugin_hmr",
- "rolldown_plugin_lazy_compilation",
- "rolldown_plugin_oxc_runtime",
- "rolldown_plugin_utils",
- "rolldown_resolver",
- "rolldown_sourcemap",
- "rolldown_std_utils",
- "rolldown_tracing",
- "rolldown_utils",
- "serde",
- "serde_json",
- "string_wizard",
- "tempfile",
- "tokio",
- "tokio-stream",
- "tokio-tungstenite",
- "tower",
- "url",
-]
-
-[[package]]
-name = "oj_cache"
-version = "0.4.5"
-dependencies = [
- "blake3",
- "oj_env",
- "oj_stylex",
- "proptest",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "oj_compiler"
-version = "0.4.5"
-dependencies = [
- "base64 0.22.1",
- "glob",
- "globset",
- "memchr",
- "oj_env",
- "oj_resolver",
- "oj_stylex",
- "oxc_allocator",
- "oxc_ast",
- "oxc_ast_visit",
- "oxc_codegen",
- "oxc_ecmascript",
- "oxc_minifier",
- "oxc_parser",
- "oxc_resolver",
- "oxc_semantic",
- "oxc_sourcemap",
- "oxc_span",
- "oxc_str",
- "oxc_syntax",
- "oxc_transformer",
- "oxc_transformer_plugins",
- "proptest",
- "regex",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "url",
-]
-
-[[package]]
-name = "oj_config"
-version = "0.4.5"
-dependencies = [
- "oj_env",
- "oxc_allocator",
- "oxc_codegen",
- "oxc_parser",
- "oxc_semantic",
- "oxc_span",
- "oxc_transformer",
- "proptest",
- "regex",
- "rquickjs",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "oj_css"
-version = "0.4.5"
-dependencies = [
- "base64 0.22.1",
- "browserslist-rs",
- "grass",
- "lightningcss",
- "md-5",
- "md4",
- "oj_resolver",
- "oxc_resolver",
- "parcel_sourcemap",
- "proptest",
- "regex",
- "serde_json",
- "sha1",
- "sha2",
- "tempfile",
- "xxhash-rust",
-]
-
-[[package]]
-name = "oj_deno_napi"
-version = "0.4.5"
-dependencies = [
- "deno_core",
- "deno_error",
- "deno_node",
- "deno_permissions",
- "denort_helper",
- "libc",
- "libloading 0.7.4",
- "libuv-sys-lite",
- "log",
- "napi_sym",
- "object 0.36.7",
- "thiserror 2.0.21",
- "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "oj_deno_process"
-version = "0.4.5"
-dependencies = [
- "deno_core",
- "deno_error",
- "deno_fs",
- "deno_io",
- "deno_os",
- "deno_path_util",
- "deno_permissions",
- "deno_process",
- "deno_signals",
- "deno_subprocess_windows",
- "libc",
- "log",
- "memchr",
- "nix 0.30.1",
- "rand 0.8.5",
- "serde",
- "sys_traits",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "oj_deno_runtime"
-version = "0.4.5"
-dependencies = [
- "async-trait",
- "base64 0.22.1",
- "boxed_error",
- "color-print",
- "deno_ast",
- "deno_bundle_runtime",
- "deno_cache",
- "deno_canvas",
- "deno_core",
- "deno_cron",
- "deno_crypto",
- "deno_error",
- "deno_features",
- "deno_fetch",
- "deno_ffi",
- "deno_fs",
- "deno_http",
- "deno_image",
- "deno_inspector_server",
- "deno_io",
- "deno_kv",
- "deno_net",
- "deno_node",
- "deno_node_crypto",
- "deno_node_sqlite",
- "deno_os",
- "deno_path_util",
- "deno_permissions",
- "deno_resolver",
- "deno_signals",
- "deno_telemetry",
- "deno_terminal",
- "deno_tls",
- "deno_web",
- "deno_webgpu",
- "deno_webidl",
- "deno_websocket",
- "deno_webstorage",
- "ed25519-dalek",
- "encoding_rs",
- "faster-hex",
- "fastwebsockets",
- "http",
- "http-body-util",
- "hyper",
- "libc",
- "log",
- "nix 0.30.1",
- "node_resolver",
- "oj_deno_napi",
- "oj_deno_process",
- "oj_notify",
- "once_cell",
- "qbsdiff",
- "raw-window-handle",
- "regex",
- "rustyline",
- "same-file",
- "serde",
- "serde_bytes",
- "sha2",
- "sys_traits",
- "thiserror 2.0.21",
- "tokio",
- "tokio-metrics",
- "twox-hash",
- "unicode-normalization",
- "uuid",
- "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "oj_deno_snapshots"
-version = "0.4.5"
-dependencies = [
- "deno_runtime",
-]
-
-[[package]]
-name = "oj_diag"
-version = "0.4.5"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "oj_env"
-version = "0.4.5"
-dependencies = [
- "proptest",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "oj_graph"
-version = "0.4.5"
-dependencies = [
- "proptest",
-]
-
-[[package]]
-name = "oj_js"
-version = "0.4.5"
-dependencies = [
- "deno_config",
- "deno_core",
- "deno_error",
- "deno_media_type",
- "deno_package_json",
- "deno_path_util",
- "deno_resolver",
- "libc",
- "node_resolver",
- "oj_deno_napi",
- "oj_deno_runtime",
- "oj_deno_snapshots",
- "serde_json",
- "sys_traits",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
-]
-
-[[package]]
 name = "oj_notify"
 version = "0.4.5"
 dependencies = [
@@ -6650,85 +6724,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "oj_resolver"
-version = "0.4.5"
-dependencies = [
- "oxc_resolver",
- "regress",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "oj_server"
-version = "0.4.5"
-dependencies = [
- "anyhow",
- "arcstr",
- "axum",
- "blake3",
- "deno_signals",
- "futures-util",
- "glob",
- "globset",
- "hyper",
- "hyper-util",
- "json-strip-comments",
- "libc",
- "num_cpus",
- "oj_cache",
- "oj_compiler",
- "oj_config",
- "oj_css",
- "oj_deno_process",
- "oj_diag",
- "oj_env",
- "oj_graph",
- "oj_js",
- "oj_notify",
- "oj_resolver",
- "oj_stylex",
- "oj_typecheck",
- "opentelemetry",
- "opentelemetry_sdk",
- "oxc_allocator",
- "oxc_ast",
- "oxc_parser",
- "oxc_sourcemap",
- "oxc_span",
- "oxc_syntax",
- "pathdiff",
- "regex",
- "reqwest",
- "rolldown",
- "rolldown_common",
- "rolldown_error",
- "rolldown_plugin",
- "rolldown_utils",
- "rustc-hash 2.1.3",
- "rustls",
- "rustls-pemfile",
- "rustls-platform-verifier",
- "serde",
- "serde_json",
- "simdutf8",
- "sys_traits",
- "tempfile",
- "tokio",
- "tokio-rustls",
- "tokio-tungstenite",
- "tower",
-]
-
-[[package]]
 name = "oj_stylex"
 version = "0.4.5"
 dependencies = [
+ "adaptive-oj-env",
  "blake3",
  "clap",
  "memchr",
- "oj_env",
  "oxc_allocator",
  "oxc_ast",
  "oxc_ast_visit",
@@ -7194,11 +7196,11 @@ dependencies = [
 name = "oj_wasm"
 version = "0.4.5"
 dependencies = [
+ "adaptive-oj-compiler",
+ "adaptive-oj-css",
+ "adaptive-oj-resolver",
  "getrandom 0.2.17",
  "getrandom 0.3.4",
- "oj_compiler",
- "oj_css",
- "oj_resolver",
  "regex",
  "serde",
  "serde_json",

@@ -24,7 +24,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const PORT = Number(process.env.OJ_E2E_PORT || 5534);
 const { chromium } = createRequire(path.join(here, "x.js"))("playwright");
 
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 const app = fs.mkdtempSync(path.join(os.tmpdir(), "oj-reqcond-"));
 const write = (rel, text) => {

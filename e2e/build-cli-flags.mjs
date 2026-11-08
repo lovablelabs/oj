@@ -21,7 +21,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
 const oj = path.join(repo, "target", "debug", "oj");
 
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 const base = fs.mkdtempSync(path.join(os.tmpdir(), "oj-cliflags-"));
 const app = path.join(base, "app");

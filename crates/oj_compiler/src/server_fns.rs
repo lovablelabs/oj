@@ -81,6 +81,12 @@ pub fn find_server_fns(code: &str) -> Vec<ServerFn> {
 /// the handler's first argument. Adds no lines, so stack traces keep their
 /// positions. `None` when the module declares no server function.
 pub fn rewrite_server(code: &str, rel: &str) -> Option<String> {
+    rewrite_server_with_package(code, rel, "@tanstack/react-start")
+}
+
+/// [`rewrite_server`], naming the Start package's `server-rpc` (fork: Solid
+/// names `@tanstack/solid-start/server-rpc`).
+pub fn rewrite_server_with_package(code: &str, rel: &str, start_package: &str) -> Option<String> {
     let mut edits: Vec<(usize, String)> = Vec::new();
     for ServerFn {
         name,
@@ -102,8 +108,7 @@ pub fn rewrite_server(code: &str, rel: &str) -> Option<String> {
         return None;
     }
     edits.sort_by_key(|(at, _)| *at);
-    let mut out =
-        String::from("import { createServerRpc } from \"@tanstack/react-start/server-rpc\"; ");
+    let mut out = format!("import {{ createServerRpc }} from \"{start_package}/server-rpc\"; ");
     let mut last = 0;
     for (at, text) in edits {
         out.push_str(&code[last..at]);
@@ -137,6 +142,16 @@ impl std::error::Error for ClientRewriteError {}
 /// `rel` is the app-relative path, which also picks the parser's language. `Ok(None)` when the module
 /// declares no server function.
 pub fn rewrite_client(code: &str, rel: &str) -> Result<Option<String>, ClientRewriteError> {
+    rewrite_client_with_package(code, rel, "@tanstack/react-start")
+}
+
+/// [`rewrite_client`], naming the Start package's `client-rpc` (fork: Solid
+/// names `@tanstack/solid-start/client-rpc`).
+pub fn rewrite_client_with_package(
+    code: &str,
+    rel: &str,
+    start_package: &str,
+) -> Result<Option<String>, ClientRewriteError> {
     let fns = find_server_fns(code);
     if fns.is_empty() {
         return Ok(None);
@@ -202,7 +217,7 @@ pub fn rewrite_client(code: &str, rel: &str) -> Result<Option<String>, ClientRew
         ""
     };
     Ok(Some(format!(
-        "{}{sep}import {{ createClientRpc }} from \"@tanstack/react-start/client-rpc\"; {}",
+        "{}{sep}import {{ createClientRpc }} from \"{start_package}/client-rpc\"; {}",
         &out[..at],
         &out[at..]
     )))

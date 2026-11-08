@@ -243,7 +243,20 @@ pub(crate) async fn serve_fallback(
     if req.method() == Method::GET {
         let headers = req.headers().clone();
         let uri = req.uri().clone();
-        return serve_path(State(state), headers, uri).await;
+        // A GET carrying a body (curl `-X GET -d …`): collect it so a file
+        // miss forwards the same bytes the headers promise. Forwarding the
+        // headers with an empty body desyncs the pooled sidecar connection —
+        // Node's parser eats the next request's head as the missing body and
+        // answers 400. Header-gated: ordinary GETs take no extra await.
+        let body = if request_has_body(&headers) {
+            axum::body::to_bytes(req.into_body(), usize::MAX)
+                .await
+                .unwrap_or_default()
+                .to_vec()
+        } else {
+            Vec::new()
+        };
+        return serve_path(State(state), headers, uri, body).await;
     }
     let method = req.method().clone();
     let uri = req.uri().clone();

@@ -20,7 +20,7 @@ const { chromium } = createRequire(path.join(here, "x.js"))("playwright");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const PORT = 5492;
 
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 const app = path.join(repo, "playground", ".e2e-hmr-client");
 fs.rmSync(app, { recursive: true, force: true });

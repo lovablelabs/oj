@@ -5,6 +5,7 @@ import { dirname, join as pathJoin, relative as pathRelative, resolve as pathRes
 
 import { importPkg } from "./resolve-pkg.mjs";
 import { pathToFileURL } from "node:url";
+import { startPkg, routerTarget } from "./start-pkg.mjs";
 
 // Runs on oj's embedded engine (`ScriptEngine`): the values that used to be
 // spawn env arrive as `env`; `node <script>` still works for tests.
@@ -53,6 +54,8 @@ async function main() {
   const { Generator, getConfig } = await importPkg(root, "@tanstack/router-generator", [
     "@tanstack/react-router",
     "@tanstack/react-start",
+    "@tanstack/solid-router",
+    "@tanstack/solid-start",
   ]);
 
   // getConfig merges as { ...tsr.config.json, ...inline }, so anything passed
@@ -134,8 +137,8 @@ async function main() {
       `import type { getRouter } from '${importPath(routerEntry())}'`,
       start
         ? `import type { startInstance } from '${importPath(start)}'`
-        : "import type { createStart } from '@tanstack/react-start'",
-      "declare module '@tanstack/react-start' {",
+        : `import type { createStart } from '${startPkg()}'`,
+      `declare module '${startPkg()}' {`,
       "  interface Register {",
       "    ssr: true",
       "    router: Awaited<ReturnType<typeof getRouter>>",
@@ -149,7 +152,7 @@ async function main() {
     {
       ...Object.fromEntries(Object.entries(OJ_DEFAULTS).filter(([k]) => !(k in configured))),
       ...START_PATHS,
-      target: "react",
+      target: routerTarget(),
       // The declare-module footer the framework's plugin writes; an app that sets
       // routeTreeFileFooter itself keeps its own.
       ...("routeTreeFileFooter" in configured ? {} : { routeTreeFileFooter: [moduleDeclaration()] }),

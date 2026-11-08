@@ -24,7 +24,7 @@ const { chromium } = createRequire(path.join(here, "x.js"))("playwright");
 const PORT = 6110;
 const DIALOG = 'div[role="dialog"][aria-label="Build error"]';
 
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 const app = path.join(repo, "playground", ".e2e-hmr-overlay-recovery");
 fs.rmSync(app, { recursive: true, force: true });

@@ -27,7 +27,7 @@ if (!installed) {
   process.exit(0);
 }
 
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
 
 const port = 3099;

@@ -1,10 +1,14 @@
 [package]
-name = "oj_server"
+name = "adaptive-oj-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Dev server: on-demand compile over HTTP, WebSocket HMR channel, file watcher"
+
+
+[lib]
+name = "oj_server"
 
 [dependencies]
 oj_compiler.workspace = true
@@ -79,4 +83,4 @@ libc = "0.2"
 # Same version the embedded Deno runtime registers its signal handlers with.
 deno_signals = "0.50.0"
 # Fork of deno_process (see crates/oj_deno_process): spawn hook + own groups.
-deno_process = { package = "oj_deno_process", version = "0.4.5", path = "../oj_deno_process" }
+deno_process = { package = "adaptive-oj-deno-process", version = "0.4.5", path = "../oj_deno_process" }

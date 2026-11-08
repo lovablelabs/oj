@@ -144,6 +144,34 @@ const START_ASSETS: &[(&str, &str)] = &[
     ),
     ("generate.mjs", include_str!("assets/start/generate.mjs")),
     ("fn-stubs.mjs", include_str!("assets/start/fn-stubs.mjs")),
+    // Fork: Solid Start pipeline scripts (kept; the Solid dev/prod path
+    // still drives bundle-client/build/cf-build via ScriptEngine).
+    (
+        "solid-transform.mjs",
+        include_str!("assets/start/solid-transform.mjs"),
+    ),
+    ("start-pkg.mjs", include_str!("assets/start/start-pkg.mjs")),
+    (
+        "bundle-client.mjs",
+        include_str!("assets/start/bundle-client.mjs"),
+    ),
+    ("build.mjs", include_str!("assets/start/build.mjs")),
+    // Fork: kept pipeline helpers (upstream dropped them from the asset
+    // list with the scripts' Rust replacements; the Solid path and
+    // START_BUILD_SCRIPTS still embed them).
+    ("cf-build.mjs", include_str!("assets/start/cf-build.mjs")),
+    (
+        "rolldown-assets.mjs",
+        include_str!("assets/start/rolldown-assets.mjs"),
+    ),
+    (
+        "vite-plugin-bridge.mjs",
+        include_str!("assets/start/vite-plugin-bridge.mjs"),
+    ),
+    (
+        "glob-transform.mjs",
+        include_str!("assets/start/glob-transform.mjs"),
+    ),
     ("prerender.mjs", include_str!("assets/start/prerender.mjs")),
     ("error-overlay.js", include_str!("assets/error-overlay.js")),
     (
@@ -160,8 +188,16 @@ const START_ASSETS: &[(&str, &str)] = &[
         include_str!("assets/start/server-entry.tsx"),
     ),
     (
+        "server-entry-solid.tsx",
+        include_str!("assets/start/server-entry-solid.tsx"),
+    ),
+    (
         "client-entry.tsx",
         include_str!("assets/start/client-entry.tsx"),
+    ),
+    (
+        "client-entry-solid.tsx",
+        include_str!("assets/start/client-entry-solid.tsx"),
     ),
     (
         "start-entry.ts",
@@ -177,6 +213,48 @@ const START_ASSETS: &[(&str, &str)] = &[
         include_str!("assets/start/manifest-dev.ts"),
     ),
 ];
+
+const START_BUILD_SCRIPTS: &[(&str, &str)] = &[
+    (
+        "bundle-client.mjs",
+        include_str!("assets/start/bundle-client.mjs"),
+    ),
+    (
+        "resolve-pkg.mjs",
+        include_str!("assets/start/resolve-pkg.mjs"),
+    ),
+    (
+        "rolldown-assets.mjs",
+        include_str!("assets/start/rolldown-assets.mjs"),
+    ),
+    (
+        "vite-plugin-bridge.mjs",
+        include_str!("assets/start/vite-plugin-bridge.mjs"),
+    ),
+    (
+        "glob-transform.mjs",
+        include_str!("assets/start/glob-transform.mjs"),
+    ),
+    (
+        "solid-transform.mjs",
+        include_str!("assets/start/solid-transform.mjs"),
+    ),
+    ("start-pkg.mjs", include_str!("assets/start/start-pkg.mjs")),
+    (
+        "client-entry.tsx",
+        include_str!("assets/start/client-entry.tsx"),
+    ),
+    (
+        "client-entry-solid.tsx",
+        include_str!("assets/start/client-entry-solid.tsx"),
+    ),
+];
+
+/// Embedded scripts required to build the TanStack Start client bundle.
+/// Kept in the order expected by the bundle cache's script store.
+pub fn start_build_scripts() -> &'static [(&'static str, &'static str)] {
+    START_BUILD_SCRIPTS
+}
 
 /// Persistent V8 code-cache dir for embedded engines, keyed by the V8 ABI and
 /// NOT the oj version: per-entry source hashes already invalidate changed scripts.
@@ -235,6 +313,92 @@ pub fn is_tanstack_start_app(root: &Path) -> bool {
             || plugins::vite_config_file(root, None)
                 .and_then(|f| std::fs::read_to_string(f).ok())
                 .is_some_and(|s| s.contains("tanstackStart(")))
+}
+
+/// A TanStack Start app on SolidJS (`@tanstack/solid-start`): same file-based
+/// routing layout as the React flavor, but oj's Start pipeline (server-entry,
+/// client-entry, `server-rpc` rewrites) is React-specific, so this is
+/// detected separately and NOT routed into it. The plain dev server still
+/// serves its modules (vite-plugin-solid transforms via the plugin host).
+/// See SOLID.md.
+pub fn is_tanstack_solid_start_app(root: &Path) -> bool {
+    start_framework(root) == Some(StartFramework::Solid)
+}
+
+/// Which TanStack Start flavor an app is, if any: `src/routes` plus the
+/// framework's Start package in `package.json`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartFramework {
+    React,
+    Solid,
+}
+
+impl StartFramework {
+    /// `@tanstack/react-start` / `@tanstack/solid-start`: the package whose
+    /// `server-entry`, `server`, `server-rpc`, `client-rpc` and `client`
+    /// subpaths the Start pipeline aliases and rewrites against.
+    pub fn start_package(&self) -> &'static str {
+        match self {
+            StartFramework::React => "@tanstack/react-start",
+            StartFramework::Solid => "@tanstack/solid-start",
+        }
+    }
+
+    /// The `@tanstack/router-generator` `target` for route-tree codegen.
+    pub fn router_target(&self) -> &'static str {
+        match self {
+            StartFramework::React => "react",
+            StartFramework::Solid => "solid",
+        }
+    }
+
+    /// Env var value passed to the `assets/start/*` scripts so the
+    /// package-name strings they embed follow the app's flavor.
+    pub fn env_value(&self) -> &'static str {
+        self.start_package()
+    }
+
+    /// The framework's own dev `resolve.noExternal` plan (its Vite plugin
+    /// runs these packages inside the module runner): the Start runtime seam
+    /// whose module state an app edit must re-evaluate with the app.
+    /// `start-server-core` caches the app's router entries in module state,
+    /// so leaving it external pins the first entries forever.
+    pub fn start_runtime_no_external(&self) -> [&'static str; 2] {
+        match self {
+            StartFramework::React => ["@tanstack/start**", "@tanstack/react-start**"],
+            StartFramework::Solid => ["@tanstack/start**", "@tanstack/solid-start**"],
+        }
+    }
+
+    /// The framework's runner server entry written by `write_start_assets`.
+    pub fn server_entry_file(&self) -> &'static str {
+        match self {
+            StartFramework::React => "server-entry.tsx",
+            StartFramework::Solid => "server-entry-solid.tsx",
+        }
+    }
+
+    /// The framework's client entry bundled by `bundle-client.mjs`.
+    pub fn client_entry_file(&self) -> &'static str {
+        match self {
+            StartFramework::React => "client-entry.tsx",
+            StartFramework::Solid => "client-entry-solid.tsx",
+        }
+    }
+}
+
+pub fn start_framework(root: &Path) -> Option<StartFramework> {
+    if !root.join("src/routes").is_dir() {
+        return None;
+    }
+    let pkg = std::fs::read_to_string(root.join("package.json")).ok()?;
+    if pkg.contains("@tanstack/solid-start") {
+        Some(StartFramework::Solid)
+    } else if pkg.contains("@tanstack/react-start") {
+        Some(StartFramework::React)
+    } else {
+        None
+    }
 }
 
 type Defines = Vec<(String, String)>;
@@ -1766,6 +1930,8 @@ impl DevServer {
         let (listener, port) = built.bind_listener().await?;
         println!("  {} dev server", oj_brand());
         println!("  root: {}", built.root.display());
+        // Fork: solid-start detection note removed (stale since the fork's SSR
+        // completion); StartFramework dispatch lives in crates/oj.
         let url = format!(
             "{}://localhost:{}/",
             tls::url_scheme(built.https.as_ref()),

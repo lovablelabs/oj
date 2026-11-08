@@ -26,7 +26,7 @@ try {
   console.log("SKIP hmr-accept-exports: playwright not installed");
   process.exit(0);
 }
-if (!process.env.OJ_BIN) execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+if (!process.env.OJ_BIN) execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 const PORT = 5502;
 
 const app = fs.mkdtempSync(path.join(os.tmpdir(), "oj-accept-exports-"));

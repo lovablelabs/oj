@@ -26,7 +26,7 @@ if (!fs.existsSync(path.join(fixture, "node_modules", "@tanstack", "react-start"
   console.log("SKIP start cloudflare config once: fixture deps not installed");
   process.exit(0);
 }
-if (!process.env.OJ_BIN) execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+if (!process.env.OJ_BIN) execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "oj-start-cf-once-"));
 const app = path.join(tmp, "app");

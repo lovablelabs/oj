@@ -43,7 +43,7 @@ if (!installed || !chromium) {
   process.exit(0);
 }
 
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "oj-start-cf-hmr-"));
 const app = path.join(tmp, "app");

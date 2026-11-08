@@ -27,18 +27,21 @@ members = [
 version = "0.4.5"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/lovablelabs/oj"
+repository = "https://github.com/david1gp/oj"
 
 [workspace.dependencies]
-oj_compiler = { version = "0.4.5", path = "crates/oj_compiler" }
-oj_resolver = { version = "0.4.5", path = "crates/oj_resolver" }
-oj_graph = { version = "0.4.5", path = "crates/oj_graph" }
-oj_cache = { version = "0.4.5", path = "crates/oj_cache" }
-oj_css = { version = "0.4.5", path = "crates/oj_css" }
-oj_diag = { version = "0.4.5", path = "crates/oj_diag" }
-oj_env = { version = "0.4.5", path = "crates/oj_env" }
-oj_config = { version = "0.4.5", path = "crates/oj_config" }
-oj_server = { version = "0.4.5", path = "crates/oj_server" }
+# Fork: the published crates keep their `adaptive-oj-*` names on the upstream
+# version train; every key still resolves to the local path.
+oj_compiler = { package = "adaptive-oj-compiler", version = "0.4.5", path = "crates/oj_compiler" }
+oj_resolver = { package = "adaptive-oj-resolver", version = "0.4.5", path = "crates/oj_resolver" }
+oj_graph = { package = "adaptive-oj-graph", version = "0.4.5", path = "crates/oj_graph" }
+oj_cache = { package = "adaptive-oj-cache", version = "0.4.5", path = "crates/oj_cache" }
+oj_css = { package = "adaptive-oj-css", version = "0.4.5", path = "crates/oj_css" }
+oj_diag = { package = "adaptive-oj-diag", version = "0.4.5", path = "crates/oj_diag" }
+oj_env = { package = "adaptive-oj-env", version = "0.4.5", path = "crates/oj_env" }
+oj_config = { package = "adaptive-oj-config", version = "0.4.5", path = "crates/oj_config" }
+oj_server = { package = "adaptive-oj-server", version = "0.4.5", path = "crates/oj_server" }
+oj_js = { package = "adaptive-oj-js", version = "0.4.5", path = "crates/oj_js" }
 oj_typecheck = { version = "0.4.5", path = "crates/typecheck/oj_typecheck" }
 # tsrs:begin (tools/vendor-tsrs.py) deps
 tsrs_api = { package = "oj_tsrs_api", version = "0.4.5", path = "crates/typecheck/oj_tsrs_api" }
@@ -73,7 +76,6 @@ tsrs_transformers = { package = "oj_tsrs_transformers", version = "0.4.5", path 
 tsrs_tsoptions = { package = "oj_tsrs_tsoptions", version = "0.4.5", path = "crates/typecheck/oj_tsrs_tsoptions" }
 tsrs_vfs = { package = "oj_tsrs_vfs", version = "0.4.5", path = "crates/typecheck/oj_tsrs_vfs" }
 # tsrs:end deps
-oj_js = { version = "0.4.5", path = "crates/oj_js" }
 oj_stylex = { version = "0.4.5", path = "crates/oj_stylex" }
 
 # oj-maintained forks of deno_napi 0.190.0 and deno_runtime 0.267.0 (published
@@ -83,9 +85,12 @@ oj_stylex = { version = "0.4.5", path = "crates/oj_stylex" }
 # hundreds of thousands of live references — it dominated one-shot rebundle
 # children. See crates/oj_deno_napi/lib.rs. Consumers rename them back via the
 # dependency key so `use deno_napi::`/`use deno_runtime::` stay unchanged; a
-# published oj resolves them by version from crates.io.
-oj_deno_napi = { package = "oj_deno_napi", version = "0.4.5", path = "crates/oj_deno_napi" }
-oj_deno_runtime = { package = "oj_deno_runtime", version = "0.4.5", path = "crates/oj_deno_runtime" }
+# published oj resolves them by version from crates.io. Fork: local adaptive
+# names on the 0.4.5 train.
+oj_deno_napi = { package = "adaptive-oj-deno-napi", version = "0.4.5", path = "crates/oj_deno_napi" }
+oj_deno_process = { package = "adaptive-oj-deno-process", version = "0.4.5", path = "crates/oj_deno_process" }
+oj_deno_runtime = { package = "adaptive-oj-deno-runtime", version = "0.4.5", path = "crates/oj_deno_runtime" }
+oj_deno_snapshots = { package = "adaptive-oj-deno-snapshots", version = "0.4.5", path = "crates/oj_deno_snapshots" }
 
 oxc_allocator = "0.157.0"
 oxc_parser = "0.157.0"
@@ -137,19 +142,19 @@ codegen-units = 1
 
 # Size-optimize the long tail, but keep the dev-loop hot paths at full speed.
 [profile.release.package]
-oj = { opt-level = 3 }
-oj_compiler = { opt-level = 3 }
-oj_css = { opt-level = 3 }
-oj_resolver = { opt-level = 3 }
-oj_graph = { opt-level = 3 }
-oj_server = { opt-level = 3 }
-oj_cache = { opt-level = 3 }
-oj_diag = { opt-level = 3 }
-oj_env = { opt-level = 3 }
-oj_config = { opt-level = 3 }
+adaptive-oj = { opt-level = 3 }
+adaptive-oj-compiler = { opt-level = 3 }
+adaptive-oj-css = { opt-level = 3 }
+adaptive-oj-resolver = { opt-level = 3 }
+adaptive-oj-graph = { opt-level = 3 }
+adaptive-oj-server = { opt-level = 3 }
+adaptive-oj-cache = { opt-level = 3 }
+adaptive-oj-diag = { opt-level = 3 }
+adaptive-oj-env = { opt-level = 3 }
+adaptive-oj-config = { opt-level = 3 }
+adaptive-oj-js = { opt-level = 3 }
 oj_stylex = { opt-level = 3 }
 fru = { opt-level = 3 }
-oj_js = { opt-level = 3 }
 oxc = { opt-level = 3 }
 oxc_allocator = { opt-level = 3 }
 oxc_ast = { opt-level = 3 }
@@ -209,9 +214,9 @@ v8 = { opt-level = 3 }
 # opts deno_napi/deno_node/deno_runtime/deno_web/serde_v8 back to 3), plus
 # deno_fs/deno_io: the one-shot rebundle child funnels every napi call, sync
 # fs op and chunk write through these.
-oj_deno_napi = { opt-level = 3 }
+adaptive-oj-deno-napi = { opt-level = 3 }
 deno_node = { opt-level = 3 }
-oj_deno_runtime = { opt-level = 3 }
+adaptive-oj-deno-runtime = { opt-level = 3 }
 # Vanilla deno_runtime stays in the graph as deno_snapshots' build-dependency.
 deno_runtime = { opt-level = 3 }
 deno_web = { opt-level = 3 }

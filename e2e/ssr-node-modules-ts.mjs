@@ -24,7 +24,7 @@ if (!fs.existsSync(path.join(playground, "node_modules", "react"))) {
   console.log("SKIP ssr node_modules ts: playground deps not installed");
   process.exit(0);
 }
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 const must = (cond, msg) => {
   if (!cond) throw new Error(msg);

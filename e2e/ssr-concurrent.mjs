@@ -20,7 +20,7 @@ const oj = path.join(repo, "target", "debug", "oj");
 const PORT = Number(process.env.OJ_E2E_PORT || 5237);
 const base = `http://localhost:${PORT}`;
 
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 fs.rmSync(path.join(app, ".oj-cache"), { recursive: true, force: true });
 
 const must = (cond, msg) => {

@@ -12,9 +12,9 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 serde_json = "1"
-oj_compiler = { path = "../crates/oj_compiler" }
-oj_cache = { path = "../crates/oj_cache" }
-oj_env = { path = "../crates/oj_env" }
+oj_compiler = { package = "adaptive-oj-compiler", path = "../crates/oj_compiler" }
+oj_cache = { package = "adaptive-oj-cache", path = "../crates/oj_cache" }
+oj_env = { package = "adaptive-oj-env", path = "../crates/oj_env" }
 
 [[bin]]
 name = "fuzz_compile"

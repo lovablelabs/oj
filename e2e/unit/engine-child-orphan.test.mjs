@@ -15,7 +15,7 @@ const oj = path.join(repo, "target", "debug", "oj");
 if (!fs.existsSync(oj)) {
   // The unit-test CI job runs `cargo test --workspace` first, so this is an
   // incremental link of the bin, not a cold build.
-  execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+  execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 }
 // The first exec of a freshly linked binary is slow (a ~400MB debug build:
 // cold page cache, and macOS scans a new executable on its first launch),

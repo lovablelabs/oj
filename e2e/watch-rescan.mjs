@@ -32,7 +32,7 @@ if (process.platform !== "linux" || queue > 256) {
   process.exit(0);
 }
 
-if (!process.env.OJ_BIN) execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+if (!process.env.OJ_BIN) execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 const app = fs.mkdtempSync(path.join(os.tmpdir(), "oj-watch-rescan-"));
 const src = path.join(app, "src");

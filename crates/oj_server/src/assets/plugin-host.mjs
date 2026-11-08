@@ -357,6 +357,86 @@ function ctl(obj) {
   process.stdout.write("\n" + CONTROL_TOKEN + JSON.stringify(obj) + "\n");
 }
 
+// Opt-in per-plugin transform timing for the T1 bench
+// (docs/20261108_native-solid-plugins.md): with OJ_PLUGIN_TIMING=1 the
+// transform dispatch below accumulates wall-time + call counts per plugin
+// name (plus environment) and flushes JSON to OJ_PLUGIN_TIMING_FILE every
+// couple of seconds, merged with any previous flush so a host respawn
+// mid-run keeps earlier rows. Off by default: one env read at load and one
+// boolean check per transform call, no behavior change.
+const OJ_PLUGIN_TIMING = process.env.OJ_PLUGIN_TIMING === "1";
+const OJ_PLUGIN_TIMING_FILE = process.env.OJ_PLUGIN_TIMING_FILE || "";
+const ojPluginTimingRows = OJ_PLUGIN_TIMING ? new Map() : null;
+const ojPluginTimingFlushed = OJ_PLUGIN_TIMING ? new Map() : null;
+// Transform-chain concurrency, for the same flush: actually-executing chain
+// runs right now, the max observed, and singleflight waiter joins (duplicate
+// concurrent requests that shared a run instead of executing). Only touched
+// when OJ_PLUGIN_TIMING is on.
+let ojActiveTransforms = 0;
+let ojMaxActiveTransforms = 0;
+let ojDedupedTransforms = 0;
+let ojDedupedFlushed = 0;
+let ojPluginTimingLastFlush = 0;
+function ojPluginTimingRecord(name, env, ms) {
+  if (!ojPluginTimingRows) return;
+  const key = `${env}::${name}`;
+  let row = ojPluginTimingRows.get(key);
+  if (!row) {
+    row = { name, env, calls: 0, ms: 0 };
+    ojPluginTimingRows.set(key, row);
+  }
+  row.calls += 1;
+  row.ms += ms;
+  const now = Date.now();
+  if (!OJ_PLUGIN_TIMING_FILE || now - ojPluginTimingLastFlush <= 2000) return;
+  ojPluginTimingLastFlush = now;
+  try {
+    let prev = [];
+    let prevMaxActive = 0;
+    let prevDeduped = 0;
+    try {
+      const old = JSON.parse(readFileSync(OJ_PLUGIN_TIMING_FILE, "utf8"));
+      if (Array.isArray(old.plugins)) prev = old.plugins;
+      if (typeof old.maxActiveTransforms === "number") prevMaxActive = old.maxActiveTransforms;
+      if (typeof old.dedupedTransforms === "number") prevDeduped = old.dedupedTransforms;
+    } catch {}
+    const merged = new Map();
+    const add = (r) => {
+      if (!r || typeof r.name !== "string") return;
+      const k = `${r.env ?? ""}::${r.name}`;
+      const have = merged.get(k);
+      if (have) {
+        have.calls += r.calls;
+        have.ms += r.ms;
+      } else {
+        merged.set(k, { name: r.name, env: r.env ?? "", calls: r.calls, ms: r.ms });
+      }
+    };
+    for (const r of prev) add(r);
+    for (const [k, r] of ojPluginTimingRows) {
+      const snap = ojPluginTimingFlushed.get(k) ?? { calls: 0, ms: 0 };
+      add({ name: r.name, env: r.env, calls: r.calls - snap.calls, ms: r.ms - snap.ms });
+    }
+    writeFileSync(
+      OJ_PLUGIN_TIMING_FILE,
+      JSON.stringify({
+        pid: process.pid,
+        at: new Date().toISOString(),
+        // Run summary alongside the per-plugin rows: the max concurrently
+        // executing chain runs observed (so wall numbers stay interpretable
+        // under bursts) and the singleflight waiter joins (duplicates that
+        // shared a run instead of executing). Across a mid-run host respawn
+        // the max takes the max and the joins accumulate, like the rows.
+        maxActiveTransforms: Math.max(prevMaxActive, ojMaxActiveTransforms),
+        dedupedTransforms: prevDeduped + (ojDedupedTransforms - ojDedupedFlushed),
+        plugins: [...merged.values()].map((r) => ({ ...r, ms: Math.round(r.ms * 100) / 100 })),
+      }),
+    );
+    for (const [k, r] of ojPluginTimingRows) ojPluginTimingFlushed.set(k, { calls: r.calls, ms: r.ms });
+    ojDedupedFlushed = ojDedupedTransforms;
+  } catch {}
+}
+
 // Top-level init MILESTONES ({ ojInitProgress }), pushed at each real step of
 // the boot (script start, plugins loaded, every config-phase hook). Rust's
 // stall monitor measures its wedge window from the last one: a healthy slow
@@ -2112,7 +2192,12 @@ function pluginContext(c) {
         if (viaPre != null) return viaPre;
         const core = await (async () => {
           const pre = transformResolveStore.getStore();
-          if (pre && pre.map && pre.map.has(source)) {
+          // The map describes the transforming module's own imports (keyed by
+          // specifier as written): only a resolve for that same importer may
+          // take it, as the dev path requires. Anything else — a plugin
+          // resolving for another importer, or with none — falls through to
+          // the bundler, exactly as a miss does.
+          if (pre && pre.map && pre.importer === importer && pre.map.has(source)) {
             const id = pre.map.get(source);
             return id == null ? null : { id };
           }
@@ -5189,7 +5274,85 @@ function cssPhaseOf(p, rank) {
 // chain run elsewhere (a Start bundle's "after-compile"): the code the chain
 // started from and the maps before this call, so getCombinedSourcemap still
 // collapses back to the loaded code.
+//
+// Concurrent identical transform requests share one chain run (singleflight):
+// the dev server fans the same module out to many concurrent pipelines (up to
+// ~47 in flight on one isolate), and same-module races re-ran the whole chain
+// once per waiter. Only CONCURRENT calls join: the entry is removed on settle,
+// so there is no result caching beyond in-flight; an error rejects every
+// waiter and a later retry executes again. The singleflight lives here — the
+// per-module chain dispatch — rather than the Rust `call` layer: this is the
+// one funnel every transform entry takes (`transform`, `transformPhase`, the
+// internal `transformRequest`), and every field the result depends on is
+// directly visible. The key covers the process command, the container (whose
+// plugin set is fixed at creation) plus environment name plus ssr flag, the
+// hook-ordered transform-chain fingerprint, the phase, the module id, and
+// hashes of the input code, the pre-resolved imports and the prior chain
+// state. Hooks must be deterministic in those inputs (Vite's own module-graph
+// caching assumes the same); every waiter receives the exact same result
+// string the single execution produced. Always on; when OJ_PLUGIN_TIMING is
+// off the only cost is one key hash per call.
+const ojTransformInflight = new Map();
+// Hook-ordered transform-chain fingerprint, cached per container plugin set:
+// the set is fixed at creation, so array identity covers staleness.
+function ojTransformChainFP(c) {
+  const plugins = c.plugins;
+  if (c.__ojChainFP == null || c.__ojChainFPPlugins !== plugins) {
+    let fp = "";
+    try {
+      for (const { p, rank } of pluginsWithHook(c, "transform")) fp += `${rank}:${p?.name ?? "?"};`;
+    } catch {
+      fp = `n:${plugins?.length ?? 0}`;
+    }
+    c.__ojChainFPPlugins = plugins;
+    c.__ojChainFP = fp;
+  }
+  return c.__ojChainFP;
+}
+function ojTransformKey(c, code, id, resolvedJson, phase, priorJson) {
+  const env = c?.environment?.name ?? "";
+  const digest = createHash("sha256");
+  digest.update(command ?? "");
+  digest.update("\0");
+  digest.update(ojTransformChainFP(c));
+  digest.update("\0");
+  digest.update(id ?? "");
+  digest.update("\0");
+  digest.update(code ?? "");
+  digest.update("\0");
+  digest.update(resolvedJson ?? "");
+  digest.update("\0");
+  digest.update(priorJson ?? "");
+  return `${c?.id ?? ""}|${env}|ssr:${env === "ssr" ? 1 : 0}|${phase ?? ""}|${digest.digest("hex")}`;
+}
 async function transform(c, code, id, resolvedJson, phase, priorJson) {
+  const key = ojTransformKey(c, code, id, resolvedJson, phase, priorJson);
+  const inflight = ojTransformInflight.get(key);
+  if (inflight) {
+    if (OJ_PLUGIN_TIMING) ojDedupedTransforms += 1;
+    return inflight;
+  }
+  const p = transformRun(c, code, id, resolvedJson, phase, priorJson);
+  ojTransformInflight.set(key, p);
+  const forget = () => {
+    if (ojTransformInflight.get(key) === p) ojTransformInflight.delete(key);
+  };
+  p.then(forget, forget);
+  return p;
+}
+async function transformRun(c, code, id, resolvedJson, phase, priorJson) {
+  const ojChainTiming = OJ_PLUGIN_TIMING;
+  if (ojChainTiming) {
+    ojActiveTransforms += 1;
+    if (ojActiveTransforms > ojMaxActiveTransforms) ojMaxActiveTransforms = ojActiveTransforms;
+  }
+  try {
+    return await transformRunInner(c, code, id, resolvedJson, phase, priorJson);
+  } finally {
+    if (ojChainTiming) ojActiveTransforms -= 1;
+  }
+}
+async function transformRunInner(c, code, id, resolvedJson, phase, priorJson) {
   await routesKnow(code, id);
   let prior = null;
   if (priorJson) {
@@ -5258,11 +5421,15 @@ async function transform(c, code, id, resolvedJson, phase, priorJson) {
       // (Rollup's missing link); Vite's dev _getCombinedSourcemap skips it.
       ctx.getCombinedSourcemap = () =>
         combineSourcemaps(id, chainStart, chainSoFar, brokenSoFar && command === "build");
+      const ojTimingOn = OJ_PLUGIN_TIMING;
+      const ojTimingName = ojTimingOn ? (p.name ?? "?") : "";
+      const ojT0 = ojTimingOn ? performance.now() : 0;
       try {
         r = await handler.call(ctx, current, id, transformOptions);
       } catch (e) {
         throw decoratePluginError(e, p, id);
       }
+      if (ojTimingOn) ojPluginTimingRecord(ojTimingName, c.environment.name, performance.now() - ojT0);
       if (r == null) continue;
       if (typeof r === "string") {
         current = r;
@@ -5728,6 +5895,17 @@ async function resolveIdFull(c, source, importer, opts) {
     }
     return out;
   }
+  // Vite's `vite:alias` step: when no resolveId hook claims the id, the
+  // merged config's `resolve.alias` (string finds and RegExps, including
+  // entries contributed by plugin `config` hooks — e.g. vite-plugin-solid
+  // mapping /^solid-refresh$/ to its /@solid-refresh HMR runtime) rewrites
+  // it. Plugin claims win over aliases, as in Vite; an alias hit returns
+  // the rewritten id for the normal `load` path, without re-entering the
+  // chain (Vite stops at the alias hit too).
+  // Fork (ported to the container model): `resolvedConfig` is now per
+  // container (`environmentAliases` reads its environment's config).
+  const aliased = applyAlias(source, environmentAliases(c));
+  if (aliased !== source) return { id: aliased };
   return null;
 }
 async function resolveId(c, source, importer, opts) {

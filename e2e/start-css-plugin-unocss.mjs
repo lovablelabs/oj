@@ -27,7 +27,7 @@ if (!fs.existsSync(path.join(fixture, "node_modules", "@tanstack", "react-start"
   console.log("SKIP start unocss: fixture deps not installed");
   process.exit(0);
 }
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 // UnoCSS installs on its own; the app links its packages beside the fixture's.
 const uno = fs.mkdtempSync(path.join(os.tmpdir(), "oj-start-unocss-pkg-"));

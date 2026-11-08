@@ -53,6 +53,9 @@ pub(crate) struct StartConfig {
     pub stylex: Option<std::sync::Arc<oj_stylex::plugin::StylexPlugin>>,
     /// The runtime the bundles run on (see `oj_server::rolldown_runtime`).
     pub rolldown: tokio::runtime::Handle,
+    /// Fork: the TanStack Start flavor. Entries, aliases and server-fn
+    /// rewrites follow it; React behavior is unchanged.
+    pub framework: oj_server::StartFramework,
 }
 
 /// TanStack Start's load-env plugin: `Object.assign(process.env,
@@ -142,8 +145,8 @@ impl StartConfig {
     }
 
     /// The server bundle's seam: the client's, plus the server-fn resolver
-    /// and oj's handler as `@tanstack/react-start/server-entry` (so an app's
-    /// own server entry wrapping it composes as under Vite).
+    /// and oj's handler as `{pkg}/server-entry` (so an app's own server
+    /// entry wrapping it composes as under Vite).
     pub fn server_aliases(&self) -> Vec<(String, PathBuf)> {
         let mut out = self.client_aliases();
         out.push((
@@ -151,8 +154,8 @@ impl StartConfig {
             self.cache.join(server_fn_resolver_file(false)),
         ));
         out.push((
-            "@tanstack/react-start/server-entry".into(),
-            self.cache.join("server-entry.tsx"),
+            format!("{}/server-entry", self.framework.start_package()),
+            self.cache.join(self.framework.server_entry_file()),
         ));
         out
     }
@@ -283,6 +286,35 @@ impl StartConfig {
     pub fn server_main_fields(&self) -> Vec<String> {
         oj_config::ssr_resolve_main_fields(&self.config)
             .unwrap_or_else(oj_resolver::default_server_main_fields)
+    }
+
+    /// Export conditions for the node server bundle: for Solid apps the
+    /// `solid` condition first (selects transformable dist/source over
+    /// precompiled dist/esm, whose top-level `template()` calls throw under
+    /// the server build of `solid-js/web`), then Vite's SSR order — the
+    /// Rust-side port of `solidServerConditions` from the `assets/start`
+    /// pipeline scripts. React keeps rolldown's default (`None`) so
+    /// upstream resolution is untouched.
+    pub fn server_conditions(&self) -> Option<Vec<String>> {
+        match self.framework {
+            oj_server::StartFramework::Solid => Some(
+                [
+                    "solid",
+                    "module",
+                    "node",
+                    "import",
+                    if self.is_production() {
+                        "production"
+                    } else {
+                        "development"
+                    },
+                    "default",
+                ]
+                .map(String::from)
+                .to_vec(),
+            ),
+            oj_server::StartFramework::React => None,
+        }
     }
 
     /// rolldown's resolver for a Start bundle: the framework seam as aliases

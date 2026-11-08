@@ -12,7 +12,7 @@ const repo = path.join(here, "..");
 const oj = path.join(repo, "target", "debug", "oj");
 const playground = path.join(repo, "playground");
 
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 fs.rmSync(path.join(playground, ".oj-cache"), { recursive: true, force: true });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

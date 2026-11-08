@@ -21,7 +21,7 @@ const repo = path.join(here, "..");
 const oj = path.join(repo, "target", "debug", "oj");
 const PORT = 6372;
 
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 const SHEETS = {
   "counter.module.css": ".button { color: red; }\n",

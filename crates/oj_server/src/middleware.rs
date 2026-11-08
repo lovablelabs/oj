@@ -16,7 +16,7 @@ impl HostPolicy {
                 return Self {
                     allow_all: true,
                     allowed,
-                }
+                };
             }
             Some(oj_config::AllowedHosts::List(list)) => {
                 allowed.extend(list.iter().map(|h| h.to_ascii_lowercase()))

@@ -1,12 +1,16 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Raphael Amorim
 [package]
-name = "oj_config"
+name = "adaptive-oj-config"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "oj.config.{ts,js,mjs,json} loading: TS strip via oxc, evaluation via embedded QuickJS"
+
+
+[lib]
+name = "oj_config"
 
 [dependencies]
 oxc_allocator.workspace = true

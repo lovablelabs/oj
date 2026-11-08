@@ -29,7 +29,7 @@ if (!fs.existsSync(viteSrc)) {
   console.log("  enable with: (cd e2e/fixtures/start-app && npm install)");
   process.exit(0);
 }
-if (!process.env.OJ_BIN) execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+if (!process.env.OJ_BIN) execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 const PORT = 5367;
 const MODULES = 1200;
 const SPIN_MS = 6;

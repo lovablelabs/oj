@@ -5,7 +5,8 @@
 
 [package]
 edition = "2024"
-name = "oj_deno_napi"
+name = "adaptive-oj-deno-napi"
+publish = false
 version.workspace = true
 authors = ["the Deno authors"]
 build = "build.rs"
@@ -17,9 +18,10 @@ autobenches = false
 description = "Fork of deno_napi 0.190.0 maintained for oj, carrying oj's finalizer-registry performance patch (Vec -> BTreeMap). Use upstream deno_napi unless you need this patch."
 readme = "README.md"
 license = "MIT"
-repository = "https://github.com/lovablelabs/oj"
+repository = "https://github.com/david1gp/oj"
 
 [lib]
+name = "oj_deno_napi"
 path = "lib.rs"
 
 [dependencies.deno_core]

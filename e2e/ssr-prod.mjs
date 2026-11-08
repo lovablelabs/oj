@@ -15,7 +15,7 @@ const out = path.join(playground, "dist-ssr");
 const port = 5181;
 const base = `http://localhost:${port}`;
 
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 fs.rmSync(out, { recursive: true, force: true });
 execSync(`${path.join(repo, "target", "debug", "oj")} build playground --ssr src/entry-server.tsx --out dist-ssr`, {
   cwd: repo,

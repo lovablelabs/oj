@@ -1,10 +1,15 @@
 [package]
-name = "oj_diag"
+name = "adaptive-oj-diag"
+publish = false
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "structured dev-server diagnostics: bounded event ring + NDJSON stderr output"
+
+
+[lib]
+name = "oj_diag"
 
 [dependencies]
 serde.workspace = true

@@ -71,6 +71,16 @@ jobs:
         env:
           OJ_REQUIRE_BROWSER: "1"
           OJ_REQUIRE_FIXTURES: "1"
+      # The optimizer + sidecar-harness unit tests run the real vite/rolldown
+      # (and the config loader's esbuild) from the start-app fixture; install
+      # it so they run instead of skipping.
+      - name: install start-app fixture (bundlers for optimizer + config tests)
+        run: npm ci --prefix e2e/fixtures/start-app
+      # The start-client-real-deps unit test runs the real Solid Start
+      # fixture; install it so it runs instead of skipping (bun.lock only,
+      # so npm install, matching the e2e job convention).
+      - name: install solid-start-app fixture (solid client unit test)
+        run: npm install --prefix e2e/fixtures/solid-start-app
       - name: js unit tests (adapter helpers)
         run: node --test e2e/unit/*.test.mjs
       - name: fuzz targets still build
@@ -101,6 +111,12 @@ jobs:
       # start-build-options) skip themselves when the fixture is not installed.
       - name: install start-app fixture
         run: npm ci --prefix e2e/fixtures/start-app
+      # The solid-start-app fixture tracks bun.lock only (no package-lock.json),
+      # so npm ci cannot be used here; npm install reuses the existing node/npm
+      # toolchain (no bun setup on these runners) and keeps the solid-start.mjs
+      # skip gate from silently skipping.
+      - name: install solid-start-app fixture
+        run: npm install --prefix e2e/fixtures/solid-start-app
       - run: npx --prefix e2e playwright install --with-deps chromium
       - name: install wasm-pack + www deps (wasm playground e2e)
         # A version-pinned release tarball, not `curl | sh` of whatever the
@@ -168,6 +184,8 @@ jobs:
         run: node e2e/plugin-ws-upgrade.mjs
       - name: plugin process contract (listening emit at bind, process.exit)
         run: node e2e/plugin-server-process.mjs
+      - name: GET-with-body keeps the pooled plugin-middleware connection framed
+        run: node e2e/plugin-middleware-get-body.mjs
       - name: json import edit reaches the boundary (stamped import)
         run: node e2e/hmr-json-update.mjs
       - name: a non-root base serves the HMR client and refresh preamble
@@ -239,6 +257,11 @@ jobs:
         run: node e2e/start-plugin-environments.mjs
       - name: start prod build honors ssr.external (bare imports, server still renders)
         run: node e2e/start-ssr-external.mjs
+      # run.mjs only discovers *.test.js, so this .mjs regression needs its own
+      # step. Fixture deps are installed above; e2e deps + playwright chromium
+      # are already installed, so the browser hydration pass truly executes.
+      - name: solid start dev + prod SSR, hydration, routing, edit/rebuild
+        run: node e2e/solid-start.mjs
       - name: start dev SIGTERM sweeps plugin children; detached child outlives
         run: node e2e/start-shutdown-children.mjs
       - name: start dev stop runs wrapped server.close, buildEnd, closeBundle before sweep
@@ -397,7 +420,7 @@ jobs:
         with:
           node-version: 22
       - run: npm ci --prefix playground
-      - run: cargo run -p oj -- build playground
+      - run: cargo run -p adaptive-oj -- build playground
       - name: check outputs
         run: |
           test -f playground/dist/index.html
@@ -460,7 +483,7 @@ jobs:
           mkdir -p /tmp/lib/src
           printf 'export const add = (a, b) => a + b;\n' > /tmp/lib/src/index.ts
           printf 'import { defineConfig } from "oj";\nexport default defineConfig({ build: { lib: { entry: "src/index.ts", name: "L", formats: ["es", "cjs", "umd"] } } });\n' > /tmp/lib/oj.config.ts
-          cargo run -p oj -- build /tmp/lib
+          cargo run -p adaptive-oj -- build /tmp/lib
           # Vite's lib file names for a package without "type": "module"
           test -f /tmp/lib/dist/index.mjs
           test -f /tmp/lib/dist/index.js
@@ -473,7 +496,7 @@ jobs:
         run: node e2e/ssr-dev.mjs
       - name: preview smoke
         run: |
-          (cargo run -p oj -- preview playground &)
+          (cargo run -p adaptive-oj -- preview playground &)
           for i in $(seq 1 30); do curl -sf http://localhost:4173/ >/dev/null && break; sleep 1; done
           curl -sf http://localhost:4173/ | grep -q 'id="root"'
           test "$(curl -sf -o /dev/null -w '%{http_code}' http://localhost:4173/deep/route)" = 200

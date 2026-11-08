@@ -26,7 +26,7 @@ if (!fs.existsSync(path.join(nm, "vite")) || !fs.existsSync(path.join(nm, "light
   console.log("  enable with: (cd e2e/fixtures/start-app && npm install)");
   process.exit(0);
 }
-if (!process.env.OJ_BIN) execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+if (!process.env.OJ_BIN) execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 const { createServer } = await import(path.join(nm, "vite/dist/node/index.js"));
 const lightningcss = await import(path.join(nm, "lightningcss/node/index.mjs"));

@@ -23,7 +23,7 @@ const PORT = 6376;
 const VITE_PORT = 6377;
 const SASS = "sass@1.93.2";
 
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 const app = fs.mkdtempSync(path.join(os.tmpdir(), "oj-css-slots-"));
 const seenFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "oj-css-slots-seen-")), "seen.txt");

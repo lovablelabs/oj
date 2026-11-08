@@ -23,7 +23,7 @@ const repo = path.join(here, "..");
 const oj = path.join(repo, "target", "debug", "oj");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 // ---- upstream: a minimal raw WebSocket server (handshake + one greeting
 // frame + a reply per client frame), recording the tunneled request paths.

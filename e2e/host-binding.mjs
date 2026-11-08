@@ -14,7 +14,7 @@ const repo = path.join(here, "..");
 const oj = path.join(repo, "target", "debug", "oj");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 function lanIp() {
   for (const list of Object.values(os.networkInterfaces())) {

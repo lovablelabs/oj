@@ -20,7 +20,7 @@ const oj = path.join(repo, "target", "debug", "oj");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const PORT = Number(process.env.OJ_E2E_PORT || 5533);
 
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 const app = fs.mkdtempSync(path.join(os.tmpdir(), "oj-tsremap-"));
 const write = (rel, text) => {

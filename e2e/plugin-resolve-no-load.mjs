@@ -14,7 +14,7 @@ const repo = path.join(here, "..");
 const oj = path.join(repo, "target", "debug", "oj");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 // A resolver plugin maps a bare specifier to a real file the on-disk resolver
 // would never reach (outside the project tree), and has NO load hook. Rollup's

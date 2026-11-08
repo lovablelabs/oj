@@ -118,6 +118,30 @@ async fn bundle_split(
     Ok(out.assets)
 }
 
+/// A style edit invalidates the served sheet, so the next request
+/// recompiles it: the freshness half of skipping the client engine's
+/// rebuild for css-only batches (settle still reloads, and the reload
+/// fetches through here).
+#[test]
+fn a_style_edit_invalidates_the_served_sheet_so_pages_refetch_it() {
+    let app = App::new(&[("src/a.css", ".a { color: red }")]);
+    let styles = Styles::new(&app.start());
+    let css = app.dir.join("src/a.css");
+    styles.keep_dev_sheet(&css, ".a{color:red}".into(), styles.dev_stamp(), None);
+    assert_eq!(
+        styles.dev_sheet(&css).as_deref(),
+        Some(".a{color:red}"),
+        "the bundle's sheet serves until an edit"
+    );
+    // What every watch batch runs (DevBundler::note_changes), style or not.
+    styles.dev_sheets_stale();
+    assert_eq!(
+        styles.dev_sheet(&css),
+        None,
+        "the next request recompiles the sheet after a css edit"
+    );
+}
+
 fn dev_assets(app: &App, css_urls: &Arc<Mutex<LinkedSheets>>) -> SharedPluginable {
     Pluginable::new_shared(StartAssetsPlugin::new(
         &app.dir,
@@ -1493,6 +1517,119 @@ async fn render_start_runs_in_the_build_only() {
     assert_eq!(render_starts(super::Command::Build).await, 3);
 }
 
+/// A bundle transform's `this.resolve` for the module's own imports comes
+/// from the pre-resolved map, not the bundler: `@alias-target` resolves
+/// natively (an alias only the map's resolver knows) while the bundler
+/// cannot resolve it, so the map hit and the fallback disagree. Without
+/// installed resolvers the same transform falls back and gets null.
+#[tokio::test(flavor = "multi_thread")]
+async fn bundle_transform_this_resolve_uses_the_pre_resolved_map() {
+    async fn run(with_resolvers: bool) -> (String, String, String) {
+        let seen = std::env::temp_dir().join(format!(
+            "oj-start-resolvemap-{}-{with_resolvers}.txt",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&seen);
+        let plugins = format!(
+            r#"import {{ appendFileSync }} from "node:fs";
+export default [{{
+  name: "probe",
+  async transform(code, id) {{
+    if (!id.endsWith("entry.js")) return null;
+    const alias = await this.resolve("@alias-target", id);
+    const ok = await this.resolve("./ok.js", id);
+    appendFileSync({}, "alias=" + (alias ? alias.id : "null") + " ok=" + (ok ? ok.id : "null") + "\n");
+    return code.replace("import \"@alias-target\";", "// alias stripped");
+  }},
+}}];
+"#,
+            serde_json::to_string(&seen.display().to_string()).unwrap()
+        );
+        let app = App::new(&[
+            (
+                "package.json",
+                r#"{"name":"start-resolve-map","type":"module"}"#,
+            ),
+            (
+                "src/entry.js",
+                "import \"@alias-target\";\nimport \"./ok.js\";\nconsole.log(\"entry\");\n",
+            ),
+            ("src/ok.js", "export const ok = 1;\n"),
+            ("src/aliased.js", "export const aliased = 1;\n"),
+            ("oj.plugins.mjs", &plugins),
+        ]);
+        let start = super::StartConfig {
+            command: super::Command::Serve,
+            ..app.start()
+        };
+        let host = super::hosts::spawn(&start, None, "client")
+            .await
+            .unwrap()
+            .expect("the app's plugins");
+        if with_resolvers {
+            let resolver = oj_resolver::OjResolver::with_settings(
+                &app.dir,
+                oj_resolver::ResolveSettings {
+                    alias: vec![(
+                        "@alias-target".to_string(),
+                        app.dir.join("src/aliased.js").display().to_string(),
+                    )],
+                    ..Default::default()
+                },
+            );
+            host.host.set_resolvers(oj_server::plugins::EnvResolvers {
+                root: app.dir.clone(),
+                config: Arc::new(start.config.clone()),
+                client: Arc::new(resolver),
+                production: false,
+                optimized_dep: Default::default(),
+            });
+        }
+        let plugin = super::host::StartHostPlugin::new(
+            Arc::clone(&host.host),
+            host.ctx.clone(),
+            &host.facts,
+            super::Command::Serve,
+            &app.dir,
+            Arc::new(crate::build::EmitState::new(app.dir.clone())),
+            start.jsx_config(),
+        )
+        .environment("client");
+        bundle(&app, "src/entry.js", vec![Pluginable::new_shared(plugin)])
+            .await
+            .unwrap();
+        let text = std::fs::read_to_string(&seen).unwrap_or_default();
+        let _ = std::fs::remove_file(&seen);
+        (
+            text,
+            app.dir.join("src/aliased.js").display().to_string(),
+            app.dir.join("src/ok.js").display().to_string(),
+        )
+    }
+
+    let (mapped, aliased, ok) = run(true).await;
+    assert_eq!(
+        mapped.lines().count(),
+        1,
+        "the entry transform runs once: {mapped:?}"
+    );
+    assert_eq!(
+        mapped.trim(),
+        format!("alias={aliased} ok={ok}"),
+        "the alias resolves from the map (the bundler itself cannot resolve it)"
+    );
+    let (fallback, _, _) = run(false).await;
+    assert_eq!(
+        fallback.lines().count(),
+        1,
+        "the entry transform runs once: {fallback:?}"
+    );
+    assert!(
+        fallback.trim().starts_with("alias=null "),
+        "without resolvers the alias falls back to the bundler and misses: {fallback:?}"
+    );
+}
+
 /// A route file with a server handler, the route tree importing it, and the
 /// entry importing the tree.
 fn route_with_a_server_handler() -> App {
@@ -1551,5 +1688,39 @@ async fn the_client_deletes_server_route_options_unless_its_host_splits_routes()
     assert!(
         split_in_host.contains("server-handler-only"),
         "oj deleted what the host's splitter deletes:\n{split_in_host}"
+    );
+}
+
+/// The node server bundle resolves Solid apps with the `solid` condition
+/// first (the Rust-side port of `solidServerConditions`): Solid deps expose
+/// transformable dist/source under `solid` and precompiled DOM dist/esm
+/// under `import`, whose top-level `template()` calls throw under the server
+/// build of `solid-js/web`. React keeps rolldown's default (`None`).
+#[test]
+fn server_conditions_put_solid_first_for_solid_apps() {
+    let app = App::new(&[]);
+    let mut start = app.start();
+    start.framework = oj_server::StartFramework::Solid;
+    assert_eq!(
+        start.server_conditions(),
+        Some(
+            [
+                "solid",
+                "module",
+                "node",
+                "import",
+                "development",
+                "default"
+            ]
+            .map(String::from)
+            .to_vec()
+        ),
+        "solid-first server conditions for the node server bundle"
+    );
+    start.framework = oj_server::StartFramework::React;
+    assert_eq!(
+        start.server_conditions(),
+        None,
+        "react keeps rolldown's default conditions"
     );
 }

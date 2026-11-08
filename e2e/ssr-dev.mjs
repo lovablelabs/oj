@@ -21,7 +21,7 @@ const baseline = fs
   .replace("{label} = {count}", "{label}: {count}");
 fs.writeFileSync(counter, baseline);
 
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 try {
   execSync(`lsof -ti:${port} -sTCP:LISTEN | xargs kill`, { shell: "/bin/bash", stdio: "ignore" });
 } catch {}

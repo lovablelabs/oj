@@ -211,9 +211,15 @@ fn client_plugins(
                 Arc::clone(emit),
                 start.jsx_config(),
             )
+            .environment(if matches!(target, CodeTarget::Server) {
+                "ssr"
+            } else {
+                "client"
+            })
             .with_module_parsed()
             .compiling(
                 StartCodePlugin::new(&start.root, target.clone())
+                    .with_start_package(start.framework.start_package())
                     .with_route_tree(start.route_tree())
                     .with_alias(h.facts.alias.clone())
                     .routes_split_in_host(true),
@@ -236,6 +242,7 @@ fn client_plugins(
     ));
     plugins.push(Pluginable::new_shared(
         StartCodePlugin::new(&start.root, target)
+            .with_start_package(start.framework.start_package())
             .with_route_tree(start.route_tree())
             .with_alias(host.map(|h| h.facts.alias.clone()).unwrap_or_default())
             .compiled_in_host(host.is_some()),
@@ -321,9 +328,10 @@ pub(crate) async fn build(
         .as_ref()
         .map_or("ssr", |e| e.name.as_str())
         .to_string();
+    // Fork: the fallback entry follows the Start flavor.
     let server_entry = start
         .server_entry()
-        .unwrap_or_else(|| start.cache.join("server-entry.tsx"));
+        .unwrap_or_else(|| start.cache.join(start.framework.server_entry_file()));
     let server_out_dir = match &cf_env {
         Some(env) => cloudflare::worker_out_dir(env, &start.root, &dist),
         None => dist.clone(),
@@ -439,7 +447,10 @@ pub(crate) async fn build(
                 &emit,
             ))
             .with_options(BundlerOptions {
-                input: Some(vec![input("client", &start.cache.join("client-entry.tsx"))]),
+                input: Some(vec![input(
+                    "client",
+                    &start.cache.join(start.framework.client_entry_file()),
+                )]),
                 cwd: Some(start.root.clone()),
                 platform: Some(Platform::Browser),
                 transform: Some(start.transform_options()),
@@ -577,9 +588,11 @@ pub(crate) async fn build(
                         Arc::clone(&emit),
                         start.jsx_config(),
                     )
+                    .environment(&server_env_name)
                     .with_module_parsed()
                     .compiling(
                         StartCodePlugin::new(&start.root, CodeTarget::Server)
+                            .with_start_package(start.framework.start_package())
                             .with_route_tree(start.route_tree())
                             .with_alias(h.facts.alias.clone()),
                     ),
@@ -715,7 +728,7 @@ pub(crate) async fn build(
                         resolve: Some(start.resolve_options(
                             &server_aliases,
                             Some(start.server_main_fields()),
-                            None,
+                            start.server_conditions(),
                         )),
                         dir: Some(dist.to_string_lossy().into_owned()),
                         format: Some(OutputFormat::Esm),
@@ -802,7 +815,7 @@ pub(crate) async fn build(
     let built = serde_json::json!({
         "client": {
             "outDir": client_dir.display().to_string(),
-            "input": start.cache.join("client-entry.tsx").display().to_string(),
+            "input": start.cache.join(start.framework.client_entry_file()).display().to_string(),
         },
         server_env_name.clone(): {
             "outDir": server_out_dir.display().to_string(),

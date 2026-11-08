@@ -34,7 +34,7 @@ try {
   process.exit(0);
 }
 
-if (!process.env.OJ_BIN) execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+if (!process.env.OJ_BIN) execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 // A survivor from a crashed run would answer the port and shadow this server.
 try {

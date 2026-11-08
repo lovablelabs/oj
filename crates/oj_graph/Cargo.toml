@@ -1,10 +1,15 @@
 [package]
-name = "oj_graph"
+name = "adaptive-oj-graph"
+publish = false
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Module graph and HMR boundary propagation"
+
+
+[lib]
+name = "oj_graph"
 
 [dev-dependencies]
 proptest.workspace = true

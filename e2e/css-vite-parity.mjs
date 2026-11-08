@@ -20,7 +20,7 @@ const oj = path.join(repo, "target", "debug", "oj");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const PORT = 6350;
 
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 const app = fs.mkdtempSync(path.join(os.tmpdir(), "oj-cssparity-"));
 fs.mkdirSync(path.join(app, "src", "ui"), { recursive: true });

@@ -306,6 +306,7 @@ impl CssEngine {
         options: serde_json::Value,
         dev: bool,
     ) -> Result<(String, CssDeps), String> {
+        let started = std::time::Instant::now();
         let request = serde_json::json!({
             "base": self.base,
             "css": css,
@@ -323,7 +324,7 @@ impl CssEngine {
                     .await,
             )
         };
-        match result {
+        let outcome = match result {
             Ok(serde_json::Value::String(css)) => Ok((css, CssDeps::default())),
             Ok(out) if out["css"].is_string() => {
                 let deps = CssDeps::of(&out);
@@ -341,12 +342,104 @@ impl CssEngine {
                 }
                 Err(map_engine_error(self.kind, e))
             }
-        }
+        };
+        record_css_timing(self.kind, started.elapsed().as_secs_f64() * 1000.0);
+        outcome
     }
 }
 
+/// Native css compiles under the bench's plugin-timing flag: with
+/// `OJ_PLUGIN_TIMING=1` every compile (success or failure) adds its kind's
+/// wall time + call count to `OJ_PLUGIN_TIMING_FILE`, in the same
+/// `{plugins:[{name, env, calls, ms}]}` shape the plugin host writes — so
+/// native-vs-hosted css cost is finally visible side by side in the harness.
+/// Off by default: one cached env read per compile, no file IO.
+///
+/// The plugin host merges its own rows into the same file (read + merge +
+/// write); native rows merge the same way and keep every row that is not
+/// theirs, so concurrent flushes only ever drop rows in a torn interleave,
+/// never corrupt the file (native writes go through a temp file + rename,
+/// so readers never see a half-written one). Compiles are rare enough (one
+/// per sheet, not per module) that flushing per record costs nothing next
+/// to the compile itself.
+fn record_css_timing(kind: &str, wall_ms: f64) {
+    use std::sync::{LazyLock, Mutex};
+
+    /// The flag, read once: the harness sets it before the server spawns.
+    static ENABLED: LazyLock<bool> =
+        LazyLock::new(|| std::env::var("OJ_PLUGIN_TIMING").as_deref() == Ok("1"));
+    /// Cumulative `(calls, wall_ms)` per engine kind, in this process.
+    static ROWS: LazyLock<Mutex<std::collections::HashMap<String, (u64, f64)>>> =
+        LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
+    if !*ENABLED {
+        return;
+    }
+    let file = std::env::var("OJ_PLUGIN_TIMING_FILE").unwrap_or_default();
+    if file.is_empty() {
+        return;
+    }
+    let snapshot: Vec<(String, u64, f64)> = {
+        let mut rows = ROWS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = rows.entry(kind.to_string()).or_insert((0, 0.0));
+        entry.0 += 1;
+        entry.1 += wall_ms;
+        rows.iter()
+            .map(|(k, (calls, ms))| (k.clone(), *calls, *ms))
+            .collect()
+    };
+    let previous: Option<serde_json::Value> = std::fs::read_to_string(&file)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok());
+    let merged = merge_native_css_rows(previous, &snapshot);
+    let Ok(body) = serde_json::to_string(&merged) else {
+        return;
+    };
+    // Temp file + rename: a reader (the harness, the plugin host's merge)
+    // only ever sees whole files.
+    let tmp = format!("{file}.oj-native-tmp");
+    if std::fs::write(&tmp, &body).is_ok() {
+        let _ = std::fs::rename(&tmp, &file);
+    }
+}
+
+/// Merge native css rows into a timing-file value of the plugin host's
+/// shape: native rows (`native-css`) replace same-name ones, hosted rows
+/// pass through untouched.
+fn merge_native_css_rows(
+    previous: Option<serde_json::Value>,
+    native: &[(String, u64, f64)],
+) -> serde_json::Value {
+    let mut plugins: Vec<serde_json::Value> = previous
+        .as_ref()
+        .and_then(|v| v.get("plugins"))
+        .and_then(|p| p.as_array())
+        .map(|rows| {
+            rows.iter()
+                .filter(|r| r.get("name").and_then(|n| n.as_str()) != Some(NATIVE_CSS_ROW))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    for (kind, calls, ms) in native {
+        plugins.push(serde_json::json!({
+            "name": NATIVE_CSS_ROW,
+            "env": kind,
+            "calls": calls,
+            "ms": (ms * 100.0).round() / 100.0,
+        }));
+    }
+    serde_json::json!({ "plugins": plugins })
+}
+
+/// The timing-file row name for native css compiles (`env` carries the
+/// engine kind: tailwind, css preprocessor, svelte compiler).
+const NATIVE_CSS_ROW: &str = "native-css";
+
 /// The one heap cap for every embedded engine: OJ_PLUGIN_MEMORY_MB, then
-/// NODE_OPTIONS --max-old-space-size, then 4096MB.
+/// NODE_OPTIONS --max-old-space-size, then 512MB.
 fn shared_memory_limit() -> usize {
     crate::plugins::plugin_host_memory_mb() * 1024 * 1024
 }
@@ -454,6 +547,46 @@ mod tests {
             map_engine_error("tailwind", EngineError::MemoryLimit),
             "tailwind compile exceeded the JS memory limit"
         );
+    }
+
+    /// Native rows merge into the plugin host's timing file without touching
+    /// hosted rows, and replace (never duplicate) earlier native rows.
+    #[test]
+    fn native_css_timing_merges_without_touching_hosted_rows() {
+        let prev = serde_json::json!({
+            "plugins": [{"name": "vite:css", "env": "client", "calls": 3, "ms": 12.5}],
+        });
+        let merged = merge_native_css_rows(Some(prev), &[("tailwind".into(), 2, 100.126)]);
+        let plugins = merged["plugins"].as_array().unwrap();
+        assert_eq!(plugins.len(), 2, "{plugins:?}");
+        assert_eq!(plugins[0]["name"], "vite:css");
+        assert_eq!(plugins[0]["calls"], 3);
+        let native = plugins.iter().find(|r| r["name"] == "native-css").unwrap();
+        assert_eq!(native["env"], "tailwind");
+        assert_eq!(native["calls"], 2);
+        assert_eq!(native["ms"], 100.13, "{native}");
+
+        let again = merge_native_css_rows(Some(merged), &[("tailwind".into(), 3, 150.0)]);
+        let plugins = again["plugins"].as_array().unwrap();
+        assert_eq!(
+            plugins.iter().filter(|r| r["name"] == "native-css").count(),
+            1,
+            "a later flush replaces the native rows: {plugins:?}"
+        );
+        let native = plugins.iter().find(|r| r["name"] == "native-css").unwrap();
+        assert_eq!(native["calls"], 3);
+        assert_eq!(
+            again["plugins"][0]["name"], "vite:css",
+            "hosted rows survive"
+        );
+
+        let fresh = merge_native_css_rows(None, &[]);
+        assert_eq!(fresh["plugins"].as_array().unwrap().len(), 0);
+        let broken = merge_native_css_rows(
+            Some(serde_json::json!({"plugins": "garbage"})),
+            &[("tailwind".into(), 1, 1.0)],
+        );
+        assert_eq!(broken["plugins"].as_array().unwrap().len(), 1);
     }
 
     fn app_root() -> tempfile::TempDir {

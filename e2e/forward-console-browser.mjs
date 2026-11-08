@@ -21,7 +21,7 @@ const oj = path.join(repo, "target", "debug", "oj");
 const { chromium } = createRequire(path.join(here, "x.js"))("playwright");
 const port = 5393;
 
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 const app = fs.mkdtempSync(path.join(os.tmpdir(), "oj-fwdbrowser-"));
 fs.writeFileSync(path.join(app, "package.json"), JSON.stringify({ name: "fwdb", version: "1.0.0" }));

@@ -85,7 +85,7 @@ Scoped to the pure crates -- the dev server and the CLI are covered from `e2e/`,
 which cargo-mutants cannot drive.
 
 ```sh
-cargo mutants --test-workspace false -j 4 -p oj_env -p oj_graph -p oj_cache -p oj_css
+cargo mutants --test-workspace false -j 4 -p adaptive-oj-env -p adaptive-oj-graph -p adaptive-oj-cache -p adaptive-oj-css
 ```
 
 The survivors that mattered were killed by adding tests: the CSS browser-target
@@ -142,7 +142,7 @@ Things that look like gaps and are not, pinned by a test so they stay decisions:
 
 ```sh
 cargo test --workspace                 # unit + integration, all crates
-cargo test -p oj_graph --test model    # one suite
+cargo test -p adaptive-oj-graph --test model    # one suite
 cargo test --workspace -- --ignored    # the process-aborting tier, deliberately
 cargo check --manifest-path fuzz/Cargo.toml   # fuzz targets still build
 node e2e/run.mjs                       # the main end-to-end suite

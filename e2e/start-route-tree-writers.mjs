@@ -30,7 +30,7 @@ if (!fs.existsSync(path.join(fixture, "node_modules", "@tanstack", "react-start"
   process.exit(0);
 }
 
-if (!process.env.OJ_BIN) execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+if (!process.env.OJ_BIN) execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "oj-tree-writers-")));
 const app = path.join(tmp, "app");

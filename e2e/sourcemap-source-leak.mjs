@@ -17,7 +17,7 @@ import { waitUp } from "./util.mjs";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.join(here, "..");
 const oj = process.env.OJ_BIN ?? path.join(repo, "target", "debug", "oj");
-if (!process.env.OJ_BIN) execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+if (!process.env.OJ_BIN) execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 const PORT = 5498;
 
 const SECRET = "TOP-SECRET-a12ff342-DO-NOT-SERVE";

@@ -35,6 +35,8 @@ oj build web                                     # production build
 
 Dev serves file-based routes with streaming SSR and client hydration, keeps Fast Refresh working, runs server functions in the module runner, and applies the app's `vite.config` plugins (React and the app's own). `oj build` emits a Node `server.mjs`, a Cloudflare `worker.mjs` (`nodejs_compat`), content-hashed client assets, and prerendered routes. oj's own docs site (`www/`) is a TanStack Start app built by oj and served from a Cloudflare Worker.
 
+Solid Start apps use the same interface (`oj dev web`, `oj build web`); see `SOLID.md` for ongoing fork notes.
+
 ## Type checking
 
 `oj typecheck` is `tsc` on [tsrs](https://github.com/oxc-project/tsrs) (the Rust port of the TypeScript 7 compiler, built into oj). It takes the arguments `tsc` (tsgo) takes and prints and exits as TypeScript 7.0's does, so a build that calls tsgo can call `oj typecheck` in its place. The lib files are TypeScript 7.1's (default target ES2026), listed as `bundled:///libs/...`.
@@ -59,15 +61,28 @@ How the warm checker works:
 
 ## Quickstart
 
-Install the CLI from crates.io, then run `oj` in any app:
+Run `oj` in any app. Usable today from a local checkout (see
+`docs/adaptive-oj-release.md`):
 
 ```sh
-cargo install oj --locked                       # install the `oj` CLI
+cargo install --path crates/oj --locked
 oj dev                                           # dev server for the current app on :5199
 oj build                                         # production build into ./dist
 ```
 
-Or with [Homebrew](https://formulae.brew.sh/formula/lovable-oj):
+After this branch is pushed, the same checkout installs from git:
+
+```sh
+cargo install --git https://github.com/david1gp/oj --branch solid-support --locked adaptive-oj
+```
+
+Once published, the same CLI comes from crates.io instead:
+
+```sh
+cargo install adaptive-oj --locked              # install the `oj` CLI
+```
+
+Or with [Homebrew](https://formulae.brew.sh/formula/lovable-oj) (upstream release):
 
 ```sh
 brew install lovable-oj
@@ -130,9 +145,9 @@ Production builds (`oj build` vs `vite build`) produce the same output on the 10
 ## Misc
 
 ```sh
-cargo run -p oj -- dev                            # dev server for ./playground on :5199
-cargo run -p oj -- dev --ssr src/entry-server.tsx # streaming SSR + hydration
-cargo run -p oj -- build playground               # production build into playground/dist
+cargo run -p adaptive-oj -- dev                            # dev server for ./playground on :5199
+cargo run -p adaptive-oj -- dev --ssr src/entry-server.tsx # streaming SSR + hydration
+cargo run -p adaptive-oj -- build playground               # production build into playground/dist
 cargo test --workspace                            # rust unit tests
 node --test e2e/unit/*.test.mjs                   # js unit tests (adapter helpers)
 node e2e/run.mjs                                  # browser e2e suite

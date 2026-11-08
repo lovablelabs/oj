@@ -63,7 +63,7 @@ if (hasWasmPack) {
   console.log("wasm-playground: wasm-pack missing, testing the prebuilt bundle in www/public/oj-wasm");
 }
 
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

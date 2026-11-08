@@ -1,9 +1,25 @@
 use super::*;
 
+/// Whether a request's headers promise a body: `content-length: N>0` or any
+/// `transfer-encoding`. Ordinary GETs carry neither, so the GET path only
+/// pays for body collection when a file miss must forward those exact bytes
+/// to the plugin-middleware sidecar.
+pub(crate) fn request_has_body(headers: &HeaderMap) -> bool {
+    if headers.contains_key(header::TRANSFER_ENCODING) {
+        return true;
+    }
+    headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .is_some_and(|n| n > 0)
+}
+
 pub(crate) async fn serve_path(
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,
     uri: Uri,
+    body: Vec<u8>,
 ) -> Response {
     let path = state
         .base
@@ -36,7 +52,7 @@ pub(crate) async fn serve_path(
     if let Some(url) = optimized_url_of(&state, &named.to_string_lossy()) {
         return Redirect::temporary(&url).into_response();
     }
-    let file = match request_file(&state, &headers, &uri, rel).await {
+    let file = match request_file(&state, &headers, &uri, rel, body).await {
         Ok(file) => file,
         Err(resp) => return *resp,
     };
@@ -252,6 +268,7 @@ async fn request_file(
     headers: &HeaderMap,
     uri: &Uri,
     rel: &str,
+    body: Vec<u8>,
 ) -> Result<PathBuf, Box<Response>> {
     if let Some(abs) = uri.path().strip_prefix("/@fs") {
         let Some(real) = fs_gate(state, &PathBuf::from(urldecode(abs))) else {
@@ -266,7 +283,9 @@ async fn request_file(
     }
     match locate(&state.root, state.public_dir.as_deref(), rel) {
         Some(file) => Ok(file),
-        None => Err(Box::new(serve_missing(state, headers, uri, rel).await)),
+        None => Err(Box::new(
+            serve_missing(state, headers, uri, rel, body).await,
+        )),
     }
 }
 
@@ -275,9 +294,9 @@ async fn serve_missing(
     headers: &HeaderMap,
     uri: &Uri,
     rel: &str,
+    body: Vec<u8>,
 ) -> Response {
-    if let Some(resp) =
-        forward_to_plugin_middleware(state, &Method::GET, uri, headers, Vec::new()).await
+    if let Some(resp) = forward_to_plugin_middleware(state, &Method::GET, uri, headers, body).await
     {
         return resp;
     }

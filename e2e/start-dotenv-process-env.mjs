@@ -28,7 +28,7 @@ if (!fs.existsSync(path.join(fixture, "node_modules", "@tanstack", "react-start"
   process.exit(0);
 }
 
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 const app = fs.mkdtempSync(path.join(os.tmpdir(), "oj-start-dotenv-"));
 fs.cpSync(fixture, app, {

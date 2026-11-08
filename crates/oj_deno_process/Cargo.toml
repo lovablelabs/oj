@@ -7,7 +7,8 @@
 
 [package]
 edition = "2024"
-name = "oj_deno_process"
+name = "adaptive-oj-deno-process"
+publish = false
 version.workspace = true
 authors = ["the Deno authors"]
 build = false
@@ -19,10 +20,11 @@ autobenches = false
 description = "oj's fork of deno_process: child process groups + spawn hook"
 readme = "README.md"
 license = "MIT"
-repository = "https://github.com/lovablelabs/oj"
+repository = "https://github.com/david1gp/oj"
 resolver = "2"
 
 [lib]
+name = "oj_deno_process"
 path = "lib.rs"
 
 [dependencies.deno_core]

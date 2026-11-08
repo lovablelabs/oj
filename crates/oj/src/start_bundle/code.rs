@@ -36,6 +36,9 @@ pub(crate) enum CodeTarget {
 pub(crate) struct StartCodePlugin {
     root: PathBuf,
     target: CodeTarget,
+    /// Fork: the Start package the server-fn rewrites name
+    /// (`{pkg}/server-rpc`, `{pkg}/client-rpc`); React by default.
+    start_package: &'static str,
     /// Every glob a client bundle expanded, for the dev rebundle gate (a file
     /// created that one matches changes the bundle).
     glob_scopes: Option<Arc<Mutex<Vec<GlobCall>>>>,
@@ -68,6 +71,7 @@ impl StartCodePlugin {
         Self {
             root: root.to_path_buf(),
             target,
+            start_package: "@tanstack/react-start",
             glob_scopes: None,
             alias: Vec::new(),
             compiled_in_host: false,
@@ -76,6 +80,12 @@ impl StartCodePlugin {
             route_files: Mutex::new(None),
             warned: Mutex::new(HashSet::new()),
         }
+    }
+
+    /// Fork: the Start package the server-fn rewrites name.
+    pub fn with_start_package(mut self, package: &'static str) -> Self {
+        self.start_package = package;
+        self
     }
 
     /// The route tree the app's Start generates, when not Start's default.
@@ -314,9 +324,17 @@ impl StartCodePlugin {
                 .map(|p| p.to_string_lossy().replace('\\', "/"))
                 .unwrap_or_else(|_| file.to_string_lossy().into_owned());
             let rewritten = match self.target {
-                CodeTarget::Client => oj_compiler::server_fns::rewrite_client(&code, &rel)
-                    .map_err(|e| anyhow::anyhow!("{e}"))?,
-                CodeTarget::Server => oj_compiler::server_fns::rewrite_server(&code, &rel),
+                CodeTarget::Client => oj_compiler::server_fns::rewrite_client_with_package(
+                    &code,
+                    &rel,
+                    self.start_package,
+                )
+                .map_err(|e| anyhow::anyhow!("{e}"))?,
+                CodeTarget::Server => oj_compiler::server_fns::rewrite_server_with_package(
+                    &code,
+                    &rel,
+                    self.start_package,
+                ),
                 CodeTarget::Worker { .. } => None,
             };
             if let Some(out) = rewritten {

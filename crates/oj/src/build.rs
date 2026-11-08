@@ -1248,7 +1248,7 @@ async fn css_transform_phase(
         return Ok(source);
     };
     let t = host
-        .transform_phase(&source, id, phase)
+        .transform_phase(&source, id, "{}", phase)
         .await
         .map_err(|e| anyhow::anyhow!("plugin transform failed for {id}:\n{e}"))?;
     if let Some((ctx, emit)) = emit {
@@ -3152,7 +3152,7 @@ impl Plugin for OjUserPlugin {
                 return Ok(None);
             }
             let transformed = if is_compiled_stylesheet(id) {
-                host.transform_phase(code, id, "post").await
+                host.transform_phase(code, id, "{}", "post").await
             } else {
                 host.transform(code, id, "{}").await
             };
@@ -3963,7 +3963,16 @@ pub async fn build(
         if rel.ends_with(".html") {
             let content = match fs::read_to_string(&abs) {
                 Ok(c) => c,
-                Err(_) if ro_input.is_none() => bail!("no index.html in {}", root.display()),
+                Err(_) if ro_input.is_none() => {
+                    if oj_server::is_tanstack_solid_start_app(&root) {
+                        bail!(
+                            "no index.html in {} (tanstack solid-start app: \
+                             the Start SSR build is not yet supported, see SOLID.md)",
+                            root.display()
+                        )
+                    }
+                    bail!("no index.html in {}", root.display())
+                }
                 Err(e) => {
                     return Err(anyhow::Error::from(e))
                         .with_context(|| format!("build input HTML not found: {}", abs.display()));

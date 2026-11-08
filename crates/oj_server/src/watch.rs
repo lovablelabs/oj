@@ -100,7 +100,9 @@ pub(crate) fn is_tsconfig_file(path: &Path) -> bool {
 /// daemon answer, pid files with an identity check.
 pub(crate) mod child_groups {
     use std::path::{Path, PathBuf};
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::Mutex;
+    #[cfg(not(test))]
+    use std::sync::OnceLock;
     use std::time::{Duration, Instant};
 
     struct Child {
@@ -113,7 +115,32 @@ pub(crate) mod child_groups {
 
     static CHILDREN: Mutex<Vec<Child>> = Mutex::new(Vec::new());
     /// This process's registry file, set once by `init_registry`.
+    #[cfg(not(test))]
     static REGISTRY: OnceLock<PathBuf> = OnceLock::new();
+    /// Test twin of `REGISTRY`: the lifecycle test re-points it per run via
+    /// `reset_registry_for_tests` (production keeps the set-once `OnceLock`).
+    #[cfg(test)]
+    static REGISTRY: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+    #[cfg(not(test))]
+    fn registry_file() -> Option<PathBuf> {
+        REGISTRY.get().cloned()
+    }
+
+    #[cfg(test)]
+    fn registry_file() -> Option<PathBuf> {
+        REGISTRY.lock().unwrap().clone()
+    }
+
+    #[cfg(not(test))]
+    fn store_registry_file(file: PathBuf) {
+        let _ = REGISTRY.set(file);
+    }
+
+    #[cfg(test)]
+    fn store_registry_file(file: PathBuf) {
+        *REGISTRY.lock().unwrap() = Some(file);
+    }
 
     pub fn register(pid: u32, own_group: bool) {
         let start = proc_start_time(pid);
@@ -184,7 +211,7 @@ pub(crate) mod child_groups {
     /// Rewrite this process's registry file (write-then-rename, so a crash
     /// mid-write never leaves a half-parsed file for the next boot).
     fn persist(children: &[Child]) {
-        let Some(file) = REGISTRY.get() else { return };
+        let Some(file) = registry_file() else { return };
         let tmp = file.with_extension("json.tmp");
         if std::fs::write(&tmp, snapshot(children)).is_ok() {
             let _ = std::fs::rename(&tmp, file);
@@ -202,7 +229,27 @@ pub(crate) mod child_groups {
         if reaped > 0 {
             eprintln!("oj: reaped {reaped} orphaned child process(es) from a previous run");
         }
-        let _ = REGISTRY.set(dir.join(format!("{}.json", std::process::id())));
+        store_registry_file(dir.join(format!("{}.json", std::process::id())));
+        persist(&CHILDREN.lock().unwrap());
+    }
+
+    /// Test-only reset for the lifecycle test: another test's `build_app`
+    /// already ran `init_registry` (the path is set once per process), so a
+    /// plain `init_registry` here would keep persisting to that test's
+    /// directory and this test's file would never appear. Drain any children
+    /// other tests registered, point the registry at `dir`, and write our
+    /// file, mirroring `init_registry` otherwise.
+    #[cfg(test)]
+    pub fn reset_registry_for_tests(dir: &Path) {
+        if std::fs::create_dir_all(dir).is_err() {
+            return;
+        }
+        *CHILDREN.lock().unwrap() = Vec::new();
+        let reaped = sweep_stale(dir);
+        if reaped > 0 {
+            eprintln!("oj: reaped {reaped} orphaned child process(es) from a previous run");
+        }
+        store_registry_file(dir.join(format!("{}.json", std::process::id())));
         persist(&CHILDREN.lock().unwrap());
     }
 
@@ -336,7 +383,7 @@ pub(crate) mod child_groups {
         // registered mid-sweep keeps the file so the next boot can reap it.
         let children = CHILDREN.lock().unwrap();
         if children.is_empty() {
-            if let Some(file) = REGISTRY.get() {
+            if let Some(file) = registry_file() {
                 let _ = std::fs::remove_file(file);
             }
         } else {

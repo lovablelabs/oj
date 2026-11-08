@@ -134,6 +134,11 @@ impl DevBundler {
         &self.start.root
     }
 
+    /// Fork: the TanStack Start flavor this bundler builds for.
+    pub(crate) fn framework(&self) -> oj_server::StartFramework {
+        self.start.framework
+    }
+
     /// The files the client bundle depends on that closure.json does not
     /// list, which the bundle store keys a generation by: the trees its
     /// routes come from (the client's own, generate.mjs's pruned tree in the
@@ -448,7 +453,8 @@ impl DevBundler {
         let glob_scopes = Arc::new(Mutex::new(Vec::new()));
         let styles = Arc::new(DevStyleState::default());
         let refresh = hot && host.is_some_and(|h| h.facts.react_refresh);
-        let entry = start.cache.join("client-entry.tsx");
+        // Fork: the entry follows the Start flavor.
+        let entry = start.cache.join(start.framework.client_entry_file());
         let mut plugins: Vec<SharedPluginable> = Vec::new();
         if let Some(plugin) = &start.stylex {
             plugins.push(crate::stylex_plugin::transform(plugin));
@@ -480,8 +486,10 @@ impl DevBundler {
                     Arc::clone(&emit),
                     start.jsx_config(),
                 )
+                .environment("client")
                 .compiling(
                     StartCodePlugin::new(&start.root, CodeTarget::Client)
+                        .with_start_package(start.framework.start_package())
                         .with_route_tree(start.route_tree())
                         .with_alias(h.facts.alias.clone())
                         .routes_split_in_host(true),
@@ -506,6 +514,7 @@ impl DevBundler {
         }
         plugins.push(Pluginable::new_shared(
             StartCodePlugin::new(&start.root, CodeTarget::Client)
+                .with_start_package(start.framework.start_package())
                 .with_route_tree(start.route_tree())
                 .with_alias(host.map(|h| h.facts.alias.clone()).unwrap_or_default())
                 .compiled_in_host(host.is_some())
@@ -890,6 +899,7 @@ pub(crate) mod tests {
             base: "/".into(),
             stylex: None,
             rolldown: test_runtime(),
+            framework: oj_server::StartFramework::React,
         }
     }
 

@@ -1,16 +1,24 @@
 name: release
 
 # Pushing a version tag creates the GitHub release with that
-# version's CHANGELOG section as notes, then publishes the workspace crates to
-# crates.io (cargo publish --workspace resolves the dependency order itself
-# and skips publish = false). After a partial failure, re-run with
-# --exclude <already-published> if cargo refuses the duplicates. Auth is
+# version's CHANGELOG section as notes, then publishes the seven required
+# fork crates to crates.io in dependency order (explicit -p list: the eight
+# reused upstream oj_* 0.2.22 deps resolve from the registry, publish = false
+# local members and oj_wasm are never selected). After a partial failure,
+# resume by dropping the already-published names from the -p list, as cargo
+# refuses duplicates. Auth is
 # crates.io Trusted Publishing (OIDC): each crate lists this repo+workflow as
 # a publisher, and the auth action mints a run-scoped token — no stored
-# secret. A crate's very first publish cannot be trust-configured yet; do
-# that one manually with a scoped token, then it joins the flow. A manual
-# run (workflow_dispatch) only builds and checks the oj binaries: no release,
-# no publish, no upload.
+# secret. A crate's very first publish cannot be trust-configured yet (OIDC
+# cannot create new crates); do that one manually with a scoped token, then
+# it joins the flow. A manual run (workflow_dispatch) only builds and checks
+# the oj binaries: no release, no publish, no upload.
+# Fork bootstrap (david1gp/oj, adaptive-oj lineage): the one-time crates.io
+# bootstrap for the 7 required adaptive-oj* names is docs/adaptive-oj-release.md
+# (scoped CARGO_REGISTRY_TOKEN use, then per-crate Trusted Publishing for
+# this repo+workflow); the v* tag must match the workspace version.
+# Later versions publish via OIDC: bump the workspace version, push the
+# matching v* tag.
 on:
   push:
     tags: ["v*"]
@@ -49,6 +57,9 @@ jobs:
   publish:
     name: cargo publish
     needs: release
+    # Bootstrap skip: v0.2.23 was manually published before tagging;
+    # re-publishing would fail as duplicates. Release + snapshot-pin still run.
+    if: github.ref_name != 'v0.2.23'
     runs-on: ubuntu-latest
     timeout-minutes: 240
     permissions:
@@ -86,14 +97,33 @@ jobs:
       - name: authenticate with crates.io (trusted publishing)
         uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
         id: auth
-      - name: publish the workspace
+      - name: publish the seven fork crates
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         # --no-verify: verifying a fork crate standalone compiles deno_v8
         # without the v8 feature that only the full workspace unifies (the
-        # same wall the manual fork publishes always hit); ci.yml on main is
-        # the build gate.
-        run: cargo publish --workspace --locked --no-verify
+        # same wall the manual fork publishes always hit); the gate is the
+        # targeted local preflight checks in docs/adaptive-oj-release.md
+        # (metadata/package list plus cargo check --locked -p adaptive-oj,
+        # focused relevant Rust tests, node --test
+        # e2e/unit/start-client-transforms.test.mjs — 9 Rust + 5 JS passed,
+        # CLI check plus per-crate listings — not full CI).
+        # Pushes to the fork branch intentionally do not run the full
+        # ci.yml e2e suite (its push trigger stays main-only).
+        # Explicit -p list in dependency order: the eight reused upstream
+        # oj_* 0.2.22 deps resolve from the registry, publish = false local
+        # members and oj_wasm are never selected, and the six already-published
+        # unused adaptive-oj-* crates are not published again. On a partial
+        # failure, resume by dropping the already-published names from the list.
+        # Cargo 1.95 supports repeated -p: package the selected set up front,
+        # then let Cargo schedule uploads in dependency order. One invocation
+        # avoids repeating workspace packaging setup within the OIDC token's
+        # 30-minute lifetime; the job timeout does not extend that token.
+        run: |
+          cargo publish --locked --no-verify \
+            -p adaptive-oj-env -p adaptive-oj-config -p adaptive-oj-cache \
+            -p adaptive-oj-compiler -p adaptive-oj-resolver \
+            -p adaptive-oj-server -p adaptive-oj
 
   # oj binaries for consumers that cannot run nix, such as Bazel remote
   # executors, which fetch them by sha256 (the API's asset digest). rusty_v8

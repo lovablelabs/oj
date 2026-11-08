@@ -36,7 +36,7 @@ if (!pw) {
 }
 const startInstalled = fs.existsSync(path.join(fixture, "node_modules", "@tanstack", "react-start"));
 
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 const must = (cond, msg) => {
   if (!cond) throw new Error(msg);
 };

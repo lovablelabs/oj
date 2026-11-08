@@ -34,7 +34,7 @@ if (!fs.existsSync(path.join(fixture, "node_modules", "vite"))) {
   process.exit(0);
 }
 
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "oj-proxy-forms-"));
 const keep = !!process.env.OJ_E2E_KEEP;

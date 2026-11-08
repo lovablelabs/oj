@@ -1,10 +1,13 @@
 [package]
-name = "oj_cache"
+name = "adaptive-oj-cache"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Content-addressed persistent cache for compiled module outputs"
+
+[lib]
+name = "oj_cache"
 
 [dependencies]
 blake3.workspace = true

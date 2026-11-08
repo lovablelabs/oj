@@ -187,7 +187,7 @@ pub(crate) async fn preview_serve(State(state): State<Arc<PreviewState>>, uri: U
         match preview_html_fallback(dir, &rel, *spa_fallback) {
             Some(target) => (target, "text/html; charset=utf-8"),
             None => {
-                return (StatusCode::NOT_FOUND, format!("oj: not found: {rel}")).into_response()
+                return (StatusCode::NOT_FOUND, format!("oj: not found: {rel}")).into_response();
             }
         }
     } else {

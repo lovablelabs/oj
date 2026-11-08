@@ -699,7 +699,7 @@ async fn addon_keeper_tolerates_unloadable_addons() {
 }
 
 // Heap cap mirrors NODE_OPTIONS --max-old-space-size (last wins, underscore
-// accepted, like Node), OJ_PLUGIN_MEMORY_MB above it, 4096 beneath.
+// accepted, like Node), OJ_PLUGIN_MEMORY_MB above it, 512 beneath.
 #[test]
 fn node_options_heap_cap_parses_like_node() {
     assert_eq!(max_old_space_mb("--max-old-space-size=8192"), Some(8192));
@@ -1926,6 +1926,75 @@ fn merge_adopts_resolve_server_css_env_and_mode() {
     assert_eq!(config.env_dir.as_deref(), Some("cfg"));
 }
 
+// vite-plugin-solid orders the `solid` export condition first (Vite 8: via its
+// per-environment hook, visible on the resolved top-level list), so deps with
+// a `solid` export (e.g. `@tanstack/solid-router`: `solid` -> transformable
+// dist/source, `import` -> precompiled dist/esm) resolve to transformable
+// source. The merge must adopt that list verbatim and keep `solid` first for
+// the native resolver. Observed resolved shape on a TanStack Solid Start app
+// (Vite 8.2.1, `serve`): top-level AND per-environment lists alike carry
+// `["solid", "development", "module", "browser", "development|production"]`
+// (ssr: `node` in place of `browser`).
+#[test]
+fn merge_keeps_solid_first_resolve_conditions() {
+    let mut config = oj_config::OjConfig::default();
+    let v = ViteValues {
+        resolve: Some(serde_json::json!({
+            "conditions": ["solid", "development", "module", "browser", "development|production"]
+        })),
+        ..Default::default()
+    };
+    merge_vite_values(&mut config, v);
+    assert_eq!(
+        config.resolve.as_ref().unwrap().conditions.as_deref(),
+        Some(
+            &[
+                "solid".to_string(),
+                "development".to_string(),
+                "module".to_string(),
+                "browser".to_string(),
+                "development|production".to_string()
+            ][..]
+        ),
+        "the extractor's solid-first list is adopted verbatim"
+    );
+    // The native client resolver sees `solid` first (the placeholder maps to
+    // the active `development`, `import`/`default` are kept for dual-package
+    // exports maps).
+    assert_eq!(
+        oj_config::resolve_conditions(&config, "client"),
+        vec![
+            "solid".to_string(),
+            "development".to_string(),
+            "module".to_string(),
+            "browser".to_string(),
+            "import".to_string(),
+            "default".to_string(),
+        ]
+    );
+
+    // An oj-side list still wins: the merge never overrides config.
+    let mut config = oj_config::OjConfig {
+        resolve: Some(oj_config::ResolveConfig {
+            conditions: Some(vec!["custom".to_string()]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let v = ViteValues {
+        resolve: Some(serde_json::json!({
+            "conditions": ["solid", "development", "module", "browser", "development|production"]
+        })),
+        ..Default::default()
+    };
+    merge_vite_values(&mut config, v);
+    assert_eq!(
+        config.resolve.as_ref().unwrap().conditions.as_deref(),
+        Some(&["custom".to_string()][..]),
+        "oj.config wins"
+    );
+}
+
 #[test]
 fn merge_adopts_cors_and_allowed_hosts() {
     let mut config = oj_config::OjConfig::default();
@@ -1984,18 +2053,21 @@ fn merge_adopts_css_preprocessor_options() {
 
 #[test]
 fn extraction_stderr_lines_print_once_per_process() {
+    // Probe lines are unique to this test: real extractions print their own
+    // `oj: vite.config: ...` lines through the same process-global SEEN set,
+    // which poisoned this test whenever one ran first in the same process.
     let first = unseen_extraction_lines(
-        "oj: vite.config: worker config is not applied\nsome plugin notice\n",
+        "oj-test: extraction stderr once-per-process alpha\noj-test: extraction stderr once-per-process beta\n",
     );
     assert_eq!(
         first,
-        "oj: vite.config: worker config is not applied\nsome plugin notice\n"
+        "oj-test: extraction stderr once-per-process alpha\noj-test: extraction stderr once-per-process beta\n"
     );
     let again = unseen_extraction_lines(
-        "oj: vite.config: worker config is not applied\nsome plugin notice\nnew line\n",
+        "oj-test: extraction stderr once-per-process alpha\noj-test: extraction stderr once-per-process beta\noj-test: extraction stderr once-per-process gamma\n",
     );
     assert_eq!(
-        again, "new line\n",
+        again, "oj-test: extraction stderr once-per-process gamma\n",
         "only lines not printed before in this process come back"
     );
     assert_eq!(unseen_extraction_lines(""), "");

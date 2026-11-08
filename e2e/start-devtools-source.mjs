@@ -26,7 +26,7 @@ if (!fs.existsSync(path.join(app, "node_modules", "@tanstack", "react-start"))) 
   console.log("SKIP start devtools source: fixture deps not installed");
   process.exit(0);
 }
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 const must = (cond, msg) => {
   if (!cond) throw new Error(msg);

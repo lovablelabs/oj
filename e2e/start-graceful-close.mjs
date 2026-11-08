@@ -37,7 +37,7 @@ if (!fs.existsSync(sharedDeps)) {
   console.log("SKIP start-graceful-close (start-app fixture not installed)");
   process.exit(0);
 }
-if (!process.env.OJ_BIN) execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+if (!process.env.OJ_BIN) execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const alive = (pid) => {

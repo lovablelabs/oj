@@ -55,7 +55,7 @@ pub async fn style_slot(
     if !host.hook_wants_transform(id, &code) {
         return Ok(code);
     }
-    host.transform_phase(&code, id, phase)
+    host.transform_phase(&code, id, "{}", phase)
         .await
         .map(|t| t.code)
         .map_err(|e| format!("plugin transform error for {id}:\n{e}"))

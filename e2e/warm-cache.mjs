@@ -14,7 +14,7 @@ const playground = path.join(repo, "playground");
 const WATCHED = path.join(playground, "plugin-watched.txt");
 const PORT = 5197;
 
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function killPort() {

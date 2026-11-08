@@ -192,14 +192,31 @@ impl HotSession {
     /// Whether a rebundle's edits all went out as hot updates. The engine
     /// watches the same files the dev server does, usually sooner; an input
     /// it has no module for (a file the bundle only declared, a create under a
-    /// glob's scan base) rebuilds in full.
+    /// glob's scan base) rebuilds in full — except a style input, which is
+    /// the CSS pipeline's (see `unknown_forces_build`): the batch still
+    /// reloads, it just skips the rebuild.
     pub async fn settle(&self, changed: &[PathBuf], has_pages: bool) -> Result<bool, BundleError> {
+        let debug = oj_env::get().knobs.debug_hot_settle;
+        let t0 = tokio::time::Instant::now();
         let known: Vec<String> = changed
             .iter()
             .map(|p| p.to_string_lossy().into_owned())
             .filter(|p| self.engine.get_module_info(p).is_some())
             .collect();
-        let deadline = tokio::time::Instant::now() + Duration::from_millis(1000);
+        // The spelling probe: a path the engine knows only under another
+        // spelling (canonicalized, or the reverse) reads as unknown above and
+        // forces a full build. Only computed under the debug flag: one stat
+        // per unknown path per batch.
+        let unknown: Vec<String> = if debug {
+            changed
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .filter(|p| self.engine.get_module_info(p).is_none())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let deadline = t0 + Duration::from_millis(1000);
         let watched = loop {
             let ready = self.events.error.lock().unwrap().is_some() || {
                 let seen = self.events.seen.lock().unwrap();
@@ -218,23 +235,65 @@ impl HotSession {
             for p in &known {
                 seen.remove(p);
             }
+            if debug {
+                eprintln!(
+                    "{}: hot settle: changed={changed:?} known={known:?} has_pages={has_pages} waited={:?} error={err:?} => full build (engine error)",
+                    oj_server::oj_brand(),
+                    t0.elapsed(),
+                );
+            }
             return Err(err);
         }
         let kinds: Vec<Option<Seen>> = {
             let mut seen = self.events.seen.lock().unwrap();
             known.iter().map(|p| seen.remove(p)).collect()
         };
-        let unknown = changed.len() > known.len();
-        if unknown || !watched {
+        let unknown = if debug {
+            unknown
+        } else {
+            changed
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .filter(|p| self.engine.get_module_info(p).is_none())
+                .collect()
+        };
+        // Style inputs the engine never knew are the CSS pipeline's, not its
+        // module graph's (a plain sheet, a partial, a css config): they must
+        // not force the engine's full build. The verdict below still treats
+        // every unknown as not-hot, so the batch's reload applies the new
+        // rules, exactly as before — only the rebuild is skipped.
+        let build_unknown = unknown.iter().filter(|p| unknown_forces_build(p)).count();
+        if build_unknown > 0 || !watched {
             let _ = self.engine.trigger_full_build();
         }
-        Ok(has_pages
-            && !known.is_empty()
-            && watched
-            && !unknown
-            && kinds
-                .iter()
-                .all(|k| matches!(k, Some(Seen::Patch | Seen::Noop))))
+        let hot = settle_verdict(has_pages, known.len(), unknown.len(), watched, &kinds);
+        if debug {
+            // Alternate spellings for each unknown path, to tell an id
+            // mismatch (engine knows the canonicalized path, or the
+            // watcher/closure spelling differs) from a genuinely new module.
+            let mut probes = Vec::new();
+            for p in &unknown {
+                let direct = self.engine.get_module_info(p).is_some();
+                let canon = std::fs::canonicalize(p)
+                    .ok()
+                    .map(|c| c.to_string_lossy().into_owned());
+                let canon_hit = canon
+                    .as_ref()
+                    .is_some_and(|c| self.engine.get_module_info(c).is_some());
+                probes.push(format!(
+                    "{p} direct={direct} canonical={canon:?} canonical_hit={canon_hit}"
+                ));
+            }
+            let seen_keys: Vec<String> =
+                { self.events.seen.lock().unwrap().keys().cloned().collect() };
+            eprintln!(
+                "{}: hot settle: changed={changed:?} known={known:?} unknown_probes={probes:?} build_unknown={build_unknown} has_pages={has_pages} watched={watched} waited={:?} kinds={kinds:?} leftover_seen={seen_keys:?} => {}",
+                oj_server::oj_brand(),
+                t0.elapsed(),
+                if hot { "hot" } else { "full build" },
+            );
+        }
+        Ok(hot)
     }
 
     /// The engine's current output: what a rebundle writes for reloads and
@@ -281,6 +340,37 @@ impl HotSession {
     }
 }
 
+/// An unknown input that forces the engine's full build: everything but a
+/// style input. Style files are owned by the CSS pipeline, not the JS module
+/// graph — the engine never holds them as modules, so every css edit would
+/// otherwise rebuild the client in full. Skipping the rebuild is safe
+/// because the verdict still counts them unknown (not hot), so the batch
+/// reloads and the pages fetch the recompiled sheets, exactly as before.
+fn unknown_forces_build(path: &str) -> bool {
+    !crate::start_dev::is_style_input(Path::new(path))
+}
+
+/// The settle verdict from one batch's inputs: hot only when every changed
+/// path is a known engine module seen patched (or a no-op) in time, with a
+/// page to take the patch. Unknown or unwatched inputs, engine errors,
+/// reloads, and unseen rebuilds keep the full-build fallback (genuinely
+/// unknown/unwatched changes still rebuild in full).
+fn settle_verdict(
+    has_pages: bool,
+    known: usize,
+    unknown: usize,
+    watched: bool,
+    kinds: &[Option<Seen>],
+) -> bool {
+    has_pages
+        && known > 0
+        && watched
+        && unknown == 0
+        && kinds
+            .iter()
+            .all(|k| matches!(k, Some(Seen::Patch | Seen::Noop)))
+}
+
 fn on_hmr_updates(
     events: &Events,
     root: &Path,
@@ -310,6 +400,13 @@ fn on_hmr_updates(
     } else {
         Seen::Noop
     };
+    if oj_env::get().knobs.debug_hot_settle {
+        eprintln!(
+            "{}: hot engine update: changed={changed:?} kind={kind:?} updates={}",
+            oj_server::oj_brand(),
+            updates.len(),
+        );
+    }
     {
         let mut seen = events.seen.lock().unwrap();
         for file in changed {
@@ -564,6 +661,87 @@ mod tests {
             .unwrap()
             .is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The settle truth table: only a fully-known, fully-watched, patched
+    /// (or no-op) batch with a page to take it goes hot. Everything else —
+    /// unknown or unwatched inputs, no pages, reloads, unseen rebuilds —
+    /// keeps the full-build fallback.
+    #[test]
+    fn settle_verdict_keeps_the_full_build_fallback() {
+        use Seen::*;
+        let hot = |kinds: &[Option<Seen>]| settle_verdict(true, 1, 0, true, kinds);
+        assert!(hot(&[Some(Patch)]), "a patched batch with a page goes hot");
+        assert!(
+            hot(&[Some(Noop)]),
+            "a no-op batch (identical content) goes hot"
+        );
+        assert!(
+            hot(&[Some(Patch), Some(Noop)]),
+            "a mixed patched/no-op batch goes hot"
+        );
+        assert!(
+            !hot(&[Some(Patch), Some(Reload)]),
+            "a batch the engine reloads for rebuilds in full"
+        );
+        assert!(
+            !hot(&[Some(Unseen)]),
+            "an engine rebuild with no update for any page rebuilds in full"
+        );
+        assert!(
+            !hot(&[None]),
+            "an input the engine never reported rebuilds in full"
+        );
+        assert!(
+            !settle_verdict(true, 1, 1, true, &[Some(Patch)]),
+            "one unknown input rebuilds the whole batch in full"
+        );
+        assert!(
+            !settle_verdict(true, 1, 0, false, &[Some(Patch)]),
+            "an input the watcher missed rebuilds in full"
+        );
+        assert!(
+            !settle_verdict(false, 1, 0, true, &[Some(Patch)]),
+            "with no page to take the patch (a curl-only bench) the output rebuilds in full"
+        );
+        assert!(
+            !settle_verdict(true, 0, 0, true, &[]),
+            "an empty batch is not a hot update"
+        );
+    }
+
+    /// Style inputs skip the engine's rebuild trigger, but never go hot:
+    /// the batch still reloads, which is what applies the new rules.
+    #[test]
+    fn style_inputs_skip_the_engine_build_but_keep_the_reload() {
+        assert!(
+            !unknown_forces_build("/app/src/globals.css"),
+            "a sheet is the CSS pipeline's, not the module graph's"
+        );
+        assert!(
+            !unknown_forces_build("/app/src/_vars.scss"),
+            "a partial feeds sheets, not modules"
+        );
+        assert!(
+            !unknown_forces_build("/app/tailwind.config.js"),
+            "the tailwind config feeds sheets, not modules"
+        );
+        assert!(
+            !unknown_forces_build("/app/postcss.config.mjs"),
+            "the postcss config feeds sheets, not modules"
+        );
+        assert!(
+            unknown_forces_build("/app/src/app.tsx"),
+            "a JS module the engine never knew still rebuilds in full"
+        );
+        assert!(
+            unknown_forces_build("/app/README.md"),
+            "any other unknown input still rebuilds in full"
+        );
+        assert!(
+            !settle_verdict(true, 0, 1, true, &[]),
+            "a style-only unknown batch still reloads, so the pages fetch the recompiled sheets"
+        );
     }
 
     // The full bundle wrote its links in execution order; a hot update's

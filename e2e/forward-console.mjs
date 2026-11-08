@@ -21,7 +21,7 @@ const repo = path.join(here, "..");
 const oj = path.join(repo, "target", "debug", "oj");
 const port = 5390;
 
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 const app = fs.mkdtempSync(path.join(os.tmpdir(), "oj-fwd-"));
 fs.writeFileSync(path.join(app, "package.json"), JSON.stringify({ name: "fwd", version: "1.0.0" }));

@@ -123,3 +123,80 @@ async fn browser_hop_clients_never_follow_a_redirect() {
     assert_eq!(visits.load(Ordering::SeqCst), 0);
     server.abort();
 }
+
+// A bodyless loopback forward must not promise a body: the sidecar's HTTP
+// parser would wait for bytes that never arrive, then eat the next pooled
+// request's head as the missing body (Node answers 400, empty). A forward
+// with a body keeps its framing and bytes untouched.
+#[tokio::test]
+async fn loopback_forward_framing_matches_its_body() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let app = axum::Router::new().route(
+        "/echo",
+        axum::routing::any(|req: axum::extract::Request| async move {
+            let (parts, body) = req.into_parts();
+            let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+            let cl = parts
+                .headers
+                .get(header::CONTENT_LENGTH)
+                .map(|v| v.to_str().unwrap().to_string());
+            let te = parts.headers.contains_key(header::TRANSFER_ENCODING);
+            serde_json::json!({ "cl": cl, "te": te, "len": bytes.len() }).to_string()
+        }),
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    // GET-with-body headers but no body forwarded: framing headers stripped.
+    let mut bare = HeaderMap::new();
+    bare.insert(header::CONTENT_LENGTH, "2".parse().unwrap());
+    bare.insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
+    let resp = proxy_to_loopback(port, "GET", "/echo", &bare, None)
+        .await
+        .unwrap();
+    let seen: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        seen,
+        serde_json::json!({ "cl": null, "te": false, "len": 0 })
+    );
+
+    // A real body keeps its content-length and bytes.
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_LENGTH, "7".parse().unwrap());
+    headers.insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
+    let resp = proxy_to_loopback(port, "GET", "/echo", &headers, Some(br#"{"a":1}"#.to_vec()))
+        .await
+        .unwrap();
+    let seen: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        seen,
+        serde_json::json!({ "cl": "7", "te": false, "len": 7 })
+    );
+
+    server.abort();
+}
+
+#[test]
+fn request_has_body_reads_framing_headers() {
+    let empty = HeaderMap::new();
+    assert!(!request_has_body(&empty));
+    let mut zero = HeaderMap::new();
+    zero.insert(header::CONTENT_LENGTH, "0".parse().unwrap());
+    assert!(!request_has_body(&zero));
+    let mut two = HeaderMap::new();
+    two.insert(header::CONTENT_LENGTH, "2".parse().unwrap());
+    assert!(request_has_body(&two));
+    let mut chunked = HeaderMap::new();
+    chunked.insert(header::TRANSFER_ENCODING, "chunked".parse().unwrap());
+    assert!(request_has_body(&chunked));
+}

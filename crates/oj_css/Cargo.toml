@@ -1,10 +1,15 @@
 [package]
-name = "oj_css"
+name = "adaptive-oj-css"
+publish = false
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "CSS pipeline: Lightning CSS transforms, CSS Modules scoping"
+
+
+[lib]
+name = "oj_css"
 
 [dependencies]
 lightningcss = { version = "1.0.0-alpha.72", features = ["browserslist"] }

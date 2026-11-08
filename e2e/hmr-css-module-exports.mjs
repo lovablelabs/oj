@@ -21,7 +21,7 @@ const { chromium } = createRequire(path.join(here, "x.js"))("playwright");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const port = Number(process.env.OJ_E2E_PORT || 5486);
 
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 const app = fs.mkdtempSync(path.join(os.tmpdir(), "oj-cssmod-"));
 fs.mkdirSync(path.join(app, "src"), { recursive: true });

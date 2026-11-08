@@ -28,7 +28,7 @@ if (!fs.existsSync(path.join(app, "node_modules", "@tanstack", "react-start"))) 
   console.log("SKIP start ssr browser field: fixture deps not installed");
   process.exit(0);
 }
-if (!process.env.OJ_BIN) execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+if (!process.env.OJ_BIN) execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 const must = (cond, msg) => {
   if (!cond) throw new Error(msg);

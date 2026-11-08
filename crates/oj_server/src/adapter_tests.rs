@@ -50,6 +50,51 @@ fn start_manifest_shims_serve_old_and_new_start_server_core_shapes() {
     );
 }
 
+// The runner shadows `{pkg}/server-entry` so an app server entry wrapping
+// the default composes against it; the shadow must keep the default's named
+// export too, or a wrapper importing `createServerEntry` 500s every page
+// with "does not provide an export named 'createServerEntry'".
+#[test]
+fn both_runner_stubs_export_create_server_entry() {
+    let dir = tmp("runner-stubs");
+    write_start_assets(&dir).unwrap();
+    for name in ["server-entry.tsx", "server-entry-solid.tsx"] {
+        let src = std::fs::read_to_string(dir.join(name)).unwrap();
+        assert!(
+            src.contains("export function createServerEntry"),
+            "{name} lost the named export app server entries wrap with"
+        );
+    }
+}
+
+#[test]
+fn start_build_scripts_match_the_embedded_assets_in_cache_order() {
+    let expected_names = [
+        "bundle-client.mjs",
+        "resolve-pkg.mjs",
+        "rolldown-assets.mjs",
+        "vite-plugin-bridge.mjs",
+        "glob-transform.mjs",
+        "solid-transform.mjs",
+        "start-pkg.mjs",
+        "client-entry.tsx",
+        "client-entry-solid.tsx",
+    ];
+    let scripts = start_build_scripts();
+
+    assert_eq!(
+        scripts.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+        expected_names
+    );
+    for (name, content) in scripts {
+        let embedded = START_ASSETS
+            .iter()
+            .find(|(asset_name, _)| asset_name == name)
+            .unwrap_or_else(|| panic!("{name} is not included in START_ASSETS"));
+        assert_eq!(content, &embedded.1, "content mismatch for {name}");
+    }
+}
+
 #[test]
 fn is_tanstack_start_app_requires_routes_and_dep() {
     let base = tmp("ts");
@@ -75,6 +120,31 @@ fn is_tanstack_start_app_requires_routes_and_dep() {
     )
     .unwrap();
     assert!(!is_tanstack_start_app(&app2));
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn is_tanstack_solid_start_app_detects_the_solid_flavor_only() {
+    let base = tmp("tss");
+    let app = base.join("app");
+    std::fs::create_dir_all(app.join("src").join("routes")).unwrap();
+    std::fs::write(
+        app.join("package.json"),
+        r#"{"dependencies":{"solid-js":"1","@tanstack/solid-start":"1"}}"#,
+    )
+    .unwrap();
+    assert!(is_tanstack_solid_start_app(&app));
+    // The React Start pipeline must not claim it.
+    assert!(!is_tanstack_start_app(&app));
+    let react = base.join("react");
+    std::fs::create_dir_all(react.join("src").join("routes")).unwrap();
+    std::fs::write(
+        react.join("package.json"),
+        r#"{"dependencies":{"@tanstack/react-start":"1"}}"#,
+    )
+    .unwrap();
+    assert!(!is_tanstack_solid_start_app(&react));
+    assert!(is_tanstack_start_app(&react));
     let _ = std::fs::remove_dir_all(&base);
 }
 

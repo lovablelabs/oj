@@ -142,6 +142,7 @@ impl SsrBridge {
 
     /// Plugin-transform + compile tail on a pre-read source; `run_plugins:
     /// false` skips the plugin chain and applies only the dev-ssr compile.
+    /// `id` stays opaque for plugins; filesystem/compiler paths omit its query.
     pub async fn transform_module(
         &self,
         id: &str,
@@ -686,10 +687,11 @@ pub(crate) async fn ssr_module_inner(
     if let Some(code) = crate::stylex::virtual_module(state, id) {
         return ssr_compile_source(state, id, code.to_string(), true, runner);
     }
-    let path = PathBuf::from(id);
+    // `id` stays opaque for plugins; filesystem/compiler paths omit its query.
+    let clean = id.split_once('?').map_or(id, |(clean, _)| clean);
+    let path = PathBuf::from(clean);
     // Checked on the file the id names, query aside: `x?raw` reads `x`.
-    let named = Path::new(id.split('?').next().unwrap_or(id));
-    if !ssr_module_allowed(state, named) {
+    if !ssr_module_allowed(state, &path) {
         return Err(SsrModuleError::Forbidden(
             "oj: module not allow-listed".into(),
         ));
@@ -740,7 +742,7 @@ pub(crate) async fn ssr_module_inner(
         },
     };
     if !from_plugin && ext == Some("json") {
-        return oj_compiler::json::to_esm(&source, id)
+        return oj_compiler::json::to_esm(&source, clean)
             .map_err(|e| SsrModuleError::Failed(format!("{e}")));
     }
     ssr_transform_source(state, id, source, from_plugin, runner).await
@@ -944,8 +946,10 @@ pub(crate) async fn ssr_transform_source(
             let resolver = host
                 .own_environment_resolver("ssr")
                 .unwrap_or_else(|| Arc::clone(&state.ssr_resolver));
+            // Filesystem paths omit the opaque plugin query.
+            let clean = id.split_once('?').map_or(id, |(clean, _)| clean);
             let resolved =
-                resolved_imports_json(&resolver, &state.fs_allow, &source, Path::new(id), None);
+                resolved_imports_json(&resolver, &state.fs_allow, &source, Path::new(clean), None);
             match host.transform(&source, id, &resolved).await {
                 Ok(t) => t.code,
                 Err(e) => {
@@ -1006,6 +1010,8 @@ fn compile_ssr(
     let compile_path: PathBuf = if from_plugin {
         PathBuf::from("virtual.tsx")
     } else {
+        // OXC infers TS/JSX from the filename, not the opaque plugin query
+        // (`served` above already strips it).
         served.clone()
     };
     let specs = oj_compiler::imports(&source, &compile_path)
@@ -1043,6 +1049,57 @@ fn compile_ssr(
         out.code
     };
     Ok(with_inline_map(code, out.map_json))
+}
+
+#[cfg(test)]
+mod compiler_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn queried_filenames_compile_with_the_clean_source_extension() {
+        let root = tempfile::tempdir().unwrap();
+        let built = DevServer {
+            root: root.path().to_path_buf(),
+            port: None,
+            host: None,
+            config: None,
+            enable_cache: false,
+            no_cache: true,
+            lazy: true,
+            typecheck: false,
+            mode: None,
+            rolldown: tokio::runtime::Handle::current(),
+        }
+        .build_app()
+        .await
+        .unwrap();
+        for (name, source) in [
+            ("source.ts", "export const value: number = 42;"),
+            ("source.mts", "export const value: number = 42;"),
+            ("source.tsx", "export const value = <div>compiled</div>;"),
+            ("source.jsx", "export const value = <div>compiled</div>;"),
+        ] {
+            let clean = root.path().join(name).to_string_lossy().into_owned();
+            for runner in [false, true] {
+                let plain =
+                    ssr_compile_source(&built.ssr.state, &clean, source.into(), false, runner)
+                        .unwrap();
+                let queried = ssr_compile_source(
+                    &built.ssr.state,
+                    &format!("{clean}?tsr-split=component&opaque=%2F"),
+                    source.into(),
+                    false,
+                    runner,
+                )
+                .unwrap();
+                assert_eq!(queried, plain, "{name}, runner={runner}");
+                assert!(
+                    !queried.contains(": number") && !queried.contains("<div>"),
+                    "{queried}"
+                );
+            }
+        }
+    }
 }
 
 pub(crate) async fn ssr_module(

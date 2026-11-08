@@ -12,7 +12,7 @@ import { tmpProject } from "./harness.mjs";
 const repo = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const oj = path.join(repo, "target", "debug", "oj");
 if (!fs.existsSync(oj)) {
-  execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+  execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 }
 
 // Node raises its soft fd limit to the hard limit at startup

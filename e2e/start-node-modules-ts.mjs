@@ -27,7 +27,7 @@ if (!installed) {
   console.log("SKIP start node_modules ts: fixture deps not installed");
   process.exit(0);
 }
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 // The dependency's own stylesheet, CSS module and JSON imports must reach
 // the pipeline (Vite never externalizes a relative specifier), as must the

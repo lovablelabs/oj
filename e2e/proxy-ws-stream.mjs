@@ -25,7 +25,7 @@ const UPSTREAM = 5494;
 const PORT = 5495;
 const TLS_UPSTREAM = 5496;
 
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 // ---- upstream: a slow chunked route and a minimal WebSocket echo server ----
 function wsFrame(op, payload) {

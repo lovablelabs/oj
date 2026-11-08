@@ -27,7 +27,7 @@ if (!installed) {
   process.exit(0);
 }
 
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 const rm = (p) => {
   for (let i = 0; ; i++) {
     try {

@@ -31,7 +31,7 @@ if (!fs.existsSync(path.join(fixtureModules, "vite", "package.json"))) {
   process.exit(0);
 }
 
-execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 
 const app = fs.mkdtempSync(path.join(os.tmpdir(), "oj-optdep-rd-"));
 const nm = path.join(app, "node_modules");

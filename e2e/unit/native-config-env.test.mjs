@@ -12,7 +12,7 @@ import { tmpProject } from "./harness.mjs";
 const repo = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const oj = process.env.OJ_BIN ?? path.join(repo, "target", "debug", "oj");
 if (!process.env.OJ_BIN && !fs.existsSync(oj)) {
-  execSync("cargo build -p oj", { cwd: repo, stdio: "inherit" });
+  execSync("cargo build -p adaptive-oj", { cwd: repo, stdio: "inherit" });
 }
 
 // rolldown-vite's native config loader prints a migration-advice warning wall
