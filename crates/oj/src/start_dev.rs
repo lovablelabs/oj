@@ -545,9 +545,18 @@ pub async fn start_dev(
     } else {
         None
     };
-    // The resolved gate (the knob or `server.hmrGate`): a gate on drops the
-    // boot's engine at the next rebundle.
-    bundler.set_hot_enabled(built.hmr_gate.is_none());
+    // The resolved gate (the knob or `server.hmrGate`). A full-reload gate
+    // reloads on every release, so it drops the boot's engine at the next
+    // rebundle; a granular one keeps hot updates and parks them for the
+    // editor's flush.
+    bundler.set_hot_enabled(hot_under_gate(
+        built.hmr_gate.as_ref().map(|gate| gate.full_reload()),
+    ));
+    if let Some(gate) = built.hmr_gate.clone() {
+        bundler
+            .hot
+            .set_gate(Arc::new(move || gate.reload_is_held()));
+    }
     // The dev urls' prefix under `base` (see oj_server::start_dev_url_base).
     let base = oj_server::start_dev_url_base(bundler.base());
     let state = Arc::new(StartState {
@@ -649,6 +658,9 @@ pub async fn start_dev(
                 Err(broadcast::error::RecvError::Closed)
             ) {
                 let Some(state) = weak.upgrade() else { return };
+                // Parked hot updates first: a reload published with them
+                // supersedes them anyway.
+                state.bundler.hot.release();
                 state.reloads.flushed();
             }
         });
@@ -1060,6 +1072,13 @@ fn restorable_glob_members(scopes: &Path, cache: &Path) -> Vec<PathBuf> {
         .flat_map(oj_compiler::glob::GlobCall::files)
         .filter(|f| !left_out(f))
         .collect()
+}
+
+/// Whether the client bundle hot-updates, given the editor's gate (`Some`
+/// with its full-reload mode) or none. Only a full-reload gate turns hot
+/// updates off: its releases reload the pages anyway.
+fn hot_under_gate(gate_full_reload: Option<bool>) -> bool {
+    gate_full_reload != Some(true)
 }
 
 /// Whether a batch can change the client bundle: a path in the closure (the
@@ -2525,9 +2544,10 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
                     .read()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .clone();
-                // Hot updates reach a page unless the HMR gate holds updates
-                // for the editor's flush: then each edit reloads, as before.
-                let hot = state.gate.is_none().then(|| {
+                // Hot updates reach a page unless a full-reload HMR gate
+                // reloads every edit; a granular gate parks them for its flush
+                // (HotUpdates::set_gate).
+                let hot = state.bundler.hot_enabled().then(|| {
                     let weak = Arc::downgrade(&state);
                     HotPage {
                         bundler: Arc::clone(&state.bundler),
@@ -3539,11 +3559,15 @@ mod tests {
     }
 
     #[test]
-    fn the_hmr_gate_turns_the_bundlers_hot_updates_off() {
+    fn only_a_full_reload_gate_turns_the_bundlers_hot_updates_off() {
+        // No gate: edits apply in place.
+        assert!(hot_under_gate(None));
+        // A granular gate parks the hot updates for its flush instead of
+        // reloading every edit.
+        assert!(hot_under_gate(Some(false)));
+        // A full-reload gate reloads on every release.
+        assert!(!hot_under_gate(Some(true)));
         let bundler = ClientBundler::for_tests(Path::new("/app"));
-        bundler.set_hot_enabled(true);
-        assert!(bundler.hot_enabled());
-        // A gated server: every edit reloads, so the bundle never goes hot.
         bundler.set_hot_enabled(false);
         assert!(!bundler.hot_enabled());
     }

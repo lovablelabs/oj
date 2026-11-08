@@ -1557,6 +1557,7 @@ fn merge_adopts_only_unset_fields() {
         html: None,
         active_plugins: None,
         stylex: None,
+        editor_hmr_gate: false,
         start_router: None,
         resolve_error: None,
     };
@@ -1613,6 +1614,7 @@ fn merge_never_overrides_config() {
         html: None,
         active_plugins: None,
         stylex: None,
+        editor_hmr_gate: false,
         start_router: None,
         resolve_error: None,
     };
@@ -2229,4 +2231,23 @@ export async function loadConfigFromFile() {
     );
     host.shutdown();
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn an_editor_hmr_gate_plugin_turns_the_native_gate_on_unless_oj_config_says_no() {
+    let json = serde_json::json!({ "editorHmrGate": true });
+    let mut config = oj_config::OjConfig::default();
+    merge_vite_values(&mut config, parse_vite_values(&json));
+    assert_eq!(config.server.as_ref().and_then(|s| s.hmr_gate), Some(true));
+
+    // oj's own `server.hmrGate: false` wins.
+    let mut config = oj_config::OjConfig::default();
+    config.server.get_or_insert_with(Default::default).hmr_gate = Some(false);
+    merge_vite_values(&mut config, parse_vite_values(&json));
+    assert_eq!(config.server.as_ref().and_then(|s| s.hmr_gate), Some(false));
+
+    // No plugin: the gate is left as it was.
+    let mut config = oj_config::OjConfig::default();
+    merge_vite_values(&mut config, parse_vite_values(&serde_json::json!({})));
+    assert_eq!(config.server.as_ref().and_then(|s| s.hmr_gate), None);
 }

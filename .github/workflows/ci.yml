@@ -341,6 +341,7 @@ jobs:
           node e2e/hmr-client-options.mjs
           node e2e/html-fallback-dev.mjs
           node e2e/hmr-glob-add-delete.mjs
+          node e2e/hmr-gate-flush-grace.mjs
           node e2e/watch-config-deps-ignored.mjs
       - name: transformIndexHtml per-page ctx (dev + build) via the css fixture
         run: node e2e/html-transform-ctx.mjs
@@ -352,6 +353,8 @@ jobs:
         run: node e2e/ssr-concurrent.mjs
       - name: start dev holds the page reload behind the editor HMR gate until the flush
         run: node e2e/start-hmr-gate.mjs
+      - name: start dev keeps edits hot behind a granular editor HMR gate, released by the flush
+        run: node e2e/start-hmr-gate-hot.mjs
       - name: start dev skips rebundle and reload for changes outside every served graph
         run: node e2e/start-rebundle-gate.mjs
       - name: start dev keeps one client plugin container, a buildStart codegen write never loops

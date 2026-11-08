@@ -43,6 +43,12 @@ pub(crate) struct HotUpdates {
     stale: tokio::sync::watch::Sender<bool>,
     /// Where pages fetch a patch: [`PATCH_PREFIX`] under the dev `base`.
     patch_prefix: String,
+    /// The editor's granular HMR gate: while it holds, frames park here
+    /// until its flush ([`HotUpdates::release`]). The check and the push share the
+    /// lock a release drains under, so a frame is never stranded by a flush
+    /// landing between them.
+    gate: std::sync::OnceLock<crate::start_reloads::Held>,
+    parked: Mutex<Vec<Arc<Frame>>>,
 }
 
 impl HotUpdates {
@@ -53,6 +59,39 @@ impl HotUpdates {
             patches: Mutex::new(VecDeque::new()),
             generation: std::sync::atomic::AtomicU64::new(0),
             stale: tokio::sync::watch::Sender::new(false),
+            gate: std::sync::OnceLock::new(),
+            parked: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Hold the pages' frames while `held` says the editor's gate holds.
+    pub(crate) fn set_gate(&self, held: crate::start_reloads::Held) {
+        let _ = self.gate.set(held);
+    }
+
+    /// The gate flushed: send what it held, in order. Sent under the lock, so
+    /// a frame made after the flush cannot overtake them (a patch sequence
+    /// gap reloads the page).
+    pub(crate) fn release(&self) {
+        let mut parked = self
+            .parked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for frame in parked.drain(..) {
+            let _ = self.tx.send(frame);
+        }
+    }
+
+    fn send(&self, frame: Frame) {
+        let frame = Arc::new(frame);
+        let mut parked = self
+            .parked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.gate.get().is_some_and(|held| held()) {
+            parked.push(frame);
+        } else {
+            let _ = self.tx.send(frame);
         }
     }
 
@@ -87,7 +126,7 @@ impl HotUpdates {
     pub(crate) fn refresh_styles(&self, relink: bool, add: &[String]) {
         let text =
             serde_json::json!({ "type": "oj:css", "relink": relink, "add": add }).to_string();
-        let _ = self.tx.send(Arc::new(Frame { client: None, text }));
+        self.send(Frame { client: None, text });
     }
 
     /// A patch for its page: kept for the page to fetch, announced on its
@@ -126,10 +165,10 @@ impl HotUpdates {
         self.generation
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.stale.send_replace(true);
-        let _ = self.tx.send(Arc::new(Frame {
+        self.send(Frame {
             client: Some(patch.client.clone()),
             text,
-        }));
+        });
     }
 
     pub(crate) fn serve(&self, name: &str) -> Response {
@@ -257,6 +296,44 @@ mod tests {
         assert_eq!(v["type"], "oj:css");
         assert_eq!(v["relink"], false);
         assert_eq!(v["add"][0], "/@oj-start/fs/app/src/new.css");
+    }
+
+    #[tokio::test]
+    async fn a_held_gate_parks_frames_until_its_flush_releases_them_in_order() {
+        let hot = HotUpdates::new("");
+        let held = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let h = Arc::clone(&held);
+        hot.set_gate(Arc::new(move || {
+            h.load(std::sync::atomic::Ordering::SeqCst)
+        }));
+        let mut rx = hot.subscribe();
+        hot.accept(&patch("c1", "hmr_patch_0.js", 1));
+        hot.refresh_styles(true, &[]);
+        assert!(
+            rx.try_recv().is_err(),
+            "nothing reaches the pages while held"
+        );
+        // The patch is fetchable already: only its announcement waits.
+        assert_eq!(hot.serve("hmr_patch_0.js").status(), StatusCode::OK);
+
+        held.store(false, std::sync::atomic::Ordering::SeqCst);
+        hot.release();
+        let first: serde_json::Value =
+            serde_json::from_str(&rx.recv().await.unwrap().text).unwrap();
+        let second: serde_json::Value =
+            serde_json::from_str(&rx.recv().await.unwrap().text).unwrap();
+        assert_eq!(first["type"], "oj:hmr");
+        assert_eq!(second["type"], "oj:css");
+
+        // Released, the gate passes frames straight through.
+        hot.accept(&patch("c1", "hmr_patch_1.js", 2));
+        let v: serde_json::Value = serde_json::from_str(&rx.recv().await.unwrap().text).unwrap();
+        assert_eq!(v["seq"], 2);
+        hot.release();
+        assert!(
+            rx.try_recv().is_err(),
+            "a release with nothing parked sends nothing"
+        );
     }
 
     #[test]

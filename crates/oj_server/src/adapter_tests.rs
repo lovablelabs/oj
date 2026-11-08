@@ -500,3 +500,17 @@ fn content_changes_ignore_attribute_only_events_unless_the_mtime_moved() {
     assert_eq!(changes.changed_paths(&removed), vec![file.clone()]);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn only_a_fresh_empty_flush_lets_writes_pass_the_gate() {
+    let now = std::time::Instant::now();
+    // No empty flush: every write is held as usual.
+    assert!(!crate::hmr::within_flush_grace(None, now));
+    // A write racing the flush that just released nothing passes.
+    assert!(crate::hmr::within_flush_grace(Some(now), now));
+    let early = now - crate::hmr::FLUSH_GRACE / 2;
+    assert!(crate::hmr::within_flush_grace(Some(early), now));
+    // Past the window, the editor's next write is held again.
+    let stale = now - crate::hmr::FLUSH_GRACE;
+    assert!(!crate::hmr::within_flush_grace(Some(stale), now));
+}

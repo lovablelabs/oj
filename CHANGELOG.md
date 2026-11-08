@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- TanStack Start dev keeps hot updates behind a granular editor HMR gate (`OJ_HMR_FULL_RELOAD=false`). An edit is patched in place once the editor's `POST /__hmr_flush` releases it, keeping the page and its state. A gated server used to turn hot updates off, so every edit reloaded the page. A full-reload gate still reloads.
+- An app plugin named `hmr-gate` (an editor's HMR gate) turns oj's native gate on and is not hosted, so one change is never gated twice.
+
+### Fixed
+
+- A write that lands just after an editor's flush that released nothing reaches the page. It used to be held until the gate's cap (four minutes), waiting for a flush that had already been sent. A flush that released something still holds the next write as before.
+
 ## [0.4.5] - 2026-11-06
 
 ### Fixed

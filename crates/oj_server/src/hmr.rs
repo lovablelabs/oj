@@ -533,6 +533,24 @@ pub(crate) struct GateInner {
     /// cap timer compares against the same instant to know whether its hold
     /// set was ever flushed.
     last_flush: Option<std::time::SystemTime>,
+    /// When the last flush that released nothing ran: see [`FLUSH_GRACE`].
+    empty_flush_at: Option<std::time::Instant>,
+}
+
+/// How long after a flush that released nothing new writes pass the gate.
+/// Such a flush can only have raced its own write (the write landed, or its
+/// watcher event arrived, just after the POST): held, that write would wait
+/// out the hold cap, minutes, for a flush the editor already sent. A flush
+/// that released something opens no window, so the editor's next write is
+/// held as always.
+pub(crate) const FLUSH_GRACE: Duration = Duration::from_millis(500);
+
+/// Whether a write at `now` lands in the grace window of an empty flush.
+pub(crate) fn within_flush_grace(
+    empty_flush_at: Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> bool {
+    empty_flush_at.is_some_and(|at| now.saturating_duration_since(at) < FLUSH_GRACE)
 }
 
 pub(crate) fn gate_relevant(path: &Path) -> bool {
@@ -570,6 +588,9 @@ impl HmrGate {
             if relevant.is_empty() {
                 return false;
             }
+        }
+        if within_flush_grace(inner.empty_flush_at, std::time::Instant::now()) {
+            return false;
         }
         let was_empty = inner.pending.is_empty();
         for p in relevant {
@@ -614,10 +635,14 @@ impl HmrGate {
         let (entries, held_reload): (Vec<(PathBuf, std::collections::BTreeSet<String>)>, bool) = {
             let mut inner = self.inner.lock().unwrap();
             inner.last_flush = Some(std::time::SystemTime::now());
+            let held_reload = self
+                .held_reload
+                .swap(false, std::sync::atomic::Ordering::SeqCst);
+            inner.empty_flush_at =
+                (inner.pending.is_empty() && !held_reload).then(std::time::Instant::now);
             (
                 std::mem::take(&mut inner.pending).into_iter().collect(),
-                self.held_reload
-                    .swap(false, std::sync::atomic::Ordering::SeqCst),
+                held_reload,
             )
         };
         let files: Vec<String> = entries
@@ -700,6 +725,15 @@ impl HmrGateHandle {
             gate.held_reload.load(std::sync::atomic::Ordering::SeqCst)
                 || !gate.inner.lock().unwrap().pending.is_empty()
         })
+    }
+
+    /// Whether a release reloads the pages rather than applying the held
+    /// changes in place (the full-reload knob).
+    pub fn full_reload(&self) -> bool {
+        self.state
+            .hmr_gate
+            .as_ref()
+            .is_some_and(|gate| gate.full_reload)
     }
 
     /// Fires once per flush that released something.
