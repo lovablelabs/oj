@@ -658,10 +658,15 @@ pub async fn start_dev(
                 Err(broadcast::error::RecvError::Closed)
             ) {
                 let Some(state) = weak.upgrade() else { return };
-                // Parked hot updates first: a reload published with them
-                // supersedes them anyway.
-                state.bundler.hot.release();
-                state.reloads.flushed();
+                // A reload this flush publishes takes every page onto output
+                // that carries the parked hot updates: drop them instead of
+                // patching a page that is about to unload (a patch fetch cut
+                // off by the reload). Otherwise they go out, in order.
+                if state.reloads.flushed() {
+                    state.bundler.hot.discard();
+                } else {
+                    state.bundler.hot.release();
+                }
             }
         });
     }

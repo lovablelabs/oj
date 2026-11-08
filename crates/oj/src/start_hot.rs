@@ -82,6 +82,14 @@ impl HotUpdates {
         }
     }
 
+    /// The gate flushed with a page reload: the parked frames are moot.
+    pub(crate) fn discard(&self) {
+        self.parked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
+
     fn send(&self, frame: Frame) {
         let frame = Arc::new(frame);
         let mut parked = self
@@ -334,6 +342,14 @@ mod tests {
             rx.try_recv().is_err(),
             "a release with nothing parked sends nothing"
         );
+
+        // A flush that reloads the pages drops what was parked.
+        held.store(true, std::sync::atomic::Ordering::SeqCst);
+        hot.accept(&patch("c1", "hmr_patch_2.js", 3));
+        held.store(false, std::sync::atomic::Ordering::SeqCst);
+        hot.discard();
+        hot.release();
+        assert!(rx.try_recv().is_err(), "a discarded patch reached the page");
     }
 
     #[test]
