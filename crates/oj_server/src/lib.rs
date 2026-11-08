@@ -358,6 +358,18 @@ impl StartFramework {
         self.start_package()
     }
 
+    /// The framework's own dev `resolve.noExternal` plan (its Vite plugin
+    /// runs these packages inside the module runner): the Start runtime seam
+    /// whose module state an app edit must re-evaluate with the app.
+    /// `start-server-core` caches the app's router entries in module state,
+    /// so leaving it external pins the first entries forever.
+    pub fn start_runtime_no_external(&self) -> [&'static str; 2] {
+        match self {
+            StartFramework::React => ["@tanstack/start**", "@tanstack/react-start**"],
+            StartFramework::Solid => ["@tanstack/start**", "@tanstack/solid-start**"],
+        }
+    }
+
     /// The framework's runner server entry written by `write_start_assets`.
     pub fn server_entry_file(&self) -> &'static str {
         match self {

@@ -1606,12 +1606,18 @@ async fn rebundle_worker(
         }
         // The non-lazy runner reloads strictly after the regen completed (its
         // re-import must see the new generated files, as the inline loop
-        // guaranteed) and before the browser reload. A batch that bundled or
-        // regenerated reloads it whole, as before; one that did neither only
-        // revalidates, which drops exactly the stale records (and answers
-        // whether the engine served any of the changed files at all).
+        // guaranteed) and before the browser reload. A batch that changed a
+        // server fn or regenerated outputs reloads the engine whole, as
+        // before: those replace module identity (resolver manifest, route
+        // tree), not just content. Any other batch — including one the
+        // client bundled — only revalidates, which drops exactly the stale
+        // records (and answers whether the engine served any of the changed
+        // files at all). The Start runtime seam loads versioned through the
+        // pipeline (the framework's own `resolve.noExternal` plan), so the
+        // dropped chain reaches the runtime's cached router entries and the
+        // next request re-imports them in place, without a fresh isolate.
         let engine_hit = if !state.lazy_runner() {
-            if bundled || server_fn_changed || !regen_changed.is_empty() {
+            if server_fn_changed || !regen_changed.is_empty() {
                 state.engine.reload().await;
                 true
             } else {

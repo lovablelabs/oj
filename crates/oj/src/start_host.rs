@@ -932,6 +932,17 @@ impl StartHost {
         framework: StartFramework,
     ) -> Arc<StartHost> {
         let aliases = framework_aliases(&root, cache, framework);
+        // The framework's own dev runner plan (`resolve.noExternal`) runs the
+        // Start runtime inside the module graph; claim the same seam here so
+        // an app edit re-evaluates the runtime's cached entries with the app
+        // (see `claims_dependency`). An explicit user `ssr.external` still
+        // wins, as in `matches_pkg`.
+        let mut no_external = no_external;
+        for pat in framework.start_runtime_no_external() {
+            if !no_external.no_external.iter().any(|p| p == pat) {
+                no_external.no_external.push(pat.to_string());
+            }
+        }
         Arc::new(StartHost {
             bridge,
             root,
@@ -2450,6 +2461,148 @@ export default { async fetch(req) {
             .await
             .unwrap_err()
             .contains("uncaught-handler-marker"));
+        drop(engine);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    // A plain module edit must reach the page WITHOUT a fresh isolate, while
+    // the batches the watcher still fully reloads keep their contract. The
+    // fake reproduces the external Start runtime's module-scope entries
+    // cache; with the runtime seam versioned, the dropped chain reaches that
+    // holder, the entry bump re-links it in place, and the generation — the
+    // respawn counter — does not move until the explicit reload.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_engine_revalidates_plain_edits_without_respawn_and_reloads_on_demand() {
+        let root = std::env::temp_dir().join(format!("oj-start-revalidate-{}", std::process::id()));
+        let cache = root.join("start-cache");
+        let package = root.join("node_modules/@tanstack/start-server-core");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("package.json"), r#"{"type":"module"}"#).unwrap();
+        std::fs::write(
+            package.join("package.json"),
+            r#"{"name":"@tanstack/start-server-core","type":"module","exports":{"./createStartHandler":"./handler.mjs"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            package.join("handler.mjs"),
+            r#"let entriesPromise;
+export function createStartHandler() {
+  return async () => {
+    const entries = await (entriesPromise ||= import('#tanstack-router-entry'));
+    return new Response(entries.render());
+  };
+}
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/router.ts"),
+            "export { render } from './component.ts';",
+        )
+        .unwrap();
+        let component = root.join("src/component.ts");
+        let edit = |marker: &str, seconds: u64| {
+            std::fs::write(
+                &component,
+                format!("export function render() {{ return '<p>{marker}</p>'; }}"),
+            )
+            .unwrap();
+            // Coarse filesystem clocks need a shove past the load-time mtime,
+            // and later edits need strictly increasing offsets to seed.
+            std::fs::File::options()
+                .write(true)
+                .open(&component)
+                .unwrap()
+                .set_modified(
+                    std::time::SystemTime::now() + std::time::Duration::from_secs(seconds),
+                )
+                .unwrap();
+        };
+        edit("initial-marker", 5);
+        let entry = root.join("src/server.ts");
+        std::fs::write(
+            &entry,
+            r#"import { createStartHandler } from '@tanstack/start-server-core/createStartHandler';
+const handler = createStartHandler();
+export default { async fetch(req) { return handler(req); } };
+"#,
+        )
+        .unwrap();
+        let built = oj_server::DevServer {
+            root: root.clone(),
+            port: None,
+            host: None,
+            config: None,
+            enable_cache: false,
+            no_cache: true,
+            lazy: true,
+            typecheck: false,
+            mode: None,
+            rolldown: tokio::runtime::Handle::current(),
+        }
+        .build_app()
+        .await
+        .unwrap();
+        let engine = StartEngine::new(
+            root.clone(),
+            &cache,
+            built.ssr.clone(),
+            entry,
+            Default::default(),
+            None,
+            Vec::new(),
+            StartFramework::Solid,
+        )
+        .unwrap();
+        let request = |url: &str| StartRequest {
+            method: "GET".into(),
+            url: url.into(),
+            host: "localhost".into(),
+            headers: Vec::new(),
+            body: None,
+        };
+        let body = |response: StartResponse| String::from_utf8(response.body).unwrap();
+        assert_eq!(
+            body(engine.handle(request("/")).await.unwrap()),
+            "<p>initial-marker</p>"
+        );
+        let generation = engine.host.graph().generation();
+        let holder = package.join("handler.mjs").to_string_lossy().into_owned();
+
+        // (a) The plain edit is picked up with the isolate untouched.
+        edit("revalidated-marker", 60);
+        assert!(
+            engine
+                .revalidate_for(std::slice::from_ref(&component))
+                .await
+        );
+        assert_eq!(
+            engine.host.graph().generation(),
+            generation,
+            "targeted revalidation must not respawn the isolate"
+        );
+        assert!(
+            engine.host.graph().version_of(&holder) > 0,
+            "the dropped chain reaches the runtime's cached entries holder"
+        );
+        assert_eq!(
+            body(engine.handle(request("/")).await.unwrap()),
+            "<p>revalidated-marker</p>"
+        );
+
+        // (b) The kept full-reload path still resets onto the new modules.
+        edit("reload-marker", 120);
+        engine.reload().await;
+        assert!(
+            engine.host.graph().generation() > generation,
+            "an explicit reload still respawns the isolate"
+        );
+        assert_eq!(
+            body(engine.handle(request("/")).await.unwrap()),
+            "<p>reload-marker</p>"
+        );
         drop(engine);
         std::fs::remove_dir_all(root).unwrap();
     }
