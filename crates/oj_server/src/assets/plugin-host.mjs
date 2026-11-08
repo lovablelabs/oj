@@ -2112,7 +2112,12 @@ function pluginContext(c) {
         if (viaPre != null) return viaPre;
         const core = await (async () => {
           const pre = transformResolveStore.getStore();
-          if (pre && pre.map && pre.map.has(source)) {
+          // The map describes the transforming module's own imports (keyed by
+          // specifier as written): only a resolve for that same importer may
+          // take it, as the dev path requires. Anything else — a plugin
+          // resolving for another importer, or with none — falls through to
+          // the bundler, exactly as a miss does.
+          if (pre && pre.map && pre.importer === importer && pre.map.has(source)) {
             const id = pre.map.get(source);
             return id == null ? null : { id };
           }

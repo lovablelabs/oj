@@ -173,6 +173,10 @@ pub(crate) struct StartHostPlugin {
     bundler_ctx: BundlerCtx,
     emit: Arc<EmitState>,
     command: Command,
+    /// The environment this bundle builds (`"client"`, `"ssr"`, or a worker
+    /// environment's name): selects the resolver the pre-resolved import map
+    /// is built with.
+    env_name: String,
     root: PathBuf,
     pre: bool,
     post: bool,
@@ -211,6 +215,7 @@ impl StartHostPlugin {
             bundler_ctx,
             emit,
             command,
+            env_name: "client".to_string(),
             root: root.to_path_buf(),
             pre: facts.resolve_id_pre > 0,
             post: facts.resolve_id_post > 0,
@@ -230,6 +235,13 @@ impl StartHostPlugin {
     /// server functions' handlers or what only they imported.
     pub fn compiling(mut self, compile: super::code::StartCodePlugin) -> Self {
         self.compile = Some(Arc::new(compile));
+        self
+    }
+
+    /// The environment this bundle builds, naming the resolver the
+    /// pre-resolved import map is built with (`"client"` by default).
+    pub fn environment(mut self, env_name: &str) -> Self {
+        self.env_name = env_name.to_string();
         self
     }
 
@@ -694,6 +706,7 @@ impl Plugin for StartHostPlugin {
             .compile
             .clone()
             .filter(|c| phase.is_none() && c.may_compile(id, code));
+        let env_name = self.env_name.clone();
         async move {
             let fail = |e: String| anyhow::anyhow!("plugin transform failed for {id}:\n{e}");
             let t = match (phase, compile) {
@@ -701,17 +714,28 @@ impl Plugin for StartHostPlugin {
                     if !pass {
                         return Ok(None);
                     }
-                    host.transform_phase(code, id, phase).await.map_err(fail)?
+                    // A stylesheet's post slot sees vite:css-post's module,
+                    // not the sheet the map would describe: no map, as before.
+                    host.transform_phase(code, id, "{}", phase)
+                        .await
+                        .map_err(fail)?
                 }
                 (None, None) => {
                     if !pass {
                         return Ok(None);
                     }
-                    host.transform(code, id, "{}").await.map_err(fail)?
+                    // The module's pre-resolved imports, so a transform's
+                    // `this.resolve` answers locally instead of round-tripping
+                    // through the bundler per import.
+                    let resolved = host.bundle_resolved_imports(&env_name, id, code);
+                    host.transform(code, id, &resolved).await.map_err(fail)?
                 }
                 (None, Some(compile)) => {
                     let mut t = if pass {
-                        host.transform_phase(code, id, "before-compile")
+                        // The pre-compile source's imports, as the
+                        // whole-chain call above sees them.
+                        let resolved = host.bundle_resolved_imports(&env_name, id, code);
+                        host.transform_phase(code, id, &resolved, "before-compile")
                             .await
                             .map_err(fail)?
                     } else {
@@ -741,8 +765,12 @@ impl Plugin for StartHostPlugin {
                             "broken": t.map_broken.is_some(),
                         })
                         .to_string();
+                        // The compiled code's imports: the rewrite may have
+                        // changed them, and after-compile plugins resolve what
+                        // they see.
+                        let resolved = host.bundle_resolved_imports(&env_name, id, &t.code);
                         let rest = host
-                            .transform_phase_after(&t.code, id, "after-compile", &prior)
+                            .transform_phase_after(&t.code, id, &resolved, "after-compile", &prior)
                             .await
                             .map_err(fail)?;
                         t.then(rest);

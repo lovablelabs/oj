@@ -211,6 +211,11 @@ fn client_plugins(
                 Arc::clone(emit),
                 start.jsx_config(),
             )
+            .environment(if matches!(target, CodeTarget::Server) {
+                "ssr"
+            } else {
+                "client"
+            })
             .with_module_parsed()
             .compiling(
                 StartCodePlugin::new(&start.root, target.clone())
@@ -583,6 +588,7 @@ pub(crate) async fn build(
                         Arc::clone(&emit),
                         start.jsx_config(),
                     )
+                    .environment(&server_env_name)
                     .with_module_parsed()
                     .compiling(
                         StartCodePlugin::new(&start.root, CodeTarget::Server)

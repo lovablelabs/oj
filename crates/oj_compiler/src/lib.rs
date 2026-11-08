@@ -31,7 +31,9 @@ pub use compile::{
 pub(crate) use env::defines_for;
 pub use env::ImportMetaEnv;
 pub(crate) use rewrite::rewrite_module_specifiers_pub;
-pub use scan::{exports, imports, rewrite_specifiers, specifier_edits, SpecifierEdits};
+pub use scan::{
+    exports, import_sources, imports, rewrite_specifiers, specifier_edits, SpecifierEdits,
+};
 pub(crate) use scan::{scan, F_IMPORT_META_GLOB, F_IMPORT_PAREN};
 pub use sourcemap::{line_map_json, map_json_to_data_url};
 

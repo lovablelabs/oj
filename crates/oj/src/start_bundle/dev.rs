@@ -486,6 +486,7 @@ impl DevBundler {
                     Arc::clone(&emit),
                     start.jsx_config(),
                 )
+                .environment("client")
                 .compiling(
                     StartCodePlugin::new(&start.root, CodeTarget::Client)
                         .with_start_package(start.framework.start_package())

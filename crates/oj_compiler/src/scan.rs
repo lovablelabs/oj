@@ -96,6 +96,55 @@ pub fn imports(source_text: &str, path: &Path) -> Vec<String> {
     })
 }
 
+/// Every module specifier a plugin's `this.resolve` may be asked for during
+/// a transform: static imports, named and star re-exports, and string-literal
+/// dynamic `import()`s, in source order (deduped). [`imports`] covers the
+/// static subset only; the bundle's pre-resolved map needs the rest because
+/// its fallback (the bundler's own resolution) costs a round trip per import
+/// while the dev pipelines' does not.
+pub fn import_sources(source_text: &str, path: &Path) -> Vec<String> {
+    with_program(source_text, path, |program| {
+        let mut seen = HashSet::new();
+        let mut out: Vec<String> = program
+            .body
+            .iter()
+            .filter_map(|stmt| match stmt {
+                Statement::ImportDeclaration(decl) => Some(crate::lit_str(decl.source.value)),
+                Statement::ExportFromDeclaration(decl) => Some(crate::lit_str(decl.source.value)),
+                Statement::ExportAllDeclaration(decl) => Some(crate::lit_str(decl.source.value)),
+                _ => None,
+            })
+            .filter(|s| seen.insert((*s).to_string()))
+            .map(str::to_string)
+            .collect();
+        // String-literal dynamic imports, anywhere in the module, gated on a
+        // memchr scan so the walk only runs when `import(` is present.
+        if scan(&F_IMPORT_PAREN, source_text) {
+            struct Dynamic<'x> {
+                seen: &'x mut HashSet<String>,
+                out: &'x mut Vec<String>,
+            }
+            impl<'a> Visit<'a> for Dynamic<'_> {
+                fn visit_import_expression(&mut self, it: &ImportExpression<'a>) {
+                    if let Expression::StringLiteral(lit) = &it.source {
+                        let s = crate::lit_str(lit.value);
+                        if self.seen.insert(s.to_string()) {
+                            self.out.push(s.to_string());
+                        }
+                    }
+                    walk::walk_import_expression(self, it);
+                }
+            }
+            Dynamic {
+                seen: &mut seen,
+                out: &mut out,
+            }
+            .visit_program(program);
+        }
+        out
+    })
+}
+
 /// The specifier rewrites one parse found: byte spans of the quoted literals
 /// (quotes included) and the replacement specifier for each, kept instead of
 /// the rewritten file so a caller can memoize the parse without retaining the
@@ -215,6 +264,32 @@ mod tests {
     #[test]
     fn imports_empty_for_no_imports() {
         assert!(imports("export const x = 1;", Path::new("m.ts")).is_empty());
+    }
+
+    #[test]
+    fn import_sources_covers_reexports_and_dynamic_imports() {
+        let src = r#"
+            import { a } from "react";
+            import b from "./b";
+            import "react";
+            export { c } from "./c";
+            export * from "./d";
+            export { x };
+            const y = await import("./dynamic");
+            const z = await import(variable);
+        "#;
+        let got = import_sources(src, Path::new("m.tsx"));
+        assert_eq!(
+            got,
+            vec![
+                "react".to_string(),
+                "./b".to_string(),
+                "./c".to_string(),
+                "./d".to_string(),
+                "./dynamic".to_string(),
+            ]
+        );
+        assert!(import_sources("export const x = 1;", Path::new("m.ts")).is_empty());
     }
 
     #[test]

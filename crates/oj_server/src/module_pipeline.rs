@@ -589,7 +589,12 @@ pub(crate) async fn plugin_transform_phase(
         return Ok(untouched(source));
     }
     let transformed = match phase {
-        Some(phase) => host.transform_phase(&source, transform_id, phase).await,
+        // Stylesheet slots only (JS takes the whole chain with its map): no
+        // pre-resolved imports, as before.
+        Some(phase) => {
+            host.transform_phase(&source, transform_id, "{}", phase)
+                .await
+        }
         None => {
             let resolved =
                 resolved_imports_json(&state.resolver, &state.fs_allow, &source, file, Some(state));
@@ -1879,6 +1884,46 @@ pub(crate) fn resolved_imports_json(
     serde_json::Value::Object(map).to_string()
 }
 
+/// Pre-resolve a bundle transform's static imports the way
+/// [`resolved_imports_json`] does for the dev pipelines, for the bundle's
+/// `this.resolve` (which otherwise ends in the bundler's own resolution, an
+/// RPC round trip per import per module). Only successes are listed: anything
+/// the native resolver cannot answer is left to `bundlerResolve`, which also
+/// preserves `external` — a listed path would otherwise claim a builtin or an
+/// externalized dependency as bundled (import-protection treats a missing
+/// `external` as internal). `server` is the importing environment's
+/// consumer: a server bundle externalizes bare dependencies, so only
+/// relative/absolute specifiers are listed for it. A client bundle lists
+/// everything the resolver answers; a user-configured
+/// `build.rollupOptions.external` matching a bare specifier is the one case
+/// the map cannot express (its string/regexp/function forms are evaluated by
+/// the bundler only), and falls back to `bundlerResolve` only when the
+/// resolver itself fails it.
+pub(crate) fn bundle_resolved_imports(
+    resolver: &OjResolver,
+    source: &str,
+    file: &Path,
+    server: bool,
+) -> String {
+    let mut map = serde_json::Map::new();
+    for spec in oj_compiler::import_sources(source, file) {
+        // Builtins resolve external, never to a file; leave them to the
+        // bundler, as `resolved_imports_json` does.
+        if is_node_builtin(&spec) {
+            continue;
+        }
+        // A server bundle externalizes bare dependencies; a listed file
+        // would wrongly answer them as bundled.
+        if server && is_bare_specifier(&spec) {
+            continue;
+        }
+        if let Ok(p) = resolver.resolve_from(file, &spec) {
+            map.insert(spec, serde_json::Value::String(p.display().to_string()));
+        }
+    }
+    serde_json::Value::Object(map).to_string()
+}
+
 /// Warn once per distinct message (Vite's deduping logger); a stable per-file
 /// condition would otherwise re-warn on every recompile.
 pub(crate) fn warn_interop_once(msg: String) {
@@ -1944,5 +1989,98 @@ mod tests {
         assert!(super::is_node_builtin("fs/promises"));
         assert!(super::is_node_builtin("_stream_readable"));
         assert!(!super::is_node_builtin("react"));
+    }
+
+    fn bundle_map_fixture() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        for (rel, body) in [
+            (
+                "main.js",
+                "import './a.js';\nimport 'dep';\nimport 'node:fs';\nimport './missing.js';\nexport * from './a.js';\nexport { R } from './re.js';\nconst dyn = await import('./dyn.js');\n",
+            ),
+            ("a.js", "export const A = 1;\n"),
+            ("re.js", "export const R = 1;\n"),
+            ("dyn.js", "export const D = 1;\n"),
+            (
+                "node_modules/dep/package.json",
+                r#"{"name":"dep","version":"1.0.0","type":"module","exports":{".":"./index.js"}}"#,
+            ),
+            ("node_modules/dep/index.js", "export const D = 1;\n"),
+        ] {
+            let p = tmp.path().join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, body).unwrap();
+        }
+        tmp
+    }
+
+    fn bundle_map_resolver(root: &std::path::Path) -> oj_resolver::OjResolver {
+        oj_resolver::OjResolver::with_settings(
+            root,
+            oj_resolver::ResolveSettings {
+                conditions: ["node", "import", "default"].map(String::from).to_vec(),
+                ..Default::default()
+            },
+        )
+    }
+
+    /// The bundle transform map lists what the native resolver answers and
+    /// omits the rest, so a miss still falls back to `bundlerResolve` (which
+    /// also preserves `external`): builtins and unresolvable specifiers are
+    /// never listed, and a server consumer's bare dependencies are left out
+    /// because the bundle externalizes them.
+    #[test]
+    fn bundle_resolved_imports_lists_files_only() {
+        let tmp = bundle_map_fixture();
+        let root = tmp.path();
+        let source = std::fs::read_to_string(root.join("main.js")).unwrap();
+        let file = root.join("main.js");
+        let resolver = bundle_map_resolver(root);
+        let client: std::collections::HashMap<String, String> = serde_json::from_str(
+            &super::bundle_resolved_imports(&resolver, &source, &file, false),
+        )
+        .unwrap();
+        assert_eq!(
+            client.get("./a.js").map(String::as_str),
+            Some(root.join("a.js").to_string_lossy().as_ref()),
+            "relative imports list the resolved file"
+        );
+        assert_eq!(
+            client.get("dep").map(String::as_str),
+            Some(
+                root.join("node_modules/dep/index.js")
+                    .to_string_lossy()
+                    .as_ref()
+            ),
+            "a client bundle lists bare dependencies (bundled, never external)"
+        );
+        assert_eq!(
+            client.get("./re.js").map(String::as_str),
+            Some(root.join("re.js").to_string_lossy().as_ref()),
+            "named re-exports resolve like static imports"
+        );
+        assert_eq!(
+            client.get("./dyn.js").map(String::as_str),
+            Some(root.join("dyn.js").to_string_lossy().as_ref()),
+            "string-literal dynamic imports resolve like static imports"
+        );
+        assert!(
+            !client.contains_key("node:fs"),
+            "builtins stay on the fallback path"
+        );
+        assert!(
+            !client.contains_key("./missing.js"),
+            "unresolvable specifiers stay on the fallback path"
+        );
+        let server: std::collections::HashMap<String, String> = serde_json::from_str(
+            &super::bundle_resolved_imports(&resolver, &source, &file, true),
+        )
+        .unwrap();
+        assert_eq!(server.get("./a.js"), client.get("./a.js"));
+        assert!(
+            !server.contains_key("dep"),
+            "a server bundle externalizes bare dependencies: listing one as a file would drop its external marking"
+        );
+        assert!(!server.contains_key("node:fs"));
     }
 }

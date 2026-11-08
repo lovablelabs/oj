@@ -1248,7 +1248,7 @@ async fn css_transform_phase(
         return Ok(source);
     };
     let t = host
-        .transform_phase(&source, id, phase)
+        .transform_phase(&source, id, "{}", phase)
         .await
         .map_err(|e| anyhow::anyhow!("plugin transform failed for {id}:\n{e}"))?;
     if let Some((ctx, emit)) = emit {
@@ -3152,7 +3152,7 @@ impl Plugin for OjUserPlugin {
                 return Ok(None);
             }
             let transformed = if is_compiled_stylesheet(id) {
-                host.transform_phase(code, id, "post").await
+                host.transform_phase(code, id, "{}", "post").await
             } else {
                 host.transform(code, id, "{}").await
             };

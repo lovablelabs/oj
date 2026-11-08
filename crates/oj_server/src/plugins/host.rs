@@ -1149,14 +1149,17 @@ impl PluginHost {
     /// One slot of a stylesheet's transform chain, around Vite's core CSS
     /// plugins: `"pre"` (the source, before vite:css compiles it), `"normal"`
     /// (the compiled CSS) or `"post"` (the JS module vite:css-post makes).
+    /// `resolved` is the module's pre-resolved imports (`{spec: path}`), as
+    /// [`PluginHost::transform`] takes it; stylesheet slots pass `"{}"`.
     pub async fn transform_phase(
         &self,
         code: &str,
         id: &str,
+        resolved: &str,
         phase: &str,
     ) -> Result<HostTransform, String> {
         let raw = self
-            .call("transformPhase", &[code, id, "{}", phase])
+            .call("transformPhase", &[code, id, resolved, phase])
             .await?;
         Ok(HostTransform::parse(raw, code))
     }
@@ -1168,13 +1171,34 @@ impl PluginHost {
         &self,
         code: &str,
         id: &str,
+        resolved: &str,
         phase: &str,
         prior: &str,
     ) -> Result<HostTransform, String> {
         let raw = self
-            .call("transformPhase", &[code, id, "{}", phase, prior])
+            .call("transformPhase", &[code, id, resolved, phase, prior])
             .await?;
         Ok(HostTransform::parse(raw, code))
+    }
+
+    /// The pre-resolved imports for a bundle transform of `id` (the
+    /// [`crate::module_pipeline::bundle_resolved_imports`] map), so the
+    /// transform's `this.resolve` answers locally instead of round-tripping
+    /// through `bundlerResolve` per import per module. `"{}"` when the dev
+    /// server set no resolvers (a `spawn`ed build host): the fallback path,
+    /// as before.
+    pub fn bundle_resolved_imports(&self, env_name: &str, id: &str, code: &str) -> String {
+        let Some(resolver) = self.own_environment_resolver(env_name) else {
+            return "{}".to_string();
+        };
+        let server = self.core.boot.resolvers.is_server(env_name);
+        let clean = id.split(['?', '#']).next().unwrap_or(id);
+        crate::module_pipeline::bundle_resolved_imports(
+            &resolver,
+            code,
+            std::path::Path::new(clean),
+            server,
+        )
     }
 
     pub async fn seed_chunk_names(&self, map_json: &str) -> Result<Option<String>, String> {
