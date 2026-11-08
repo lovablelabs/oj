@@ -270,3 +270,63 @@ async fn an_edit_reverted_before_any_page_fetched_it_drops_its_hold() {
     wait_pending(&server, 0, "the revert to X").await;
     assert_eq!(flush(&server).await, 0);
 }
+
+/// The editor's flush reaches the gate before its own write (or the write's
+/// watcher event): it releases nothing, and the write lands right after.
+/// The gate lets it through instead of holding it for a flush already sent.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_write_right_after_a_flush_that_released_nothing_reaches_the_pages() {
+    let (app, server) = gated_app().await;
+    release(&app, &server, "X", 1).await;
+
+    assert_eq!(
+        flush(&server).await,
+        0,
+        "nothing held: the flush races its write"
+    );
+    app.write(&[(COLOR, &color("W"))]);
+    tokio::time::sleep(SETTLED).await;
+    assert_eq!(
+        pending(&server).await,
+        0,
+        "the write was held for a flush the editor already sent"
+    );
+    assert!(page_fetch(&server, 2).await.contains("\"W\""));
+}
+
+/// What the pages have moves with a write the gate lets through: a later
+/// write back to the bytes the last flush released is a change (the pages
+/// show W now), held and released, never dropped as "no change".
+#[tokio::test(flavor = "multi_thread")]
+async fn a_write_let_through_moves_what_the_pages_have() {
+    let (app, server) = gated_app().await;
+    release(&app, &server, "X", 1).await;
+
+    assert_eq!(flush(&server).await, 0);
+    app.write(&[(COLOR, &color("W"))]);
+    tokio::time::sleep(SETTLED).await;
+    assert_eq!(pending(&server).await, 0, "W went straight to the pages");
+
+    // Past the empty flush's window: the next write is held as always.
+    app.write(&[(COLOR, &color("X"))]);
+    wait_pending(&server, 1, "the write back to X").await;
+    assert_eq!(
+        flush(&server).await,
+        1,
+        "the flush released the write back to X"
+    );
+    assert!(page_fetch(&server, 2).await.contains("\"X\""));
+}
+
+/// A flush that released something opens no window: the editor's next
+/// write is held, even right after it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_write_right_after_a_flush_that_released_something_is_held() {
+    let (app, server) = gated_app().await;
+    app.write(&[(COLOR, &color("X"))]);
+    wait_pending(&server, 1, "the edit to X").await;
+    assert_eq!(flush(&server).await, 1);
+    app.write(&[(COLOR, &color("Y"))]);
+    wait_pending(&server, 1, "the next edit, right after a releasing flush").await;
+    assert_eq!(flush(&server).await, 1);
+}

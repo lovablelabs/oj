@@ -126,7 +126,9 @@ try {
     must(await updated(3000), `round ${round}: the next write was not released`);
     await sleep(800);
   }
-  console.log("ok: the hmr-gate plugin turns oj's gate on unhosted; a write racing an empty flush passes; the next write is still held");
+  console.log(
+    "ok: the hmr-gate plugin turns oj's gate on unhosted; a write racing an empty flush passes; the next write is still held",
+  );
 } catch (e) {
   failed = true;
   console.error(String(e?.stack ?? e));

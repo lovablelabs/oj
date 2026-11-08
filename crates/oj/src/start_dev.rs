@@ -924,6 +924,8 @@ fn hot_has_now(state: &StartState) -> Option<u64> {
 /// The live-reload client's tag, under the dev `base` prefix, with the
 /// document's stamp (see start_reloads).
 fn reload_client(url_base: &str, stamp: &str) -> String {
+    // The stamp's query (`g`, then `&h=`) sits in an attribute: `&` escaped.
+    let stamp = stamp.replace('&', "&amp;");
     format!(
         "<script type=\"module\" src=\"{url_base}/@oj-start/live-reload.js?g={stamp}\"></script>"
     )
@@ -4726,6 +4728,12 @@ mod tests {
         assert!(
             tag.contains("src=\"/app/@oj-start/live-reload.js?g=1f-3\""),
             "{tag}"
+        );
+        // With the hot changes it has: the query's `&` escaped in the attribute.
+        let hot = reload_client("/app", "1f-3&h=7");
+        assert!(
+            hot.contains("src=\"/app/@oj-start/live-reload.js?g=1f-3&amp;h=7\""),
+            "{hot}"
         );
         let inject = |r| body_of(inject_reload_client(r, "/app", "1f-3"));
         assert!(inject(resp("text/html", None)).contains(&tag));

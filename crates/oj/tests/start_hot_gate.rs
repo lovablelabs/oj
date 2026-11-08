@@ -27,6 +27,11 @@ use start_app::{app, Server, WAIT};
 use tokio_tungstenite::tungstenite::Message;
 
 const GATE: &[(&str, &str)] = &[("OJ_HMR_GATE", "1"), ("OJ_HMR_FULL_RELOAD", "false")];
+
+/// One browser test of this file at a time. Most open two pages, and the
+/// Page helper allows a few Chromes at once: run side by side, each would
+/// take a slot for its first page and wait on the others for its second.
+static BROWSER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 const WIDGET: &str = "src/widgets/glob-widget.jsx";
 const SHOWN: &str = "(document.querySelector('[data-testid=\"glob-jsx\"]')?.textContent ?? '')";
 
@@ -85,7 +90,7 @@ async fn hydrated(page: &Page) {
 
 /// The hot changes a document says it has: `h` on its live-reload client's url.
 fn hot_has(html: &str) -> u64 {
-    let re = regex::Regex::new(r"live-reload\.js\?g=[0-9a-f]+-[0-9]+&h=([0-9]+)").unwrap();
+    let re = regex::Regex::new(r"live-reload\.js\?g=[0-9a-f]+-[0-9]+&(?:amp;)?h=([0-9]+)").unwrap();
     re.captures(html)
         .unwrap_or_else(|| panic!("no hot changes on the document's live-reload client:\n{html}"))
         [1]
@@ -123,6 +128,7 @@ async fn a_socket_behind_a_hot_change_is_told_to_reload() {
     if browser::skip() {
         return;
     }
+    let _one_at_a_time = BROWSER.lock().await;
     let root = app.0.clone();
     let original = std::fs::read_to_string(root.join(WIDGET)).unwrap();
     let dev = Server::oj_dev_with(&root, GATE);
@@ -175,6 +181,7 @@ async fn a_page_whose_socket_dropped_during_a_hot_change_still_gets_it() {
     if browser::skip() {
         return;
     }
+    let _one_at_a_time = BROWSER.lock().await;
     let root = app.0.clone();
     let original = std::fs::read_to_string(root.join(WIDGET)).unwrap();
     let dev = Server::oj_dev_with(&root, GATE);
@@ -288,6 +295,7 @@ async fn the_client_decides_a_missed_change_by_its_document_not_by_order() {
     if browser::skip() {
         return;
     }
+    let _one_at_a_time = BROWSER.lock().await;
     let script = include_str!("../../oj_server/src/assets/start/live-reload.js");
     let rule = script
         .split("// <oj:missed-change>")
@@ -333,6 +341,7 @@ async fn a_page_the_change_does_not_touch_stays_put() {
     if browser::skip() {
         return;
     }
+    let _one_at_a_time = BROWSER.lock().await;
     let root = app.0.clone();
     let original = std::fs::read_to_string(root.join(WIDGET)).unwrap();
     let dev = Server::oj_dev_with(&root, GATE);
@@ -388,7 +397,7 @@ fn documents_name_their_hot_changes_only_with_hot_updates() {
         let dev = Server::oj_dev_with(&app.0, env);
         let (status, html) = dev.request("GET", "/", &[]);
         assert_eq!(status, 200, "{html}");
-        regex::Regex::new(r"live-reload\.js\?g=[0-9a-f]+-[0-9]+&h=[0-9]+")
+        regex::Regex::new(r"live-reload\.js\?g=[0-9a-f]+-[0-9]+&(?:amp;)?h=[0-9]+")
             .unwrap()
             .is_match(&html)
     };
@@ -401,4 +410,133 @@ fn documents_name_their_hot_changes_only_with_hot_updates() {
         !named(&[("OJ_HMR_GATE", "1"), ("OJ_HMR_FULL_RELOAD", "true")]),
         "full-reload gate: no hot updates, nothing to name"
     );
+}
+
+/// A page's sockets, reachable from the test, with reconnects held (a new
+/// socket closes as it opens) while `window.__ojHold` is set, and retried
+/// at once instead of after a second. `held` holds them from the start.
+fn socket_hook(held: bool) -> String {
+    format!(
+        r#"
+        (() => {{
+          window.__ojHold = {held};
+          const Native = window.WebSocket;
+          window.__ojTestSockets = [];
+          window.WebSocket = function (...args) {{
+            const socket = new Native(...args);
+            if (window.__ojHold) socket.addEventListener("open", () => socket.close());
+            window.__ojTestSockets.push(socket);
+            return socket;
+          }};
+          window.WebSocket.prototype = Native.prototype;
+          Object.assign(window.WebSocket, Native);
+          const later = window.setTimeout;
+          window.setTimeout = (fn, ms, ...rest) => later(fn, ms === 1000 ? 20 : ms, ...rest);
+        }})();
+        "#
+    )
+}
+
+/// A page whose document was rendered before an edit, and whose socket only
+/// connects after the edit went out (still loading as it went), names the
+/// changes its document has and reloads onto the edit.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_page_that_loaded_before_a_change_and_connects_after_it_reloads() {
+    let Some(app) = app("hot-gate-late-socket") else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let _one_at_a_time = BROWSER.lock().await;
+    let root = app.0.clone();
+    let original = std::fs::read_to_string(root.join(WIDGET)).unwrap();
+    let dev = Server::oj_dev_with(&root, GATE);
+    // B keeps the run hot; C's socket is held from its first connect.
+    let b = Page::open(&dev.url("/")).await;
+    hydrated(&b).await;
+    let c = Page::open_with_script(&dev.url("/"), Some(&socket_hook(true))).await;
+    c.wait_for(&format!("{SHOWN}.includes('jsxglob:')"), WAIT)
+        .await;
+    c.eval::<bool>("(window.__mark = 'kept', true)").await;
+
+    edit(&dev, &root, &widget(&original, "jsxlate:", Some("#2468ac"))).await;
+    b.wait_for(
+        &format!("{SHOWN}.includes('jsxlate:') && {WIDGET_BG} === 'rgb(36, 104, 172)'"),
+        WAIT,
+    )
+    .await;
+    assert!(
+        c.eval::<bool>(&format!("!{SHOWN}.includes('jsxlate:')"))
+            .await,
+        "page C took the edit with no socket"
+    );
+
+    c.eval::<bool>("(window.__ojHold = false, true)").await;
+    assert!(
+        c.poll(
+            &format!("{SHOWN}.includes('jsxlate:') && {WIDGET_BG} === 'rgb(36, 104, 172)'"),
+            Duration::from_secs(20),
+        )
+        .await,
+        "page C stayed on the document from before the edit\n{}",
+        dev.output()
+    );
+    assert!(
+        c.eval::<bool>("window.__mark === undefined").await,
+        "page C shows the edit without having reloaded onto it"
+    );
+    b.close().await;
+    c.close().await;
+}
+
+/// A burst of edits with every page connected: each lands in place on every
+/// page, none reloads, and the last one wins. The change frames must never
+/// read a covered page as left out.
+#[tokio::test(flavor = "multi_thread")]
+async fn back_to_back_edits_apply_in_place_on_every_page() {
+    let Some(app) = app("hot-gate-burst") else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let _one_at_a_time = BROWSER.lock().await;
+    let root = app.0.clone();
+    let original = std::fs::read_to_string(root.join(WIDGET)).unwrap();
+    let dev = Server::oj_dev_with(&root, GATE);
+    let a = Page::open(&dev.url("/")).await;
+    let b = Page::open(&dev.url("/")).await;
+    hydrated(&a).await;
+    hydrated(&b).await;
+    for page in [&a, &b] {
+        page.eval::<bool>("(window.__mark = 'kept', true)").await;
+    }
+    let edits = [
+        ("jsxburst1:", "#102030", "rgb(16, 32, 48)"),
+        ("jsxburst2:", "#405060", "rgb(64, 80, 96)"),
+        ("jsxburst3:", "#708090", "rgb(112, 128, 144)"),
+        ("jsxburst4:", "#a0b0c0", "rgb(160, 176, 192)"),
+    ];
+    for (text, hex, rgb) in edits {
+        edit(&dev, &root, &widget(&original, text, Some(hex))).await;
+        for page in [&a, &b] {
+            page.wait_for(
+                &format!("{SHOWN}.includes('{text}') && {WIDGET_BG} === '{rgb}'"),
+                WAIT,
+            )
+            .await;
+        }
+    }
+    // Long enough for a stray reload to have landed.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    for (name, page) in [("A", &a), ("B", &b)] {
+        assert!(
+            page.eval::<bool>("window.__mark === 'kept'").await,
+            "page {name} reloaded during a burst of in-place edits\n{}",
+            dev.output()
+        );
+    }
+    a.close().await;
+    b.close().await;
 }

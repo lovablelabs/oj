@@ -95,7 +95,11 @@ try {
   await page.waitForSelector('[data-testid="counter"]:has-text("count: 1")');
   await page.evaluate(() => (window.__hotProbe = "kept"));
   const loaded = navigations;
-  const shows = (text) => page.locator('[data-testid="glob-jsx"]').textContent().then((t) => t?.includes(text));
+  const shows = (text) =>
+    page
+      .locator('[data-testid="glob-jsx"]')
+      .textContent()
+      .then((t) => t?.includes(text));
 
   // 1. A held edit: hot-updated at once, shown only after the flush.
   const hotCount = () => log.split("oj start: hot updated").length - 1;
