@@ -193,15 +193,26 @@
   // change that went out while the page still loaded (no socket open to take
   // it) reloads the page on connect.
   const stamp = __OJ_PAGE_STAMP__;
+  // The hot changes this page has: the document's, then each one it applies
+  // (every oj:hmr / oj:css frame names its change). The socket names them on
+  // every connect, so a change sent while this page loaded or while its
+  // socket was down reloads it.
+  let hotHas = __OJ_HOT_CHANGE__;
+  const applied = (msg) => {
+    if (typeof msg.change === "number" && (hotHas == null || msg.change > hotHas)) hotHas = msg.change;
+  };
   const BEHIND_KEY = "oj:start:behind:" + location.pathname;
   const connect = () => {
+    const query = [];
+    if (stamp != null) query.push("g=" + encodeURIComponent(stamp));
+    if (hotHas != null) query.push("h=" + hotHas);
     ws = new WebSocket(
       (location.protocol === "https:" ? "wss" : "ws") +
         "://" +
         location.host +
         base +
         "/@oj-start/hmr" +
-        (stamp == null ? "" : "?g=" + encodeURIComponent(stamp)),
+        (query.length ? "?" + query.join("&") : ""),
     );
     ws.onopen = () => {
       if (bus.runtime) send({ type: "oj:client", id: bus.runtime.clientId });
@@ -236,28 +247,45 @@
       }
       if (msg && msg.type === "oj:hmr" && bus.runtime && bus.runtime.ojApply) {
         bus.runtime.ojApply(msg);
+        applied(msg);
         return;
       }
       if (msg && msg.type === "oj:css") {
         if (msg.relink !== false) refreshStyles();
         linkStyles(msg.add || []);
+        applied(msg);
         return;
+      }
+      // A change went out to the pages it names. Named, this page has it
+      // (its patch came first, or it had nothing to patch). Left out, its
+      // client was not there for it (registered while it was being built):
+      // reload onto it.
+      if (msg && msg.type === "oj:change") {
+        if (typeof msg.change !== "number" || (hotHas != null && msg.change <= hotHas)) return;
+        const id = bus.runtime && bus.runtime.clientId;
+        if (id && Array.isArray(msg.clients) && msg.clients.includes(id)) {
+          applied(msg);
+          return;
+        }
       }
       // The page connected behind the server's changes: reload, once per
       // stamp. A document that comes back with the same stamp was served
       // from a cache (a service worker's, say), and reloading again would
       // only loop.
       if (msg && msg.type === "oj:behind") {
+        // A missed hot change keys on the changes the page has too: the
+        // reload brings a document stamped with newer ones.
+        const mark = msg.hot ? stamp + "#h" + hotHas : stamp;
         let last = null;
         try {
           last = sessionStorage.getItem(BEHIND_KEY);
         } catch {}
-        if (last === stamp) {
+        if (last === mark) {
           console.warn("[oj] this page is older than the dev server's code, and reloading served it unchanged");
           return;
         }
         try {
-          sessionStorage.setItem(BEHIND_KEY, stamp);
+          sessionStorage.setItem(BEHIND_KEY, mark);
         } catch {}
       }
     }

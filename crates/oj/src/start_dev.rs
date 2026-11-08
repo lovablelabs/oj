@@ -899,6 +899,28 @@ fn asset_mime(ext: &str) -> &'static str {
     }
 }
 
+/// A document's stamp: the reloads it has (`g`, see start_reloads) and,
+/// with hot updates, the hot changes it has (`h`, see
+/// `HotUpdates::behind`), read by the caller before the document waits for
+/// its output. Both ride the live-reload client's url to its socket.
+fn document_stamp(state: &StartState, hot_has: Option<u64>) -> String {
+    let reloads = state.reloads.stamp();
+    match hot_has {
+        Some(h) => format!("{reloads}&h={h}"),
+        None => reloads,
+    }
+}
+
+/// The hot changes a document rendered now has: read before it waits for
+/// output that carries them, so a change landing in between can only make
+/// the page reload once more, never miss it.
+fn hot_has_now(state: &StartState) -> Option<u64> {
+    state
+        .bundler
+        .hot_enabled()
+        .then(|| state.bundler.hot.changes())
+}
+
 /// The live-reload client's tag, under the dev `base` prefix, with the
 /// document's stamp (see start_reloads).
 fn reload_client(url_base: &str, stamp: &str) -> String {
@@ -2539,9 +2561,11 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
                 // Hot updates reach a page unless a full-reload HMR gate
                 // reloads every edit; a granular gate parks them for its flush
                 // (HotUpdates::set_gate).
+                let has = crate::start_hot::hot_change_in(parts.uri.query());
                 let hot = state.bundler.hot_enabled().then(|| {
                     let weak = Arc::downgrade(&state);
                     HotPage {
+                        has,
                         bundler: Arc::clone(&state.bundler),
                         frames: state.bundler.hot.subscribe(),
                         reload_needed: Arc::new(move || {
@@ -2578,6 +2602,7 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
                     state.hmr_overlay,
                     &state.base,
                     crate::start_reloads::stamp_in(req.uri().query()),
+                    crate::start_hot::hot_change_in(req.uri().query()),
                 ),
             )
                 .into_response(),
@@ -2650,6 +2675,8 @@ struct HotPage {
     bundler: Arc<ClientBundler>,
     frames: broadcast::Receiver<Arc<crate::start_hot::Frame>>,
     reload_needed: Arc<dyn Fn() + Send + Sync>,
+    /// The hot changes the page says it has (`h` on its socket's url).
+    has: Option<u64>,
 }
 
 type ToPlugins = Arc<dyn Fn(&str, &str) + Send + Sync>;
@@ -2672,6 +2699,8 @@ fn page_custom_frame(text: &str) -> bool {
 /// Sent on connect to a page whose document is older than the published
 /// changes (see start_reloads). A client that knows no such frame reloads.
 const BEHIND_FRAME: &str = r#"{"type":"oj:behind"}"#;
+/// [`BEHIND_FRAME`] for a hot change the page missed.
+const HOT_BEHIND_FRAME: &str = r#"{"type":"oj:behind","hot":true}"#;
 
 async fn start_hmr_socket(
     mut socket: WebSocket,
@@ -2688,6 +2717,18 @@ async fn start_hmr_socket(
     if epoch.behind()
         && socket
             .send(Message::Text(BEHIND_FRAME.into()))
+            .await
+            .is_err()
+    {
+        return;
+    }
+    // The same for a hot change: a frame goes once, to the pages connected
+    // then, so one that went out while this page loaded or while its socket
+    // was down (subscribed above, so none is missed from here on) leaves it
+    // behind for good unless it reloads now.
+    if hot.as_ref().is_some_and(|h| h.bundler.hot.behind(h.has))
+        && socket
+            .send(Message::Text(HOT_BEHIND_FRAME.into()))
             .await
             .is_err()
     {
@@ -2804,6 +2845,7 @@ async fn forward_document(
     raw: String,
     headers: &header::HeaderMap,
 ) -> Response {
+    let hot_has = hot_has_now(state);
     // A document loads the client output: never one from before a hot update.
     state.client_output_fresh().await;
     // Editor plugins (dev-server bridge) register configureServer routes
@@ -2813,7 +2855,7 @@ async fn forward_document(
     // The changes the document has, stamped before it renders: one that goes
     // out while it loads reaches its socket on connect.
     if let Some(port) = state.plugin_serve.mw_port() {
-        let stamp = state.reloads.stamp();
+        let stamp = document_stamp(state, hot_has);
         if let Some(resp) = oj_server::forward_get_to_plugin_mw(port, &raw, headers).await {
             // A worker-served document needs the live-reload client like the
             // runner-served ones, or edits never reload the page.
@@ -2825,7 +2867,7 @@ async fn forward_document(
     forward(
         &state.engine,
         &state.base,
-        &state.reloads.stamp(),
+        &document_stamp(state, hot_has),
         "GET".into(),
         document_url(&raw),
         headers,
@@ -2901,7 +2943,7 @@ async fn forward_with_body(state: &Arc<StartState>, req: Request) -> Response {
         .unwrap_or("/")
         .to_string();
     let mut headers = req.headers().clone();
-    let stamp = state.reloads.stamp();
+    let stamp = document_stamp(state, hot_has_now(state));
     // A configureServer middleware may claim the request first; since a
     // streamed body cannot be replayed, the plugin host pipes an unclaimed
     // request on to the engine's loopback shim (x-oj-forward-to) instead of
@@ -3027,7 +3069,13 @@ async fn serve_client_chunk(
 }
 
 /// The live-reload client with Vite's `__HMR_ENABLE_OVERLAY__` filled in.
-fn render_live_reload(js: &str, overlay: bool, url_base: &str, stamp: Option<String>) -> String {
+fn render_live_reload(
+    js: &str,
+    overlay: bool,
+    url_base: &str,
+    stamp: Option<String>,
+    hot_has: Option<u64>,
+) -> String {
     js.replace(
         "__HMR_ENABLE_OVERLAY__",
         if overlay { "true" } else { "false" },
@@ -3042,6 +3090,10 @@ fn render_live_reload(js: &str, overlay: bool, url_base: &str, stamp: Option<Str
             || "null".to_string(),
             |s| serde_json::Value::String(s).to_string(),
         ),
+    )
+    .replace(
+        "__OJ_HOT_CHANGE__",
+        &hot_has.map_or_else(|| "null".to_string(), |h| h.to_string()),
     )
 }
 
@@ -3909,8 +3961,8 @@ mod tests {
         oj_server::write_start_assets(&dir).unwrap();
         let js = std::fs::read_to_string(dir.join("live-reload.js")).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
-        let on = render_live_reload(&js, true, "/app", Some("1f-3".into()));
-        let off = render_live_reload(&js, false, "", None);
+        let on = render_live_reload(&js, true, "/app", Some("1f-3".into()), Some(7));
+        let off = render_live_reload(&js, false, "", None, None);
         assert!(on.contains("const enableOverlay = true;"), "{on}");
         // The dev urls' prefix under `base`, filled in as a string.
         assert!(on.contains("const base = \"/app\";"), "{on}");
@@ -3918,6 +3970,9 @@ mod tests {
         // The document's stamp, from the script's url.
         assert!(on.contains("const stamp = \"1f-3\";"), "{on}");
         assert!(off.contains("const stamp = null;"), "{off}");
+        // The hot changes the document has, from the script's url too.
+        assert!(on.contains("let hotHas = 7;"), "{on}");
+        assert!(off.contains("let hotHas = null;"), "{off}");
         assert!(!on.contains("__OJ_DEV_BASE__"));
         assert!(off.contains("const enableOverlay = false;"), "{off}");
         assert!(!off.contains("__HMR_ENABLE_OVERLAY__"));

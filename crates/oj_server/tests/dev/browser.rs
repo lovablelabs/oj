@@ -109,6 +109,12 @@ pub struct Page {
 
 impl Page {
     pub async fn open(url: &str) -> Page {
+        Page::open_with_script(url, None).await
+    }
+
+    /// [`Page::open`], with `script` run in every document of the page before
+    /// its own scripts (a test hook: wrapping `WebSocket`, say).
+    pub async fn open_with_script(url: &str, script: Option<&str>) -> Page {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         // A dozen Chromes booting beside the dev servers starve each other
         // into page-wait timeouts; a few at a time keeps the waits honest.
@@ -243,6 +249,13 @@ impl Page {
         page.send("Runtime.enable", json!({})).await;
         page.send("Page.enable", json!({})).await;
         page.send("Log.enable", json!({})).await;
+        if let Some(script) = script {
+            page.send(
+                "Page.addScriptToEvaluateOnNewDocument",
+                json!({ "source": script }),
+            )
+            .await;
+        }
         page.send("Page.navigate", json!({ "url": url })).await;
         page
     }

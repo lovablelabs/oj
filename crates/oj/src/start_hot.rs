@@ -43,6 +43,14 @@ pub(crate) struct HotUpdates {
     stale: tokio::sync::watch::Sender<bool>,
     /// Where pages fetch a patch: [`PATCH_PREFIX`] under the dev `base`.
     patch_prefix: String,
+    /// Changes sent to the pages in place: one per batch of patches (every
+    /// page's patch for one edit) and one per style refresh. Each frame
+    /// carries its change; a page reports the newest it applied when its
+    /// socket connects, and one that is behind reloads ([`HotUpdates::behind`]).
+    /// A frame goes once, to whoever is connected: the count is what makes
+    /// a page that missed one (a socket that dropped, a document still
+    /// loading) find out, as the reload count does for reloads.
+    changes: std::sync::atomic::AtomicU64,
     /// The editor's granular HMR gate: while it holds, frames park here
     /// until its flush ([`HotUpdates::release`]). The check and the push share the
     /// lock a release drains under, so a frame is never stranded by a flush
@@ -61,7 +69,43 @@ impl HotUpdates {
             stale: tokio::sync::watch::Sender::new(false),
             gate: std::sync::OnceLock::new(),
             parked: Mutex::new(Vec::new()),
+            changes: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    /// A new change for the pages, before its frames go out: the batch of
+    /// patches one edit makes (one per page), counted once.
+    pub(crate) fn begin_change(&self) -> u64 {
+        self.changes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1
+    }
+
+    /// `change` went out: every page hears which clients it covered (a patch
+    /// or nothing to patch). A page left out (its client registered while
+    /// the change was being built, or its patch never made it) is behind and
+    /// reloads; a page named in it has the change. After the change's
+    /// patches, through the same gate, so it never overtakes them.
+    pub(crate) fn end_change(&self, change: u64, covered: &[String]) {
+        let text = serde_json::json!({
+            "type": "oj:change",
+            "change": change,
+            "clients": covered,
+        })
+        .to_string();
+        self.send(Frame { client: None, text });
+    }
+
+    /// The changes sent so far.
+    pub(crate) fn changes(&self) -> u64 {
+        self.changes.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Whether a page that has applied the changes up to `has` missed one.
+    /// A page that names none (no hot client, an older document) is never
+    /// behind here; the reload count still covers it.
+    pub(crate) fn behind(&self, has: Option<u64>) -> bool {
+        has.is_some_and(|has| self.changes() > has)
     }
 
     /// Hold the pages' frames while `held` says the editor's gate holds.
@@ -132,8 +176,14 @@ impl HotUpdates {
     /// re-links the ones it has (a Tailwind sheet's rules follow the sources
     /// the update changed), `add` links the ones it newly imported.
     pub(crate) fn refresh_styles(&self, relink: bool, add: &[String]) {
-        let text =
-            serde_json::json!({ "type": "oj:css", "relink": relink, "add": add }).to_string();
+        let change = self.begin_change();
+        let text = serde_json::json!({
+            "type": "oj:css",
+            "relink": relink,
+            "add": add,
+            "change": change,
+        })
+        .to_string();
         self.send(Frame { client: None, text });
     }
 
@@ -168,6 +218,7 @@ impl HotUpdates {
             "url": format!("{}{filename}", self.patch_prefix),
             "seq": patch.seq,
             "changedIds": patch.changed_ids,
+            "change": self.changes(),
         })
         .to_string();
         self.generation
@@ -196,6 +247,16 @@ impl HotUpdates {
             None => (StatusCode::NOT_FOUND, "oj start: no such hot update").into_response(),
         }
     }
+}
+
+/// The hot changes a page has (`h` in its socket's or script's query), when
+/// it names them.
+pub(crate) fn hot_change_in(query: Option<&str>) -> Option<u64> {
+    query?
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("h="))?
+        .parse()
+        .ok()
 }
 
 /// What a page says on /@oj-start/hmr.
@@ -350,6 +411,77 @@ mod tests {
         hot.discard();
         hot.release();
         assert!(rx.try_recv().is_err(), "a discarded patch reached the page");
+    }
+
+    #[tokio::test]
+    async fn every_frame_carries_its_change_and_one_edit_is_one_change() {
+        let hot = HotUpdates::new("");
+        let mut rx = hot.subscribe();
+        // One edit, two pages: one change, a patch for each.
+        let change = hot.begin_change();
+        hot.accept(&patch("c1", "hmr_patch_0.js", 1));
+        hot.accept(&patch("c2", "hmr_patch_1.js", 1));
+        for _ in 0..2 {
+            let v: serde_json::Value =
+                serde_json::from_str(&rx.recv().await.unwrap().text).unwrap();
+            assert_eq!(v["change"], change);
+        }
+        // A style refresh is a change of its own.
+        hot.refresh_styles(true, &[]);
+        let v: serde_json::Value = serde_json::from_str(&rx.recv().await.unwrap().text).unwrap();
+        assert_eq!(v["type"], "oj:css");
+        assert_eq!(v["change"], change + 1);
+        assert_eq!(hot.changes(), change + 1);
+    }
+
+    #[tokio::test]
+    async fn a_change_ends_by_naming_every_page_it_covered_after_its_patches() {
+        let hot = HotUpdates::new("");
+        let held = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let h = Arc::clone(&held);
+        hot.set_gate(Arc::new(move || {
+            h.load(std::sync::atomic::Ordering::SeqCst)
+        }));
+        let mut rx = hot.subscribe();
+        let change = hot.begin_change();
+        hot.accept(&patch("c1", "hmr_patch_0.js", 1));
+        hot.end_change(change, &["c1".to_string(), "c2".to_string()]);
+        assert!(rx.try_recv().is_err(), "held like the patches");
+        held.store(false, std::sync::atomic::Ordering::SeqCst);
+        hot.release();
+        let first: serde_json::Value =
+            serde_json::from_str(&rx.recv().await.unwrap().text).unwrap();
+        let end = rx.recv().await.unwrap();
+        assert_eq!(first["type"], "oj:hmr", "the patch first");
+        assert_eq!(end.client, None, "every page hears it");
+        let end: serde_json::Value = serde_json::from_str(&end.text).unwrap();
+        assert_eq!(end["type"], "oj:change");
+        assert_eq!(end["change"], change);
+        assert_eq!(end["clients"], serde_json::json!(["c1", "c2"]));
+    }
+
+    #[test]
+    fn a_page_is_behind_only_when_a_change_it_never_applied_went_out() {
+        let hot = HotUpdates::new("");
+        // A page that names nothing is left to the reload count.
+        assert!(!hot.behind(None));
+        assert!(!hot.behind(Some(0)));
+        let first = hot.begin_change();
+        // Rendered before it, or its socket dropped as it went out.
+        assert!(hot.behind(Some(0)));
+        // Applied it: current.
+        assert!(!hot.behind(Some(first)));
+        hot.begin_change();
+        assert!(hot.behind(Some(first)));
+    }
+
+    #[test]
+    fn hot_change_parses_from_a_query() {
+        assert_eq!(hot_change_in(Some("g=ff-3&h=7")), Some(7));
+        assert_eq!(hot_change_in(Some("h=0")), Some(0));
+        assert_eq!(hot_change_in(Some("g=ff-3")), None);
+        assert_eq!(hot_change_in(Some("h=x")), None);
+        assert_eq!(hot_change_in(None), None);
     }
 
     #[test]
