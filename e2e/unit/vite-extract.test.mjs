@@ -53,29 +53,43 @@ test("duplicate array-form aliases preserve Vite first-match precedence", () => 
   assert.equal(out["@app"], "/first/src");
 });
 
-test("a monorepo regex alias pair collapses to one directory alias", () => {
-  // The standard TanStack/monorepo shape: an exact match to the package entry
-  // plus a subpath match. Both must collapse to `@x/pkg -> .../src`.
+// A RegExp `find` is not turned into a path prefix: it travels encoded as
+// `\0regex:<flags>:<source>` with its replacement untouched, and the
+// resolver applies it as Vite's alias plugin does (`id.replace(find,
+// replacement)` on the ids it tests true on).
+const regexKey = (re) => `\u0000regex:${re.flags}:${re.source}`;
+
+test("a regex alias travels as its pattern and flags, with the replacement untouched", () => {
+  const exact = /^@excalidraw\/excalidraw$/;
+  const subpath = /^@excalidraw\/excalidraw\/(.*)/i;
   const out = extractAlias([
-    { find: /^@excalidraw\/excalidraw$/, replacement: "/repo/packages/excalidraw/index.ts" },
-    { find: /^@excalidraw\/excalidraw\/(.*)/, replacement: "/repo/packages/excalidraw/$1" },
+    { find: exact, replacement: "/repo/packages/excalidraw/index.ts" },
+    { find: subpath, replacement: "/repo/packages/excalidraw/$1" },
   ]);
-  assert.equal(out["@excalidraw/excalidraw"], "/repo/packages/excalidraw");
+  assert.deepEqual(out, {
+    [regexKey(exact)]: "/repo/packages/excalidraw/index.ts",
+    [regexKey(subpath)]: "/repo/packages/excalidraw/$1",
+  });
+  // No prefix key is derived from the pattern: `/^@x$/` must not catch `@x/y`.
+  assert.ok(!("@excalidraw/excalidraw" in out), JSON.stringify(out));
 });
 
-test("subpath-only regex derives the key and strips the trailing capture", () => {
-  const out = extractAlias([{ find: /^@x\/pkg\/(.*)$/, replacement: "/abs/pkg/$1" }]);
-  assert.equal(out["@x/pkg"], "/abs/pkg");
+test("a duplicate regex alias keeps Vite's first-match precedence", () => {
+  const find = /^lib$/;
+  const out = extractAlias([
+    { find, replacement: "/first/lib/index.tsx" },
+    { find: /^lib$/, replacement: "/second/lib/index.tsx" },
+  ]);
+  assert.equal(out[regexKey(find)], "/first/lib/index.tsx");
 });
 
-test("index.ext replacement suffix is stripped to the directory", () => {
-  const out = extractAlias([{ find: /^lib$/, replacement: "/abs/lib/index.tsx" }]);
-  assert.equal(out["lib"], "/abs/lib");
-});
-
-test("a regex too complex to express as a path alias is skipped, not mis-resolved", () => {
-  const out = extractAlias([{ find: /^@x\/.*\/deep/, replacement: "/abs/$1" }]);
-  assert.ok(!("@x" in out), `must not produce a bogus key: ${JSON.stringify(out)}`);
+test("Vite's own client aliases are left to oj, not carried as user aliases", () => {
+  const out = extractAlias([
+    { find: /^\/?@vite\/env/, replacement: "/vite/dist/client/env.mjs" },
+    { find: /^\/?@vite\/client/, replacement: "/vite/dist/client/client.mjs" },
+    { find: "@app", replacement: "/src" },
+  ]);
+  assert.deepEqual(out, { "@app": "/src" });
 });
 
 test("non-string replacements are ignored", () => {

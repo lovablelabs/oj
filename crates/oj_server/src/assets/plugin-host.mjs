@@ -2557,7 +2557,9 @@ async function hostConfig(rc, list, { replay = false, container = main } = {}) {
     user.some((c) => !!c.ssr || !!c.build?.ssr || !!c.environments?.ssr);
   // The environment this host builds is one Vite resolves (an ssr build's).
   const viteResolves = (name) => name !== "ssr" || ssrResolved || name === hostEnvName;
-  for (const n of ["client", "ssr"]) if (!envNames.includes(n)) envNames.push(n);
+  // Vite's resolveConfig orders them `{ client, ssr, ...custom }`, whatever
+  // order the config declared them in.
+  envNames.splice(0, envNames.length, "client", "ssr", ...envNames.filter((n) => n !== "client" && n !== "ssr"));
   const configEnvHooks = hooksOf(list, "configEnvironment");
   // Plugin by plugin, then environment by environment, as
   // runConfigEnvironmentHook loops.
