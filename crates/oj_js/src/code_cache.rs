@@ -448,6 +448,27 @@ impl CodeCache for FsCodeCache {
     }
 }
 
+/// The runtime's transpiled extension TypeScript (`ext:`/`node:` modules):
+/// without a startup snapshot every process transpiles each lazily loaded
+/// module with swc on first import, about a quarter of the engine thread's
+/// startup work on a node-heavy program. The emit is a pure function of the
+/// embedded source, so it rides in this cache as a third entry kind (`ts`),
+/// keyed and guarded like the bytecode: the runtime's own hash of the source
+/// (which also covers the runtime version) in the entry head. Consume-only
+/// children read and never write, like everything else here.
+impl piu_runtime::transpile::ExtTranspileCache for FsCodeCache {
+    fn get(&self, specifier: &str, source_hash: u64) -> Option<Vec<u8>> {
+        let specifier = Url::parse(specifier).ok()?;
+        self.get_entry(&specifier, "ts", source_hash)
+    }
+
+    fn put(&self, specifier: &str, source_hash: u64, data: &[u8]) {
+        if let Ok(specifier) = Url::parse(specifier) {
+            self.put_entry(&specifier, "ts", source_hash, data);
+        }
+    }
+}
+
 impl NodeAnalysisCache for FsCodeCache {
     fn compute_source_hash(&self, source: &str) -> NodeAnalysisCacheSourceHash {
         NodeAnalysisCacheSourceHash(hash64(source.as_bytes()))

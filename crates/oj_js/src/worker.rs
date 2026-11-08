@@ -69,6 +69,12 @@ fn engine_loaders(
     let sys = Sys::default();
 
     let code_cache = code_cache_dir.map(|dir| Arc::new(FsCodeCache::new(dir)));
+    // Transpiled extension TypeScript is the same for every engine and root in
+    // the process; the first engine's cache serves them all (the runtime keeps
+    // one store per process).
+    if let Some(code_cache) = &code_cache {
+        piu_runtime::transpile::set_ext_transpile_cache(code_cache.clone());
+    }
 
     let workspace_factory = Arc::new(WorkspaceFactory::new(
         sys.clone(),
