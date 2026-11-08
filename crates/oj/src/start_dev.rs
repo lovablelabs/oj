@@ -3971,8 +3971,8 @@ mod tests {
         assert!(on.contains("const stamp = \"1f-3\";"), "{on}");
         assert!(off.contains("const stamp = null;"), "{off}");
         // The hot changes the document has, from the script's url too.
-        assert!(on.contains("let hotHas = 7;"), "{on}");
-        assert!(off.contains("let hotHas = null;"), "{off}");
+        assert!(on.contains("const docHas = 7;"), "{on}");
+        assert!(off.contains("const docHas = null;"), "{off}");
         assert!(!on.contains("__OJ_DEV_BASE__"));
         assert!(off.contains("const enableOverlay = false;"), "{off}");
         assert!(!off.contains("__HMR_ENABLE_OVERLAY__"));

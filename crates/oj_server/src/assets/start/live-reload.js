@@ -197,10 +197,22 @@
   // (every oj:hmr / oj:css frame names its change). The socket names them on
   // every connect, so a change sent while this page loaded or while its
   // socket was down reloads it.
-  let hotHas = __OJ_HOT_CHANGE__;
+  const docHas = __OJ_HOT_CHANGE__;
+  let hotHas = docHas;
   const applied = (msg) => {
     if (typeof msg.change === "number" && (hotHas == null || msg.change > hotHas)) hotHas = msg.change;
   };
+  // A change's end frame (oj:change): does this page still need it? Named
+  // among the clients it covered, it has it (patched, or nothing to patch).
+  // Left out, it needs it, unless its document was rendered after the
+  // change. Order-independent: the changes the page has applied (raised by
+  // style refreshes too) play no part.
+  // <oj:missed-change>
+  const missedChange = (msg, id, docHas) =>
+    typeof msg.change === "number" &&
+    !(id != null && Array.isArray(msg.clients) && msg.clients.includes(id)) &&
+    !(docHas != null && msg.change <= docHas);
+  // </oj:missed-change>
   const BEHIND_KEY = "oj:start:behind:" + location.pathname;
   const connect = () => {
     const query = [];
@@ -261,9 +273,7 @@
       // client was not there for it (registered while it was being built):
       // reload onto it.
       if (msg && msg.type === "oj:change") {
-        if (typeof msg.change !== "number" || (hotHas != null && msg.change <= hotHas)) return;
-        const id = bus.runtime && bus.runtime.clientId;
-        if (id && Array.isArray(msg.clients) && msg.clients.includes(id)) {
+        if (!missedChange(msg, bus.runtime ? bus.runtime.clientId : null, docHas)) {
           applied(msg);
           return;
         }

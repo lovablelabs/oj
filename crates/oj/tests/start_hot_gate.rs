@@ -278,3 +278,127 @@ async fn a_page_whose_socket_dropped_during_a_hot_change_still_gets_it() {
     a.close().await;
     b.close().await;
 }
+
+/// The client's rule for a change's end frame, run from the shipped script:
+/// named, the page has the change; left out, it needs it unless its document
+/// was rendered after it. Whatever else the page applied meanwhile (a style
+/// refresh raises its count too) plays no part.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_client_decides_a_missed_change_by_its_document_not_by_order() {
+    if browser::skip() {
+        return;
+    }
+    let script = include_str!("../../oj_server/src/assets/start/live-reload.js");
+    let rule = script
+        .split("// <oj:missed-change>")
+        .nth(1)
+        .and_then(|rest| rest.split("// </oj:missed-change>").next())
+        .expect("the missed-change rule's markers in live-reload.js");
+    let page = Page::open("about:blank").await;
+    let cases = [
+        // (change, clients, page id, document's changes, missed)
+        ("3", r#"["a","b"]"#, r#""a""#, "1", false),
+        ("3", r#"["b"]"#, r#""a""#, "1", true),
+        // Left out, but rendered after the change: nothing missing.
+        ("3", r#"["b"]"#, r#""a""#, "3", false),
+        ("3", r#"["b"]"#, r#""a""#, "4", false),
+        // No client yet (still loading) and a document from before it.
+        ("3", r#"["b"]"#, "null", "2", true),
+        // A document that names nothing: a page left out needs it.
+        ("3", r#"["b"]"#, r#""a""#, "null", true),
+        ("3", r#"["a"]"#, r#""a""#, "null", false),
+        // Not a change frame this rule can read.
+        ("null", r#"["b"]"#, r#""a""#, "1", false),
+    ];
+    for (change, clients, id, doc, missed) in cases {
+        let expr = format!(
+            "(() => {{ {rule}; return missedChange({{ change: {change}, clients: {clients} }}, {id}, {doc}); }})()"
+        );
+        assert_eq!(
+            page.eval::<bool>(&expr).await,
+            missed,
+            "change {change}, clients {clients}, page {id}, document {doc}"
+        );
+    }
+    page.close().await;
+}
+
+/// A page the change does not touch (another route) is named among the
+/// pages it covered, with nothing to patch: it stays as it is.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_page_the_change_does_not_touch_stays_put() {
+    let Some(app) = app("hot-gate-other-route") else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let root = app.0.clone();
+    let original = std::fs::read_to_string(root.join(WIDGET)).unwrap();
+    let dev = Server::oj_dev_with(&root, GATE);
+    let home = Page::open(&dev.url("/")).await;
+    let about = Page::open(&dev.url("/about")).await;
+    hydrated(&home).await;
+    about
+        .wait_for(
+            "document.body?.textContent.includes('about-page-marker')",
+            WAIT,
+        )
+        .await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    for page in [&home, &about] {
+        page.eval::<bool>("(window.__mark = 'kept', true)").await;
+    }
+
+    edit(
+        &dev,
+        &root,
+        &widget(&original, "jsxelsewhere:", Some("#13579b")),
+    )
+    .await;
+    home.wait_for(
+        &format!("{SHOWN}.includes('jsxelsewhere:') && {WIDGET_BG} === 'rgb(19, 87, 155)'"),
+        WAIT,
+    )
+    .await;
+    // Long enough for its frames, and a reload, to have landed.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(
+        home.eval::<bool>("window.__mark === 'kept'").await,
+        "the page the change touched reloaded instead of taking it in place"
+    );
+    assert!(
+        about.eval::<bool>("window.__mark === 'kept'").await,
+        "a page on another route reloaded for a change that does not touch it\n{}",
+        dev.output()
+    );
+    home.close().await;
+    about.close().await;
+}
+
+/// The hot changes a document names come with hot updates: with no gate and
+/// with a granular one, not behind a full-reload gate (every edit reloads
+/// there, and the reload count covers the pages).
+#[test]
+fn documents_name_their_hot_changes_only_with_hot_updates() {
+    let Some(app) = app("hot-gate-stamp") else {
+        return;
+    };
+    let named = |env: &[(&str, &str)]| {
+        let dev = Server::oj_dev_with(&app.0, env);
+        let (status, html) = dev.request("GET", "/", &[]);
+        assert_eq!(status, 200, "{html}");
+        regex::Regex::new(r"live-reload\.js\?g=[0-9a-f]+-[0-9]+&h=[0-9]+")
+            .unwrap()
+            .is_match(&html)
+    };
+    assert!(named(&[]), "no gate: hot updates, so the changes are named");
+    assert!(
+        named(GATE),
+        "granular gate: hot updates, so the changes are named"
+    );
+    assert!(
+        !named(&[("OJ_HMR_GATE", "1"), ("OJ_HMR_FULL_RELOAD", "true")]),
+        "full-reload gate: no hot updates, nothing to name"
+    );
+}

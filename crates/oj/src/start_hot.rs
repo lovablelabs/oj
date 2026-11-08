@@ -460,6 +460,31 @@ mod tests {
         assert_eq!(end["clients"], serde_json::json!(["c1", "c2"]));
     }
 
+    #[tokio::test]
+    async fn a_flush_that_reloads_drops_the_parked_change_frames_too() {
+        let hot = HotUpdates::new("");
+        let held = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let h = Arc::clone(&held);
+        hot.set_gate(Arc::new(move || {
+            h.load(std::sync::atomic::Ordering::SeqCst)
+        }));
+        let mut rx = hot.subscribe();
+        let change = hot.begin_change();
+        hot.accept(&patch("c1", "hmr_patch_0.js", 1));
+        hot.end_change(change, &["c1".to_string()]);
+        hot.refresh_styles(true, &[]);
+        held.store(false, std::sync::atomic::Ordering::SeqCst);
+        hot.discard();
+        hot.release();
+        assert!(
+            rx.try_recv().is_err(),
+            "a page reloading onto the change got its frames anyway"
+        );
+        // The count still moved: a page that reconnects after the reload
+        // names the changes its new document has.
+        assert_eq!(hot.changes(), change + 1);
+    }
+
     #[test]
     fn a_page_is_behind_only_when_a_change_it_never_applied_went_out() {
         let hot = HotUpdates::new("");
