@@ -35,7 +35,9 @@ const log = (line) => appendFileSync(new URL("./events.log", import.meta.url), l
 
 // Vite's runConfigHook / runConfigEnvironmentHook / configResolved run on
 // BasicMinimalPluginContext (version meta, no environment), configEnvironment
-// plugin by plugin then environment by environment.
+// plugin by plugin then environment by environment. A build resolves the
+// `ssr` environment only when the config declares it (Vite's resolveConfig),
+// so a plain client build's hooks see `client` alone.
 test("config-phase hooks get Vite's minimal context, configEnvironment plugin first", async () => {
   const fx = tmpProject({ prefix: "oj-shared-ctx-" });
   fx.write(
@@ -56,11 +58,38 @@ test("config-phase hooks get Vite's minimal context, configEnvironment plugin fi
       "a config env=true rolldown=true",
       "b config env=true rolldown=true",
       "a configEnvironment client env=true",
-      "a configEnvironment ssr env=true",
       "b configEnvironment client env=true",
-      "b configEnvironment ssr env=true",
       "a configResolved env=true watch=false",
       "b configResolved env=true watch=false",
+    ]);
+  } finally {
+    host.close();
+    fx.cleanup();
+  }
+});
+
+// The same build with `ssr` declared by a config hook: Vite resolves the ssr
+// environment, and configEnvironment runs for it too, plugin by plugin.
+test("a build that declares ssr runs configEnvironment for it too", async () => {
+  const fx = tmpProject({ prefix: "oj-shared-ctx-ssr-" });
+  fx.write(
+    "oj.plugins.mjs",
+    `${LOG}
+     const plugin = (name, config) => ({
+       name,
+       config,
+       configEnvironment(env) { log(name + " configEnvironment " + env); },
+     });
+     export default [plugin("a", () => ({ environments: { ssr: {} } })), plugin("b")];\n`,
+  );
+  const host = startBuildHost(fx);
+  try {
+    await host.initSignal();
+    assert.deepEqual(events(fx), [
+      "a configEnvironment client",
+      "a configEnvironment ssr",
+      "b configEnvironment client",
+      "b configEnvironment ssr",
     ]);
   } finally {
     host.close();

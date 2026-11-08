@@ -125,3 +125,214 @@ async fn gated_edit_is_held_until_flush_then_reloads() {
     assert_eq!(page.errors(), Vec::<String>::new(), "page errors");
     page.close().await;
 }
+
+// What the gate counts as "no change": a rewrite of the bytes the pages
+// already have. The pages only have bytes the server served them, so a
+// module fetched while an edit is held (a reload, another tab, a fetch
+// racing the flush) keeps a later write of the older bytes a change. These
+// drive the gate the way an editor does (write, GET /__hmr_gate, POST
+// /__hmr_flush) and stand in for a page with a GET of the module.
+
+const COLOR: &str = "src/color.js";
+const GATED: (&str, &str) = ("oj.config.json", r#"{"server":{"hmrGate":true}}"#);
+
+fn color(v: &str) -> String {
+    format!("export const color = {v:?};\n")
+}
+
+async fn gated_app() -> (App, crate::Server) {
+    let app = App::new(&[
+        ("package.json", r#"{"name":"gate-noop","version":"1.0.0"}"#),
+        GATED,
+        (
+            "src/main.js",
+            "import { color } from \"./color.js\";\nconsole.log(color);\n",
+        ),
+        (COLOR, &color("c0")),
+        ("index.html", crate::INDEX_HTML),
+    ]);
+    let server = app.serve().await;
+    (app, server)
+}
+
+async fn pending(server: &crate::Server) -> u64 {
+    let status: serde_json::Value =
+        serde_json::from_str(&server.text("/__hmr_gate").await).unwrap();
+    status["count"].as_u64().unwrap_or(0)
+}
+
+/// Waits until the gate holds `n` changes.
+async fn wait_pending(server: &crate::Server, n: u64, what: &str) {
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while pending(server).await != n {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{what}: the gate never held {n} change(s)"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+async fn flush(server: &crate::Server) -> u64 {
+    let res = server
+        .request(Request::post("/__hmr_flush").body(Body::empty()).unwrap())
+        .await;
+    assert_eq!(res.status, 200, "flush:\n{}", res.body);
+    let body: serde_json::Value = serde_json::from_str(&res.body).unwrap();
+    body["count"].as_u64().unwrap_or(0)
+}
+
+/// A page's fetch of the module: what it now shows.
+async fn page_fetch(server: &crate::Server, n: u32) -> String {
+    server.text(&format!("/src/color.js?t={n}")).await
+}
+
+/// Long enough for the watcher to have delivered a write (its batches settle
+/// in 10ms): a gate that dropped the write has dropped it by then.
+const SETTLED: Duration = Duration::from_millis(1500);
+
+/// Releases `v` to the pages: written, held, flushed, fetched.
+async fn release(app: &App, server: &crate::Server, v: &str, n: u32) {
+    app.write(&[(COLOR, &color(v))]);
+    wait_pending(server, 1, &format!("releasing {v}")).await;
+    assert_eq!(flush(server).await, 1, "the flush released {v}");
+    assert!(
+        page_fetch(server, n).await.contains(v),
+        "the page shows {v}"
+    );
+    tokio::time::sleep(Duration::from_millis(800)).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_revert_after_a_page_fetched_the_held_edit_stays_held() {
+    let (app, server) = gated_app().await;
+    release(&app, &server, "X", 1).await;
+
+    // W is held, but a page fetches it anyway.
+    app.write(&[(COLOR, &color("W"))]);
+    wait_pending(&server, 1, "the edit to W").await;
+    assert!(
+        page_fetch(&server, 2).await.contains("\"W\""),
+        "the page fetched W"
+    );
+
+    // Back to X, the bytes the last flush released: the page showing W
+    // still needs this, so it stays held and the flush releases it.
+    app.write(&[(COLOR, &color("X"))]);
+    tokio::time::sleep(SETTLED).await;
+    assert_eq!(
+        pending(&server).await,
+        1,
+        "the revert to X was dropped while a page shows W"
+    );
+    assert_eq!(flush(&server).await, 1, "the flush released the revert");
+    assert!(page_fetch(&server, 3).await.contains("\"X\""));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cache_hit_of_the_held_edit_counts_as_serving_it() {
+    let (app, server) = gated_app().await;
+    release(&app, &server, "X", 1).await;
+
+    app.write(&[(COLOR, &color("W"))]);
+    wait_pending(&server, 1, "the edit to W").await;
+    // Twice: the second fetch is the module cache's.
+    assert!(page_fetch(&server, 2).await.contains("\"W\""));
+    assert!(page_fetch(&server, 3).await.contains("\"W\""));
+
+    app.write(&[(COLOR, &color("X"))]);
+    tokio::time::sleep(SETTLED).await;
+    assert_eq!(pending(&server).await, 1, "the revert to X was dropped");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rewrite_of_what_every_page_fetched_is_still_dropped() {
+    let (app, server) = gated_app().await;
+    release(&app, &server, "X", 1).await;
+    // Fetched again (a cache hit): still only X was ever served.
+    assert!(page_fetch(&server, 2).await.contains("\"X\""));
+
+    app.write(&[(COLOR, &color("X"))]);
+    tokio::time::sleep(SETTLED).await;
+    assert_eq!(pending(&server).await, 0, "a rewrite of X was held");
+    assert_eq!(flush(&server).await, 0, "the flush released a rewrite of X");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_edit_reverted_before_any_page_fetched_it_drops_its_hold() {
+    let (app, server) = gated_app().await;
+    release(&app, &server, "X", 1).await;
+
+    app.write(&[(COLOR, &color("W"))]);
+    wait_pending(&server, 1, "the edit to W").await;
+    // No page fetched W: back to X, the pages already show it.
+    app.write(&[(COLOR, &color("X"))]);
+    wait_pending(&server, 0, "the revert to X").await;
+    assert_eq!(flush(&server).await, 0);
+}
+
+/// The editor's flush reaches the gate before its own write (or the write's
+/// watcher event): it releases nothing, and the write lands right after.
+/// The gate lets it through instead of holding it for a flush already sent.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_write_right_after_a_flush_that_released_nothing_reaches_the_pages() {
+    let (app, server) = gated_app().await;
+    release(&app, &server, "X", 1).await;
+
+    assert_eq!(
+        flush(&server).await,
+        0,
+        "nothing held: the flush races its write"
+    );
+    app.write(&[(COLOR, &color("W"))]);
+    tokio::time::sleep(SETTLED).await;
+    assert_eq!(
+        pending(&server).await,
+        0,
+        "the write was held for a flush the editor already sent"
+    );
+    assert!(page_fetch(&server, 2).await.contains("\"W\""));
+}
+
+/// What the pages have moves with a write the gate lets through: a later
+/// write back to the bytes the last flush released is a change (the pages
+/// show W now), held and released, never dropped as "no change".
+#[tokio::test(flavor = "multi_thread")]
+async fn a_write_let_through_moves_what_the_pages_have() {
+    let (app, server) = gated_app().await;
+    release(&app, &server, "X", 1).await;
+
+    assert_eq!(flush(&server).await, 0);
+    app.write(&[(COLOR, &color("W"))]);
+    tokio::time::sleep(SETTLED).await;
+    assert_eq!(pending(&server).await, 0, "W went straight to the pages");
+
+    // Past the empty flush's window: the next write is held as always.
+    app.write(&[(COLOR, &color("X"))]);
+    wait_pending(&server, 1, "the write back to X").await;
+    assert_eq!(
+        flush(&server).await,
+        1,
+        "the flush released the write back to X"
+    );
+    assert!(page_fetch(&server, 2).await.contains("\"X\""));
+}
+
+/// A flush that released something opens no window: the editor's next
+/// write is held, even soon after it (well inside the window an empty flush
+/// would have opened).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_write_right_after_a_flush_that_released_something_is_held() {
+    let (app, server) = gated_app().await;
+    app.write(&[(COLOR, &color("X"))]);
+    wait_pending(&server, 1, "the edit to X").await;
+    assert_eq!(flush(&server).await, 1);
+    // Past one tick of the file-time clock: Linux stamps a file's mtime
+    // from a coarse clock that can read a few milliseconds behind the
+    // flush's own timestamp, and the gate counts a write stamped before a
+    // flush as covered by it (released, not held), the safe side.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    app.write(&[(COLOR, &color("Y"))]);
+    wait_pending(&server, 1, "the next edit, right after a releasing flush").await;
+    assert_eq!(flush(&server).await, 1);
+}

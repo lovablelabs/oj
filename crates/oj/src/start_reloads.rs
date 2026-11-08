@@ -64,20 +64,21 @@ impl Epochs {
     /// The gate released its hold (the editor's flush or the hold cap):
     /// publish what changed meanwhile. A change still being built publishes
     /// when its run bumps, so a flush never reloads onto the old output.
-    pub(crate) fn flushed(&self) {
+    /// True when this published a reload the pages had not been sent.
+    pub(crate) fn flushed(&self) -> bool {
         let latest = self
             .latest
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.publish_locked(*latest);
+        self.publish_locked(*latest)
     }
 
-    fn publish_locked(&self, latest: u64) {
+    fn publish_locked(&self, latest: u64) -> bool {
         self.published.send_if_modified(|p| {
             let moved = *p < latest;
             *p = latest.max(*p);
             moved
-        });
+        })
     }
 
     /// The stamp of a document rendered now.

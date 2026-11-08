@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-11-08
+
+### Changed
+
+- TanStack Start dev keeps hot updates behind a granular editor HMR gate (`OJ_HMR_FULL_RELOAD=false`). An edit is patched in place once the editor's `POST /__hmr_flush` releases it, keeping the page and its state. A gated server used to turn hot updates off, so every edit reloaded the page. A full-reload gate still reloads.
+- An app plugin named `hmr-gate` (an editor's HMR gate) turns oj's native gate on and is not hosted, so one change is never gated twice.
+
+### Fixed
+
+- TanStack Start dev: a page that misses a hot update reloads onto it instead of staying stale. A hot update goes once, to the pages connected when it goes out, so a page whose socket dropped, or whose document was still loading, missed it while another page took it in place. Each document now carries the hot changes it has, the page reports them when its socket connects, and every change ends by naming the pages it covered: a page behind or left out reloads.
+- A write that lands just after an editor's flush that released nothing reaches the page. It used to be held until the gate's cap (four minutes), waiting for a flush that had already been sent. A flush that released something still holds the next write as before.
+- Behind an editor HMR gate, a rewrite of the bytes the pages already have (an editor regenerating a file before it flushes, a formatter's no-op pass) is neither held nor pushed, and an edit reverted to those bytes before the flush drops its hold. With a full-reload gate, each such rewrite used to reload the page on the next flush. A write only counts as such a rewrite when every version of the file the dev server served since the last release is those bytes too: a page that fetched a newer version while an edit was held (a reload, another tab, a fetch racing the flush) still gets a write back to the older bytes.
+
 ## [0.4.5] - 2026-11-06
 
 ### Fixed

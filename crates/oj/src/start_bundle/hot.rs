@@ -323,12 +323,24 @@ fn on_hmr_updates(
             );
         }
     }
+    // Every page's patch for this edit is one change to the pages, which
+    // ends by naming the clients it covered: a page the engine left out (it
+    // registered mid-build) learns it is behind.
+    let change = updates
+        .iter()
+        .any(|u| matches!(u.update, HmrUpdate::Patch(_)))
+        .then(|| hot.begin_change());
+    let mut covered = Vec::with_capacity(updates.len());
     for u in updates {
         let HmrUpdate::Patch(patch) = u.update else {
+            // Nothing to patch (or a reload, which the reload count carries).
+            covered.push(u.client_id);
             continue;
         };
         // An import that never resolved fails the rebundle (the overlay),
-        // never the page that would run the patch.
+        // never the page that would run the patch. The page is still
+        // covered: the overlay is what it gets for this change, not a reload.
+        covered.push(u.client_id.clone());
         let importer = root.join(patch.changed_ids.first().map(String::as_str).unwrap_or(""));
         if let Some(err) = unresolved_in_patch(&patch.code, &importer.to_string_lossy(), declared) {
             *events.error.lock().unwrap() = Some(err);
@@ -341,6 +353,9 @@ fn on_hmr_updates(
             changed_ids: patch.changed_ids,
             code: patch.code,
         });
+    }
+    if let Some(change) = change {
+        hot.end_change(change, &covered);
     }
 }
 

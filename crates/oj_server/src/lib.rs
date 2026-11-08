@@ -63,6 +63,8 @@ mod css_serve;
 pub use css_serve::*;
 mod plugin_mw;
 pub use plugin_mw::*;
+mod content_index;
+pub use content_index::{bytes_hash, file_content_hash, Baseline, ContentIndex};
 mod hmr;
 pub use hmr::*;
 mod watch;
@@ -296,6 +298,8 @@ struct ServerState {
     cache: PersistentCache,
     memory: Mutex<MemoryCache>,
     mtime_keys: Mutex<HashMap<String, (std::time::SystemTime, u64, String)>>,
+    /// Files' content hashes and the baselines consumers compare them to.
+    content: Arc<ContentIndex>,
     compile_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     crawl_done: tokio::sync::watch::Receiver<bool>,
     fs_allow: Arc<Mutex<std::collections::HashSet<PathBuf>>>,
@@ -709,6 +713,8 @@ pub struct BuiltApp {
     /// The HMR gate (the editor-driven hold), when enabled: the Start
     /// server holds its page reload behind it like the plain path holds updates.
     pub hmr_gate: Option<HmrGateHandle>,
+    /// The dev server's content index, shared with Start.
+    pub content: Arc<ContentIndex>,
     /// The SSR resolve/load pipeline, for the in-process SSR module runner.
     pub ssr: SsrBridge,
     pub watch_feed: WatchFeed,
@@ -2226,6 +2232,7 @@ impl DevServer {
                 .with_salt_extra(&format!("asset-urls={asset_urls:?}")),
             memory: Mutex::new(MemoryCache::new(memory_cache_budget())),
             mtime_keys: Mutex::new(HashMap::new()),
+            content: Arc::default(),
             compile_locks: Mutex::new(HashMap::new()),
             crawl_done: crawl_rx,
             tailwind: tokio::sync::OnceCell::new(),
@@ -2423,6 +2430,7 @@ impl DevServer {
         }
 
         let proxy_prefixes: Vec<String> = state.proxy.iter().map(|(p, _)| p.clone()).collect();
+        let content = Arc::clone(&state.content);
         let hmr_gate = state.hmr_gate.as_ref().map(|_| HmrGateHandle {
             state: Arc::clone(&state),
         });
@@ -2449,6 +2457,7 @@ impl DevServer {
             https: server_cfg.https.clone(),
             base,
             hmr_gate,
+            content,
             ssr,
             watch_feed,
             watch_tx,

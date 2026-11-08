@@ -65,6 +65,9 @@ pub struct ViteValues {
     pub active_plugins: Option<usize>,
     /// The config's `@stylexjs/unplugin` (`{ options }`), which oj runs natively.
     pub stylex: Option<serde_json::Value>,
+    /// The config has an editor's HMR gate plugin: oj's native gate stands
+    /// in for it.
+    pub editor_hmr_gate: bool,
     /// The routes directory and route tree TanStack Start's router generator
     /// ran with (`startRouter`).
     pub start_router: Option<oj_config::StartRouterPaths>,
@@ -1159,6 +1162,10 @@ pub(crate) fn parse_vite_values(json: &serde_json::Value) -> ViteValues {
             .and_then(|v| v.as_u64())
             .map(|n| n as usize),
         stylex: non_null(json, "stylex"),
+        editor_hmr_gate: json
+            .get("editorHmrGate")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         start_router: json.get("startRouter").and_then(|v| {
             Some(oj_config::StartRouterPaths {
                 routes_directory: v.get("routesDirectory")?.as_str()?.into(),
@@ -1253,6 +1260,11 @@ fn exclude_stylex_dependencies(config: &mut oj_config::OjConfig, root: &Path, co
 /// Fills every field oj's own config left unset from the vite.config values.
 pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues) {
     config.vite_active_plugins = v.active_plugins;
+    // oj's own config (`server.hmrGate: false`) still wins.
+    if v.editor_hmr_gate {
+        let server = config.server.get_or_insert_with(Default::default);
+        server.hmr_gate.get_or_insert(true);
+    }
     config.vite_stylex = v.stylex;
     config.vite_start_router = v.start_router;
     if config.base.is_none() {

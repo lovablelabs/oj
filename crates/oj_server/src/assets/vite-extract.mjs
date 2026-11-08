@@ -1861,6 +1861,17 @@ async function activePluginCount(raw) {
   }
 }
 
+// Whether the config carries an editor's HMR gate plugin, which oj replaces
+// with its native gate (native-plugins.mjs).
+async function hasEditorHmrGate(raw) {
+  if (!raw) return false;
+  try {
+    return (await flattenPlugins(raw.plugins)).some((p) => p?.name === "hmr-gate");
+  } catch {
+    return false;
+  }
+}
+
 // The option values that cross to Rust: functions (cssInjectionTarget) and
 // other non-JSON values are dropped.
 function jsonOptions(value) {
@@ -2113,6 +2124,7 @@ async function extractValues(input) {
         activePlugins: await activePluginCount(raw),
         resolveError: resolveFailure ? String((resolveFailure && resolveFailure.message) || resolveFailure) : null,
         stylex: await stylexPlugin(raw),
+        editorHmrGate: await hasEditorHmrGate(raw),
       };
     };
     const out = await valuesOf(c);

@@ -57,8 +57,9 @@ pub(crate) struct DevBundler {
     engine: EngineSlot,
     /// The bundler's hot updates on their way to the pages.
     pub(crate) hot: Arc<crate::start_hot::HotUpdates>,
-    /// Whether pages may take hot updates: not while the editor's HMR gate
-    /// holds updates, where every edit reloads.
+    /// Whether pages may take hot updates: not behind the editor's
+    /// full-reload HMR gate, where every edit reloads. A granular gate stays
+    /// hot from the boot bundle on, so its first edit already patches.
     hot_enabled: std::sync::atomic::AtomicBool,
     /// Bumped by every batch that touched a style input.
     style_epoch: std::sync::atomic::AtomicU64,
@@ -93,7 +94,10 @@ impl DevBundler {
             session: tokio::sync::Mutex::new(None),
             engine: EngineSlot::default(),
             hot,
-            hot_enabled: std::sync::atomic::AtomicBool::new(!oj_env::get().knobs.hmr_gate),
+            hot_enabled: std::sync::atomic::AtomicBool::new({
+                let knobs = &oj_env::get().knobs;
+                !(knobs.hmr_gate && knobs.hmr_full_reload)
+            }),
             style_epoch: std::sync::atomic::AtomicU64::new(0),
             clients: Mutex::new(HashSet::new()),
             fn_externals: Arc::default(),
@@ -334,8 +338,8 @@ impl DevBundler {
         let start = &self.start;
         // Vite's bundled dev runs only with HMR on: never for a production
         // client (`NODE_ENV=production oj dev`) or `server.hmr: false`, nor
-        // under the editor's HMR gate (every edit reloads there, so pages
-        // never take a patch).
+        // under the editor's full-reload HMR gate (every edit reloads there,
+        // so pages never take a patch). A granular gate stays hot.
         let hot =
             self.hot_enabled() && !start.is_production() && host.is_none_or(|h| h.facts.server_hmr);
         let epoch = self.style_epoch();

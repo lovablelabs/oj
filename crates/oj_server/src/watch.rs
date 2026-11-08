@@ -1345,12 +1345,27 @@ fn handle_batch(
     // Vite's handleHMRUpdate ends at a restart trigger: no hot update hook
     // and nothing to the browser for it (its watchChange still runs).
     let hot: Vec<PathBuf> = paths.iter().filter(|p| !restarts(p)).cloned().collect();
+    // Behind the editor's gate, a rewrite of the bytes the pages already have
+    // (as the last release brought them, and nothing else served since)
+    // reaches no page (HmrGate::drop_unchanged). The watchers, watchChange
+    // and invalidation below still see it.
+    let hot = match &state.hmr_gate {
+        Some(gate) => gate.drop_unchanged(&state.content, &hot),
+        None => hot,
+    };
     let dispatch = state.hmr_enabled
         && !hot.is_empty()
         && !state
             .hmr_gate
             .as_ref()
             .is_some_and(|gate| gate.hold(state, &hot, false));
+    // Let through, the batch reaches the pages without a flush: what the
+    // gate compares rewrites against moves with it.
+    if dispatch {
+        if let Some(gate) = &state.hmr_gate {
+            gate.passed(&state.content, &hot);
+        }
+    }
     let (state, paths, created) = (Arc::clone(state), paths.to_vec(), created.clone());
     state.rt.clone().spawn(async move {
         // The watcher's listeners hear the change first (a plugin reloading

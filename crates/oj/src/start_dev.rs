@@ -49,7 +49,9 @@ struct StartState {
     /// the framework's own router-generator plugin in the plugin host also
     /// rewrites the route tree on watchChange, and racing it per run would
     /// randomly hide a change it wrote first.
-    regen_hashes: std::sync::Mutex<std::collections::HashMap<PathBuf, Option<u64>>>,
+    /// The dev server's content index; the regen outputs' `Pushed` baseline
+    /// is what the worker environments last saw.
+    content: Arc<oj_server::ContentIndex>,
     bundle: std::sync::RwLock<Arc<oj_cache::start_bundle::PinnedBundle>>,
     /// Gzip bodies of the live client chunks, by content hash.
     gzip: crate::start_chunks::GzipCache,
@@ -545,9 +547,18 @@ pub async fn start_dev(
     } else {
         None
     };
-    // The resolved gate (the knob or `server.hmrGate`): a gate on drops the
-    // boot's engine at the next rebundle.
-    bundler.set_hot_enabled(built.hmr_gate.is_none());
+    // The resolved gate (the knob or `server.hmrGate`). A full-reload gate
+    // reloads on every release, so it drops the boot's engine at the next
+    // rebundle; a granular one keeps hot updates and parks them for the
+    // editor's flush.
+    bundler.set_hot_enabled(hot_under_gate(
+        built.hmr_gate.as_ref().map(|gate| gate.full_reload()),
+    ));
+    if let Some(gate) = built.hmr_gate.clone() {
+        bundler
+            .hot
+            .set_gate(Arc::new(move || gate.reload_is_held()));
+    }
     // The dev urls' prefix under `base` (see oj_server::start_dev_url_base).
     let base = oj_server::start_dev_url_base(bundler.base());
     let state = Arc::new(StartState {
@@ -583,15 +594,13 @@ pub async fn start_dev(
         css_host,
         mode: mode.clone(),
         runner_dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        regen_hashes: std::sync::Mutex::new(
-            regen_output_files(&routes.tree, &cache)
-                .into_iter()
-                .map(|p| {
-                    let h = file_content_hash(&p);
-                    (p, h)
-                })
-                .collect(),
-        ),
+        content: {
+            let content = Arc::clone(&built.content);
+            for p in regen_output_files(&routes.tree, &cache) {
+                content.settle(&p, oj_server::Baseline::Pushed);
+            }
+            content
+        },
         client_closure: std::sync::RwLock::new(load_client_closure(&cache)),
         client_glob_scopes: std::sync::RwLock::new(load_client_glob_scopes(&cache)),
         // A failed boot bundle rebundles on every next batch until one succeeds.
@@ -649,7 +658,15 @@ pub async fn start_dev(
                 Err(broadcast::error::RecvError::Closed)
             ) {
                 let Some(state) = weak.upgrade() else { return };
-                state.reloads.flushed();
+                // A reload this flush publishes takes every page onto output
+                // that carries the parked hot updates: drop them instead of
+                // patching a page that is about to unload (a patch fetch cut
+                // off by the reload). Otherwise they go out, in order.
+                if state.reloads.flushed() {
+                    state.bundler.hot.discard();
+                } else {
+                    state.bundler.hot.release();
+                }
             }
         });
     }
@@ -882,9 +899,33 @@ fn asset_mime(ext: &str) -> &'static str {
     }
 }
 
+/// A document's stamp: the reloads it has (`g`, see start_reloads) and,
+/// with hot updates, the hot changes it has (`h`, see
+/// `HotUpdates::behind`), read by the caller before the document waits for
+/// its output. Both ride the live-reload client's url to its socket.
+fn document_stamp(state: &StartState, hot_has: Option<u64>) -> String {
+    let reloads = state.reloads.stamp();
+    match hot_has {
+        Some(h) => format!("{reloads}&h={h}"),
+        None => reloads,
+    }
+}
+
+/// The hot changes a document rendered now has: read before it waits for
+/// output that carries them, so a change landing in between can only make
+/// the page reload once more, never miss it.
+fn hot_has_now(state: &StartState) -> Option<u64> {
+    state
+        .bundler
+        .hot_enabled()
+        .then(|| state.bundler.hot.changes())
+}
+
 /// The live-reload client's tag, under the dev `base` prefix, with the
 /// document's stamp (see start_reloads).
 fn reload_client(url_base: &str, stamp: &str) -> String {
+    // The stamp's query (`g`, then `&h=`) sits in an attribute: `&` escaped.
+    let stamp = stamp.replace('&', "&amp;");
     format!(
         "<script type=\"module\" src=\"{url_base}/@oj-start/live-reload.js?g={stamp}\"></script>"
     )
@@ -1062,6 +1103,13 @@ fn restorable_glob_members(scopes: &Path, cache: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Whether the client bundle hot-updates, given the editor's gate (`Some`
+/// with its full-reload mode) or none. Only a full-reload gate turns hot
+/// updates off: its releases reload the pages anyway.
+fn hot_under_gate(gate_full_reload: Option<bool>) -> bool {
+    gate_full_reload != Some(true)
+}
+
 /// Whether a batch can change the client bundle: a path in the closure (the
 /// watcher spelling, or its real path, since the bundler records resolved
 /// paths), a new file a bundled glob matches, a failed previous bundle, or
@@ -1134,27 +1182,20 @@ fn regen_output_files(tree: &Path, cache: &Path) -> [PathBuf; 2] {
     [tree.to_path_buf(), cache.join("server-fn-resolver.mjs")]
 }
 
-/// Content hash for regen-output change detection (None: missing/unreadable).
-fn file_content_hash(p: &Path) -> Option<u64> {
-    use std::hash::{Hash, Hasher};
-    let bytes = std::fs::read(p).ok()?;
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    bytes.hash(&mut h);
-    Some(h.finish())
-}
-
-/// The regen outputs whose content moved past `seen` (the hashes last pushed
-/// to the worker environments), as invalidate changes; `seen` is updated to
-/// the current content.
+/// The regen outputs whose content moved past their `Pushed` baseline (what
+/// the worker environments last saw), as invalidate changes; the baseline
+/// takes the current content.
 fn changed_regen_outputs(
     files: &[PathBuf],
-    seen: &mut std::collections::HashMap<PathBuf, Option<u64>>,
+    content: &oj_server::ContentIndex,
 ) -> Vec<(String, &'static str)> {
+    use oj_server::Baseline::Pushed;
     files
         .iter()
         .filter(|f| {
-            let current = file_content_hash(f);
-            match seen.insert((*f).clone(), current) {
+            let last = content.baseline(f, Pushed);
+            let current = content.settle(f, Pushed);
+            match last {
                 Some(last) => current != last,
                 // Never seen (a config change moved the tree): only a file
                 // that exists is a change worth pushing.
@@ -1528,13 +1569,7 @@ async fn rebundle_worker(
         // rewrote them), and re-arm the lazy runner — a fallback request that
         // consumed the dirty flag mid-regen reloaded onto the old generated
         // files. Both before this run's browser reload.
-        let regen_changed = {
-            let mut seen = state
-                .regen_hashes
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            changed_regen_outputs(&regen_files, &mut seen)
-        };
+        let regen_changed = changed_regen_outputs(&regen_files, &state.content);
         if !regen_changed.is_empty() {
             if state.lazy_runner() {
                 state
@@ -2525,11 +2560,14 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
                     .read()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .clone();
-                // Hot updates reach a page unless the HMR gate holds updates
-                // for the editor's flush: then each edit reloads, as before.
-                let hot = state.gate.is_none().then(|| {
+                // Hot updates reach a page unless a full-reload HMR gate
+                // reloads every edit; a granular gate parks them for its flush
+                // (HotUpdates::set_gate).
+                let has = crate::start_hot::hot_change_in(parts.uri.query());
+                let hot = state.bundler.hot_enabled().then(|| {
                     let weak = Arc::downgrade(&state);
                     HotPage {
+                        has,
                         bundler: Arc::clone(&state.bundler),
                         frames: state.bundler.hot.subscribe(),
                         reload_needed: Arc::new(move || {
@@ -2566,6 +2604,7 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
                     state.hmr_overlay,
                     &state.base,
                     crate::start_reloads::stamp_in(req.uri().query()),
+                    crate::start_hot::hot_change_in(req.uri().query()),
                 ),
             )
                 .into_response(),
@@ -2638,6 +2677,8 @@ struct HotPage {
     bundler: Arc<ClientBundler>,
     frames: broadcast::Receiver<Arc<crate::start_hot::Frame>>,
     reload_needed: Arc<dyn Fn() + Send + Sync>,
+    /// The hot changes the page says it has (`h` on its socket's url).
+    has: Option<u64>,
 }
 
 type ToPlugins = Arc<dyn Fn(&str, &str) + Send + Sync>;
@@ -2660,6 +2701,8 @@ fn page_custom_frame(text: &str) -> bool {
 /// Sent on connect to a page whose document is older than the published
 /// changes (see start_reloads). A client that knows no such frame reloads.
 const BEHIND_FRAME: &str = r#"{"type":"oj:behind"}"#;
+/// [`BEHIND_FRAME`] for a hot change the page missed.
+const HOT_BEHIND_FRAME: &str = r#"{"type":"oj:behind","hot":true}"#;
 
 async fn start_hmr_socket(
     mut socket: WebSocket,
@@ -2676,6 +2719,18 @@ async fn start_hmr_socket(
     if epoch.behind()
         && socket
             .send(Message::Text(BEHIND_FRAME.into()))
+            .await
+            .is_err()
+    {
+        return;
+    }
+    // The same for a hot change: a frame goes once, to the pages connected
+    // then, so one that went out while this page loaded or while its socket
+    // was down (subscribed above, so none is missed from here on) leaves it
+    // behind for good unless it reloads now.
+    if hot.as_ref().is_some_and(|h| h.bundler.hot.behind(h.has))
+        && socket
+            .send(Message::Text(HOT_BEHIND_FRAME.into()))
             .await
             .is_err()
     {
@@ -2792,6 +2847,7 @@ async fn forward_document(
     raw: String,
     headers: &header::HeaderMap,
 ) -> Response {
+    let hot_has = hot_has_now(state);
     // A document loads the client output: never one from before a hot update.
     state.client_output_fresh().await;
     // Editor plugins (dev-server bridge) register configureServer routes
@@ -2801,7 +2857,7 @@ async fn forward_document(
     // The changes the document has, stamped before it renders: one that goes
     // out while it loads reaches its socket on connect.
     if let Some(port) = state.plugin_serve.mw_port() {
-        let stamp = state.reloads.stamp();
+        let stamp = document_stamp(state, hot_has);
         if let Some(resp) = oj_server::forward_get_to_plugin_mw(port, &raw, headers).await {
             // A worker-served document needs the live-reload client like the
             // runner-served ones, or edits never reload the page.
@@ -2813,7 +2869,7 @@ async fn forward_document(
     forward(
         &state.engine,
         &state.base,
-        &state.reloads.stamp(),
+        &document_stamp(state, hot_has),
         "GET".into(),
         document_url(&raw),
         headers,
@@ -2889,7 +2945,7 @@ async fn forward_with_body(state: &Arc<StartState>, req: Request) -> Response {
         .unwrap_or("/")
         .to_string();
     let mut headers = req.headers().clone();
-    let stamp = state.reloads.stamp();
+    let stamp = document_stamp(state, hot_has_now(state));
     // A configureServer middleware may claim the request first; since a
     // streamed body cannot be replayed, the plugin host pipes an unclaimed
     // request on to the engine's loopback shim (x-oj-forward-to) instead of
@@ -3015,7 +3071,13 @@ async fn serve_client_chunk(
 }
 
 /// The live-reload client with Vite's `__HMR_ENABLE_OVERLAY__` filled in.
-fn render_live_reload(js: &str, overlay: bool, url_base: &str, stamp: Option<String>) -> String {
+fn render_live_reload(
+    js: &str,
+    overlay: bool,
+    url_base: &str,
+    stamp: Option<String>,
+    hot_has: Option<u64>,
+) -> String {
     js.replace(
         "__HMR_ENABLE_OVERLAY__",
         if overlay { "true" } else { "false" },
@@ -3030,6 +3092,10 @@ fn render_live_reload(js: &str, overlay: bool, url_base: &str, stamp: Option<Str
             || "null".to_string(),
             |s| serde_json::Value::String(s).to_string(),
         ),
+    )
+    .replace(
+        "__OJ_HOT_CHANGE__",
+        &hot_has.map_or_else(|| "null".to_string(), |h| h.to_string()),
     )
 }
 
@@ -3539,11 +3605,15 @@ mod tests {
     }
 
     #[test]
-    fn the_hmr_gate_turns_the_bundlers_hot_updates_off() {
+    fn only_a_full_reload_gate_turns_the_bundlers_hot_updates_off() {
+        // No gate: edits apply in place.
+        assert!(hot_under_gate(None));
+        // A granular gate parks the hot updates for its flush instead of
+        // reloading every edit.
+        assert!(hot_under_gate(Some(false)));
+        // A full-reload gate reloads on every release.
+        assert!(!hot_under_gate(Some(true)));
         let bundler = ClientBundler::for_tests(Path::new("/app"));
-        bundler.set_hot_enabled(true);
-        assert!(bundler.hot_enabled());
-        // A gated server: every edit reloads, so the bundle never goes hot.
         bundler.set_hot_enabled(false);
         assert!(!bundler.hot_enabled());
     }
@@ -3893,8 +3963,8 @@ mod tests {
         oj_server::write_start_assets(&dir).unwrap();
         let js = std::fs::read_to_string(dir.join("live-reload.js")).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
-        let on = render_live_reload(&js, true, "/app", Some("1f-3".into()));
-        let off = render_live_reload(&js, false, "", None);
+        let on = render_live_reload(&js, true, "/app", Some("1f-3".into()), Some(7));
+        let off = render_live_reload(&js, false, "", None, None);
         assert!(on.contains("const enableOverlay = true;"), "{on}");
         // The dev urls' prefix under `base`, filled in as a string.
         assert!(on.contains("const base = \"/app\";"), "{on}");
@@ -3902,6 +3972,9 @@ mod tests {
         // The document's stamp, from the script's url.
         assert!(on.contains("const stamp = \"1f-3\";"), "{on}");
         assert!(off.contains("const stamp = null;"), "{off}");
+        // The hot changes the document has, from the script's url too.
+        assert!(on.contains("const docHas = 7;"), "{on}");
+        assert!(off.contains("const docHas = null;"), "{off}");
         assert!(!on.contains("__OJ_DEV_BASE__"));
         assert!(off.contains("const enableOverlay = false;"), "{off}");
         assert!(!off.contains("__HMR_ENABLE_OVERLAY__"));
@@ -4549,18 +4622,18 @@ mod tests {
         let missing = dir.join("never-written.mjs");
         std::fs::write(&tree, "tree v1").unwrap();
         let files = [tree.clone(), resolver.clone(), missing.clone()];
-        let mut seen: std::collections::HashMap<PathBuf, Option<u64>> = files
-            .iter()
-            .map(|p| (p.clone(), file_content_hash(p)))
-            .collect();
+        let seen = oj_server::ContentIndex::default();
+        for p in &files {
+            seen.settle(p, oj_server::Baseline::Pushed);
+        }
 
         // Nothing rewritten: no changes, even for the still-missing files.
-        assert!(changed_regen_outputs(&files, &mut seen).is_empty());
+        assert!(changed_regen_outputs(&files, &seen).is_empty());
 
         // A rewrite and a creation both count; the untouched missing file not.
         std::fs::write(&tree, "tree v2").unwrap();
         std::fs::write(&resolver, "resolver v1").unwrap();
-        let changed = changed_regen_outputs(&files, &mut seen);
+        let changed = changed_regen_outputs(&files, &seen);
         let paths: Vec<&str> = changed.iter().map(|(p, _)| p.as_str()).collect();
         assert_eq!(
             paths,
@@ -4570,13 +4643,13 @@ mod tests {
 
         // Same content written again: hashes match, no change detected.
         std::fs::write(&tree, "tree v2").unwrap();
-        assert!(changed_regen_outputs(&files, &mut seen).is_empty());
+        assert!(changed_regen_outputs(&files, &seen).is_empty());
 
         // A change the worker HAS seen (recorded above) never re-pushes, and a
         // change landing between runs (someone else's write) is caught on the
         // next pass.
         std::fs::write(&tree, "tree v3").unwrap();
-        let changed = changed_regen_outputs(&files, &mut seen);
+        let changed = changed_regen_outputs(&files, &seen);
         assert_eq!(changed.len(), 1);
         assert!(changed[0].0.ends_with("routeTree.gen.ts"));
     }
@@ -4655,6 +4728,12 @@ mod tests {
         assert!(
             tag.contains("src=\"/app/@oj-start/live-reload.js?g=1f-3\""),
             "{tag}"
+        );
+        // With the hot changes it has: the query's `&` escaped in the attribute.
+        let hot = reload_client("/app", "1f-3&h=7");
+        assert!(
+            hot.contains("src=\"/app/@oj-start/live-reload.js?g=1f-3&amp;h=7\""),
+            "{hot}"
         );
         let inject = |r| body_of(inject_reload_client(r, "/app", "1f-3"));
         assert!(inject(resp("text/html", None)).contains(&tag));

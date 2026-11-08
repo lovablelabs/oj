@@ -575,10 +575,12 @@ test("invalidate dedup: content identity, atomic-save create, read errors", asyn
               dev: {
                 createEnvironment: (name) => {
                   const env = {
-                    name, __sends: [],
+                    name, __sends: [], __changes: [],
                     moduleGraph: {
                       getModulesByFile(f) { return byFile.get(f); },
-                      onFileChange() {},
+                      // One call per change the host processes (Vite's
+                      // onFileChange); a deduped repeat never reaches it.
+                      onFileChange(f) { env.__changes.push(f); },
                       invalidateModule() {},
                     },
                     hot: { send: (p) => env.__sends.push(p), on() {}, handleInvoke() {} },
@@ -606,7 +608,8 @@ test("invalidate dedup: content identity, atomic-save create, read errors", asyn
          server.watcher.on("add", (f) => emits.push("add:" + f.split("/").pop()));
          server.middlewares.use("/__probe", (req, res) => {
            res.setHeader("content-type", "application/json");
-           res.end(JSON.stringify({ workerSends: server.environments.worker.__sends, emits }));
+           const worker = server.environments.worker;
+           res.end(JSON.stringify({ workerSends: worker.__sends, changes: worker.__changes, emits }));
          });
        },
      }];\n`,
@@ -648,15 +651,22 @@ test("invalidate dedup: content identity, atomic-save create, read errors", asyn
     const probe = async () => (await fetch(`http://127.0.0.1:${port}/__probe`)).json();
 
     // The early and settled sends for one write: same (path, type), same
-    // content. The second is skipped, so the hooks/update run once and the
-    // watcher sees one event, as under Vite's single chokidar event.
+    // content. The second is skipped, so the hooks/update run once, as under
+    // Vite's single chokidar event.
     const fixed = new Date("2026-01-01T00:00:00Z");
     fs.utimesSync(file, fixed, fixed);
     await invalidate();
     await invalidate();
     let seen = await probe();
     assert.equal(seen.workerSends.length, 1, `one hot payload, got ${JSON.stringify(seen.workerSends)}`);
-    assert.deepEqual(seen.emits, ["change:live.ts"], "one watcher emit for the repeated identical send");
+    const names = (changes) => changes.map((f) => path.basename(f));
+    assert.deepEqual(names(seen.changes), ["live.ts"], "one processed change for the repeated identical send");
+    // The watcher's listeners hear a settled batch from `watcherEvents`, once,
+    // never from the invalidation path (Vite's one chokidar event per change).
+    assert.deepEqual(seen.emits, [], "the invalidation path emits nothing to the watcher");
+    await host.send({ id: 2, hook: "watcherEvents", args: [JSON.stringify([{ path: file, type: "update" }])] });
+    seen = await probe();
+    assert.deepEqual(seen.emits, ["change:live.ts"], "one watcher emit for the settled change");
 
     // DIFFERENT content under the SAME mtime (an mtime heuristic's blind spot:
     // coarse timestamps, two writes in one tick): the hash differs, so the
@@ -666,7 +676,7 @@ test("invalidate dedup: content identity, atomic-save create, read errors", asyn
     await invalidate();
     seen = await probe();
     assert.equal(seen.workerSends.length, 2, "different content under the same mtime processes again");
-    assert.equal(seen.emits.length, 2, "the watcher sees the second, changed write");
+    assert.deepEqual(names(seen.changes), ["live.ts", "live.ts"], "the second, changed write is processed");
 
     // An atomic save's recreate half: a "create" for a file the worker graph
     // already knows is handled as an update (chokidar reports these as
@@ -677,6 +687,11 @@ test("invalidate dedup: content identity, atomic-save create, read errors", asyn
     await invalidate(file, "create");
     seen = await probe();
     assert.equal(seen.workerSends.length, 3, "update-then-create for known content is one pass");
+    assert.equal(
+      seen.changes.length,
+      3,
+      `update-then-create is one processed change, got ${JSON.stringify(seen.changes)}`,
+    );
     assert.ok(!seen.emits.some((e) => e.startsWith("add:")), `no phantom add emit, got ${JSON.stringify(seen.emits)}`);
 
     // A file that cannot be read (never suppress on error): both sends process.
@@ -684,8 +699,10 @@ test("invalidate dedup: content identity, atomic-save create, read errors", asyn
     await invalidate(ghost, "update");
     await invalidate(ghost, "update");
     seen = await probe();
-    const ghostEmits = seen.emits.filter((e) => e === "change:ghost.ts");
-    assert.equal(ghostEmits.length, 2, "a read error processes every time");
+    // A file no graph knows is retried under its real spelling (a symlinked
+    // temp dir): count the spelling the change came in as.
+    const ghostChanges = seen.changes.filter((f) => f === ghost);
+    assert.equal(ghostChanges.length, 2, "a read error processes every time");
 
     // A file no runner graph knows (miniflare's trace-store database, which
     // a worker rewrites on every request and grows to gigabytes) is
@@ -698,8 +715,8 @@ test("invalidate dedup: content identity, atomic-save create, read errors", asyn
     await invalidate(store, "update");
     seen = await (await fetch(`http://127.0.0.1:${port}/__probe`, { signal: AbortSignal.timeout(10_000) })).json();
     assert.deepEqual(
-      seen.emits.filter((e) => e === "change:trace.sqlite"),
-      ["change:trace.sqlite"],
+      seen.changes.filter((f) => f === store),
+      [store],
       "an unread file still dedups its repeated send by stat",
     );
   } finally {
