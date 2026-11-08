@@ -424,7 +424,8 @@ pub async fn start_dev_with_framework(
                 return Ok(Ok(None));
             }
             tokio::task::spawn_blocking(move || {
-                bundle_client_entry_cached(&bundler, &cache, &mode).map(Some)
+                bundle_client_entry_cached(&bundler, &cache, &mode)
+                    .map(|(pinned, restored)| Some((pinned, restored)))
             })
             .await
         }
@@ -434,13 +435,17 @@ pub async fn start_dev_with_framework(
     // the server up, as Vite's bundled dev does: pages render the overlay and
     // the next edit rebundles. Anything else (the bundler failing to load)
     // still aborts the boot.
-    let (pinned, boot_error) = match bundle_res? {
-        Ok(Some(pinned)) => (pinned, None),
-        Ok(None) => (oj_cache::start_bundle::PinnedBundle::empty(), None),
+    let (pinned, boot_error, bundle_restored) = match bundle_res? {
+        Ok(Some((pinned, restored))) => (pinned, None, restored),
+        Ok(None) => (oj_cache::start_bundle::PinnedBundle::empty(), None, false),
         Err(e) => match client_error_frame(&cache) {
             Some(frame) => {
                 eprintln!("  oj start: client bundle failed, serving the error overlay: {e:#}");
-                (oj_cache::start_bundle::PinnedBundle::empty(), Some(frame))
+                (
+                    oj_cache::start_bundle::PinnedBundle::empty(),
+                    Some(frame),
+                    false,
+                )
             }
             None => return Err(e),
         },
@@ -597,6 +602,24 @@ pub async fn start_dev_with_framework(
     // The resolved gate (the knob or `server.hmrGate`): a gate on drops the
     // boot's engine at the next rebundle.
     bundler.set_hot_enabled(built.hmr_gate.is_none());
+    // A restored bundle is verified current but its hot session never
+    // started, so the first edit would pay the engine's initial full build
+    // (~290 modules re-transformed). Warm the session in the background: the
+    // build runs off the boot and edit paths, and an edit racing it waits
+    // out the same build through the session lock that it would otherwise
+    // start itself. A warmup failure only logs; the first edit then builds
+    // as before.
+    if bundle_restored && bundler.hot_enabled() {
+        let warm = Arc::clone(&bundler);
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = warm.bundle(&[], false) {
+                eprintln!(
+                    "{}: hot session warmup failed, the first edit builds instead: {e:#}",
+                    oj_server::oj_brand()
+                );
+            }
+        });
+    }
     // The dev urls' prefix under `base` (see oj_server::start_dev_url_base).
     let base = oj_server::start_dev_url_base(bundler.base());
     let state = Arc::new(StartState {
@@ -2445,11 +2468,16 @@ fn keyed_bundle_store(
         .keyed_by("defines", &bundler.cache_key_defines())
 }
 
+/// The boot client bundle, and whether it came from the cache: a restore
+/// verifies the pinned output without starting its hot session, so the first
+/// edit would pay the engine's initial full build. The caller warms the
+/// session in the background when this reports a restore (see the
+/// `bundle_restored` spawn).
 fn bundle_client_entry_cached(
     bundler: &ClientBundler,
     cache: &Path,
     mode: &str,
-) -> anyhow::Result<oj_cache::start_bundle::PinnedBundle> {
+) -> anyhow::Result<(oj_cache::start_bundle::PinnedBundle, bool)> {
     let root = bundler.root();
     let _ = std::fs::remove_file(cache.join(CLIENT_ERROR_FILE));
     let store = keyed_bundle_store(bundler, root, mode);
@@ -2478,7 +2506,7 @@ fn bundle_client_entry_cached(
                 stats.files,
                 stats.elapsed_ms
             );
-            return Ok(pinned);
+            return Ok((pinned, true));
         }
         Err(miss) => println!("  oj start: client bundle cache miss ({miss})"),
     }
@@ -2491,10 +2519,11 @@ fn bundle_client_entry_cached(
             key.get(..8).unwrap_or(&key),
             pinned.len()
         );
-        return Ok(pinned);
+        return Ok((pinned, false));
     }
     oj_cache::start_bundle::PinnedBundle::from_build_dir(cache)
         .ok_or_else(|| anyhow::anyhow!("client chunk index missing after successful bundle"))
+        .map(|pinned| (pinned, false))
 }
 
 // Client module count written by the client bundle, for update/boot narration.

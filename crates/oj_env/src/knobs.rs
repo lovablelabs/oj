@@ -48,6 +48,9 @@ pub struct Knobs {
     pub debug_mem: bool,
     /// `DEBUG` names `oj:hook-gate` (`--debug hook-gate`): gated-out RPC logs.
     pub debug_hook_gate: bool,
+    /// `DEBUG` names `oj:hot-settle` (`--debug hot-settle`): the hot session's
+    /// per-batch settle decision (known/watched/kinds/has_pages + path).
+    pub debug_hot_settle: bool,
 
     /// `OJ_PLUGIN_MEMORY_MB`, when positive.
     pub plugin_memory_mb: Option<usize>,
@@ -122,6 +125,7 @@ impl Knobs {
                 || var("CURSOR_EXTENSION_HOST_ROLE").as_deref() == Some("agent-exec"),
             debug_mem: debug_enabled(&debug, "oj:mem"),
             debug_hook_gate: debug_enabled(&debug, "oj:hook-gate"),
+            debug_hot_settle: debug_enabled(&debug, "oj:hot-settle"),
             plugin_memory_mb: trimmed("OJ_PLUGIN_MEMORY_MB")
                 .map(|v| v as usize)
                 .filter(|v| *v > 0),
@@ -269,6 +273,8 @@ mod tests {
         assert!(!knobs(&[]).boot_phases);
         assert!(k("oj:boot").boot_phases && !k("oj:boot").debug_mem);
         assert!(k("oj:*").boot_phases && k("oj:*").debug_mem && k("oj:*").debug_hook_gate);
+        assert!(k("oj:hot-settle").debug_hot_settle && !k("oj:hot-settle").debug_mem);
+        assert!(k("oj:*").debug_hot_settle);
         assert!(k("*").debug_hook_gate);
         assert!(k("vite:*, oj:mem").debug_mem, "comma and space separated");
         assert!(!k("vite:*").boot_phases);
