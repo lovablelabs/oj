@@ -49,6 +49,7 @@ mod hmr_disabled;
 mod hmr_gate;
 mod hmr_hot_accept;
 mod hmr_protocol;
+mod hmr_stamp_persistent;
 mod host_binding;
 mod hot_update_burst;
 mod html_entry;
