@@ -162,9 +162,15 @@ async fn identical_concurrent_module_hook_calls_share_one_run() {
     host.transform("# f", &fast, "").await.unwrap();
     host.transform("# s", &slow, "").await.unwrap();
     assert_eq!(calls(&record), ["slow.md", "fast.md", "slow.md"]);
-    // A different code for the same id is a different request too.
-    host.transform("# s2", &slow, "").await.unwrap();
-    assert_eq!(calls(&record).len(), 4);
+    // A different code for the same id is a different request too, also
+    // while the other is still running (two runs under one module).
+    let (a, b) = tokio::join!(
+        host.transform("# a", &slow, ""),
+        host.transform("# b", &slow, "")
+    );
+    assert_eq!(a.unwrap().code, "# a via slow-md");
+    assert_eq!(b.unwrap().code, "# b via slow-md");
+    assert_eq!(calls(&record).len(), 5);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

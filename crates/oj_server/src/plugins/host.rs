@@ -108,7 +108,12 @@ pub(crate) struct HostCore {
     /// handed its stale answer to a caller arriving after it. Vite keeps
     /// the same rule per module, comparing the pending request's timestamp
     /// with the module's `lastInvalidationTimestamp` (`transformRequest`).
-    in_flight: Mutex<std::collections::HashMap<std::sync::Arc<InFlightKey>, InFlightCall>>,
+    ///
+    /// Keyed by the call's subject (container, hook, module id, phase), so
+    /// a lookup hashes a path, never the source; the runs under a subject
+    /// are told apart by their whole arguments, compared only when two
+    /// calls on one module overlap.
+    in_flight: Mutex<std::collections::HashMap<InFlightSubject, Vec<InFlightRun>>>,
     /// How many changes the host has heard of: a watched file's event
     /// (`watcherEvents`, `watchChange`, `hotUpdate`) or a plugin
     /// invalidating a module through the server's module graph. Read into
@@ -2717,21 +2722,24 @@ impl HostCore {
         let Some(core) = self.self_ref.get().and_then(std::sync::Weak::upgrade) else {
             return self.run_hook(container, hook, args).await;
         };
-        let key = InFlightKey {
-            container,
-            hook: hook.to_string(),
-            args: args.iter().map(|a| (*a).to_string()).collect(),
-            changes: self.changes.load(std::sync::atomic::Ordering::Acquire),
-        };
+        let subject = InFlightSubject::of(container, hook, args);
+        let changes = self.changes.load(std::sync::atomic::Ordering::Acquire);
         let shared = {
             let mut in_flight = self
                 .in_flight
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            match in_flight.get(&key) {
-                Some(run) => run.clone(),
+            let same = in_flight
+                .get(&subject)
+                .and_then(|runs| runs.iter().find(|r| r.key.is_call(changes, args)));
+            match same {
+                Some(run) => run.call.clone(),
                 None => {
-                    let key = std::sync::Arc::new(key);
+                    let key = std::sync::Arc::new(InFlightKey {
+                        subject,
+                        args: args.iter().map(|a| (*a).to_string()).collect(),
+                        changes,
+                    });
                     let run = tokio::spawn({
                         let key = std::sync::Arc::clone(&key);
                         async move {
@@ -2741,7 +2749,9 @@ impl HostCore {
                             let done = InFlightDone { core, key };
                             let refs: Vec<&str> =
                                 done.key.args.iter().map(String::as_str).collect();
-                            done.core.run_hook(container, &done.key.hook, &refs).await
+                            done.core
+                                .run_hook(container, &done.key.subject.hook, &refs)
+                                .await
                         }
                     });
                     let run: InFlightCall =
@@ -2751,7 +2761,13 @@ impl HostCore {
                                 Err(e) => Err(format!("plugin hook task failed: {e}")),
                             }),
                         ));
-                    in_flight.insert(key, run.clone());
+                    in_flight
+                        .entry(key.subject.clone())
+                        .or_default()
+                        .push(InFlightRun {
+                            key,
+                            call: run.clone(),
+                        });
                     run
                 }
             }
@@ -3137,16 +3153,55 @@ fn shares_a_run(hook: &str) -> bool {
     matches!(hook, "transform" | "transformPhase" | "load" | "loadPhase")
 }
 
-/// What identifies one shared run: the whole call, so two calls share a
-/// run only when they are the same call (a hash alone could pair two
-/// modules by collision and hand one the other's code).
+/// What a shared run's map entry is found by: the container, the hook
+/// and the module it is about (see [`hook_subject`]). Hashing it touches
+/// the id and the phase, not the source a transform carries.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct InFlightKey {
+struct InFlightSubject {
     container: u32,
     hook: String,
+    id: Option<String>,
+    phase: Option<String>,
+}
+
+impl InFlightSubject {
+    fn of(container: u32, hook: &str, args: &[&str]) -> Self {
+        let (id, phase) = hook_subject(hook, args);
+        Self {
+            container,
+            hook: hook.to_string(),
+            id: id.map(str::to_string),
+            phase: phase.map(str::to_string),
+        }
+    }
+}
+
+/// What identifies one shared run: the whole call, so two calls share a
+/// run only when they are the same call (a hash alone could pair two
+/// modules by collision and hand one the other's code), begun with the
+/// same changes heard of.
+#[derive(Debug)]
+struct InFlightKey {
+    subject: InFlightSubject,
     args: Vec<String>,
     /// `HostCore::changes` when the run began.
     changes: u64,
+}
+
+impl InFlightKey {
+    /// Whether a call with these arguments, made with this many changes
+    /// heard of, is this run's call (its subject already matched).
+    fn is_call(&self, changes: u64, args: &[&str]) -> bool {
+        self.changes == changes
+            && self.args.len() == args.len()
+            && self.args.iter().zip(args).all(|(a, b)| a == b)
+    }
+}
+
+/// One run under a subject: its key and the future its callers share.
+struct InFlightRun {
+    key: std::sync::Arc<InFlightKey>,
+    call: InFlightCall,
 }
 
 /// Forgets a shared run's key when the run ends, however it ends.
@@ -3157,11 +3212,17 @@ struct InFlightDone {
 
 impl Drop for InFlightDone {
     fn drop(&mut self) {
-        self.core
+        let mut in_flight = self
+            .core
             .in_flight
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&self.key);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(runs) = in_flight.get_mut(&self.key.subject) {
+            runs.retain(|r| !std::sync::Arc::ptr_eq(&r.key, &self.key));
+            if runs.is_empty() {
+                in_flight.remove(&self.key.subject);
+            }
+        }
     }
 }
 
