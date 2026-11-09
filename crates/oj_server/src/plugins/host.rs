@@ -113,7 +113,7 @@ pub(crate) struct HostCore {
     /// a lookup hashes a path, never the source; the runs under a subject
     /// are told apart by their whole arguments, compared only when two
     /// calls on one module overlap.
-    in_flight: Mutex<std::collections::HashMap<InFlightSubject, Vec<InFlightRun>>>,
+    in_flight: Mutex<std::collections::HashMap<std::sync::Arc<InFlightSubject>, Vec<InFlightRun>>>,
     /// How many changes the host has heard of: a watched file's event
     /// (`watcherEvents`, `watchChange`, `hotUpdate`) or a plugin
     /// invalidating a module through the server's module graph. Read into
@@ -2736,7 +2736,7 @@ impl HostCore {
                 Some(run) => run.call.clone(),
                 None => {
                     let key = std::sync::Arc::new(InFlightKey {
-                        subject,
+                        subject: std::sync::Arc::new(subject),
                         args: args.iter().map(|a| (*a).to_string()).collect(),
                         changes,
                     });
@@ -2762,7 +2762,7 @@ impl HostCore {
                             }),
                         ));
                     in_flight
-                        .entry(key.subject.clone())
+                        .entry(std::sync::Arc::clone(&key.subject))
                         .or_default()
                         .push(InFlightRun {
                             key,
@@ -3182,7 +3182,8 @@ impl InFlightSubject {
 /// same changes heard of.
 #[derive(Debug)]
 struct InFlightKey {
-    subject: InFlightSubject,
+    /// Shared with the map entry the run sits under.
+    subject: std::sync::Arc<InFlightSubject>,
     args: Vec<String>,
     /// `HostCore::changes` when the run began.
     changes: u64,
@@ -3217,10 +3218,11 @@ impl Drop for InFlightDone {
             .in_flight
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(runs) = in_flight.get_mut(&self.key.subject) {
+        let subject: &InFlightSubject = &self.key.subject;
+        if let Some(runs) = in_flight.get_mut(subject) {
             runs.retain(|r| !std::sync::Arc::ptr_eq(&r.key, &self.key));
             if runs.is_empty() {
-                in_flight.remove(&self.key.subject);
+                in_flight.remove(subject);
             }
         }
     }
