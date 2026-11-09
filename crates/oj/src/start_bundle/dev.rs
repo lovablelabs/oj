@@ -425,6 +425,7 @@ impl DevBundler {
                     let css = live.css_urls.lock().unwrap().urls();
                     let css = super::hot::link_new_styles(&start.cache, &css)
                         .map_err(|e| BundleError::from_message(format!("css-urls.json: {e}")))?;
+                    self.record_inputs(live, host).await?;
                     return Ok(Run::Hot { css });
                 }
             }
@@ -481,6 +482,53 @@ impl DevBundler {
         Ok(Run::Output {
             files: output.len(),
         })
+    }
+
+    /// Records the live engine's module graph as the bundle's input set
+    /// (closure.json, glob-scopes.json) after a hot update. A patch can grow
+    /// the graph: an import the edit added, a new route and the components
+    /// it imports, a file a glob gained. Vite's module graph takes such a
+    /// module the moment it is first transformed (server/moduleGraph.ts,
+    /// `ensureEntryFromUrl`), so the next change to it propagates; the input
+    /// set the rebundle gate consults has to follow the graph the same way,
+    /// not wait for the next full output. Until it did, every later edit to
+    /// a module gained by a patch was "outside every served graph".
+    async fn record_inputs(
+        &self,
+        live: &HotSession,
+        host: Option<&BundleHost>,
+    ) -> Result<(), BundleError> {
+        let module_ids: Vec<String> = live
+            .engine
+            .get_module_ids()
+            .iter()
+            .map(|id| id.to_string())
+            .collect();
+        let watch_files = match host {
+            Some(h) => h.host.watch_files().await.unwrap_or_default(),
+            None => Vec::new(),
+        };
+        let scopes = live.glob_scopes.lock().unwrap().clone();
+        // A union with the set as written: a patch only ever adds to the
+        // graph, and the engine's map is emptied while a full build runs
+        // (rolldown clears it at the start of one), so a read during one
+        // must not shrink the set. The next full output writes it afresh.
+        let written: Vec<String> = std::fs::read_to_string(self.start.cache.join("closure.json"))
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+        write_inputs(
+            &self.start,
+            written
+                .iter()
+                .chain(module_ids.iter())
+                .chain(watch_files.iter())
+                .map(String::as_str),
+            &scopes,
+        )
+        .map_err(|e| BundleError::from_message(format!("writing the bundle's inputs: {e}")))?;
+        *self.bundle_modules.lock().unwrap() = module_ids;
+        Ok(())
     }
 
     /// The client bundle's plugins and options: `hot` adds React Fast
@@ -763,7 +811,7 @@ pub(crate) fn write_outputs<'a>(
     let mut files = Vec::with_capacity(outputs.len());
     let mut modules = 0usize;
     let mut entry = None;
-    let mut closure: Vec<String> = vec![start.router_entry().to_string_lossy().into_owned()];
+    let mut closure: Vec<String> = Vec::new();
     for out in outputs {
         let (name, bytes): (&str, &[u8]) = match out {
             Output::Chunk(c) => {
@@ -797,27 +845,7 @@ pub(crate) fn write_outputs<'a>(
     std::fs::write(cache.join("client-entry.modules"), modules.to_string())?;
 
     closure.extend(module_ids.map(str::to_string));
-    write_json(
-        &cache.join("closure.json"),
-        &serde_json::json!(closure_files(start, closure)),
-    )?;
-    let mut scopes: Vec<serde_json::Value> = scopes
-        .iter()
-        .map(|s| {
-            serde_json::json!({
-                "importer": s.importer,
-                "patterns": s.call.patterns,
-                "exhaustive": s.call.exhaustive,
-                "caseSensitive": s.call.case_sensitive,
-            })
-        })
-        .collect();
-    scopes.sort_by_key(|v| v.to_string());
-    scopes.dedup();
-    write_json(
-        &cache.join("glob-scopes.json"),
-        &serde_json::Value::Array(scopes),
-    )?;
+    write_inputs(start, closure.iter().map(String::as_str), scopes)?;
 
     let manifest = dev_manifest(&start.dev_url_base(), css_urls, hot);
     // Only a changed manifest is written: the client bundle imports it, so a
@@ -851,6 +879,43 @@ pub(crate) fn dev_manifest(url_base: &str, css_urls: &[String], hot: bool) -> St
         out.push_str("if (import.meta.hot) import.meta.hot.accept();\n");
     }
     out
+}
+
+/// Writes the bundle's input set, which the dev server's rebundle gate
+/// consults: closure.json (the router entry, every module id named, see
+/// [`closure_files`]) and glob-scopes.json (every `import.meta.glob` the
+/// bundle expanded, with its importer, for the files created or deleted
+/// under one). A full output and a hot update both write it, since both can
+/// change the graph.
+pub(crate) fn write_inputs<'a>(
+    start: &StartConfig,
+    ids: impl Iterator<Item = &'a str>,
+    scopes: &[GlobScope],
+) -> std::io::Result<()> {
+    let cache = &start.cache;
+    let mut closure: Vec<String> = vec![start.router_entry().to_string_lossy().into_owned()];
+    closure.extend(ids.map(str::to_string));
+    write_json(
+        &cache.join("closure.json"),
+        &serde_json::json!(closure_files(start, closure)),
+    )?;
+    let mut scopes: Vec<serde_json::Value> = scopes
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "importer": s.importer,
+                "patterns": s.call.patterns,
+                "exhaustive": s.call.exhaustive,
+                "caseSensitive": s.call.case_sensitive,
+            })
+        })
+        .collect();
+    scopes.sort_by_key(|v| v.to_string());
+    scopes.dedup();
+    write_json(
+        &cache.join("glob-scopes.json"),
+        &serde_json::Value::Array(scopes),
+    )
 }
 
 /// The bundle's input files, as the rebundle gate matches watcher paths

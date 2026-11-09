@@ -1661,6 +1661,9 @@ async fn rebundle_worker(
                     }
                     ClientRun::Hot => {
                         hot = true;
+                        // The patch may have grown the graph (an import the
+                        // edit added): the gate's inputs follow it.
+                        load_inputs(&state, &cache);
                         state.refresh_wake.notify_one();
                     }
                     ClientRun::Skipped | ClientRun::Failed(_) => {}
@@ -1897,6 +1900,14 @@ fn install_bundle(state: &StartState, cache: &Path, pinned: oj_cache::start_bund
     let pinned = Arc::new(pinned);
     state.gzip.retain(|h| pinned.has_hash(h));
     *state.bundle.write().unwrap() = pinned;
+    load_inputs(state, cache);
+}
+
+/// Takes the bundle's input set as the bundler last wrote it (closure.json,
+/// and glob-scopes.json as the glob scopes and as their importers): after a
+/// full output, and after a hot update, whose patch can bring new modules
+/// and new globs into the graph.
+fn load_inputs(state: &StartState, cache: &Path) {
     *state
         .client_closure
         .write()
