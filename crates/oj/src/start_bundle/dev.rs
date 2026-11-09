@@ -183,6 +183,17 @@ impl DevBundler {
         self.hot_enabled.load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// Whether the client bundle is built for hot updates (Vite's bundled
+    /// dev, with React Fast Refresh for an app that configures plugin-react):
+    /// hot updates on and a development client. The bundle store keys a
+    /// generation by this too: a bundle built for one mode must never be
+    /// restored into the other (a page running a bundle without the refresh
+    /// preamble would throw at the first patched component, and one built hot
+    /// carries the engine's runtime a plain reload never drives).
+    pub(crate) fn hot_bundle(&self) -> bool {
+        self.hot_enabled() && !self.start.is_production()
+    }
+
     pub(crate) fn style_epoch(&self) -> u64 {
         self.style_epoch.load(std::sync::atomic::Ordering::SeqCst)
     }
@@ -340,8 +351,7 @@ impl DevBundler {
         // client (`NODE_ENV=production oj dev`) or `server.hmr: false`, nor
         // under the editor's full-reload HMR gate (every edit reloads there,
         // so pages never take a patch). A granular gate stays hot.
-        let hot =
-            self.hot_enabled() && !start.is_production() && host.is_none_or(|h| h.facts.server_hmr);
+        let hot = self.hot_bundle() && host.is_none_or(|h| h.facts.server_hmr);
         let epoch = self.style_epoch();
         // A style input moved: CSS modules and preprocessor sheets the
         // engine compiled predate the epoch, and a partial is no module of
@@ -444,7 +454,9 @@ impl DevBundler {
 
     /// The client bundle's plugins and options: `hot` adds React Fast
     /// Refresh, as @vitejs/plugin-react does for Vite's bundled dev (only for
-    /// an app that configures the plugin).
+    /// an app that configures the plugin): the runtime module, which installs
+    /// the preamble as it evaluates and is the entry's first import, the
+    /// refresh transform and the wrapper (see `refresh`).
     fn parts(&self, host: Option<&BundleHost>, hot: bool) -> Result<SessionParts, BundleError> {
         let start = &self.start;
         let emit = Arc::new(EmitState::new(start.root.clone()));

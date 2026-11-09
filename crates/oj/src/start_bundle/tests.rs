@@ -92,19 +92,33 @@ async fn bundle_split(
     plugins: Vec<SharedPluginable>,
     code_splitting: Option<rolldown_common::CodeSplittingMode>,
 ) -> Result<Vec<rolldown_common::Output>, BundleError> {
+    bundle_with(app, entry, plugins, |options| {
+        options.code_splitting = code_splitting
+    })
+    .await
+}
+
+/// `bundle_output` with the options `set` adjusts.
+async fn bundle_with(
+    app: &App,
+    entry: &str,
+    plugins: Vec<SharedPluginable>,
+    set: impl FnOnce(&mut BundlerOptions),
+) -> Result<Vec<rolldown_common::Output>, BundleError> {
+    let mut options = BundlerOptions {
+        input: Some(vec![InputItem {
+            name: Some("entry".into()),
+            import: app.dir.join(entry).to_string_lossy().into_owned(),
+        }]),
+        cwd: Some(app.dir.clone()),
+        platform: Some(Platform::Browser),
+        format: Some(OutputFormat::Esm),
+        ..Default::default()
+    };
+    set(&mut options);
     let mut bundler = BundlerBuilder::default()
         .with_plugins(plugins)
-        .with_options(BundlerOptions {
-            input: Some(vec![InputItem {
-                name: Some("entry".into()),
-                import: app.dir.join(entry).to_string_lossy().into_owned(),
-            }]),
-            cwd: Some(app.dir.clone()),
-            platform: Some(Platform::Browser),
-            format: Some(OutputFormat::Esm),
-            code_splitting,
-            ..Default::default()
-        })
+        .with_options(options)
         .build()
         .map_err(|errs| BundleError::from_diagnostics(&errs.into_vec()))?;
     let out = bundler
@@ -1551,5 +1565,190 @@ async fn the_client_deletes_server_route_options_unless_its_host_splits_routes()
     assert!(
         split_in_host.contains("server-handler-only"),
         "oj deleted what the host's splitter deletes:\n{split_in_host}"
+    );
+}
+
+/// A stand-in for oj's copy of plugin-react's refresh runtime: the exports
+/// the preamble and the wrapper call.
+const STUB_REFRESH_RUNTIME: &str = "\
+export function injectIntoGlobalHook(g) { g.__oj_refresh_hooked = true; }
+export function register(type, id) {}
+export function createSignatureFunctionForTransform() { return (type) => type; }
+export function registerExportsForReactRefresh(id, exports) {}
+export function validateRefreshBoundaryAndEnqueueUpdate(id, prev, next) { return null; }
+";
+
+/// The refresh plugins as the dev bundle runs them, over `start`'s cache:
+/// the transform's registrations are what the wrapper reads, so it runs
+/// first (rolldown runs transform hooks in plugin order).
+fn refresh_plugins(start: &StartConfig) -> Vec<SharedPluginable> {
+    vec![
+        Pluginable::new_shared(super::refresh::RefreshPreamble {
+            runtime: start.cache.join("react-refresh-runtime.js"),
+            entry: start.cache.join("client-entry.tsx"),
+        }),
+        Pluginable::new_shared(super::refresh::RefreshTransform {
+            jsx: oj_compiler::JsxConfig::default(),
+        }),
+        Pluginable::new_shared(super::refresh::RefreshWrapper::new("react")),
+    ]
+}
+
+/// The chunks of `out`: file name, code, whether it is an entry.
+fn chunks(out: &[rolldown_common::Output]) -> Vec<(&str, &str, bool)> {
+    out.iter()
+        .filter_map(|o| match o {
+            rolldown_common::Output::Chunk(c) => {
+                Some((c.filename.as_str(), c.code.as_str(), c.is_entry))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+// The shape that broke every fresh page load of a code-split app: a component
+// the entry renders and a lazy route also imports lands in a shared chunk the
+// entry chunk imports, so the chunk's wrapper check (`$RefreshReg$` set?) runs
+// before the entry chunk's own body. The preamble is the runtime module's
+// tail now, and every wrapped module imports the runtime, so ES module order
+// evaluates it first in whatever chunk rolldown puts it.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_refresh_preamble_evaluates_before_every_wrapped_module() {
+    use rolldown_common::{
+        CodeSplittingMode, ManualCodeSplittingOptions, MatchGroup, MatchGroupName, MatchGroupTest,
+    };
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"refresh-order","private":true,"type":"module"}"#,
+        ),
+        (
+            "node_modules/react/package.json",
+            r#"{"name":"react","version":"19.2.0","main":"index.js"}"#,
+        ),
+        ("node_modules/react/index.js", "export const version = \"19.2.0\";\n"),
+        (
+            "node_modules/react/jsx-dev-runtime.js",
+            "export function jsxDEV(type, props) { return { type, props }; }\nexport const Fragment = Symbol.for(\"fragment\");\n",
+        ),
+        (".oj-cache/v1/start/react-refresh-runtime.js", STUB_REFRESH_RUNTIME),
+        (
+            ".oj-cache/v1/start/client-entry.tsx",
+            "import { Shell } from \"../../../src/shell\";\nimport(\"../../../src/routes/a\");\nimport(\"../../../src/routes/b\");\nconsole.log(<Shell />);\n",
+        ),
+        (
+            "src/shell.tsx",
+            "export function Shell() { return <div>shell</div>; }\n",
+        ),
+        (
+            "src/routes/a.tsx",
+            "import { Shell } from \"../shell\";\nexport function A() { return <Shell />; }\n",
+        ),
+        (
+            "src/routes/b.tsx",
+            "import { Shell } from \"../shell\";\nexport function B() { return <Shell />; }\n",
+        ),
+    ]);
+    let start = app.start();
+    // As the dev bundle: Vite's client build keeps no entry signature. The
+    // app's chunk policy (a vendor group, here one for the shared component)
+    // puts what the entry renders into a chunk the entry chunk imports, as
+    // rolldown does on its own for a module the entry and lazy routes share.
+    let shared = CodeSplittingMode::Advanced(ManualCodeSplittingOptions {
+        groups: Some(vec![MatchGroup {
+            name: MatchGroupName::Static("shared".into()),
+            test: Some(MatchGroupTest::Regex(
+                rolldown_utils::js_regex::HybridRegex::new("src/shell").unwrap(),
+            )),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    });
+    let out = bundle_with(
+        &app,
+        ".oj-cache/v1/start/client-entry.tsx",
+        refresh_plugins(&start),
+        |options| {
+            options.preserve_entry_signatures =
+                Some(rolldown_common::PreserveEntrySignatures::False);
+            options.code_splitting = Some(shared);
+        },
+    )
+    .await
+    .unwrap();
+    let chunks = chunks(&out);
+    // A wrapped module registers its components as it evaluates
+    // (`$RefreshReg$(_c, "Shell")`, the refresh transform's calls the wrapper
+    // keys on); its `$RefreshReg$` check sits right after them, inside an
+    // `import.meta.hot` block this plain bundle (no dev engine) drops.
+    let registration = regex::Regex::new(r"\$RefreshReg\$[\w$]*\(_c").unwrap();
+    let first_registration = |code: &str| registration.find(code).map(|m| m.start());
+    // The wrapper's own registration function, which calls the runtime.
+    let wrapped = regex::Regex::new(r"function \$RefreshReg\$[\w$]*\(type, id\)").unwrap();
+    const STUBS: &str = "window.$RefreshReg$ = () => {};";
+    // The shape under test: the shared component is wrapped, outside the entry.
+    let shared = chunks
+        .iter()
+        .find(|(_, code, _)| code.contains("\"Shell\")"))
+        .expect("a chunk registers Shell");
+    assert!(
+        !shared.2,
+        "Shell lands in a shared chunk, not the entry: {:?} of {:?}",
+        shared.0,
+        chunks.iter().map(|(n, _, e)| (*n, *e)).collect::<Vec<_>>()
+    );
+    assert!(
+        wrapped.is_match(shared.1),
+        "the shared chunk is wrapped:\n{}",
+        shared.1
+    );
+    // The preamble runs once, where the runtime is.
+    let with_stubs: Vec<_> = chunks
+        .iter()
+        .filter(|(_, code, _)| code.contains(STUBS))
+        .collect();
+    assert_eq!(
+        with_stubs.len(),
+        1,
+        "one chunk installs the preamble: {with_stubs:?}"
+    );
+    let (runtime_chunk, runtime_code, _) = with_stubs[0];
+    assert!(
+        runtime_code.contains("function injectIntoGlobalHook"),
+        "the preamble is the runtime module's tail"
+    );
+    // Every chunk with a wrapped module evaluates the preamble first: in the
+    // runtime's chunk it is rendered ahead of the first registration (the
+    // runtime has the lowest execution order of the modules that import it);
+    // elsewhere the chunk imports the runtime's chunk, which ES module order
+    // evaluates before the importer's body.
+    for (name, code, _) in &chunks {
+        let Some(check) = first_registration(code) else {
+            continue;
+        };
+        assert!(
+            wrapped.is_match(code),
+            "{name}: a module that registers components is wrapped:\n{code}"
+        );
+        if *name == *runtime_chunk {
+            let stubs = code.find(STUBS).unwrap();
+            assert!(
+                stubs < check,
+                "{name}: the preamble precedes the first wrapped module"
+            );
+        } else {
+            let imports_runtime = format!("\"./{runtime_chunk}\"");
+            assert!(
+                code.contains(&imports_runtime),
+                "{name} imports the runtime's chunk {runtime_chunk}:\n{code}"
+            );
+        }
+    }
+    // The entry reaches the runtime through its first import (ahead of
+    // react-dom's module body), so its chunk evaluates the runtime's.
+    let (entry_name, entry_code, _) = chunks.iter().find(|(_, _, is_entry)| *is_entry).unwrap();
+    assert!(
+        *entry_name == *runtime_chunk || entry_code.contains(&format!("\"./{runtime_chunk}\"")),
+        "{entry_name} evaluates the runtime chunk {runtime_chunk}:\n{entry_code}"
     );
 }

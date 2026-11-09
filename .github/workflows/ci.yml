@@ -356,6 +356,8 @@ jobs:
         run: node e2e/start-hmr-gate.mjs
       - name: start dev keeps edits hot behind a granular editor HMR gate, released by the flush
         run: node e2e/start-hmr-gate-hot.mjs
+      - name: start dev's hot bundle hydrates a fresh page, the refresh preamble ahead of every wrapped module
+        run: node e2e/start-refresh-preamble.mjs
       - name: start dev skips rebundle and reload for changes outside every served graph
         run: node e2e/start-rebundle-gate.mjs
       - name: start dev keeps one client plugin container, a buildStart codegen write never loops

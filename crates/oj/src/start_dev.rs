@@ -2350,8 +2350,9 @@ fn start_bundle_store(root: &Path, mode: &str) -> oj_cache::start_bundle::StartB
 }
 
 /// The client bundle's store, keyed by what the bundle depends on beyond its
-/// closure: the route trees, the config and its imports, and the defines its
-/// code inlines.
+/// closure: the route trees, the config and its imports, the defines its
+/// code inlines, and whether it is built for hot updates (the Fast Refresh
+/// plugins and the engine's runtime are in a hot bundle alone).
 fn keyed_bundle_store(
     bundler: &ClientBundler,
     root: &Path,
@@ -2360,6 +2361,7 @@ fn keyed_bundle_store(
     start_bundle_store(root, mode)
         .keyed_by_files(&bundler.cache_key_files())
         .keyed_by("defines", &bundler.cache_key_defines())
+        .keyed_by("hot", if bundler.hot_bundle() { "1" } else { "0" })
 }
 
 fn bundle_client_entry_cached(
@@ -3614,8 +3616,13 @@ mod tests {
         // A full-reload gate reloads on every release.
         assert!(!hot_under_gate(Some(true)));
         let bundler = ClientBundler::for_tests(Path::new("/app"));
+        bundler.set_hot_enabled(true);
+        // The bundle store keys a generation by the mode too: a development
+        // client with hot updates on is a hot bundle, nothing else is.
+        assert!(bundler.hot_bundle());
         bundler.set_hot_enabled(false);
         assert!(!bundler.hot_enabled());
+        assert!(!bundler.hot_bundle());
     }
 
     #[test]

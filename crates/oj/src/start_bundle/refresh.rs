@@ -2,34 +2,71 @@
 // Copyright (c) 2026 Raphael Amorim
 
 //! React Fast Refresh in the dev client bundle, as @vitejs/plugin-react sets
-//! it up for Vite's bundled dev: the refresh preamble runs first in the entry
-//! (before react-dom loads), oxc's refresh transform instruments the app's
-//! modules (rolldown's `builtin:vite-transform` with `jsx.refresh`), and the
-//! wrapper registers each module's exports and accepts the update when they
-//! are all components (`builtin:vite-react-refresh-wrapper`, ported from
-//! rolldown 1.2.14, MIT). The runtime is oj's copy of plugin-react's.
+//! it up for Vite's bundled dev: the refresh preamble runs before any
+//! component module (and before react-dom loads), oxc's refresh transform
+//! instruments the app's modules (rolldown's `builtin:vite-transform` with
+//! `jsx.refresh`), and the wrapper registers each module's exports and
+//! accepts the update when they are all components
+//! (`builtin:vite-react-refresh-wrapper`, ported from rolldown 1.2.14, MIT).
+//! The runtime is oj's copy of plugin-react's.
+//!
+//! The preamble is the runtime module's own tail, not a module of its own:
+//! every wrapped module imports the runtime, so wherever rolldown chunks the
+//! graph, ES module order evaluates the runtime (and with it the preamble)
+//! before the first wrapped module's body. A separate preamble module inlined
+//! into the entry ran too late: the entry chunk evaluates the shared chunks
+//! it imports first, and a component shared with a lazy route lives in one
+//! of those, so its `$RefreshReg$` check threw on every fresh page load
+//! (Vite's unbundled dev has no such chunking; its bundled dev puts the
+//! preamble in the HTML, ahead of the entry script). The entry still imports
+//! the runtime first, so it also runs before react-dom's module body reads
+//! the devtools hook the preamble installs.
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use rolldown_common::ModuleType;
 use rolldown_plugin::{
-    HookLoadArgs, HookLoadOutput, HookLoadReturn, HookResolveIdArgs, HookResolveIdOutput,
-    HookResolveIdReturn, HookTransformArgs, HookTransformOutput, HookTransformOutputMap,
-    HookTransformReturn, Plugin, PluginContext, PluginHookMeta, PluginOrder,
-    SharedLoadPluginContext, SharedTransformPluginContext,
+    HookResolveIdArgs, HookResolveIdOutput, HookResolveIdReturn, HookTransformArgs,
+    HookTransformOutput, HookTransformOutputMap, HookTransformReturn, Plugin, PluginContext,
+    PluginHookMeta, PluginOrder, SharedTransformPluginContext,
 };
 
 const RUNTIME_PUBLIC_PATH: &str = "/@react-refresh";
-const PREAMBLE: &str = "\0oj-react-refresh-preamble";
 
-/// The preamble and the runtime's public path, ahead of plugin-react's own
-/// pre-ordered resolveId (which would claim the id for a load oj never runs).
+/// plugin-react's preamble, run as the runtime module's last statements
+/// (`injectIntoGlobalHook` is the module's own export). Guarded for a bundle
+/// evaluated off the main thread, where the wrapper skips refresh too.
+const PREAMBLE_TAIL: &str = r#"
+if (typeof window !== "undefined") {
+  injectIntoGlobalHook(window);
+  window.$RefreshReg$ = () => {};
+  window.$RefreshSig$ = () => (type) => type;
+}
+"#;
+
+/// The entry's first import, so the runtime (and its preamble) has the
+/// lowest execution order in the graph: ahead of react-dom.
+fn entry_code(code: &str) -> String {
+    format!("import {RUNTIME_PUBLIC_PATH:?};\n{code}")
+}
+
+/// The runtime module, installing the preamble as it evaluates.
+fn runtime_code(code: &str) -> String {
+    let mut out = String::with_capacity(code.len() + PREAMBLE_TAIL.len());
+    out.push_str(code);
+    out.push_str(PREAMBLE_TAIL);
+    out
+}
+
+/// The runtime's public path, ahead of plugin-react's own pre-ordered
+/// resolveId (which would claim the id for a load oj never runs), and the
+/// preamble: the entry's first import and the runtime's tail.
 #[derive(Debug)]
 pub(crate) struct RefreshPreamble {
     /// oj's copy of plugin-react's refresh runtime.
     pub runtime: PathBuf,
-    /// The client entry, which imports the preamble first.
+    /// The client entry, which imports the runtime first.
     pub entry: PathBuf,
 }
 
@@ -40,7 +77,7 @@ impl Plugin for RefreshPreamble {
 
     fn register_hook_usage(&self) -> rolldown_plugin::HookUsage {
         use rolldown_plugin::HookUsage;
-        HookUsage::ResolveId | HookUsage::Load | HookUsage::Transform
+        HookUsage::ResolveId | HookUsage::Transform
     }
 
     fn resolve_id_meta(&self) -> Option<PluginHookMeta> {
@@ -58,25 +95,8 @@ impl Plugin for RefreshPreamble {
             RUNTIME_PUBLIC_PATH => Some(HookResolveIdOutput::from_id(
                 self.runtime.to_string_lossy().into_owned(),
             )),
-            PREAMBLE => Some(HookResolveIdOutput::from_id(PREAMBLE)),
             _ => None,
         })
-    }
-
-    async fn load(&self, _ctx: SharedLoadPluginContext, args: &HookLoadArgs<'_>) -> HookLoadReturn {
-        if args.id != PREAMBLE {
-            return Ok(None);
-        }
-        Ok(Some(HookLoadOutput {
-            code: arcstr::literal!(
-                "import { injectIntoGlobalHook } from \"/@react-refresh\";\n\
-                 injectIntoGlobalHook(window);\n\
-                 window.$RefreshReg$ = () => {};\n\
-                 window.$RefreshSig$ = () => (type) => type;"
-            ),
-            module_type: Some(ModuleType::Js),
-            ..Default::default()
-        }))
     }
 
     async fn transform(
@@ -84,15 +104,17 @@ impl Plugin for RefreshPreamble {
         _ctx: SharedTransformPluginContext,
         args: &HookTransformArgs<'_>,
     ) -> HookTransformReturn {
-        if Path::new(args.id) != self.entry {
+        let path = Path::new(args.id);
+        let code = if path == self.entry {
+            entry_code(args.code)
+        } else if path == self.runtime {
+            runtime_code(args.code)
+        } else {
             return Ok(None);
-        }
+        };
         Ok(Some(HookTransformOutput {
-            code: Some(format!(
-                "import {}; {}",
-                serde_json::Value::String(PREAMBLE.into()),
-                args.code
-            )),
+            code: Some(code),
+            map: HookTransformOutputMap::Null,
             ..Default::default()
         }))
     }
@@ -289,5 +311,37 @@ mod tests {
         assert!(code.contains("jsx-dev-runtime"), "{code}");
         assert!(!code.contains(": JSX.Element"), "{code}");
         assert!(map.is_some());
+    }
+
+    #[test]
+    fn the_entry_imports_the_runtime_first() {
+        let out = entry_code("import { hydrateRoot } from \"react-dom/client\";\n");
+        assert!(
+            out.starts_with("import \"/@react-refresh\";\nimport { hydrateRoot }"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn the_runtime_installs_the_preamble_as_it_evaluates() {
+        let runtime = "export function injectIntoGlobalHook(g) { g.hooked = true; }\n";
+        let out = runtime_code(runtime);
+        assert!(out.starts_with(runtime), "{out}");
+        let tail = &out[runtime.len()..];
+        // The preamble plugin-react documents, verbatim, behind a window guard.
+        assert!(tail.contains("injectIntoGlobalHook(window);"), "{tail}");
+        assert!(tail.contains("window.$RefreshReg$ = () => {};"), "{tail}");
+        assert!(
+            tail.contains("window.$RefreshSig$ = () => (type) => type;"),
+            "{tail}"
+        );
+        assert!(
+            tail.trim_start()
+                .starts_with("if (typeof window !== \"undefined\")"),
+            "{tail}"
+        );
+        // The wrapper reads registrations as `$RefreshReg$(`: the stubs are
+        // assignments, so the runtime is never wrapped as a component module.
+        assert!(!out.contains("$RefreshReg$("), "{out}");
     }
 }
