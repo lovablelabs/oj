@@ -1984,20 +1984,24 @@ fn merge_adopts_css_preprocessor_options() {
     );
 }
 
+// The seen set is one per process, shared with every extraction another
+// test in this binary runs: these lines are this test's own, so no real
+// extraction's stderr (`worker_config_warns_only_in_an_spa_build` prints
+// the worker warning) can have printed them first.
 #[test]
 fn extraction_stderr_lines_print_once_per_process() {
     let first = unseen_extraction_lines(
-        "oj: vite.config: worker config is not applied\nsome plugin notice\n",
+        "oj: vite.config: once-per-process test line\nonce-per-process plugin notice\n",
     );
     assert_eq!(
         first,
-        "oj: vite.config: worker config is not applied\nsome plugin notice\n"
+        "oj: vite.config: once-per-process test line\nonce-per-process plugin notice\n"
     );
     let again = unseen_extraction_lines(
-        "oj: vite.config: worker config is not applied\nsome plugin notice\nnew line\n",
+        "oj: vite.config: once-per-process test line\nonce-per-process plugin notice\nonce-per-process new line\n",
     );
     assert_eq!(
-        again, "new line\n",
+        again, "once-per-process new line\n",
         "only lines not printed before in this process come back"
     );
     assert_eq!(unseen_extraction_lines(""), "");

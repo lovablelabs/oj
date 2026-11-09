@@ -268,12 +268,14 @@ export default [{{
         tokio::spawn(async move { host.load(&virt).await })
     };
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    // Before any change: the same call, so the same run.
+    // Before any change: the same call, so the same run. The task has to
+    // reach the host before the change below, or it would be a call after it.
     let before = {
         let host = std::sync::Arc::clone(&host);
         let virt = virt.clone();
         tokio::spawn(async move { host.load(&virt).await })
     };
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     // A watched file changed: what the running load read may be stale.
     host.watch_change(&root.join("notes.md").display().to_string(), "update")
         .await
