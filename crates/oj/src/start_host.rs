@@ -1454,8 +1454,15 @@ impl StartEngine {
 
     /// The watcher's reload: drop changed modules (and their importers) and
     /// force the entry fresh, so the next request re-imports the new graph.
-    pub async fn reload(&self) {
-        self.host.graph().invalidate();
+    /// `changed` names the batch's files, dropped whether or not their bytes
+    /// moved (a glob's importer re-expanding for a member created or deleted
+    /// beside it); the entry's own bump covers a batch with none.
+    pub async fn reload(&self, changed: &[PathBuf]) {
+        if changed.is_empty() {
+            self.host.graph().invalidate();
+        } else {
+            self.host.graph().invalidate_for(changed);
+        }
         self.host.graph().bump(&self.entry_id);
         self.maybe_respawn().await;
     }

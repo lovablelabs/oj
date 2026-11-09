@@ -269,7 +269,7 @@ impl GlobCall {
     /// or a pattern spells a dot-led part.
     pub fn files(&self) -> Vec<PathBuf> {
         let matcher = self.matcher();
-        let bases: Vec<String> = matcher.affirmed.iter().map(|a| a.base.clone()).collect();
+        let bases: Vec<String> = matcher.bases().map(str::to_string).collect();
         let Some(start) = common_base(&bases) else {
             return Vec::new();
         };
@@ -384,6 +384,13 @@ impl GlobMatcher {
     }
 
     /// Whether `file` (absolute, `/`-separated) is in the call's expansion.
+    /// The literal directories the affirmed patterns start in (picomatch's
+    /// scan base of each): a file a pattern matches lives under one of them,
+    /// so a watcher on these sees every file the call can expand to.
+    pub fn bases(&self) -> impl Iterator<Item = &str> {
+        self.affirmed.iter().map(|a| a.base.as_str())
+    }
+
     pub fn is_match(&self, file: &str) -> bool {
         let affirmed = self.affirmed.is_empty()
             || self.affirmed.iter().any(|a| {

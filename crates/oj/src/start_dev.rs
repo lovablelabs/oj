@@ -106,6 +106,12 @@ struct StartState {
     /// importers of the globs an added file matches (resolution shifts land
     /// when an importer changes or the bundle failed, there as here).
     client_glob_scopes: std::sync::RwLock<Vec<oj_compiler::glob::GlobMatcher>>,
+    /// The same globs by the module that expands each: a file created or
+    /// deleted under one re-expands that module everywhere it is served (the
+    /// SSR graph, the plugin's worker environments), as Vite's import-glob
+    /// `hotUpdate` adds the importer to the update. The client engine finds
+    /// them itself (`StartCodePlugin::hot_update`).
+    client_glob_importers: std::sync::RwLock<Vec<(PathBuf, oj_compiler::glob::GlobMatcher)>>,
     /// False after a failed rebundle: the closure may be a torso (the build
     /// stopped early), so every next batch rebundles until one succeeds.
     bundle_ok: std::sync::atomic::AtomicBool,
@@ -609,6 +615,7 @@ pub async fn start_dev(
         },
         client_closure: std::sync::RwLock::new(load_client_closure(&cache)),
         client_glob_scopes: std::sync::RwLock::new(load_client_glob_scopes(&cache)),
+        client_glob_importers: std::sync::RwLock::new(load_client_glob_importers(&cache)),
         // A failed boot bundle rebundles on every next batch until one succeeds.
         bundle_ok: std::sync::atomic::AtomicBool::new(boot_error.is_none()),
         bundle_loaded: std::sync::atomic::AtomicBool::new(false),
@@ -783,7 +790,7 @@ async fn ensure_runner_fresh(state: &StartState) {
             .runner_dirty
             .swap(false, std::sync::atomic::Ordering::SeqCst)
     {
-        state.engine.reload().await;
+        state.engine.reload(&[]).await;
     }
 }
 
@@ -901,7 +908,9 @@ fn asset_mime(ext: &str) -> &'static str {
         "ttf" => "font/ttf",
         "otf" => "font/otf",
         "wasm" => "application/wasm",
-        _ => "application/octet-stream",
+        // Every other known asset type (audio, video, pdf, ...): the table
+        // the dev server and the build share.
+        _ => oj_compiler::assets::asset_mime(ext),
     }
 }
 
@@ -945,6 +954,10 @@ struct PendingRebundle {
     /// Every changed path of the merged batches (relevant and not), for the
     /// regen decisions; the HMR gate recorded them at the watcher event.
     paths: std::collections::HashSet<PathBuf>,
+    /// The glob importers the batches' created and deleted files re-expand
+    /// (`glob_importers_hit`): changed modules for the server graphs, though
+    /// no file of theirs was written.
+    globbed: std::collections::HashSet<PathBuf>,
     /// The worker-invalidate sends (early and settled) in flight for the
     /// merged batches: this run's browser reload waits for them, so a reload
     /// never lands while the worker environments still hold stale modules,
@@ -1001,6 +1014,26 @@ fn load_client_glob_scopes(cache: &Path) -> Vec<oj_compiler::glob::GlobMatcher> 
         .collect()
 }
 
+/// Every glob call the last bundle expanded, by the module that expands it
+/// (an entry's `importer`). A cache written before the importer was recorded
+/// contributes nothing here: its globs still gate the rebundle.
+fn load_client_glob_importers(cache: &Path) -> Vec<(PathBuf, oj_compiler::glob::GlobMatcher)> {
+    let Some(entries) = std::fs::read_to_string(cache.join("glob-scopes.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<Vec<serde_json::Value>>(&s).ok())
+    else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|e| {
+            let importer = PathBuf::from(e.get("importer")?.as_str()?);
+            let call = oj_compiler::glob::GlobCall::from_json(e)?;
+            Some((importer, call.matcher()))
+        })
+        .collect()
+}
+
 /// The glob calls a bundle expanded, as the client bundle writes them beside
 /// the closure (Vite's resolved patterns and options, see
 /// `oj_compiler::glob::GlobCall`). Missing or unreadable is an empty list:
@@ -1050,6 +1083,48 @@ fn added_to_glob(
         scopes.iter().any(|g| g.is_match(&file))
     };
     matched(p) || real.is_some_and(|r| matched(&r))
+}
+
+/// A file a bundled glob matched that is gone from disk: its importer's
+/// expansion shrinks, the other way a file that is not an edit changes a
+/// bundle. The bundler's engine has no module for a `?raw` or `?url` member
+/// by its bare path, so the closure alone cannot tell; the glob can.
+fn gone_from_glob(scopes: &[oj_compiler::glob::GlobMatcher], p: &Path) -> bool {
+    if scopes.is_empty() || p.exists() {
+        return false;
+    }
+    let file = p.to_string_lossy().replace('\\', "/");
+    scopes.iter().any(|g| g.is_match(&file))
+}
+
+/// The modules whose `import.meta.glob` a created or deleted file of `paths`
+/// matches: they re-expand, as plain dev's glob importers do and as Vite's
+/// import-glob `hotUpdate` adds them to the update. A file that exists and
+/// the bundle already read is an edit, which changes no expansion.
+fn glob_importers_hit(
+    importers: &[(PathBuf, oj_compiler::glob::GlobMatcher)],
+    closure: &std::collections::HashSet<PathBuf>,
+    paths: &std::collections::HashSet<PathBuf>,
+) -> Vec<PathBuf> {
+    if importers.is_empty() {
+        return Vec::new();
+    }
+    let mut hit: Vec<PathBuf> = Vec::new();
+    for p in paths {
+        let known = closure.contains(p)
+            || std::fs::canonicalize(p).is_ok_and(|real| closure.contains(&real));
+        if p.exists() && known {
+            continue;
+        }
+        let file = p.to_string_lossy().replace('\\', "/");
+        for (importer, matcher) in importers {
+            if matcher.is_match(&file) && !hit.contains(importer) {
+                hit.push(importer.clone());
+            }
+        }
+    }
+    hit.sort();
+    hit
 }
 
 /// The files the watcher knows, as chokidar's watched set: the boot scan
@@ -1143,7 +1218,9 @@ fn client_bundle_affected(state: &StartState, paths: &[PathBuf]) -> bool {
         .client_glob_scopes
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    paths.iter().any(|p| added_to_glob(&scopes, &closure, p))
+    paths
+        .iter()
+        .any(|p| added_to_glob(&scopes, &closure, p) || gone_from_glob(&scopes, p))
 }
 
 /// A batch's paths the client bundle reads: those in the closure (as it
@@ -1171,7 +1248,7 @@ fn client_inputs(state: &StartState, paths: &[PathBuf]) -> Vec<PathBuf> {
             .filter(|r| closure.contains(r))
         {
             inputs.push(real);
-        } else if added_to_glob(&scopes, &closure, p) {
+        } else if added_to_glob(&scopes, &closure, p) || gone_from_glob(&scopes, p) {
             inputs.push(p.clone());
         }
     }
@@ -1338,11 +1415,37 @@ fn spawn_start_watcher(
             let _ = state.ws_tx.send(oj_server::update_progress_frame(
                 batch, "watch", 0, 0, None, false,
             ));
+            // A file created or deleted under a module's `import.meta.glob`
+            // re-expands that module: an edit of it as far as every server
+            // graph is concerned, though its file was not written.
+            let globbed: std::collections::HashSet<PathBuf> = {
+                let importers = state
+                    .client_glob_importers
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let closure = state
+                    .client_closure
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                glob_importers_hit(&importers, &closure, &paths)
+                    .into_iter()
+                    .collect()
+            };
+            for importer in &globbed {
+                let shown = importer.strip_prefix(&watch_root).unwrap_or(importer);
+                println!("  oj start: glob importer {} re-expanded", shown.display());
+            }
             // Invalidate the plugin's worker DevEnvironments so a Cloudflare
             // app re-renders with the changed modules (not stale SSR). Spawned
             // promptly per settled batch, never behind an in-flight rebundle;
             // the rebundle worker awaits it before that run's browser reload.
-            let invalidate = spawn_mw_invalidate(&rt, &state, &paths, &created);
+            let invalidate = if globbed.is_empty() {
+                spawn_mw_invalidate(&rt, &state, &paths, &created)
+            } else {
+                let with_importers: std::collections::HashSet<PathBuf> =
+                    paths.union(&globbed).cloned().collect();
+                spawn_mw_invalidate(&rt, &state, &with_importers, &created)
+            };
             if state.lazy_runner() {
                 state
                     .runner_dirty
@@ -1354,6 +1457,7 @@ fn spawn_start_watcher(
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let run = slot.get_or_insert_with(PendingRebundle::default);
                 run.paths.extend(paths.iter().cloned());
+                run.globbed.extend(globbed);
                 run.invalidates.extend(early_invalidate);
                 run.invalidates.extend(invalidate);
                 run.batch = batch;
@@ -1401,6 +1505,9 @@ async fn rebundle_worker(
             continue;
         };
         let paths: Vec<PathBuf> = run.paths.into_iter().collect();
+        // The server graphs' changed files: the batch's, and the glob
+        // importers its created and deleted files re-expand.
+        let served: Vec<PathBuf> = paths.iter().chain(run.globbed.iter()).cloned().collect();
         let regen_files = regen_output_files(&routes.tree, &cache);
         // The gate: a batch whose paths miss the last bundle's input closure
         // cannot change the client bundle (rollup watch semantics; Vite only
@@ -1602,15 +1709,15 @@ async fn rebundle_worker(
         // whether the engine served any of the changed files at all).
         let engine_hit = if !state.lazy_runner() {
             if bundled || server_fn_changed || !regen_changed.is_empty() {
-                state.engine.reload().await;
+                state.engine.reload(&served).await;
                 true
             } else {
-                state.engine.revalidate_for(&paths).await
+                state.engine.revalidate_for(&served).await
             }
         } else if no_invalidates_sent {
             // Lazy with the middleware down: the fallback runner is serving,
             // so its graph is the only reload signal left.
-            state.engine.revalidate_for(&paths).await
+            state.engine.revalidate_for(&served).await
         } else {
             false
         };
@@ -1623,7 +1730,7 @@ async fn rebundle_worker(
                 .take()
                 .is_some();
         let server_signals =
-            worker_hit || engine_hit || paths.iter().any(|p| state.ssr.graph_knows_file(p));
+            worker_hit || engine_hit || served.iter().any(|p| state.ssr.graph_knows_file(p));
         let unbundled = !pages_run_bundle && !bundled;
         let reload = reloads_browser(RunSignals {
             unbundled,
@@ -1807,6 +1914,10 @@ fn install_bundle(state: &StartState, cache: &Path, pinned: oj_cache::start_bund
         .client_glob_scopes
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = load_client_glob_scopes(cache);
+    *state
+        .client_glob_importers
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = load_client_glob_importers(cache);
 }
 
 /// How long edits must pause before the refresher writes the client output:
@@ -4764,6 +4875,92 @@ mod tests {
     // save renamed onto a live file is an update (a lazy glob member no
     // worker loaded must not re-expand its importer), a file renamed into
     // place is a create, and so is one recreated after its delete settled.
+    // Vite's import-glob hotUpdate, the other way round and for the server
+    // graphs: a file created or deleted where a module's glob looks changes
+    // that module's expansion, so the module counts as changed although its
+    // own file was not written (the client engine finds it through a watch
+    // on the glob's directory, the server graphs through this list). A
+    // member that exists and the bundle already read is an edit: nothing
+    // re-expands for it. A deleted member the bundler has no module for by
+    // its bare path (a `?raw` one) still gates the rebundle through its glob.
+    #[test]
+    fn a_glob_member_created_or_deleted_re_expands_its_importer() {
+        let dir = tmp("glob-importers");
+        let app = dir.join("app");
+        let a = app.to_string_lossy().replace('\\', "/");
+        let posts = app.join("src/posts.tsx");
+        let icons = app.join("src/icons.tsx");
+        std::fs::write(
+            dir.join("glob-scopes.json"),
+            serde_json::json!([
+                {"importer": posts, "patterns": [format!("{a}/src/content/*.md")], "exhaustive": false, "caseSensitive": true},
+                {"importer": icons, "patterns": [format!("{a}/src/icons/**/*.svg")], "exhaustive": false, "caseSensitive": true},
+                // A cache an older oj wrote names no importer: it still gates.
+                {"patterns": [format!("{a}/src/data/*.json")], "exhaustive": false, "caseSensitive": true},
+            ])
+            .to_string(),
+        )
+        .unwrap();
+        let importers = load_client_glob_importers(&dir);
+        assert_eq!(importers.len(), 2, "the entries naming an importer");
+        let scopes = load_client_glob_scopes(&dir);
+        assert_eq!(scopes.len(), 3, "every entry gates the rebundle");
+
+        let file = |rel: &str| {
+            let p = app.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, "x").unwrap();
+            p
+        };
+        let read = file("src/content/read.md");
+        let closure: std::collections::HashSet<PathBuf> =
+            [std::fs::canonicalize(&read).unwrap()].into();
+        let gone = app.join("src/content/gone.md");
+        let created = file("src/content/new.md");
+        let elsewhere = file("src/other/new.md");
+        let data_gone = app.join("src/data/old.json");
+
+        assert!(gone_from_glob(&scopes, &gone), "a deleted member");
+        assert!(
+            gone_from_glob(&scopes, &data_gone),
+            "under a legacy entry too"
+        );
+        assert!(
+            !gone_from_glob(&scopes, &read),
+            "a member on disk is an edit"
+        );
+        assert!(!gone_from_glob(&scopes, &created));
+        assert!(
+            !gone_from_glob(&scopes, &app.join("src/other/gone.md")),
+            "a deleted file no glob matches"
+        );
+        assert!(!gone_from_glob(&[], &gone));
+
+        let hit = |paths: &[&PathBuf]| {
+            glob_importers_hit(
+                &importers,
+                &closure,
+                &paths.iter().map(|p| (*p).clone()).collect(),
+            )
+        };
+        assert_eq!(hit(&[&created]), std::slice::from_ref(&posts), "a create re-expands");
+        assert_eq!(hit(&[&gone]), std::slice::from_ref(&posts), "a delete re-expands");
+        assert!(
+            hit(&[&read]).is_empty(),
+            "an edit of a member re-expands nothing"
+        );
+        assert!(hit(&[&elsewhere]).is_empty(), "a file no glob matches");
+        assert_eq!(
+            hit(&[&created, &gone, &app.join("src/icons/a.svg")]),
+            [icons.clone(), posts.clone()],
+            "each importer once, in order"
+        );
+        assert!(
+            glob_importers_hit(&[], &closure, &[created.clone()].into()).is_empty(),
+            "no importers recorded"
+        );
+    }
+
     #[test]
     fn renames_onto_known_files_are_changes_as_in_chokidar() {
         use notify::event::{CreateKind, DataChange, ModifyKind, RemoveKind, RenameMode};
@@ -5208,6 +5405,9 @@ mod tests {
         assert_eq!(asset_mime("webp"), "image/webp");
         assert_eq!(asset_mime("woff2"), "font/woff2");
         assert_eq!(asset_mime("json"), "application/json");
+        // The shared table answers for the other known asset types.
+        assert_eq!(asset_mime("mp3"), "audio/mpeg");
+        assert_eq!(asset_mime("pdf"), "application/pdf");
         assert_eq!(asset_mime("weirdext"), "application/octet-stream");
     }
 

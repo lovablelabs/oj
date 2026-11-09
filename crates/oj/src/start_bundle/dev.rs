@@ -18,7 +18,6 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use oj_compiler::glob::GlobCall;
 use oj_server::rolldown_runtime::on_rolldown;
 use rolldown::{BundlerBuilder, BundlerOptions, InputItem, OutputFormat, Platform};
 use rolldown_common::AddonOutputOption;
@@ -26,7 +25,7 @@ use rolldown_plugin::__inner::{Pluginable, SharedPluginable};
 
 use super::alias::AppAliasPlugin;
 use super::assets::{AssetMode, DevStyleState, StartAssetsPlugin, Styles};
-use super::code::{CodeTarget, StartCodePlugin};
+use super::code::{CodeTarget, GlobScope, StartCodePlugin};
 use super::errors::{unresolved_import_in, BundleError};
 use super::host::StartHostPlugin;
 use super::hosts::{self, BundleHost};
@@ -749,7 +748,7 @@ pub(crate) fn write_outputs<'a>(
     outputs: &[rolldown_common::Output],
     module_ids: impl Iterator<Item = &'a str>,
     css_urls: &[String],
-    scopes: &[GlobCall],
+    scopes: &[GlobScope],
     hot: bool,
 ) -> std::io::Result<()> {
     use rolldown_common::Output;
@@ -806,9 +805,10 @@ pub(crate) fn write_outputs<'a>(
         .iter()
         .map(|s| {
             serde_json::json!({
-                "patterns": s.patterns,
-                "exhaustive": s.exhaustive,
-                "caseSensitive": s.case_sensitive,
+                "importer": s.importer,
+                "patterns": s.call.patterns,
+                "exhaustive": s.call.exhaustive,
+                "caseSensitive": s.call.case_sensitive,
             })
         })
         .collect();
