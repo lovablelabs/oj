@@ -100,6 +100,16 @@ function loadPage({
     return ws().url;
   };
   const tick = () => intervals.forEach(({ fn }) => fn());
+  // Time passing on a running page: its watchdog ticks at its interval.
+  const advanceTo = (t) => {
+    const step = intervals.length ? intervals[0].ms : t - clock.now;
+    while (clock.now + step < t) {
+      clock.now += step;
+      tick();
+    }
+    clock.now = t;
+    tick();
+  };
   const emit = (on, type, event = {}) => (on[type] || []).forEach((fn) => fn(event));
   return {
     bus: page.__ojStartHmr,
@@ -113,6 +123,7 @@ function loadPage({
     intervals,
     clock,
     tick,
+    advanceTo,
     page,
     visible: () => emit(docListeners, "visibilitychange"),
     resume: () => emit(docListeners, "resume"),
@@ -268,32 +279,39 @@ test("a page behind a hot change reloads once per document, so a cached document
 // The keepalive: the server sends a frame at least every `ping` ms, and a
 // socket silent for two intervals and a grace of one more (at most 10s) is
 // presumed dead: 3000ms at a 1000ms ping. A connection dropped on the way
-// without a close never fires onclose.
+// without a close never fires onclose. The watchdog ticks every 500ms here.
 
-test("the server's ping is answered, and neither reloads the page nor reaches its listeners", async () => {
+test("the server's ping neither reloads the page, nor reaches its listeners, nor is answered", async () => {
   const { log, open, receive } = loadPage({ ping: 1000 });
   open();
   log.length = 0;
+  // The server's own deadline runs on the protocol's ping, which the
+  // browser answers without the page's scripts.
   await receive({ type: "oj:ping" });
-  assert.deepEqual(JSON.parse(JSON.stringify(log)), [["send", { type: "oj:pong" }]]);
+  assert.deepEqual(log, []);
 });
 
-test("a ping is answered at once, even behind a listener still busy with an update", async () => {
-  const { log, open, receive, page } = loadPage({ ping: 1000 });
+test("a ping counts at once, even behind a listener still busy with an update", async () => {
+  const { open, receive, page, sockets, advanceTo } = loadPage({ ping: 1000 });
   open();
   // A plugin listener that never finishes holds the frame queue.
   page.__ojStartHmr.runtime.hmr.notify = () => new Promise(() => {});
   await receive({ type: "custom", event: "app:slow" });
-  log.length = 0;
-  await receive({ type: "oj:ping" });
-  assert.deepEqual(JSON.parse(JSON.stringify(log)), [["send", { type: "oj:pong" }]]);
+  for (let t = 1000; t <= 6000; t += 1000) {
+    advanceTo(t);
+    await receive({ type: "oj:ping" });
+  }
+  assert.equal(sockets.length, 1, "heard before the queue, so the socket stays");
 });
 
 test("a socket silent past the deadline is replaced at once, naming the page's stamps", () => {
-  const { log, open, sockets, clock, tick, timers } = loadPage({ ping: 1000, stamp: '"1f-3"', hot: "4" });
+  const { log, open, sockets, clock, advanceTo, tick, timers } = loadPage({
+    ping: 1000,
+    stamp: '"1f-3"',
+    hot: "4",
+  });
   open();
-  clock.now = 3000;
-  tick();
+  advanceTo(3000);
   assert.equal(sockets.length, 1, "not yet: 3000ms is the deadline itself");
   clock.now = 3001;
   tick();
@@ -308,22 +326,20 @@ test("a socket silent past the deadline is replaced at once, naming the page's s
 });
 
 test("any frame keeps the socket: a busy socket outlives the deadline", async () => {
-  const { open, receive, sockets, clock, tick } = loadPage({ ping: 1000 });
+  const { open, receive, sockets, advanceTo } = loadPage({ ping: 1000 });
   open();
   for (let t = 1000; t <= 10000; t += 1000) {
-    clock.now = t;
+    advanceTo(t);
     await receive(t % 2000 ? { type: "oj:ping" } : { type: "custom", event: "app:x" });
-    tick();
   }
   assert.equal(sockets.length, 1);
 });
 
 test("the replaced socket's late close starts no second reconnect", () => {
-  const { open, sockets, clock, tick, timers } = loadPage({ ping: 1000 });
+  const { open, sockets, advanceTo, timers } = loadPage({ ping: 1000 });
   open();
   const dead = sockets[0];
-  clock.now = 5000;
-  tick();
+  advanceTo(3500);
   assert.equal(dead.onclose, null, "its handlers were detached first");
   assert.equal(dead.onmessage, null);
   assert.equal(timers.length, 0);
@@ -331,78 +347,124 @@ test("the replaced socket's late close starts no second reconnect", () => {
 });
 
 test("a socket stuck connecting past the deadline is replaced too", () => {
-  const { sockets, clock, tick } = loadPage({ ping: 1000 });
-  clock.now = 3001;
-  tick();
+  const { sockets, advanceTo } = loadPage({ ping: 1000 });
+  advanceTo(3500);
   assert.equal(sockets.length, 2);
 });
 
 test("a replaced socket says why, in the console and in its close", () => {
-  const { open, sockets, clock, tick, said } = loadPage({ ping: 1000 });
+  const { open, sockets, advanceTo, said } = loadPage({ ping: 1000 });
   open();
-  clock.now = 3001;
-  tick();
+  advanceTo(3500);
   assert.deepEqual(sockets[0].closedWith, [1000, "oj: no word from the dev server in 3000ms"]);
   assert.deepEqual(said, ["[oj] no word from the dev server in 3000ms; reconnecting"]);
 });
 
-test("the network coming back replaces a remote dev server's socket at once, silent or not", () => {
-  const { open, sockets, clock, online, said } = loadPage({ ping: 1000, hostname: "preview.example.dev" });
+test("a page that was itself stopped gives its socket one more ping before replacing it", async () => {
+  const { open, receive, sockets, clock, tick } = loadPage({ ping: 1000 });
   open();
-  clock.now = 500;
+  // A breakpoint, an alert() or a frozen tab: nothing ran for 50s, and the
+  // frames the server sent meanwhile wait to be delivered.
+  clock.now = 50000;
+  tick();
+  assert.equal(sockets.length, 1, "not replaced on the first look after the stop");
+  // They arrive: the socket was fine all along.
+  await receive({ type: "oj:hmr", change: 1 });
+  clock.now = 50500;
+  tick();
+  clock.now = 52500;
+  tick();
+  assert.equal(sockets.length, 1, "kept");
+});
+
+test("after a stop, a socket still silent once its grace ran out is replaced", () => {
+  const { open, sockets, clock, tick, advanceTo } = loadPage({ ping: 1000 });
+  open();
+  clock.now = 50000;
+  tick();
+  assert.equal(sockets.length, 1);
+  advanceTo(51900);
+  assert.equal(sockets.length, 1, "one ping and a second of grace");
+  advanceTo(52100);
+  assert.equal(sockets.length, 2, "dead after all");
+});
+
+test("the grace comes once: a throttled tab, every tick late, still replaces a dead socket", () => {
+  const { open, sockets, clock, tick } = loadPage({ ping: 1000 });
+  open();
+  // A hidden tab's timers run once a minute.
+  clock.now = 60000;
+  tick();
+  assert.equal(sockets.length, 1, "the first late look grants the grace");
+  clock.now = 120000;
+  tick();
+  assert.equal(sockets.length, 2, "the next one, still silent, does not grant it again");
+});
+
+test("the network coming back replaces a remote dev server's socket at once, silent or not", () => {
+  const { open, sockets, advanceTo, online, said } = loadPage({ ping: 1000, hostname: "preview.example.dev" });
+  open();
+  advanceTo(500);
   online();
   assert.equal(sockets.length, 2, "a socket from before the network went is dead");
   assert.deepEqual(said, ["[oj] the network came back; reconnecting"]);
 });
 
 test("a dev server on this machine keeps its loopback socket when the network comes back", () => {
-  const { open, sockets, clock, online } = loadPage({ ping: 1000 });
+  const { open, sockets, advanceTo, online } = loadPage({ ping: 1000 });
   open();
-  clock.now = 500;
+  advanceTo(500);
   online();
   assert.equal(sockets.length, 1, "loopback survives a network change");
-  clock.now = 3001;
+  advanceTo(2900);
   online();
+  assert.equal(sockets.length, 1, "within the deadline still");
+  advanceTo(3100);
   assert.equal(sockets.length, 2, "but a silent one is still replaced");
 });
 
-test("a tab coming back, or the network, checks at once instead of at the next tick", () => {
-  const { open, sockets, clock, visible, online, resume } = loadPage({ ping: 1000 });
+test("a tab coming back, or a frozen page resuming, checks at once instead of at the next tick", () => {
+  const { open, sockets, clock, advanceTo, visible, resume } = loadPage({ ping: 1000 });
   open();
-  clock.now = 1000;
+  advanceTo(1000);
   visible();
   assert.equal(sockets.length, 1, "a socket heard from in time stays");
-  clock.now = 60000;
+  // A hidden, running tab: its watchdog kept ticking, the socket went silent.
+  advanceTo(3400);
+  clock.now = 3600;
   visible();
-  assert.equal(sockets.length, 2, "a tab hidden for a minute replaces its silent socket");
+  assert.equal(sockets.length, 2, "becoming visible replaces it at once");
   open();
-  clock.now = 120000;
-  online();
-  assert.equal(sockets.length, 3, "the network returning replaces a silent socket");
-  open();
-  clock.now = 180000;
+  // A frozen page: nothing ran for a minute, so its socket gets its grace,
+  // and the resume after it, still silent, replaces it.
+  clock.now = 63600;
   resume();
-  assert.equal(sockets.length, 4, "a frozen page resuming replaces a silent socket, visibilitychange or not");
+  assert.equal(sockets.length, 2, "the first look after the freeze grants the grace");
+  clock.now = 65700;
+  resume();
+  assert.equal(sockets.length, 3, "a resumed page whose socket stays silent replaces it");
 });
 
 test("a replacement that hears from the server is kept", async () => {
-  const { open, receive, sockets, clock, tick } = loadPage({ ping: 1000 });
+  const { open, receive, sockets, advanceTo } = loadPage({ ping: 1000 });
   open();
-  clock.now = 3001;
-  tick();
+  advanceTo(3500);
+  assert.equal(sockets.length, 2);
   open();
-  await receive({ type: "oj:ping" });
-  clock.now = 5000;
-  tick();
+  for (let t = 4000; t <= 8000; t += 1000) {
+    advanceTo(t);
+    await receive({ type: "oj:ping" });
+  }
   assert.equal(sockets.length, 2);
 });
 
 test("a message is never written into a socket past its deadline: it waits for the new one", () => {
-  const { bus, log, open, sockets, clock } = loadPage({ ping: 1000 });
+  const { bus, log, open, sockets, advanceTo, clock } = loadPage({ ping: 1000 });
   open();
   log.length = 0;
-  // The watchdog's tick has not fired (a throttled timer, say).
-  clock.now = 3001;
+  advanceTo(3000);
+  // Past the deadline before the watchdog's next tick.
+  clock.now = 3200;
   bus.post({ type: "custom", event: "app:late", data: 1 });
   assert.equal(sockets.length, 2, "checked before the write, and replaced");
   assert.ok(!log.some((e) => e[0] === "send"), "nothing went into the dead socket");
@@ -423,6 +485,8 @@ test("a page going into the back/forward cache closes its socket; restored, it c
   assert.equal(sockets[0].onclose, null, "its close starts no reconnect");
   assert.equal(timers.length, 0);
   clock.now = 60000;
+  tick();
+  clock.now = 120000;
   tick();
   assert.equal(sockets.length, 1, "the watchdog leaves a cached page alone");
   pageshow(true);

@@ -41,6 +41,8 @@ const SHOWN: &str = "(document.querySelector('[data-testid=\"glob-jsx\"]')?.text
 const PING_MS: &str = "300";
 /// Long past that deadline and a reconnect.
 const CATCH_UP: Duration = Duration::from_secs(15);
+/// The watchdog's console line at [`PING_MS`].
+const WATCHDOG: &str = "[oj] no word from the dev server in 900ms; reconnecting";
 
 /// A TCP proxy to oj that can leave its open WebSocket connections
 /// half-open: [`SilentProxy::silence`] makes each one drop what either end
@@ -165,8 +167,18 @@ async fn hydrated(page: &Page) {
 
 /// Records the page's `console.log` lines in sessionStorage, before any of
 /// its scripts run, so they outlast a catch-up reload (the browser helper
-/// keeps errors and warnings only).
-const RECORD_LOG: &str = "const log = console.log; console.log = (...a) => { const said = JSON.parse(sessionStorage.getItem('said') || '[]'); said.push(a.join(' ')); sessionStorage.setItem('said', JSON.stringify(said)); log(...a); };";
+/// keeps errors and warnings only), and keeps the document's dev server
+/// sockets in `window.__ojSockets`.
+const RECORD_LOG: &str = "const log = console.log; console.log = (...a) => { const said = JSON.parse(sessionStorage.getItem('said') || '[]'); said.push(a.join(' ')); sessionStorage.setItem('said', JSON.stringify(said)); log(...a); }; window.__ojSockets = []; const Ws = WebSocket; window.WebSocket = class extends Ws { constructor(...a) { super(...a); if (String(a[0]).includes('/@oj-start/hmr')) window.__ojSockets.push(this); } };";
+
+/// The document's dev server sockets still open.
+const OPEN_SOCKETS: &str = "window.__ojSockets.filter((s) => s.readyState === 1).length";
+
+/// What the page said in the console, across reloads.
+async fn said(page: &Page) -> Vec<String> {
+    page.eval("JSON.parse(sessionStorage.getItem('said') || '[]')")
+        .await
+}
 
 fn shows(text: &str) -> String {
     format!("{SHOWN}.includes({})", serde_json::to_string(text).unwrap())
@@ -228,17 +240,88 @@ async fn a_page_whose_socket_went_silent_still_gets_the_next_edit() {
         dev.output()
     );
     // The watchdog did it, and said so.
-    let said: Vec<String> = page
-        .eval("JSON.parse(sessionStorage.getItem('said') || '[]')")
-        .await;
-    let watchdog = "[oj] no word from the dev server in 900ms; reconnecting";
+    let lines = said(&page).await;
     assert!(
-        said.iter().any(|line| line == watchdog),
-        "no watchdog line in the console: {said:?}"
+        lines.iter().any(|line| line == WATCHDOG),
+        "no watchdog line in the console: {lines:?}"
     );
-    // And the replacement socket carries the next one.
+    // One socket, the replacement, and it carries the next edit as a patch
+    // in place: the page stays registered for hot updates. (The catch-up
+    // may have reloaded the page: its new document hydrates and connects
+    // first.)
+    hydrated(&page).await;
+    assert!(
+        page.poll(&format!("{OPEN_SOCKETS} === 1"), CATCH_UP).await,
+        "the page has {} open dev server sockets",
+        page.eval::<u32>(OPEN_SOCKETS).await
+    );
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let open: u32 = page.eval(OPEN_SOCKETS).await;
+    assert_eq!(open, 1, "a second socket opened: {open}");
+    page.eval::<bool>("(window.__kept = true)").await;
     std::fs::write(root.join(WIDGET), widget(&original, "after:")).unwrap();
     page.wait_for(&shows("after:"), WAIT).await;
+    assert!(
+        page.eval::<bool>("window.__kept === true").await,
+        "the edit after the recovery reloaded the page instead of patching it"
+    );
+    assert!(page.errors().is_empty(), "page errors: {:?}", page.errors());
+    page.close().await;
+}
+
+/// The socket goes silent with nothing changing: the page replaces it, and
+/// the server later closes the dead one at its own deadline. The page keeps
+/// its document (nothing to catch up on) and its runtime id, so that late
+/// close must not unregister it from hot updates: the next edit still
+/// arrives as a patch in place, on one socket.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_page_whose_socket_went_silent_with_nothing_changing_keeps_patching_in_place() {
+    let Some(app) = app("keepalive-blip") else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let _one_at_a_time = BROWSER.lock().await;
+    let root = app.0.clone();
+    let original = std::fs::read_to_string(root.join(WIDGET)).unwrap();
+    let dev = Server::oj_dev_with(&root, &[("OJ_HMR_PING_MS", PING_MS)]);
+    let proxy = SilentProxy::start(dev.port).await;
+    let page = Page::open_with_script(&proxy.url("/"), Some(RECORD_LOG)).await;
+    hydrated(&page).await;
+    page.eval::<bool>("(window.__kept = true)").await;
+
+    proxy.silence();
+    assert!(
+        page.poll(
+            &format!(
+                "JSON.parse(sessionStorage.getItem('said') || '[]').includes({})",
+                serde_json::to_string(WATCHDOG).unwrap()
+            ),
+            CATCH_UP
+        )
+        .await,
+        "the watchdog never replaced the silent socket: {:?}",
+        said(&page).await
+    );
+    // Past the server's deadline for the dead socket (900ms from its last
+    // pong, checked each 300ms), so its late close has happened.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(
+        dev.logs("a page stopped answering pings"),
+        "the server never closed the dead socket\n{}",
+        dev.output()
+    );
+
+    std::fs::write(root.join(WIDGET), widget(&original, "after-blip:")).unwrap();
+    page.wait_for(&shows("after-blip:"), WAIT).await;
+    assert!(
+        page.eval::<bool>("window.__kept === true").await,
+        "the page reloaded: its replacement socket lost its hot client\n{}",
+        dev.output()
+    );
+    let open: u32 = page.eval(OPEN_SOCKETS).await;
+    assert_eq!(open, 1, "the page has {open} open dev server sockets");
     assert!(page.errors().is_empty(), "page errors: {:?}", page.errors());
     page.close().await;
 }

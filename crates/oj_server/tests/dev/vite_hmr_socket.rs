@@ -111,3 +111,39 @@ async fn root_vite_hmr_socket_pings_each_interval_and_never_without_one() {
     assert!(frame.is_none(), "a frame with no interval: {frame:?}");
     close(quiet).await;
 }
+
+/// A client end that stops answering the protocol's ping (it reads nothing:
+/// its connection is gone) is closed after the deadline, with the reason;
+/// a browser answers by itself, so a page paused in a debugger stays.
+#[tokio::test(flavor = "multi_thread")]
+async fn root_vite_hmr_socket_closes_a_client_that_stops_answering() {
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"vite-hmr-deadline-app","version":"1.0.0"}"#,
+        ),
+        ("src/main.js", "document.title = \"v1\";\n"),
+        ("index.html", INDEX_HTML),
+    ]);
+    let server = app.serve().await;
+    let listening = server.listen().await;
+    let ping = std::time::Duration::from_millis(100);
+    server.built.set_hmr_ping(Some(ping));
+    let (mut socket, _) = server.ws(listening.addr, "/", Some("vite-hmr")).await;
+    tokio::time::sleep(oj_server::silent_deadline(ping) + ping * 2).await;
+    let closed = tokio::time::timeout(WAIT, async {
+        loop {
+            match socket.next().await {
+                Some(Ok(Message::Close(frame))) => return frame,
+                None | Some(Err(_)) => return None,
+                Some(Ok(_)) => {}
+            }
+        }
+    })
+    .await
+    .expect("the silent client's socket stayed open");
+    assert_eq!(
+        closed.map(|f| f.reason.to_string()).as_deref(),
+        Some("oj: ping timeout")
+    );
+}

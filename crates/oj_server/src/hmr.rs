@@ -94,9 +94,14 @@ pub fn hmr_ping(ms: Option<u64>) -> Option<std::time::Duration> {
     match ms {
         None => Some(DEFAULT_HMR_PING),
         Some(0) => None,
-        Some(ms) => Some(std::time::Duration::from_millis(ms)),
+        // A day at most: a longer interval is the same as none for a dev
+        // session, and keeps every deadline far from overflowing.
+        Some(ms) => Some(std::time::Duration::from_millis(ms.min(MAX_HMR_PING_MS))),
     }
 }
+
+/// The longest keepalive interval [`hmr_ping`] takes, in ms (a day).
+const MAX_HMR_PING_MS: u64 = 24 * 60 * 60 * 1000;
 
 /// How long either end of a socket that pings waits, hearing nothing, before
 /// it presumes the other end gone: two missed pings and a grace of up to
@@ -110,6 +115,23 @@ pub(crate) fn ping_millis(ping: Option<std::time::Duration>) -> u64 {
     ping.map_or(0, |p| {
         u64::try_from(p.as_millis()).unwrap_or(u64::MAX).max(1)
     })
+}
+
+/// Sends `message` on a dev server socket, giving up after `limit`: a peer
+/// that has not read for that long (its end gone, the send buffer full) is
+/// as dead as one that stopped answering, and a send stuck on it would hold
+/// the socket's whole loop, its deadline check included. No limit waits as
+/// long as it takes.
+pub async fn send_within(
+    socket: &mut axum::extract::ws::WebSocket,
+    message: Message,
+    limit: Option<std::time::Duration>,
+) -> bool {
+    let send = socket.send(message);
+    match limit {
+        Some(limit) => matches!(tokio::time::timeout(limit, send).await, Ok(Ok(()))),
+        None => send.await.is_ok(),
+    }
 }
 
 /// A tick every `ping`, the first one interval in, or never; a stalled send
@@ -170,34 +192,53 @@ pub(crate) fn hmr_socket(
             let boot = boot_progress_frame(0, state.preload_snapshot.len(), Some(0));
             let _ = socket.send(Message::Text(boot.into())).await;
         }
-        // No deadline on this end: Vite's client and oj's client.js never
-        // answer a ping, so a silent client is not a dead one here.
+        // Each tick sends the protocol's ping, which a browser answers by
+        // itself (whatever its page's scripts are doing), and Vite's text
+        // ping for a client watching the socket. A client end silent for the
+        // deadline is gone, and a send it has not read for as long would
+        // hold this loop: either closes the socket.
         let ms = state.hmr_ping_ms.load(std::sync::atomic::Ordering::SeqCst);
-        let mut ticks = ping_ticks((ms > 0).then(|| std::time::Duration::from_millis(ms)));
+        let ping = (ms > 0).then(|| std::time::Duration::from_millis(ms));
+        let deadline = ping.map(silent_deadline);
+        let mut heard = tokio::time::Instant::now();
+        let mut ticks = ping_ticks(ping);
         loop {
             tokio::select! {
                 () = ping_due(&mut ticks) => {
-                    // A client that has not read for a deadline's worth of
-                    // pings is gone; a send stuck on it would hold this loop.
-                    let limit = silent_deadline(std::time::Duration::from_millis(ms));
-                    let send = socket.send(Message::Text(VITE_PING_FRAME.into()));
-                    if !matches!(tokio::time::timeout(limit, send).await, Ok(Ok(()))) {
+                    if deadline.is_some_and(|d| heard.elapsed() > d) {
+                        let close = Message::Close(Some(axum::extract::ws::CloseFrame {
+                            code: axum::extract::ws::close_code::NORMAL,
+                            reason: "oj: ping timeout".into(),
+                        }));
+                        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), socket.send(close)).await;
+                        break;
+                    }
+                    if !send_within(&mut socket, Message::Ping(Default::default()), deadline).await
+                        || !send_within(&mut socket, Message::Text(VITE_PING_FRAME.into()), deadline).await
+                    {
                         break;
                     }
                 },
                 msg = rx.recv() => match msg {
                     Ok(text) => {
-                        if socket.send(Message::Text(text.into())).await.is_err() {
+                        if !send_within(&mut socket, Message::Text(text.into()), deadline).await {
                             break;
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(broadcast::error::RecvError::Closed) => break,
                 },
-                incoming = socket.recv() => match incoming {
-                    None | Some(Err(_)) => break,
-                    Some(Ok(Message::Text(text))) => handle_client_message(&state, &text),
-                    Some(Ok(_)) => {}
+                incoming = socket.recv() => {
+                    // Any frame from the client's end shows it alive, the
+                    // browser's pong to the protocol ping included.
+                    if matches!(incoming, Some(Ok(_))) {
+                        heard = tokio::time::Instant::now();
+                    }
+                    match incoming {
+                        None | Some(Err(_)) => break,
+                        Some(Ok(Message::Text(text))) => handle_client_message(&state, &text),
+                        Some(Ok(_)) => {}
+                    }
                 },
             }
         }
@@ -1569,6 +1610,11 @@ mod ping_tests {
         assert_eq!(super::hmr_ping(None), Some(super::DEFAULT_HMR_PING));
         assert_eq!(super::hmr_ping(Some(0)), None);
         assert_eq!(super::hmr_ping(Some(250)), Some(Duration::from_millis(250)));
+        assert_eq!(
+            super::hmr_ping(Some(u64::MAX)),
+            Some(Duration::from_millis(super::MAX_HMR_PING_MS)),
+            "clamped to a day"
+        );
         assert_eq!(super::ping_millis(None), 0);
         assert_eq!(super::ping_millis(Some(Duration::from_millis(250))), 250);
         // Under a millisecond still pings, rather than reading as none.

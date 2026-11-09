@@ -16,7 +16,7 @@ use axum::{
 };
 use futures_util::SinkExt;
 use oj_server::needs_css_compile;
-use oj_server::{hmr_ping, silent_deadline};
+use oj_server::{hmr_ping, send_within, silent_deadline};
 use tokio::sync::broadcast;
 
 use crate::start_chunks::{respond, Chunk};
@@ -2725,22 +2725,12 @@ const HOT_BEHIND_FRAME: &str = r#"{"type":"oj:behind","hot":true}"#;
 /// laptop) without a close never fires the browser's `onclose`, so the page
 /// would otherwise keep a dead socket, and miss every change, until a manual
 /// refresh. The keepalive also keeps idle-timeout middleboxes from cutting it.
+/// A text frame, as page scripts never see the protocol's own pings.
 const PING_FRAME: &str = r#"{"type":"oj:ping"}"#;
-/// The close reason a page socket gets when its page stopped answering
-/// pings, as engine.io's "ping timeout" and Phoenix's "heartbeat timeout".
+/// The close reason a page socket gets when its page's end stopped
+/// answering pings, as engine.io's "ping timeout" and Phoenix's "heartbeat
+/// timeout".
 const PING_TIMEOUT_REASON: &str = "oj: ping timeout";
-
-/// Sends `text`, giving up after `limit`: a peer that has not read for that
-/// long (its end gone, the send buffer full) is as dead as one that stopped
-/// answering, and a send stuck on it would hold the socket's whole loop,
-/// its deadline check included. No limit waits as long as it takes.
-async fn send_within(socket: &mut WebSocket, text: String, limit: Option<Duration>) -> bool {
-    let send = socket.send(Message::Text(text.into()));
-    match limit {
-        Some(limit) => matches!(tokio::time::timeout(limit, send).await, Ok(Ok(()))),
-        None => send.await.is_ok(),
-    }
-}
 
 async fn start_hmr_socket(
     mut socket: WebSocket,
@@ -2752,15 +2742,19 @@ async fn start_hmr_socket(
     ping: Option<Duration>,
 ) {
     use crate::start_hot::PageMessage;
-    // The page answers each ping (`oj:pong`), so a socket that hears nothing
-    // from it for the deadline lost it on the way: close it, as Socket.IO
-    // does a missed pong and Phoenix 60s without data. The page's hot client
-    // then leaves the bundler (`page_gone` below) instead of staying listed
-    // until TCP gives up, minutes later.
+    // Each tick also sends the protocol's own ping, which the browser's
+    // network stack answers by itself: a page paused at a breakpoint or in
+    // an alert() still answers, where an answer from its scripts (engine.io's
+    // pong, Phoenix's heartbeat) would stop. So a socket that hears nothing
+    // from the page's end for the deadline lost it on the way: close it, as
+    // Socket.IO does a missed pong and Phoenix 60s without data. The page's
+    // hot client then leaves the bundler (`page_gone` below) instead of
+    // staying listed until TCP gives up, minutes later.
     let deadline = ping.map(silent_deadline);
     let mut heard = tokio::time::Instant::now();
-    // The first ping one interval in: the frames sent on connect already
-    // show the page its socket works.
+    // The first ping one interval in: the page's deadline runs from its
+    // connect, so it hears in time, and an answer from it starts this
+    // end's clock afresh.
     let mut ping = oj_server::ping_ticks(ping);
     // A change went out while the page loaded, before this socket could
     // take it. Its own frame, so the client can tell a document that keeps
@@ -2807,7 +2801,7 @@ async fn start_hmr_socket(
         tokio::select! {
             () = oj_server::ping_due(&mut ping) => {
                 if deadline.is_some_and(|d| heard.elapsed() > d) {
-                    // The page is gone: say why, but never wait on a dead
+                    // The page's end is gone: say why, but never wait on a dead
                     // connection to take it (engine.io tears its transport
                     // down the same way).
                     println!("  oj start: a page stopped answering pings; closed its socket");
@@ -2818,13 +2812,16 @@ async fn start_hmr_socket(
                     let _ = tokio::time::timeout(Duration::from_secs(1), socket.send(close)).await;
                     break;
                 }
-                if !send_within(&mut socket, PING_FRAME.to_string(), deadline).await {
+                if !send_within(&mut socket, Message::Ping(Default::default()), deadline).await {
+                    break;
+                }
+                if !send_within(&mut socket, Message::Text(PING_FRAME.into()), deadline).await {
                     break;
                 }
             },
             custom = custom => match custom {
                 Ok(text) if page_custom_frame(&text) => {
-                    if !send_within(&mut socket, text, deadline).await {
+                    if !send_within(&mut socket, Message::Text(text.into()), deadline).await {
                         break;
                     }
                 }
@@ -2835,7 +2832,7 @@ async fn start_hmr_socket(
             },
             error = errors.recv() => match error {
                 Ok(frame) => {
-                    if !send_within(&mut socket, frame, deadline).await {
+                    if !send_within(&mut socket, Message::Text(frame.into()), deadline).await {
                         break;
                     }
                 }
@@ -2849,7 +2846,7 @@ async fn start_hmr_socket(
                 // A count, not a queue: however many changes went out, the
                 // page reloads once onto the newest.
                 Some(()) => {
-                    if !send_within(&mut socket, "reload".to_string(), deadline).await {
+                    if !send_within(&mut socket, Message::Text("reload".into()), deadline).await {
                         break;
                     }
                 }
@@ -2862,12 +2859,13 @@ async fn start_hmr_socket(
                     Err(broadcast::error::RecvError::Lagged(_)) => "reload".to_string(),
                     Err(broadcast::error::RecvError::Closed) => break,
                 };
-                if !send_within(&mut socket, text, deadline).await {
+                if !send_within(&mut socket, Message::Text(text.into()), deadline).await {
                     break;
                 }
             },
             incoming = socket.recv() => {
-                // Any frame from the page shows it alive, its pong included.
+                // Any frame from the page's end shows it alive, the
+                // browser's pong to our protocol ping included.
                 if matches!(incoming, Some(Ok(_))) {
                     heard = tokio::time::Instant::now();
                 }
@@ -3992,14 +3990,19 @@ mod tests {
                 Item = Result<ClientMessage, tokio_tungstenite::tungstenite::Error>,
             > + Unpin,
     {
-        let msg = tokio::time::timeout(std::time::Duration::from_secs(2), client.next())
-            .await
-            .expect("a frame arrives")
-            .unwrap()
-            .unwrap();
-        match msg {
-            ClientMessage::Text(t) => t.to_string(),
-            other => panic!("expected a text frame, got {other:?}"),
+        // The protocol's pings and pongs are the socket's own (the client
+        // answers a ping by itself as it reads); the frames are the page's.
+        loop {
+            let msg = tokio::time::timeout(std::time::Duration::from_secs(2), client.next())
+                .await
+                .expect("a frame arrives")
+                .unwrap()
+                .unwrap();
+            match msg {
+                ClientMessage::Text(t) => return t.to_string(),
+                ClientMessage::Ping(_) | ClientMessage::Pong(_) => {}
+                other => panic!("expected a text frame, got {other:?}"),
+            }
         }
     }
 
@@ -4014,11 +4017,6 @@ mod tests {
         let started = std::time::Instant::now();
         for _ in 0..3 {
             assert_eq!(next_text(&mut client).await, PING_FRAME);
-            // Answered, as a page does: a silent one is closed (below).
-            client
-                .send(ClientMessage::Text(r#"{"type":"oj:pong"}"#.into()))
-                .await
-                .unwrap();
         }
         // Three intervals, not a burst on connect.
         assert!(
@@ -4034,10 +4032,6 @@ mod tests {
         let server = HmrTestServer::start_with_ping(Duration::from_millis(100)).await;
         let (mut client, _) = tokio_tungstenite::connect_async(&server.url).await.unwrap();
         assert_eq!(next_text(&mut client).await, PING_FRAME);
-        client
-            .send(ClientMessage::Text(r#"{"type":"oj:pong"}"#.into()))
-            .await
-            .unwrap();
         while server.ws_tx.receiver_count() == 0 {
             tokio::task::yield_now().await;
         }
@@ -4045,14 +4039,7 @@ mod tests {
         server.ws_tx.send(custom.to_string()).unwrap();
         let mut seen = Vec::new();
         while seen.iter().all(|f| f != custom) {
-            let frame = next_text(&mut client).await;
-            if frame == PING_FRAME {
-                client
-                    .send(ClientMessage::Text(r#"{"type":"oj:pong"}"#.into()))
-                    .await
-                    .unwrap();
-            }
-            seen.push(frame);
+            seen.push(next_text(&mut client).await);
         }
         assert!(
             seen.iter().all(|f| f == custom || f == PING_FRAME),
@@ -4069,10 +4056,12 @@ mod tests {
         let server = HmrTestServer::start_with_ping(ping).await;
         let (mut client, _) = tokio_tungstenite::connect_async(&server.url).await.unwrap();
         let started = std::time::Instant::now();
+        // A client end that reads nothing answers no protocol ping: a page
+        // whose connection is gone.
+        tokio::time::sleep(silent_deadline(ping) + ping * 2).await;
         let closed = tokio::time::timeout(Duration::from_secs(3), async {
             loop {
                 match client.next().await {
-                    Some(Ok(ClientMessage::Text(t))) => assert_eq!(t.as_str(), PING_FRAME),
                     Some(Ok(ClientMessage::Close(frame))) => return frame,
                     None | Some(Err(_)) => return None,
                     Some(Ok(_)) => {}
@@ -4094,10 +4083,35 @@ mod tests {
         server.wait_for_no_subscribers().await;
     }
 
+    /// One that answers stays, however long it is idle, with no word from
+    /// its scripts: the protocol's pong, which a browser sends by itself
+    /// (as a page paused at a breakpoint still does), is answer enough.
+    #[tokio::test]
+    async fn a_socket_whose_page_answers_stays_open() {
+        let ping = Duration::from_millis(100);
+        let server = HmrTestServer::start_with_ping(ping).await;
+        let (mut client, _) = tokio_tungstenite::connect_async(&server.url).await.unwrap();
+        let until = std::time::Instant::now() + silent_deadline(ping) * 4;
+        let mut protocol_pings = 0;
+        while std::time::Instant::now() < until {
+            match tokio::time::timeout(Duration::from_secs(1), client.next()).await {
+                Ok(Some(Ok(ClientMessage::Ping(_)))) => protocol_pings += 1,
+                Ok(Some(Ok(ClientMessage::Text(t)))) => assert_eq!(t.as_str(), PING_FRAME),
+                other => panic!("the answering page's socket ended: {other:?}"),
+            }
+        }
+        assert!(protocol_pings >= 3, "{protocol_pings} protocol pings");
+        assert_eq!(
+            server.reloads.receivers(),
+            1,
+            "the answering page was dropped"
+        );
+    }
+
     /// A page whose socket died without a close opens a new one under the
     /// same runtime id, and the dead one's server end closes later, at its
-    /// ping deadline. That close must leave the page on the engine: taken
-    /// off, every later edit would leave it out and reload it, instead of
+    /// ping deadline. That close must leave the page registered: taken off,
+    /// every later edit would leave it out and reload it, instead of
     /// patching it in place.
     #[tokio::test]
     async fn a_dead_sockets_late_close_leaves_its_page_on_the_engine() {
@@ -4105,8 +4119,8 @@ mod tests {
         let bundler = Arc::new(ClientBundler::for_tests(Path::new("/app")));
         let server = HmrTestServer::start_hot(ping, Arc::clone(&bundler)).await;
         let hello = || ClientMessage::Text(r#"{"type":"oj:client","id":"c1"}"#.into());
-        let pong = || ClientMessage::Text(r#"{"type":"oj:pong"}"#.into());
-        // The first socket announces the page, then goes silent.
+        // The first socket announces the page, then goes silent (reads
+        // nothing, so answers no ping).
         let (mut dead, _) = tokio_tungstenite::connect_async(&server.url).await.unwrap();
         dead.send(hello()).await.unwrap();
         // Its replacement announces the same page and keeps answering.
@@ -4115,7 +4129,6 @@ mod tests {
         let until = std::time::Instant::now() + silent_deadline(ping) * 3;
         while std::time::Instant::now() < until {
             assert_eq!(next_text(&mut live).await, PING_FRAME);
-            live.send(pong()).await.unwrap();
         }
         // By now the server closed the silent one.
         let closed = tokio::time::timeout(Duration::from_secs(1), async {
@@ -4128,6 +4141,8 @@ mod tests {
         })
         .await;
         assert!(closed.is_ok(), "the silent socket was never closed");
+        // The bundler's own list (this test bundler runs no engine; the
+        // engine hears of pages through the same count, in order).
         assert_eq!(
             bundler.pages(),
             vec!["c1".to_string()],
@@ -4144,28 +4159,6 @@ mod tests {
         .expect("the page stayed on after its last socket closed");
     }
 
-    /// One that answers stays, however long it is idle.
-    #[tokio::test]
-    async fn a_socket_whose_page_answers_stays_open() {
-        let ping = Duration::from_millis(100);
-        let server = HmrTestServer::start_with_ping(ping).await;
-        let (mut client, _) = tokio_tungstenite::connect_async(&server.url).await.unwrap();
-        let until = std::time::Instant::now() + silent_deadline(ping) * 4;
-        while std::time::Instant::now() < until {
-            assert_eq!(next_text(&mut client).await, PING_FRAME);
-            client
-                .send(ClientMessage::Text(r#"{"type":"oj:pong"}"#.into()))
-                .await
-                .expect("the socket is still open");
-        }
-        assert_eq!(
-            server.reloads.receivers(),
-            1,
-            "the answering page was dropped"
-        );
-    }
-
-    /// No interval, no pings: `OJ_HMR_PING_MS=0`.
     #[tokio::test]
     async fn a_socket_without_an_interval_sends_no_pings() {
         let server = HmrTestServer::start().await;

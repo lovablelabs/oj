@@ -234,32 +234,30 @@ impl DevBundler {
 
     /// A page announced its runtime id: the engine addresses its patches.
     pub(crate) fn page_connected(&self, id: &str) {
-        let first = self
+        let mut pages = self
             .clients
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .connect(id);
-        if !first {
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !pages.connect(id) {
             return;
         }
         if let Some(engine) = self.engine.get() {
             let id = id.to_string();
-            tokio::spawn(async move { engine.register_client(id).await });
+            pages.then(async move { engine.register_client(id).await });
         }
     }
 
     pub(crate) fn page_gone(&self, id: &str) {
-        let last = self
+        let mut pages = self
             .clients
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .gone(id);
-        if !last {
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !pages.gone(id) {
             return;
         }
         if let Some(engine) = self.engine.get() {
             let id = id.to_string();
-            tokio::spawn(async move { engine.remove_client(&id).await });
+            pages.then(async move { engine.remove_client(&id).await });
         }
     }
 
@@ -926,26 +924,48 @@ fn write_json(path: &Path, value: &serde_json::Value) -> std::io::Result<()> {
 /// the engine while its new socket is open, so a page leaves only with its
 /// last socket. (Socket.IO and Phoenix name each connection instead, so a
 /// dead one's close never touches its successor.)
+///
+/// The engine hears of pages in the order they come and go: a socket
+/// closing just before the page's next one says hello takes it off, then
+/// on again, and the two calls must not land the other way round (rolldown's
+/// `register_client` waits on a lock first, so two spawned tasks could).
 #[derive(Default)]
-pub(crate) struct PageSockets(std::collections::HashMap<String, usize>);
+pub(crate) struct PageSockets {
+    open: std::collections::HashMap<String, usize>,
+    /// The last engine call queued; the next one runs after it.
+    chain: Option<tokio::task::JoinHandle<()>>,
+}
 
 impl PageSockets {
+    /// Runs `call` once the engine calls queued before it have run. Queued
+    /// under the same lock as the count it follows, so the order is the
+    /// pages' own.
+    pub(crate) fn then(&mut self, call: impl std::future::Future<Output = ()> + Send + 'static) {
+        let before = self.chain.take();
+        self.chain = Some(tokio::spawn(async move {
+            if let Some(before) = before {
+                let _ = before.await;
+            }
+            call.await;
+        }));
+    }
+
     /// Whether `id` was not connected before: the engine learns of it.
     pub(crate) fn connect(&mut self, id: &str) -> bool {
-        let open = self.0.entry(id.to_string()).or_default();
+        let open = self.open.entry(id.to_string()).or_default();
         *open += 1;
         *open == 1
     }
 
     /// Whether that was `id`'s last socket: the engine forgets it.
     pub(crate) fn gone(&mut self, id: &str) -> bool {
-        match self.0.get_mut(id) {
+        match self.open.get_mut(id) {
             Some(open) if *open > 1 => {
                 *open -= 1;
                 false
             }
             Some(_) => {
-                self.0.remove(id);
+                self.open.remove(id);
                 true
             }
             None => false,
@@ -953,13 +973,34 @@ impl PageSockets {
     }
 
     pub(crate) fn ids(&self) -> Vec<String> {
-        self.0.keys().cloned().collect()
+        self.open.keys().cloned().collect()
     }
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// Engine calls run in the order they were queued, however long each
+    /// takes: a slow first call (rolldown's register waits on a lock) is
+    /// not overtaken by a quick second.
+    #[tokio::test]
+    async fn engine_calls_run_in_the_order_the_pages_came_and_went() {
+        let mut pages = PageSockets::default();
+        let order = Arc::new(Mutex::new(Vec::new()));
+        for (name, wait) in [("register", 50), ("remove", 0), ("register again", 10)] {
+            let order = Arc::clone(&order);
+            pages.then(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
+                order.lock().unwrap().push(name);
+            });
+        }
+        pages.chain.take().unwrap().await.unwrap();
+        assert_eq!(
+            *order.lock().unwrap(),
+            ["register", "remove", "register again"]
+        );
+    }
 
     /// The page's new socket connects before its dead one's server end
     /// closes: the page stays on the engine through both.

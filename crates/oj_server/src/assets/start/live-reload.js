@@ -225,14 +225,21 @@
   // that stays silent for `deadMs` is presumed dead and replaced; the new
   // one names the page's stamps, and the server reloads it onto any change
   // it missed meanwhile. As Phoenix's heartbeat and Socket.IO's
-  // pingInterval + pingTimeout do. The page answers each ping at once
-  // (oj:pong), so the server can close a socket whose page went silent.
-  // 0: no keepalive, no watchdog.
+  // pingInterval + pingTimeout do. (The server's own deadline runs on the
+  // protocol's ping, which the browser answers without this script, so a
+  // page paused at a breakpoint keeps its socket.) 0: no keepalive, no
+  // watchdog.
   const pingMs = __OJ_PING_MS__;
   const PING = '{"type":"oj:ping"}';
   const deadMs = pingMs * 2 + Math.min(pingMs, 10000);
   let heardAt = 0;
-  const heard = () => (heardAt = Date.now());
+  // Whether the socket already had its grace since it was last heard from
+  // (see checkAlive).
+  let graced = false;
+  const heard = () => {
+    heardAt = Date.now();
+    graced = false;
+  };
   // The retry a close scheduled. Whatever opens a socket first cancels it,
   // as Phoenix resets its reconnect timer: one scheduled before a page went
   // into the back/forward cache fires on the way back, after pageshow
@@ -262,8 +269,7 @@
     // listener awaited for one finishes before the next message runs.
     ws.onmessage = (ev) => {
       heard();
-      // Answered here, not in the queue: a slow update must not delay it.
-      if (ev.data === PING) return void send({ type: "oj:pong" });
+      if (ev.data === PING) return;
       inbox = inbox.then(() => handle(ev.data)).catch((err) => console.error("[oj]", err));
     };
     ws.onclose = () => (retry = setTimeout(connect, 1000));
@@ -282,8 +288,24 @@
     } catch {}
     connect();
   };
+  // The last time the watchdog ran. A run long after the one before means
+  // this page, not its socket, was stopped (a breakpoint, an alert(), a
+  // frozen or throttled tab, a sleeping laptop): frames may be waiting to be
+  // delivered, and replacing the socket now would drop them. So the socket
+  // gets one more ping's time (and a second) to be heard from, once; a
+  // still-silent socket is replaced at the next check after that.
+  let checkedAt = Date.now();
   const checkAlive = () => {
-    if (Date.now() - heardAt > deadMs) replace("no word from the dev server in " + deadMs + "ms");
+    const now = Date.now();
+    const stopped = now - checkedAt > deadMs;
+    checkedAt = now;
+    if (now - heardAt <= deadMs) return;
+    if (stopped && !graced) {
+      graced = true;
+      heardAt = now - deadMs + pingMs + 1000;
+      return;
+    }
+    replace("no word from the dev server in " + deadMs + "ms");
   };
   // The network came back: a socket from before it went (another network,
   // a new address) is dead whether or not it has been silent long enough
