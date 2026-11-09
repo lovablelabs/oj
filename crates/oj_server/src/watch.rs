@@ -359,6 +359,59 @@ pub fn unregister_child(pid: u32) {
     child_groups::unregister(pid);
 }
 
+/// Set once a signal is ending this process (its shutdown sweep kills every
+/// child it spawned, a restart check's engine job included): what fails
+/// after that failed because the server is stopping, not on its own.
+static SHUTTING_DOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn note_shutting_down() {
+    SHUTTING_DOWN.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub(crate) fn shutting_down() -> bool {
+    SHUTTING_DOWN.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// How long a restart check waits before evaluating the config again after
+/// an evaluation was interrupted (its engine process killed by a signal),
+/// one wait per further attempt. Vite loads the config in its own process,
+/// where nothing can take the evaluation down without taking the server
+/// with it; oj evaluates it in a child, which the kernel's memory killer or
+/// a supervisor's signal to the process group can end on its own. The
+/// running server serves meanwhile, so waiting costs nothing.
+pub(crate) const INTERRUPTED_RETRY_DELAYS: [Duration; 3] = [
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+];
+
+/// Runs the restart check's config evaluation, again after each interruption
+/// per [`INTERRUPTED_RETRY_DELAYS`] (waiting through `sleep`), and never
+/// again once the server is stopping. The error is the one to report.
+pub(crate) fn evaluate_with_retries<T>(
+    mut evaluate: impl FnMut() -> Result<T, plugins::ExtractionError>,
+    mut sleep: impl FnMut(Duration),
+    stopping: impl Fn() -> bool,
+) -> Result<T, plugins::ExtractionError> {
+    let mut delays = INTERRUPTED_RETRY_DELAYS.iter();
+    loop {
+        match evaluate() {
+            Err(plugins::ExtractionError::Interrupted(why)) if !stopping() => {
+                let Some(delay) = delays.next() else {
+                    return Err(plugins::ExtractionError::Interrupted(why));
+                };
+                eprintln!(
+                    "{} the config evaluation was interrupted ({why}); evaluating again in {}s",
+                    oj_brand(),
+                    delay.as_secs()
+                );
+                sleep(*delay);
+            }
+            outcome => return outcome,
+        }
+    }
+}
+
 /// A dev server's restarts: what the next boot starts from (the app root,
 /// the CLI's `--config`, the dev mode, whether it is a Start app) and the
 /// restart being checked.
@@ -440,6 +493,14 @@ impl Restarter {
                 // Vite's restart loops while requests are pending: one that
                 // came during this check is checked before the exec.
                 None if this.pending.lock().unwrap().1.is_some() => {}
+                // The shutdown sweep killed the check's engine job: the
+                // server is stopping, so there is no restart to fail.
+                Some(error) if shutting_down() => {
+                    eprintln!(
+                        "{} restart not checked, the dev server is stopping ({error})",
+                        oj_brand()
+                    );
+                }
                 Some(error) => {
                     this.failed.store(true, std::sync::atomic::Ordering::SeqCst);
                     eprintln!("{} {error}", oj_brand());
@@ -469,15 +530,29 @@ impl Restarter {
         else {
             return None;
         };
-        let values = crate::plugins::reextract_vite_values(
-            &check.root,
-            check.config_file.as_deref(),
-            "serve",
-            &check.mode,
+        // An evaluation a signal cut short is run again, bounded: the config
+        // did not fail, its process was killed (see `evaluate_with_retries`).
+        let values = evaluate_with_retries(
+            || {
+                crate::plugins::reextract_vite_values(
+                    &check.root,
+                    check.config_file.as_deref(),
+                    "serve",
+                    &check.mode,
+                )
+            },
+            std::thread::sleep,
+            shutting_down,
         );
         match values {
-            None => Some(format!("failed to load config from {}", vite.display())),
-            Some((values, changed)) => {
+            Err(plugins::ExtractionError::Failed) => {
+                Some(format!("failed to load config from {}", vite.display()))
+            }
+            Err(plugins::ExtractionError::Interrupted(why)) => Some(format!(
+                "failed to load config from {}: its evaluation was interrupted every time ({why})",
+                vite.display()
+            )),
+            Ok((values, changed)) => {
                 // The next boot reads this evaluation from the cache, so it
                 // cannot tell the config changed: when it did, the deps
                 // pre-seed it keys must run again.

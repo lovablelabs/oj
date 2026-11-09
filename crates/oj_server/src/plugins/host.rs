@@ -2814,6 +2814,11 @@ impl HostCore {
                 "plugin host abandoned {hook} (execution terminated)"
             )),
             Err(oj_js::EngineError::Closed) => Err("plugin host exited".into()),
+            // An in-process engine is never killed apart from its process; the
+            // variant belongs to the one-shot engine job children.
+            Err(oj_js::EngineError::Interrupted(why)) => {
+                Err(format!("plugin host interrupted running {hook}: {why}"))
+            }
             Err(oj_js::EngineError::MemoryLimit) => {
                 // A near-limit heap is a property of the isolate, not this call:
                 // declare it gone, the next call revives a fresh one.

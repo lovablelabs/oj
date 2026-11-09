@@ -949,6 +949,7 @@ fn prepare_engines(root: &Path) {
     // unhandled SIGHUP/SIGTERM/SIGINT, beating the tokio shutdown task; sweep there
     // too or a supervisor restart strands every plugin child (workerd) on pid 1.
     deno_process::oj_hook::set_shutdown_sweep(|| {
+        watch::note_shutting_down();
         child_groups::kill_all();
     });
 }
@@ -2555,6 +2556,9 @@ pub async fn close_plugins_on_shutdown(host: Arc<std::sync::OnceLock<Arc<PluginH
         let _ = tokio::signal::ctrl_c().await;
         130
     };
+    // From here the sweep below kills every child, a restart check's engine
+    // job included: a check failing now failed because the server is stopping.
+    watch::note_shutting_down();
     // A signal during boot finds no host yet: skip the hooks, still sweep.
     if let Some(host) = host.get() {
         if tokio::time::timeout(Duration::from_secs(5), close_plugins(host))
