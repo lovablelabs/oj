@@ -92,6 +92,14 @@ The files in this directory:
   `cf-server-worker.mjs` the Worker bundle's `getCloudflareContext()`.
 - `hmr-runtime.js` is the dev client's hot-update runtime; `live-reload.js` is
   the dev client that snapshots and restores form state across a warm reload.
+  `react-refresh-runtime.js` in the cache (oj's copy of plugin-react's
+  runtime, `crates/oj_server/src/assets/refresh-runtime.js`) is bundled into
+  the hot client bundle as `/@react-refresh`, with plugin-react's preamble
+  appended as its tail (`crates/oj/src/start_bundle/refresh.rs`): every
+  wrapped component module imports it, so it evaluates before the first
+  `$RefreshReg$` check in whatever chunk rolldown puts it, and the entry
+  imports it first so it runs before react-dom reads the devtools hook. The
+  page's HTML carries no separate preamble script.
 - `vite-globs.mjs` loads Vite's own glob libraries (picomatch, tinyglobby)
   from the app's vite, or the copies oj ships in `glob-libs.mjs`, for the
   plugin host's hook filters and glob matchers.
