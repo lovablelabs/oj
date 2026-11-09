@@ -1916,7 +1916,7 @@ impl PluginHost {
     }
 
     /// One hook call into this handle's container.
-    async fn call(&self, hook: &str, args: &[&str]) -> Result<Option<String>, String> {
+    async fn call(&self, hook: &'static str, args: &[&str]) -> Result<Option<String>, String> {
         if self.is_stale() {
             return Err(format!(
                 "plugin container {} died with its plugin host's engine",
@@ -1933,12 +1933,12 @@ impl PluginHost {
             .is_some_and(|g| g != self.core.revive.lock().unwrap().generation)
     }
 
-    async fn call_unit(&self, hook: &str, args: &[&str]) -> Result<(), String> {
+    async fn call_unit(&self, hook: &'static str, args: &[&str]) -> Result<(), String> {
         self.call(hook, args).await.map(|_| ())
     }
 
     /// A no-arg query, with any failure or empty reply as `None`.
-    async fn call_ok(&self, hook: &str) -> Option<String> {
+    async fn call_ok(&self, hook: &'static str) -> Option<String> {
         self.call(hook, &[]).await.ok().flatten()
     }
 
@@ -1951,12 +1951,12 @@ impl PluginHost {
             .filter(|v| v.is_object())
     }
 
-    async fn call_json(&self, hook: &str) -> Option<serde_json::Value> {
+    async fn call_json(&self, hook: &'static str) -> Option<serde_json::Value> {
         serde_json::from_str(&self.call_ok(hook).await?).ok()
     }
 
     /// A no-arg `"true"` query; `default` when the call fails or returns nothing.
-    async fn call_flag(&self, hook: &str, default: bool) -> bool {
+    async fn call_flag(&self, hook: &'static str, default: bool) -> bool {
         match self.call(hook, &[]).await {
             Ok(Some(s)) => s == "true",
             _ => default,
@@ -2705,11 +2705,13 @@ impl HostCore {
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     }
 
-    /// One hook call into `container`.
+    /// One hook call into `container`. The hook is a name from the host's
+    /// fixed set, a literal at every call site, so what records it (a
+    /// shared run's subject) points at the binary instead of copying it.
     async fn call(
         &self,
         container: u32,
-        hook: &str,
+        hook: &'static str,
         args: &[&str],
     ) -> Result<Option<String>, String> {
         if *self.host_gone.borrow() && !self.try_revive() {
@@ -2750,7 +2752,7 @@ impl HostCore {
                             let refs: Vec<&str> =
                                 done.key.args.iter().map(String::as_str).collect();
                             done.core
-                                .run_hook(container, &done.key.subject.hook, &refs)
+                                .run_hook(container, done.key.subject.hook, &refs)
                                 .await
                         }
                     });
@@ -3155,24 +3157,37 @@ fn shares_a_run(hook: &str) -> bool {
 
 /// What a shared run's map entry is found by: the container, the hook
 /// and the module it is about (see [`hook_subject`]). Hashing it touches
-/// the id and the phase, not the source a transform carries.
+/// the id and the phase, not the source a transform carries. The hook and
+/// a known phase are the binary's own literals; only the id, a path, is
+/// allocated.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct InFlightSubject {
     container: u32,
-    hook: String,
+    hook: &'static str,
     id: Option<String>,
-    phase: Option<String>,
+    phase: Option<std::borrow::Cow<'static, str>>,
 }
 
 impl InFlightSubject {
-    fn of(container: u32, hook: &str, args: &[&str]) -> Self {
+    fn of(container: u32, hook: &'static str, args: &[&str]) -> Self {
         let (id, phase) = hook_subject(hook, args);
         Self {
             container,
-            hook: hook.to_string(),
+            hook,
             id: id.map(str::to_string),
-            phase: phase.map(str::to_string),
+            phase: phase.map(known_phase),
         }
+    }
+}
+
+/// A stylesheet slot's name as the binary's literal, so a subject holds no
+/// copy of it; an unknown phase (none today) is carried as it came.
+fn known_phase(phase: &str) -> std::borrow::Cow<'static, str> {
+    match phase {
+        "pre" => std::borrow::Cow::Borrowed("pre"),
+        "normal" => std::borrow::Cow::Borrowed("normal"),
+        "post" => std::borrow::Cow::Borrowed("post"),
+        other => std::borrow::Cow::Owned(other.to_string()),
     }
 }
 
