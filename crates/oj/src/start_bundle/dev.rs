@@ -66,8 +66,8 @@ pub(crate) struct DevBundler {
     host_failed: std::sync::atomic::AtomicBool,
     /// Bumped by every batch that touched a style input.
     style_epoch: std::sync::atomic::AtomicU64,
-    /// Pages that announced their runtime id.
-    clients: Mutex<HashSet<String>>,
+    /// Pages that announced their runtime id, with their open sockets.
+    clients: Mutex<PageSockets>,
     /// Specifiers the app's `external` function kept external, so the dev
     /// bundle's unresolved-import check takes the function's own answers.
     fn_externals: Arc<Mutex<HashSet<String>>>,
@@ -113,7 +113,7 @@ impl DevBundler {
             hot_enabled: std::sync::atomic::AtomicBool::new(hot_enabled),
             host_failed: std::sync::atomic::AtomicBool::new(false),
             style_epoch: std::sync::atomic::AtomicU64::new(0),
-            clients: Mutex::new(HashSet::new()),
+            clients: Mutex::new(PageSockets::default()),
             fn_externals: Arc::default(),
             bundle_modules: Mutex::new(Vec::new()),
         }
@@ -234,10 +234,14 @@ impl DevBundler {
 
     /// A page announced its runtime id: the engine addresses its patches.
     pub(crate) fn page_connected(&self, id: &str) {
-        self.clients
+        let first = self
+            .clients
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(id.to_string());
+            .connect(id);
+        if !first {
+            return;
+        }
         if let Some(engine) = self.engine.get() {
             let id = id.to_string();
             tokio::spawn(async move { engine.register_client(id).await });
@@ -245,10 +249,14 @@ impl DevBundler {
     }
 
     pub(crate) fn page_gone(&self, id: &str) {
-        self.clients
+        let last = self
+            .clients
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(id);
+            .gone(id);
+        if !last {
+            return;
+        }
         if let Some(engine) = self.engine.get() {
             let id = id.to_string();
             tokio::spawn(async move { engine.remove_client(&id).await });
@@ -263,13 +271,11 @@ impl DevBundler {
         }
     }
 
-    fn pages(&self) -> Vec<String> {
+    pub(crate) fn pages(&self) -> Vec<String> {
         self.clients
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .cloned()
-            .collect()
+            .ids()
     }
 
     /// The sheet the current bundle compiled for `path` through the client
@@ -913,9 +919,71 @@ fn write_json(path: &Path, value: &serde_json::Value) -> std::io::Result<()> {
     std::fs::write(path, value.to_string())
 }
 
+/// The open sockets of each page, by its runtime id. A page's id outlives
+/// its socket: a page whose socket died without a close opens a new one
+/// under the same id, and the dead one's server end only closes later (its
+/// ping deadline, or TCP giving up). That close must not take the page off
+/// the engine while its new socket is open, so a page leaves only with its
+/// last socket. (Socket.IO and Phoenix name each connection instead, so a
+/// dead one's close never touches its successor.)
+#[derive(Default)]
+pub(crate) struct PageSockets(std::collections::HashMap<String, usize>);
+
+impl PageSockets {
+    /// Whether `id` was not connected before: the engine learns of it.
+    pub(crate) fn connect(&mut self, id: &str) -> bool {
+        let open = self.0.entry(id.to_string()).or_default();
+        *open += 1;
+        *open == 1
+    }
+
+    /// Whether that was `id`'s last socket: the engine forgets it.
+    pub(crate) fn gone(&mut self, id: &str) -> bool {
+        match self.0.get_mut(id) {
+            Some(open) if *open > 1 => {
+                *open -= 1;
+                false
+            }
+            Some(_) => {
+                self.0.remove(id);
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub(crate) fn ids(&self) -> Vec<String> {
+        self.0.keys().cloned().collect()
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// The page's new socket connects before its dead one's server end
+    /// closes: the page stays on the engine through both.
+    #[test]
+    fn a_page_leaves_only_with_its_last_socket() {
+        let mut pages = PageSockets::default();
+        assert!(pages.connect("c1"), "the first socket announces the page");
+        assert!(
+            !pages.connect("c1"),
+            "a second socket of the same page does not"
+        );
+        assert!(
+            !pages.gone("c1"),
+            "the dead socket's close leaves the page on"
+        );
+        assert_eq!(pages.ids(), vec!["c1".to_string()]);
+        assert!(pages.gone("c1"), "its last socket takes it off");
+        assert!(pages.ids().is_empty());
+        assert!(!pages.gone("c1"), "an unknown page's close changes nothing");
+        assert!(
+            pages.connect("c1"),
+            "a page back after leaving is new again"
+        );
+    }
 
     pub(crate) fn start_at(root: &Path) -> StartConfig {
         StartConfig {

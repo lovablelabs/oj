@@ -161,6 +161,10 @@
   const bus = (globalThis.__ojStartHmr ??= {});
   let ws;
   const send = (msg) => {
+    // Never into a socket already past its deadline, as engine.io checks
+    // its ping timeout before a write (a throttled timer may not have
+    // fired yet): replaced first, the message waits for the new one (post).
+    if (pingMs > 0) checkAlive();
     if (!ws || ws.readyState !== 1) return false;
     ws.send(JSON.stringify(msg));
     return true;
@@ -229,7 +233,14 @@
   const deadMs = pingMs * 2 + Math.min(pingMs, 10000);
   let heardAt = 0;
   const heard = () => (heardAt = Date.now());
+  // The retry a close scheduled. Whatever opens a socket first cancels it,
+  // as Phoenix resets its reconnect timer: one scheduled before a page went
+  // into the back/forward cache fires on the way back, after pageshow
+  // already connected, and two sockets would carry every frame twice.
+  let retry = null;
   const connect = () => {
+    clearTimeout(retry);
+    retry = null;
     const query = [];
     if (stamp != null) query.push("g=" + encodeURIComponent(stamp));
     if (hotHas != null) query.push("h=" + hotHas);
@@ -255,7 +266,7 @@
       if (ev.data === PING) return void send({ type: "oj:pong" });
       inbox = inbox.then(() => handle(ev.data)).catch((err) => console.error("[oj]", err));
     };
-    ws.onclose = () => setTimeout(connect, 1000);
+    ws.onclose = () => (retry = setTimeout(connect, 1000));
   };
   // Drops the socket, open or still connecting, and opens a new one at
   // once. Its handlers go first: a close that arrives late must not start
@@ -292,6 +303,22 @@
     document.addEventListener("resume", checkAlive);
     addEventListener("online", networkBack);
   }
+  // The back/forward cache, as Phoenix does: a page going in closes its
+  // socket (an open one can keep it out, and would be dead on the way back
+  // anyway), and one restored from it connects again; its stamps bring it
+  // up to whatever changed meanwhile.
+  addEventListener("pagehide", (e) => {
+    if (!e.persisted || !ws) return;
+    const old = ws;
+    old.onopen = old.onmessage = old.onclose = null;
+    ws = null;
+    try {
+      old.close(1000, "oj: page cached");
+    } catch {}
+  });
+  addEventListener("pageshow", (e) => {
+    if (e.persisted && !ws) connect();
+  });
   let inbox = Promise.resolve();
   const handle = async (data) => {
     if (typeof data === "string" && data.startsWith("{")) {
@@ -299,11 +326,11 @@
       try {
         msg = JSON.parse(data);
       } catch {}
+      // The server's keepalive: hearing it was the point (see checkAlive).
+      if (msg && msg.type === "oj:ping") return;
       // Vite's bundled dev error frame ({type:"error", err}): the client
       // bundle failed, so the page keeps what it has and shows the overlay;
       // the fixed rebundle's update or reload clears it.
-      // The server's keepalive: hearing it was the point (see checkAlive).
-      if (msg && msg.type === "oj:ping") return;
       if (msg && msg.type === "error") {
         await notify("vite:error", msg);
         showError(msg.err);

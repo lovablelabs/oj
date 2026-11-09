@@ -2872,31 +2872,34 @@ async fn start_hmr_socket(
                     heard = tokio::time::Instant::now();
                 }
                 match incoming {
-                None | Some(Err(_)) => break,
-                Some(Ok(Message::Close(_))) => {
-                    let _ = socket.close().await;
-                    break;
-                }
-                Some(Ok(Message::Text(text))) => {
-                    let message = crate::start_hot::page_message(&text);
-                    if let (Some(PageMessage::Custom { event, data }), Some(e)) = (&message, &events) {
-                        (e.to_plugins)(event, data);
-                        continue;
+                    None | Some(Err(_)) => break,
+                    // The page closed it: answer, but never wait long on it.
+                    Some(Ok(Message::Close(_))) => {
+                        let _ = tokio::time::timeout(Duration::from_secs(1), socket.close()).await;
+                        break;
                     }
-                    let Some(h) = hot.as_ref() else { continue };
-                    match message {
-                        Some(PageMessage::Client(id)) => {
-                            if let Some(old) = page.replace(id.clone()) {
-                                h.bundler.page_gone(&old);
-                            }
-                            h.bundler.page_connected(&id);
+                    Some(Ok(Message::Text(text))) => {
+                        let message = crate::start_hot::page_message(&text);
+                        if let (Some(PageMessage::Custom { event, data }), Some(e)) = (&message, &events) {
+                            (e.to_plugins)(event, data);
+                            continue;
                         }
-                        Some(PageMessage::Delivered(file)) => h.bundler.patch_delivered(&file),
-                        Some(PageMessage::ReloadNeeded) => (h.reload_needed)(),
-                        Some(PageMessage::Custom { .. }) | None => {}
+                        let Some(h) = hot.as_ref() else { continue };
+                        match message {
+                            // Said again on the same socket, the same page: no change.
+                            Some(PageMessage::Client(id)) if page.as_deref() == Some(id.as_str()) => {}
+                            Some(PageMessage::Client(id)) => {
+                                if let Some(old) = page.replace(id.clone()) {
+                                    h.bundler.page_gone(&old);
+                                }
+                                h.bundler.page_connected(&id);
+                            }
+                            Some(PageMessage::Delivered(file)) => h.bundler.patch_delivered(&file),
+                            Some(PageMessage::ReloadNeeded) => (h.reload_needed)(),
+                            Some(PageMessage::Custom { .. }) | None => {}
+                        }
                     }
-                }
-                Some(Ok(_)) => {}
+                    Some(Ok(_)) => {}
                 }
             },
         }
@@ -3875,21 +3878,27 @@ mod tests {
 
     impl HmrTestServer {
         async fn start() -> Self {
-            Self::start_with(None, None, None).await
+            Self::start_with(None, None, None, None).await
         }
 
         async fn start_with_gate(gate: Option<Arc<tokio::sync::Notify>>) -> Self {
-            Self::start_with(gate, None, None).await
+            Self::start_with(gate, None, None, None).await
         }
 
         async fn start_with_ping(ping: Duration) -> Self {
-            Self::start_with(None, None, Some(ping)).await
+            Self::start_with(None, None, Some(ping), None).await
+        }
+
+        /// Pages with a hot client, registering with `bundler`.
+        async fn start_hot(ping: Duration, bundler: Arc<ClientBundler>) -> Self {
+            Self::start_with(None, None, Some(ping), Some(bundler)).await
         }
 
         async fn start_with(
             gate: Option<Arc<tokio::sync::Notify>>,
             replay: Option<String>,
             ping: Option<Duration>,
+            bundler: Option<Arc<ClientBundler>>,
         ) -> Self {
             let reloads = Arc::new(crate::start_reloads::Epochs::new(None));
             let (error_tx, _) = broadcast::channel(16);
@@ -3919,6 +3928,12 @@ mod tests {
                                 frames: ws_tx.subscribe(),
                                 to_plugins: sink,
                             };
+                            let hot = bundler.as_ref().map(|bundler| HotPage {
+                                bundler: Arc::clone(bundler),
+                                frames: bundler.hot.subscribe(),
+                                reload_needed: Arc::new(|| {}),
+                                has: None,
+                            });
                             ws.on_upgrade(move |socket| async move {
                                 if let Some(gate) = gate {
                                     gate.notified().await;
@@ -3928,7 +3943,7 @@ mod tests {
                                     epoch,
                                     errors,
                                     replay,
-                                    None,
+                                    hot,
                                     Some(events),
                                     ping,
                                 )
@@ -4079,6 +4094,56 @@ mod tests {
         server.wait_for_no_subscribers().await;
     }
 
+    /// A page whose socket died without a close opens a new one under the
+    /// same runtime id, and the dead one's server end closes later, at its
+    /// ping deadline. That close must leave the page on the engine: taken
+    /// off, every later edit would leave it out and reload it, instead of
+    /// patching it in place.
+    #[tokio::test]
+    async fn a_dead_sockets_late_close_leaves_its_page_on_the_engine() {
+        let ping = Duration::from_millis(100);
+        let bundler = Arc::new(ClientBundler::for_tests(Path::new("/app")));
+        let server = HmrTestServer::start_hot(ping, Arc::clone(&bundler)).await;
+        let hello = || ClientMessage::Text(r#"{"type":"oj:client","id":"c1"}"#.into());
+        let pong = || ClientMessage::Text(r#"{"type":"oj:pong"}"#.into());
+        // The first socket announces the page, then goes silent.
+        let (mut dead, _) = tokio_tungstenite::connect_async(&server.url).await.unwrap();
+        dead.send(hello()).await.unwrap();
+        // Its replacement announces the same page and keeps answering.
+        let (mut live, _) = tokio_tungstenite::connect_async(&server.url).await.unwrap();
+        live.send(hello()).await.unwrap();
+        let until = std::time::Instant::now() + silent_deadline(ping) * 3;
+        while std::time::Instant::now() < until {
+            assert_eq!(next_text(&mut live).await, PING_FRAME);
+            live.send(pong()).await.unwrap();
+        }
+        // By now the server closed the silent one.
+        let closed = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                match dead.next().await {
+                    Some(Ok(ClientMessage::Close(_))) | None | Some(Err(_)) => return,
+                    Some(Ok(_)) => {}
+                }
+            }
+        })
+        .await;
+        assert!(closed.is_ok(), "the silent socket was never closed");
+        assert_eq!(
+            bundler.pages(),
+            vec!["c1".to_string()],
+            "the dead socket's close took the page off with it"
+        );
+        // Its last socket closing takes it off.
+        live.close(None).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !bundler.pages().is_empty() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the page stayed on after its last socket closed");
+    }
+
     /// One that answers stays, however long it is idle.
     #[tokio::test]
     async fn a_socket_whose_page_answers_stays_open() {
@@ -4115,7 +4180,7 @@ mod tests {
     #[tokio::test]
     async fn start_hmr_replays_the_build_error_then_forwards_new_ones() {
         let stored = r#"{"type":"error","err":{"message":"first"}}"#.to_string();
-        let server = HmrTestServer::start_with(None, Some(stored.clone()), None).await;
+        let server = HmrTestServer::start_with(None, Some(stored.clone()), None, None).await;
         let (mut client, _) = connect_async(&server.url).await.unwrap();
         assert_eq!(
             next_text(&mut client).await,

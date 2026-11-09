@@ -59,7 +59,12 @@ function loadPage({
     },
     addEventListener: (type, fn) => (listeners[type] ??= []).push(fn),
     Date: { now: () => clock.now },
-    setTimeout: (fn) => timers.push(fn),
+    // A timer is its function; clearTimeout takes it back out.
+    setTimeout: (fn) => (timers.push(fn), fn),
+    clearTimeout: (fn) => {
+      const i = timers.indexOf(fn);
+      if (i >= 0) timers.splice(i, 1);
+    },
     setInterval: (fn, ms) => intervals.push({ fn, ms }),
     __ojStartHmr: {
       runtime: {
@@ -95,7 +100,7 @@ function loadPage({
     return ws().url;
   };
   const tick = () => intervals.forEach(({ fn }) => fn());
-  const emit = (on, type) => (on[type] || []).forEach((fn) => fn());
+  const emit = (on, type, event = {}) => (on[type] || []).forEach((fn) => fn(event));
   return {
     bus: page.__ojStartHmr,
     log,
@@ -111,6 +116,8 @@ function loadPage({
     page,
     visible: () => emit(docListeners, "visibilitychange"),
     resume: () => emit(docListeners, "resume"),
+    pagehide: (persisted) => emit(listeners, "pagehide", { persisted }),
+    pageshow: (persisted) => emit(listeners, "pageshow", { persisted }),
     said,
     online: () => emit(listeners, "online"),
   };
@@ -388,6 +395,56 @@ test("a replacement that hears from the server is kept", async () => {
   clock.now = 5000;
   tick();
   assert.equal(sockets.length, 2);
+});
+
+test("a message is never written into a socket past its deadline: it waits for the new one", () => {
+  const { bus, log, open, sockets, clock } = loadPage({ ping: 1000 });
+  open();
+  log.length = 0;
+  // The watchdog's tick has not fired (a throttled timer, say).
+  clock.now = 3001;
+  bus.post({ type: "custom", event: "app:late", data: 1 });
+  assert.equal(sockets.length, 2, "checked before the write, and replaced");
+  assert.ok(!log.some((e) => e[0] === "send"), "nothing went into the dead socket");
+  open();
+  assert.deepEqual(JSON.parse(JSON.stringify(log.filter((e) => e[0] === "send"))), [
+    ["send", { type: "oj:client", id: "c1" }],
+    ["send", { type: "custom", event: "app:late", data: 1 }],
+  ]);
+});
+
+test("a page going into the back/forward cache closes its socket; restored, it connects again", () => {
+  const { open, sockets, pagehide, pageshow, timers, clock, tick } = loadPage({ ping: 1000, stamp: '"1f-3"' });
+  open();
+  pagehide(false);
+  assert.equal(sockets[0].closedWith, undefined, "an unload that is not cached leaves the socket");
+  pagehide(true);
+  assert.deepEqual(sockets[0].closedWith, [1000, "oj: page cached"]);
+  assert.equal(sockets[0].onclose, null, "its close starts no reconnect");
+  assert.equal(timers.length, 0);
+  clock.now = 60000;
+  tick();
+  assert.equal(sockets.length, 1, "the watchdog leaves a cached page alone");
+  pageshow(true);
+  assert.equal(sockets.length, 2, "restored, it connects again");
+  assert.equal(sockets[1].url, "ws://localhost/@oj-start/hmr?g=1f-3");
+  pageshow(true);
+  assert.equal(sockets.length, 2, "once");
+});
+
+test("a retry scheduled before the back/forward cache does not open a second socket after it", () => {
+  const { open, sockets, pagehide, pageshow, timers } = loadPage({ ping: 1000 });
+  open();
+  // The socket closes just before the page is cached: a retry is pending,
+  // and timers stop while the page is in the cache.
+  sockets[0].onclose();
+  assert.equal(timers.length, 1);
+  pagehide(true);
+  pageshow(true);
+  assert.equal(sockets.length, 2, "restored, it connects");
+  assert.equal(timers.length, 0, "and the stale retry is gone");
+  timers.splice(0).forEach((fn) => fn());
+  assert.equal(sockets.length, 2, "one socket, not two");
 });
 
 test("with no keepalive interval there is no watchdog", () => {
