@@ -224,19 +224,25 @@ impl HotSession {
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         };
-        // A failed hot update is no verdict on the app: the engine re-fetches
-        // every module that depends on a changed file, a deleted file's own
-        // `?raw` module among them, which no longer loads although nothing
-        // imports it any more once its glob's importer re-expanded. The full
-        // build that follows (`latest_output`) starts over from the entries,
-        // as Vite's bundled dev rebuilds after a failed update when a page
-        // needs the output; its error, if it has one, is the one to report.
-        if self.events.error.lock().unwrap().take().is_some() {
+        // A failed hot update over a deleted file is no verdict on the app:
+        // the engine re-fetches every module that depends on a changed file,
+        // a deleted file's own `?raw` module among them, which no longer
+        // loads although nothing imports it any more once its glob's importer
+        // re-expanded. The full build that follows (`latest_output`) starts
+        // over from the entries, as Vite's bundled dev rebuilds after a
+        // failed update when a page needs the output; its error, if it has
+        // one, is the one to report. A failure with every changed file still
+        // on disk (a syntax error mid-edit) is the edit's own, reported as
+        // it is: the overlay shows it without a full build first.
+        if let Some(err) = self.events.error.lock().unwrap().take() {
             let mut seen = self.events.seen.lock().unwrap();
             for p in &known {
                 seen.remove(p);
             }
-            return Ok(false);
+            if changed.iter().any(|p| !p.exists()) {
+                return Ok(false);
+            }
+            return Err(err);
         }
         let kinds: Vec<Option<Seen>> = {
             let mut seen = self.events.seen.lock().unwrap();

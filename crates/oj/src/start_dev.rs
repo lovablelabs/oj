@@ -4943,8 +4943,16 @@ mod tests {
                 &paths.iter().map(|p| (*p).clone()).collect(),
             )
         };
-        assert_eq!(hit(&[&created]), std::slice::from_ref(&posts), "a create re-expands");
-        assert_eq!(hit(&[&gone]), std::slice::from_ref(&posts), "a delete re-expands");
+        assert_eq!(
+            hit(&[&created]),
+            std::slice::from_ref(&posts),
+            "a create re-expands"
+        );
+        assert_eq!(
+            hit(&[&gone]),
+            std::slice::from_ref(&posts),
+            "a delete re-expands"
+        );
         assert!(
             hit(&[&read]).is_empty(),
             "an edit of a member re-expands nothing"
