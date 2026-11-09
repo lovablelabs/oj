@@ -1008,8 +1008,13 @@ impl StartHost {
         let is_path = Path::new(&clean).is_absolute();
 
         // svgr: the plugin owns .svg modules (bare and ?react); without a
-        // claiming plugin the module is its served URL.
-        if is_path && clean.ends_with(".svg") {
+        // claiming plugin the module is its served URL. An intent on the
+        // import (`?raw`, `?inline`, `?url`) is not the plugin's: Vite's
+        // vite:asset answers `?raw` with the file's text before any rule
+        // on the extension (`rawRE` first in its load), and an SVG
+        // component plugin's filter never matches the queried id.
+        let intent = query.as_deref().and_then(|q| q.strip_prefix("ojasset="));
+        if is_path && clean.ends_with(".svg") && intent.is_none() {
             let plugin_id = match &query {
                 Some(q) => format!("{clean}?{q}"),
                 None => clean.clone(),
@@ -1032,7 +1037,7 @@ impl StartHost {
             return Ok(js(code));
         }
 
-        if let Some(kind) = query.as_deref().and_then(|q| q.strip_prefix("ojasset=")) {
+        if let Some(kind) = intent {
             let code = self.asset_module(&clean, kind).await?;
             return Ok(js(self.asset_transform(&clean, kind, code).await?));
         }
@@ -1614,6 +1619,11 @@ mod tests {
             split_intent("../notes.txt?raw"),
             ("../notes.txt".into(), Some("raw"), false)
         );
+        // An intent on an svg is the intent's, not the component's.
+        assert_eq!(
+            split_intent("./logo.svg?raw"),
+            ("./logo.svg".into(), Some("raw"), false)
+        );
         assert_eq!(
             split_intent("./hero.png?url"),
             ("./hero.png".into(), Some("url"), false)
@@ -1732,6 +1742,15 @@ mod tests {
         assert_eq!(
             classify_id(Path::new("/a"), "/a/n.txt", Some("raw"), false),
             "/a/n.txt?ojasset=raw"
+        );
+        // An intent on an svg is the intent's, not the component's.
+        assert_eq!(
+            classify_id(Path::new("/a"), "/a/l.svg", Some("raw"), false),
+            "/a/l.svg?ojasset=raw"
+        );
+        assert_eq!(
+            classify_id(Path::new("/a"), "/a/l.svg", Some("inline"), false),
+            "/a/l.svg?ojasset=inline"
         );
         assert_eq!(
             classify_id(Path::new("/a"), "/a/l.svg", None, true),

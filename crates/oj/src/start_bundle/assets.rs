@@ -1502,6 +1502,11 @@ mod tests {
             ("/a/x.css", false, Some(Css)),
             ("/a/x.module.scss", false, Some(Css)),
             ("/a/x.ts?raw", false, Some(Raw)),
+            // `?raw` wins over the extension, as Vite's rawRE check comes
+            // first: an SVG's text, not its URL or component.
+            ("/a/x.svg?raw", false, Some(Raw)),
+            ("/a/x.md?raw", true, Some(Raw)),
+            ("/a/x.svg?inline", false, Some(Inline)),
             ("/a/x.css?url", false, Some(Url)),
             ("/a/x.css?inline", false, Some(Inline)),
             ("/a/x.png?url&no-inline", false, Some(Url)),
