@@ -252,9 +252,10 @@ pub(crate) async fn serve_fallback(
         .await
         .unwrap_or_default()
         .to_vec();
-    forward_to_plugin_middleware(&state, &method, &uri, &headers, body)
-        .await
-        .unwrap_or_else(|| (StatusCode::NOT_FOUND, "oj: not found").into_response())
+    match forward_to_plugin_middleware(&state, &method, &uri, &headers, body).await {
+        Forwarded::Answered(resp) => resp,
+        Forwarded::FellThrough { .. } => (StatusCode::NOT_FOUND, "oj: not found").into_response(),
+    }
 }
 
 /// The preload href: the exact URL the importer names, so preload and import

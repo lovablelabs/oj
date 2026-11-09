@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The `ViteDevServer` a plugin's `configureServer` hook receives under `oj dev` now carries the pieces plugins reach for beyond `middlewares.use`, as Vite's does (server/index.ts):
+  - `server.ssrLoadModule(url)` evaluates a module of the app for a middleware and returns its namespace, in a module runner over the ssr environment as Vite's ssr/ssrModuleLoader.ts does: each module goes through the plugin chains, TypeScript and JSX are stripped as `vite:oxc` would, bare imports run under Node's own loader (ssr/fetchModule.ts), and a file change drops the runner's modules. It used to throw "server.ssrLoadModule is not available in configureServer", which a plugin loading a request handler module in `configureServer` turned into a 503 for its route.
+  - `server.ssrFixStacktrace(error)` and `server.ssrRewriteStacktrace(stack)` exist, so a middleware's `catch (e) { server.ssrFixStacktrace(e) }` answers instead of throwing a TypeError of its own and hanging the request.
+  - A hook that calls a resolve or load chain through `server.environments.<name>.pluginContainer` while the host is still booting gets an answer. The host created its html-inline-proxy plugin after the hooks ran, so such a call threw "Cannot access 'htmlProxy' before initialization" and the hook was skipped (TanStack Start's dev styles middleware, which collects a route's CSS this way, never registered and `/@tanstack-start/styles.css` answered 404 on every page).
+  - A middleware that rewrites `req.url` and calls `next()` has the url it left served: the document for a TanStack Start app, the file or its HTML fallback for a classic one, as Vite's static and HTML middlewares (which run after a plugin's) serve the rewritten url. The rewrite was dropped and the request served as first asked, so a plugin mapping a clean route onto `/<route>/index.html` saw the root page instead.
+
 ## [0.4.9] - 2026-11-10
 
 ### Fixed

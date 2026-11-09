@@ -14,8 +14,10 @@ pub(crate) async fn forward_to_plugin_middleware(
     uri: &Uri,
     headers: &HeaderMap,
     body: Vec<u8>,
-) -> Option<Response> {
-    let port = state.plugin_serve.mw_port()?;
+) -> Forwarded {
+    let Some(port) = state.plugin_serve.mw_port() else {
+        return Forwarded::FellThrough { rewritten: None };
+    };
     let pq = uri
         .path_and_query()
         .map(|p| p.as_str())
@@ -236,26 +238,51 @@ pub async fn proxy_to_loopback_streaming(
     Ok(stream_reqwest_response(resp))
 }
 
+/// What the plugin middleware made of a request nothing in oj claimed.
+pub enum Forwarded {
+    /// A middleware answered it.
+    Answered(Response),
+    /// No middleware answered it. One may have rewritten `req.url` before
+    /// its `next()`, as a plugin mapping a clean route to its HTML entry
+    /// does; under Vite the middlewares after it (static files, the HTML
+    /// fallback, the index page) serve that url, so it comes back here for
+    /// oj's own routing to serve. An unchanged url is `None`.
+    FellThrough { rewritten: Option<Uri> },
+}
+
+/// The url a fall-through left in `req.url` when a middleware changed it:
+/// origin-form only, since an absolute or protocol-relative url (a proxy
+/// `bypass` may return one) must never reach native routing.
+pub fn rewritten_url(headers: &HeaderMap, asked: &str) -> Option<Uri> {
+    headers
+        .get("x-oj-rewritten-url")
+        .and_then(|v| v.to_str().ok())
+        .filter(|s| s.starts_with('/') && !s.starts_with("//") && *s != asked)
+        .and_then(|s| s.parse::<Uri>().ok())
+}
+
 pub async fn forward_to_plugin_mw(
     port: u16,
     method: &str,
     path_and_query: &str,
     headers: &HeaderMap,
     body: Option<Vec<u8>>,
-) -> Option<Response> {
-    let response = proxy_to_loopback(port, method, path_and_query, headers, body)
-        .await
-        .ok()?;
+) -> Forwarded {
+    let Ok(response) = proxy_to_loopback(port, method, path_and_query, headers, body).await else {
+        return Forwarded::FellThrough { rewritten: None };
+    };
     if response.headers().contains_key("x-oj-fallthrough") {
-        return None;
+        return Forwarded::FellThrough {
+            rewritten: rewritten_url(response.headers(), path_and_query),
+        };
     }
-    Some(response)
+    Forwarded::Answered(response)
 }
 
 pub async fn forward_get_to_plugin_mw(
     port: u16,
     path_and_query: &str,
     headers: &HeaderMap,
-) -> Option<Response> {
+) -> Forwarded {
     forward_to_plugin_mw(port, "GET", path_and_query, headers, None).await
 }
