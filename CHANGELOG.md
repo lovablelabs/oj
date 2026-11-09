@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.8] - 2026-11-09
+
+### Fixed
+
+- TanStack Start dev: a page whose socket to the dev server died without a close gets the next change instead of staying stale until a manual refresh. A connection dropped on the way (a proxy or load balancer, a sleeping laptop) never fires the browser's `onclose`, so the page kept a dead socket and its client never reconnected. The page socket now sends `{"type":"oj:ping"}` every 15 seconds, and the page replaces a socket it hears nothing from for two intervals plus a grace of up to 10 seconds (40 seconds at the default), as Phoenix's heartbeat and Socket.IO's ping timeout do. The new socket names the page's stamps, so a change it missed reloads or reaches it as before; a blip with no change keeps the page and its state. The page logs `[oj] …; reconnecting` and closes the old socket with that reason.
+  - A page that was itself stopped (a breakpoint, an `alert()`, a frozen or throttled tab) gives its socket one more ping to be heard from before replacing it, once, so frames waiting to be delivered are not dropped.
+  - It also checks at once when the tab becomes visible or the frozen page resumes. When the network comes back, a socket to a dev server on another host is replaced at once, as Socket.IO does on `offline`. A message the page sends is never written into a socket past its deadline. A page going into the back/forward cache closes its socket and connects again, once, when restored.
+  - The server sends the protocol's own ping too, which the browser answers without the page's scripts, and closes a socket whose end answers nothing for the deadline (reason `oj: ping timeout`). A page paused at a breakpoint keeps its socket. A send a page has not read for as long gives up instead of holding the socket's loop.
+  - A page stays registered for hot updates until its last socket closes, and the engine hears of pages coming and going in order: a dead socket closed after its replacement connected used to take the page off, and every later edit reloaded it instead of patching it in place.
+- oj's Vite-protocol socket (the one an editor's own socket uses) pings the same way: the protocol's ping, with the same deadline and send limit, and Vite's own `{"type":"ping"}`, which its clients ignore, so a client watching that socket hears from a healthy one even when nothing changes. Vite's own server has no heartbeat.
+
+### Added
+
+- `OJ_HMR_PING_MS`: the dev server sockets' keepalive interval in milliseconds (default 15000, at most a day; `0` turns the keepalive, the deadlines and the page's watchdog off).
+
 ## [0.4.7] - 2026-11-09
 
 ### Fixed

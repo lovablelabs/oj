@@ -78,6 +78,82 @@ pub(crate) async fn vite_hmr_upgrade(
     }
 }
 
+/// The keepalive frame oj's Vite-protocol socket sends each [`hmr_ping`]
+/// interval: Vite's own `ping` payload, which every client of it ignores
+/// (Vite's: `case "ping": break`; oj's client.js: no handler). It carries no
+/// meaning; a client watching the socket counts on hearing something, as the
+/// editor's socket to this one can, and idle-timeout proxies see traffic.
+pub const VITE_PING_FRAME: &str = r#"{"type":"ping"}"#;
+
+/// The keepalive interval's default, Socket.IO's order (25s ping, 20s grace).
+pub const DEFAULT_HMR_PING: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// The keepalive interval `OJ_HMR_PING_MS` asks for: unset is the default,
+/// `0` none.
+pub fn hmr_ping(ms: Option<u64>) -> Option<std::time::Duration> {
+    match ms {
+        None => Some(DEFAULT_HMR_PING),
+        Some(0) => None,
+        // A day at most: a longer interval is the same as none for a dev
+        // session, and keeps every deadline far from overflowing.
+        Some(ms) => Some(std::time::Duration::from_millis(ms.min(MAX_HMR_PING_MS))),
+    }
+}
+
+/// The longest keepalive interval [`hmr_ping`] takes, in ms (a day).
+const MAX_HMR_PING_MS: u64 = 24 * 60 * 60 * 1000;
+
+/// How long either end of a socket that pings waits, hearing nothing, before
+/// it presumes the other end gone: two missed pings and a grace of up to
+/// 10s. Start dev's live-reload.js computes the same (`deadMs`).
+pub fn silent_deadline(ping: std::time::Duration) -> std::time::Duration {
+    ping * 2 + ping.min(std::time::Duration::from_secs(10))
+}
+
+/// `ping` as stored on the server state: milliseconds, 0 for none.
+pub(crate) fn ping_millis(ping: Option<std::time::Duration>) -> u64 {
+    ping.map_or(0, |p| {
+        u64::try_from(p.as_millis()).unwrap_or(u64::MAX).max(1)
+    })
+}
+
+/// Sends `message` on a dev server socket, giving up after `limit`: a peer
+/// that has not read for that long (its end gone, the send buffer full) is
+/// as dead as one that stopped answering, and a send stuck on it would hold
+/// the socket's whole loop, its deadline check included. No limit waits as
+/// long as it takes.
+pub async fn send_within(
+    socket: &mut axum::extract::ws::WebSocket,
+    message: Message,
+    limit: Option<std::time::Duration>,
+) -> bool {
+    let send = socket.send(message);
+    match limit {
+        Some(limit) => matches!(tokio::time::timeout(limit, send).await, Ok(Ok(()))),
+        None => send.await.is_ok(),
+    }
+}
+
+/// A tick every `ping`, the first one interval in, or never; a stalled send
+/// delays the next tick instead of bursting the missed ones.
+pub fn ping_ticks(ping: Option<std::time::Duration>) -> Option<tokio::time::Interval> {
+    ping.map(|every| {
+        let mut ticks = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        ticks
+    })
+}
+
+/// The next tick of [`ping_ticks`], or never.
+pub async fn ping_due(ticks: &mut Option<tokio::time::Interval>) {
+    match ticks.as_mut() {
+        Some(ticks) => {
+            ticks.tick().await;
+        }
+        None => std::future::pending().await,
+    }
+}
+
 pub(crate) fn hmr_socket(
     upgrade: WebSocketUpgrade,
     state: Arc<ServerState>,
@@ -116,21 +192,53 @@ pub(crate) fn hmr_socket(
             let boot = boot_progress_frame(0, state.preload_snapshot.len(), Some(0));
             let _ = socket.send(Message::Text(boot.into())).await;
         }
+        // Each tick sends the protocol's ping, which a browser answers by
+        // itself (whatever its page's scripts are doing), and Vite's text
+        // ping for a client watching the socket. A client end silent for the
+        // deadline is gone, and a send it has not read for as long would
+        // hold this loop: either closes the socket.
+        let ms = state.hmr_ping_ms.load(std::sync::atomic::Ordering::SeqCst);
+        let ping = (ms > 0).then(|| std::time::Duration::from_millis(ms));
+        let deadline = ping.map(silent_deadline);
+        let mut heard = tokio::time::Instant::now();
+        let mut ticks = ping_ticks(ping);
         loop {
             tokio::select! {
+                () = ping_due(&mut ticks) => {
+                    if deadline.is_some_and(|d| heard.elapsed() > d) {
+                        let close = Message::Close(Some(axum::extract::ws::CloseFrame {
+                            code: axum::extract::ws::close_code::NORMAL,
+                            reason: "oj: ping timeout".into(),
+                        }));
+                        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), socket.send(close)).await;
+                        break;
+                    }
+                    if !send_within(&mut socket, Message::Ping(Default::default()), deadline).await
+                        || !send_within(&mut socket, Message::Text(VITE_PING_FRAME.into()), deadline).await
+                    {
+                        break;
+                    }
+                },
                 msg = rx.recv() => match msg {
                     Ok(text) => {
-                        if socket.send(Message::Text(text.into())).await.is_err() {
+                        if !send_within(&mut socket, Message::Text(text.into()), deadline).await {
                             break;
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(broadcast::error::RecvError::Closed) => break,
                 },
-                incoming = socket.recv() => match incoming {
-                    None | Some(Err(_)) => break,
-                    Some(Ok(Message::Text(text))) => handle_client_message(&state, &text),
-                    Some(Ok(_)) => {}
+                incoming = socket.recv() => {
+                    // Any frame from the client's end shows it alive, the
+                    // browser's pong to the protocol ping included.
+                    if matches!(incoming, Some(Ok(_))) {
+                        heard = tokio::time::Instant::now();
+                    }
+                    match incoming {
+                        None | Some(Err(_)) => break,
+                        Some(Ok(Message::Text(text))) => handle_client_message(&state, &text),
+                        Some(Ok(_)) => {}
+                    }
                 },
             }
         }
@@ -1491,6 +1599,39 @@ fn graph_update_targets(
     targets.sort();
     targets.dedup();
     Ok(targets)
+}
+
+#[cfg(test)]
+mod ping_tests {
+    use std::time::Duration;
+
+    #[test]
+    fn the_keepalive_interval_defaults_and_turns_off_with_zero() {
+        assert_eq!(super::hmr_ping(None), Some(super::DEFAULT_HMR_PING));
+        assert_eq!(super::hmr_ping(Some(0)), None);
+        assert_eq!(super::hmr_ping(Some(250)), Some(Duration::from_millis(250)));
+        assert_eq!(
+            super::hmr_ping(Some(u64::MAX)),
+            Some(Duration::from_millis(super::MAX_HMR_PING_MS)),
+            "clamped to a day"
+        );
+        assert_eq!(super::ping_millis(None), 0);
+        assert_eq!(super::ping_millis(Some(Duration::from_millis(250))), 250);
+        // Under a millisecond still pings, rather than reading as none.
+        assert_eq!(super::ping_millis(Some(Duration::from_micros(10))), 1);
+    }
+
+    #[test]
+    fn either_end_waits_two_pings_and_a_grace_capped_at_ten_seconds() {
+        assert_eq!(
+            super::silent_deadline(Duration::from_millis(300)),
+            Duration::from_millis(900)
+        );
+        assert_eq!(
+            super::silent_deadline(Duration::from_secs(15)),
+            Duration::from_secs(40)
+        );
+    }
 }
 
 #[cfg(test)]

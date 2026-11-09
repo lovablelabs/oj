@@ -300,6 +300,10 @@ struct ServerState {
     mtime_keys: Mutex<HashMap<String, (std::time::SystemTime, u64, String)>>,
     /// Files' content hashes and the baselines consumers compare them to.
     content: Arc<ContentIndex>,
+    /// The Vite-protocol socket's keepalive interval in ms (0: none), from
+    /// `OJ_HMR_PING_MS`; [`BuiltApp::set_hmr_ping`] changes it for sockets
+    /// that connect after.
+    hmr_ping_ms: Arc<std::sync::atomic::AtomicU64>,
     compile_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     crawl_done: tokio::sync::watch::Receiver<bool>,
     fs_allow: Arc<Mutex<std::collections::HashSet<PathBuf>>>,
@@ -715,6 +719,7 @@ pub struct BuiltApp {
     pub hmr_gate: Option<HmrGateHandle>,
     /// The dev server's content index, shared with Start.
     pub content: Arc<ContentIndex>,
+    hmr_ping_ms: Arc<std::sync::atomic::AtomicU64>,
     /// The SSR resolve/load pipeline, for the in-process SSR module runner.
     pub ssr: SsrBridge,
     pub watch_feed: WatchFeed,
@@ -724,6 +729,13 @@ pub struct BuiltApp {
 }
 
 impl BuiltApp {
+    /// The Vite-protocol socket's keepalive interval for sockets that
+    /// connect from now on (none: no pings), over `OJ_HMR_PING_MS`.
+    pub fn set_hmr_ping(&self, ping: Option<Duration>) {
+        self.hmr_ping_ms
+            .store(hmr::ping_millis(ping), std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// Resolves once the watcher covers the root (chokidar's `ready`), or
     /// once it failed to start.
     pub async fn watcher_ready(&self) {
@@ -2233,6 +2245,9 @@ impl DevServer {
             memory: Mutex::new(MemoryCache::new(memory_cache_budget())),
             mtime_keys: Mutex::new(HashMap::new()),
             content: Arc::default(),
+            hmr_ping_ms: Arc::new(std::sync::atomic::AtomicU64::new(hmr::ping_millis(
+                hmr_ping(oj_env::get().knobs.hmr_ping_ms),
+            ))),
             compile_locks: Mutex::new(HashMap::new()),
             crawl_done: crawl_rx,
             tailwind: tokio::sync::OnceCell::new(),
@@ -2431,6 +2446,7 @@ impl DevServer {
 
         let proxy_prefixes: Vec<String> = state.proxy.iter().map(|(p, _)| p.clone()).collect();
         let content = Arc::clone(&state.content);
+        let hmr_ping_ms = Arc::clone(&state.hmr_ping_ms);
         let hmr_gate = state.hmr_gate.as_ref().map(|_| HmrGateHandle {
             state: Arc::clone(&state),
         });
@@ -2458,6 +2474,7 @@ impl DevServer {
             base,
             hmr_gate,
             content,
+            hmr_ping_ms,
             ssr,
             watch_feed,
             watch_tx,
