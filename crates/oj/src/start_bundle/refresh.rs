@@ -21,6 +21,14 @@
 //! preamble in the HTML, ahead of the entry script). The entry still imports
 //! the runtime first, so it also runs before react-dom's module body reads
 //! the devtools hook the preamble installs.
+//!
+//! This holds for rolldown's own chunking (a chunk holding the runtime never
+//! imports one holding a wrapped module: the runtime is reached from every
+//! entry that reaches a wrapped module). An app's manual chunk group that
+//! captures the runtime together with an importer of a wrapped module it
+//! leaves out would make such a cycle; should that bite, the Vite-parity
+//! fallback is a second input for the preamble and a `<script type="module">`
+//! for it ahead of the entry script.
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};

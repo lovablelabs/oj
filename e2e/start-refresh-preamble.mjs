@@ -106,7 +106,10 @@ async function boot(env, label, { refresh = true, roundTrip = false } = {}) {
   };
   try {
     await waitUp(`${base}/`, { proc: srv, timeoutMs: 240000 });
-    await settles(() => fs.existsSync(path.join(chunksDir)) && fs.readdirSync(chunksDir).length > 0);
+    must(
+      await settles(() => fs.existsSync(chunksDir) && fs.readdirSync(chunksDir).length > 0),
+      "the client bundle's chunks are on disk",
+    );
     const order = checkChunkOrder(refresh);
     if (refresh) must(order.wrapped > 0, "the bundle has wrapped component modules (Fast Refresh is on)");
     console.log(
@@ -126,7 +129,10 @@ async function boot(env, label, { refresh = true, roundTrip = false } = {}) {
       await page.goto(`${base}/`, { waitUntil: "networkidle" });
       // Hydration: the client entry ran to the end and React took the page
       // (react-dom tells the devtools hook, if any, about its root).
-      await settles(async () => (await page.getByTestId("counter").count()) > 0, { timeoutMs: 30000 });
+      must(
+        await settles(async () => (await page.getByTestId("counter").count()) > 0, { timeoutMs: 30000 }),
+        "the index route rendered its counter",
+      );
       await sleep(500);
       const state = await page.evaluate(() => ({
         refreshReg: typeof window.$RefreshReg$,
@@ -154,7 +160,10 @@ async function boot(env, label, { refresh = true, roundTrip = false } = {}) {
       // route counts clicks on its button).
       const counter = page.getByTestId("counter");
       await counter.click();
-      await settles(async () => (await counter.textContent()) === "count: 1", { timeoutMs: 10000 });
+      must(
+        await settles(async () => (await counter.textContent()) === "count: 1", { timeoutMs: 10000 }),
+        "a click reached a React handler (the page hydrated)",
+      );
       if (roundTrip) {
         // Fast Refresh itself: the preamble's injectIntoGlobalHook ran before
         // react-dom evaluated, so the runtime knows the renderer and a

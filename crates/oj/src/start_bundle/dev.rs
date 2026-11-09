@@ -203,7 +203,9 @@ impl DevBundler {
     /// generation by this too: a bundle built for one mode must never be
     /// restored into the other (a page running a bundle without the refresh
     /// preamble would throw at the first patched component, and one built hot
-    /// carries the engine's runtime a plain reload never drives).
+    /// carries the engine's runtime a plain reload never drives). The run
+    /// also asks the app's `server.hmr`, which the key carries through the
+    /// config file it hashes.
     pub(crate) fn hot_bundle(&self) -> bool {
         self.hot_enabled() && !self.start.is_production()
     }
