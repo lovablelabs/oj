@@ -614,3 +614,375 @@ async fn dev_serves_a_module_again_once_its_server_only_marker_is_gone() {
     );
     assert!(hydrated, "the page did not hydrate: {errors:?}");
 }
+
+/// A server-only module imported at the top of a `*.functions.ts` module
+/// and used only inside a server function's handler, where the server-only
+/// module itself imports `@tanstack/react-start/server`.
+const DB_SERVER: &str = r#"import { getRequest } from "@tanstack/react-start/server";
+
+export const db = { method: () => getRequest()?.method ?? "db-server-secret" };
+"#;
+
+fn data_fns(n: u32) -> String {
+    format!(
+        r#"import {{ createServerFn }} from "@tanstack/react-start";
+import {{ db }} from "./db.server";
+
+// edit {n}
+export const readMethod = createServerFn({{ method: "POST" }})
+  .inputValidator((input: {{ who: string }}) => input)
+  .handler(async ({{ data }}) => {{
+    return `${{data.who}}:${{db.method()}}`;
+  }});
+"#
+    )
+}
+
+fn top_level_server_files() -> [(&'static str, String); 3] {
+    [
+        ("src/lib/db.server.ts", DB_SERVER.to_string()),
+        ("src/lib/data.functions.ts", data_fns(0)),
+        (
+            "src/routes/about.tsx",
+            about(
+                "import { readMethod } from \"../lib/data.functions\";",
+                "const extra = <button onClick={() => readMethod({ data: { who: \"me\" } })}>read</button>;",
+            ),
+        ),
+    ]
+}
+
+/// The client bundle after an edit to the functions module: Start's compiler
+/// drops the handler and the server-only import with it on the client, so the
+/// rebuild must pass import protection as the first bundle did.
+fn rebuild_keeps_handler_only_imports(name: &str, env: &[(&str, &str)]) {
+    let Some(app) = app_with(
+        name,
+        &top_level_server_files(),
+        Some("importProtection: { behavior: \"error\" }"),
+    ) else {
+        return;
+    };
+    let dev = Server::oj_dev_with(&app.0, env);
+    let (status, _) = dev.request("GET", "/@oj-start/client-entry.js", &[]);
+    assert_eq!(status, 200, "the client entry\n{}", dev.output());
+    assert!(
+        !dev.output().contains("[import-protection]"),
+        "the first bundle flagged a handler-only import\n{}",
+        dev.output()
+    );
+    for n in 1..=4 {
+        match n {
+            1 | 4 => std::fs::write(app.0.join("src/lib/data.functions.ts"), data_fns(n)).unwrap(),
+            2 => {
+                let route = app.0.join("src/routes/about.tsx");
+                let text = std::fs::read_to_string(&route).unwrap();
+                std::fs::write(&route, format!("{text}\n// edit {n}\n")).unwrap();
+            }
+            _ => {
+                let server = app.0.join("src/lib/db.server.ts");
+                std::fs::write(&server, format!("{DB_SERVER}// edit {n}\n")).unwrap();
+            }
+        }
+        std::thread::sleep(Duration::from_secs(4));
+        let (status, _) = dev.request("GET", "/@oj-start/client-entry.js", &[]);
+        assert_eq!(
+            status,
+            200,
+            "the client entry after edit {n}\n{}",
+            dev.output()
+        );
+        let output = dev.output();
+        assert!(
+            !output.contains("[import-protection]") && !output.contains("client bundle failed"),
+            "rebuild {n} flagged a handler-only import\n{output}"
+        );
+    }
+}
+
+#[test]
+fn a_rebuild_keeps_a_functions_modules_handler_only_server_import() {
+    rebuild_keeps_handler_only_imports("ip-fns-rebuild", &[]);
+}
+
+#[test]
+fn a_rebuild_behind_a_granular_gate_keeps_a_handler_only_server_import() {
+    rebuild_keeps_handler_only_imports(
+        "ip-fns-rebuild-gate",
+        &[("OJ_HMR_GATE", "1"), ("OJ_HMR_FULL_RELOAD", "false")],
+    );
+}
+
+#[test]
+fn a_rebuild_behind_a_full_reload_gate_keeps_a_handler_only_server_import() {
+    rebuild_keeps_handler_only_imports(
+        "ip-fns-rebuild-reload",
+        &[("OJ_HMR_GATE", "1"), ("OJ_HMR_FULL_RELOAD", "true")],
+    );
+}
+
+/// A file-routed app (the router generator writes `routeTree.gen.ts`), as
+/// Start's own template is laid out: the root route imports a functions
+/// module whose server function takes a middleware from a `*.server.ts`
+/// module and reads a second one only inside its handler; both server modules
+/// import `@tanstack/react-start/server`. Import protection is set to its
+/// strict shape: errors, and a directory pattern in place of the default file
+/// patterns (so `*.server.ts` is not denied by name, only what it imports).
+fn file_routed_app(name: &str) -> Option<start_app::App> {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../e2e/fixtures/start-app");
+    if !fixture.join("node_modules/@tanstack/react-start").is_dir() {
+        if std::env::var_os("OJ_REQUIRE_FIXTURES").is_some() {
+            panic!("OJ_REQUIRE_FIXTURES is set but the start-app fixture is not installed");
+        }
+        eprintln!("skipping: npm ci --prefix e2e/fixtures/start-app");
+        return None;
+    }
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("oj-start-fr-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src/routes")).unwrap();
+    std::fs::create_dir_all(root.join("src/lib")).unwrap();
+    std::os::unix::fs::symlink(fixture.join("node_modules"), root.join("node_modules")).unwrap();
+    let files: &[(&str, String)] = &[
+        (
+            "package.json",
+            r#"{ "name": "file-routed", "private": true, "type": "module", "dependencies": { "@tanstack/react-start": "*", "@tanstack/react-router": "*", "react": "*", "react-dom": "*" } }"#.to_string(),
+        ),
+        (
+            "tsconfig.json",
+            r#"{ "compilerOptions": { "jsx": "react-jsx", "module": "ESNext", "moduleResolution": "Bundler", "target": "ES2022", "strict": true, "skipLibCheck": true } }"#.to_string(),
+        ),
+        (
+            "vite.config.ts",
+            r#"import { tanstackStart } from "@tanstack/react-start/plugin/vite";
+import react from "@vitejs/plugin-react";
+import { defineConfig } from "vite";
+
+export default defineConfig({
+  plugins: [
+    tanstackStart({
+      importProtection: {
+        behavior: "error",
+        client: { files: ["**/server/**"], specifiers: ["server-only"] },
+      },
+    }),
+    react(),
+  ],
+});
+"#
+            .to_string(),
+        ),
+        (
+            "src/router.tsx",
+            r#"import { createRouter } from "@tanstack/react-router";
+import { routeTree } from "./routeTree.gen";
+
+export function getRouter() {
+  return createRouter({ routeTree, scrollRestoration: true });
+}
+"#
+            .to_string(),
+        ),
+        (
+            "src/routes/__root.tsx",
+            root_route(0),
+        ),
+        (
+            "src/routes/index.tsx",
+            r#"import { createFileRoute } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
+import { readMethod } from "../lib/data.functions";
+
+export const Route = createFileRoute("/")({ component: Home });
+
+function Home() {
+  const [state, setState] = useState("ssr");
+  useEffect(() => setState("hydrated"), []);
+  return (
+    <main>
+      <p id="hydrated">{state}</p>
+      <button onClick={() => readMethod({ data: { who: "me" } })}>read</button>
+    </main>
+  );
+}
+"#
+            .to_string(),
+        ),
+        ("src/lib/data.functions.ts", guarded_fns(0)),
+        ("src/lib/account.functions.ts", account_fns(0)),
+        ("src/lib/auth.server.ts", auth_server(0)),
+        ("src/lib/session.server.ts", session_server(0)),
+    ];
+    for (rel, body) in files {
+        std::fs::write(root.join(rel), body).unwrap();
+    }
+    Some(start_app::App(root))
+}
+
+fn root_route(n: u32) -> String {
+    format!(
+        r#"import {{ createRootRoute, HeadContent, Outlet, Scripts }} from "@tanstack/react-router";
+import {{ whoAmI }} from "../lib/account.functions";
+
+// edit {n}
+export const Route = createRootRoute({{
+  beforeLoad: async () => ({{ who: await whoAmI() }}),
+  component: RootComponent,
+}});
+
+function RootComponent() {{
+  return (
+    <html lang="en">
+      <head>
+        <HeadContent />
+      </head>
+      <body>
+        <Outlet />
+        <Scripts />
+      </body>
+    </html>
+  );
+}}
+"#
+    )
+}
+
+fn guarded_fns(n: u32) -> String {
+    format!(
+        r#"import {{ createServerFn }} from "@tanstack/react-start";
+import {{ requireAuth }} from "./auth.server";
+import {{ db }} from "./session.server";
+
+// edit {n}
+export const readMethod = createServerFn({{ method: "POST" }})
+  .middleware([requireAuth])
+  .inputValidator((input: {{ who: string }}) => input)
+  .handler(async ({{ data, context }}) => {{
+    return `${{data.who}}:${{context.user}}:${{db.method()}}`;
+  }});
+"#
+    )
+}
+
+fn account_fns(n: u32) -> String {
+    format!(
+        r#"import {{ createServerFn }} from "@tanstack/react-start";
+import {{ currentUser }} from "./session.server";
+
+// edit {n}
+export const whoAmI = createServerFn({{ method: "GET" }}).handler(async () => {{
+  return currentUser();
+}});
+"#
+    )
+}
+
+fn auth_server(n: u32) -> String {
+    format!(
+        r#"import {{ createMiddleware }} from "@tanstack/react-start";
+import {{ getRequestHeader }} from "@tanstack/react-start/server";
+
+// edit {n}
+export const requireAuth = createMiddleware({{ type: "function" }}).server(({{ next }}) =>
+  next({{ context: {{ user: getRequestHeader("x-user") ?? "nobody" }} }}),
+);
+"#
+    )
+}
+
+fn session_server(n: u32) -> String {
+    format!(
+        r#"import {{ getRequest }} from "@tanstack/react-start/server";
+
+// edit {n}
+export const db = {{ method: () => getRequest()?.method ?? "session-server-secret" }};
+export const currentUser = () => getRequest()?.headers.get("x-user") ?? "anonymous";
+"#
+    )
+}
+
+fn assert_no_denial(dev: &Server, when: &str) {
+    let output = dev.output();
+    assert!(
+        !output.contains("[import-protection]") && !output.contains("client bundle failed"),
+        "{when}: import protection denied a server import the client never uses\n{output}"
+    );
+}
+
+/// Every edit of the chain (the functions module, the root route importing
+/// it, a server-only module) rebuilds the client without a denial, with a
+/// page connected (so the engine's hot path runs) and without one.
+async fn file_routed_rebuilds(name: &str, env: &[(&str, &str)], with_page: bool) {
+    let Some(app) = file_routed_app(name) else {
+        return;
+    };
+    if with_page && browser::skip() {
+        return;
+    }
+    let dev = Server::oj_dev_with(&app.0, env);
+    let (status, _) = dev.request("GET", "/@oj-start/client-entry.js", &[]);
+    assert_eq!(status, 200, "the client entry\n{}", dev.output());
+    assert_no_denial(&dev, "the first bundle");
+    let page = if with_page {
+        let page = Page::open(&dev.url("/")).await;
+        assert!(
+            page.poll(
+                r##"document.querySelector("#hydrated")?.textContent === "hydrated""##,
+                Duration::from_secs(30),
+            )
+            .await,
+            "the page did not hydrate: {:?}\n{}",
+            page.errors(),
+            dev.output()
+        );
+        Some(page)
+    } else {
+        None
+    };
+    type Edit = (&'static str, fn(u32) -> String);
+    let edits: [Edit; 5] = [
+        ("src/lib/data.functions.ts", guarded_fns),
+        ("src/routes/__root.tsx", root_route),
+        ("src/lib/auth.server.ts", auth_server),
+        ("src/lib/session.server.ts", session_server),
+        ("src/lib/account.functions.ts", account_fns),
+    ];
+    for (n, (rel, make)) in edits.iter().enumerate() {
+        let n = n as u32 + 1;
+        std::fs::write(app.0.join(rel), make(n)).unwrap();
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        let (status, _) = dev.request("GET", "/@oj-start/client-entry.js", &[]);
+        assert_eq!(
+            status,
+            200,
+            "the client entry after editing {rel}\n{}",
+            dev.output()
+        );
+        assert_no_denial(&dev, &format!("after editing {rel}"));
+    }
+    if let Some(page) = page {
+        page.close().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_routed_app_rebuilds_without_denying_handler_only_server_imports() {
+    file_routed_rebuilds("plain", &[], false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_routed_page_stays_hot_without_denying_handler_only_server_imports() {
+    file_routed_rebuilds("hot", &[], true).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_routed_page_behind_a_granular_gate_rebuilds_without_denials() {
+    file_routed_rebuilds(
+        "gate",
+        &[("OJ_HMR_GATE", "1"), ("OJ_HMR_FULL_RELOAD", "false")],
+        true,
+    )
+    .await;
+}
