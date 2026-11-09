@@ -193,7 +193,8 @@ impl HotSession {
     /// watches the same files the dev server does, usually sooner: its
     /// modules, and the scan bases of the globs they expand, so a file
     /// created or deleted under one is an edit it reports too (the glob's
-    /// importer re-expands, see `StartCodePlugin::hot_update`). An input it
+    /// importer re-expands: `StartCodePlugin`'s transform registers each
+    /// base as the importer's watch file). An input it
     /// has no module for and no glob over (a file the bundle only declared)
     /// rebuilds in full.
     pub async fn settle(&self, changed: &[PathBuf], has_pages: bool) -> Result<bool, BundleError> {

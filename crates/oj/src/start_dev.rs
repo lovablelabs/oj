@@ -110,7 +110,8 @@ struct StartState {
     /// deleted under one re-expands that module everywhere it is served (the
     /// SSR graph, the plugin's worker environments), as Vite's import-glob
     /// `hotUpdate` adds the importer to the update. The client engine finds
-    /// them itself (`StartCodePlugin::hot_update`).
+    /// them itself: `StartCodePlugin`'s transform registers each glob's base
+    /// as the importer's watch file.
     client_glob_importers: std::sync::RwLock<Vec<(PathBuf, oj_compiler::glob::GlobMatcher)>>,
     /// False after a failed rebundle: the closure may be a torso (the build
     /// stopped early), so every next batch rebundles until one succeeds.
@@ -891,25 +892,15 @@ fn workspace_root(app: &Path) -> PathBuf {
     best
 }
 
+/// The content type of a served file: the kinds this server serves that
+/// are no asset (a stylesheet with its charset, a script, JSON, wasm), and
+/// every asset type from the table the dev server and the build share.
 fn asset_mime(ext: &str) -> &'static str {
     match ext {
         "css" => "text/css; charset=utf-8",
         "js" | "mjs" => "text/javascript",
         "json" => "application/json",
-        "svg" => "image/svg+xml",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "avif" => "image/avif",
-        "ico" => "image/x-icon",
-        "woff2" => "font/woff2",
-        "woff" => "font/woff",
-        "ttf" => "font/ttf",
-        "otf" => "font/otf",
         "wasm" => "application/wasm",
-        // Every other known asset type (audio, video, pdf, ...): the table
-        // the dev server and the build share.
         _ => oj_compiler::assets::asset_mime(ext),
     }
 }
