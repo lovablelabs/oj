@@ -100,7 +100,14 @@ pub(crate) struct HostCore {
     /// url already being transformed that pending request
     /// (`environment._pendingRequests`). Pages that load the same sheet or
     /// module at once run its plugins once.
-    in_flight: Mutex<std::collections::HashMap<u64, InFlightCall>>,
+    ///
+    /// A transform's source is in its key, so an edited file is a new run.
+    /// A `load` is keyed by id alone: a virtual module invalidated while
+    /// its load runs hands that one in-flight run to a caller arriving
+    /// after the invalidation (Vite compares the pending request's
+    /// timestamp with the module's `lastInvalidationTimestamp` and aborts
+    /// it instead); the next call after it settles runs the plugins again.
+    in_flight: Mutex<std::collections::HashMap<std::sync::Arc<InFlightKey>, InFlightCall>>,
     /// Weak self-handle so `&self` methods can hand a fresh generation's tasks their `Arc`s.
     self_ref: std::sync::OnceLock<std::sync::Weak<HostCore>>,
     /// The handle on the host's own container, whose hook plan a respawn resets.
@@ -2687,7 +2694,11 @@ impl HostCore {
         let Some(core) = self.self_ref.get().and_then(std::sync::Weak::upgrade) else {
             return self.run_hook(container, hook, args).await;
         };
-        let key = in_flight_key(container, hook, args);
+        let key = InFlightKey {
+            container,
+            hook: hook.to_string(),
+            args: args.iter().map(|a| (*a).to_string()).collect(),
+        };
         let shared = {
             let mut in_flight = self
                 .in_flight
@@ -2696,16 +2707,18 @@ impl HostCore {
             match in_flight.get(&key) {
                 Some(run) => run.clone(),
                 None => {
-                    let hook = hook.to_string();
-                    let args: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
-                    let run = tokio::spawn(async move {
-                        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-                        let result = core.run_hook(container, &hook, &refs).await;
-                        core.in_flight
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .remove(&key);
-                        result
+                    let key = std::sync::Arc::new(key);
+                    let run = tokio::spawn({
+                        let key = std::sync::Arc::clone(&key);
+                        async move {
+                            // Dropped however the run ends, a panic
+                            // included: a key left behind would hand every
+                            // later identical call this run's failure.
+                            let done = InFlightDone { core, key };
+                            let refs: Vec<&str> =
+                                done.key.args.iter().map(String::as_str).collect();
+                            done.core.run_hook(container, &done.key.hook, &refs).await
+                        }
                     });
                     let run: InFlightCall =
                         futures_util::FutureExt::shared(futures_util::FutureExt::boxed(
@@ -3100,16 +3113,30 @@ fn shares_a_run(hook: &str) -> bool {
     matches!(hook, "transform" | "transformPhase" | "load" | "loadPhase")
 }
 
-fn in_flight_key(container: u32, hook: &str, args: &[&str]) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    container.hash(&mut h);
-    hook.hash(&mut h);
-    args.len().hash(&mut h);
-    for a in args {
-        a.hash(&mut h);
+/// What identifies one shared run: the whole call, so two calls share a
+/// run only when they are the same call (a hash alone could pair two
+/// modules by collision and hand one the other's code).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct InFlightKey {
+    container: u32,
+    hook: String,
+    args: Vec<String>,
+}
+
+/// Forgets a shared run's key when the run ends, however it ends.
+struct InFlightDone {
+    core: std::sync::Arc<HostCore>,
+    key: std::sync::Arc<InFlightKey>,
+}
+
+impl Drop for InFlightDone {
+    fn drop(&mut self) {
+        self.core
+            .in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.key);
     }
-    h.finish()
 }
 
 type InFlightCall = futures_util::future::Shared<

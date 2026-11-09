@@ -5260,13 +5260,13 @@ async function transform(c, code, id, resolvedJson, phase, priorJson) {
       // (Rollup's missing link); Vite's dev _getCombinedSourcemap skips it.
       ctx.getCombinedSourcemap = () =>
         combineSourcemaps(id, chainStart, chainSoFar, brokenSoFar && command === "build");
-      runningIn(p);
+      const outerPlugin = enterPlugin(p);
       try {
         r = await handler.call(ctx, current, id, transformOptions);
       } catch (e) {
         throw decoratePluginError(e, p, id);
       } finally {
-        runningIn(null);
+        leavePlugin(outerPlugin);
       }
       if (r == null) continue;
       if (typeof r === "string") {
@@ -6025,13 +6025,13 @@ async function loadFull(c, id, phase) {
     if (phase === "pre" && !runsBeforeCoreResolver(p, rank)) continue;
     if (!hookIdMatches(p.load, id)) continue;
     let r;
-    runningIn(p);
+    const outerPlugin = enterPlugin(p);
     try {
       r = await handler.call(ctxFor(c, p), id, options);
     } catch (e) {
       throw decoratePluginError(e, p, id);
     } finally {
-      runningIn(null);
+      leavePlugin(outerPlugin);
     }
     if (r == null) continue;
     if (typeof r === "string") return { code: r };
@@ -6829,10 +6829,22 @@ function hookPhase(hook, args) {
   if (hook === "loadPhase" && typeof args[1] === "string") return args[1];
   return null;
 }
-// The plugin whose handler the current hook awaits (null between handlers).
-function runningIn(plugin) {
+// Marks the current hook as awaiting `plugin`'s handler and hands back what
+// it awaited before: null between handlers, the outer plugin's name when a
+// handler's `this.load` or `this.resolve` runs a chain of its own. The
+// caller restores that once the handler settles, so a nested chain never
+// un-names the handler still awaiting it (Vite's nested `ctx.load` builds
+// its own context and leaves the outer one's active plugin alone).
+function enterPlugin(plugin) {
   const running = hookStore.getStore();
-  if (running) running.plugin = plugin == null ? null : (plugin.name ?? "?");
+  if (!running) return null;
+  const outer = running.plugin;
+  running.plugin = plugin.name ?? "?";
+  return outer;
+}
+function leavePlugin(outer) {
+  const running = hookStore.getStore();
+  if (running) running.plugin = outer;
 }
 // Liveness probe for calls waiting out a long hook: a parked event loop
 // answers instantly, so no answer means the isolate is wedged in synchronous

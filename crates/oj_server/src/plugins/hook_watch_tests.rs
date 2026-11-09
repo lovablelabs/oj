@@ -2,8 +2,9 @@
 // Copyright (c) 2026 Raphael Amorim
 
 //! A hook that runs long: the call waiting on it says which module and
-//! plugin it waits on, identical concurrent calls share one run (Vite's
-//! pending request per url), and a slow module holds up only itself.
+//! plugin it waits on (through a handler's own `this.load` too), identical
+//! concurrent calls share one run (Vite's pending request per url), and a
+//! slow module holds up only itself.
 
 use super::host::{long_hook_notice, running_hooks_of, RunningHook, SpawnTimeouts};
 use super::*;
@@ -171,6 +172,7 @@ async fn a_slow_hook_holds_up_only_its_own_module() {
     let root = plugins_root("own");
     let record = root.join("calls.txt");
     let host = host_with(&root, &slow_plugin(&record, 1500)).await;
+    host.resolve_id("x", "").await.expect("a live host serves");
     let slow = root.join("slow.md").display().to_string();
     let fast = root.join("fast.md").display().to_string();
     let pending = {
@@ -187,4 +189,50 @@ async fn a_slow_hook_holds_up_only_its_own_module() {
         started.elapsed()
     );
     pending.await.unwrap().unwrap();
+}
+
+// A handler that runs the chain again itself (`this.load`, as a router
+// plugin walking a directory or a stylesheet plugin scanning sources does)
+// is still the plugin the hook awaits once that inner chain settles.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_handler_loading_another_module_stays_the_named_plugin() {
+    let root = plugins_root("nested");
+    let virt = root.join("virt.md").display().to_string();
+    let plugins = format!(
+        r#"export default [{{
+  name: "outer",
+  async transform(code, id) {{
+    if (id.endsWith("/slow.md")) {{
+      await this.load({{ id: {virt:?} }});
+      await new Promise((r) => setTimeout(r, 1500));
+    }}
+    return code;
+  }},
+}}, {{
+  name: "inner",
+  load(id) {{ if (id.endsWith("/virt.md")) return "x"; }},
+}}];
+"#
+    );
+    let host = host_with(&root, &plugins).await;
+    host.resolve_id("x", "").await.expect("a live host serves");
+    let slow = root.join("slow.md").display().to_string();
+    let call = {
+        let host = std::sync::Arc::clone(&host);
+        let slow = slow.clone();
+        tokio::spawn(async move { host.transform("# s", &slow, "").await })
+    };
+    // Past the inner load (immediate) and into the outer handler's sleep.
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    let running = host.running_hooks().await;
+    let outer = running
+        .iter()
+        .find(|r| r.hook == "transform" && r.id.as_deref() == Some(slow.as_str()))
+        .unwrap_or_else(|| panic!("the outer transform is not running: {running:?}"));
+    assert_eq!(
+        outer.plugin.as_deref(),
+        Some("outer"),
+        "the inner chain un-named the handler still awaiting: {running:?}"
+    );
+    assert_eq!(call.await.unwrap().unwrap().code, "# s");
 }
