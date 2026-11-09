@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- TanStack Start dev: a page open across a rebundle keeps loading its chunks. A rebundle renames every chunk whose content changed, and a document served before it (its reload held by the editor's flush, or missed) imports a route's chunk lazily by the old name when the user first navigates there; the dev server answered 404 and the page went blank with "Failed to fetch dynamically imported module" (Safari: "Importing a module script failed") until a manual reload. The server now keeps serving the chunks of the last seven bundles behind the current one, the same window the bundle store keeps on disk: chunks are content-hashed and immutable, so an old name serves exactly the code the document was built with. The entry, the one chunk with a fixed name, is only ever the current bundle's. A chunk whose name has fallen out of that window still fails, and the page then reloads itself once, as Vite's `vite:preloadError` guidance has a built app do.
+
 ## [0.4.8] - 2026-11-09
 
 ### Fixed

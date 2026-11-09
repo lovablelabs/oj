@@ -131,6 +131,8 @@ function loadPage({
     pageshow: (persisted) => emit(listeners, "pageshow", { persisted }),
     said,
     online: () => emit(listeners, "online"),
+    // A promise rejection nothing in the page handled (a failed import()).
+    rejected: (reason) => emit(listeners, "unhandledrejection", { reason, preventDefault() {} }),
   };
 }
 
@@ -204,6 +206,28 @@ test("a page found behind on connect reloads once per stamp, so a cached documen
   assert.equal(await reloadsFor('"1f-5"', { type: "oj:behind" }), 1);
   // A change that goes out while the page is open always reloads it.
   assert.equal(await reloadsFor('"1f-5"', "reload"), 1);
+});
+
+test("a lazy import of a chunk the server no longer has reloads the page, once per document", () => {
+  const storage = new Map();
+  const reloads = (stamp, reason) => {
+    const { log, rejected } = loadPage({ stamp, storage });
+    rejected(reason);
+    return log.filter(([kind]) => kind === "reload").length;
+  };
+  const gone = new TypeError(
+    "Failed to fetch dynamically imported module: http://localhost/@oj-start/about-DEADBEEF.js",
+  );
+  assert.equal(reloads('"1f-4"', gone), 1);
+  // The reload served the same document (a cache): it would fail the same way, so no loop.
+  assert.equal(reloads('"1f-4"', gone), 0);
+  // A newer document reloads again; Safari words the failure differently.
+  assert.equal(reloads('"1f-5"', new TypeError("Importing a module script failed.")), 1);
+  // Any other rejection is the app's business.
+  assert.equal(reloads('"1f-6"', new Error("Failed to fetch")), 0);
+  assert.equal(reloads('"1f-7"', "not an error"), 0);
+  // A document the dev server did not stamp is not one of its pages.
+  assert.equal(reloads("null", gone), 0);
 });
 
 test("the socket names the hot changes the document has, beside its stamp", () => {

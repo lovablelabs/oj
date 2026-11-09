@@ -5,14 +5,108 @@
 //! content hash (a reload revalidates to a 304), immutable caching for the
 //! bundle's hashed chunks, and gzip for clients that accept it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use axum::body::Bytes;
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
+use oj_cache::start_bundle::{PinnedBundle, PinnedChunk, KEEP_GENERATIONS};
 use oj_server::etag::{not_modified, weak_etag};
+
+/// The client bundles the dev server serves: the current one, whose entry
+/// every new document loads, and the ones before it, kept for the documents
+/// still open on an older entry.
+///
+/// A rebundle renames every chunk whose content changed (rolldown's
+/// `[name]-[hash]`), and a document served before it still holds the old
+/// names: its entry imports a route's chunk lazily when the user first
+/// navigates there. Served from the current bundle alone, that import got a
+/// 404 and the page went blank with "Failed to fetch dynamically imported
+/// module" until a manual reload, which the dev server may hold back (the
+/// editor's flush) or the document may have missed. Vite's dev server never
+/// has this problem, since it serves modules by path and only ever changes a
+/// url's `?t=` stamp; its build-side answer is the `vite:preloadError` event.
+/// So the dev server keeps the last [`RETAINED_GENERATIONS`] bundles behind
+/// the current one, and a chunk no longer in the current manifest is looked
+/// up in them, newest first: the chunks are content-hashed and immutable, so
+/// an old name served from an old generation is exactly what the document
+/// expects. The entry is the exception: it has a fixed name, so only the
+/// current bundle's is ever served.
+pub(crate) struct ServedBundles {
+    current: Arc<PinnedBundle>,
+    /// The bundles before `current`, newest first, at most
+    /// [`RETAINED_GENERATIONS`].
+    previous: VecDeque<Arc<PinnedBundle>>,
+}
+
+/// How many bundles behind the current one keep their chunks served: the
+/// bundle store's own generation window less the current one, since the
+/// store keeps that many generations' chunk files on disk (see
+/// `oj_cache::start_bundle::KEEP_GENERATIONS`); a server holding more would
+/// name files the store has already swept.
+pub(crate) const RETAINED_GENERATIONS: usize = KEEP_GENERATIONS - 1;
+
+/// A chunk looked up across the served bundles.
+pub(crate) struct ServedChunk {
+    pub(crate) chunk: PinnedChunk,
+    /// Whether the current bundle holds it, or an earlier one.
+    pub(crate) current: bool,
+    /// Whether it is the current bundle's entry, the one chunk with a fixed
+    /// name (served without immutable caching).
+    pub(crate) entry: bool,
+}
+
+impl ServedBundles {
+    pub(crate) fn new(current: PinnedBundle) -> Self {
+        Self {
+            current: Arc::new(current),
+            previous: VecDeque::new(),
+        }
+    }
+
+    /// Serve `next`; the bundle it replaces joins the retained ones, unless
+    /// it had no chunks (a failed boot's placeholder) or is the same bundle
+    /// (a rebundle that changed nothing renames nothing). The oldest
+    /// retained bundle past the window is forgotten.
+    pub(crate) fn install(&mut self, next: PinnedBundle) {
+        if *self.current != next && !self.current.is_empty() {
+            let replaced = std::mem::replace(&mut self.current, Arc::new(next));
+            self.previous.push_front(replaced);
+            self.previous.truncate(RETAINED_GENERATIONS);
+        } else {
+            self.current = Arc::new(next);
+        }
+    }
+
+    /// The chunk `name` serves: the current bundle's, else the newest retained
+    /// bundle's chunk of that name. A retained bundle's entry is never served,
+    /// whatever name asks for it.
+    pub(crate) fn chunk(&self, name: &str) -> Option<ServedChunk> {
+        if let Some(chunk) = self.current.chunk(name) {
+            return Some(ServedChunk {
+                chunk: chunk.clone(),
+                current: true,
+                entry: self.current.is_entry(name),
+            });
+        }
+        self.previous
+            .iter()
+            .filter(|bundle| !bundle.is_entry(name))
+            .find_map(|bundle| bundle.chunk(name))
+            .map(|chunk| ServedChunk {
+                chunk: chunk.clone(),
+                current: false,
+                entry: false,
+            })
+    }
+
+    /// Whether any served bundle has a chunk with content hash `hash`.
+    pub(crate) fn has_hash(&self, hash: &str) -> bool {
+        self.current.has_hash(hash) || self.previous.iter().any(|b| b.has_hash(hash))
+    }
+}
 
 /// Below this a gzip frame costs more than it saves.
 const MIN_GZIP_BYTES: usize = 1024;
@@ -264,5 +358,90 @@ mod tests {
         cache.retain(|h| h == "new");
         let map = cache.lock();
         assert!(map.contains_key("new") && !map.contains_key("old"));
+    }
+
+    /// A bundle of generation `n`: an entry and a route chunk named by `n`.
+    fn generation(n: usize) -> PinnedBundle {
+        let chunk = |name: &str| PinnedChunk {
+            path: std::path::PathBuf::from(format!("/blobs/{name}")),
+            size: 1,
+            hash: Some(format!("hash-{name}")),
+        };
+        let route = format!("route-{n}.js");
+        PinnedBundle::new(
+            "client-entry.js".into(),
+            [
+                ("client-entry.js".to_string(), chunk(&format!("entry-{n}"))),
+                (route.clone(), chunk(&route)),
+            ],
+        )
+    }
+
+    #[test]
+    fn a_chunk_renamed_by_a_rebundle_is_still_served_from_the_bundle_before() {
+        let mut served = ServedBundles::new(generation(1));
+        served.install(generation(2));
+        let old = served.chunk("route-1.js").expect("the old route chunk");
+        assert!(!old.current && !old.entry);
+        assert_eq!(old.chunk.hash.as_deref(), Some("hash-route-1.js"));
+        let new = served.chunk("route-2.js").expect("the new route chunk");
+        assert!(new.current && !new.entry);
+        assert!(served.has_hash("hash-route-1.js") && served.has_hash("hash-route-2.js"));
+        assert!(served.chunk("route-3.js").is_none());
+    }
+
+    #[test]
+    fn the_entry_is_only_ever_the_current_bundles() {
+        let mut served = ServedBundles::new(generation(1));
+        served.install(generation(2));
+        let entry = served.chunk("client-entry.js").expect("the entry");
+        assert!(entry.current && entry.entry);
+        assert_eq!(entry.chunk.hash.as_deref(), Some("hash-entry-2"));
+        // A retained bundle whose entry has a hashed name of its own is not
+        // served under that name either.
+        let mut served = ServedBundles::new(PinnedBundle::new(
+            "entry-DEADBEEF.js".into(),
+            [(
+                "entry-DEADBEEF.js".to_string(),
+                PinnedChunk {
+                    path: "/blobs/e".into(),
+                    size: 1,
+                    hash: Some("e".into()),
+                },
+            )],
+        ));
+        served.install(generation(2));
+        assert!(served.chunk("entry-DEADBEEF.js").is_none());
+    }
+
+    #[test]
+    fn the_retained_window_is_bounded_and_forgets_the_oldest() {
+        let mut served = ServedBundles::new(generation(0));
+        for n in 1..=RETAINED_GENERATIONS + 1 {
+            served.install(generation(n));
+        }
+        assert_eq!(served.previous.len(), RETAINED_GENERATIONS);
+        assert!(served.chunk("route-0.js").is_none(), "the oldest is gone");
+        assert!(
+            served.chunk("route-1.js").is_some(),
+            "the next oldest is kept"
+        );
+        assert!(!served.has_hash("hash-route-0.js"));
+    }
+
+    #[test]
+    fn a_placeholder_and_an_unchanged_bundle_take_no_slot() {
+        let mut served = ServedBundles::new(PinnedBundle::empty());
+        served.install(generation(1));
+        assert!(
+            served.previous.is_empty(),
+            "a failed boot's placeholder is not a generation"
+        );
+        served.install(generation(1));
+        assert!(
+            served.previous.is_empty(),
+            "the same bundle again renames nothing"
+        );
+        assert!(served.chunk("route-1.js").is_some_and(|c| c.current));
     }
 }

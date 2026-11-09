@@ -19,7 +19,7 @@ use oj_server::needs_css_compile;
 use oj_server::{hmr_ping, send_within, silent_deadline};
 use tokio::sync::broadcast;
 
-use crate::start_chunks::{respond, Chunk};
+use crate::start_chunks::{respond, Chunk, ServedBundles};
 use crate::start_host::{StartEngine, StartRequest, StartResponse};
 
 struct StartState {
@@ -54,7 +54,9 @@ struct StartState {
     /// The dev server's content index; the regen outputs' `Pushed` baseline
     /// is what the worker environments last saw.
     content: Arc<oj_server::ContentIndex>,
-    bundle: std::sync::RwLock<Arc<oj_cache::start_bundle::PinnedBundle>>,
+    /// The client bundle the pages load, and the ones before it whose chunks
+    /// a page still open on an older entry imports (see [`ServedBundles`]).
+    bundle: std::sync::RwLock<ServedBundles>,
     /// Gzip bodies of the live client chunks, by content hash.
     gzip: crate::start_chunks::GzipCache,
     live_reload: PathBuf,
@@ -576,7 +578,7 @@ pub async fn start_dev(
         plugin_serve: Arc::clone(&built.plugin_serve),
         engine,
         loopback_port,
-        bundle: std::sync::RwLock::new(Arc::new(pinned)),
+        bundle: std::sync::RwLock::new(ServedBundles::new(pinned)),
         gzip: Default::default(),
         live_reload: cache.join("live-reload.js"),
         hmr_overlay,
@@ -1796,9 +1798,13 @@ fn save_stylex_rules(bundler: &ClientBundler, cache: &Path, key: &str) {
 
 /// Serve a fresh client output, with the inputs it was built from.
 fn install_bundle(state: &StartState, cache: &Path, pinned: oj_cache::start_bundle::PinnedBundle) {
-    let pinned = Arc::new(pinned);
-    state.gzip.retain(|h| pinned.has_hash(h));
-    *state.bundle.write().unwrap() = pinned;
+    let mut served = state
+        .bundle
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    served.install(pinned);
+    state.gzip.retain(|h| served.has_hash(h));
+    drop(served);
     *state
         .client_closure
         .write()
@@ -3068,24 +3074,26 @@ async fn serve_client_chunk(
     name: &str,
 ) -> Response {
     let name = percent_decode(name);
-    let bundle = state
+    let served = state
         .bundle
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
-    let Some(chunk) = bundle.chunk(&name) else {
+        .chunk(&name);
+    let Some(served) = served else {
         return (
             StatusCode::NOT_FOUND,
             format!("oj start: {name} is not in the client bundle manifest"),
         )
             .into_response();
     };
+    let chunk = served.chunk;
     let expected = oj_cache::integrity::ExpectedFile {
         size: chunk.size,
         hash: chunk.hash.clone().unwrap_or_default(),
     };
     let path = chunk.path.clone();
     let what = name.clone();
+    let retained = !served.current;
     let read = move || async move {
         match tokio::task::spawn_blocking(move || {
             oj_cache::integrity::verified_read(
@@ -3097,6 +3105,18 @@ async fn serve_client_chunk(
         .await
         {
             Ok(Ok(bytes)) => Ok(axum::body::Bytes::from(bytes)),
+            // An earlier bundle's chunk file the store has swept (or a build
+            // dir the next bundle rewrote): the page is too old to serve,
+            // and that is a 404, not a server fault.
+            Ok(Err(oj_cache::integrity::VerifyError::Io(e)))
+                if retained && e.kind() == std::io::ErrorKind::NotFound =>
+            {
+                Err((
+                    StatusCode::NOT_FOUND,
+                    format!("oj start: {what} is from an earlier bundle and no longer on disk; reload the page"),
+                )
+                    .into_response())
+            }
             Ok(Err(e)) => {
                 eprintln!("oj start: chunk {what} failed verification ({e}); refusing to serve");
                 Err((
@@ -3115,7 +3135,7 @@ async fn serve_client_chunk(
     let ext = name.rsplit('.').next().unwrap_or("");
     let mime = asset_mime(ext);
     // Every chunk but the entry is named by rolldown's `[name]-[hash]`.
-    let immutable = !bundle.is_entry(&name);
+    let immutable = !served.entry;
     match chunk.hash.clone() {
         Some(hash) => {
             let chunk = Chunk {

@@ -218,6 +218,35 @@
     !(docHas != null && msg.change <= docHas);
   // </oj:missed-change>
   const BEHIND_KEY = "oj:start:behind:" + location.pathname;
+  // A lazy import of a chunk this document names and the dev server no
+  // longer has: the chunk was renamed by a rebundle this page missed, and
+  // its old name has fallen out of the bundles the server keeps serving. The
+  // import fails ("Failed to fetch dynamically imported module", Safari's
+  // "Importing a module script failed") and the page would stay broken on
+  // its stale entry. Vite's build-side answer is the `vite:preloadError`
+  // event, for the page to reload on; the dev server's chunks load through
+  // no preload helper that could raise it, so the import's own rejection
+  // stands in. Reload once per document, as a behind connect does: a
+  // document that comes back with the same stamp was served from a cache,
+  // and reloading again would only loop.
+  const STALE_IMPORT_KEY = "oj:start:stale-import:" + location.pathname;
+  addEventListener("unhandledrejection", (e) => {
+    const reason = e && e.reason;
+    const message = reason && typeof reason.message === "string" ? reason.message : "";
+    if (stamp == null || !/dynamically imported module|Importing a module script failed/.test(message)) return;
+    let last = null;
+    try {
+      last = sessionStorage.getItem(STALE_IMPORT_KEY);
+    } catch {}
+    if (last === stamp) return;
+    try {
+      sessionStorage.setItem(STALE_IMPORT_KEY, stamp);
+    } catch {}
+    console.warn("[oj] a chunk of this page is gone from the dev server (" + message + "); reloading");
+    if (e.preventDefault) e.preventDefault();
+    snapshot();
+    location.reload();
+  });
   // Liveness. The server sends every open socket a frame at least every
   // `pingMs` (oj:ping when it has nothing else), and any frame shows the
   // socket alive. A connection dropped on the way without a close (a proxy

@@ -68,6 +68,16 @@ pub struct PinnedChunk {
 }
 
 impl PinnedBundle {
+    /// A bundle from its entry's name and its chunks by name (the store pins
+    /// one from a generation's manifest; this is for a bundle assembled
+    /// elsewhere, tests included).
+    pub fn new(entry: String, chunks: impl IntoIterator<Item = (String, PinnedChunk)>) -> Self {
+        Self {
+            entry,
+            chunks: chunks.into_iter().collect(),
+        }
+    }
+
     pub fn chunk(&self, name: &str) -> Option<&PinnedChunk> {
         self.chunks
             .get(name)
