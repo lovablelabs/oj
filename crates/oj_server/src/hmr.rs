@@ -78,6 +78,60 @@ pub(crate) async fn vite_hmr_upgrade(
     }
 }
 
+/// The keepalive frame oj's Vite-protocol socket sends each [`hmr_ping`]
+/// interval: Vite's own `ping` payload, which every client of it ignores
+/// (Vite's: `case "ping": break`; oj's client.js: no handler). It carries no
+/// meaning; a client watching the socket counts on hearing something, as the
+/// editor's socket to this one can, and idle-timeout proxies see traffic.
+pub const VITE_PING_FRAME: &str = r#"{"type":"ping"}"#;
+
+/// The keepalive interval's default, Socket.IO's order (25s ping, 20s grace).
+pub const DEFAULT_HMR_PING: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// The keepalive interval `OJ_HMR_PING_MS` asks for: unset is the default,
+/// `0` none.
+pub fn hmr_ping(ms: Option<u64>) -> Option<std::time::Duration> {
+    match ms {
+        None => Some(DEFAULT_HMR_PING),
+        Some(0) => None,
+        Some(ms) => Some(std::time::Duration::from_millis(ms)),
+    }
+}
+
+/// How long either end of a socket that pings waits, hearing nothing, before
+/// it presumes the other end gone: two missed pings and a grace of up to
+/// 10s. Start dev's live-reload.js computes the same (`deadMs`).
+pub fn silent_deadline(ping: std::time::Duration) -> std::time::Duration {
+    ping * 2 + ping.min(std::time::Duration::from_secs(10))
+}
+
+/// `ping` as stored on the server state: milliseconds, 0 for none.
+pub(crate) fn ping_millis(ping: Option<std::time::Duration>) -> u64 {
+    ping.map_or(0, |p| {
+        u64::try_from(p.as_millis()).unwrap_or(u64::MAX).max(1)
+    })
+}
+
+/// A tick every `ping`, the first one interval in, or never; a stalled send
+/// delays the next tick instead of bursting the missed ones.
+pub fn ping_ticks(ping: Option<std::time::Duration>) -> Option<tokio::time::Interval> {
+    ping.map(|every| {
+        let mut ticks = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        ticks
+    })
+}
+
+/// The next tick of [`ping_ticks`], or never.
+pub async fn ping_due(ticks: &mut Option<tokio::time::Interval>) {
+    match ticks.as_mut() {
+        Some(ticks) => {
+            ticks.tick().await;
+        }
+        None => std::future::pending().await,
+    }
+}
+
 pub(crate) fn hmr_socket(
     upgrade: WebSocketUpgrade,
     state: Arc<ServerState>,
@@ -116,8 +170,17 @@ pub(crate) fn hmr_socket(
             let boot = boot_progress_frame(0, state.preload_snapshot.len(), Some(0));
             let _ = socket.send(Message::Text(boot.into())).await;
         }
+        // No deadline on this end: Vite's client and oj's client.js never
+        // answer a ping, so a silent client is not a dead one here.
+        let ms = state.hmr_ping_ms.load(std::sync::atomic::Ordering::SeqCst);
+        let mut ticks = ping_ticks((ms > 0).then(|| std::time::Duration::from_millis(ms)));
         loop {
             tokio::select! {
+                () = ping_due(&mut ticks) => {
+                    if socket.send(Message::Text(VITE_PING_FRAME.into())).await.is_err() {
+                        break;
+                    }
+                },
                 msg = rx.recv() => match msg {
                     Ok(text) => {
                         if socket.send(Message::Text(text.into())).await.is_err() {
@@ -1491,6 +1554,34 @@ fn graph_update_targets(
     targets.sort();
     targets.dedup();
     Ok(targets)
+}
+
+#[cfg(test)]
+mod ping_tests {
+    use std::time::Duration;
+
+    #[test]
+    fn the_keepalive_interval_defaults_and_turns_off_with_zero() {
+        assert_eq!(super::hmr_ping(None), Some(super::DEFAULT_HMR_PING));
+        assert_eq!(super::hmr_ping(Some(0)), None);
+        assert_eq!(super::hmr_ping(Some(250)), Some(Duration::from_millis(250)));
+        assert_eq!(super::ping_millis(None), 0);
+        assert_eq!(super::ping_millis(Some(Duration::from_millis(250))), 250);
+        // Under a millisecond still pings, rather than reading as none.
+        assert_eq!(super::ping_millis(Some(Duration::from_micros(10))), 1);
+    }
+
+    #[test]
+    fn either_end_waits_two_pings_and_a_grace_capped_at_ten_seconds() {
+        assert_eq!(
+            super::silent_deadline(Duration::from_millis(300)),
+            Duration::from_millis(900)
+        );
+        assert_eq!(
+            super::silent_deadline(Duration::from_secs(15)),
+            Duration::from_secs(40)
+        );
+    }
 }
 
 #[cfg(test)]

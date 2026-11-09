@@ -28,6 +28,9 @@ pub struct Knobs {
     pub hmr_gate: bool,
     /// `OJ_HMR_FULL_RELOAD` (else `LOVABLE_HMR_FULL_RELOAD`) is not `false`.
     pub hmr_full_reload: bool,
+    /// `OJ_HMR_PING_MS` as an integer: how often Start dev's page socket
+    /// sends a keepalive frame (`0` = never; unset = the consumer's default).
+    pub hmr_ping_ms: Option<u64>,
     /// `OJ_MEMORY_CACHE_MB` as an integer (`0` = unlimited, the consumer's rule).
     pub memory_cache_mb: Option<usize>,
     /// `OJ_CODE_CACHE_MAX_BYTES` as an integer (`0` = unbounded; unset = the
@@ -89,6 +92,7 @@ impl Knobs {
                 .or_else(|| var("LOVABLE_HMR_FULL_RELOAD"))
                 .as_deref()
                 != Some("false"),
+            hmr_ping_ms: trimmed("OJ_HMR_PING_MS"),
             memory_cache_mb: var("OJ_MEMORY_CACHE_MB").and_then(|v| v.trim().parse().ok()),
             code_cache_max_bytes: var("OJ_CODE_CACHE_MAX_BYTES")
                 .and_then(|v| v.trim().parse().ok()),
@@ -224,6 +228,11 @@ mod tests {
             .hmr_full_reload
         );
         assert!(!knobs(&[("LOVABLE_HMR_FULL_RELOAD", "false")]).hmr_full_reload);
+        // The keepalive interval: a number, 0 included; anything else unset.
+        assert_eq!(knobs(&[]).hmr_ping_ms, None);
+        assert_eq!(knobs(&[("OJ_HMR_PING_MS", " 250 ")]).hmr_ping_ms, Some(250));
+        assert_eq!(knobs(&[("OJ_HMR_PING_MS", "0")]).hmr_ping_ms, Some(0));
+        assert_eq!(knobs(&[("OJ_HMR_PING_MS", "soon")]).hmr_ping_ms, None);
         // StyleX: exactly "1" selects the native scope walk; only "0" kills
         // the CLI cache.
         assert!(knobs(&[("OJ_STYLEX_NATIVE_SCOPE", "1")]).stylex_native_scope);

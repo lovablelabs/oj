@@ -9,7 +9,9 @@
 use futures_util::StreamExt;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::listen::{close, echoed_protocol, frame_matching, is_reload, next_frame, ws, WAIT};
+use crate::listen::{
+    close, echoed_protocol, frame_matching, is_reload, next_frame, next_text_within, ws, WAIT,
+};
 use crate::{App, INDEX_HTML};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -66,4 +68,46 @@ async fn root_vite_hmr_socket_connects_and_carries_reloads() {
         closed.is_ok(),
         "vite-ping socket opened then was closed by the server"
     );
+}
+
+/// The socket pings each `OJ_HMR_PING_MS` with Vite's own `ping` payload,
+/// which Vite's client and oj's client.js both ignore, so a client watching
+/// the socket (the editor's, beside the page) hears from a healthy one even
+/// when nothing changes. No interval, no pings.
+#[tokio::test(flavor = "multi_thread")]
+async fn root_vite_hmr_socket_pings_each_interval_and_never_without_one() {
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"vite-hmr-ping-app","version":"1.0.0"}"#,
+        ),
+        ("src/main.js", "document.title = \"v1\";\n"),
+        ("index.html", INDEX_HTML),
+    ]);
+    let server = app.serve().await;
+    let listening = server.listen().await;
+
+    server
+        .built
+        .set_hmr_ping(Some(std::time::Duration::from_millis(100)));
+    let (mut socket, _) = server.ws(listening.addr, "/", Some("vite-hmr")).await;
+    assert_eq!(next_frame(&mut socket).await["type"], "connected");
+    let started = std::time::Instant::now();
+    for _ in 0..3 {
+        let frame = frame_matching(&mut socket, "a ping", |f| f["type"] == "ping").await;
+        assert_eq!(frame, serde_json::json!({ "type": "ping" }));
+    }
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(250),
+        "three pings came in {:?}: a burst, not an interval",
+        started.elapsed()
+    );
+    close(socket).await;
+
+    server.built.set_hmr_ping(None);
+    let (mut quiet, _) = server.ws(listening.addr, "/", Some("vite-hmr")).await;
+    assert_eq!(next_frame(&mut quiet).await["type"], "connected");
+    let frame = next_text_within(&mut quiet, std::time::Duration::from_millis(400)).await;
+    assert!(frame.is_none(), "a frame with no interval: {frame:?}");
+    close(quiet).await;
 }

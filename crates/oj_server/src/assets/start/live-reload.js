@@ -214,6 +214,21 @@
     !(docHas != null && msg.change <= docHas);
   // </oj:missed-change>
   const BEHIND_KEY = "oj:start:behind:" + location.pathname;
+  // Liveness. The server sends every open socket a frame at least every
+  // `pingMs` (oj:ping when it has nothing else), and any frame shows the
+  // socket alive. A connection dropped on the way without a close (a proxy
+  // or load balancer, a sleeping laptop) never fires `onclose`, so a socket
+  // that stays silent for `deadMs` is presumed dead and replaced; the new
+  // one names the page's stamps, and the server reloads it onto any change
+  // it missed meanwhile. As Phoenix's heartbeat and Socket.IO's
+  // pingInterval + pingTimeout do. The page answers each ping at once
+  // (oj:pong), so the server can close a socket whose page went silent.
+  // 0: no keepalive, no watchdog.
+  const pingMs = __OJ_PING_MS__;
+  const PING = '{"type":"oj:ping"}';
+  const deadMs = pingMs * 2 + Math.min(pingMs, 10000);
+  let heardAt = 0;
+  const heard = () => (heardAt = Date.now());
   const connect = () => {
     const query = [];
     if (stamp != null) query.push("g=" + encodeURIComponent(stamp));
@@ -226,17 +241,46 @@
         "/@oj-start/hmr" +
         (query.length ? "?" + query.join("&") : ""),
     );
+    heard();
     ws.onopen = () => {
+      heard();
       if (bus.runtime) send({ type: "oj:client", id: bus.runtime.clientId });
       while (outbox.length && send(outbox[0])) outbox.shift();
     };
     // One message at a time, as Vite's createHMRHandler queues them: a
     // listener awaited for one finishes before the next message runs.
     ws.onmessage = (ev) => {
+      heard();
+      // Answered here, not in the queue: a slow update must not delay it.
+      if (ev.data === PING) return void send({ type: "oj:pong" });
       inbox = inbox.then(() => handle(ev.data)).catch((err) => console.error("[oj]", err));
     };
     ws.onclose = () => setTimeout(connect, 1000);
   };
+  // A socket silent past the deadline, open or still connecting, is
+  // dropped and replaced at once. Its handlers go first: a close that
+  // arrives late must not start a second reconnect.
+  const checkAlive = () => {
+    if (!ws || ws.readyState > 1 || Date.now() - heardAt <= deadMs) return;
+    const dead = ws;
+    dead.onopen = dead.onmessage = dead.onclose = null;
+    try {
+      dead.close();
+    } catch {}
+    connect();
+  };
+  if (pingMs > 0) {
+    setInterval(checkAlive, Math.max(250, Math.floor(pingMs / 2)));
+    // A tab coming back (timers throttled while hidden) or the network
+    // returning: check now rather than at the next tick. `resume` too, as
+    // Phoenix does: Chrome does not reliably fire visibilitychange after a
+    // frozen page resumes (https://issues.chromium.org/issues/547062449).
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") checkAlive();
+    });
+    document.addEventListener("resume", checkAlive);
+    addEventListener("online", checkAlive);
+  }
   let inbox = Promise.resolve();
   const handle = async (data) => {
     if (typeof data === "string" && data.startsWith("{")) {
@@ -247,6 +291,8 @@
       // Vite's bundled dev error frame ({type:"error", err}): the client
       // bundle failed, so the page keeps what it has and shows the overlay;
       // the fixed rebundle's update or reload clears it.
+      // The server's keepalive: hearing it was the point (see checkAlive).
+      if (msg && msg.type === "oj:ping") return;
       if (msg && msg.type === "error") {
         await notify("vite:error", msg);
         showError(msg.err);

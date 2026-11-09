@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- TanStack Start dev: a page whose socket to the dev server died without a close gets the next change instead of staying stale until a manual refresh. A connection dropped on the way (a proxy or load balancer, a sleeping laptop) never fires the browser's `onclose`, so the page kept a dead socket and its client never reconnected. The page socket now sends `{"type":"oj:ping"}` every 15 seconds; the page answers each one (`oj:pong`) and replaces a socket it hears nothing from for two intervals plus a grace of up to 10 seconds (40 seconds at the default), or at once when the tab becomes visible again, the frozen page resumes or the network returns. The new socket names the page's stamps, so a change it missed reloads or reaches it as before. The server closes a socket whose page stops answering, so its hot client leaves the bundler. Phoenix's heartbeat and Socket.IO's ping timeout work this way; Vite's client sends pings no one answers and only notices a closed socket.
+
+### Added
+
+- `OJ_HMR_PING_MS`: the dev server sockets' keepalive interval in milliseconds (default 15000; `0` turns the keepalive and the page's watchdog off). oj's Vite-protocol socket sends Vite's own `{"type":"ping"}` at the same interval, which its clients ignore, so a client watching that socket hears from a healthy one even when nothing changes.
+
 ## [0.4.7] - 2026-11-09
 
 ### Fixed

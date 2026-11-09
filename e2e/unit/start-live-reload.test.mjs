@@ -8,10 +8,16 @@ import { asset } from "./harness.mjs";
 
 // live-reload.js in a page with a stub socket, document and HMR runtime;
 // `log` records reloads, sends and the runtime's notified events.
-function loadPage({ overlays = [], stamp = "null", hot = "null", storage = new Map() } = {}) {
+// `ping` is the keepalive interval filled in (0: no watchdog); `clock.now`
+// is what the page's Date.now reads, and `tick()` runs its intervals.
+function loadPage({ overlays = [], stamp = "null", hot = "null", ping = 0, storage = new Map() } = {}) {
   const log = [];
   const sockets = [];
   const timers = [];
+  const intervals = [];
+  const docListeners = {};
+  const listeners = {};
+  const clock = { now: 0 };
   class WebSocket {
     constructor(url) {
       this.url = url;
@@ -20,6 +26,10 @@ function loadPage({ overlays = [], stamp = "null", hot = "null", storage = new M
     }
     send(text) {
       log.push(["send", JSON.parse(text)]);
+    }
+    close() {
+      this.readyState = 3;
+      log.push(["close", sockets.indexOf(this)]);
     }
   }
   const page = {
@@ -34,9 +44,14 @@ function loadPage({ overlays = [], stamp = "null", hot = "null", storage = new M
     document: {
       readyState: "loading",
       activeElement: null,
+      visibilityState: "visible",
       querySelectorAll: (sel) => (sel === "vite-error-overlay" ? overlays : []),
+      addEventListener: (type, fn) => (docListeners[type] ??= []).push(fn),
     },
+    addEventListener: (type, fn) => (listeners[type] ??= []).push(fn),
+    Date: { now: () => clock.now },
     setTimeout: (fn) => timers.push(fn),
+    setInterval: (fn, ms) => intervals.push({ fn, ms }),
     __ojStartHmr: {
       runtime: {
         clientId: "c1",
@@ -52,7 +67,8 @@ function loadPage({ overlays = [], stamp = "null", hot = "null", storage = new M
     .replaceAll("__HMR_ENABLE_OVERLAY__", "true")
     .replaceAll("__OJ_DEV_BASE__", '""')
     .replaceAll("__OJ_PAGE_STAMP__", stamp)
-    .replaceAll("__OJ_HOT_CHANGE__", hot);
+    .replaceAll("__OJ_HOT_CHANGE__", hot)
+    .replaceAll("__OJ_PING_MS__", String(ping));
   vm.runInContext(source, page);
   const ws = () => sockets[sockets.length - 1];
   const open = () => {
@@ -69,7 +85,25 @@ function loadPage({ overlays = [], stamp = "null", hot = "null", storage = new M
     timers.splice(0).forEach((fn) => fn());
     return ws().url;
   };
-  return { bus: page.__ojStartHmr, log, open, receive, reconnect, url: sockets[0].url };
+  const tick = () => intervals.forEach(({ fn }) => fn());
+  const emit = (on, type) => (on[type] || []).forEach((fn) => fn());
+  return {
+    bus: page.__ojStartHmr,
+    log,
+    open,
+    receive,
+    reconnect,
+    url: sockets[0].url,
+    sockets,
+    timers,
+    intervals,
+    clock,
+    tick,
+    page,
+    visible: () => emit(docListeners, "visibilitychange"),
+    resume: () => emit(docListeners, "resume"),
+    online: () => emit(listeners, "online"),
+  };
 }
 
 test("a plugin's custom frame reaches the page's hot.on listeners without a reload", async () => {
@@ -212,4 +246,117 @@ test("a page behind a hot change reloads once per document, so a cached document
   assert.equal(await reloadsFor("3"), 0);
   // A document that names newer changes, and is behind again, reloads.
   assert.equal(await reloadsFor("4"), 1);
+});
+
+// The keepalive: the server sends a frame at least every `ping` ms, and a
+// socket silent for two intervals and a grace of one more (at most 10s) is
+// presumed dead: 3000ms at a 1000ms ping. A connection dropped on the way
+// without a close never fires onclose.
+
+test("the server's ping is answered, and neither reloads the page nor reaches its listeners", async () => {
+  const { log, open, receive } = loadPage({ ping: 1000 });
+  open();
+  log.length = 0;
+  await receive({ type: "oj:ping" });
+  assert.deepEqual(JSON.parse(JSON.stringify(log)), [["send", { type: "oj:pong" }]]);
+});
+
+test("a ping is answered at once, even behind a listener still busy with an update", async () => {
+  const { log, open, receive, page } = loadPage({ ping: 1000 });
+  open();
+  // A plugin listener that never finishes holds the frame queue.
+  page.__ojStartHmr.runtime.hmr.notify = () => new Promise(() => {});
+  await receive({ type: "custom", event: "app:slow" });
+  log.length = 0;
+  await receive({ type: "oj:ping" });
+  assert.deepEqual(JSON.parse(JSON.stringify(log)), [["send", { type: "oj:pong" }]]);
+});
+
+test("a socket silent past the deadline is replaced at once, naming the page's stamps", () => {
+  const { log, open, sockets, clock, tick, timers } = loadPage({ ping: 1000, stamp: '"1f-3"', hot: "4" });
+  open();
+  clock.now = 3000;
+  tick();
+  assert.equal(sockets.length, 1, "not yet: 3000ms is the deadline itself");
+  clock.now = 3001;
+  tick();
+  assert.equal(sockets.length, 2, "the silent socket was replaced");
+  assert.ok(
+    log.some((e) => e[0] === "close" && e[1] === 0),
+    "the old socket was closed",
+  );
+  assert.equal(sockets[1].url, "ws://localhost/@oj-start/hmr?g=1f-3&h=4");
+  assert.equal(timers.length, 0, "replaced now, not after the retry delay");
+  assert.ok(!log.some((e) => e[0] === "reload"), "replacing the socket does not reload the page");
+});
+
+test("any frame keeps the socket: a busy socket outlives the deadline", async () => {
+  const { open, receive, sockets, clock, tick } = loadPage({ ping: 1000 });
+  open();
+  for (let t = 1000; t <= 10000; t += 1000) {
+    clock.now = t;
+    await receive(t % 2000 ? { type: "oj:ping" } : { type: "custom", event: "app:x" });
+    tick();
+  }
+  assert.equal(sockets.length, 1);
+});
+
+test("the replaced socket's late close starts no second reconnect", () => {
+  const { open, sockets, clock, tick, timers } = loadPage({ ping: 1000 });
+  open();
+  const dead = sockets[0];
+  clock.now = 5000;
+  tick();
+  assert.equal(dead.onclose, null, "its handlers were detached first");
+  assert.equal(dead.onmessage, null);
+  assert.equal(timers.length, 0);
+  assert.equal(sockets.length, 2);
+});
+
+test("a socket stuck connecting past the deadline is replaced too", () => {
+  const { sockets, clock, tick } = loadPage({ ping: 1000 });
+  clock.now = 3001;
+  tick();
+  assert.equal(sockets.length, 2);
+});
+
+test("a tab coming back, or the network, checks at once instead of at the next tick", () => {
+  const { open, sockets, clock, visible, online, resume } = loadPage({ ping: 1000 });
+  open();
+  clock.now = 1000;
+  visible();
+  assert.equal(sockets.length, 1, "a socket heard from in time stays");
+  clock.now = 60000;
+  visible();
+  assert.equal(sockets.length, 2, "a tab hidden for a minute replaces its silent socket");
+  open();
+  clock.now = 120000;
+  online();
+  assert.equal(sockets.length, 3, "the network returning replaces a silent socket");
+  open();
+  clock.now = 180000;
+  resume();
+  assert.equal(sockets.length, 4, "a frozen page resuming replaces a silent socket, visibilitychange or not");
+});
+
+test("a replacement that hears from the server is kept", async () => {
+  const { open, receive, sockets, clock, tick } = loadPage({ ping: 1000 });
+  open();
+  clock.now = 3001;
+  tick();
+  open();
+  await receive({ type: "oj:ping" });
+  clock.now = 5000;
+  tick();
+  assert.equal(sockets.length, 2);
+});
+
+test("with no keepalive interval there is no watchdog", () => {
+  const { open, sockets, clock, tick, intervals, visible } = loadPage({ ping: 0 });
+  open();
+  assert.equal(intervals.length, 0);
+  clock.now = 10 * 60 * 1000;
+  tick();
+  visible();
+  assert.equal(sockets.length, 1);
 });
