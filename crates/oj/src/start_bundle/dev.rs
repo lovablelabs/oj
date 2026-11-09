@@ -61,6 +61,9 @@ pub(crate) struct DevBundler {
     /// full-reload HMR gate, where every edit reloads. A granular gate stays
     /// hot from the boot bundle on, so its first edit already patches.
     hot_enabled: std::sync::atomic::AtomicBool,
+    /// The dev server's plugin host never came up (its server build failed
+    /// first): the bundle ran without the app's plugins, and is not cached.
+    host_failed: std::sync::atomic::AtomicBool,
     /// Bumped by every batch that touched a style input.
     style_epoch: std::sync::atomic::AtomicU64,
     /// Pages that announced their runtime id.
@@ -71,6 +74,18 @@ pub(crate) struct DevBundler {
     /// The module ids of the last bundle written, whose StyleX rules a cached
     /// copy of it carries.
     bundle_modules: Mutex<Vec<String>>,
+}
+
+/// Whether the client bundle hot-updates under the editor's HMR gate as the
+/// config and the knobs resolve it (`oj_server`'s `hmr_gate_of`): only a
+/// full-reload gate turns hot updates off. Decided here, before the boot
+/// bundle, so the bundle it builds and the cache key it uses are the
+/// session's own; the dev server applies the same resolution once its gate
+/// exists (`start_dev::hot_under_gate`).
+fn hot_under_config(config: &oj_config::OjConfig) -> bool {
+    let knobs = &oj_env::get().knobs;
+    let gate = config.server.as_ref().and_then(|s| s.hmr_gate) == Some(true) || knobs.hmr_gate;
+    !(gate && knobs.hmr_full_reload)
 }
 
 impl DevBundler {
@@ -85,6 +100,7 @@ impl DevBundler {
             start.cache.join("client-entry.json"),
             serde_json::Value::String(entry).to_string(),
         );
+        let hot_enabled = hot_under_config(&start.config);
         DevBundler {
             start: Arc::new(start),
             config_file,
@@ -94,10 +110,8 @@ impl DevBundler {
             session: tokio::sync::Mutex::new(None),
             engine: EngineSlot::default(),
             hot,
-            hot_enabled: std::sync::atomic::AtomicBool::new({
-                let knobs = &oj_env::get().knobs;
-                !(knobs.hmr_gate && knobs.hmr_full_reload)
-            }),
+            hot_enabled: std::sync::atomic::AtomicBool::new(hot_enabled),
+            host_failed: std::sync::atomic::AtomicBool::new(false),
             style_epoch: std::sync::atomic::AtomicU64::new(0),
             clients: Mutex::new(HashSet::new()),
             fn_externals: Arc::default(),
@@ -194,6 +208,14 @@ impl DevBundler {
         self.hot_enabled() && !self.start.is_production()
     }
 
+    /// Whether the last bundle may be cached: one built while the dev
+    /// server's plugin host was down ran none of the app's plugins (and no
+    /// Fast Refresh), so it must not be restored into a later, whole session
+    /// under the key that session computes.
+    pub(crate) fn cacheable(&self) -> bool {
+        !self.host_failed.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     pub(crate) fn style_epoch(&self) -> u64 {
         self.style_epoch.load(std::sync::atomic::Ordering::SeqCst)
     }
@@ -281,7 +303,11 @@ impl DevBundler {
                 // A server build that failed before its host came up drops the sender.
                 let dev = match dev_host.wait_for(Option::is_some).await {
                     Ok(dev) => dev.clone().flatten(),
-                    Err(_) => None,
+                    Err(_) => {
+                        self.host_failed
+                            .store(true, std::sync::atomic::Ordering::SeqCst);
+                        None
+                    }
                 };
                 match dev {
                     Some(dev) => hosts::open(&dev, "client").await.map(Some),

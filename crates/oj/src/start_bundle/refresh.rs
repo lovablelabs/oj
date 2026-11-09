@@ -46,17 +46,15 @@ if (typeof window !== "undefined") {
 "#;
 
 /// The entry's first import, so the runtime (and its preamble) has the
-/// lowest execution order in the graph: ahead of react-dom.
+/// lowest execution order in the graph: ahead of react-dom. On the entry's
+/// first line, so its line numbers stand without a map.
 fn entry_code(code: &str) -> String {
-    format!("import {RUNTIME_PUBLIC_PATH:?};\n{code}")
+    format!("import {RUNTIME_PUBLIC_PATH:?}; {code}")
 }
 
 /// The runtime module, installing the preamble as it evaluates.
 fn runtime_code(code: &str) -> String {
-    let mut out = String::with_capacity(code.len() + PREAMBLE_TAIL.len());
-    out.push_str(code);
-    out.push_str(PREAMBLE_TAIL);
-    out
+    format!("{code}{PREAMBLE_TAIL}")
 }
 
 /// The runtime's public path, ahead of plugin-react's own pre-ordered
@@ -316,10 +314,12 @@ mod tests {
     #[test]
     fn the_entry_imports_the_runtime_first() {
         let out = entry_code("import { hydrateRoot } from \"react-dom/client\";\n");
+        // On the entry's own first line: its line numbers stand.
         assert!(
-            out.starts_with("import \"/@react-refresh\";\nimport { hydrateRoot }"),
+            out.starts_with("import \"/@react-refresh\"; import { hydrateRoot }"),
             "{out}"
         );
+        assert_eq!(out.lines().count(), 1);
     }
 
     #[test]

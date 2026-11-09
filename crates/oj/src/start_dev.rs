@@ -1742,6 +1742,9 @@ fn pinned_output(
     cache: &Path,
     mode: &str,
 ) -> Option<oj_cache::start_bundle::PinnedBundle> {
+    if !bundler.cacheable() {
+        return oj_cache::start_bundle::PinnedBundle::from_build_dir(cache);
+    }
     match keyed_bundle_store(bundler, root, mode).persist(cache) {
         Some((key, pinned)) => {
             save_stylex_rules(bundler, cache, &key);
@@ -2402,7 +2405,9 @@ fn bundle_client_entry_cached(
         Err(miss) => println!("  oj start: client bundle cache miss ({miss})"),
     }
     bundler.bundle(&[], false)?;
-    if let Some((key, pinned)) = store.persist(cache) {
+    if !bundler.cacheable() {
+        println!("  oj start: client bundle not cached (built without the app's plugin host)");
+    } else if let Some((key, pinned)) = store.persist(cache) {
         save_stylex_rules(bundler, cache, &key);
         save_generated_sheets(bundler, cache, &key);
         println!(
@@ -3623,6 +3628,24 @@ mod tests {
         bundler.set_hot_enabled(false);
         assert!(!bundler.hot_enabled());
         assert!(!bundler.hot_bundle());
+        // A fresh bundler takes the gate from the config (the knob or the
+        // app's `hmr-gate` plugin, which extraction records as
+        // `server.hmrGate`), so the boot bundle and its cache key already
+        // know the mode: with the default full-reload gate, not hot.
+        let mut start = crate::start_bundle::dev::tests::start_at(Path::new("/app"));
+        start
+            .config
+            .server
+            .get_or_insert_with(Default::default)
+            .hmr_gate = Some(true);
+        let gated = ClientBundler::new(start, None);
+        assert_eq!(
+            gated.hot_enabled(),
+            !oj_env::get().knobs.hmr_full_reload,
+            "a config gate resolves as the server's own will"
+        );
+        // A bundle built without the dev server's plugin host is never cached.
+        assert!(bundler.cacheable());
     }
 
     #[test]

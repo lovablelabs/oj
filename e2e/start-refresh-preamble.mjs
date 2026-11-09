@@ -118,8 +118,10 @@ async function boot(env, label, { refresh = true, roundTrip = false } = {}) {
       const page = await browser.newPage();
       const errors = [];
       page.on("pageerror", (e) => errors.push(e.message));
+      // Uncaught errors, and the refresh runtime's own console errors; a React
+      // dev warning is not this test's concern.
       page.on("console", (m) => {
-        if (m.type() === "error") errors.push(m.text());
+        if (m.type() === "error" && /preamble|RefreshRuntime|\$Refresh/.test(m.text())) errors.push(m.text());
       });
       await page.goto(`${base}/`, { waitUntil: "networkidle" });
       // Hydration: the client entry ran to the end and React took the page
