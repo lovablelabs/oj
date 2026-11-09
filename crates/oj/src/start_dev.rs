@@ -64,6 +64,9 @@ struct StartState {
     /// turns the keepalive and the client's watchdog off.
     hmr_ping: Option<Duration>,
     workspace_root: PathBuf,
+    /// Vite's `publicDir` (`None` when disabled): its files answer ahead of
+    /// the router and the SSR handler, see [`serve_public_file`].
+    public_dir: Option<PathBuf>,
     /// The pages' reloads, as counts (see start_reloads).
     reloads: Arc<crate::start_reloads::Epochs>,
     /// The client bundle's last failure as a `{type:"error", err}` frame,
@@ -417,7 +420,7 @@ pub async fn start_dev(
     // the dev server's SSR pipeline (StartHost); it needs the built app's
     // SsrBridge, so it comes up once the server build joins.
     let hmr_overlay;
-    let engine = {
+    let (engine, public_dir) = {
         let mut config = oj_config::load(&root).unwrap_or_default();
         oj_server::plugins::adopt_vite_config_values(
             &mut config,
@@ -434,15 +437,17 @@ pub async fn start_dev(
         let entry = configured_start_server_entry(&config, &root)
             .unwrap_or_else(|| cache.join("server-entry.tsx"));
         let init_env = script_vars.to_vec();
-        Arc::new(StartEngine::new(
+        let public_dir = oj_config::public_dir(&config, &root);
+        let engine = Arc::new(StartEngine::new(
             root.clone(),
             &cache,
             built.ssr.clone(),
             entry,
             oj_config::ssr_externals(&config),
-            oj_config::public_dir(&config, &root),
+            public_dir.clone(),
             init_env,
-        )?)
+        )?);
+        (engine, public_dir)
     };
     let loopback_port = spawn_engine_loopback(Arc::clone(&engine)).await?;
     oj_server::boot_phase("engine ready");
@@ -582,6 +587,7 @@ pub async fn start_dev(
         hmr_overlay,
         hmr_ping: hmr_ping(oj_env::get().knobs.hmr_ping_ms),
         workspace_root: workspace_root(&root),
+        public_dir,
         reloads: Arc::clone(&reloads),
         build_error: std::sync::RwLock::new(boot_error.clone()),
         error_tx: broadcast::channel(16).0,
@@ -887,8 +893,19 @@ fn workspace_root(app: &Path) -> PathBuf {
 fn asset_mime(ext: &str) -> &'static str {
     match ext {
         "css" => "text/css; charset=utf-8",
-        "js" | "mjs" => "text/javascript",
+        // Vite's sirv setHeaders: the TypeScript extensions are JavaScript
+        // too, not the video/mp2t their registered type says.
+        "js" | "mjs" | "cjs" | "jsx" | "ts" | "mts" | "cts" | "tsx" => "text/javascript",
         "json" => "application/json",
+        "html" | "htm" => "text/html; charset=utf-8",
+        "txt" => "text/plain; charset=utf-8",
+        "xml" => "application/xml",
+        "pdf" => "application/pdf",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "ogg" => "audio/ogg",
         "svg" => "image/svg+xml",
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
@@ -2666,6 +2683,14 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
     if oj_server::is_websocket_upgrade(req.headers()) {
         return next.run(req).await;
     }
+    // A file under `publicDir` answers before the router and the SSR handler
+    // see the request, as Vite's servePublicMiddleware runs ahead of its html
+    // middlewares for every appType: `/hub/index.html` is that file, not the
+    // `/hub/` document (which the router would redirect or 404), and a
+    // dotted or extensionless public path is never the app's 404.
+    if let Some(resp) = serve_public_file(&state, path, req.uri().query(), req.method()).await {
+        return resp;
+    }
     match classify_path(path, req.uri().path(), req.method(), &state.proxy_prefixes) {
         Route::Document => {
             let raw = path_and_query(&req);
@@ -3317,6 +3342,69 @@ async fn serve_fs_asset(state: &StartState, abs: &str) -> Response {
         )
             .into_response(),
     }
+}
+
+/// The file under `public_dir` that `path` names, or None when the request
+/// is not for one. Vite's servePublicMiddleware: the exact path of a file
+/// in the dir, percent-decoded, with no extension guessing and no
+/// `index.html` for a directory (sirv with `extensions: []`), skipping
+/// oj's own `/@` urls and the `?url` and `?import` requests whose module
+/// the transform pipeline makes (`/logo.svg?url` is a module, as in Vite).
+/// A `..` segment never leaves the dir.
+fn public_file_path(
+    public_dir: &Path,
+    path: &str,
+    query: Option<&str>,
+    method: &Method,
+) -> Option<PathBuf> {
+    if *method != Method::GET && *method != Method::HEAD {
+        return None;
+    }
+    if path.starts_with("/@") || oj_server::is_dev_server_path(path) {
+        return None;
+    }
+    if query.is_some_and(|q| q.split('&').any(|flag| flag == "url" || flag == "import")) {
+        return None;
+    }
+    let rel = percent_decode(path);
+    let rel = rel.trim_start_matches('/');
+    if rel.is_empty() || rel.ends_with('/') || rel.split('/').any(|seg| seg == "..") {
+        return None;
+    }
+    Some(public_dir.join(rel))
+}
+
+/// A `publicDir` file, served as it is (never compiled, never given the
+/// live-reload client: Vite's public middleware serves the bytes), or None
+/// when `path` names no such file. See [`public_file_path`].
+async fn serve_public_file(
+    state: &StartState,
+    path: &str,
+    query: Option<&str>,
+    method: &Method,
+) -> Option<Response> {
+    let public = state.public_dir.as_deref()?;
+    let file = public_file_path(public, path, query, method)?;
+    let meta = tokio::fs::metadata(&file).await.ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
+    Some(match tokio::fs::read(&file).await {
+        Ok(bytes) => (
+            [
+                (header::CONTENT_TYPE, asset_mime(ext)),
+                (header::CACHE_CONTROL, "no-cache"),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("oj start: public file: {e}"),
+        )
+            .into_response(),
+    })
 }
 
 fn percent_decode(s: &str) -> String {
@@ -5198,6 +5286,46 @@ mod tests {
         assert_eq!(percent_decode("a%"), "a%");
         assert_eq!(percent_decode("a%2"), "a%2");
         assert_eq!(percent_decode("a%zz"), "a%zz");
+    }
+
+    #[test]
+    fn public_file_path_is_the_exact_decoded_path_in_the_dir() {
+        let public = Path::new("/app/public");
+        let at =
+            |path: &str, query: Option<&str>| public_file_path(public, path, query, &Method::GET);
+        assert_eq!(
+            at("/hub/index.html", None),
+            Some(PathBuf::from("/app/public/hub/index.html"))
+        );
+        assert_eq!(
+            at("/with%20space.txt", None),
+            Some(PathBuf::from("/app/public/with space.txt"))
+        );
+        assert_eq!(
+            at("/noext", Some("v=1")),
+            Some(PathBuf::from("/app/public/noext"))
+        );
+        // No directory index and nothing for the root: Vite's public
+        // middleware serves files only.
+        assert_eq!(at("/hub/", None), None);
+        assert_eq!(at("/", None), None);
+        // The module requests the transform pipeline owns.
+        assert_eq!(at("/logo.svg", Some("url")), None);
+        assert_eq!(at("/logo.svg", Some("import")), None);
+        assert_eq!(at("/logo.svg", Some("v=1&url")), None);
+        // oj's own urls and a path that tries to leave the dir.
+        assert_eq!(at("/@oj-start/x.js", None), None);
+        assert_eq!(at("/@fs/etc/passwd", None), None);
+        assert_eq!(at("/../package.json", None), None);
+        assert_eq!(at("/a/%2e%2e/package.json", None), None);
+        assert_eq!(
+            public_file_path(public, "/a.txt", None, &Method::POST),
+            None
+        );
+        assert_eq!(
+            public_file_path(public, "/a.txt", None, &Method::HEAD),
+            Some(PathBuf::from("/app/public/a.txt"))
+        );
     }
 
     #[test]

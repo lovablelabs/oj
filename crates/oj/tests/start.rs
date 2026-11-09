@@ -232,6 +232,85 @@ fn build_renders_every_fixture_feature() {
     assert_app("build", &built);
 }
 
+/// Every file under `publicDir` is served as it is, ahead of the router and
+/// the SSR handler, as Vite's servePublicMiddleware runs ahead of its html
+/// middlewares: an `index.html` (the router would answer the directory
+/// document instead), a nested script, a binary, an extensionless file and a
+/// percent-encoded name. A directory has no index (sirv with no extensions),
+/// a `?url` request is the module, and a path no file owns still reaches
+/// the app.
+#[test]
+fn dev_serves_public_dir_files_ahead_of_the_router() {
+    let Some(app) = app("dev-public") else {
+        return;
+    };
+    let public = app.0.join("public");
+    let hub = b"<!DOCTYPE html><html><body><h1>hub-public-marker</h1></body></html>\n";
+    let script = b"console.log('public-script-marker');\n";
+    let clip: &[u8] = &[0, 0, 0, 0x18, b'f', b't', b'y', b'p', 0xff, 0xfe, 0, 0x80];
+    let files: [(&str, &[u8]); 5] = [
+        ("hub/index.html", hub),
+        ("original/assets/app.js", script),
+        ("clip.mp4", clip),
+        ("with space.txt", b"spaced-public-marker"),
+        ("noext", b"extensionless-public-marker"),
+    ];
+    for (rel, bytes) in files {
+        let path = public.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+    let dev = Server::oj_dev(&app.0);
+    let content_type = |headers: &[(String, String)]| {
+        headers
+            .iter()
+            .find(|(name, _)| name == "content-type")
+            .map(|(_, value)| value.clone())
+            .unwrap_or_default()
+    };
+    let expect = |path: &str, mime: &str, bytes: &[u8]| {
+        let (status, headers, body) = dev.fetch("GET", path, &[]);
+        assert_eq!(status, 200, "GET {path}\n{}", dev.output());
+        assert!(
+            content_type(&headers).starts_with(mime),
+            "GET {path}: content-type {:?}, wanted {mime}",
+            content_type(&headers)
+        );
+        assert_eq!(
+            body,
+            bytes,
+            "GET {path}: served {:?}, not the public file",
+            String::from_utf8_lossy(&body)
+        );
+    };
+    expect("/hub/index.html", "text/html", hub);
+    expect("/original/assets/app.js", "text/javascript", script);
+    expect("/clip.mp4", "video/mp4", clip);
+    expect("/with%20space.txt", "text/plain", b"spaced-public-marker");
+    expect(
+        "/noext",
+        "application/octet-stream",
+        b"extensionless-public-marker",
+    );
+    expect("/favicon.txt", "text/plain", b"public-dir-marker\n");
+    // Vite's public middleware serves no directory index: `/hub/` is the
+    // app's, whatever it answers.
+    let (_, _, dir) = dev.fetch("GET", "/hub/", &[]);
+    assert_ne!(dir, hub, "/hub/ served public/hub/index.html");
+    // `?url` is the module the transform pipeline makes of a public file.
+    let (status, module) = get(&dev, "/favicon.txt?url");
+    assert!(
+        status == 200 && module.contains("export default"),
+        "/favicon.txt?url should be a module ({status}): {module}"
+    );
+    let (status, missing) = get(&dev, "/no-such-file.txt");
+    assert!(
+        missing.contains("<html") || missing.contains("<!DOCTYPE"),
+        "an unowned dotted GET should still reach the app ({status}): {}",
+        &missing[..missing.len().min(80)]
+    );
+}
+
 /// A dotted GET no static file owns reaches the SSR handler (dotted route
 /// params, robots.txt-style server routes), static files still win, and
 /// requests run concurrently.

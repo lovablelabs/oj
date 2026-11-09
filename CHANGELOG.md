@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- TanStack Start dev: every file under `publicDir` is served as it is, ahead of the router and the SSR handler, as Vite's `servePublicMiddleware` runs ahead of its html middlewares for every `appType`. A `public/hub/index.html` used to be taken for the `/hub/` document (the router redirected it to `/hub` and answered 404), and a nested script, a video or an extensionless file under `public/` could reach the app's 404 instead of being served. A directory still has no index and `?url` and `?import` requests still yield the module, as in Vite (sirv with no extensions). Public files are served with their type, the TypeScript extensions as JavaScript as Vite's sirv headers have them.
+
 ## [0.4.8] - 2026-11-09
 
 ### Fixed
