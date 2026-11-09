@@ -2726,6 +2726,21 @@ const HOT_BEHIND_FRAME: &str = r#"{"type":"oj:behind","hot":true}"#;
 /// would otherwise keep a dead socket, and miss every change, until a manual
 /// refresh. The keepalive also keeps idle-timeout middleboxes from cutting it.
 const PING_FRAME: &str = r#"{"type":"oj:ping"}"#;
+/// The close reason a page socket gets when its page stopped answering
+/// pings, as engine.io's "ping timeout" and Phoenix's "heartbeat timeout".
+const PING_TIMEOUT_REASON: &str = "oj: ping timeout";
+
+/// Sends `text`, giving up after `limit`: a peer that has not read for that
+/// long (its end gone, the send buffer full) is as dead as one that stopped
+/// answering, and a send stuck on it would hold the socket's whole loop,
+/// its deadline check included. No limit waits as long as it takes.
+async fn send_within(socket: &mut WebSocket, text: String, limit: Option<Duration>) -> bool {
+    let send = socket.send(Message::Text(text.into()));
+    match limit {
+        Some(limit) => matches!(tokio::time::timeout(limit, send).await, Ok(Ok(()))),
+        None => send.await.is_ok(),
+    }
+}
 
 async fn start_hmr_socket(
     mut socket: WebSocket,
@@ -2792,16 +2807,24 @@ async fn start_hmr_socket(
         tokio::select! {
             () = oj_server::ping_due(&mut ping) => {
                 if deadline.is_some_and(|d| heard.elapsed() > d) {
-                    let _ = socket.close().await;
+                    // The page is gone: say why, but never wait on a dead
+                    // connection to take it (engine.io tears its transport
+                    // down the same way).
+                    println!("  oj start: a page stopped answering pings; closed its socket");
+                    let close = Message::Close(Some(axum::extract::ws::CloseFrame {
+                        code: axum::extract::ws::close_code::NORMAL,
+                        reason: PING_TIMEOUT_REASON.into(),
+                    }));
+                    let _ = tokio::time::timeout(Duration::from_secs(1), socket.send(close)).await;
                     break;
                 }
-                if socket.send(Message::Text(PING_FRAME.into())).await.is_err() {
+                if !send_within(&mut socket, PING_FRAME.to_string(), deadline).await {
                     break;
                 }
             },
             custom = custom => match custom {
                 Ok(text) if page_custom_frame(&text) => {
-                    if socket.send(Message::Text(text.into())).await.is_err() {
+                    if !send_within(&mut socket, text, deadline).await {
                         break;
                     }
                 }
@@ -2812,7 +2835,7 @@ async fn start_hmr_socket(
             },
             error = errors.recv() => match error {
                 Ok(frame) => {
-                    if socket.send(Message::Text(frame.into())).await.is_err() {
+                    if !send_within(&mut socket, frame, deadline).await {
                         break;
                     }
                 }
@@ -2826,7 +2849,7 @@ async fn start_hmr_socket(
                 // A count, not a queue: however many changes went out, the
                 // page reloads once onto the newest.
                 Some(()) => {
-                    if socket.send(Message::Text("reload".into())).await.is_err() {
+                    if !send_within(&mut socket, "reload".to_string(), deadline).await {
                         break;
                     }
                 }
@@ -2839,7 +2862,7 @@ async fn start_hmr_socket(
                     Err(broadcast::error::RecvError::Lagged(_)) => "reload".to_string(),
                     Err(broadcast::error::RecvError::Closed) => break,
                 };
-                if socket.send(Message::Text(text.into())).await.is_err() {
+                if !send_within(&mut socket, text, deadline).await {
                     break;
                 }
             },
@@ -4035,13 +4058,19 @@ mod tests {
             loop {
                 match client.next().await {
                     Some(Ok(ClientMessage::Text(t))) => assert_eq!(t.as_str(), PING_FRAME),
-                    Some(Ok(ClientMessage::Close(_))) | None | Some(Err(_)) => break,
+                    Some(Ok(ClientMessage::Close(frame))) => return frame,
+                    None | Some(Err(_)) => return None,
                     Some(Ok(_)) => {}
                 }
             }
         })
         .await;
-        assert!(closed.is_ok(), "the silent page's socket stayed open");
+        let frame = closed.expect("the silent page's socket stayed open");
+        // It says why, as engine.io's "ping timeout".
+        assert_eq!(
+            frame.map(|f| f.reason.to_string()).as_deref(),
+            Some(PING_TIMEOUT_REASON)
+        );
         assert!(
             started.elapsed() >= silent_deadline(ping),
             "closed before the deadline: {:?}",

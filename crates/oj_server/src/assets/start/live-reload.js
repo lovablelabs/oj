@@ -257,18 +257,29 @@
     };
     ws.onclose = () => setTimeout(connect, 1000);
   };
-  // A socket silent past the deadline, open or still connecting, is
-  // dropped and replaced at once. Its handlers go first: a close that
-  // arrives late must not start a second reconnect.
-  const checkAlive = () => {
-    if (!ws || ws.readyState > 1 || Date.now() - heardAt <= deadMs) return;
+  // Drops the socket, open or still connecting, and opens a new one at
+  // once. Its handlers go first: a close that arrives late must not start
+  // a second reconnect. Said in the console and in the close, as Phoenix's
+  // "heartbeat timeout": a page that stopped updating leaves a trace.
+  const replace = (why) => {
+    if (!ws || ws.readyState > 1) return;
     const dead = ws;
     dead.onopen = dead.onmessage = dead.onclose = null;
+    console.log("[oj] " + why + "; reconnecting");
     try {
-      dead.close();
+      dead.close(1000, "oj: " + why);
     } catch {}
     connect();
   };
+  const checkAlive = () => {
+    if (Date.now() - heardAt > deadMs) replace("no word from the dev server in " + deadMs + "ms");
+  };
+  // The network came back: a socket from before it went (another network,
+  // a new address) is dead whether or not it has been silent long enough
+  // to tell. Socket.IO closes on "offline" for the same reason, and skips
+  // a dev server on this machine, whose loopback socket survives.
+  const local = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname || "");
+  const networkBack = () => (local ? checkAlive() : replace("the network came back"));
   if (pingMs > 0) {
     setInterval(checkAlive, Math.max(250, Math.floor(pingMs / 2)));
     // A tab coming back (timers throttled while hidden) or the network
@@ -279,7 +290,7 @@
       if (document.visibilityState === "visible") checkAlive();
     });
     document.addEventListener("resume", checkAlive);
-    addEventListener("online", checkAlive);
+    addEventListener("online", networkBack);
   }
   let inbox = Promise.resolve();
   const handle = async (data) => {

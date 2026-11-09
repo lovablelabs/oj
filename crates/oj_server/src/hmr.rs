@@ -177,7 +177,11 @@ pub(crate) fn hmr_socket(
         loop {
             tokio::select! {
                 () = ping_due(&mut ticks) => {
-                    if socket.send(Message::Text(VITE_PING_FRAME.into())).await.is_err() {
+                    // A client that has not read for a deadline's worth of
+                    // pings is gone; a send stuck on it would hold this loop.
+                    let limit = silent_deadline(std::time::Duration::from_millis(ms));
+                    let send = socket.send(Message::Text(VITE_PING_FRAME.into()));
+                    if !matches!(tokio::time::timeout(limit, send).await, Ok(Ok(()))) {
                         break;
                     }
                 },

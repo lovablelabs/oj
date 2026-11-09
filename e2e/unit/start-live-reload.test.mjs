@@ -10,7 +10,14 @@ import { asset } from "./harness.mjs";
 // `log` records reloads, sends and the runtime's notified events.
 // `ping` is the keepalive interval filled in (0: no watchdog); `clock.now`
 // is what the page's Date.now reads, and `tick()` runs its intervals.
-function loadPage({ overlays = [], stamp = "null", hot = "null", ping = 0, storage = new Map() } = {}) {
+function loadPage({
+  overlays = [],
+  stamp = "null",
+  hot = "null",
+  ping = 0,
+  hostname = "localhost",
+  storage = new Map(),
+} = {}) {
   const log = [];
   const sockets = [];
   const timers = [];
@@ -18,6 +25,7 @@ function loadPage({ overlays = [], stamp = "null", hot = "null", ping = 0, stora
   const docListeners = {};
   const listeners = {};
   const clock = { now: 0 };
+  const said = [];
   class WebSocket {
     constructor(url) {
       this.url = url;
@@ -27,15 +35,16 @@ function loadPage({ overlays = [], stamp = "null", hot = "null", ping = 0, stora
     send(text) {
       log.push(["send", JSON.parse(text)]);
     }
-    close() {
+    close(code, reason) {
       this.readyState = 3;
+      this.closedWith = [code, reason];
       log.push(["close", sockets.indexOf(this)]);
     }
   }
   const page = {
     WebSocket,
-    console: { error() {}, debug() {}, warn() {} },
-    location: { protocol: "http:", host: "localhost", pathname: "/", reload: () => log.push(["reload"]) },
+    console: { error() {}, debug() {}, warn() {}, log: (line) => said.push(line) },
+    location: { protocol: "http:", host: hostname, hostname, pathname: "/", reload: () => log.push(["reload"]) },
     sessionStorage: {
       setItem: (k, v) => storage.set(k, String(v)),
       getItem: (k) => (storage.has(k) ? storage.get(k) : null),
@@ -102,6 +111,7 @@ function loadPage({ overlays = [], stamp = "null", hot = "null", ping = 0, stora
     page,
     visible: () => emit(docListeners, "visibilitychange"),
     resume: () => emit(docListeners, "resume"),
+    said,
     online: () => emit(listeners, "online"),
   };
 }
@@ -318,6 +328,35 @@ test("a socket stuck connecting past the deadline is replaced too", () => {
   clock.now = 3001;
   tick();
   assert.equal(sockets.length, 2);
+});
+
+test("a replaced socket says why, in the console and in its close", () => {
+  const { open, sockets, clock, tick, said } = loadPage({ ping: 1000 });
+  open();
+  clock.now = 3001;
+  tick();
+  assert.deepEqual(sockets[0].closedWith, [1000, "oj: no word from the dev server in 3000ms"]);
+  assert.deepEqual(said, ["[oj] no word from the dev server in 3000ms; reconnecting"]);
+});
+
+test("the network coming back replaces a remote dev server's socket at once, silent or not", () => {
+  const { open, sockets, clock, online, said } = loadPage({ ping: 1000, hostname: "preview.example.dev" });
+  open();
+  clock.now = 500;
+  online();
+  assert.equal(sockets.length, 2, "a socket from before the network went is dead");
+  assert.deepEqual(said, ["[oj] the network came back; reconnecting"]);
+});
+
+test("a dev server on this machine keeps its loopback socket when the network comes back", () => {
+  const { open, sockets, clock, online } = loadPage({ ping: 1000 });
+  open();
+  clock.now = 500;
+  online();
+  assert.equal(sockets.length, 1, "loopback survives a network change");
+  clock.now = 3001;
+  online();
+  assert.equal(sockets.length, 2, "but a silent one is still replaced");
 });
 
 test("a tab coming back, or the network, checks at once instead of at the next tick", () => {

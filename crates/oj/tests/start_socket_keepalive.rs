@@ -163,6 +163,11 @@ async fn hydrated(page: &Page) {
     tokio::time::sleep(Duration::from_millis(500)).await;
 }
 
+/// Records the page's `console.log` lines in sessionStorage, before any of
+/// its scripts run, so they outlast a catch-up reload (the browser helper
+/// keeps errors and warnings only).
+const RECORD_LOG: &str = "const log = console.log; console.log = (...a) => { const said = JSON.parse(sessionStorage.getItem('said') || '[]'); said.push(a.join(' ')); sessionStorage.setItem('said', JSON.stringify(said)); log(...a); };";
+
 fn shows(text: &str) -> String {
     format!("{SHOWN}.includes({})", serde_json::to_string(text).unwrap())
 }
@@ -208,7 +213,7 @@ async fn a_page_whose_socket_went_silent_still_gets_the_next_edit() {
     let original = std::fs::read_to_string(root.join(WIDGET)).unwrap();
     let dev = Server::oj_dev_with(&root, &[("OJ_HMR_PING_MS", PING_MS)]);
     let proxy = SilentProxy::start(dev.port).await;
-    let page = Page::open(&proxy.url("/")).await;
+    let page = Page::open_with_script(&proxy.url("/"), Some(RECORD_LOG)).await;
     hydrated(&page).await;
 
     // Through the proxy, an edit arrives as usual.
@@ -221,6 +226,15 @@ async fn a_page_whose_socket_went_silent_still_gets_the_next_edit() {
         page.poll(&shows("while-silent:"), CATCH_UP).await,
         "the page kept its dead socket and never showed the edit\n{}",
         dev.output()
+    );
+    // The watchdog did it, and said so.
+    let said: Vec<String> = page
+        .eval("JSON.parse(sessionStorage.getItem('said') || '[]')")
+        .await;
+    let watchdog = "[oj] no word from the dev server in 900ms; reconnecting";
+    assert!(
+        said.iter().any(|line| line == watchdog),
+        "no watchdog line in the console: {said:?}"
     );
     // And the replacement socket carries the next one.
     std::fs::write(root.join(WIDGET), widget(&original, "after:")).unwrap();
