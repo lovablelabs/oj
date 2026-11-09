@@ -142,8 +142,10 @@ async fn root_vite_hmr_socket_closes_a_client_that_stops_answering() {
     })
     .await
     .expect("the silent client's socket stayed open");
-    assert_eq!(
-        closed.map(|f| f.reason.to_string()).as_deref(),
-        Some("oj: ping timeout")
-    );
+    // The reason, when the close frame is read: answering the pings queued
+    // while it read nothing, the client writes to a socket the server
+    // already closed, and on Linux the reset discards the unread close.
+    if let Some(frame) = closed {
+        assert_eq!(frame.reason.as_str(), "oj: ping timeout");
+    }
 }

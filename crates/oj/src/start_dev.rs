@@ -4070,11 +4070,13 @@ mod tests {
         })
         .await;
         let frame = closed.expect("the silent page's socket stayed open");
-        // It says why, as engine.io's "ping timeout".
-        assert_eq!(
-            frame.map(|f| f.reason.to_string()).as_deref(),
-            Some(PING_TIMEOUT_REASON)
-        );
+        // It says why, as engine.io's "ping timeout". The close frame may
+        // never be read: answering the pings queued while it read nothing,
+        // the client writes to a socket the server already closed, and on
+        // Linux the reset discards the unread close (macOS delivers it).
+        if let Some(frame) = frame {
+            assert_eq!(frame.reason.as_str(), PING_TIMEOUT_REASON);
+        }
         assert!(
             started.elapsed() >= silent_deadline(ping),
             "closed before the deadline: {:?}",
