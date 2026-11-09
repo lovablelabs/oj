@@ -236,3 +236,61 @@ async fn a_handler_loading_another_module_stays_the_named_plugin() {
     );
     assert_eq!(call.await.unwrap().unwrap().code, "# s");
 }
+
+// A call made after a change never shares a run begun before it: the run
+// read the files as they were, and a virtual module's `load` is keyed by
+// its id alone. A call made before the change still shares it (Vite's
+// `transformRequest` keeps a pending request only while its timestamp is
+// past the module's last invalidation).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_call_after_a_change_never_shares_a_run_begun_before_it() {
+    let root = plugins_root("changed");
+    let record = root.join("calls.txt");
+    let plugins = format!(
+        r#"import {{ appendFileSync }} from "node:fs";
+export default [{{
+  name: "virt",
+  async load(id) {{
+    if (!id.endsWith("/virt.md")) return null;
+    appendFileSync({record:?}, "load\n");
+    await new Promise((r) => setTimeout(r, 600));
+    return "export default 'v'";
+  }},
+}}];
+"#
+    );
+    let host = host_with(&root, &plugins).await;
+    host.resolve_id("x", "").await.expect("a live host serves");
+    let virt = root.join("virt.md").display().to_string();
+    let first = {
+        let host = std::sync::Arc::clone(&host);
+        let virt = virt.clone();
+        tokio::spawn(async move { host.load(&virt).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    // Before any change: the same call, so the same run.
+    let before = {
+        let host = std::sync::Arc::clone(&host);
+        let virt = virt.clone();
+        tokio::spawn(async move { host.load(&virt).await })
+    };
+    // A watched file changed: what the running load read may be stale.
+    host.watch_change(&root.join("notes.md").display().to_string(), "update")
+        .await
+        .unwrap();
+    let after = host.load(&virt).await.unwrap();
+    assert_eq!(after.as_deref(), Some("export default 'v'"));
+    assert_eq!(
+        first.await.unwrap().unwrap().as_deref(),
+        Some("export default 'v'")
+    );
+    assert_eq!(
+        before.await.unwrap().unwrap().as_deref(),
+        Some("export default 'v'")
+    );
+    assert_eq!(
+        calls(&record),
+        ["load", "load"],
+        "the two calls before the change shared one run; the one after ran again"
+    );
+}

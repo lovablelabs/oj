@@ -101,13 +101,19 @@ pub(crate) struct HostCore {
     /// (`environment._pendingRequests`). Pages that load the same sheet or
     /// module at once run its plugins once.
     ///
-    /// A transform's source is in its key, so an edited file is a new run.
-    /// A `load` is keyed by id alone: a virtual module invalidated while
-    /// its load runs hands that one in-flight run to a caller arriving
-    /// after the invalidation (Vite compares the pending request's
-    /// timestamp with the module's `lastInvalidationTimestamp` and aborts
-    /// it instead); the next call after it settles runs the plugins again.
+    /// The key carries the count of changes the host had heard of when
+    /// the run began (`changes`), so a call made after a change never
+    /// shares a run begun before it: a virtual module's `load` is keyed by
+    /// id alone, and a run that read the files before an edit would have
+    /// handed its stale answer to a caller arriving after it. Vite keeps
+    /// the same rule per module, comparing the pending request's timestamp
+    /// with the module's `lastInvalidationTimestamp` (`transformRequest`).
     in_flight: Mutex<std::collections::HashMap<std::sync::Arc<InFlightKey>, InFlightCall>>,
+    /// How many changes the host has heard of: a watched file's event
+    /// (`watcherEvents`, `watchChange`, `hotUpdate`) or a plugin
+    /// invalidating a module through the server's module graph. Read into
+    /// every shared run's key; see `in_flight`.
+    changes: std::sync::atomic::AtomicU64,
     /// Weak self-handle so `&self` methods can hand a fresh generation's tasks their `Arc`s.
     self_ref: std::sync::OnceLock<std::sync::Weak<HostCore>>,
     /// The handle on the host's own container, whose hook plan a respawn resets.
@@ -1118,6 +1124,7 @@ impl PluginHost {
             }),
             shut_down: std::sync::atomic::AtomicBool::new(false),
             in_flight: Mutex::new(std::collections::HashMap::new()),
+            changes: std::sync::atomic::AtomicU64::new(0),
             self_ref: std::sync::OnceLock::new(),
             main: std::sync::OnceLock::new(),
             environments: Mutex::new(Vec::new()),
@@ -1449,6 +1456,7 @@ impl PluginHost {
         change_type: &str,
         modules_json: &str,
     ) -> Result<Option<String>, String> {
+        self.core.note_change();
         self.call(
             "handleHotUpdate",
             &[file, &timestamp.to_string(), change_type, modules_json],
@@ -1509,6 +1517,7 @@ impl PluginHost {
 
     #[inline]
     pub async fn watch_change(&self, file: &str, event: &str) -> Result<(), String> {
+        self.core.note_change();
         self.call_unit("watchChange", &[file, event]).await
     }
 
@@ -1522,6 +1531,7 @@ impl PluginHost {
                 .collect(),
         )
         .to_string();
+        self.core.note_change();
         self.call_unit("watcherEvents", &[json.as_str()]).await
     }
 
@@ -2473,6 +2483,12 @@ impl HostCore {
             self.init_progress_seen.send_modify(|c| *c += 1);
             let _ = self.init_failed.send_replace(false);
         } else if let Some(ev) = msg.get("ojServer") {
+            if matches!(
+                ev.get("action").and_then(|a| a.as_str()),
+                Some("invalidate" | "invalidateAll")
+            ) {
+                self.note_change();
+            }
             let mut early = self.early_server_events.lock().unwrap();
             match self.server_events.get() {
                 Some(tx) => {
@@ -2677,6 +2693,13 @@ impl HostCore {
         });
     }
 
+    /// A change the host is about to hear of, or has pushed: runs begun
+    /// before it are never shared with calls made after it (see `in_flight`).
+    pub(crate) fn note_change(&self) {
+        self.changes
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    }
+
     /// One hook call into `container`.
     async fn call(
         &self,
@@ -2698,6 +2721,7 @@ impl HostCore {
             container,
             hook: hook.to_string(),
             args: args.iter().map(|a| (*a).to_string()).collect(),
+            changes: self.changes.load(std::sync::atomic::Ordering::Acquire),
         };
         let shared = {
             let mut in_flight = self
@@ -3121,6 +3145,8 @@ struct InFlightKey {
     container: u32,
     hook: String,
     args: Vec<String>,
+    /// `HostCore::changes` when the run began.
+    changes: u64,
 }
 
 /// Forgets a shared run's key when the run ends, however it ends.
