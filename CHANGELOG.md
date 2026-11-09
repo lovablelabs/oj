@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.7] - 2026-11-09
+
 ### Fixed
 
 - TanStack Start dev with hot updates (plain `oj dev`, or behind a granular editor HMR gate): a fresh page hydrates. The React Fast Refresh preamble was a module inlined in the client entry chunk's body, and the entry chunk evaluates the shared chunks it imports first, so a component the root and a lazy route share ran its `$RefreshReg$` check before the preamble and threw "@vitejs/plugin-react can't detect preamble" on every fresh load; the server-rendered page then never hydrated. The preamble is now the refresh runtime module's own tail, and every wrapped module imports the runtime, so it evaluates first wherever rolldown chunks the graph. The entry still imports the runtime first, ahead of react-dom, so Fast Refresh sees React's renderer.
