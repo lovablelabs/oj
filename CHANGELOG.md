@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Plugin host: pages that ask for the same module or stylesheet while its plugins are still transforming it share that one run instead of each starting the plugins over, as Vite's `transformRequest` hands a request for a url already in flight the pending request. A page whose stylesheet runs a slow plugin (a full-project scan, a cold compiler) no longer pays once per open page, and the dev server's log says what a long hook is doing: the notice a call logs every probe window now names the hook's phase, the module it runs on and the plugin whose handler it is awaiting (`oj: transformPhase (normal) of /app/src/styles.css has been running for 20s, in plugin <name>'s transform …`), as Vite's `DEBUG=vite:plugin-transform` names them.
+
 ## [0.4.8] - 2026-11-09
 
 ### Fixed

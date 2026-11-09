@@ -94,6 +94,13 @@ pub(crate) struct HostCore {
     pub(crate) revive: Mutex<ReviveState>,
     /// Set by `shutdown()`: retired on purpose, must never be revived.
     shut_down: std::sync::atomic::AtomicBool,
+    /// The module hooks in flight, by container, hook and arguments: a
+    /// second identical call while one runs awaits the same run instead of
+    /// starting another, as Vite's `transformRequest` hands a request for a
+    /// url already being transformed that pending request
+    /// (`environment._pendingRequests`). Pages that load the same sheet or
+    /// module at once run its plugins once.
+    in_flight: Mutex<std::collections::HashMap<u64, InFlightCall>>,
     /// Weak self-handle so `&self` methods can hand a fresh generation's tasks their `Arc`s.
     self_ref: std::sync::OnceLock<std::sync::Weak<HostCore>>,
     /// The handle on the host's own container, whose hook plan a respawn resets.
@@ -1103,6 +1110,7 @@ impl PluginHost {
                 reported: false,
             }),
             shut_down: std::sync::atomic::AtomicBool::new(false),
+            in_flight: Mutex::new(std::collections::HashMap::new()),
             self_ref: std::sync::OnceLock::new(),
             main: std::sync::OnceLock::new(),
             environments: Mutex::new(Vec::new()),
@@ -1637,6 +1645,22 @@ impl PluginHost {
     #[inline]
     pub fn hook_wants_load(&self, id: &str) -> bool {
         self.hook_plan.read().unwrap().load.wants(id, None)
+    }
+
+    /// The hooks the host is running right now, oldest first (what a probe
+    /// reports; see [`RunningHook`]). Empty when the host is gone.
+    pub async fn running_hooks(&self) -> Vec<RunningHook> {
+        let engine = self.core.engine.lock().unwrap().clone();
+        let Some(engine) = engine else {
+            return Vec::new();
+        };
+        match engine
+            .call(self.core.host_module.clone(), "ojPing", Vec::new(), None)
+            .await
+        {
+            Ok(answer) => running_hooks_of(&answer),
+            Err(_) => Vec::new(),
+        }
     }
 
     #[inline]
@@ -2657,7 +2681,45 @@ impl HostCore {
             return Err("plugin host exited".into());
         }
         self.wait_for_init().await?;
-        self.run_hook(container, hook, args).await
+        if !shares_a_run(hook) {
+            return self.run_hook(container, hook, args).await;
+        }
+        let Some(core) = self.self_ref.get().and_then(std::sync::Weak::upgrade) else {
+            return self.run_hook(container, hook, args).await;
+        };
+        let key = in_flight_key(container, hook, args);
+        let shared = {
+            let mut in_flight = self
+                .in_flight
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match in_flight.get(&key) {
+                Some(run) => run.clone(),
+                None => {
+                    let hook = hook.to_string();
+                    let args: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
+                    let run = tokio::spawn(async move {
+                        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+                        let result = core.run_hook(container, &hook, &refs).await;
+                        core.in_flight
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .remove(&key);
+                        result
+                    });
+                    let run: InFlightCall =
+                        futures_util::FutureExt::shared(futures_util::FutureExt::boxed(
+                            futures_util::FutureExt::map(run, |joined| match joined {
+                                Ok(result) => result,
+                                Err(e) => Err(format!("plugin hook task failed: {e}")),
+                            }),
+                        ));
+                    in_flight.insert(key, run.clone());
+                    run
+                }
+            }
+        };
+        shared.await
     }
 
     /// Init gate, BEFORE anything reaches the engine: the host answers hooks
@@ -2768,10 +2830,15 @@ impl HostCore {
                         Ok(Err(oj_js::EngineError::Closed)) => {
                             return Err("plugin host exited".into());
                         }
-                        Ok(_) => {
+                        Ok(answer) => {
+                            let running = answer
+                                .ok()
+                                .as_ref()
+                                .map(running_hooks_of)
+                                .unwrap_or_default();
                             eprintln!(
-                                "oj: {hook} has been running for {}s (the plugin host is responsive)…",
-                                started.elapsed().as_secs()
+                                "{}",
+                                long_hook_notice(hook, args, started.elapsed().as_secs(), &running)
                             );
                         }
                         Err(_) => {
@@ -2991,6 +3058,113 @@ fn bool_arg(b: bool) -> &'static str {
         "true"
     } else {
         "false"
+    }
+}
+
+/// One hook the host is running (what `ojPing` reports): its subject (a
+/// transform's or load's id, a resolve's specifier), the plugin whose
+/// handler it awaits at the moment, and how long it has run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunningHook {
+    pub hook: String,
+    pub id: Option<String>,
+    pub phase: Option<String>,
+    pub plugin: Option<String>,
+    pub ms: u64,
+}
+
+/// The running hooks a ping answered with (an older host answers `true`: none).
+pub(crate) fn running_hooks_of(answer: &serde_json::Value) -> Vec<RunningHook> {
+    let text = answer.as_str().unwrap_or("");
+    let Ok(serde_json::Value::Array(list)) = serde_json::from_str::<serde_json::Value>(text) else {
+        return Vec::new();
+    };
+    let string =
+        |v: &serde_json::Value, k: &str| v.get(k).and_then(|s| s.as_str()).map(str::to_string);
+    list.iter()
+        .map(|v| RunningHook {
+            hook: string(v, "hook").unwrap_or_default(),
+            id: string(v, "id"),
+            phase: string(v, "phase"),
+            plugin: string(v, "plugin"),
+            ms: v.get("ms").and_then(serde_json::Value::as_u64).unwrap_or(0),
+        })
+        .collect()
+}
+
+/// The hooks whose identical concurrent calls share one run (see
+/// `HostCore::in_flight`): the module hooks, whose answer is a function of
+/// the module they are asked about. Lifecycle hooks and the server's own
+/// calls each run every time.
+fn shares_a_run(hook: &str) -> bool {
+    matches!(hook, "transform" | "transformPhase" | "load" | "loadPhase")
+}
+
+fn in_flight_key(container: u32, hook: &str, args: &[&str]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    container.hash(&mut h);
+    hook.hash(&mut h);
+    args.len().hash(&mut h);
+    for a in args {
+        a.hash(&mut h);
+    }
+    h.finish()
+}
+
+type InFlightCall = futures_util::future::Shared<
+    futures_util::future::BoxFuture<'static, Result<Option<String>, String>>,
+>;
+
+/// The module a hook call is about, from its arguments (see `hookSubject`
+/// in plugin-host.mjs): `(id, phase)`.
+fn hook_subject<'a>(hook: &str, args: &[&'a str]) -> (Option<&'a str>, Option<&'a str>) {
+    match hook {
+        "transform" => (args.get(1).copied(), None),
+        "transformPhase" => (args.get(1).copied(), args.get(3).copied()),
+        "loadPhase" => (args.first().copied(), args.get(1).copied()),
+        "load" | "resolveId" | "resolveIdPhase" | "scanResolveId" => (args.first().copied(), None),
+        _ => (None, None),
+    }
+}
+
+/// The line a call waiting out a long hook logs each probe window: the hook
+/// and what it runs on, and the plugin it is awaiting if the host knows
+/// (Vite's `DEBUG=vite:plugin-transform` names the plugin and the module of
+/// each transform the same way).
+pub(crate) fn long_hook_notice(
+    hook: &str,
+    args: &[&str],
+    elapsed_secs: u64,
+    running: &[RunningHook],
+) -> String {
+    let (id, phase) = hook_subject(hook, args);
+    let mut line = format!("oj: {hook}");
+    if let Some(phase) = phase {
+        line.push_str(&format!(" ({phase})"));
+    }
+    if let Some(id) = id {
+        line.push_str(&format!(" of {id}"));
+    }
+    line.push_str(&format!(" has been running for {elapsed_secs}s"));
+    let plugin = running
+        .iter()
+        .find(|r| r.hook == hook && r.id.as_deref() == id && r.phase.as_deref() == phase)
+        .and_then(|r| r.plugin.as_deref());
+    if let Some(plugin) = plugin {
+        line.push_str(&format!(", in plugin {plugin}'s {}", hook_name(hook)));
+    }
+    line.push_str(" (the plugin host is responsive)…");
+    line
+}
+
+/// The plugin hook a host call runs: a phase call is still the plugins' `transform` or `load`.
+fn hook_name(hook: &str) -> &str {
+    match hook {
+        "transformPhase" => "transform",
+        "loadPhase" => "load",
+        "resolveIdPhase" | "scanResolveId" => "resolveId",
+        other => other,
     }
 }
 

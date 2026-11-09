@@ -5260,10 +5260,13 @@ async function transform(c, code, id, resolvedJson, phase, priorJson) {
       // (Rollup's missing link); Vite's dev _getCombinedSourcemap skips it.
       ctx.getCombinedSourcemap = () =>
         combineSourcemaps(id, chainStart, chainSoFar, brokenSoFar && command === "build");
+      runningIn(p);
       try {
         r = await handler.call(ctx, current, id, transformOptions);
       } catch (e) {
         throw decoratePluginError(e, p, id);
+      } finally {
+        runningIn(null);
       }
       if (r == null) continue;
       if (typeof r === "string") {
@@ -6022,10 +6025,13 @@ async function loadFull(c, id, phase) {
     if (phase === "pre" && !runsBeforeCoreResolver(p, rank)) continue;
     if (!hookIdMatches(p.load, id)) continue;
     let r;
+    runningIn(p);
     try {
       r = await handler.call(ctxFor(c, p), id, options);
     } catch (e) {
       throw decoratePluginError(e, p, id);
+    } finally {
+      runningIn(null);
     }
     if (r == null) continue;
     if (typeof r === "string") return { code: r };
@@ -6780,21 +6786,63 @@ async function run(hook, args, c) {
 // evaluates this module's top level; its resolution (or rejection: a top-level
 // throw that used to kill the node child) is the boot task's error carrier.
 export async function ojRun(hook, args, container) {
+  args ??= [];
+  const running = { hook, id: hookSubject(hook, args), phase: hookPhase(hook, args), plugin: null, since: Date.now() };
+  runningHooks.add(running);
   try {
-    return await run(hook, args ?? [], containerOf(container));
+    return await hookStore.run(running, () => run(hook, args, containerOf(container)));
   } catch (e) {
     // The same string the stdio protocol carried in its error frames.
     throw new Error(String((e && e.stack) || e));
+  } finally {
+    runningHooks.delete(running);
   }
 }
 export function ojHostReady() {
   return true;
 }
+// The hooks in flight, oldest first, each with the plugin whose handler it is
+// awaiting right now: what the liveness probe reports, so a call waiting out
+// a long hook can say which module and plugin it waits on (what Vite's
+// `vite:plugin-transform` debug timing names per plugin and id).
+const runningHooks = new Set();
+const hookStore = new AsyncLocalStorage();
+// The module a hook is about: the id of a transform or load, the specifier
+// of a resolve; nothing for a lifecycle hook.
+function hookSubject(hook, args) {
+  switch (hook) {
+    case "transform":
+    case "transformPhase":
+      return typeof args[1] === "string" ? args[1] : null;
+    case "load":
+    case "loadPhase":
+    case "resolveId":
+    case "resolveIdPhase":
+    case "scanResolveId":
+      return typeof args[0] === "string" ? args[0] : null;
+    default:
+      return null;
+  }
+}
+function hookPhase(hook, args) {
+  if (hook === "transformPhase" && typeof args[3] === "string") return args[3];
+  if (hook === "loadPhase" && typeof args[1] === "string") return args[1];
+  return null;
+}
+// The plugin whose handler the current hook awaits (null between handlers).
+function runningIn(plugin) {
+  const running = hookStore.getStore();
+  if (running) running.plugin = plugin == null ? null : (plugin.name ?? "?");
+}
 // Liveness probe for calls waiting out a long hook: a parked event loop
 // answers instantly, so no answer means the isolate is wedged in synchronous
-// JS or native code (the Rust side then declares the host gone).
+// JS or native code (the Rust side then declares the host gone). It answers
+// with the hooks in flight (see runningHooks).
 export function ojPing() {
-  return true;
+  const now = Date.now();
+  return JSON.stringify(
+    [...runningHooks].map((r) => ({ hook: r.hook, id: r.id, phase: r.phase, plugin: r.plugin, ms: now - r.since })),
+  );
 }
 
 // Under plain `node` (the direct-drive unit tests) the stdio protocol stays:
