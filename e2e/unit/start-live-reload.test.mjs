@@ -275,19 +275,53 @@ test("a chunk gone from the server reloads the page that asked for it, and no ot
   assert.equal(reloadsIn(unstamped.log), 0);
 });
 
-test("a gone chunk reloads once per document, so a cached document cannot loop", async () => {
-  const storage = new Map();
-  const reloads = async (stamp) => {
-    const page = loadPage({ stamp, storage });
-    page.open();
-    page.fetched(GONE_URL);
-    await page.receive(GONE);
-    return reloadsIn(page.log);
-  };
-  assert.equal(await reloads('"1f-4"'), 1);
+// One tab's documents, one after another: each asks for `names` and is told
+// each is gone. Returns how many times it reloaded.
+const goneIn = (storage) => async (stamp, ...names) => {
+  const page = loadPage({ stamp, storage });
+  page.open();
+  for (const name of names) page.fetched(`http://localhost/@oj-start/${name}`);
+  for (const name of names) await page.receive({ type: "oj:chunk-gone", name });
+  return reloadsIn(page.log);
+};
+
+test("a gone chunk reloads once per document and chunk, so a cached document cannot loop", async () => {
+  const reloads = goneIn(new Map());
+  assert.equal(await reloads('"1f-4"', "about-DEADBEEF.js"), 1);
   // The reload served the same document (a cache): it would fail the same way.
-  assert.equal(await reloads('"1f-4"'), 0);
-  assert.equal(await reloads('"1f-5"'), 1);
+  assert.equal(await reloads('"1f-4"', "about-DEADBEEF.js"), 0);
+  assert.equal(await reloads('"1f-5"', "about-DEADBEEF.js"), 1);
+});
+
+test("a tab that reloaded for one gone chunk reloads for the next, under the same stamp", async () => {
+  // Hot updates rebundle and rename chunks without a reload, so the stamp
+  // (the reloads the pages were sent) stays where it was: the document the
+  // first reload brought is stamped as the one before it, and falls behind
+  // the bundles the server keeps in its turn.
+  const reloads = goneIn(new Map());
+  assert.equal(await reloads('"1f-4"', "about-DEADBEEF.js"), 1);
+  assert.equal(await reloads('"1f-4"', "about-CAFEBABE.js"), 1, "another chunk, later");
+  assert.equal(await reloads('"1f-4"', "about-CAFEBABE.js"), 0, "the same one again is a cached document");
+});
+
+test("a cached document that asks for two gone chunks as it loads stops after one reload for each", async () => {
+  const reloads = goneIn(new Map());
+  const names = ["about-DEADBEEF.js", "posts-CAFEBABE.js"];
+  // A real page is gone at its first reload; whichever frame the next
+  // document hears first, each chunk is reloaded for once and no more.
+  const first = await reloads('"1f-4"', names[0]);
+  const second = await reloads('"1f-4"', ...names);
+  assert.deepEqual([first, second], [1, 1], "one reload per chunk");
+  for (let load = 0; load < 4; load++) assert.equal(await reloads('"1f-4"', ...names), 0, "then it stays");
+});
+
+test("the gone-chunk marks survive storage that holds something else, and stay bounded", async () => {
+  const storage = new Map([["oj:start:stale-import:/", '"1f-4"']]);
+  const reloads = goneIn(storage);
+  // What an earlier client stored (a bare stamp) is not a list of marks.
+  assert.equal(await reloads('"1f-4"', "about-DEADBEEF.js"), 1);
+  for (let n = 0; n < 100; n++) await reloads('"1f-4"', `c${n}-AAAAAAAA.js`);
+  assert.ok(JSON.parse(storage.get("oj:start:stale-import:/")).length <= 64);
 });
 
 test("the gone-chunk frame can outrun the 404 it is about", async () => {
@@ -329,7 +363,17 @@ test("with no frame, an uncaught failed import reloads only for the dev server's
   assert.deepEqual(asked, [["/@oj-start/client-entry.js", "HEAD"]], "it asks the server first");
   // Firefox's and Safari's wording (Safari names no url).
   assert.equal(await reloads(new TypeError(`error loading dynamically imported module: ${GONE_URL}`)), 1);
-  assert.equal(await reloads(new TypeError("Importing a module script failed.")), 1);
+  const safari = new TypeError("Importing a module script failed.");
+  assert.equal(await reloads(safari), 1, "no socket open: nothing else would say so");
+  // With the socket open the server names a gone chunk itself, and a message
+  // with no url could be any import of the app's (a CDN script): left alone.
+  const connected = loadPage({ stamp: '"1f-4"' });
+  connected.open();
+  await connected.rejected(safari);
+  assert.equal(reloadsIn(connected.log), 0);
+  // A message that names the dev server's chunk counts either way.
+  await connected.rejected(gone);
+  assert.equal(reloadsIn(connected.log), 1);
   // The server is not answering (restarting): the import failed for that,
   // and reloading would replace the page with a connection error.
   assert.equal(

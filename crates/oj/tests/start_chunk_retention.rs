@@ -303,6 +303,16 @@ fn a_chunk_past_the_window_is_not_found_and_the_pages_are_told() {
         names[0],
         page.frames.lock().unwrap()
     );
+    // A name this run of the server never had is told too: a page left open
+    // across a restart of the dev server names such chunks, and nothing else
+    // reloads it (its stamp is another run's).
+    let never = "lazy-note-AAAAAAAA.js";
+    assert_eq!(chunk(&dev, never).0, 404);
+    assert!(
+        page.told_gone(never),
+        "the pages were not told {never} is gone: {:?}",
+        page.frames.lock().unwrap()
+    );
     // A source map is the browser's tools asking, not a page.
     let before = page.gone_frames();
     assert_eq!(chunk(&dev, &format!("{}.map", names[0])).0, 404);

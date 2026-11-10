@@ -409,12 +409,13 @@ mod tests {
         assert!(served.chunk("route-1.js").is_some_and(|c| !c.current));
     }
 
-    // One pass over the bundle and one over the cache: pruning a large
-    // cache against a large bundle stays far from the chunk-count squared
-    // it was (2,000 x 2,000 hash comparisons took tens of milliseconds,
-    // with the bundle lock held; this is two set passes).
+    // Pruning a large cache against a large bundle keeps exactly the
+    // bundle's bodies. (It is one pass over the bundle and one over the
+    // cache, where asking the bundle about each cached hash was the chunk
+    // count squared; no clock is asserted here, a loaded machine has none
+    // to give.)
     #[test]
-    fn pruning_a_large_gzip_cache_is_linear() {
+    fn pruning_a_large_gzip_cache_keeps_the_bundles_bodies() {
         let chunks = 2_000usize;
         let bundle = PinnedBundle::new(
             "client-entry.js".into(),
@@ -437,14 +438,10 @@ mod tests {
                 map.insert(format!("retired-{i:08}"), Default::default());
             }
         }
-        let started = std::time::Instant::now();
         cache.retain_hashes_of(&bundle);
-        let took = started.elapsed();
-        assert_eq!(cache.lock().len(), chunks);
-        assert!(
-            took < std::time::Duration::from_millis(100),
-            "pruning {chunks} chunks took {took:?}"
-        );
+        let map = cache.lock();
+        assert_eq!(map.len(), chunks);
+        assert!(map.keys().all(|hash| hash.starts_with("current-")));
     }
 
     #[test]

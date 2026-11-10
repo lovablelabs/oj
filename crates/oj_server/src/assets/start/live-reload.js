@@ -221,19 +221,32 @@
   // A chunk this document names and the dev server no longer has: a rebundle
   // this page missed renamed it, and the old name has fallen out of the
   // bundles the server keeps serving (or its file was swept). The page's
-  // entry is too old to run on, so it reloads, once per document as a
-  // behind connect does: a document that comes back with the same stamp was
-  // served from a cache, and reloading again would only loop.
+  // entry is too old to run on, so it reloads, once per document and chunk:
+  // a document that comes back asking for the same gone chunk was served
+  // from a cache, and reloading again would only loop. Not once per stamp
+  // alone, as a behind connect is: the stamp counts the reloads the pages
+  // were sent (start_reloads), and hot updates rebundle (and rename chunks)
+  // without one, so a tab that reloaded for one gone chunk would be left
+  // blank at the next, its document still under the same stamp. The marks
+  // are kept as a list, not the last one: a document that asks for two gone
+  // chunks as it loads would otherwise reload for each in turn, forever.
   const GONE_CHUNK_KEY = "oj:start:stale-import:" + location.pathname;
+  const GONE_CHUNK_MARKS = 64;
   const reloadForGoneChunk = (what) => {
     if (stamp == null) return;
-    let last = null;
+    const mark = stamp + "|" + what;
+    let marks = [];
     try {
-      last = sessionStorage.getItem(GONE_CHUNK_KEY);
+      const kept = JSON.parse(sessionStorage.getItem(GONE_CHUNK_KEY) || "[]");
+      if (Array.isArray(kept)) marks = kept.filter((m) => typeof m === "string");
     } catch {}
-    if (last === stamp) return;
+    if (marks.includes(mark)) {
+      console.warn("[oj] a chunk of this page is gone from the dev server (" + what + "), and reloading served the same document");
+      return;
+    }
+    marks.push(mark);
     try {
-      sessionStorage.setItem(GONE_CHUNK_KEY, stamp);
+      sessionStorage.setItem(GONE_CHUNK_KEY, JSON.stringify(marks.slice(-GONE_CHUNK_MARKS)));
     } catch {}
     console.warn("[oj] a chunk of this page is gone from the dev server (" + what + "); reloading");
     snapshot();
@@ -284,13 +297,16 @@
   // dev server's own chunks, where the message names the url, and only if
   // the server answers: an import that failed because the server is
   // restarting is not a chunk gone, and reloading would trade the page for
-  // a connection error, with no client left to bring it back.
+  // a connection error, with no client left to bring it back. Safari's
+  // message names no url, so it could be any import of the app's (a script
+  // from a CDN): it counts only while the socket is down, when the server's
+  // own word for it (oj:chunk-gone) cannot arrive.
   addEventListener("unhandledrejection", (e) => {
     const reason = e && e.reason;
     const message = reason && typeof reason.message === "string" ? reason.message : "";
     if (stamp == null || !/dynamically imported module|Importing a module script failed/.test(message)) return;
     const named = /https?:\/\/\S+/.exec(message);
-    if (named && !named[0].includes(CHUNKS)) return;
+    if (named ? !named[0].includes(CHUNKS) : ws && ws.readyState === 1) return;
     if (typeof fetch !== "function") return;
     fetch(CHUNKS + "client-entry.js", { method: "HEAD", cache: "no-store" }).then(
       (answer) => {

@@ -3264,8 +3264,13 @@ async fn forward_with_body(state: &Arc<StartState>, req: Request) -> Response {
 
 /// Tells the open pages that `name`, which one of them just asked for, is
 /// not a chunk the dev server can serve any more: the one that asked reloads
-/// (see [`crate::start_chunks::chunk_gone_frame`]). A source map is asked
-/// for by the browser's tools, not by a page.
+/// (see [`crate::start_chunks::chunk_gone_frame`]). Said of any name the
+/// served bundles do not hold, not only of ones they once held: a page left
+/// open across a restart of the dev server names chunks this run never had,
+/// and its socket is not reloaded on connect (a stamp from another run
+/// counts as current, see start_reloads), so this is what brings it back. A
+/// page that asks for a name nothing ever had reloads once for it and stays.
+/// A source map is asked for by the browser's tools, not by a page.
 fn chunk_gone(pages: &broadcast::Sender<String>, name: &str) {
     if !name.ends_with(".map") {
         let _ = pages.send(crate::start_chunks::chunk_gone_frame(name));
