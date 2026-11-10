@@ -66,10 +66,17 @@ fn has_inline(query: &str) -> bool {
     })
 }
 
-const ASSET_EXTS: &[&str] = &[
-    "png", "jpg", "jpeg", "gif", "webp", "avif", "ico", "woff", "woff2", "ttf", "otf", "eot",
-    "mp4", "webm", "wasm",
-];
+/// A file type whose bare import is its URL: Vite's `KNOWN_ASSET_TYPES`
+/// (oj_compiler's copy, images, media, fonts, pdf and txt among them), plus
+/// `.wasm`, which oj has always served by URL. An `.svg` is left to the
+/// plugins first (svgr's `?react`, a componentizing plugin) and falls back to
+/// its URL in [`StartAssetsPlugin::module`]. A type outside the list that
+/// rolldown read as JavaScript failed the bundle with "stream did not
+/// contain valid UTF-8" on the first binary byte.
+fn is_asset_ext(ext: &str) -> bool {
+    ext.eq_ignore_ascii_case("wasm")
+        || (!ext.eq_ignore_ascii_case("svg") && oj_compiler::assets::is_asset_ext(ext))
+}
 /// Vite's CSS_LANGS_RE.
 const STYLE_EXTS: &[&str] = &[
     "css", "less", "sass", "scss", "styl", "stylus", "pcss", "postcss", "sss",
@@ -131,7 +138,10 @@ pub(crate) fn asset_tag(source: &str, dev: bool) -> Option<AssetTag> {
     if has_inline(query) {
         return Some(AssetTag::Inline);
     }
-    if has_flag(query, "url") || ASSET_EXTS.contains(&ext_of(path).to_ascii_lowercase().as_str()) {
+    if has_flag(query, "url")
+        || is_asset_ext(ext_of(path))
+        || oj_compiler::assets::is_included_asset(path)
+    {
         return Some(AssetTag::Url);
     }
     is_style_path(path).then_some(AssetTag::Css)
@@ -932,23 +942,7 @@ fn normalize(path: &Path) -> PathBuf {
 fn data_uri(path: &Path) -> Result<String, String> {
     use base64::Engine;
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mime = match ext_of(&path.to_string_lossy())
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "avif" => "image/avif",
-        "svg" => "image/svg+xml",
-        "ico" => "image/x-icon",
-        "woff" => "font/woff",
-        "woff2" => "font/woff2",
-        "ttf" => "font/ttf",
-        "otf" => "font/otf",
-        _ => "application/octet-stream",
-    };
+    let mime = oj_compiler::assets::asset_mime(ext_of(&path.to_string_lossy()));
     Ok(format!(
         "data:{mime};base64,{}",
         base64::engine::general_purpose::STANDARD.encode(bytes)
@@ -1491,7 +1485,20 @@ mod tests {
         let cases: &[(&str, bool, Option<AssetTag>)] = &[
             ("/a/x.png", false, Some(Url)),
             ("/a/x.PNG", false, Some(Url)),
+            // Vite's KNOWN_ASSET_TYPES beyond images: media, fonts, documents.
+            ("/a/x.mp3", false, Some(Url)),
+            ("/a/x.wav", false, Some(Url)),
+            ("/a/x.ogg", false, Some(Url)),
+            ("/a/x.MOV", false, Some(Url)),
+            ("/a/x.eot", false, Some(Url)),
+            ("/a/x.pdf", false, Some(Url)),
+            ("/a/x.webmanifest", false, Some(Url)),
+            ("/a/x.txt", false, Some(Url)),
+            ("/a/x.wasm", false, Some(Url)),
+            ("/a/x.txt?raw", false, Some(Raw)),
             ("/a/x.svg", false, None),
+            ("/a/x.svg?react", false, None),
+            ("/a/x.mdx", false, None),
             ("/a/x.css", false, Some(Css)),
             ("/a/x.module.scss", false, Some(Css)),
             ("/a/x.ts?raw", false, Some(Raw)),

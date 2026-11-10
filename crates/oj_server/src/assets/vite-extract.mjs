@@ -963,10 +963,13 @@ async function loadConfig() {
       // resolveConfig runs the plugins' config hooks, so plugin-injected values
       // (e.g. TanStack Start's resolve.alias for `#tanstack-router-entry`) are
       // present. loadConfigFromFile only reads the raw user config and misses them.
-      // It still runs when the raw load threw: its own load path can succeed
-      // where loadConfigFromFile failed, and that degenerate success is handled
-      // loudly above (raw == null warns and withholds the raw-dependent sugar).
-      if (typeof vite.resolveConfig === "function") {
+      // Not when the raw load threw: Vite's resolveConfig loads the file with
+      // the same loadConfigFromFile and lets its error out (config.ts: no
+      // catch around `await loadConfigFromFile(...)`), so resolving from the
+      // file would evaluate the config a second time, side effects and all,
+      // into the same error. One evaluation, then the config's own error
+      // (thrown below).
+      if (!loadErr && typeof vite.resolveConfig === "function") {
         const singleEval = !!(loaded && loaded.config && typeof vite.mergeConfig === "function");
         // Hoisted OUT of the try: a resolveConfig throw mid-hook-run must not
         // discard the sentinel's partial verdict or the raw snapshot.
@@ -1066,8 +1069,7 @@ async function loadConfig() {
               // cannot run and the emit below withholds the resolved ssr sugar
               // and the resolved top-level conditions.
               warn(
-                `could not load the raw config from ${configPath}` +
-                  `${loadErr ? ` (${(loadErr && loadErr.message) || loadErr})` : ""}; ` +
+                `could not load the raw config from ${configPath}; ` +
                   "runner-backed detection and ssr.resolve conditions are unavailable",
               );
             }
@@ -1127,9 +1129,8 @@ async function loadConfig() {
       viteErr = e;
     }
   }
-  // Reached with loadErr set only when the whole vite attempt produced
-  // nothing: the config threw under vite's own loader and resolveConfig did
-  // not rescue it. That is the CONFIG's failure, exactly as `vite dev` would
+  // Reached with loadErr set when the config threw under vite's own loader
+  // (nothing ran it again). That is the CONFIG's failure, exactly as `vite dev` would
   // report it (loadConfigFromFile logs and rethrows; Vite has no
   // alternate-bundler fallback): re-bundling below re-runs the same code into
   // the same error -- or, worse, succeeds under different bundling and hands
@@ -1612,6 +1613,16 @@ async function detectSsrRunnerBacked(raw, configEnv, merge = mergeConfigLite) {
 // (the esbuild and plain-import loaders).
 //
 
+// `assetsInclude`: a string glob, a RegExp, or an array of either (Vite's
+// createFilter input), read off the RAW config: the resolved one holds the
+// function Vite made of it. A RegExp travels as its source and flags.
+function extractAssetsInclude(v) {
+  const list = Array.isArray(v) ? v : v != null ? [v] : [];
+  const out = list
+    .map((e) => (typeof e === "string" ? e : e instanceof RegExp ? { regex: e.source, flags: e.flags } : null))
+    .filter((e) => e !== null);
+  return out.length ? out : null;
+}
 function extractResolve(r) {
   if (!r || typeof r !== "object") return null;
   const out = {};
@@ -2121,6 +2132,7 @@ async function extractValues(input) {
         preview: extractPreview(c.preview),
         appType: typeof c.appType === "string" ? c.appType : null,
         html: typeof c.html?.cspNonce === "string" ? { cspNonce: c.html.cspNonce } : null,
+        assetsInclude: extractAssetsInclude(raw?.assetsInclude),
         activePlugins: await activePluginCount(raw),
         resolveError: resolveFailure ? String((resolveFailure && resolveFailure.message) || resolveFailure) : null,
         stylex: await stylexPlugin(raw),

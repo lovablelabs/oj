@@ -96,6 +96,11 @@ pub enum EngineError {
     MemoryLimit,
     #[error("JS execution exceeded the deadline")]
     Deadline,
+    /// The evaluation was cut short from outside the program: the process
+    /// running it was killed by a signal. Nothing about the program failed,
+    /// so a caller may run it again.
+    #[error("the JS evaluation was interrupted: {0}")]
+    Interrupted(String),
     #[error("the JS engine is shut down")]
     Closed,
 }

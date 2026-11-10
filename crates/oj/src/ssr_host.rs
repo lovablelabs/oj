@@ -131,7 +131,7 @@ impl VersionGraph {
     /// re-imports fresh instances along the chain. Removing a record as it is
     /// visited IS the visited set: a re-pushed id finds no record and stops.
     pub(crate) fn invalidate(&self) -> usize {
-        self.invalidate_seeded().0
+        self.invalidate_seeded(&HashSet::new()).0
     }
 
     /// [`invalidate`](Self::invalidate), answering also whether a changed
@@ -139,14 +139,17 @@ impl VersionGraph {
     /// either spelling). Vite acts on a watcher event through the modules of
     /// that event's file alone (`getModulesByFile`): a recorded file that
     /// changed without the watcher reporting it (an output oj itself rewrote,
-    /// an ignored path) is re-imported, but is no hit for the batch.
+    /// an ignored path) is re-imported, but is no hit for the batch. A
+    /// recorded file of `changed` is dropped whether or not its own bytes
+    /// moved: a module whose `import.meta.glob` gained or lost a member is
+    /// changed with its file untouched, and the batch names it for that.
     pub(crate) fn invalidate_for(&self, changed: &[PathBuf]) -> (usize, bool) {
-        let (dropped, seeds) = self.invalidate_seeded();
         let spelled: HashSet<PathBuf> = changed
             .iter()
             .flat_map(|p| [Some(p.clone()), std::fs::canonicalize(p).ok()])
             .flatten()
             .collect();
+        let (dropped, seeds) = self.invalidate_seeded(&spelled);
         let hit = seeds.iter().any(|id| {
             let file = Path::new(id.split('?').next().unwrap_or(id));
             spelled.contains(file)
@@ -156,8 +159,9 @@ impl VersionGraph {
     }
 
     /// The walk behind both: how many records it dropped, and the ids of the
-    /// changed files it started from.
-    fn invalidate_seeded(&self) -> (usize, Vec<String>) {
+    /// changed files it started from: every record whose file's mtime moved,
+    /// and every record of a file in `named`.
+    fn invalidate_seeded(&self, named: &HashSet<PathBuf>) -> (usize, Vec<String>) {
         // The seed scan stats every recorded file; do that OUTSIDE the lock,
         // so resolves never queue behind hundreds of filesystem calls. A
         // module that loads between snapshot and walk is caught by the next
@@ -170,9 +174,17 @@ impl VersionGraph {
                 .map(|(id, rec)| (id.clone(), rec.mtime))
                 .collect()
         };
+        let is_named = |id: &str| {
+            if named.is_empty() {
+                return false;
+            }
+            let file = Path::new(id.split('?').next().unwrap_or(id));
+            named.contains(file)
+                || std::fs::canonicalize(file).is_ok_and(|real| named.contains(&real))
+        };
         let seeds: Vec<String> = recorded
             .into_iter()
-            .filter(|(id, mtime)| mtime_of(id) != *mtime)
+            .filter(|(id, mtime)| mtime_of(id) != *mtime || is_named(id))
             .map(|(id, _)| id)
             .collect();
         let mut stack = seeds.clone();
@@ -686,6 +698,45 @@ mod tests {
 
         touch(&page);
         assert_eq!(graph.invalidate_for(std::slice::from_ref(&page)), (1, true));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A batch can name a recorded file whose own bytes never moved: a module
+    // whose `import.meta.glob` gained or lost a member, which the dev server
+    // lists as changed (Vite's import-glob hotUpdate returns the importer).
+    // The record is dropped and the batch hits, so the next request
+    // re-imports the module and re-expands the glob; a batch naming an
+    // unrecorded file drops nothing.
+    #[test]
+    fn a_batch_drops_a_named_record_whose_file_did_not_move() {
+        let dir = std::env::temp_dir().join(format!("oj-vgraph-named-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (importer, other) = (dir.join("posts.tsx"), dir.join("other.tsx"));
+        for f in [&importer, &other] {
+            std::fs::write(f, "1").unwrap();
+        }
+        let graph = VersionGraph::default();
+        for f in [&importer, &other] {
+            let id = f.to_string_lossy().into_owned();
+            let _ = graph.edge_specifier(&id, "entry".into());
+            graph.record_loaded(&id);
+        }
+        let before = graph.version_of(&importer.to_string_lossy());
+        assert_eq!(
+            graph.invalidate_for(std::slice::from_ref(&importer)),
+            (1, true),
+            "the named record goes, untouched file or not"
+        );
+        assert!(
+            graph.version_of(&importer.to_string_lossy()) > before,
+            "its next specifier is new"
+        );
+        assert_eq!(
+            graph.invalidate_for(&[dir.join("never-loaded.md")]),
+            (0, false),
+            "a file no record stands for drops nothing"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

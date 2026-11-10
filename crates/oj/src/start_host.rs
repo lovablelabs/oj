@@ -448,8 +448,12 @@ fn classify_id(abs: &str, intent: Option<&'static str>, svg_react: bool) -> Stri
         return format!("{abs}?ojasset=css");
     }
     // wasm is asset-classified like the loader (URL export only). A plain
-    // import is `asset`: served like `?url`, but its id has no query.
-    if oj_server::is_importable_asset_ext(&ext) || ext == "wasm" {
+    // import is `asset`: served like `?url`, but its id has no query. An
+    // import carrying a query of its own (`hero.png?w=64`) is left as it
+    // is, for the plugin that answers that query (an `enforce: "pre"` load
+    // runs before Vite's asset plugin): tagged, the plugin would read its
+    // query with the tag appended, or never see the id.
+    if !abs.contains('?') && (oj_server::is_importable_asset(abs) || ext == "wasm") {
         return format!("{abs}?ojasset=asset");
     }
     abs.to_string()
@@ -863,7 +867,7 @@ impl StartHost {
                 if svg_react
                     || intent.is_some()
                     || oj_server::is_style_ext(&ext)
-                    || oj_server::is_importable_asset_ext(&ext)
+                    || (!abs.contains('?') && oj_server::is_importable_asset(&abs))
                 {
                     let id = classify_id(&abs, intent, svg_react);
                     return Ok(Some(self.module_url(&id, importer_id)));
@@ -1036,10 +1040,7 @@ impl StartHost {
         // An asset under a query no intent names (vite-imagetools'
         // `x.webp?w=768`): the load hooks Vite runs before vite:asset see the
         // full id; unclaimed, it is the file's served URL, as vite:asset's.
-        if is_path
-            && query.is_some()
-            && oj_server::is_importable_asset_ext(&ext_of(&clean).to_ascii_lowercase())
-        {
+        if is_path && query.is_some() && oj_server::is_importable_asset(&clean) {
             let loaded = match self.bridge.plugin_host().await {
                 Some(host) if host.hook_wants_load(id) => {
                     host.load_pre(id).await.map_err(|e| format!("{id}: {e}"))?
@@ -1454,8 +1455,15 @@ impl StartEngine {
 
     /// The watcher's reload: drop changed modules (and their importers) and
     /// force the entry fresh, so the next request re-imports the new graph.
-    pub async fn reload(&self) {
-        self.host.graph().invalidate();
+    /// `changed` names the batch's files, dropped whether or not their bytes
+    /// moved (a glob's importer re-expanding for a member created or deleted
+    /// beside it); the entry's own bump covers a batch with none.
+    pub async fn reload(&self, changed: &[PathBuf]) {
+        if changed.is_empty() {
+            self.host.graph().invalidate();
+        } else {
+            self.host.graph().invalidate_for(changed);
+        }
         self.host.graph().bump(&self.entry_id);
         self.maybe_respawn().await;
     }
@@ -1729,6 +1737,13 @@ mod tests {
             classify_id("/a/m.wasm", None, false),
             "/a/m.wasm?ojasset=asset"
         );
+        // An import's own query is a plugin's to answer (the fixture's
+        // `hero.png?w=64`): no tag appended to it.
+        assert_eq!(
+            classify_id("/a/hero.png?w=64", None, false),
+            "/a/hero.png?w=64"
+        );
+        assert_eq!(classify_id("/a/m.wasm?init", None, false), "/a/m.wasm?init");
     }
 
     #[test]

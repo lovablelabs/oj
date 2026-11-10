@@ -52,6 +52,7 @@ pub(crate) fn is_asset_path(file: &Path) -> bool {
         .and_then(|e| e.to_str())
         .map(is_asset_ext)
         .unwrap_or(false)
+        || oj_compiler::assets::is_included_asset(&file.to_string_lossy())
 }
 
 pub(crate) fn content_type(ext: &str) -> &'static str {
