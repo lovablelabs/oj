@@ -207,11 +207,15 @@ impl ModuleGraph {
     /// Accept a client's `import.meta.hot.invalidate()` for `changed`: only a
     /// self-accepting module an update already touched, and only once per
     /// update (Vite's `lastHMRInvalidationReceived`). Its importers (see
-    /// [`ModuleGraph::dirty_closure`]) are stamped so their re-fetch sees the
-    /// invalidated module's current version; the module itself keeps its stamp, so the
-    /// instance the browser already loaded is reused rather than re-evaluated.
-    /// Returns the stamped importers, or `None` when the call is ignored.
-    pub fn accept_invalidation(&mut self, changed: &Path, timestamp: u64) -> Option<Vec<PathBuf>> {
+    /// [`ModuleGraph::dirty_closure`]) are stamped with the module's own
+    /// stamp, the timestamp of the update that touched it: Vite's handler
+    /// calls `updateModules(env, file, [...mod.importers],
+    /// mod.lastHMRTimestamp, firstInvalidatedBy)`, so the importers' update is
+    /// part of that same update, not a newer one. The module itself is left
+    /// as it is, so the instance the browser already loaded is reused rather
+    /// than re-evaluated. Returns that timestamp and the stamped importers, or
+    /// `None` when the call is ignored.
+    pub fn accept_invalidation(&mut self, changed: &Path) -> Option<(u64, Vec<PathBuf>)> {
         let node = self.modules.get_mut(changed)?;
         if !node.is_self_accepting
             || node.last_hmr_timestamp == 0
@@ -220,6 +224,7 @@ impl ModuleGraph {
             return None;
         }
         node.last_hmr_invalidation_received = true;
+        let timestamp = node.last_hmr_timestamp;
         // Every importer is a module of the update, one that accepts
         // `changed` as a dep included: Vite passes `[...mod.importers]`
         // (self-imports left out) to `updateModules`, which invalidates each
@@ -238,7 +243,7 @@ impl ModuleGraph {
         dirty.sort();
         dirty.dedup();
         self.stamp_all(&dirty, timestamp);
-        Some(dirty)
+        Some((timestamp, dirty))
     }
 
     pub fn contains(&self, path: &Path) -> bool {
@@ -923,11 +928,11 @@ mod tests {
         assert_eq!(g.hmr_timestamp(&page), 0);
 
         assert_eq!(
-            g.accept_invalidation(&widget, 5),
-            Some(vec![page.clone(), main.clone()])
+            g.accept_invalidation(&widget),
+            Some((3, vec![page.clone(), main.clone()]))
         );
-        assert_eq!(g.hmr_timestamp(&page), 5, "the accepting importer");
-        assert_eq!(g.hmr_timestamp(&main), 5, "and what imports it");
+        assert_eq!(g.hmr_timestamp(&page), 3, "the accepting importer");
+        assert_eq!(g.hmr_timestamp(&main), 3, "and what imports it");
         assert_eq!(g.hmr_timestamp(&widget), 3, "the module keeps its stamp");
     }
 
@@ -936,16 +941,22 @@ mod tests {
         // main -> App (boundary) -> Button (boundary)
         let mut g = graph();
         // Never updated: Vite ignores the invalidate.
-        assert_eq!(g.accept_invalidation(&p("Button.tsx"), 5), None);
+        assert_eq!(g.accept_invalidation(&p("Button.tsx")), None);
         g.stamp_update(&p("Button.tsx"), 3);
+        // The importers' update is the same update: Vite hands
+        // `mod.lastHMRTimestamp` to updateModules, not a new time.
         assert_eq!(
-            g.accept_invalidation(&p("Button.tsx"), 5),
-            Some(vec![p("App.tsx"), p("main.tsx")])
+            g.accept_invalidation(&p("Button.tsx")),
+            Some((3, vec![p("App.tsx"), p("main.tsx")]))
         );
-        assert_eq!(g.hmr_timestamp(&p("App.tsx")), 5, "the importer is stamped");
+        assert_eq!(
+            g.hmr_timestamp(&p("App.tsx")),
+            3,
+            "the importer carries the module's stamp"
+        );
         assert_eq!(
             g.hmr_timestamp(&p("main.tsx")),
-            5,
+            3,
             "and the importer's importer, as Vite's updateModules invalidates them"
         );
         assert_eq!(
@@ -954,19 +965,20 @@ mod tests {
             "the invalidated module keeps its stamp"
         );
         assert_eq!(
-            g.accept_invalidation(&p("Button.tsx"), 6),
+            g.accept_invalidation(&p("Button.tsx")),
             None,
             "second call for the same update"
         );
         g.stamp_update(&p("Button.tsx"), 7);
-        assert!(
-            g.accept_invalidation(&p("Button.tsx"), 8).is_some(),
-            "a new update re-arms it"
+        assert_eq!(
+            g.accept_invalidation(&p("Button.tsx")).map(|(t, _)| t),
+            Some(7),
+            "a new update re-arms it, under that update's stamp"
         );
         // Not self-accepting: ignored.
         g.add_import(&p("Button.tsx"), &p("util.ts"));
         g.stamp_update(&p("util.ts"), 9);
-        assert_eq!(g.accept_invalidation(&p("util.ts"), 10), None);
+        assert_eq!(g.accept_invalidation(&p("util.ts")), None);
         assert_eq!(
             g.update_targets_from_importers(&p("Button.tsx")).unwrap(),
             vec![target("App.tsx", "App.tsx", false)]

@@ -321,16 +321,22 @@ pub(crate) fn handle_client_message(state: &Arc<ServerState>, text: &str) {
         };
         let first_invalidated_by = body["firstInvalidatedBy"].as_str();
         let reply = {
-            let timestamp = hmr_now();
-            let (dirty, targets) = {
+            // The importers' update carries the invalidated module's own
+            // stamp, as Vite's handler hands `mod.lastHMRTimestamp` to
+            // updateModules: it continues the update that touched the module.
+            let (timestamp, dirty, targets) = {
                 let mut graph = state.graph.lock().unwrap();
                 // Only a self-accepting module an update touched, once per update
                 // (Vite's lastHMRInvalidationReceived); importers are stamped too.
-                let Some(dirty) = graph.accept_invalidation(Path::new(path), timestamp) else {
+                let Some((timestamp, dirty)) = graph.accept_invalidation(Path::new(path)) else {
                     println!("oj: invalidate {path} ignored (no pending update)");
                     return;
                 };
-                (dirty, graph.update_targets_from_importers(Path::new(path)))
+                (
+                    timestamp,
+                    dirty,
+                    graph.update_targets_from_importers(Path::new(path)),
+                )
             };
             {
                 let mut keys = state.mtime_keys.lock().unwrap();
@@ -1461,9 +1467,32 @@ fn stamp_chains(state: &ServerState, seeds: &[&Path], timestamp: u64) {
     }
 }
 
-/// A `hotUpdate` that returned a module subset: propagate from those seeds,
-/// which are the update's modules as Vite's `updateModules(environment, file,
-/// hotContext.modules, timestamp)` takes them, stamped like any other's.
+/// Vite's hard invalidation of one module (`moduleGraph.invalidateModule`
+/// without `softInvalidate`, as `onFileChange` and `updateModules` call it):
+/// its next request transforms it again, and each importer whose output
+/// inlines it (a stylesheet) with it. A hard-invalidated module drops its
+/// mtime fast-path key, so its next request recomputes the cache key, which
+/// carries the new invalidation stamp.
+pub(crate) fn hard_invalidate(state: &ServerState, url: &str) {
+    let hard = state
+        .graph
+        .lock()
+        .unwrap()
+        .invalidate_on_change(Path::new(url), |m| !is_style_url(&m.to_string_lossy()));
+    let mut keys = state.mtime_keys.lock().unwrap();
+    for module in hard {
+        for url in url_variants(&module.display().to_string()) {
+            keys.remove(&url);
+        }
+    }
+}
+
+/// A `hotUpdate` that returned a module subset: those modules are the
+/// update's, as Vite's `updateModules(environment, file, hotContext.modules,
+/// timestamp)` takes them. Each is invalidated whatever the outcome (its
+/// transform runs again: a returned module is often not the changed file but
+/// one generated from it), then propagated from to its boundaries, each entry
+/// naming the module its boundary accepts (`acceptedVia`).
 fn plugin_filtered_update(
     state: &ServerState,
     file: &str,
@@ -1472,20 +1501,28 @@ fn plugin_filtered_update(
     timestamp: u64,
     updates: &mut Vec<serde_json::Value>,
 ) -> Flow {
+    for seed in seeds {
+        hard_invalidate(state, &seed.display().to_string());
+    }
     let seed_refs: Vec<&Path> = seeds.iter().map(PathBuf::as_path).collect();
-    let decision = state.graph.lock().unwrap().propagate_from_seeds(&seed_refs);
-    match decision {
-        HmrDecision::Update { boundaries } => {
+    let targets = {
+        let graph = state.graph.lock().unwrap();
+        seeds.iter().try_fold(Vec::new(), |mut all, seed| {
+            all.extend(graph.update_targets(seed)?);
+            Ok::<_, String>(all)
+        })
+    };
+    match targets {
+        Ok(mut targets) => {
+            targets.sort();
+            targets.dedup();
+            let boundaries: Vec<&Path> = targets.iter().map(|t| t.boundary.as_path()).collect();
             println!("oj: change {file} -> plugin-filtered update {boundaries:?}");
             stamp_chains(state, &seed_refs, timestamp);
-            updates.extend(
-                boundaries
-                    .iter()
-                    .map(|b| update_entry("js-update", &boundary_url(b), timestamp)),
-            );
+            updates.extend(targets.iter().map(|t| update_entry_for(t, timestamp, None)));
             Flow::Done
         }
-        HmrDecision::FullReload { reason } => {
+        Err(reason) => {
             println!("oj: change {file} -> full-reload ({reason})");
             Flow::Reload(full_reload_frame(&reason, None, Some(path)))
         }
