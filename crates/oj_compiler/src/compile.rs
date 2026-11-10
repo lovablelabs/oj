@@ -248,7 +248,11 @@ pub fn compile_module_with_maps(
     apply_defines(&allocator, source_text, opts, &mut program);
     let synthesized = expand_synthesized(&allocator, path, opts, source_text, &mut program);
 
-    let specifiers = rewrite_module_specifiers(&allocator, &mut program, &mut rewriter);
+    // A compile a dev loader imports: the browser (a rewriter maps its
+    // specifiers to urls) or the SSR runner (`opts.ssr`); the build keeps
+    // its attributes for the bundler.
+    let served = rewriter.is_some() || opts.ssr;
+    let specifiers = rewrite_module_specifiers(&allocator, &mut program, &mut rewriter, served);
     let mut hot_accept = lex_hot_accept(&allocator, &mut program, &mut rewriter);
     if let Some(h) = hot_accept.as_mut() {
         promote_full_export_accept(h, &program);

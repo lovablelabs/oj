@@ -13,7 +13,7 @@ pub(crate) fn rewrite_module_specifiers_pub<'a>(
     rewriter: &mut ImportRewriter,
 ) -> (Vec<String>, Vec<String>) {
     let mut opt: Option<&mut ImportRewriter> = Some(rewriter);
-    let specifiers = rewrite_module_specifiers(allocator, program, &mut opt);
+    let specifiers = rewrite_module_specifiers(allocator, program, &mut opt, true);
     (specifiers.imports, specifiers.dynamic_imports)
 }
 
@@ -27,18 +27,21 @@ pub(crate) struct ModuleSpecifiers {
 }
 
 /// Rewrites static import/export-from sources (and, with a rewriter, dynamic
-/// `import("...")` literals) and collects them.
+/// `import("...")` literals) and collects them. `served` says the output is
+/// what a dev loader imports (the browser, the SSR runner), where a static
+/// import's attributes go (see [`drop_import_attributes`]).
 pub(crate) fn rewrite_module_specifiers<'a>(
     allocator: &'a Allocator,
     program: &mut Program<'a>,
     rewriter: &mut Option<&mut ImportRewriter>,
+    served: bool,
 ) -> ModuleSpecifiers {
     let mut imports = Vec::new();
     let mut dynamic_imports = Vec::new();
     let mut bindings = BindingsBuilder::default();
     for stmt in program.body.iter_mut() {
         let names = imported_names(stmt);
-        if rewriter.is_some() {
+        if served {
             drop_import_attributes(stmt);
         }
         let Some(lit) = static_source(stmt) else {
@@ -110,7 +113,13 @@ fn imported_names(stmt: &Statement) -> Vec<String> {
 /// (`with { type: "json" }`) from the code it serves: the module it answers
 /// is JavaScript whatever the file (a JSON file's is `export default {...}`),
 /// and a browser holding the attribute would reject it as no JSON module.
-/// A dynamic import keeps its options, as in Vite.
+/// The same holds for the server: Vite's ssrTransform replaces each static
+/// import with a `__vite_ssr_import__` call (`defineImport`), so no
+/// attribute reaches its module runner, and the json plugin's module is what
+/// it gets. oj's SSR engine keeps imports as ES syntax and does honour the
+/// attribute: it asks for a JSON module and the JavaScript module the host
+/// serves is no match ("Cannot resolve module ./recipe.json"). A dynamic
+/// import keeps its options, as in Vite.
 fn drop_import_attributes(stmt: &mut Statement) {
     match stmt {
         Statement::ImportDeclaration(decl) => decl.with_clause = None,
@@ -286,6 +295,29 @@ console.log(data, later);
             "{}",
             kept.code
         );
+    }
+
+    /// The SSR compile serves a module runner that honours import
+    /// attributes, where Vite's ssrTransform turns every static import into
+    /// a `__vite_ssr_import__` call: with no rewriter (the SSR pipeline
+    /// rewrites nothing) an `ssr` compile still drops them.
+    #[test]
+    fn an_ssr_compile_drops_static_import_attributes() {
+        let src = r#"import recipe from "./recipe.json" with { type: "json" };
+export { default as pantry } from "./pantry.json" with { type: "json" };
+const later = import("./later.json", { with: { type: "json" } });
+console.log(recipe, later);
+"#;
+        let mut opts = CompileOptions::dev();
+        opts.refresh = false;
+        opts.ssr = true;
+        let out = compile_module(Path::new("recipe.js"), src, &opts, None).unwrap();
+        assert!(
+            !out.code.contains("with {") && out.code.contains("type: \"json\""),
+            "the SSR compile keeps a static import's attributes:\n{}",
+            out.code
+        );
+        assert_eq!(out.imports, vec!["./recipe.json", "./pantry.json"]);
     }
 
     #[test]
