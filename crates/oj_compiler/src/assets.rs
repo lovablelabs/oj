@@ -100,8 +100,71 @@ impl AssetsInclude {
         self.globs.is_match(path) || self.regexes.iter().any(|re| re.is_match(path))
     }
 
+    /// By the bytes of the path first: this runs for every import a server
+    /// rewrites, and a root is nearly always handed over as it was stored.
     fn is_for(&self, root: &std::path::Path) -> bool {
-        self.roots.iter().any(|r| r == root)
+        self.roots
+            .iter()
+            .any(|r| r.as_os_str() == root.as_os_str() || r == root)
+    }
+
+    /// `path` (absolute or a served url's, `/`-separated) under any spelling
+    /// of the root: as it is, moved from the spelling it is under to the
+    /// others (a glob resolved against the start directory names the root
+    /// as the system spells it, a path may name it through a symlink), and,
+    /// for a path under none that is no file elsewhere, joined under each.
+    fn matches_under_the_root(&self, path: &str) -> bool {
+        if self.matches(path) {
+            return true;
+        }
+        let as_path = std::path::Path::new(path);
+        let slashed = |p: std::path::PathBuf| p.to_string_lossy().replace('\\', "/");
+        let mut under_a_root = false;
+        for root in &self.roots {
+            let Ok(rest) = as_path.strip_prefix(root) else {
+                continue;
+            };
+            under_a_root = true;
+            for other in self.roots.iter().filter(|other| *other != root) {
+                if self.matches(&slashed(other.join(rest))) {
+                    return true;
+                }
+            }
+        }
+        if under_a_root || as_path.exists() {
+            return false;
+        }
+        let rest = path.trim_start_matches('/');
+        self.roots
+            .iter()
+            .any(|root| self.matches(&slashed(root.join(rest))))
+    }
+}
+
+/// A relative glob against its base, as `posix.join(base, glob)` in
+/// getMatcherString: `.` segments dropped and each `..` taking the segment
+/// before it, so `../shared/*.obj` names the base's sibling. The base's own
+/// characters are literal (pluginutils escapes them for picomatch).
+fn resolved_glob(base: &str, glob: &str) -> String {
+    let mut segments: Vec<String> = base
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .map(globset::escape)
+        .collect();
+    for segment in glob.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                segments.pop();
+            }
+            other => segments.push(other.to_string()),
+        }
+    }
+    let joined = segments.join("/");
+    if base.starts_with('/') {
+        format!("/{joined}")
+    } else {
+        joined
     }
 }
 
@@ -132,11 +195,7 @@ pub fn install_assets_include(
                 {
                     glob.replace('\\', "/")
                 } else {
-                    format!(
-                        "{}/{}",
-                        globset::escape(base_slash.trim_end_matches('/')),
-                        glob.trim_start_matches("./").replace('\\', "/")
-                    )
+                    resolved_glob(&base_slash, &glob.replace('\\', "/"))
                 };
                 // picomatch: `*` stops at `/`, `**` crosses directories,
                 // and createFilter matches dotfiles (`dot: true`).
@@ -208,15 +267,7 @@ pub fn is_included_asset(root: &std::path::Path, path: &str) -> bool {
     if clean.is_empty() || clean.contains('\0') {
         return false;
     }
-    if filter.matches(&clean) {
-        return true;
-    }
-    let as_path = std::path::Path::new(&clean);
-    if filter.roots.iter().any(|r| as_path.starts_with(r)) || as_path.exists() {
-        return false;
-    }
-    let under_root = root.join(clean.trim_start_matches('/'));
-    filter.matches(&under_root.to_string_lossy().replace('\\', "/"))
+    filter.matches_under_the_root(&clean)
 }
 
 /// Whether a path or url is an asset of the app at `root`: a known type by
@@ -375,6 +426,25 @@ mod tests {
         );
         assert!(included(&dir.join("models/x.obj").to_string_lossy()));
 
+        // posix.join normalizes the pattern: `..` takes the segment before
+        // it (createFilter("../shared/*.obj") names the base's sibling), `.`
+        // and a doubled `/` are dropped.
+        install_assets_include(
+            &[
+                serde_json::json!("../outside/*.obj"),
+                serde_json::json!("./src/../models//*.ply"),
+            ],
+            &root,
+            &root,
+        );
+        assert!(
+            included(&outside.join("x.obj").to_string_lossy()),
+            "`../outside/*.obj` names the root's sibling directory"
+        );
+        assert!(!included(&under("outside/x.obj")));
+        assert!(included(&under("models/x.ply")));
+        assert!(!included(&under("src/models/x.ply")));
+
         install_assets_include(&[], &root, &root);
         assert!(!included(&under("src/scene.gltf")), "uninstalled");
         assert!(is_asset_path(&root, &under("src/photo.PNG")));
@@ -450,6 +520,37 @@ mod tests {
         assert!(!is_included_asset(&real, &at(&real, "src/a.splat")));
         assert!(is_included_asset(&second, &at(&second, "src/a.voxels")));
         install_assets_include(&[], &second, &second);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // The root through a symlink and as it resolves are one app: a glob
+    // resolved against the start directory (the system's spelling) names a
+    // file or a served url asked for under the other spelling, as Vite,
+    // whose ids are real paths, would.
+    #[cfg(unix)]
+    #[test]
+    fn a_root_reached_through_a_symlink_is_the_same_app() {
+        let dir =
+            std::env::temp_dir().join(format!("oj-assets-include-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("real/models")).unwrap();
+        let real = std::fs::canonicalize(dir.join("real")).unwrap();
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let at = |root: &std::path::Path, rel: &str| root.join(rel).to_string_lossy().into_owned();
+
+        // Installed under the symlink, started in the real directory.
+        install_assets_include(&[serde_json::json!("models/*.obj")], &link, &real);
+        for root in [&link, &real] {
+            assert!(is_included_asset(root, &at(&real, "models/x.obj")));
+            assert!(
+                is_included_asset(root, &at(&link, "models/x.obj")),
+                "a file named through the symlink"
+            );
+            assert!(is_included_asset(root, "/models/x.obj"), "a served url");
+            assert!(!is_included_asset(root, &at(&link, "src/models/x.obj")));
+        }
+        install_assets_include(&[], &link, &real);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
