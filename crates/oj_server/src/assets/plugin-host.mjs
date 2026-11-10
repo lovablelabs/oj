@@ -4881,11 +4881,14 @@ async function setupConfigureServer() {
       const upstream = req.headers["x-oj-forward-to"];
       if (typeof upstream === "string" && /^\d+$/.test(upstream)) return forwardUpstream(req, res, Number(upstream));
       res.setHeader("x-oj-fallthrough", "1");
-      // A proxy `bypass` returning a string rewrote req.url and fell through
-      // (nothing in the stack served it): report the rewritten url so the Rust
-      // delegate can serve it via normal routing instead of returning this 404.
+      // A middleware (or a proxy `bypass` returning a string) rewrote req.url
+      // and fell through (nothing in the stack served it): report the url it
+      // left so the Rust side serves that one via its own routing instead of
+      // this 404. In the browser's form: Vite's baseMiddleware (below the
+      // user's middlewares) stripped the base for the ones after it, and the
+      // Rust side strips it again itself.
       try {
-        res.setHeader("x-oj-rewritten-url", req.url);
+        res.setHeader("x-oj-rewritten-url", req.ojStrippedBase ? ojJoinBase(req.ojStrippedBase, req.url) : req.url);
       } catch {}
       res.statusCode = 404;
       res.end();
@@ -5105,7 +5108,12 @@ async function setupConfigureServer() {
   if (devBase !== "/") {
     middlewares.use(function viteBaseMiddleware(req, _res, next) {
       const pathname = req.url.split(/[?#]/)[0];
-      if (pathname.startsWith(devBase)) req.url = ojStripBase(req.url, devBase);
+      if (pathname.startsWith(devBase)) {
+        req.url = ojStripBase(req.url, devBase);
+        // For the fall-through report (see runStack): the url goes back to
+        // the Rust side with its base.
+        req.ojStrippedBase = devBase;
+      }
       next();
     });
   }
@@ -5152,6 +5160,13 @@ function ojStripBase(url, base) {
   if (url === base) return "/";
   const devBase = base.endsWith("/") ? base : `${base}/`;
   return url.startsWith(devBase) ? url.slice(devBase.length - 1) : url;
+}
+
+// The inverse, for a url stripped by `ojStripBase`: `/page?q` under `/app/`
+// is `/app/page?q` again, and `/` is the base itself.
+function ojJoinBase(base, url) {
+  const devBase = base.endsWith("/") ? base.slice(0, -1) : base;
+  return url.startsWith("/") ? `${devBase}${url}` : `${devBase}/${url}`;
 }
 
 function ojPushServeInfo() {
