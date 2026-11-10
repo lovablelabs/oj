@@ -50,15 +50,25 @@ if ({{KILL}}) process.kill(process.pid, "{{SIGNAL}}");
 export default { define: { __RUN__: JSON.stringify(runs + 1) } };
 "#;
 
+/// A restart replaces the server's process, which binds its port again: with
+/// these tests' servers running side by side, one restarting could find its
+/// port taken by another's and come back on a different one, where the test
+/// no longer reaches it. One app, and so one server, at a time.
+static ONE_SERVER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 struct Spa {
     _tmp: tempfile::TempDir,
     root: PathBuf,
     runs: PathBuf,
+    _one_server: std::sync::MutexGuard<'static, ()>,
 }
 
 impl Spa {
     fn new(kill: &str, signal: &str) -> Option<Spa> {
         let modules = fixture_modules()?;
+        let one_server = ONE_SERVER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
         let runs = root.join("runs.txt");
@@ -80,6 +90,7 @@ impl Spa {
             _tmp: tmp,
             root,
             runs,
+            _one_server: one_server,
         };
         spa.write_config("boot", kill, signal);
         Some(spa)
@@ -228,6 +239,34 @@ fn a_restart_check_whose_config_throws_fails_without_a_second_run() {
         !output[from..].contains("evaluating again"),
         "a throwing config was evaluated again\n{output}"
     );
+
+    // One evaluation per failed check, as Vite loads the config once per
+    // restart: _createServer resolves it, and loadConfigFromFile's error
+    // leaves resolveConfig with nothing loading the file again. (Counted per
+    // reported failure: the watcher may report one edit twice, which is two
+    // checks.) oj resolved from the file after the load had thrown, running
+    // the config's module-level code twice for the one failure.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let failures = dev.output()[from..]
+            .matches("server restart failed")
+            .count();
+        let evaluations = app.runs() - 1;
+        if evaluations == failures
+            && dev.output()[from..]
+                .matches("server restart failed")
+                .count()
+                == failures
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{evaluations} evaluations of the throwing config for {failures} failed check(s)\n{}",
+            dev.output()
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
 }
 
 /// Waits until `dev` serves `/src/main.ts` logging `run`, the evaluation whose

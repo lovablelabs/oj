@@ -295,11 +295,12 @@ test("with vite installed the config file is evaluated once and the sentinel dec
   }
 });
 
-// When the raw config cannot be loaded but resolveConfig still succeeds, the
-// degenerate path is LOUD and safe: a warning names the failure, and the
-// resolved ssr.resolve sugar (possibly a foreign runtime's conditions) is
-// withheld so Node consumers can never adopt it with detection unavailable.
-test("a failed raw load warns and withholds the resolved ssr.resolve sugar", () => {
+// A raw config vite offers no loader for (a vite without loadConfigFromFile)
+// while resolveConfig still succeeds is the degenerate path, LOUD and safe: a
+// warning names it, and the resolved ssr.resolve sugar (possibly a foreign
+// runtime's conditions) is withheld so Node consumers can never adopt it with
+// detection unavailable.
+test("a missing raw load warns and withholds the resolved ssr.resolve sugar", () => {
   const base = extractorDir("oj-vite-extract-rawnull-");
   try {
     fs.mkdirSync(join(base, "node_modules", "vite"), { recursive: true });
@@ -309,8 +310,7 @@ test("a failed raw load warns and withholds the resolved ssr.resolve sugar", () 
     );
     fs.writeFileSync(
       join(base, "node_modules", "vite", "index.mjs"),
-      `export async function loadConfigFromFile() { throw new Error("raw load exploded"); }
-      export function mergeConfig(a, b) { return { ...a, ...b }; }
+      `export function mergeConfig(a, b) { return { ...a, ...b }; }
       export async function resolveConfig() {
         return {
           base: "/resolved/",
@@ -324,7 +324,7 @@ test("a failed raw load warns and withholds the resolved ssr.resolve sugar", () 
     const child = spawnExtractor(base, "vite.config.mjs");
     assert.match(
       child.stderr,
-      /could not load the raw config .*raw load exploded.*ssr\.resolve conditions are unavailable/s,
+      /could not load the raw config .*ssr\.resolve conditions are unavailable/s,
       "the degenerate path is loud, never silent",
     );
     const out = JSON.parse(child.stdout);
@@ -340,6 +340,43 @@ test("a failed raw load warns and withholds the resolved ssr.resolve sugar", () 
     assert.equal(out.resolve?.conditions, undefined, "resolved top-level conditions are withheld without detection");
     assert.equal(out.resolve?.externalConditions, undefined);
     assert.deepEqual(out.resolve?.extensions, [".mjs", ".js"], "condition-free resolve keys still travel");
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+// A raw load that THREW is the config failing, as in Vite: resolveConfig
+// calls the same loadConfigFromFile with no catch (config.ts), so the error
+// ends the resolve. Resolving from the file after it would load the config a
+// second time; the extractor reports the config's error and stops.
+test("a raw load that threw is the config's failure: resolveConfig never runs", () => {
+  const base = extractorDir("oj-vite-extract-rawthrow-");
+  try {
+    fs.mkdirSync(join(base, "node_modules", "vite"), { recursive: true });
+    fs.writeFileSync(
+      join(base, "node_modules", "vite", "package.json"),
+      JSON.stringify({ name: "vite", version: "0.0.0-stub", type: "module", main: "index.mjs" }),
+    );
+    fs.writeFileSync(
+      join(base, "node_modules", "vite", "index.mjs"),
+      `import { writeFileSync } from "node:fs";
+      export async function loadConfigFromFile() { throw new Error("raw load exploded"); }
+      export function mergeConfig(a, b) { return { ...a, ...b }; }
+      export async function resolveConfig() {
+        writeFileSync(new URL("./resolved.txt", import.meta.url), "x");
+        return { base: "/resolved/", configFileDependencies: [] };
+      }\n`,
+    );
+    fs.writeFileSync(join(base, "vite.config.mjs"), "export default {};\n");
+    const child = spawnExtractor(base, "vite.config.mjs");
+    const out = JSON.parse(child.stdout);
+    assert.equal(out.__ok, false, "a config that threw has no values");
+    assert.match(child.stderr, /raw load exploded/, "the config's own error surfaces");
+    assert.equal(
+      fs.existsSync(join(base, "node_modules", "vite", "resolved.txt")),
+      false,
+      "resolveConfig ran after the load threw: it would load the config again",
+    );
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
@@ -850,6 +887,29 @@ test("Vite server and optimizer settings survive actual config loading", () => {
     assert.equal(config.optimizeDeps.noDiscovery, true);
     assert.equal(config.optimizeDeps.rolldownOptions.transform.target, "es2015");
     assert.deepEqual(config.optimizeDeps.rolldownOptions.resolve.conditionNames, ["custom"]);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+// Vite evaluates a config once per load, and a config that throws once per
+// failed load (loadConfigFromFile logs "failed to load config" and rethrows;
+// resolveConfig does not catch). A second evaluation would run the config's
+// module-level side effects twice for one reported failure.
+test("real vite: a config that throws is evaluated once", { skip: skipNoVite }, () => {
+  const base = realViteDir("oj-vite-extract-throwonce-");
+  try {
+    writeFileSync(
+      join(base, "vite.config.mjs"),
+      `import { appendFileSync } from "node:fs";
+      appendFileSync(new URL("./evals.log", import.meta.url), "x");
+      throw new Error("config exploded");\n`,
+    );
+    const child = spawnExtractor(base, "vite.config.mjs");
+    const out = JSON.parse(child.stdout);
+    assert.equal(out.__ok, false);
+    assert.match(child.stderr, /config exploded/);
+    assert.equal(fs.readFileSync(join(base, "evals.log"), "utf8"), "x", "the throwing config ran more than once");
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
