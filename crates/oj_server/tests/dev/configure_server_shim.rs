@@ -16,7 +16,7 @@
 use std::time::Duration;
 
 use crate::plugin_middleware::middleware_ready;
-use crate::{App, INDEX_HTML};
+use crate::{require_fixture, App, INDEX_HTML};
 
 /// A plugin whose middleware maps clean urls onto what oj's own routing
 /// serves, and answers one route itself.
