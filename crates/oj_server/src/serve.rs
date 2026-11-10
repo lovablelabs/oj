@@ -373,7 +373,7 @@ async fn serve_file(
     // `?inline` on a file Vite's asset plugin does not load (not an asset or
     // a stylesheet) is the plain module, as vite:asset's load filter has it.
     let asset_query = query_asset_kind(query)
-        .filter(|kind| *kind != "inline" || is_style_ext(ext) || is_asset_path(file));
+        .filter(|kind| *kind != "inline" || is_style_ext(ext) || is_asset_path(&state.root, file));
     if let Some(kind) = asset_query {
         // Vite's checkPublicFile: public when the request path names a file
         // under the public dir, so `/public/logo.png` is not `/logo.png`.
@@ -397,7 +397,8 @@ async fn serve_file(
         let url = format!("{}?react", url_of(&state.root, file));
         return serve_compiled(state, file, &url, None, headers).await;
     }
-    if ext.eq_ignore_ascii_case("svg") || is_importable_asset(&file.to_string_lossy()) {
+    if ext.eq_ignore_ascii_case("svg") || is_importable_asset(&state.root, &file.to_string_lossy())
+    {
         return vary_on_fetch_dest(serve_bare_asset(state, headers, file, ext, query).await);
     }
     serve_raw_file(state, file, ext).await
@@ -425,7 +426,9 @@ async fn serve_bare_asset(
             asset_module(file, &url, "url", &state.asset_urls, "client").await,
         );
     }
-    if is_importable_asset(&file.to_string_lossy()) && wants_module_import(headers, query) {
+    if is_importable_asset(&state.root, &file.to_string_lossy())
+        && wants_module_import(headers, query)
+    {
         let url = url_of(&state.root, file);
         return js_module_response(
             asset_module(file, &url, "url", &state.asset_urls, "client").await,

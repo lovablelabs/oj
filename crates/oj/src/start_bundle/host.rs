@@ -148,11 +148,11 @@ async fn answer(
 
 /// A stylesheet id oj's asset plugin compiles (an import or `?inline`), the
 /// ids Vite's vite:css takes; `?raw`, `?url` and workers load as JS.
-fn is_compiled_stylesheet(id: &str) -> bool {
+fn is_compiled_stylesheet(root: &Path, id: &str) -> bool {
     // A plugin-served sheet's `\0` id names a stylesheet as well.
     let id = id.trim_start_matches('\0');
     let path = id.split('?').next().unwrap_or(id);
-    match super::assets::asset_tag(id, false) {
+    match super::assets::asset_tag(root, id, false) {
         Some(super::assets::AssetTag::Css) => true,
         Some(super::assets::AssetTag::Inline) => super::assets::is_style_path(path),
         _ => false,
@@ -299,9 +299,9 @@ fn hook_output(r: ResolvedId) -> HookResolveIdOutput {
 /// resolver answers before a normal plugin's resolveId sees them. A plain
 /// stylesheet one the core resolver misses (`virtual:theme.css`) is a
 /// plugin's to resolve, as in Vite.
-fn asset_owned(spec: &str) -> bool {
+fn asset_owned(root: &Path, spec: &str) -> bool {
     !matches!(
-        super::assets::asset_tag(spec, false),
+        super::assets::asset_tag(root, spec, false),
         None | Some(super::assets::AssetTag::Css)
     )
 }
@@ -456,7 +456,10 @@ impl Plugin for StartHostPlugin {
         // oj's own module ids are answered by the plugins that minted them.
         let ours = spec.starts_with("\0oj-");
         let wants = !ours && self.host.hook_wants_resolve_id(&spec);
-        let (pre, post) = (self.pre && wants, self.post && wants && !asset_owned(&spec));
+        let (pre, post) = (
+            self.pre && wants,
+            self.post && wants && !asset_owned(&self.root, &spec),
+        );
         let host = Arc::clone(&self.host);
         let ctx = ctx.clone();
         async move {
@@ -539,7 +542,7 @@ impl Plugin for StartHostPlugin {
             // loads those, as vite:asset does, after the hooks Vite runs
             // before it (vite-imagetools' `x.webp?w=768`).
             let asset = on_disk
-                .then(|| super::assets::asset_tag(&id, false))
+                .then(|| super::assets::asset_tag(&root, &id, false))
                 .flatten();
             if let Some(tag) = asset {
                 if !wants || matches!(tag, super::assets::AssetTag::Css) {
@@ -627,7 +630,7 @@ impl Plugin for StartHostPlugin {
         // oj's asset plugin compiled a stylesheet through its "pre" and
         // "normal" transforms; the module standing in for it gets the "post"
         // ones, as Vite's vite:css-post output does.
-        let phase = is_compiled_stylesheet(id).then_some("post");
+        let phase = is_compiled_stylesheet(&self.root, id).then_some("post");
         // Start's compiler, for a module it can change: the plugins' chain
         // splits around it. Any other module takes the whole chain in one
         // call, as the compile would leave it as it is.
@@ -1005,11 +1008,14 @@ mod tests {
         assert!(is_served_stylesheet("\0virtual:theme.css?inline"));
         assert!(!is_served_stylesheet("\0virtual:data.js"));
         assert!(!is_served_stylesheet("\0oj-shim.css"));
-        assert!(!asset_owned("virtual:theme.css"));
-        assert!(!asset_owned("./a.css"));
-        assert!(asset_owned("./a.css?raw"));
-        assert!(asset_owned("./a.png"));
-        assert!(is_compiled_stylesheet("\0virtual:theme.css"));
+        assert!(!asset_owned(Path::new("/"), "virtual:theme.css"));
+        assert!(!asset_owned(Path::new("/"), "./a.css"));
+        assert!(asset_owned(Path::new("/"), "./a.css?raw"));
+        assert!(asset_owned(Path::new("/"), "./a.png"));
+        assert!(is_compiled_stylesheet(
+            Path::new("/"),
+            "\0virtual:theme.css"
+        ));
     }
 
     #[test]
@@ -1022,7 +1028,7 @@ mod tests {
             "/app/c.pcss",
             "/app/d.sss",
         ] {
-            assert!(is_compiled_stylesheet(id), "{id}");
+            assert!(is_compiled_stylesheet(Path::new("/"), id), "{id}");
         }
         for id in [
             "/app/a.css?raw",
@@ -1031,7 +1037,7 @@ mod tests {
             "/app/a.png?inline",
             "/app/a.ts",
         ] {
-            assert!(!is_compiled_stylesheet(id), "{id}");
+            assert!(!is_compiled_stylesheet(Path::new("/"), id), "{id}");
         }
     }
 

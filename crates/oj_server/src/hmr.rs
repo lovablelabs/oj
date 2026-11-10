@@ -427,7 +427,7 @@ pub(crate) fn strip_hmr_timestamp(url: &str) -> String {
 
 /// Append the HMR timestamp to a served module url, as Vite's importAnalysis does for
 /// a dep with a `lastHMRTimestamp`: JS-served modules and asset URL modules, never oj-internal urls.
-pub(crate) fn stamp_import_url(url: &str, timestamp: u64) -> String {
+pub(crate) fn stamp_import_url(root: &Path, url: &str, timestamp: u64) -> String {
     if timestamp == 0 || url.starts_with("/@") || !url.starts_with('/') {
         return url.to_string();
     }
@@ -440,7 +440,7 @@ pub(crate) fn stamp_import_url(url: &str, timestamp: u64) -> String {
         && ext != "json"
         && !is_style_ext(ext)
         && !is_asset_ext(ext)
-        && !oj_compiler::assets::is_included_asset(path)
+        && !oj_compiler::assets::is_included_asset(root, path)
     {
         return url.to_string();
     }
@@ -1491,7 +1491,7 @@ fn decide_file(
         || is_style_ext(ext)
         || ext == "json"
         || is_asset_ext(ext)
-        || oj_compiler::assets::is_included_asset(&path.to_string_lossy())
+        || oj_compiler::assets::is_included_asset(&state.root, &path.to_string_lossy())
         || css_dep())
     {
         return Flow::Done;
