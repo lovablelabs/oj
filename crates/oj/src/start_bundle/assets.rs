@@ -54,6 +54,12 @@ fn has_flag(query: &str, name: &str) -> bool {
         .any(|part| part == name)
 }
 
+/// Vite's noInlineRE (`[?&]no-inline\b`): also `?no-inline=...` and
+/// `?no-inline-x`, as [`has_inline`] reads `inline`.
+fn has_no_inline(query: &str) -> bool {
+    oj_server::has_word_param(&format!("?{}", query.trim_start_matches('?')), "no-inline")
+}
+
 /// Vite's inlineRE (`[?&]inline\b`): also `?inline=...` and `?inline-x`.
 fn has_inline(query: &str) -> bool {
     query.trim_start_matches('?').split('&').any(|part| {
@@ -66,10 +72,17 @@ fn has_inline(query: &str) -> bool {
     })
 }
 
-const ASSET_EXTS: &[&str] = &[
-    "png", "jpg", "jpeg", "gif", "webp", "avif", "ico", "woff", "woff2", "ttf", "otf", "eot",
-    "mp4", "webm", "wasm",
-];
+/// A file type whose bare import is its URL: Vite's `KNOWN_ASSET_TYPES`
+/// (oj_compiler's copy, images, media, fonts, pdf and txt among them), plus
+/// `.wasm`, which oj has always served by URL. An `.svg` is left to the
+/// plugins first (svgr's `?react`, a componentizing plugin) and falls back to
+/// its URL in [`StartAssetsPlugin::module`]. A type outside the list that
+/// rolldown read as JavaScript failed the bundle with "stream did not
+/// contain valid UTF-8" on the first binary byte.
+fn is_asset_ext(ext: &str) -> bool {
+    ext.eq_ignore_ascii_case("wasm")
+        || (!ext.eq_ignore_ascii_case("svg") && oj_compiler::assets::is_asset_ext(ext))
+}
 /// Vite's CSS_LANGS_RE.
 const STYLE_EXTS: &[&str] = &[
     "css", "less", "sass", "scss", "styl", "stylus", "pcss", "postcss", "sss",
@@ -98,7 +111,7 @@ pub(crate) fn is_css_module(path: &str) -> bool {
 /// The asset an import (a specifier, or a resolved `/abs/x.png?url` id) is,
 /// by its query and extension; `None` when it is no asset import. `dev`: the
 /// unbundled dev pipeline ignores `&inline` on a worker, as Vite's does.
-pub(crate) fn asset_tag(source: &str, dev: bool) -> Option<AssetTag> {
+pub(crate) fn asset_tag(root: &Path, source: &str, dev: bool) -> Option<AssetTag> {
     if source.starts_with('\0') {
         return None;
     }
@@ -125,13 +138,16 @@ pub(crate) fn asset_tag(source: &str, dev: bool) -> Option<AssetTag> {
         return Some(AssetTag::Raw);
     }
     // Vite's shouldInline: `no-inline` wins, then `inline` (even with `url`).
-    if has_flag(query, "no-inline") {
+    if has_no_inline(query) {
         return Some(AssetTag::Url);
     }
     if has_inline(query) {
         return Some(AssetTag::Inline);
     }
-    if has_flag(query, "url") || ASSET_EXTS.contains(&ext_of(path).to_ascii_lowercase().as_str()) {
+    if has_flag(query, "url")
+        || is_asset_ext(ext_of(path))
+        || oj_compiler::assets::is_included_asset(root, path)
+    {
         return Some(AssetTag::Url);
     }
     is_style_path(path).then_some(AssetTag::Css)
@@ -209,21 +225,16 @@ pub(crate) struct Styles {
 }
 
 impl Styles {
+    /// The client's `build.assetsInlineLimit` (see [`client_inline_limit`]).
+    pub(crate) fn inline_limit(&self) -> u64 {
+        self.inline_limit
+    }
+
     pub fn new(start: &StartConfig) -> Styles {
         Styles {
             root: start.root.clone(),
             css: start.config.css.clone(),
-            inline_limit: start
-                .config
-                .build
-                .as_ref()
-                .and_then(|b| {
-                    b.assets_inline_limit_envs
-                        .as_ref()
-                        .and_then(|envs| envs.get("client")?.as_u64())
-                        .or(b.assets_inline_limit)
-                })
-                .unwrap_or(4096),
+            inline_limit: client_inline_limit(&start.config),
             modules: oj_server::css_modules_options(&start.config),
             engines: StyleEngines::default(),
             minify_client: oj_config::build_css_minify(&start.config, false),
@@ -928,31 +939,12 @@ fn normalize(path: &Path) -> PathBuf {
     out
 }
 
-/// A file as a `data:` URI (`?inline` of a non-stylesheet).
+/// A file as a `data:` URI (`?inline` of a non-stylesheet), Vite's
+/// `assetToDataURL`: an SVG as `svgToDataURL` writes it, any other file
+/// base64.
 fn data_uri(path: &Path) -> Result<String, String> {
-    use base64::Engine;
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mime = match ext_of(&path.to_string_lossy())
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "avif" => "image/avif",
-        "svg" => "image/svg+xml",
-        "ico" => "image/x-icon",
-        "woff" => "font/woff",
-        "woff2" => "font/woff2",
-        "ttf" => "font/ttf",
-        "otf" => "font/otf",
-        _ => "application/octet-stream",
-    };
-    Ok(format!(
-        "data:{mime};base64,{}",
-        base64::engine::general_purpose::STANDARD.encode(bytes)
-    ))
+    Ok(oj_server::asset_data_url(path, &bytes))
 }
 
 /// The options a worker wrapper starts its worker with: a module only when
@@ -1130,6 +1122,44 @@ pub(crate) enum AssetMode {
 
 pub(crate) const DEV_FS_BASE: &str = "/@oj-start/fs";
 
+/// The client's numeric `build.assetsInlineLimit` (its environment's own
+/// first; Vite's default 4096), the limit Vite's `shouldInline` reads.
+pub(crate) fn client_inline_limit(config: &oj_config::OjConfig) -> u64 {
+    config
+        .build
+        .as_ref()
+        .and_then(|b| {
+            b.assets_inline_limit_envs
+                .as_ref()
+                .and_then(|envs| envs.get("client")?.as_u64())
+                .or(b.assets_inline_limit)
+        })
+        .unwrap_or(4096)
+}
+
+/// Vite's `fileToDevUrl` for an `.svg`, the one type dev inlines on its own:
+/// "if is svg and it's inlined in build, also inline it in dev to match the
+/// behaviour in build due to quote handling differences". The data URL when
+/// the build's `shouldInline` would say so (no `no-inline` on the id, no
+/// `#` fragment, the file under `assetsInlineLimit`, not a Git LFS
+/// placeholder); `None` for anything else, which stays the served url. `id`
+/// is the import as written (with its query), `path` the file it names.
+pub(crate) fn dev_svg_inline(path: &Path, id: &str, inline_limit: u64) -> Option<String> {
+    if !ext_of(&path.to_string_lossy()).eq_ignore_ascii_case("svg") {
+        return None;
+    }
+    let query = id.split_once('?').map_or("", |(_, q)| q);
+    if has_no_inline(query) || id.contains('#') {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    const GIT_LFS_PREFIX: &[u8] = b"version https://git-lfs.github.com";
+    if (bytes.len() as u64) >= inline_limit || bytes.starts_with(GIT_LFS_PREFIX) {
+        return None;
+    }
+    Some(oj_server::svg_to_data_url(&bytes))
+}
+
 /// Where the dev server serves a stylesheet a plugin serves with no file
 /// behind it: its id in Vite's `/@id/` spelling (`\0` as `__x00__`).
 pub(crate) const DEV_ID_BASE: &str = "/@oj-start/id/";
@@ -1191,6 +1221,18 @@ impl StartAssetsPlugin {
         }
     }
 
+    /// An asset import's value: in dev, a small `.svg` is its data URL as
+    /// Vite's `fileToDevUrl` inlines it ([`dev_svg_inline`]), anything else
+    /// its served url; the build's emitter inlines or emits by the same rule.
+    async fn asset_url_for(&self, path: &Path, id: &str) -> Result<String, String> {
+        if let AssetMode::Dev { .. } = &self.mode {
+            if let Some(data) = dev_svg_inline(path, id, self.styles.inline_limit()) {
+                return Ok(data);
+            }
+        }
+        self.url_for(path).await
+    }
+
     /// A worker's URL: the dev pipeline's (root-relative, `/@fs` outside the
     /// root) with Vite's `worker_file&type=<worker_type>`, which that pipeline
     /// serves with the env prelude, or the build's emitted bundle.
@@ -1218,12 +1260,14 @@ impl StartAssetsPlugin {
         let json = |s: &str| serde_json::Value::String(s.to_string()).to_string();
         let dev = matches!(self.mode, AssetMode::Dev { .. });
         // A plugin-served sheet's `\0` id takes the tag of what it names.
-        let Some(tag) = asset_tag(id.trim_start_matches('\0'), dev) else {
-            // A bare `.svg` (or `?react` one) no plugin componentized: its URL.
+        let Some(tag) = asset_tag(&self.root, id.trim_start_matches('\0'), dev) else {
+            // A bare `.svg` (or `?react` one) no plugin componentized: its
+            // URL, or its data URL when small (Vite's dev inlines an svg the
+            // build would).
             if path.extension().is_some_and(|e| e == "svg") {
                 return Ok(Some(format!(
                     "export default {};",
-                    json(&self.url_for(path).await?)
+                    json(&self.asset_url_for(path, id).await?)
                 )));
             }
             return Ok(None);
@@ -1261,7 +1305,10 @@ impl StartAssetsPlugin {
                 let url = emitter.css_asset(path, css, slots).await?;
                 format!("import {};\nexport default {};", json(&only), json(&url))
             }
-            AssetTag::Url => format!("export default {};", json(&self.url_for(path).await?)),
+            AssetTag::Url => format!(
+                "export default {};",
+                json(&self.asset_url_for(path, id).await?)
+            ),
             AssetTag::Inline if is_style_path(&path_str) => match &self.mode {
                 AssetMode::Dev { state, .. } => {
                     state
@@ -1491,31 +1538,53 @@ mod tests {
         let cases: &[(&str, bool, Option<AssetTag>)] = &[
             ("/a/x.png", false, Some(Url)),
             ("/a/x.PNG", false, Some(Url)),
+            // Vite's KNOWN_ASSET_TYPES beyond images: media, fonts, documents.
+            ("/a/x.mp3", false, Some(Url)),
+            ("/a/x.wav", false, Some(Url)),
+            ("/a/x.ogg", false, Some(Url)),
+            ("/a/x.MOV", false, Some(Url)),
+            ("/a/x.eot", false, Some(Url)),
+            ("/a/x.pdf", false, Some(Url)),
+            ("/a/x.webmanifest", false, Some(Url)),
+            ("/a/x.txt", false, Some(Url)),
+            ("/a/x.wasm", false, Some(Url)),
+            ("/a/x.txt?raw", false, Some(Raw)),
             ("/a/x.svg", false, None),
+            ("/a/x.svg?react", false, None),
+            ("/a/x.mdx", false, None),
             ("/a/x.css", false, Some(Css)),
             ("/a/x.module.scss", false, Some(Css)),
             ("/a/x.ts?raw", false, Some(Raw)),
+            // `?raw` wins over the extension, as Vite's rawRE check comes
+            // first: an SVG's text, not its URL or component.
+            ("/a/x.svg?raw", false, Some(Raw)),
+            ("/a/x.md?raw", true, Some(Raw)),
+            ("/a/x.svg?inline", false, Some(Inline)),
             ("/a/x.css?url", false, Some(Url)),
             ("/a/x.css?inline", false, Some(Inline)),
             ("/a/x.png?url&no-inline", false, Some(Url)),
             ("/a/x.png?no-inline&inline", false, Some(Url)),
+            // noInlineRE is word-bounded, as inlineRE is.
+            ("/a/x.png?url&no-inline=1", false, Some(Url)),
+            ("/a/x.png?no-inline-x&inline", false, Some(Url)),
+            ("/a/x.svg?inline=1", false, Some(Inline)),
             ("/a/x.png?url&inline", false, Some(Inline)),
             ("/a/x.ts?rawx", false, None),
             ("/a/x.ts?raw=1", false, None),
             ("\0/a/x.png", false, None),
         ];
         for (id, dev, want) in cases {
-            assert_eq!(asset_tag(id, *dev), *want, "{id}");
+            assert_eq!(asset_tag(Path::new("/"), id, *dev), *want, "{id}");
         }
         assert_eq!(
-            asset_tag("/w.ts?worker&inline", false),
+            asset_tag(Path::new("/"), "/w.ts?worker&inline", false),
             Some(Worker {
                 shared: false,
                 form: WorkerForm::Inline
             })
         );
         assert_eq!(
-            asset_tag("/w.ts?worker&inline", true),
+            asset_tag(Path::new("/"), "/w.ts?worker&inline", true),
             Some(Worker {
                 shared: false,
                 form: WorkerForm::Module
@@ -1523,14 +1592,14 @@ mod tests {
             "unbundled dev ignores &inline"
         );
         assert_eq!(
-            asset_tag("/w.ts?sharedworker&url", true),
+            asset_tag(Path::new("/"), "/w.ts?sharedworker&url", true),
             Some(Worker {
                 shared: true,
                 form: WorkerForm::Url
             })
         );
         assert_eq!(
-            asset_tag("/w.ts?url&worker", false),
+            asset_tag(Path::new("/"), "/w.ts?url&worker", false),
             Some(Worker {
                 shared: false,
                 form: WorkerForm::Url
@@ -1585,5 +1654,101 @@ mod tests {
         assert!(needs_css_compile("@import \"tailwindcss\";"));
         assert!(needs_css_compile(".a { @apply p-4; }"));
         assert!(!needs_css_compile(".a { color: red }"));
+    }
+    /// Vite's `fileToDevUrl` inlines an `.svg` in dev when the build's
+    /// `shouldInline` would: under `build.assetsInlineLimit`, no `no-inline`
+    /// on the id, no `#` fragment, not a Git LFS placeholder; the form is
+    /// `svgToDataURL`'s. Anything else keeps its url, and only an svg is
+    /// inlined on its own.
+    #[test]
+    fn dev_inlines_a_small_svg_as_vites_file_to_dev_url_does() {
+        let dir = std::env::temp_dir().join(format!("oj-dev-svg-inline-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let small = dir.join("dot.svg");
+        std::fs::write(
+            &small,
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"><circle r=\"1\"/></svg>\n",
+        )
+        .unwrap();
+        let big = dir.join("big.svg");
+        std::fs::write(&big, format!("<svg>{}</svg>", "<g/>".repeat(2000))).unwrap();
+        let lfs = dir.join("lfs.svg");
+        std::fs::write(
+            &lfs,
+            "version https://git-lfs.github.com/spec/v1\noid sha256:0\n",
+        )
+        .unwrap();
+        let png = dir.join("dot.png");
+        std::fs::write(&png, b"png").unwrap();
+        let id = |p: &std::path::Path, q: &str| format!("{}{q}", p.display());
+
+        assert_eq!(
+            dev_svg_inline(&small, &id(&small, ""), 4096).as_deref(),
+            Some("data:image/svg+xml,%3csvg%20xmlns='http://www.w3.org/2000/svg'%3e%3ccircle%20r='1'/%3e%3c/svg%3e"),
+            "a small svg, bare"
+        );
+        assert!(
+            dev_svg_inline(&small, &id(&small, "?url"), 4096).is_some(),
+            "`?url` too"
+        );
+        assert!(
+            dev_svg_inline(&small, &id(&small, "?url&no-inline"), 4096).is_none(),
+            "`no-inline` keeps the url"
+        );
+        assert!(
+            dev_svg_inline(&small, &id(&small, "?url&no-inline=1"), 4096).is_none(),
+            "`no-inline=1` too (Vite's noInlineRE is word-bounded)"
+        );
+        assert!(
+            dev_svg_inline(&small, &id(&small, "#top"), 4096).is_none(),
+            "a fragment keeps the url"
+        );
+        assert!(
+            dev_svg_inline(&big, &id(&big, ""), 4096).is_none(),
+            "over the limit"
+        );
+        assert!(
+            dev_svg_inline(&big, &id(&big, ""), 1 << 20).is_some(),
+            "under a raised limit"
+        );
+        let size = std::fs::metadata(&small).unwrap().len();
+        assert!(
+            dev_svg_inline(&small, &id(&small, ""), size).is_none(),
+            "the limit is exclusive"
+        );
+        assert!(
+            dev_svg_inline(&lfs, &id(&lfs, ""), 4096).is_none(),
+            "a Git LFS placeholder"
+        );
+        assert!(
+            dev_svg_inline(&png, &id(&png, ""), 4096).is_none(),
+            "only an svg"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_inline_limit_is_the_clients_then_the_builds_then_vites_default() {
+        let with = |build: Option<oj_config::BuildConfig>| oj_config::OjConfig {
+            build,
+            ..Default::default()
+        };
+        assert_eq!(client_inline_limit(&with(None)), 4096);
+        assert_eq!(
+            client_inline_limit(&with(Some(oj_config::BuildConfig {
+                assets_inline_limit: Some(1000),
+                ..Default::default()
+            }))),
+            1000
+        );
+        assert_eq!(
+            client_inline_limit(&with(Some(oj_config::BuildConfig {
+                assets_inline_limit: Some(1000),
+                assets_inline_limit_envs: Some(serde_json::json!({ "client": 10, "ssr": 2000 })),
+                ..Default::default()
+            }))),
+            10
+        );
     }
 }

@@ -47,6 +47,11 @@ pub struct OjConfig {
     pub ssr: Option<serde_json::Value>,
     /// Vite's `html` block (`cspNonce`).
     pub html: Option<HtmlConfig>,
+    /// Vite's `assetsInclude`: files beyond the known asset types whose
+    /// import is their URL. String globs (resolved against the root) and
+    /// RegExps (extracted as `{ regex, flags }`, tested against the file's
+    /// absolute path), as Vite's createFilter takes them.
+    pub assets_include: Option<Vec<serde_json::Value>>,
     pub legacy: Option<LegacyConfig>,
     /// How many of a vite.config's plugins the plugin host would run, from
     /// extraction (not a config key). `Some(0)`: no host is needed.

@@ -60,6 +60,8 @@ pub struct ViteValues {
     pub app_type: Option<String>,
     /// `html` block (`cspNonce`).
     pub html: Option<serde_json::Value>,
+    /// `assetsInclude`: string globs and `{ regex, flags }` objects.
+    pub assets_include: Option<Vec<serde_json::Value>>,
     /// The config's plugins the plugin host would run (none of oj's native
     /// set); an over-count. None when extraction could not read the list.
     pub active_plugins: Option<usize>,
@@ -353,6 +355,7 @@ pub fn engine_job_envelope(
                 oj_js::EngineError::Js(m) => ("js", m.clone()),
                 oj_js::EngineError::MemoryLimit => ("memory", String::new()),
                 oj_js::EngineError::Deadline => ("deadline", String::new()),
+                oj_js::EngineError::Interrupted(m) => ("interrupted", m.clone()),
                 oj_js::EngineError::Closed => ("closed", String::new()),
             };
             serde_json::json!({ "ok": false, "kind": kind, "message": message })
@@ -378,6 +381,7 @@ pub(crate) fn engine_job_outcome(
         Some("js") => oj_js::EngineError::Js(message),
         Some("memory") => oj_js::EngineError::MemoryLimit,
         Some("deadline") => oj_js::EngineError::Deadline,
+        Some("interrupted") => oj_js::EngineError::Interrupted(message),
         Some("closed") => oj_js::EngineError::Closed,
         _ => oj_js::EngineError::Boot(message),
     })
@@ -486,6 +490,16 @@ pub(crate) fn run_engine_job_subprocess(
     };
     let envelope = std::fs::read_to_string(&result_file);
     let _ = std::fs::remove_file(&result_file);
+    if let Some(signal) = killed_by(&status) {
+        // A signal sent from outside the job: the kernel's memory killer, a
+        // supervisor stopping the process group, a sweep. The job itself did
+        // nothing wrong, so the caller may run it again. A fault the child
+        // raised on itself (SIGSEGV, SIGABRT, ...) is a crash, below.
+        return Err(oj_js::EngineError::Interrupted(format!(
+            "the engine job child was killed by {}",
+            signal_name(signal)
+        )));
+    }
     if !status.success() {
         // A crash means an addon or engine took the child down instead of the caller.
         return Err(boot(format!("the engine job child died: {status}")));
@@ -510,6 +524,40 @@ impl Drop for RegisteredChild {
     fn drop(&mut self) {
         crate::unregister_child(self.0);
     }
+}
+
+/// The signal that ended `status`, if it is one other processes send to end
+/// a process: SIGHUP, SIGINT, SIGKILL, SIGTERM (the same numbers on every
+/// unix). The rest are faults a process raises on itself (SIGSEGV, SIGBUS,
+/// SIGILL, SIGABRT, SIGTRAP, ...): an addon or the engine crashing, which
+/// running the job again would only repeat.
+#[cfg(unix)]
+fn killed_by(status: &std::process::ExitStatus) -> Option<i32> {
+    use std::os::unix::process::ExitStatusExt;
+    status
+        .signal()
+        .filter(|signal| matches!(signal, 1 | 2 | 9 | 15))
+}
+
+#[cfg(not(unix))]
+fn killed_by(_status: &std::process::ExitStatus) -> Option<i32> {
+    None
+}
+
+/// `SIGKILL (signal 9)`: the name a reader knows, with the number for the rest.
+pub(crate) fn signal_name(signal: i32) -> String {
+    let name = match signal {
+        1 => "SIGHUP",
+        2 => "SIGINT",
+        3 => "SIGQUIT",
+        6 => "SIGABRT",
+        9 => "SIGKILL",
+        11 => "SIGSEGV",
+        13 => "SIGPIPE",
+        15 => "SIGTERM",
+        _ => return format!("signal {signal}"),
+    };
+    format!("{name} (signal {signal})")
 }
 
 /// Longest sleep between exit checks. Unix wakes on exit itself, so it only
@@ -625,6 +673,27 @@ pub(crate) fn cached_active_plugins(
     json.get("activePlugins")?.as_u64().map(|n| n as usize)
 }
 
+/// Why an evaluation of the config produced no values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ExtractionError {
+    /// The config failed: it threw, hit its bound, or could not be read. Its
+    /// cause is already printed. Running it again changes nothing.
+    Failed,
+    /// The process evaluating it was killed by a signal before it finished:
+    /// the kernel's memory killer, a supervisor stopping a process group, a
+    /// sweep. Says what killed it. The config itself did not fail.
+    Interrupted(String),
+}
+
+impl std::fmt::Display for ExtractionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Failed => f.write_str("the config failed to evaluate"),
+            Self::Interrupted(why) => write!(f, "the config evaluation was interrupted: {why}"),
+        }
+    }
+}
+
 /// [`extract_vite_values_with`] with the evaluation bound explicit (tests).
 pub(crate) fn extract_vite_values_timed(
     root: &Path,
@@ -634,7 +703,9 @@ pub(crate) fn extract_vite_values_timed(
     mode_explicit: bool,
     timeout: Option<std::time::Duration>,
 ) -> Option<ViteValues> {
-    extraction(root, config, command, mode, mode_explicit, timeout, false).map(|(v, _)| v)
+    extraction(root, config, command, mode, mode_explicit, timeout, false)
+        .ok()
+        .map(|(v, _)| v)
 }
 
 /// A restart's evaluation: always fresh, as Vite's restartServer resolves the
@@ -645,7 +716,7 @@ pub(crate) fn reextract_vite_values(
     config: Option<&Path>,
     command: &str,
     mode: &str,
-) -> Option<(ViteValues, bool)> {
+) -> Result<(ViteValues, bool), ExtractionError> {
     extraction(root, config, command, mode, true, None, true)
 }
 
@@ -657,14 +728,14 @@ fn extraction(
     mode_explicit: bool,
     timeout: Option<std::time::Duration>,
     fresh: bool,
-) -> Option<(ViteValues, bool)> {
+) -> Result<(ViteValues, bool), ExtractionError> {
     if plugins_file(root).is_some() {
-        return None;
+        return Err(ExtractionError::Failed);
     }
     let spa_build = command == "build" && !crate::is_tanstack_start_app(root);
     let mode_key = extraction_mode_key(root, mode, mode_explicit, spa_build);
     let mode_key = mode_key.as_str();
-    let vite = vite_config_file(root, config)?;
+    let vite = vite_config_file(root, config).ok_or(ExtractionError::Failed)?;
     if !fresh {
         let held = RESOLVED_VALUES
             .lock()
@@ -676,11 +747,11 @@ fn extraction(
             ))
             .cloned();
         if let Some(json) = held {
-            return Some((parse_vite_values(&json), false));
+            return Ok((parse_vite_values(&json), false));
         }
         if let Some(json) = super::static_config::static_extraction(root, &vite, command, mode) {
             crate::boot_phase("vite-extract static (no engine)");
-            return Some((parse_vite_values(&json), false));
+            return Ok((parse_vite_values(&json), false));
         }
     }
     // Concurrent boot callers asking for one key wait on a single evaluation
@@ -693,7 +764,8 @@ fn extraction(
     if !fresh && flight.finished.load(std::sync::atomic::Ordering::Acquire) != seen {
         return outcome
             .as_ref()
-            .map(|json| (parse_vite_values(json), false));
+            .map(|json| (parse_vite_values(json), false))
+            .ok_or(ExtractionError::Failed);
     }
     let ran = run_extraction(
         root,
@@ -706,7 +778,7 @@ fn extraction(
         timeout,
         fresh,
     );
-    *outcome = ran.as_ref().map(|(json, _)| json.clone());
+    *outcome = ran.as_ref().ok().map(|(json, _)| json.clone());
     flight
         .finished
         .fetch_add(1, std::sync::atomic::Ordering::Release);
@@ -740,6 +812,7 @@ pub fn static_and_engine_extraction(
         None,
         true,
     )
+    .ok()
     .map(|(json, _)| json);
     (read, evaluated)
 }
@@ -759,7 +832,7 @@ fn run_extraction(
     spa_build: bool,
     timeout: Option<std::time::Duration>,
     fresh: bool,
-) -> Option<(serde_json::Value, bool)> {
+) -> Result<(serde_json::Value, bool), ExtractionError> {
     let store = extraction_store(root);
     let mut held = None;
     if let Some(hit) = store.lookup(vite, command, mode_key) {
@@ -770,13 +843,13 @@ fn run_extraction(
                 print_extraction_stderr(&hit.stderr);
                 let _ = CONFIG_DEPS.set(hit.deps);
                 crate::boot_phase("vite-extract cache hit");
-                return Some((json, false));
+                return Ok((json, false));
             }
         }
     }
     let cache = oj_cache::cache_root(root);
     let _ = std::fs::create_dir_all(&cache);
-    let script = materialize_extract_script(&cache)?;
+    let script = materialize_extract_script(&cache).ok_or(ExtractionError::Failed)?;
     let mut payload = serde_json::json!({
         "vite": vite.to_string_lossy(),
         "root": root.to_string_lossy(),
@@ -821,11 +894,18 @@ fn run_extraction(
                 "oj: extracting {}: the config evaluation hit its bound and was killed",
                 vite.display(),
             );
-            return None;
+            return Err(ExtractionError::Failed);
+        }
+        Err(oj_js::EngineError::Interrupted(why)) => {
+            eprintln!(
+                "oj: extracting {}: the config evaluation was interrupted: {why}",
+                vite.display(),
+            );
+            return Err(ExtractionError::Interrupted(why));
         }
         Err(e) => {
             eprintln!("oj: extracting {}: {e}", vite.display());
-            return None;
+            return Err(ExtractionError::Failed);
         }
     };
     // Everything the evaluation wrote to stderr, captured inside the engine.
@@ -838,7 +918,7 @@ fn run_extraction(
     // `__ok: false` means the config failed to evaluate (cause already in stderr).
     // Never parse that into an empty ViteValues; return None.
     if json.get("__ok").and_then(|v| v.as_bool()) != Some(true) {
-        return None;
+        return Err(ExtractionError::Failed);
     }
     // Whether the host took the run over is this start's alone.
     let kept = json.get("__kept").is_some();
@@ -881,7 +961,7 @@ fn run_extraction(
         obj.remove("__stderr");
     }
     let changed = held.as_ref() != Some(&output);
-    Some((json, changed))
+    Ok((json, changed))
 }
 
 /// One (config, command, mode) extraction key in this process: the lock its
@@ -1157,6 +1237,9 @@ pub(crate) fn parse_vite_values(json: &serde_json::Value) -> ViteValues {
         preview: non_null(json, "preview"),
         app_type: str_field(json, "appType"),
         html: non_null(json, "html"),
+        assets_include: json
+            .get("assetsInclude")
+            .and_then(|v| v.as_array().cloned()),
         active_plugins: json
             .get("activePlugins")
             .and_then(|v| v.as_u64())
@@ -1188,6 +1271,7 @@ pub fn adopt_vite_config_values(
         return no_values_verdict(root, config_file);
     };
     merge_vite_values(config, v);
+    install_assets_include(config, root);
     exclude_stylex_dependencies(config, root, command);
     Ok(())
 }
@@ -1205,8 +1289,33 @@ pub fn adopt_vite_config_values_default_mode(
         return no_values_verdict(root, config_file);
     };
     merge_vite_values(config, v);
+    install_assets_include(config, root);
     exclude_stylex_dependencies(config, root, command);
     Ok(())
+}
+
+/// The config's `assetsInclude` becomes the app's asset filter
+/// (`oj_compiler::assets::is_included_asset`), as Vite's resolved config
+/// carries the one `assetsInclude(file)` every plugin consults. A relative
+/// glob resolves against the directory oj was started from, as Vite's
+/// `createFilter` resolves one against the process's working directory
+/// (an in-process plugin host changes the process's own to its app root).
+fn install_assets_include(config: &oj_config::OjConfig, root: &Path) {
+    // Read once: where no launch directory was pinned (a test process, whose
+    // in-process hosts change the current directory as they come and go),
+    // every app resolves against the same one.
+    static STARTED_IN: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    let started_in = STARTED_IN.get_or_init(|| {
+        crate::watch::STARTUP_CWD
+            .get()
+            .cloned()
+            .or_else(|| std::env::current_dir().ok())
+    });
+    oj_compiler::assets::install_assets_include(
+        config.assets_include.as_deref().unwrap_or(&[]),
+        root,
+        started_in.as_deref().unwrap_or(root),
+    );
 }
 
 /// No values extracted: no vite.config means nothing to adopt, but a
@@ -1419,6 +1528,11 @@ pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues)
     }
     if let Some(css) = v.css.as_ref() {
         merge_css(config, css);
+    }
+    if config.assets_include.is_none() {
+        if let Some(a) = v.assets_include.filter(|a| !a.is_empty()) {
+            config.assets_include = Some(a);
+        }
     }
     if config.env_prefix.is_none() {
         if let Some(p) = v.env_prefix.filter(|p| !p.is_empty()) {
@@ -1765,6 +1879,14 @@ fn merge_css(config: &mut oj_config::OjConfig, css: &serde_json::Value) {
 mod exit_signal_tests {
     use super::*;
 
+    /// A sweep (`kill_all`) kills every registered child of the process, the
+    /// other tests' stand-in children included, and the registry lifecycle
+    /// test in `crate::tests` sweeps too: every test that registers a child
+    /// or sweeps holds the registry's test lock.
+    fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+        crate::watch::child_groups::test_lock()
+    }
+
     #[test]
     fn exit_signal_fires_on_exit_and_leaves_the_child_to_reap() {
         let mut child = std::process::Command::new("sh")
@@ -1793,6 +1915,7 @@ mod exit_signal_tests {
     #[test]
     fn the_shutdown_sweep_kills_a_running_engine_job_child() {
         use std::os::unix::fs::PermissionsExt;
+        let _one = one_at_a_time();
         let dir = tempfile::tempdir().unwrap();
         let exe = dir.path().join("fake-oj");
         std::fs::write(&exe, "#!/bin/sh\nexec sleep 30\n").unwrap();
@@ -1821,6 +1944,67 @@ mod exit_signal_tests {
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("the job returns once its child is killed");
         assert!(out.is_err(), "a killed job fails: {out:?}");
+    }
+
+    /// `run_engine_job_subprocess` against a stand-in child running `script`.
+    fn job_with_child(script: &str) -> Result<serde_json::Value, oj_js::EngineError> {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("fake-oj");
+        std::fs::write(&exe, format!("#!/bin/sh\n{script}\n")).unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        run_engine_job_subprocess(
+            &exe,
+            dir.path(),
+            Path::new("job.mjs"),
+            "run",
+            &serde_json::Value::Null,
+            None,
+        )
+    }
+
+    // A child a signal killed (the kernel's memory killer, a supervisor's
+    // signal to the group) was interrupted, and the error names the signal:
+    // the job did not fail, so the caller may run it again. A child that
+    // exited on its own with a failure is a crash, as before.
+    #[test]
+    fn a_child_killed_by_a_signal_is_an_interruption_naming_the_signal() {
+        let _one = one_at_a_time();
+        match job_with_child("kill -KILL $$") {
+            Err(oj_js::EngineError::Interrupted(why)) => {
+                assert!(why.contains("SIGKILL (signal 9)"), "{why}");
+            }
+            other => panic!("SIGKILL is an interruption: {other:?}"),
+        }
+        match job_with_child("kill -TERM $$") {
+            Err(oj_js::EngineError::Interrupted(why)) => {
+                assert!(why.contains("SIGTERM (signal 15)"), "{why}");
+            }
+            other => panic!("SIGTERM is an interruption: {other:?}"),
+        }
+        match job_with_child("exit 7") {
+            Err(oj_js::EngineError::Boot(why)) => {
+                assert!(why.contains("the engine job child died"), "{why}");
+            }
+            other => panic!("an exit code is a crash, not an interruption: {other:?}"),
+        }
+        // A fault the child raised on itself is a crash too: running the job
+        // again would crash again.
+        for fault in ["SEGV", "ABRT"] {
+            match job_with_child(&format!("kill -{fault} $$")) {
+                Err(oj_js::EngineError::Boot(why)) => {
+                    assert!(why.contains("the engine job child died"), "{why}");
+                }
+                other => panic!("SIG{fault} is a crash, not an interruption: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn signal_names_are_the_known_ones_or_the_number() {
+        assert_eq!(signal_name(9), "SIGKILL (signal 9)");
+        assert_eq!(signal_name(15), "SIGTERM (signal 15)");
+        assert_eq!(signal_name(31), "signal 31");
     }
 }
 

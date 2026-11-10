@@ -94,6 +94,31 @@ pub(crate) struct HostCore {
     pub(crate) revive: Mutex<ReviveState>,
     /// Set by `shutdown()`: retired on purpose, must never be revived.
     shut_down: std::sync::atomic::AtomicBool,
+    /// The module hooks in flight, by container, hook and arguments: a
+    /// second identical call while one runs awaits the same run instead of
+    /// starting another, as Vite's `transformRequest` hands a request for a
+    /// url already being transformed that pending request
+    /// (`environment._pendingRequests`). Pages that load the same sheet or
+    /// module at once run its plugins once.
+    ///
+    /// The key carries the count of changes the host had heard of when
+    /// the run began (`changes`), so a call made after a change never
+    /// shares a run begun before it: a virtual module's `load` is keyed by
+    /// id alone, and a run that read the files before an edit would have
+    /// handed its stale answer to a caller arriving after it. Vite keeps
+    /// the same rule per module, comparing the pending request's timestamp
+    /// with the module's `lastInvalidationTimestamp` (`transformRequest`).
+    ///
+    /// Keyed by the call's subject (container, hook, module id, phase), so
+    /// a lookup hashes a path, never the source; the runs under a subject
+    /// are told apart by their whole arguments, compared only when two
+    /// calls on one module overlap.
+    in_flight: Mutex<std::collections::HashMap<std::sync::Arc<InFlightSubject>, Vec<InFlightRun>>>,
+    /// How many changes the host has heard of: a watched file's event
+    /// (`watcherEvents`, `watchChange`, `hotUpdate`) or a plugin
+    /// invalidating a module through the server's module graph. Read into
+    /// every shared run's key; see `in_flight`.
+    changes: std::sync::atomic::AtomicU64,
     /// Weak self-handle so `&self` methods can hand a fresh generation's tasks their `Arc`s.
     self_ref: std::sync::OnceLock<std::sync::Weak<HostCore>>,
     /// The handle on the host's own container, whose hook plan a respawn resets.
@@ -1103,6 +1128,8 @@ impl PluginHost {
                 reported: false,
             }),
             shut_down: std::sync::atomic::AtomicBool::new(false),
+            in_flight: Mutex::new(std::collections::HashMap::new()),
+            changes: std::sync::atomic::AtomicU64::new(0),
             self_ref: std::sync::OnceLock::new(),
             main: std::sync::OnceLock::new(),
             environments: Mutex::new(Vec::new()),
@@ -1434,6 +1461,7 @@ impl PluginHost {
         change_type: &str,
         modules_json: &str,
     ) -> Result<Option<String>, String> {
+        self.core.note_change();
         self.call(
             "handleHotUpdate",
             &[file, &timestamp.to_string(), change_type, modules_json],
@@ -1494,6 +1522,7 @@ impl PluginHost {
 
     #[inline]
     pub async fn watch_change(&self, file: &str, event: &str) -> Result<(), String> {
+        self.core.note_change();
         self.call_unit("watchChange", &[file, event]).await
     }
 
@@ -1507,6 +1536,7 @@ impl PluginHost {
                 .collect(),
         )
         .to_string();
+        self.core.note_change();
         self.call_unit("watcherEvents", &[json.as_str()]).await
     }
 
@@ -1637,6 +1667,22 @@ impl PluginHost {
     #[inline]
     pub fn hook_wants_load(&self, id: &str) -> bool {
         self.hook_plan.read().unwrap().load.wants(id, None)
+    }
+
+    /// The hooks the host is running right now, oldest first (what a probe
+    /// reports; see [`RunningHook`]). Empty when the host is gone.
+    pub async fn running_hooks(&self) -> Vec<RunningHook> {
+        let engine = self.core.engine.lock().unwrap().clone();
+        let Some(engine) = engine else {
+            return Vec::new();
+        };
+        match engine
+            .call(self.core.host_module.clone(), "ojPing", Vec::new(), None)
+            .await
+        {
+            Ok(answer) => running_hooks_of(&answer),
+            Err(_) => Vec::new(),
+        }
     }
 
     #[inline]
@@ -1870,7 +1916,7 @@ impl PluginHost {
     }
 
     /// One hook call into this handle's container.
-    async fn call(&self, hook: &str, args: &[&str]) -> Result<Option<String>, String> {
+    async fn call(&self, hook: &'static str, args: &[&str]) -> Result<Option<String>, String> {
         if self.is_stale() {
             return Err(format!(
                 "plugin container {} died with its plugin host's engine",
@@ -1887,12 +1933,12 @@ impl PluginHost {
             .is_some_and(|g| g != self.core.revive.lock().unwrap().generation)
     }
 
-    async fn call_unit(&self, hook: &str, args: &[&str]) -> Result<(), String> {
+    async fn call_unit(&self, hook: &'static str, args: &[&str]) -> Result<(), String> {
         self.call(hook, args).await.map(|_| ())
     }
 
     /// A no-arg query, with any failure or empty reply as `None`.
-    async fn call_ok(&self, hook: &str) -> Option<String> {
+    async fn call_ok(&self, hook: &'static str) -> Option<String> {
         self.call(hook, &[]).await.ok().flatten()
     }
 
@@ -1905,12 +1951,12 @@ impl PluginHost {
             .filter(|v| v.is_object())
     }
 
-    async fn call_json(&self, hook: &str) -> Option<serde_json::Value> {
+    async fn call_json(&self, hook: &'static str) -> Option<serde_json::Value> {
         serde_json::from_str(&self.call_ok(hook).await?).ok()
     }
 
     /// A no-arg `"true"` query; `default` when the call fails or returns nothing.
-    async fn call_flag(&self, hook: &str, default: bool) -> bool {
+    async fn call_flag(&self, hook: &'static str, default: bool) -> bool {
         match self.call(hook, &[]).await {
             Ok(Some(s)) => s == "true",
             _ => default,
@@ -2442,6 +2488,12 @@ impl HostCore {
             self.init_progress_seen.send_modify(|c| *c += 1);
             let _ = self.init_failed.send_replace(false);
         } else if let Some(ev) = msg.get("ojServer") {
+            if matches!(
+                ev.get("action").and_then(|a| a.as_str()),
+                Some("invalidate" | "invalidateAll")
+            ) {
+                self.note_change();
+            }
             let mut early = self.early_server_events.lock().unwrap();
             match self.server_events.get() {
                 Some(tx) => {
@@ -2646,18 +2698,83 @@ impl HostCore {
         });
     }
 
-    /// One hook call into `container`.
+    /// A change the host is about to hear of, or has pushed: runs begun
+    /// before it are never shared with calls made after it (see `in_flight`).
+    pub(crate) fn note_change(&self) {
+        self.changes
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    }
+
+    /// One hook call into `container`. The hook is a name from the host's
+    /// fixed set, a literal at every call site, so what records it (a
+    /// shared run's subject) points at the binary instead of copying it.
     async fn call(
         &self,
         container: u32,
-        hook: &str,
+        hook: &'static str,
         args: &[&str],
     ) -> Result<Option<String>, String> {
         if *self.host_gone.borrow() && !self.try_revive() {
             return Err("plugin host exited".into());
         }
         self.wait_for_init().await?;
-        self.run_hook(container, hook, args).await
+        if !shares_a_run(hook) {
+            return self.run_hook(container, hook, args).await;
+        }
+        let Some(core) = self.self_ref.get().and_then(std::sync::Weak::upgrade) else {
+            return self.run_hook(container, hook, args).await;
+        };
+        let subject = InFlightSubject::of(container, hook, args);
+        let changes = self.changes.load(std::sync::atomic::Ordering::Acquire);
+        let shared = {
+            let mut in_flight = self
+                .in_flight
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let same = in_flight
+                .get(&subject)
+                .and_then(|runs| runs.iter().find(|r| r.key.is_call(changes, args)));
+            match same {
+                Some(run) => run.call.clone(),
+                None => {
+                    let key = std::sync::Arc::new(InFlightKey {
+                        subject: std::sync::Arc::new(subject),
+                        args: args.iter().map(|a| (*a).to_string()).collect(),
+                        changes,
+                    });
+                    let run = tokio::spawn({
+                        let key = std::sync::Arc::clone(&key);
+                        async move {
+                            // Dropped however the run ends, a panic
+                            // included: a key left behind would hand every
+                            // later identical call this run's failure.
+                            let done = InFlightDone { core, key };
+                            let refs: Vec<&str> =
+                                done.key.args.iter().map(String::as_str).collect();
+                            done.core
+                                .run_hook(container, done.key.subject.hook, &refs)
+                                .await
+                        }
+                    });
+                    let run: InFlightCall =
+                        futures_util::FutureExt::shared(futures_util::FutureExt::boxed(
+                            futures_util::FutureExt::map(run, |joined| match joined {
+                                Ok(result) => result,
+                                Err(e) => Err(format!("plugin hook task failed: {e}")),
+                            }),
+                        ));
+                    in_flight
+                        .entry(std::sync::Arc::clone(&key.subject))
+                        .or_default()
+                        .push(InFlightRun {
+                            key,
+                            call: run.clone(),
+                        });
+                    run
+                }
+            }
+        };
+        shared.await
     }
 
     /// Init gate, BEFORE anything reaches the engine: the host answers hooks
@@ -2768,10 +2885,15 @@ impl HostCore {
                         Ok(Err(oj_js::EngineError::Closed)) => {
                             return Err("plugin host exited".into());
                         }
-                        Ok(_) => {
+                        Ok(answer) => {
+                            let running = answer
+                                .ok()
+                                .as_ref()
+                                .map(running_hooks_of)
+                                .unwrap_or_default();
                             eprintln!(
-                                "oj: {hook} has been running for {}s (the plugin host is responsive)…",
-                                started.elapsed().as_secs()
+                                "{}",
+                                long_hook_notice(hook, args, started.elapsed().as_secs(), &running)
                             );
                         }
                         Err(_) => {
@@ -2814,6 +2936,11 @@ impl HostCore {
                 "plugin host abandoned {hook} (execution terminated)"
             )),
             Err(oj_js::EngineError::Closed) => Err("plugin host exited".into()),
+            // An in-process engine is never killed apart from its process; the
+            // variant belongs to the one-shot engine job children.
+            Err(oj_js::EngineError::Interrupted(why)) => {
+                Err(format!("plugin host interrupted running {hook}: {why}"))
+            }
             Err(oj_js::EngineError::MemoryLimit) => {
                 // A near-limit heap is a property of the isolate, not this call:
                 // declare it gone, the next call revives a fresh one.
@@ -2991,6 +3118,189 @@ fn bool_arg(b: bool) -> &'static str {
         "true"
     } else {
         "false"
+    }
+}
+
+/// One hook the host is running (what `ojPing` reports): its subject (a
+/// transform's or load's id, a resolve's specifier), the plugin whose
+/// handler it awaits at the moment, and how long it has run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunningHook {
+    pub hook: String,
+    pub id: Option<String>,
+    pub phase: Option<String>,
+    pub plugin: Option<String>,
+    pub ms: u64,
+}
+
+/// The running hooks a ping answered with (an older host answers `true`: none).
+pub(crate) fn running_hooks_of(answer: &serde_json::Value) -> Vec<RunningHook> {
+    let text = answer.as_str().unwrap_or("");
+    let Ok(serde_json::Value::Array(list)) = serde_json::from_str::<serde_json::Value>(text) else {
+        return Vec::new();
+    };
+    let string =
+        |v: &serde_json::Value, k: &str| v.get(k).and_then(|s| s.as_str()).map(str::to_string);
+    list.iter()
+        .map(|v| RunningHook {
+            hook: string(v, "hook").unwrap_or_default(),
+            id: string(v, "id"),
+            phase: string(v, "phase"),
+            plugin: string(v, "plugin"),
+            ms: v.get("ms").and_then(serde_json::Value::as_u64).unwrap_or(0),
+        })
+        .collect()
+}
+
+/// The hooks whose identical concurrent calls share one run (see
+/// `HostCore::in_flight`): the module hooks, whose answer is a function of
+/// the module they are asked about. Lifecycle hooks and the server's own
+/// calls each run every time.
+fn shares_a_run(hook: &str) -> bool {
+    matches!(hook, "transform" | "transformPhase" | "load" | "loadPhase")
+}
+
+/// What a shared run's map entry is found by: the container, the hook
+/// and the module it is about (see [`hook_subject`]). Hashing it touches
+/// the id and the phase, not the source a transform carries. The hook and
+/// a known phase are the binary's own literals; only the id, a path, is
+/// allocated.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct InFlightSubject {
+    container: u32,
+    hook: &'static str,
+    id: Option<String>,
+    phase: Option<std::borrow::Cow<'static, str>>,
+}
+
+impl InFlightSubject {
+    fn of(container: u32, hook: &'static str, args: &[&str]) -> Self {
+        let (id, phase) = hook_subject(hook, args);
+        Self {
+            container,
+            hook,
+            id: id.map(str::to_string),
+            phase: phase.map(known_phase),
+        }
+    }
+}
+
+/// A stylesheet slot's name as the binary's literal, so a subject holds no
+/// copy of it; an unknown phase (none today) is carried as it came.
+fn known_phase(phase: &str) -> std::borrow::Cow<'static, str> {
+    match phase {
+        "pre" => std::borrow::Cow::Borrowed("pre"),
+        "normal" => std::borrow::Cow::Borrowed("normal"),
+        "post" => std::borrow::Cow::Borrowed("post"),
+        other => std::borrow::Cow::Owned(other.to_string()),
+    }
+}
+
+/// What identifies one shared run: the whole call, so two calls share a
+/// run only when they are the same call (a hash alone could pair two
+/// modules by collision and hand one the other's code), begun with the
+/// same changes heard of.
+#[derive(Debug)]
+struct InFlightKey {
+    /// Shared with the map entry the run sits under.
+    subject: std::sync::Arc<InFlightSubject>,
+    args: Vec<String>,
+    /// `HostCore::changes` when the run began.
+    changes: u64,
+}
+
+impl InFlightKey {
+    /// Whether a call with these arguments, made with this many changes
+    /// heard of, is this run's call (its subject already matched).
+    fn is_call(&self, changes: u64, args: &[&str]) -> bool {
+        self.changes == changes
+            && self.args.len() == args.len()
+            && self.args.iter().zip(args).all(|(a, b)| a == b)
+    }
+}
+
+/// One run under a subject: its key and the future its callers share.
+struct InFlightRun {
+    key: std::sync::Arc<InFlightKey>,
+    call: InFlightCall,
+}
+
+/// Forgets a shared run's key when the run ends, however it ends.
+struct InFlightDone {
+    core: std::sync::Arc<HostCore>,
+    key: std::sync::Arc<InFlightKey>,
+}
+
+impl Drop for InFlightDone {
+    fn drop(&mut self) {
+        let mut in_flight = self
+            .core
+            .in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let subject: &InFlightSubject = &self.key.subject;
+        if let Some(runs) = in_flight.get_mut(subject) {
+            runs.retain(|r| !std::sync::Arc::ptr_eq(&r.key, &self.key));
+            if runs.is_empty() {
+                in_flight.remove(subject);
+            }
+        }
+    }
+}
+
+type InFlightCall = futures_util::future::Shared<
+    futures_util::future::BoxFuture<'static, Result<Option<String>, String>>,
+>;
+
+/// The module a hook call is about, from its arguments (see `hookSubject`
+/// in plugin-host.mjs): `(id, phase)`.
+fn hook_subject<'a>(hook: &str, args: &[&'a str]) -> (Option<&'a str>, Option<&'a str>) {
+    match hook {
+        "transform" => (args.get(1).copied(), None),
+        "transformPhase" => (args.get(1).copied(), args.get(3).copied()),
+        "loadPhase" => (args.first().copied(), args.get(1).copied()),
+        "load" | "resolveId" | "resolveIdPhase" | "scanResolveId" => (args.first().copied(), None),
+        _ => (None, None),
+    }
+}
+
+/// The line a call waiting out a long hook logs each probe window: the hook
+/// and what it runs on, and the plugin it is awaiting if the host knows
+/// (Vite's `DEBUG=vite:plugin-transform` names the plugin and the module of
+/// each transform the same way).
+pub(crate) fn long_hook_notice(
+    hook: &str,
+    args: &[&str],
+    elapsed_secs: u64,
+    running: &[RunningHook],
+) -> String {
+    let (id, phase) = hook_subject(hook, args);
+    let mut line = format!("oj: {hook}");
+    if let Some(phase) = phase {
+        line.push_str(&format!(" ({phase})"));
+    }
+    if let Some(id) = id {
+        line.push_str(&format!(" of {id}"));
+    }
+    line.push_str(&format!(" has been running for {elapsed_secs}s"));
+    let plugin = running
+        .iter()
+        .find(|r| r.hook == hook && r.id.as_deref() == id && r.phase.as_deref() == phase)
+        .and_then(|r| r.plugin.as_deref());
+    if let Some(plugin) = plugin {
+        line.push_str(&format!(", in plugin {plugin}'s {}", hook_name(hook)));
+    }
+    line.push_str(" (the plugin host is responsive)…");
+    line
+}
+
+/// The plugin hook a host call runs: a phase call is still the plugins' `transform` or `load`.
+fn hook_name(hook: &str) -> &str {
+    match hook {
+        "transformPhase" => "transform",
+        "loadPhase" => "load",
+        "resolveIdPhase" | "scanResolveId" => "resolveId",
+        other => other,
     }
 }
 

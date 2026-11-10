@@ -788,8 +788,11 @@ pub(crate) fn prepare_out_dir(
     Ok(())
 }
 
-fn is_build_asset(id: &str) -> bool {
-    oj_compiler::assets::is_asset_url(id)
+/// Whether the build loads `id` as an asset of the app at `root`: Vite's
+/// `config.assetsInclude(cleanUrl(id))` in vite:asset's load, a known type
+/// or a file the config's `assetsInclude` names.
+fn is_build_asset(root: &Path, id: &str) -> bool {
+    oj_compiler::assets::is_asset_path(root, id)
 }
 
 fn asset_mime(ext: &str) -> &'static str {
@@ -1106,57 +1109,22 @@ fn export_default_url(url: &str) -> String {
     )
 }
 
-/// Vite's `svgToDataURL` (asset.ts): an SVG with `<text`, `<foreignObject` or
-/// nested quotes is base64 (any rewrite would be unsafe); otherwise the markup
-/// is trimmed, inter-tag whitespace dropped, double quotes turned single, and
-/// `% # < >` plus whitespace runs percent-encoded (`%20` keeps srcset valid).
-/// A backslash is encoded too, so the url is safe inside a `"…"` CSS string.
-fn svg_data_url(text: &str) -> String {
-    if text.contains("<text") || text.contains("<foreignObject") || has_nested_quotes(text) {
-        return format!("data:image/svg+xml;base64,{}", b64(text.as_bytes()));
-    }
-    let mut out = String::with_capacity(text.len() + 16);
-    let mut pending_ws = false;
-    for ch in text.trim().chars() {
-        if ch.is_whitespace() {
-            pending_ws = true;
-            continue;
-        }
-        if pending_ws {
-            // `>   <` collapses to `><`; any other whitespace run is one `%20`.
-            if !(ch == '<' && out.ends_with("%3e")) {
-                out.push_str("%20");
-            }
-            pending_ws = false;
-        }
-        match ch {
-            '%' => out.push_str("%25"),
-            '#' => out.push_str("%23"),
-            '<' => out.push_str("%3c"),
-            '>' => out.push_str("%3e"),
-            '\\' => out.push_str("%5C"),
-            '"' => out.push('\''),
-            other => out.push(other),
-        }
-    }
-    format!("data:image/svg+xml,{out}")
+/// Vite's `svgToDataURL` (asset.ts), the dev server's copy: an SVG with
+/// `<text`, `<foreignObject` or nested quotes is base64 (any rewrite would
+/// be unsafe); otherwise the markup is trimmed, inter-tag whitespace dropped,
+/// double quotes turned single, and `% # < >` plus whitespace runs
+/// percent-encoded (`%20` keeps srcset valid). A backslash stands, as in
+/// Vite; a JavaScript string literal escapes it, and the CSS site encodes it
+/// ([`css_url_safe`]).
+pub(crate) fn svg_data_url(text: &str) -> String {
+    oj_server::svg_to_data_url(text.as_bytes())
 }
 
-/// Vite's `nestedQuotesRE`: a double-quoted run containing a single quote, or
-/// the reverse, which the quote swap would corrupt.
-fn has_nested_quotes(text: &str) -> bool {
-    for (open, inner) in [('"', '\''), ('\'', '"')] {
-        let mut rest = text;
-        while let Some(start) = rest.find(open) {
-            let after = &rest[start + 1..];
-            let Some(end) = after.find(open) else { break };
-            if after[..end].contains(inner) {
-                return true;
-            }
-            rest = &after[end + 1..];
-        }
-    }
-    false
+/// A data URL as a CSS `url("…")` string: a backslash starts a CSS escape,
+/// so one in an inlined SVG is percent-encoded here. Vite writes it as is
+/// and the browser drops it on parsing; this keeps the svg's own text.
+fn css_url_safe(url: String) -> String {
+    url.replace('\\', "%5C")
 }
 
 /// Emit an asset file, or inline it as a data URL when it is under
@@ -1392,7 +1360,14 @@ async fn compile_stylesheet(
 pub(crate) fn split_asset_query(spec: &str) -> Option<(String, String)> {
     let (base, query) = spec.split_once('?')?;
     let params: Vec<&str> = query.split('&').filter(|p| !p.is_empty()).collect();
-    let has = |k: &str| params.contains(&k);
+    // `url`, `raw`, the workers and `init` match whole (Vite's urlRE, rawRE,
+    // workerOrSharedWorkerRE); `inline` and `no-inline` as Vite's
+    // word-bounded inlineRE / noInlineRE (`inline=1`, `no-inline-x` too).
+    let word = |p: &str, name: &str| oj_server::has_word_param(&format!("?{p}"), name);
+    let has = |k: &str| match k {
+        "inline" | "no-inline" => params.iter().any(|p| word(p, k)),
+        _ => params.contains(&k),
+    };
     let worker_kind = if has("worker") {
         Some("worker")
     } else if has("sharedworker") {
@@ -1425,7 +1400,7 @@ pub(crate) fn split_asset_query(spec: &str) -> Option<(String, String)> {
     if !params.is_empty()
         && params
             .iter()
-            .all(|p| ["url", "inline", "no-inline"].contains(p))
+            .all(|p| *p == "url" || word(p, "inline") || word(p, "no-inline"))
     {
         let q = if has("no-inline") {
             "no-inline"
@@ -1894,7 +1869,11 @@ impl Plugin for OjCssPlugin {
                     || Path::new(&rest)
                         .extension()
                         .and_then(|e| e.to_str())
-                        .is_some_and(oj_compiler::assets::is_asset_ext);
+                        .is_some_and(oj_compiler::assets::is_asset_ext)
+                    || oj_compiler::assets::is_included_asset(
+                        &root,
+                        &root.join(&rest).to_string_lossy(),
+                    );
                 if asset && !worker && public_file(&public_dir, &rest).is_some() {
                     let id = with_query(&format!("{PUBLIC_FILE_ID}{rest}"));
                     return Ok(Some(HookResolveIdOutput::from_id(id)));
@@ -2112,7 +2091,7 @@ impl Plugin for OjCssPlugin {
                     }
                 }
             }
-            if !id.contains('?') && is_build_asset(&id) {
+            if !id.contains('?') && is_build_asset(&root, &id) {
                 let bytes =
                     std::fs::read(&id).map_err(|e| anyhow::anyhow!("cannot read {id}: {e}"))?;
                 let code = emit_or_inline(&ctx, &root, &id, bytes, inline_limit, false)?;
@@ -6911,7 +6890,7 @@ fn emit_css_url(
     // except an svg with a fragment, which must stay a file to keep its `#id`.
     if (data.len() as u64) < opts.inline_limit && !suffix.starts_with('#') {
         if ext.eq_ignore_ascii_case("svg") {
-            return Some(svg_data_url(&String::from_utf8_lossy(&data)));
+            return Some(css_url_safe(svg_data_url(&String::from_utf8_lossy(&data))));
         }
         return Some(format!("data:{};base64,{}", asset_mime(ext), b64(&data)));
     }
@@ -9593,7 +9572,8 @@ mod tests {
             ("<svg a=\"b\"/>", "%3csvg%20a='b'/%3e"),
             ("<svg>100%</svg>", "%3csvg%3e100%25%3c/svg%3e"),
             ("<svg fill=\"#fff\"/>", "%3csvg%20fill='%23fff'/%3e"),
-            ("<svg>a\\b</svg>", "%3csvg%3ea%5Cb%3c/svg%3e"),
+            // A backslash stands, as in Vite (the module literal escapes it).
+            ("<svg>a\\b</svg>", "%3csvg%3ea\\b%3c/svg%3e"),
             // Vite: whitespace between tags is dropped, other runs become one %20.
             (
                 "  <svg>\n  <rect   x=\"1\"/>\n</svg>  ",
@@ -9617,6 +9597,9 @@ mod tests {
             "<svg><foreignObject/></svg>",
             "<svg title=\"it's\"/>",
             "<svg title='say \"hi\"'/>",
+            // Vite's nestedQuotesRE reads across an unbalanced pair too:
+            // `"c'd"` here, though the quotes pair up as `"b"` and `"e"`.
+            "<svg a=\"b\"c'd\"e\"/>",
         ] {
             let url = svg_data_url(svg);
             assert!(
@@ -9629,8 +9612,13 @@ mod tests {
             );
         }
         assert!(
-            !has_nested_quotes("<svg a=\"b\" c='d'/>"),
+            svg_data_url("<svg a=\"b\" c='d'/>").starts_with("data:image/svg+xml,"),
             "separate quote styles are fine"
+        );
+        // In a CSS string the backslash is encoded instead.
+        assert_eq!(
+            css_url_safe(svg_data_url("<svg>a\\b</svg>")),
+            "data:image/svg+xml,%3csvg%3ea%5Cb%3c/svg%3e"
         );
     }
 
@@ -9663,7 +9651,7 @@ mod tests {
             "ttf", "otf", "eot", "mp4", "webm", "mov", "mp3", "wav", "ogg",
         ] {
             assert!(
-                is_build_asset(&format!("/src/a.{ext}")),
+                is_build_asset(Path::new("/"), &format!("/src/a.{ext}")),
                 "{ext} not an asset"
             );
             assert_ne!(
@@ -9673,15 +9661,15 @@ mod tests {
             );
         }
         // A query does not change the classification.
-        assert!(is_build_asset("/src/a.png?url"));
+        assert!(is_build_asset(Path::new("/"), "/src/a.png?url"));
         // Same list as the dev server, case-insensitive like Vite.
-        assert!(is_build_asset("/src/photo.JPG"));
-        assert!(is_build_asset("/src/doc.pdf"));
-        assert!(is_build_asset("/src/site.webmanifest"));
+        assert!(is_build_asset(Path::new("/"), "/src/photo.JPG"));
+        assert!(is_build_asset(Path::new("/"), "/src/doc.pdf"));
+        assert!(is_build_asset(Path::new("/"), "/src/site.webmanifest"));
         assert_eq!(asset_mime("PNG"), "image/png");
-        assert!(!is_build_asset("/src/a.tsx"));
-        assert!(!is_build_asset("/src/a.png.tsx"));
-        assert!(!is_build_asset(""));
+        assert!(!is_build_asset(Path::new("/"), "/src/a.tsx"));
+        assert!(!is_build_asset(Path::new("/"), "/src/a.png.tsx"));
+        assert!(!is_build_asset(Path::new("/"), ""));
         // An unknown extension falls back rather than guessing.
         assert_eq!(asset_mime("xyz"), "application/octet-stream");
     }
@@ -9735,6 +9723,28 @@ mod tests {
             "foreign params are not oj queries"
         );
         assert_eq!(split_asset_query("./a.png?v=1"), None);
+        // Vite's inlineRE / noInlineRE are word-bounded: `inline=1` and
+        // `no-inline-x` count, `inlinex` does not; `url` matches whole.
+        for (spec, want) in [
+            ("./a.png?no-inline=1", "no-inline"),
+            ("./a.png?url&no-inline-x", "no-inline"),
+            ("./a.png?inline=1", "inline"),
+            ("./a.png?url&inline-x", "inline"),
+            ("./a.png?inline&no-inline=1", "no-inline"),
+            ("./w.ts?worker&inline=1", "worker&inline"),
+        ] {
+            assert_eq!(
+                split_asset_query(spec),
+                Some((spec.split('?').next().unwrap().into(), want.into())),
+                "{spec}"
+            );
+        }
+        assert_eq!(split_asset_query("./a.png?inlinex"), None);
+        assert_eq!(
+            split_asset_query("./a.png?url=1"),
+            None,
+            "urlRE matches whole"
+        );
         // Vite's rawRE: `raw` anywhere, ahead of `url`/`inline`, after workers.
         for spec in [
             "./a.css?v=1&raw",

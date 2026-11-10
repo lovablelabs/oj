@@ -66,6 +66,11 @@ struct StartState {
     /// turns the keepalive and the client's watchdog off.
     hmr_ping: Option<Duration>,
     workspace_root: PathBuf,
+    /// Vite's `publicDir` (`None` when disabled): its files answer ahead of
+    /// the router and the SSR handler, see [`public_file`].
+    public_dir: Option<PathBuf>,
+    /// Vite's `server.headers`, which its sirv sets on a public file.
+    dev_headers: Arc<Vec<(header::HeaderName, header::HeaderValue)>>,
     /// The pages' reloads, as counts (see start_reloads).
     reloads: Arc<crate::start_reloads::Epochs>,
     /// The client bundle's last failure as a `{type:"error", err}` frame,
@@ -108,6 +113,13 @@ struct StartState {
     /// importers of the globs an added file matches (resolution shifts land
     /// when an importer changes or the bundle failed, there as here).
     client_glob_scopes: std::sync::RwLock<Vec<oj_compiler::glob::GlobMatcher>>,
+    /// The same globs by the module that expands each: a file created or
+    /// deleted under one re-expands that module everywhere it is served (the
+    /// SSR graph, the plugin's worker environments), as Vite's import-glob
+    /// `hotUpdate` adds the importer to the update. The client engine finds
+    /// them itself: `StartCodePlugin`'s transform registers each glob's base
+    /// as the importer's watch file.
+    client_glob_importers: std::sync::RwLock<Vec<(PathBuf, oj_compiler::glob::GlobMatcher)>>,
     /// False after a failed rebundle: the closure may be a torso (the build
     /// stopped early), so every next batch rebundles until one succeeds.
     bundle_ok: std::sync::atomic::AtomicBool,
@@ -306,8 +318,6 @@ pub async fn start_dev(
             port,
             host,
             config: config_file.clone(),
-            enable_cache: false,
-            no_cache: false,
             lazy: false,
             typecheck,
             mode: Some(mode.clone()),
@@ -419,7 +429,7 @@ pub async fn start_dev(
     // the dev server's SSR pipeline (StartHost); it needs the built app's
     // SsrBridge, so it comes up once the server build joins.
     let hmr_overlay;
-    let engine = {
+    let (engine, public_dir) = {
         let mut config = oj_config::load(&root).unwrap_or_default();
         oj_server::plugins::adopt_vite_config_values(
             &mut config,
@@ -436,15 +446,18 @@ pub async fn start_dev(
         let entry = configured_start_server_entry(&config, &root)
             .unwrap_or_else(|| cache.join("server-entry.tsx"));
         let init_env = script_vars.to_vec();
-        Arc::new(StartEngine::new(
+        let public_dir = oj_config::public_dir(&config, &root);
+        let engine = Arc::new(StartEngine::new(
             root.clone(),
             &cache,
             built.ssr.clone(),
             entry,
             oj_config::ssr_externals(&config),
-            oj_config::public_dir(&config, &root),
+            public_dir.clone(),
+            crate::start_bundle::assets::client_inline_limit(&config),
             init_env,
-        )?)
+        )?);
+        (engine, public_dir)
     };
     let loopback_port = spawn_engine_loopback(Arc::clone(&engine)).await?;
     oj_server::boot_phase("engine ready");
@@ -584,6 +597,8 @@ pub async fn start_dev(
         hmr_overlay,
         hmr_ping: hmr_ping(oj_env::get().knobs.hmr_ping_ms),
         workspace_root: workspace_root(&root),
+        public_dir,
+        dev_headers: Arc::clone(&built.dev_headers),
         reloads: Arc::clone(&reloads),
         build_error: std::sync::RwLock::new(boot_error.clone()),
         error_tx: broadcast::channel(16).0,
@@ -611,6 +626,7 @@ pub async fn start_dev(
         },
         client_closure: std::sync::RwLock::new(load_client_closure(&cache)),
         client_glob_scopes: std::sync::RwLock::new(load_client_glob_scopes(&cache)),
+        client_glob_importers: std::sync::RwLock::new(load_client_glob_importers(&cache)),
         // A failed boot bundle rebundles on every next batch until one succeeds.
         bundle_ok: std::sync::atomic::AtomicBool::new(boot_error.is_none()),
         bundle_loaded: std::sync::atomic::AtomicBool::new(false),
@@ -699,13 +715,18 @@ pub async fn start_dev(
         });
     }
 
-    let app = built
-        .router
-        .clone()
-        .layer(axum::middleware::from_fn_with_state(
-            Arc::clone(&state),
-            start_route,
-        ));
+    // This server's routes run inside the dev server's cors and host gates,
+    // as Vite's corsMiddleware and hostValidationMiddleware come before every
+    // other middleware (a framework's SSR handler, its own module urls and
+    // the public dir included): a request from a host that is not allowed
+    // gets no document either.
+    {
+        let state = Arc::clone(&state);
+        let hook: oj_server::RouteHook =
+            Arc::new(move |req, next| Box::pin(start_route(State(Arc::clone(&state)), req, next)));
+        let _ = built.route_hook.set(hook);
+    }
+    let app = built.router.clone();
 
     let _ = app_tx.send(app.clone());
     let (listener, port) = built.bind_listener().await?;
@@ -785,7 +806,7 @@ async fn ensure_runner_fresh(state: &StartState) {
             .runner_dirty
             .swap(false, std::sync::atomic::Ordering::SeqCst)
     {
-        state.engine.reload().await;
+        state.engine.reload(&[]).await;
     }
 }
 
@@ -886,24 +907,18 @@ fn workspace_root(app: &Path) -> PathBuf {
     best
 }
 
+/// The content type of a served file: the kinds this server serves that
+/// are no asset (a stylesheet with its charset, a script, JSON, wasm), and
+/// every asset type from the table the dev server and the build share.
 fn asset_mime(ext: &str) -> &'static str {
     match ext {
         "css" => "text/css; charset=utf-8",
-        "js" | "mjs" => "text/javascript",
+        // Vite's sirv setHeaders: the TypeScript extensions are JavaScript
+        // too, not the video/mp2t their registered type says.
+        "js" | "mjs" | "cjs" | "jsx" | "ts" | "mts" | "cts" | "tsx" => "text/javascript",
         "json" => "application/json",
-        "svg" => "image/svg+xml",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "avif" => "image/avif",
-        "ico" => "image/x-icon",
-        "woff2" => "font/woff2",
-        "woff" => "font/woff",
-        "ttf" => "font/ttf",
-        "otf" => "font/otf",
         "wasm" => "application/wasm",
-        _ => "application/octet-stream",
+        _ => oj_compiler::assets::asset_mime(ext),
     }
 }
 
@@ -947,6 +962,10 @@ struct PendingRebundle {
     /// Every changed path of the merged batches (relevant and not), for the
     /// regen decisions; the HMR gate recorded them at the watcher event.
     paths: std::collections::HashSet<PathBuf>,
+    /// The glob importers the batches' created and deleted files re-expand
+    /// (`glob_importers_hit`): changed modules for the server graphs, though
+    /// no file of theirs was written.
+    globbed: std::collections::HashSet<PathBuf>,
     /// The worker-invalidate sends (early and settled) in flight for the
     /// merged batches: this run's browser reload waits for them, so a reload
     /// never lands while the worker environments still hold stale modules,
@@ -1003,6 +1022,26 @@ fn load_client_glob_scopes(cache: &Path) -> Vec<oj_compiler::glob::GlobMatcher> 
         .collect()
 }
 
+/// Every glob call the last bundle expanded, by the module that expands it
+/// (an entry's `importer`). A cache written before the importer was recorded
+/// contributes nothing here: its globs still gate the rebundle.
+fn load_client_glob_importers(cache: &Path) -> Vec<(PathBuf, oj_compiler::glob::GlobMatcher)> {
+    let Some(entries) = std::fs::read_to_string(cache.join("glob-scopes.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<Vec<serde_json::Value>>(&s).ok())
+    else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|e| {
+            let importer = PathBuf::from(e.get("importer")?.as_str()?);
+            let call = oj_compiler::glob::GlobCall::from_json(e)?;
+            Some((importer, call.matcher()))
+        })
+        .collect()
+}
+
 /// The glob calls a bundle expanded, as the client bundle writes them beside
 /// the closure (Vite's resolved patterns and options, see
 /// `oj_compiler::glob::GlobCall`). Missing or unreadable is an empty list:
@@ -1052,6 +1091,48 @@ fn added_to_glob(
         scopes.iter().any(|g| g.is_match(&file))
     };
     matched(p) || real.is_some_and(|r| matched(&r))
+}
+
+/// A file a bundled glob matched that is gone from disk: its importer's
+/// expansion shrinks, the other way a file that is not an edit changes a
+/// bundle. The bundler's engine has no module for a `?raw` or `?url` member
+/// by its bare path, so the closure alone cannot tell; the glob can.
+fn gone_from_glob(scopes: &[oj_compiler::glob::GlobMatcher], p: &Path) -> bool {
+    if scopes.is_empty() || p.exists() {
+        return false;
+    }
+    let file = p.to_string_lossy().replace('\\', "/");
+    scopes.iter().any(|g| g.is_match(&file))
+}
+
+/// The modules whose `import.meta.glob` a created or deleted file of `paths`
+/// matches: they re-expand, as plain dev's glob importers do and as Vite's
+/// import-glob `hotUpdate` adds them to the update. A file that exists and
+/// the bundle already read is an edit, which changes no expansion.
+fn glob_importers_hit(
+    importers: &[(PathBuf, oj_compiler::glob::GlobMatcher)],
+    closure: &std::collections::HashSet<PathBuf>,
+    paths: &std::collections::HashSet<PathBuf>,
+) -> Vec<PathBuf> {
+    if importers.is_empty() {
+        return Vec::new();
+    }
+    let mut hit: Vec<PathBuf> = Vec::new();
+    for p in paths {
+        let known = closure.contains(p)
+            || std::fs::canonicalize(p).is_ok_and(|real| closure.contains(&real));
+        if p.exists() && known {
+            continue;
+        }
+        let file = p.to_string_lossy().replace('\\', "/");
+        for (importer, matcher) in importers {
+            if matcher.is_match(&file) && !hit.contains(importer) {
+                hit.push(importer.clone());
+            }
+        }
+    }
+    hit.sort();
+    hit
 }
 
 /// The files the watcher knows, as chokidar's watched set: the boot scan
@@ -1145,7 +1226,9 @@ fn client_bundle_affected(state: &StartState, paths: &[PathBuf]) -> bool {
         .client_glob_scopes
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    paths.iter().any(|p| added_to_glob(&scopes, &closure, p))
+    paths
+        .iter()
+        .any(|p| added_to_glob(&scopes, &closure, p) || gone_from_glob(&scopes, p))
 }
 
 /// A batch's paths the client bundle reads: those in the closure (as it
@@ -1173,7 +1256,7 @@ fn client_inputs(state: &StartState, paths: &[PathBuf]) -> Vec<PathBuf> {
             .filter(|r| closure.contains(r))
         {
             inputs.push(real);
-        } else if added_to_glob(&scopes, &closure, p) {
+        } else if added_to_glob(&scopes, &closure, p) || gone_from_glob(&scopes, p) {
             inputs.push(p.clone());
         }
     }
@@ -1340,11 +1423,37 @@ fn spawn_start_watcher(
             let _ = state.ws_tx.send(oj_server::update_progress_frame(
                 batch, "watch", 0, 0, None, false,
             ));
+            // A file created or deleted under a module's `import.meta.glob`
+            // re-expands that module: an edit of it as far as every server
+            // graph is concerned, though its file was not written.
+            let globbed: std::collections::HashSet<PathBuf> = {
+                let importers = state
+                    .client_glob_importers
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let closure = state
+                    .client_closure
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                glob_importers_hit(&importers, &closure, &paths)
+                    .into_iter()
+                    .collect()
+            };
+            for importer in &globbed {
+                let shown = importer.strip_prefix(&watch_root).unwrap_or(importer);
+                println!("  oj start: glob importer {} re-expanded", shown.display());
+            }
             // Invalidate the plugin's worker DevEnvironments so a Cloudflare
             // app re-renders with the changed modules (not stale SSR). Spawned
             // promptly per settled batch, never behind an in-flight rebundle;
             // the rebundle worker awaits it before that run's browser reload.
-            let invalidate = spawn_mw_invalidate(&rt, &state, &paths, &created);
+            let invalidate = if globbed.is_empty() {
+                spawn_mw_invalidate(&rt, &state, &paths, &created)
+            } else {
+                let with_importers: std::collections::HashSet<PathBuf> =
+                    paths.union(&globbed).cloned().collect();
+                spawn_mw_invalidate(&rt, &state, &with_importers, &created)
+            };
             if state.lazy_runner() {
                 state
                     .runner_dirty
@@ -1356,6 +1465,7 @@ fn spawn_start_watcher(
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let run = slot.get_or_insert_with(PendingRebundle::default);
                 run.paths.extend(paths.iter().cloned());
+                run.globbed.extend(globbed);
                 run.invalidates.extend(early_invalidate);
                 run.invalidates.extend(invalidate);
                 run.batch = batch;
@@ -1403,6 +1513,9 @@ async fn rebundle_worker(
             continue;
         };
         let paths: Vec<PathBuf> = run.paths.into_iter().collect();
+        // The server graphs' changed files: the batch's, and the glob
+        // importers its created and deleted files re-expand.
+        let served: Vec<PathBuf> = paths.iter().chain(run.globbed.iter()).cloned().collect();
         let regen_files = regen_output_files(&routes.tree, &cache);
         // The gate: a batch whose paths miss the last bundle's input closure
         // cannot change the client bundle (rollup watch semantics; Vite only
@@ -1565,6 +1678,9 @@ async fn rebundle_worker(
                     }
                     ClientRun::Hot => {
                         hot = true;
+                        // The patch may have grown the graph (an import the
+                        // edit added): the gate's inputs follow it.
+                        load_inputs(&state, &cache);
                         state.refresh_wake.notify_one();
                     }
                     ClientRun::Skipped | ClientRun::Failed(_) => {}
@@ -1604,15 +1720,15 @@ async fn rebundle_worker(
         // whether the engine served any of the changed files at all).
         let engine_hit = if !state.lazy_runner() {
             if bundled || server_fn_changed || !regen_changed.is_empty() {
-                state.engine.reload().await;
+                state.engine.reload(&served).await;
                 true
             } else {
-                state.engine.revalidate_for(&paths).await
+                state.engine.revalidate_for(&served).await
             }
         } else if no_invalidates_sent {
             // Lazy with the middleware down: the fallback runner is serving,
             // so its graph is the only reload signal left.
-            state.engine.revalidate_for(&paths).await
+            state.engine.revalidate_for(&served).await
         } else {
             false
         };
@@ -1625,7 +1741,7 @@ async fn rebundle_worker(
                 .take()
                 .is_some();
         let server_signals =
-            worker_hit || engine_hit || paths.iter().any(|p| state.ssr.graph_knows_file(p));
+            worker_hit || engine_hit || served.iter().any(|p| state.ssr.graph_knows_file(p));
         let unbundled = !pages_run_bundle && !bundled;
         let reload = reloads_browser(RunSignals {
             unbundled,
@@ -1805,6 +1921,14 @@ fn install_bundle(state: &StartState, cache: &Path, pinned: oj_cache::start_bund
     served.install(pinned);
     state.gzip.retain(|h| served.has_hash(h));
     drop(served);
+    load_inputs(state, cache);
+}
+
+/// Takes the bundle's input set as the bundler last wrote it (closure.json,
+/// and glob-scopes.json as the glob scopes and as their importers): after a
+/// full output, and after a hot update, whose patch can bring new modules
+/// and new globs into the graph.
+fn load_inputs(state: &StartState, cache: &Path) {
     *state
         .client_closure
         .write()
@@ -1813,6 +1937,10 @@ fn install_bundle(state: &StartState, cache: &Path, pinned: oj_cache::start_bund
         .client_glob_scopes
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = load_client_glob_scopes(cache);
+    *state
+        .client_glob_importers
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = load_client_glob_importers(cache);
 }
 
 /// How long edits must pause before the refresher writes the client output:
@@ -2672,10 +2800,38 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
     if oj_server::is_websocket_upgrade(req.headers()) {
         return next.run(req).await;
     }
-    match classify_path(path, req.uri().path(), req.method(), &state.proxy_prefixes) {
+    let route = classify_path(path, req.uri().path(), req.method(), &state.proxy_prefixes);
+    // A file under `publicDir` answers before the router and the SSR handler
+    // see the request, as Vite's servePublicMiddleware runs ahead of its html
+    // middlewares for every appType: `/hub/index.html` is that file, not the
+    // `/hub/` document (which the router would redirect or 404), and a
+    // dotted or extensionless public path is never the app's 404. Not for a
+    // proxied prefix (`Route::Pass`): Vite's proxy middleware comes before
+    // its public one.
+    if !matches!(route, Route::Pass) {
+        if let Some(hit) = public_file(
+            &state,
+            req.uri().path(),
+            path,
+            req.uri().query(),
+            req.method(),
+        )
+        .await
+        {
+            // A plugin's configureServer middleware comes before the public
+            // one in Vite: where the plugin middleware is asked first (a
+            // document), it still is.
+            if matches!(route, Route::Document) && state.plugin_serve.mw_port().is_some() {
+                let raw = path_and_query(&req);
+                return forward_document(&state, raw, req.headers(), Some(hit)).await;
+            }
+            return public_response(&state, &hit, req.method(), req.headers()).await;
+        }
+    }
+    match route {
         Route::Document => {
             let raw = path_and_query(&req);
-            forward_document(&state, raw, req.headers()).await
+            forward_document(&state, raw, req.headers(), None).await
         }
         Route::StaticOrDocument => {
             let raw = path_and_query(&req);
@@ -2684,7 +2840,7 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
             if resp.status() != StatusCode::NOT_FOUND {
                 return resp;
             }
-            forward_document(&state, raw, &headers).await
+            forward_document(&state, raw, &headers, None).await
         }
         Route::Api => forward_with_body(&state, req).await,
         Route::Pass => next.run(req).await,
@@ -2921,27 +3077,60 @@ fn path_and_query(req: &Request) -> String {
         .to_string()
 }
 
+/// `public`: the `publicDir` file the url names, when there is one. It is
+/// served instead of the document unless the plugin middleware answers the
+/// url or rewrites it (Vite runs a plugin's configureServer middlewares
+/// before its public one), and it does not wait for the client output.
 async fn forward_document(
     state: &Arc<StartState>,
     raw: String,
     headers: &header::HeaderMap,
+    mut public: Option<PublicHit>,
 ) -> Response {
     let hot_has = hot_has_now(state);
     // A document loads the client output: never one from before a hot update.
-    state.client_output_fresh().await;
+    if public.is_none() {
+        state.client_output_fresh().await;
+    }
     // Editor plugins (dev-server bridge) register configureServer routes
     // with no path prefix, so a GET like /_sandbox/preview/viewers can only
     // be told from an app route by asking the middleware first; it returns
     // x-oj-fallthrough when it does not own the path, and then we SSR.
     // The changes the document has, stamped before it renders: one that goes
     // out while it loads reaches its socket on connect.
+    let mut raw = raw;
     if let Some(port) = state.plugin_serve.mw_port() {
         let stamp = document_stamp(state, hot_has);
-        if let Some(resp) = oj_server::forward_get_to_plugin_mw(port, &raw, headers).await {
-            // A worker-served document needs the live-reload client like the
-            // runner-served ones, or edits never reload the page.
-            return inject_reload_client(resp, &state.base, &stamp);
+        match oj_server::forward_get_to_plugin_mw(port, &raw, headers).await {
+            oj_server::Forwarded::Answered(resp) => {
+                if public.is_some() {
+                    state.client_output_fresh().await;
+                }
+                // A worker-served document needs the live-reload client like the
+                // runner-served ones, or edits never reload the page.
+                return inject_reload_client(resp, &state.base, &stamp);
+            }
+            // A middleware rewrote `req.url` and passed the request on: the
+            // document it named is the one to render, as Vite's own
+            // middlewares after it would serve that url.
+            oj_server::Forwarded::FellThrough {
+                rewritten: Some(target),
+            } => {
+                raw = target
+                    .path_and_query()
+                    .map(|p| p.as_str().to_string())
+                    .unwrap_or_else(|| target.path().to_string());
+                // The url the middleware left is the one to serve: no longer
+                // the public file's.
+                if public.take().is_some() {
+                    state.client_output_fresh().await;
+                }
+            }
+            oj_server::Forwarded::FellThrough { rewritten: None } => {}
         }
+    }
+    if let Some(hit) = public {
+        return public_response(state, &hit, &Method::GET, headers).await;
     }
     ensure_bundle_current(state).await;
     ensure_runner_fresh(state).await;
@@ -3337,6 +3526,153 @@ async fn serve_fs_asset(state: &StartState, abs: &str) -> Response {
         )
             .into_response(),
     }
+}
+
+/// The file under `public_dir` that `path` names, or None when the request
+/// is not for one. Vite's servePublicMiddleware: the exact path of a file
+/// in the dir, decoded as `decodeURI` does (its `toFilePath`), with no
+/// extension guessing and no `index.html` for a directory (sirv with
+/// `extensions: []`), skipping oj's own `/@` urls (its `isInternalRequest`)
+/// and the `?url` and `?import` requests whose module the transform
+/// pipeline makes (`urlRE`, `isImportRequest`: `/logo.svg?url` is a module).
+/// Only a path of plain segments names a file: nothing that could leave the
+/// dir, on any platform.
+fn public_file_path(
+    public_dir: &Path,
+    path: &str,
+    query: Option<&str>,
+    method: &Method,
+) -> Option<PathBuf> {
+    if *method != Method::GET && *method != Method::HEAD {
+        return None;
+    }
+    if path.starts_with("/@") || oj_server::is_dev_server_path(path) {
+        return None;
+    }
+    // Vite's urlRE is `(\?|&)url(?:&|$)`, its importQueryRE
+    // `(\?|&)import=?(?:&|$)`.
+    if query.is_some_and(|q| {
+        q.split('&')
+            .any(|flag| flag == "url" || flag == "import" || flag == "import=")
+    }) {
+        return None;
+    }
+    // A malformed escape leaves the path as it was written (Vite catches
+    // decodeURI's error), which then names a file only literally.
+    let decoded = if path.contains('%') {
+        decode_uri(path).unwrap_or_else(|| path.to_string())
+    } else {
+        path.to_string()
+    };
+    let rel = decoded.strip_prefix('/')?;
+    if rel.is_empty()
+        || rel
+            .split('/')
+            .any(|seg| seg.is_empty() || seg == "." || seg == "..")
+    {
+        return None;
+    }
+    // A drive, a root or a separator the platform reads inside a segment.
+    let plain = Path::new(rel)
+        .components()
+        .all(|c| matches!(c, std::path::Component::Normal(_)));
+    if !plain || rel.contains('\\') {
+        return None;
+    }
+    Some(public_dir.join(rel))
+}
+
+/// JavaScript's `decodeURI`: every escape decoded but those of the reserved
+/// characters (`; / ? : @ & = + $ , #`), which stay as written, so `%2F` is
+/// never a path separator. None for what `decodeURI` throws on: an escape
+/// that is not two hex digits, or bytes that are not UTF-8.
+fn decode_uri(s: &str) -> Option<String> {
+    const RESERVED: &[u8] = b";/?:@&=+$,#";
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'%' {
+            out.push(bytes[i]);
+            i += 1;
+            continue;
+        }
+        let byte = hex_val(*bytes.get(i + 1)?)? << 4 | hex_val(*bytes.get(i + 2)?)?;
+        if RESERVED.contains(&byte) {
+            out.extend_from_slice(&bytes[i..i + 3]);
+        } else {
+            out.push(byte);
+        }
+        i += 3;
+    }
+    String::from_utf8(out).ok()
+}
+
+/// A `publicDir` file a request names: where it is and its metadata.
+struct PublicHit {
+    file: PathBuf,
+    meta: std::fs::Metadata,
+}
+
+/// The `publicDir` file the request is for, if it names one: see
+/// [`public_file_path`]. `raw` is the request's path, `path` the same past
+/// the dev `base`. Vite's base middleware comes before its public one, so
+/// with a `base` only a url under it names a public file. Vite matches the
+/// url against the names in the dir, so a name in another case is no match
+/// even where the file system would open it.
+async fn public_file(
+    state: &StartState,
+    raw: &str,
+    path: &str,
+    query: Option<&str>,
+    method: &Method,
+) -> Option<PublicHit> {
+    let public = state.public_dir.as_deref()?;
+    if !state.base.is_empty() && raw.len() == path.len() {
+        return None;
+    }
+    let file = public_file_path(public, path, query, method)?;
+    let meta = tokio::fs::metadata(&file).await.ok()?;
+    if !meta.is_file() || !named_as_written(public, &file).await {
+        return None;
+    }
+    Some(PublicHit { file, meta })
+}
+
+/// Whether `file` (which exists, under `public`) is spelled as its name on
+/// disk is. A case-insensitive file system opens `Hub/Index.html` for
+/// `hub/index.html`; Vite's set of public file names does not hold it. A
+/// name that resolves elsewhere altogether (a symlink) is the file asked for.
+async fn named_as_written(public: &Path, file: &Path) -> bool {
+    let (Ok(real_dir), Ok(real)) = (
+        tokio::fs::canonicalize(public).await,
+        tokio::fs::canonicalize(file).await,
+    ) else {
+        return true;
+    };
+    let (Ok(asked), Ok(found)) = (file.strip_prefix(public), real.strip_prefix(&real_dir)) else {
+        return true;
+    };
+    let (asked, found) = (asked.to_string_lossy(), found.to_string_lossy());
+    asked == found || asked.to_lowercase() != found.to_lowercase()
+}
+
+/// A `publicDir` file's response, as Vite's public middleware serves it:
+/// the bytes as they are (never compiled, never given the live-reload
+/// client), with sirv's type, validators and byte ranges
+/// ([`oj_server::public_file_response`]) and `server.headers`, which its
+/// sirv `setHeaders` puts on every file it serves.
+async fn public_response(
+    state: &StartState,
+    hit: &PublicHit,
+    method: &Method,
+    headers: &header::HeaderMap,
+) -> Response {
+    let mut response = oj_server::public_file_response(&hit.file, &hit.meta, method, headers).await;
+    for (name, value) in state.dev_headers.iter() {
+        response.headers_mut().insert(name.clone(), value.clone());
+    }
+    response
 }
 
 fn percent_decode(s: &str) -> String {
@@ -4784,6 +5120,100 @@ mod tests {
     // save renamed onto a live file is an update (a lazy glob member no
     // worker loaded must not re-expand its importer), a file renamed into
     // place is a create, and so is one recreated after its delete settled.
+    // Vite's import-glob hotUpdate, the other way round and for the server
+    // graphs: a file created or deleted where a module's glob looks changes
+    // that module's expansion, so the module counts as changed although its
+    // own file was not written (the client engine finds it through a watch
+    // on the glob's directory, the server graphs through this list). A
+    // member that exists and the bundle already read is an edit: nothing
+    // re-expands for it. A deleted member the bundler has no module for by
+    // its bare path (a `?raw` one) still gates the rebundle through its glob.
+    #[test]
+    fn a_glob_member_created_or_deleted_re_expands_its_importer() {
+        let dir = tmp("glob-importers");
+        let app = dir.join("app");
+        let a = app.to_string_lossy().replace('\\', "/");
+        let posts = app.join("src/posts.tsx");
+        let icons = app.join("src/icons.tsx");
+        std::fs::write(
+            dir.join("glob-scopes.json"),
+            serde_json::json!([
+                {"importer": posts, "patterns": [format!("{a}/src/content/*.md")], "exhaustive": false, "caseSensitive": true},
+                {"importer": icons, "patterns": [format!("{a}/src/icons/**/*.svg")], "exhaustive": false, "caseSensitive": true},
+                // A cache an older oj wrote names no importer: it still gates.
+                {"patterns": [format!("{a}/src/data/*.json")], "exhaustive": false, "caseSensitive": true},
+            ])
+            .to_string(),
+        )
+        .unwrap();
+        let importers = load_client_glob_importers(&dir);
+        assert_eq!(importers.len(), 2, "the entries naming an importer");
+        let scopes = load_client_glob_scopes(&dir);
+        assert_eq!(scopes.len(), 3, "every entry gates the rebundle");
+
+        let file = |rel: &str| {
+            let p = app.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, "x").unwrap();
+            p
+        };
+        let read = file("src/content/read.md");
+        let closure: std::collections::HashSet<PathBuf> =
+            [std::fs::canonicalize(&read).unwrap()].into();
+        let gone = app.join("src/content/gone.md");
+        let created = file("src/content/new.md");
+        let elsewhere = file("src/other/new.md");
+        let data_gone = app.join("src/data/old.json");
+
+        assert!(gone_from_glob(&scopes, &gone), "a deleted member");
+        assert!(
+            gone_from_glob(&scopes, &data_gone),
+            "under a legacy entry too"
+        );
+        assert!(
+            !gone_from_glob(&scopes, &read),
+            "a member on disk is an edit"
+        );
+        assert!(!gone_from_glob(&scopes, &created));
+        assert!(
+            !gone_from_glob(&scopes, &app.join("src/other/gone.md")),
+            "a deleted file no glob matches"
+        );
+        assert!(!gone_from_glob(&[], &gone));
+
+        let hit = |paths: &[&PathBuf]| {
+            glob_importers_hit(
+                &importers,
+                &closure,
+                &paths.iter().map(|p| (*p).clone()).collect(),
+            )
+        };
+        assert_eq!(
+            hit(&[&created]),
+            std::slice::from_ref(&posts),
+            "a create re-expands"
+        );
+        assert_eq!(
+            hit(&[&gone]),
+            std::slice::from_ref(&posts),
+            "a delete re-expands"
+        );
+        assert!(
+            hit(&[&read]).is_empty(),
+            "an edit of a member re-expands nothing"
+        );
+        assert!(hit(&[&elsewhere]).is_empty(), "a file no glob matches");
+        assert_eq!(
+            hit(&[&created, &gone, &app.join("src/icons/a.svg")]),
+            [icons.clone(), posts.clone()],
+            "each importer once, in order"
+        );
+        assert!(
+            glob_importers_hit(&[], &closure, &[created.clone()].into()).is_empty(),
+            "no importers recorded"
+        );
+    }
+
     #[test]
     fn renames_onto_known_files_are_changes_as_in_chokidar() {
         use notify::event::{CreateKind, DataChange, ModifyKind, RemoveKind, RenameMode};
@@ -5221,6 +5651,120 @@ mod tests {
     }
 
     #[test]
+    fn public_file_path_is_the_exact_decoded_path_in_the_dir() {
+        let public = Path::new("/app/public");
+        let at =
+            |path: &str, query: Option<&str>| public_file_path(public, path, query, &Method::GET);
+        assert_eq!(
+            at("/hub/index.html", None),
+            Some(PathBuf::from("/app/public/hub/index.html"))
+        );
+        assert_eq!(
+            at("/with%20space.txt", None),
+            Some(PathBuf::from("/app/public/with space.txt"))
+        );
+        assert_eq!(
+            at("/noext", Some("v=1")),
+            Some(PathBuf::from("/app/public/noext"))
+        );
+        // No directory index and nothing for the root: Vite's public
+        // middleware serves files only.
+        assert_eq!(at("/hub/", None), None);
+        assert_eq!(at("/", None), None);
+        // The module requests the transform pipeline owns.
+        assert_eq!(at("/logo.svg", Some("url")), None);
+        assert_eq!(at("/logo.svg", Some("import")), None);
+        assert_eq!(at("/logo.svg", Some("v=1&url")), None);
+        // oj's own urls and a path that tries to leave the dir.
+        assert_eq!(at("/@oj-start/x.js", None), None);
+        assert_eq!(at("/@fs/etc/passwd", None), None);
+        assert_eq!(at("/../package.json", None), None);
+        assert_eq!(at("/a/%2e%2e/package.json", None), None);
+        assert_eq!(at("//etc/passwd", None), None);
+        assert_eq!(at("/a/./b.txt", None), None);
+        assert_eq!(at("/a\\..\\b.txt", None), None);
+        // Vite's importQueryRE takes `import=` too; `urlRE` only the bare flag.
+        assert_eq!(at("/logo.svg", Some("import=")), None);
+        assert_eq!(
+            at("/logo.svg", Some("url=1")),
+            Some(PathBuf::from("/app/public/logo.svg"))
+        );
+        // decodeURI leaves the reserved characters' escapes as written: an
+        // encoded separator is part of a name, never a separator.
+        assert_eq!(
+            at("/a%2Fb.txt", None),
+            Some(PathBuf::from("/app/public/a%2Fb.txt"))
+        );
+        assert_eq!(
+            at("/caf%C3%A9.txt", None),
+            Some(PathBuf::from("/app/public/café.txt"))
+        );
+        // What decodeURI throws on stays as written.
+        assert_eq!(
+            at("/100%.txt", None),
+            Some(PathBuf::from("/app/public/100%.txt"))
+        );
+        assert_eq!(
+            at("/bad%FFutf8.txt", None),
+            Some(PathBuf::from("/app/public/bad%FFutf8.txt"))
+        );
+        assert_eq!(
+            public_file_path(public, "/a.txt", None, &Method::POST),
+            None
+        );
+        assert_eq!(
+            public_file_path(public, "/a.txt", None, &Method::HEAD),
+            Some(PathBuf::from("/app/public/a.txt"))
+        );
+    }
+
+    #[test]
+    fn decode_uri_is_javascripts() {
+        assert_eq!(
+            decode_uri("/with%20space.txt").as_deref(),
+            Some("/with space.txt")
+        );
+        assert_eq!(decode_uri("/%E2%9C%93").as_deref(), Some("/✓"));
+        // decodeURI("%2F%3F%23%26%3D%2B%24%2C%3B%3A%40") is its input.
+        let reserved = "%2F%3F%23%26%3D%2B%24%2C%3B%3A%40";
+        assert_eq!(decode_uri(reserved).as_deref(), Some(reserved));
+        // URIError: malformed escapes and bytes that are not UTF-8.
+        assert_eq!(decode_uri("%"), None);
+        assert_eq!(decode_uri("a%2"), None);
+        assert_eq!(decode_uri("a%zz"), None);
+        assert_eq!(decode_uri("%FF"), None);
+        assert_eq!(decode_uri("%C3"), None);
+    }
+
+    // Vite matches a url against the names in the public dir, so one that
+    // differs only in case is no public file, whatever the file system opens.
+    #[tokio::test]
+    async fn a_public_file_is_named_as_it_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let public = dir.path().join("public");
+        std::fs::create_dir_all(public.join("Hub")).unwrap();
+        std::fs::write(public.join("Hub/Index.html"), "x").unwrap();
+        assert!(named_as_written(&public, &public.join("Hub/Index.html")).await);
+        // Only where the file system is case-insensitive does the other
+        // spelling exist at all; there it is refused.
+        let other = public.join("hub/index.html");
+        if other.exists() {
+            assert!(!named_as_written(&public, &other).await);
+        }
+        // A symlink names another file: the one asked for.
+        #[cfg(unix)]
+        {
+            std::fs::write(dir.path().join("outside.txt"), "y").unwrap();
+            std::os::unix::fs::symlink(dir.path().join("outside.txt"), public.join("link.txt"))
+                .unwrap();
+            std::os::unix::fs::symlink(public.join("Hub/Index.html"), public.join("alias.html"))
+                .unwrap();
+            assert!(named_as_written(&public, &public.join("link.txt")).await);
+            assert!(named_as_written(&public, &public.join("alias.html")).await);
+        }
+    }
+
+    #[test]
     fn asset_mime_maps_types() {
         assert_eq!(asset_mime("css"), "text/css; charset=utf-8");
         assert_eq!(asset_mime("js"), "text/javascript");
@@ -5228,6 +5772,9 @@ mod tests {
         assert_eq!(asset_mime("webp"), "image/webp");
         assert_eq!(asset_mime("woff2"), "font/woff2");
         assert_eq!(asset_mime("json"), "application/json");
+        // The shared table answers for the other known asset types.
+        assert_eq!(asset_mime("mp3"), "audio/mpeg");
+        assert_eq!(asset_mime("pdf"), "application/pdf");
         assert_eq!(asset_mime("weirdext"), "application/octet-stream");
     }
 

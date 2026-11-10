@@ -202,8 +202,12 @@ mod ensure_asset_tests;
 #[cfg(test)]
 mod hook_plan_tests;
 #[cfg(test)]
+mod hook_watch_tests;
+#[cfg(test)]
 mod host_filter_tests;
 #[cfg(test)]
 mod import_protection_pass_tests;
+#[cfg(test)]
+pub(crate) mod test_roots;
 #[cfg(test)]
 mod vite_values_tests;

@@ -276,16 +276,55 @@ async fn serve_missing(
     uri: &Uri,
     rel: &str,
 ) -> Response {
-    if let Some(resp) =
-        forward_to_plugin_middleware(state, &Method::GET, uri, headers, Vec::new()).await
-    {
-        return resp;
+    match forward_to_plugin_middleware(state, &Method::GET, uri, headers, Vec::new()).await {
+        Forwarded::Answered(resp) => return resp,
+        // A middleware rewrote `req.url` and passed the request on: Vite's
+        // static and HTML middlewares, which run after a plugin's, serve the
+        // url it left (an MPA plugin maps `/page` to `/page/index.html` this
+        // way), so the rewritten url is served as if asked for, without
+        // going through the middleware again.
+        Forwarded::FellThrough {
+            rewritten: Some(target),
+        } => return serve_rewritten(state, headers, &target).await,
+        Forwarded::FellThrough { rewritten: None } => {}
     }
     if let Some(resp) = serve_plugin_load_fallback(state, uri).await {
         return resp;
     }
-    // Vite's htmlFallback: `/dir/` serves dir/index.html, `/page` serves
-    // page.html; only appType `spa` then falls back to the root index.html.
+    serve_fallback(state, headers, uri, rel).await
+}
+
+/// The url a plugin middleware rewrote a request to: the file it names, or
+/// the HTML fallback for it, as Vite's later middlewares would serve it.
+async fn serve_rewritten(state: &Arc<ServerState>, headers: &HeaderMap, uri: &Uri) -> Response {
+    let path = state
+        .base
+        .as_deref()
+        .and_then(|b| strip_base(uri.path(), b))
+        .unwrap_or_else(|| uri.path());
+    let decoded = urldecode(path.trim_start_matches('/'));
+    let rel = if decoded.is_empty() {
+        "index.html"
+    } else {
+        decoded.as_str()
+    };
+    if let Some(file) = locate(&state.root, state.public_dir.as_deref(), rel) {
+        if path_is_denied(&file, &state.root, &state.fs_deny) {
+            return (StatusCode::FORBIDDEN, "oj: path denied by server.fs.deny").into_response();
+        }
+        return serve_file(state, headers, uri, &file, rel).await;
+    }
+    serve_fallback(state, headers, uri, rel).await
+}
+
+/// Vite's htmlFallback: `/dir/` serves dir/index.html, `/page` serves
+/// page.html; only appType `spa` then falls back to the root index.html.
+async fn serve_fallback(
+    state: &Arc<ServerState>,
+    headers: &HeaderMap,
+    uri: &Uri,
+    rel: &str,
+) -> Response {
     if state.app_type != "custom" && accepts_html_fallback(headers) {
         if let Some(page) = html_fallback_candidate(rel)
             .and_then(|c| locate(&state.root, state.public_dir.as_deref(), &c))
@@ -334,7 +373,7 @@ async fn serve_file(
     // `?inline` on a file Vite's asset plugin does not load (not an asset or
     // a stylesheet) is the plain module, as vite:asset's load filter has it.
     let asset_query = query_asset_kind(query)
-        .filter(|kind| *kind != "inline" || is_style_ext(ext) || is_asset_path(file));
+        .filter(|kind| *kind != "inline" || is_style_ext(ext) || is_asset_path(&state.root, file));
     if let Some(kind) = asset_query {
         // Vite's checkPublicFile: public when the request path names a file
         // under the public dir, so `/public/logo.png` is not `/logo.png`.
@@ -348,7 +387,12 @@ async fn serve_file(
         return vary_on_fetch_dest(serve_style(state, headers, file, query).await);
     }
     if in_public {
-        return serve_static_file(file, ext).await;
+        // Vite's servePublicMiddleware: the bytes, with sirv's validators
+        // and byte ranges.
+        return match tokio::fs::metadata(file).await {
+            Ok(meta) => crate::public_file_response(file, &meta, &Method::GET, headers).await,
+            Err(err) => read_error(err),
+        };
     }
     if COMPILABLE.contains(&ext) || ext == "json" {
         let url = url_of(&state.root, file);
@@ -358,7 +402,8 @@ async fn serve_file(
         let url = format!("{}?react", url_of(&state.root, file));
         return serve_compiled(state, file, &url, None, headers).await;
     }
-    if ext.eq_ignore_ascii_case("svg") || is_importable_asset_ext(ext) {
+    if ext.eq_ignore_ascii_case("svg") || is_importable_asset(&state.root, &file.to_string_lossy())
+    {
         return vary_on_fetch_dest(serve_bare_asset(state, headers, file, ext, query).await);
     }
     serve_raw_file(state, file, ext).await
@@ -386,7 +431,9 @@ async fn serve_bare_asset(
             asset_module(file, &url, "url", &state.asset_urls, "client").await,
         );
     }
-    if is_importable_asset_ext(ext) && wants_module_import(headers, query) {
+    if is_importable_asset(&state.root, &file.to_string_lossy())
+        && wants_module_import(headers, query)
+    {
         let url = url_of(&state.root, file);
         return js_module_response(
             asset_module(file, &url, "url", &state.asset_urls, "client").await,
@@ -473,14 +520,6 @@ async fn serve_raw_file(state: &Arc<ServerState>, file: &Path, ext: &str) -> Res
             }
         }
         _ => bytes_response(bytes, ext),
-    }
-}
-
-/// The file's bytes as-is with its content type (publicDir files).
-pub(crate) async fn serve_static_file(file: &Path, ext: &str) -> Response {
-    match tokio::fs::read(file).await {
-        Ok(bytes) => bytes_response(bytes, ext),
-        Err(err) => read_error(err),
     }
 }
 

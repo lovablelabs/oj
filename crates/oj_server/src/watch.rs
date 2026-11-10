@@ -115,6 +115,20 @@ pub(crate) mod child_groups {
     /// This process's registry file, set once by `init_registry`.
     static REGISTRY: OnceLock<PathBuf> = OnceLock::new();
 
+    /// The registry and its sweep are process-wide, and the unit tests of one
+    /// binary run in parallel: a test that registers a child or sweeps the
+    /// registry holds this for its duration, so another test's `kill_all`
+    /// never takes its child (a SIGKILL the test then reads as the signal it
+    /// was testing for), and its own sweep never finds another test's child
+    /// (a registry the test expects drained).
+    #[cfg(test)]
+    pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static TESTS: Mutex<()> = Mutex::new(());
+        TESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     pub fn register(pid: u32, own_group: bool) {
         let start = proc_start_time(pid);
         let mut children = CHILDREN.lock().unwrap();
@@ -359,6 +373,110 @@ pub fn unregister_child(pid: u32) {
     child_groups::unregister(pid);
 }
 
+/// Set once a signal is ending this process (its shutdown sweep kills every
+/// child it spawned, a restart check's engine job included): what fails
+/// after that failed because the server is stopping, not on its own.
+static SHUTTING_DOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn note_shutting_down() {
+    SHUTTING_DOWN.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub(crate) fn shutting_down() -> bool {
+    SHUTTING_DOWN.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// How long a restart check waits before evaluating the config again after
+/// an evaluation was interrupted (its engine process killed by a signal),
+/// one wait per further attempt. Vite loads the config in its own process,
+/// where nothing can take the evaluation down without taking the server
+/// with it; oj evaluates it in a child, which the kernel's memory killer or
+/// a supervisor's signal to the process group can end on its own. The
+/// running server serves meanwhile, so waiting costs nothing.
+pub(crate) const INTERRUPTED_RETRY_DELAYS: [Duration; 3] = [
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+];
+
+/// Runs the restart check's config evaluation, again after each interruption
+/// per [`INTERRUPTED_RETRY_DELAYS`] (waiting through `sleep`), and never
+/// again once the server is stopping, whether it began to before the wait or
+/// during it. The error is the one to report.
+pub(crate) fn evaluate_with_retries<T>(
+    mut evaluate: impl FnMut() -> Result<T, plugins::ExtractionError>,
+    mut sleep: impl FnMut(Duration),
+    stopping: impl Fn() -> bool,
+) -> Result<T, plugins::ExtractionError> {
+    let mut delays = INTERRUPTED_RETRY_DELAYS.iter();
+    loop {
+        match evaluate() {
+            Err(plugins::ExtractionError::Interrupted(why)) if !stopping() => {
+                let Some(delay) = delays.next() else {
+                    return Err(plugins::ExtractionError::Interrupted(why));
+                };
+                eprintln!(
+                    "{} the config evaluation was interrupted ({why}); evaluating again in {}s",
+                    oj_brand(),
+                    delay.as_secs()
+                );
+                sleep(*delay);
+                // The sweep that began during the wait would kill the next
+                // evaluation's child too, or miss it.
+                if stopping() {
+                    return Err(plugins::ExtractionError::Interrupted(why));
+                }
+            }
+            outcome => return outcome,
+        }
+    }
+}
+
+/// Restart requests as a count a waiter can sleep on: a restart check waiting
+/// to evaluate an interrupted config again stops waiting when a new request
+/// arrives, since what it asks to check (an edited config) is what the next
+/// evaluation reads.
+#[derive(Default)]
+pub(crate) struct Asked {
+    /// Requests made, and how many of them the check has taken up.
+    counts: Mutex<(u64, u64)>,
+    more: std::sync::Condvar,
+}
+
+impl Asked {
+    /// A request was made.
+    pub(crate) fn note(&self) {
+        self.counts.lock().unwrap().0 += 1;
+        self.more.notify_all();
+    }
+
+    /// The check takes up every request made so far.
+    pub(crate) fn take_up(&self) {
+        let mut counts = self.counts.lock().unwrap();
+        counts.1 = counts.0;
+    }
+
+    /// Waits `delay`, or until a request the check has not taken up is made
+    /// (one made since the last `take_up` or `wait` ends it at once), and
+    /// takes up every request made by then: the evaluation that follows the
+    /// wait reads what they asked to check.
+    pub(crate) fn wait(&self, delay: Duration) {
+        let counts = self.counts.lock().unwrap();
+        let (mut counts, _) = self
+            .more
+            .wait_timeout_while(counts, delay, |(made, taken)| made == taken)
+            .unwrap();
+        counts.1 = counts.0;
+    }
+
+    /// Whether every request made was taken up before the check's last
+    /// evaluation began, so that evaluation answers them all.
+    pub(crate) fn all_taken_up(&self) -> bool {
+        let counts = self.counts.lock().unwrap();
+        counts.0 == counts.1
+    }
+}
+
 /// A dev server's restarts: what the next boot starts from (the app root,
 /// the CLI's `--config`, the dev mode, whether it is a Start app) and the
 /// restart being checked.
@@ -369,6 +487,8 @@ pub struct Restarter {
     pub(crate) start: bool,
     /// A check is running; the newest reason asked for meanwhile.
     pending: Mutex<(bool, Option<String>)>,
+    /// Every request made, for a check waiting to evaluate again.
+    asked: Asked,
     /// A check failed: the config on disk does not boot.
     failed: std::sync::atomic::AtomicBool,
 }
@@ -386,6 +506,7 @@ impl Restarter {
             mode,
             start,
             pending: Mutex::new((false, None)),
+            asked: Asked::default(),
             failed: std::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -419,6 +540,7 @@ impl Restarter {
         {
             let mut pending = self.pending.lock().unwrap();
             pending.1 = Some(reason.to_string());
+            self.asked.note();
             if pending.0 {
                 return;
             }
@@ -429,17 +551,41 @@ impl Restarter {
             let reason = {
                 let mut pending = this.pending.lock().unwrap();
                 match pending.1.take() {
-                    Some(reason) => reason,
+                    Some(reason) => {
+                        this.asked.take_up();
+                        reason
+                    }
                     None => {
                         pending.0 = false;
                         return;
                     }
                 }
             };
-            match this.failure() {
-                // Vite's restart loops while requests are pending: one that
-                // came during this check is checked before the exec.
-                None if this.pending.lock().unwrap().1.is_some() => {}
+            let failure = this.failure();
+            // A request made while the check's last evaluation ran is checked
+            // next: that evaluation may have read the config before the edit
+            // (Vite's restart() during a restart joins the one running; oj
+            // checks again, so the edit is not lost). One made before it
+            // began (during a wait to evaluate again) was answered by it:
+            // checking it again would evaluate the same config twice.
+            let (answered, reason) = {
+                let mut pending = this.pending.lock().unwrap();
+                if this.asked.all_taken_up() {
+                    (true, pending.1.take().unwrap_or(reason))
+                } else {
+                    (false, reason)
+                }
+            };
+            match failure {
+                None if !answered => {}
+                // The shutdown sweep killed the check's engine job: the
+                // server is stopping, so there is no restart to fail.
+                Some(error) if shutting_down() => {
+                    eprintln!(
+                        "{} restart not checked, the dev server is stopping ({error})",
+                        oj_brand()
+                    );
+                }
                 Some(error) => {
                     this.failed.store(true, std::sync::atomic::Ordering::SeqCst);
                     eprintln!("{} {error}", oj_brand());
@@ -469,15 +615,31 @@ impl Restarter {
         else {
             return None;
         };
-        let values = crate::plugins::reextract_vite_values(
-            &check.root,
-            check.config_file.as_deref(),
-            "serve",
-            &check.mode,
+        // An evaluation a signal cut short is run again, bounded: the config
+        // did not fail, its process was killed (see `evaluate_with_retries`).
+        // A request made meanwhile ends the wait: the config it asks about is
+        // the one the next evaluation reads.
+        let values = evaluate_with_retries(
+            || {
+                crate::plugins::reextract_vite_values(
+                    &check.root,
+                    check.config_file.as_deref(),
+                    "serve",
+                    &check.mode,
+                )
+            },
+            |delay| check.asked.wait(delay),
+            shutting_down,
         );
         match values {
-            None => Some(format!("failed to load config from {}", vite.display())),
-            Some((values, changed)) => {
+            Err(plugins::ExtractionError::Failed) => {
+                Some(format!("failed to load config from {}", vite.display()))
+            }
+            Err(plugins::ExtractionError::Interrupted(why)) => Some(format!(
+                "failed to load config from {}: its evaluation was interrupted every time ({why})",
+                vite.display()
+            )),
+            Ok((values, changed)) => {
                 // The next boot reads this evaluation from the cache, so it
                 // cannot tell the config changed: when it did, the deps
                 // pre-seed it keys must run again.

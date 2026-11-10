@@ -727,8 +727,8 @@ impl OptimizedDeps {
 /// their provisional entries for the rerun that bundles them. A plan the
 /// bundle disagrees with (another file, another interop, a dep more or less,
 /// or no bundle at all) compiled modules against the wrong metadata: every
-/// URL moves to a new version, so no compile key (persistent cache included)
-/// still matches a module compiled against the plan, and the page reloads,
+/// URL moves to a new version, so no compile key still matches a module
+/// compiled against the plan, and the page reloads,
 /// Vite's "optimized dependencies changed". Vite's committed browserHash is
 /// unsalted; this one keeps the session salt, so a later session's
 /// contradicted plan never lands on this URL either. `persist` gets the bundled entries and

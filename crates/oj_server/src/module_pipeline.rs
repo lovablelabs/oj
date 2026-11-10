@@ -52,7 +52,7 @@ pub(crate) async fn ensure_module_as(
         && ext == Some("svg")
         && query_asset_kind(url.split_once('?').map(|(_, q)| q)).is_none();
 
-    if !react_svg && !svgr_candidate && is_asset_path(file) {
+    if !react_svg && !svgr_candidate && is_asset_path(&state.root, file) {
         return Ok(register_uncached(
             state,
             url,
@@ -109,10 +109,22 @@ pub(crate) async fn ensure_module_as(
     }
 
     let is_server = is_server_module(file) && !is_dep;
+    let imports_stamp = imports_stamp_known(state, url);
+    // The source is hashed once: the re-key after the compile (below) derives
+    // its key from the same hash.
+    let source_hash = oj_cache::source_hash(source.as_bytes());
     let CompileKey {
         key,
         class_field_semantics,
-    } = compile_key(state, file, url, &source, is_server, stamp);
+    } = compile_key(
+        state,
+        file,
+        url,
+        &source_hash,
+        is_server,
+        stamp,
+        imports_stamp,
+    );
 
     if let Some(module) = memory_hit(state, url, &key) {
         return Ok((key, module));
@@ -125,12 +137,6 @@ pub(crate) async fn ensure_module_as(
     let _guard = lock.lock().await;
 
     if let Some(module) = memory_hit(state, url, &key) {
-        return Ok((key, module));
-    }
-    if let Some(module) = persistent_hit(state, &key, is_dep) {
-        memory_put(state, url, &key, &module);
-        register_in_graph(state, url, &module);
-        replay_module_parsed(state, file, &key, is_dep, is_server).await;
         return Ok((key, module));
     }
 
@@ -300,15 +306,24 @@ pub(crate) async fn ensure_module_as(
         }
         Err(join_err) => return Err(format!("compiler task failed: {join_err}")),
     };
+    // The compile stamped its imports with the graph's stamps of now; a
+    // module served for the first time keyed on none (no edges yet). Store it
+    // under the stamps it bakes in: the key the next request computes once
+    // the edges exist, so it is a hit rather than a second compile. A dep's
+    // imports are other deps, which are never stamped, so a dep is never
+    // re-keyed.
+    let baked = imports_stamp_of(state, &module.imports);
+    let key = if !is_dep && baked != imports_stamp {
+        compile_key(state, file, url, &source_hash, is_server, stamp, baked).key
+    } else {
+        key
+    };
     store_module(state, url, &key, &module);
     state
         .resolve_failed
         .lock()
         .unwrap()
         .remove(url.split('?').next().unwrap_or(url));
-    if state.plugins_use_module_parsed && !is_dep && !is_server {
-        state.parsed_fired.lock().unwrap().insert(key.clone());
-    }
     Ok((key, module))
 }
 
@@ -353,17 +368,6 @@ fn memory_hit(state: &ServerState, url: &str, key: &str) -> Option<Arc<CachedMod
 }
 
 fn store_module(state: &ServerState, url: &str, key: &str, module: &Arc<CachedModule>) {
-    // A sheet that may have inlined a file it names (a small svg; any file
-    // under `?inline`, a JSON one included) embeds its content as it is now:
-    // kept in memory, recompiled when one changes, never persisted. A `t=`
-    // stamp is 0 after a restart, so a sheet with only asset URLs persists.
-    let inlines_assets =
-        module.kind == "css" && !module.imports.is_empty() && module.code.contains("data:");
-    if state.persistent_cache && !inlines_assets {
-        let _ = state
-            .cache_writes
-            .try_send((key.to_string(), Arc::clone(module)));
-    }
     memory_put(state, url, key, module);
     register_in_graph(state, url, module);
 }
@@ -487,26 +491,53 @@ struct CompileKey {
     class_field_semantics: bool,
 }
 
-/// The content cache key, also recorded against the file's stamp for the warm path.
+/// The newest HMR stamp among a module's imports, by their served urls: what
+/// a compile of the module bakes into its import specifiers (Vite's
+/// importAnalysis appends `?t=<lastHMRTimestamp>` to each import of a stamped
+/// module). Read off the graph's edges by `ModuleGraph::imports_timestamp` when
+/// the module has been served; off a compiled module's own import list here.
+fn imports_stamp_of(state: &ServerState, imports: &[String]) -> u64 {
+    let graph = state.graph.lock().unwrap();
+    imports
+        .iter()
+        .filter(|s| s.starts_with('/') && !state.oj_paths.owns(s) && !is_worker_query(s))
+        .map(|s| graph.hmr_timestamp(&import_node(s)))
+        .max()
+        .unwrap_or(0)
+}
+
+/// [`imports_stamp_of`] for a module the graph knows: 0 for one it has no
+/// edges for yet (never served), which its compile settles.
+fn imports_stamp_known(state: &ServerState, url: &str) -> u64 {
+    state
+        .graph
+        .lock()
+        .unwrap()
+        .imports_timestamp(Path::new(graph_url(url)))
+}
+
+/// The memory cache key, also recorded against the file's stamp for the warm
+/// path. `source` is the source's hash, computed once per compile
+/// ([`oj_cache::source_hash`]), since a compile may be keyed twice.
+/// `imports_stamp` is the newest HMR stamp among the module's imports (see
+/// [`imports_stamp_of`]), folded in so an unchanged importer recompiles after
+/// a dep update and its import carries the new `?t=`, and so a cached compile
+/// is found only under the stamps it bakes in.
 fn compile_key(
     state: &ServerState,
     file: &Path,
     url: &str,
-    source: &str,
+    source: &oj_cache::SourceHash,
     is_server: bool,
     stamp: Option<FileStamp>,
+    imports_stamp: u64,
 ) -> CompileKey {
     let mode = if is_server { "server" } else { "dev" };
-    // Fold the newest HMR stamp among imports into the key: an unchanged importer
-    // must recompile after a dep update so its import carries the new `?t=`.
-    let (imports_stamp, invalidated) = {
-        let graph = state.graph.lock().unwrap();
-        let node = Path::new(graph_url(url));
-        (
-            graph.imports_timestamp(node),
-            graph.invalidation_timestamp(node),
-        )
-    };
+    let invalidated = state
+        .graph
+        .lock()
+        .unwrap()
+        .invalidation_timestamp(Path::new(graph_url(url)));
     let mut mode_key = if imports_stamp > 0 {
         format!("{mode}@{imports_stamp}")
     } else {
@@ -531,7 +562,7 @@ fn compile_key(
         mode_key.push_str("+stylex");
         mode_key.push_str(stylex.fingerprint());
     }
-    let key = state.cache.key(source.as_bytes(), url, &mode_key);
+    let key = oj_cache::module_key(source, url, &mode_key);
     if let Some((mtime, size)) = stamp {
         state
             .mtime_keys
@@ -543,23 +574,6 @@ fn compile_key(
         key,
         class_field_semantics,
     }
-}
-
-// Cached post-transform code may import a plugin-served virtual whose content
-// lives only in plugin memory (wyw-in-js cssLookup) and 404s on a warm start:
-// re-run the transform for cached modules whose imports name a filesystem path
-// with no file on disk; all-real-file modules keep the fast persistent cache.
-fn persistent_hit(state: &ServerState, key: &str, is_dep: bool) -> Option<Arc<CachedModule>> {
-    let module = Arc::new(
-        state
-            .persistent_cache
-            .then(|| state.cache.get(key))
-            .flatten()?,
-    );
-    let needs_retransform = state.plugins_have_transform
-        && !is_dep
-        && imports_a_plugin_virtual(&module.imports, &state.root, &state.dir_cache);
-    (!needs_retransform).then_some(module)
 }
 
 pub(crate) struct Transformed {
@@ -1230,7 +1244,7 @@ impl ImportRewrite<'_> {
         if self.interop_urls.borrow().contains(spec) {
             let path = Path::new(spec.split('?').next().unwrap_or(spec));
             let stamp = state.graph.lock().unwrap().hmr_timestamp(path);
-            return Some(stamp_import_url(spec, stamp));
+            return Some(stamp_import_url(&state.root, spec, stamp));
         }
         if state.virtual_ids.contains(spec) {
             return Some(format!("/@virtual/{spec}"));
@@ -1316,7 +1330,7 @@ impl ImportRewrite<'_> {
                 .lock()
                 .unwrap()
                 .hmr_timestamp(Path::new(url.split('?').next().unwrap_or(&url)));
-            return Some(stamp_import_url(&url, stamp));
+            return Some(stamp_import_url(&state.root, &url, stamp));
         }
         // Vite's import analysis fails an import nothing resolves; oj asked
         // every plugin's resolveId before compiling.
@@ -1519,7 +1533,7 @@ pub(crate) fn pre_resolved_url(state: &ServerState, id: &str) -> String {
     allow_root(&state.fs_allow, path.to_path_buf());
     let url = url_of(&state.root, path);
     let stamp = state.graph.lock().unwrap().hmr_timestamp(Path::new(&url));
-    let url = stamp_import_url(&url, stamp);
+    let url = stamp_import_url(&state.root, &url, stamp);
     match query {
         Some(q) if url.contains('?') => format!("{url}&{q}"),
         Some(q) => format!("{url}?{q}"),
@@ -1554,24 +1568,6 @@ pub(crate) fn optimized_url_of(state: &ServerState, id: &str) -> Option<String> 
 pub(crate) fn optimized_file<'a>(state: &ServerState, id: &'a str) -> Option<&'a str> {
     let path = Path::new(id.split('?').next().unwrap_or(id));
     (path.parent()? == state.optimized.dir()).then(|| path.file_name()?.to_str())?
-}
-
-pub(crate) async fn replay_module_parsed(
-    state: &Arc<ServerState>,
-    file: &Path,
-    key: &str,
-    is_dep: bool,
-    is_server: bool,
-) {
-    if !state.plugins_use_module_parsed || is_dep || is_server {
-        return;
-    }
-    if !state.parsed_fired.lock().unwrap().insert(key.to_string()) {
-        return;
-    }
-    if let Some(host) = &state.plugins {
-        let _ = host.module_parsed(&file.to_string_lossy()).await;
-    }
 }
 
 pub(crate) fn package_root(path: &Path) -> PathBuf {
@@ -1788,6 +1784,13 @@ pub(crate) fn wants_raw_resource(headers: &HeaderMap) -> bool {
 // excluded: it routes through compile so svgr can componentize it.
 pub fn is_importable_asset_ext(ext: &str) -> bool {
     oj_compiler::assets::is_asset_ext(ext) && !ext.eq_ignore_ascii_case("svg")
+}
+
+/// [`is_importable_asset_ext`] for a path or url (query ignored), or a file
+/// the config's `assetsInclude` names (Vite's `config.assetsInclude(file)`).
+pub fn is_importable_asset(root: &Path, path: &str) -> bool {
+    oj_compiler::assets::clean_ext(path).is_some_and(is_importable_asset_ext)
+        || oj_compiler::assets::is_included_asset(root, path)
 }
 
 /// `module.builtinModules` without the `node:` scheme, sorted for binary search.

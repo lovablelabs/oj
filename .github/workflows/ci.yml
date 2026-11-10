@@ -33,9 +33,14 @@ jobs:
     name: unit tests
     runs-on: ubuntu-latest-m-public
     timeout-minutes: 90
+    # The profile the tests run under: release on main, debug on a pull
+    # request (see the cargo test step). Each profile keeps its own cache, so
+    # a PR's debug artifacts never evict main's release build or the reverse.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ github.event_name == 'push' && 'release' || 'debug' }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
@@ -62,12 +67,16 @@ jobs:
       # protocol and skip without one; Playwright only installs the browser.
       - run: npm install --prefix e2e
       - run: npx --prefix e2e playwright install --with-deps chromium
-      # Release, not debug: the tests must exercise the codegen that ships.
-      # A debug-only suite stayed green through a release-only engine
-      # miscompilation (every job on an uncapped isolate failed MemoryLimit).
+      # Release on main, debug on a pull request. The tests must exercise the
+      # codegen that ships: a debug-only suite stayed green through a
+      # release-only engine miscompilation (every job on an uncapped isolate
+      # failed MemoryLimit), so every push to main runs them in release. A
+      # pull request runs them in debug, which builds in a fraction of the
+      # time; a release-only regression it lets through is caught on main
+      # before the release is cut.
       # Chrome and the fixture are installed above: a missing one fails the
       # tests that need it instead of letting them pass unrun.
-      - run: cargo test --workspace --release
+      - run: cargo test --workspace ${{ github.event_name == 'push' && '--release' || '' }}
         env:
           OJ_REQUIRE_BROWSER: "1"
           OJ_REQUIRE_FIXTURES: "1"
@@ -121,8 +130,6 @@ jobs:
         run: node e2e/ssr-dev.mjs
       - name: ssr dev serves a raw-TypeScript dependency through the pipeline
         run: node e2e/ssr-node-modules-ts.mjs
-      - name: no-cache flag e2e
-        run: node e2e/no-cache.mjs
       - name: ESM dependency's bare import of a UMD-main sibling (detect-gpu shape)
         run: node e2e/dep-esm-bare-import.mjs
       - name: ESM dependency's named import of an unbundled UMD sibling (proj4 shape)

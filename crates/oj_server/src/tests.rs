@@ -425,60 +425,6 @@ fn sec_fetch_dest_decides_raw_vs_module_form() {
 }
 
 #[test]
-fn imports_a_plugin_virtual_flags_only_missing_fs_paths() {
-    // A cached module is re-transformed on warm start only if it imports a
-    // plugin-served virtual: a filesystem-path import with no file on disk.
-    // Real files (source, svgr's .svg) and oj-internal /@ routes keep the
-    // fast persistent cache.
-    let root = std::env::temp_dir().join(format!("oj-ipv-test-{}", std::process::id()));
-    let src = root.join("src");
-    std::fs::create_dir_all(&src).unwrap();
-    std::fs::write(src.join("real.ts"), "export {}\n").unwrap();
-    let dc = Mutex::new(DirCache::new());
-    let r = root.as_path();
-
-    // All-real imports -> keep cache.
-    assert!(!imports_a_plugin_virtual(
-        &["/src/real.ts".to_string()],
-        r,
-        &dc
-    ));
-    // oj-internal routes and external urls are never plugin-state virtuals.
-    assert!(!imports_a_plugin_virtual(
-        &[
-            "/@id/abc".to_string(),
-            "/@virtual/x".to_string(),
-            "https://cdn/x.js".to_string()
-        ],
-        r,
-        &dc,
-    ));
-    // A missing absolute path (wyw's .wyw-in-js.css) -> re-transform.
-    assert!(imports_a_plugin_virtual(
-        &[
-            "/src/real.ts".to_string(),
-            "/Users/nope/x.wyw-in-js.css".to_string()
-        ],
-        r,
-        &dc,
-    ));
-    // A missing root-relative path -> re-transform.
-    assert!(imports_a_plugin_virtual(
-        &["/src/gone.css".to_string()],
-        r,
-        &dc
-    ));
-    // Query strings are stripped before the on-disk check.
-    assert!(!imports_a_plugin_virtual(
-        &["/src/real.ts?import".to_string()],
-        r,
-        &dc
-    ));
-
-    std::fs::remove_dir_all(&root).ok();
-}
-
-#[test]
 fn lingui_macro_specifiers_are_matched_exactly() {
     assert!(is_lingui_macro_specifier("@lingui/macro"));
     assert!(is_lingui_macro_specifier("@lingui/core/macro"));
@@ -1164,6 +1110,11 @@ fn client_js_is_rendered_from_server_hmr_options() {
             && !real.contains("__FORWARD_CONSOLE__"),
         "no placeholder left"
     );
+    // The keepalive interval is filled in as the client is served.
+    let served = with_ping(&Bytes::from(real), 15000);
+    let served = String::from_utf8_lossy(&served);
+    assert!(!served.contains("__OJ_PING_MS__"));
+    assert!(served.contains("pingMs: 15000,"));
 }
 
 #[test]
@@ -1229,46 +1180,49 @@ fn ws_token_is_demanded_only_from_browser_upgrades() {
 
 #[test]
 fn stamp_import_url_marks_only_compilable_module_urls() {
-    assert_eq!(stamp_import_url("/src/utils.ts", 5), "/src/utils.ts?t=5");
     assert_eq!(
-        stamp_import_url("/src/r.tsx?tsr-shared=1", 5),
+        stamp_import_url(Path::new("/app"), "/src/utils.ts", 5),
+        "/src/utils.ts?t=5"
+    );
+    assert_eq!(
+        stamp_import_url(Path::new("/app"), "/src/r.tsx?tsr-shared=1", 5),
         "/src/r.tsx?tsr-shared=1&t=5"
     );
     assert_eq!(
-        stamp_import_url("/src/utils.ts", 0),
+        stamp_import_url(Path::new("/app"), "/src/utils.ts", 0),
         "/src/utils.ts",
         "unstamped module"
     );
     assert_eq!(
-        stamp_import_url("/src/utils.ts?t=3", 5),
+        stamp_import_url(Path::new("/app"), "/src/utils.ts?t=3", 5),
         "/src/utils.ts?t=3",
         "never doubled"
     );
     assert_eq!(
-        stamp_import_url("/src/data.json", 5),
+        stamp_import_url(Path::new("/app"), "/src/data.json", 5),
         "/src/data.json?t=5",
         "json is a module"
     );
     assert_eq!(
-        stamp_import_url("/src/a.css?import", 5),
+        stamp_import_url(Path::new("/app"), "/src/a.css?import", 5),
         "/src/a.css?import&t=5",
         "a CSS module's importer must fetch its new class exports"
     );
     assert_eq!(
-        stamp_import_url("/src/a.css?inline", 5),
+        stamp_import_url(Path::new("/app"), "/src/a.css?inline", 5),
         "/src/a.css?inline&t=5"
     );
     assert_eq!(
-        stamp_import_url("/src/hero.png?url", 5),
+        stamp_import_url(Path::new("/app"), "/src/hero.png?url", 5),
         "/src/hero.png?url&t=5",
         "an updated image's importer must fetch its new url"
     );
     assert_eq!(
-        stamp_import_url("/@oj-deps/react.js", 5),
+        stamp_import_url(Path::new("/app"), "/@oj-deps/react.js", 5),
         "/@oj-deps/react.js"
     );
     assert_eq!(
-        stamp_import_url("/@fs/x/node_modules/a/index.js", 5),
+        stamp_import_url(Path::new("/app"), "/@fs/x/node_modules/a/index.js", 5),
         "/@fs/x/node_modules/a/index.js"
     );
 }
@@ -1831,6 +1785,9 @@ fn sweep_drops_unreadable_files_and_skips_our_own() {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn child_registry_lifecycle_persists_and_drains() {
+    // The sweep below is process-wide: no other test's child may be
+    // registered meanwhile (see `child_groups::test_lock`).
+    let _registry = child_groups::test_lock();
     let dir = tempfile::tempdir().unwrap();
     child_groups::init_registry(dir.path());
     let own_file = dir.path().join(format!("{}.json", std::process::id()));
@@ -2751,6 +2708,12 @@ fn inline_params_match_as_vites_word_bounded_regexes() {
         assert!(!has_word_param(url, "inline"), "{url}");
     }
     assert_eq!(query_asset_kind(Some("inline-x")), Some("inline"));
+    // `no-inline` reads the same way (Vite's noInlineRE): the url, as in
+    // the build (shouldInline checks it first).
+    for query in ["no-inline", "no-inline=1", "url&no-inline-x"] {
+        assert_eq!(query_asset_kind(Some(query)), Some("url"), "{query}");
+    }
+    assert_eq!(query_asset_kind(Some("no-inlinex")), None);
 }
 
 // A prelude of N lines moves every generated line of the map down by N.
@@ -2855,51 +2818,66 @@ fn preload_hints_name_the_exact_import_url() {
     )]
     .into();
     assert_eq!(
-        preload_href("/src/main.tsx", &entries, false),
+        preload_href(Path::new("/app"), "/src/main.tsx", &entries, false),
         "/src/main.tsx"
     );
     assert_eq!(
-        preload_href("/src/a.css", &entries, false),
+        preload_href(Path::new("/app"), "/src/a.css", &entries, false),
         "/src/a.css?import"
     );
     // A pre-bundled entry preloads under the URL importers name it by now,
     // not the session's base version, so the preload and the later import
     // hit one immutable cache entry and a rerun leaves no stale hint.
     assert_eq!(
-        preload_href("/@oj-deps/react.mjs", &entries, false),
+        preload_href(Path::new("/app"), "/@oj-deps/react.mjs", &entries, false),
         "/@oj-deps/react.mjs?v=1d335a14"
     );
     assert_eq!(
-        preload_href("/@oj-deps/chunk-AB12CD.mjs", &entries, false),
+        preload_href(
+            Path::new("/app"),
+            "/@oj-deps/chunk-AB12CD.mjs",
+            &entries,
+            false
+        ),
         "/@oj-deps/chunk-AB12CD.mjs",
         "dep files import chunks bare"
     );
     assert_eq!(
-        preload_href("/@oj-deps/react.mjs", &HashMap::new(), false),
+        preload_href(
+            Path::new("/app"),
+            "/@oj-deps/react.mjs",
+            &HashMap::new(),
+            false
+        ),
         "/@oj-deps/react.mjs",
         "no entry, no query"
     );
     assert_eq!(
-        preload_href("/@id/6e6f6465", &entries, false),
+        preload_href(Path::new("/app"), "/@id/6e6f6465", &entries, false),
         "/@id/6e6f6465",
         "stubs are unversioned"
     );
     // The bare asset url is the `<img src>`'s raw file; the import is `?url`.
     assert_eq!(
-        preload_href("/src/assets/hero.png", &entries, false),
+        preload_href(Path::new("/app"), "/src/assets/hero.png", &entries, false),
         "/src/assets/hero.png?url"
     );
     assert_eq!(
-        preload_href("/src/logo.svg", &entries, false),
+        preload_href(Path::new("/app"), "/src/logo.svg", &entries, false),
         "/src/logo.svg?url"
     );
     assert_eq!(
-        preload_href("/src/logo.svg", &entries, true),
+        preload_href(Path::new("/app"), "/src/logo.svg", &entries, true),
         "/src/logo.svg",
         "a transform plugin may componentize a bare svg import"
     );
     assert_eq!(
-        preload_href("/node_modules/pkg/icon.png", &entries, false),
+        preload_href(
+            Path::new("/app"),
+            "/node_modules/pkg/icon.png",
+            &entries,
+            false
+        ),
         "/node_modules/pkg/icon.png",
         "a dependency's asset import is not marked"
     );

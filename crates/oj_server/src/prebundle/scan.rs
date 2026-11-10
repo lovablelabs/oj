@@ -270,7 +270,7 @@ fn first_message(errs: &[rolldown_error::BuildDiagnostic]) -> String {
     let Some(first) = errs.first() else {
         return String::new();
     };
-    let text = first.to_diagnostic().to_string();
+    let text = crate::load_error::render(first).to_string();
     let keep = if crate::load_error::failed_load(first).is_some() {
         2
     } else {

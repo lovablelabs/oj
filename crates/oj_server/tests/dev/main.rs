@@ -10,6 +10,7 @@
 
 mod alias_order;
 mod assets;
+mod assets_include;
 mod browser;
 mod browser_errors;
 mod build_config_flag;
@@ -20,6 +21,7 @@ mod config_function;
 mod config_proxy;
 mod config_temp_file;
 mod config_wrapper;
+mod configure_server_shim;
 mod css_asset_hmr;
 mod css_import_inline;
 mod css_importer_invalidation;
@@ -90,6 +92,8 @@ mod redirect_passthrough;
 mod refresh_harness;
 mod resolve_created_files;
 mod restart_check;
+mod silent_proxy;
+mod spa_socket_keepalive;
 mod ssr_externalize;
 mod stylex;
 mod svelte;
@@ -101,7 +105,6 @@ mod tailwind_v4_persistent;
 mod unresolved_bare;
 mod vite_esm_entry;
 mod vite_hmr_socket;
-mod warm_transform_virtual;
 mod wasm;
 mod watch_reads;
 mod watcher;
@@ -176,8 +179,6 @@ impl App {
             port: None,
             host: None,
             config: None,
-            enable_cache: false,
-            no_cache: false,
             lazy: false,
             typecheck: false,
             mode: None,

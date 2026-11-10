@@ -15,13 +15,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use oj_compiler::glob::GlobCall;
 use rolldown_common::{HmrUpdate, Output, WatcherFileWatcherOptions};
 use rolldown_dev::{BundlerConfig, DevEngine, DevOptions, DevWatchOptions, ErrorStage};
 use rolldown_plugin::__inner::SharedPluginable;
 use rolldown_utils::pattern_filter::StringOrRegex;
 
 use super::assets::DevStyleState;
+use super::code::GlobScope;
 use super::errors::{unresolved_import, unresolved_import_in, BundleError};
 use crate::start_hot::{HotUpdates, Patch};
 
@@ -55,7 +55,7 @@ pub(crate) struct HotSession {
     /// The style epoch the session compiled its sheets under.
     pub epoch: u64,
     pub css_urls: Arc<Mutex<super::assets::LinkedSheets>>,
-    pub glob_scopes: Arc<Mutex<Vec<GlobCall>>>,
+    pub glob_scopes: Arc<Mutex<Vec<GlobScope>>>,
     pub styles: Arc<DevStyleState>,
     events: Arc<Events>,
 }
@@ -84,7 +84,7 @@ pub(crate) struct SessionParts {
     pub options: rolldown::BundlerOptions,
     pub plugins: Vec<SharedPluginable>,
     pub css_urls: Arc<Mutex<super::assets::LinkedSheets>>,
-    pub glob_scopes: Arc<Mutex<Vec<GlobCall>>>,
+    pub glob_scopes: Arc<Mutex<Vec<GlobScope>>>,
     pub styles: Arc<DevStyleState>,
 }
 
@@ -190,14 +190,26 @@ impl HotSession {
     }
 
     /// Whether a rebundle's edits all went out as hot updates. The engine
-    /// watches the same files the dev server does, usually sooner; an input
-    /// it has no module for (a file the bundle only declared, a create under a
-    /// glob's scan base) rebuilds in full.
+    /// watches the same files the dev server does, usually sooner: its
+    /// modules, and the scan bases of the globs they expand, so a file
+    /// created or deleted under one is an edit it reports too (the glob's
+    /// importer re-expands: `StartCodePlugin`'s transform registers each
+    /// base as the importer's watch file). An input it
+    /// has no module for and no glob over (a file the bundle only declared)
+    /// rebuilds in full.
     pub async fn settle(&self, changed: &[PathBuf], has_pages: bool) -> Result<bool, BundleError> {
+        let globs: Vec<oj_compiler::glob::GlobMatcher> = self
+            .glob_scopes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .map(|g| g.call.matcher())
+            .collect();
+        let under_a_glob = |p: &str| globs.iter().any(|g| g.is_match(&p.replace('\\', "/")));
         let known: Vec<String> = changed
             .iter()
             .map(|p| p.to_string_lossy().into_owned())
-            .filter(|p| self.engine.get_module_info(p).is_some())
+            .filter(|p| self.engine.get_module_info(p).is_some() || under_a_glob(p))
             .collect();
         let deadline = tokio::time::Instant::now() + Duration::from_millis(1000);
         let watched = loop {
@@ -213,10 +225,23 @@ impl HotSession {
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         };
+        // A failed hot update over a deleted file is no verdict on the app:
+        // the engine re-fetches every module that depends on a changed file,
+        // a deleted file's own `?raw` module among them, which no longer
+        // loads although nothing imports it any more once its glob's importer
+        // re-expanded. The full build that follows (`latest_output`) starts
+        // over from the entries, as Vite's bundled dev rebuilds after a
+        // failed update when a page needs the output; its error, if it has
+        // one, is the one to report. A failure with every changed file still
+        // on disk (a syntax error mid-edit) is the edit's own, reported as
+        // it is: the overlay shows it without a full build first.
         if let Some(err) = self.events.error.lock().unwrap().take() {
             let mut seen = self.events.seen.lock().unwrap();
             for p in &known {
                 seen.remove(p);
+            }
+            if changed.iter().any(|p| !p.exists()) {
+                return Ok(false);
             }
             return Err(err);
         }

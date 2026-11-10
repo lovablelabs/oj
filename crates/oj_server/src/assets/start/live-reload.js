@@ -164,7 +164,7 @@
     // Never into a socket already past its deadline, as engine.io checks
     // its ping timeout before a write (a throttled timer may not have
     // fired yet): replaced first, the message waits for the new one (post).
-    if (pingMs > 0) checkAlive();
+    watchdog.check();
     if (!ws || ws.readyState !== 1) return false;
     ws.send(JSON.stringify(msg));
     return true;
@@ -247,28 +247,23 @@
     snapshot();
     location.reload();
   });
-  // Liveness. The server sends every open socket a frame at least every
-  // `pingMs` (oj:ping when it has nothing else), and any frame shows the
-  // socket alive. A connection dropped on the way without a close (a proxy
-  // or load balancer, a sleeping laptop) never fires `onclose`, so a socket
-  // that stays silent for `deadMs` is presumed dead and replaced; the new
-  // one names the page's stamps, and the server reloads it onto any change
-  // it missed meanwhile. As Phoenix's heartbeat and Socket.IO's
-  // pingInterval + pingTimeout do. (The server's own deadline runs on the
-  // protocol's ping, which the browser answers without this script, so a
-  // page paused at a breakpoint keeps its socket.) 0: no keepalive, no
-  // watchdog.
+  // Liveness (socket-watchdog.js, served ahead of this file): the server
+  // sends every open socket a frame at least every `pingMs` (oj:ping when
+  // it has nothing else), and a socket silent past the deadline is replaced
+  // at once. The new one names the page's stamps, and the server reloads it
+  // onto any change it missed meanwhile, so a blip with nothing changed
+  // keeps the page as it is. 0: no keepalive, no watchdog.
   const pingMs = __OJ_PING_MS__;
   const PING = '{"type":"oj:ping"}';
-  const deadMs = pingMs * 2 + Math.min(pingMs, 10000);
-  let heardAt = 0;
-  // Whether the socket already had its grace since it was last heard from
-  // (see checkAlive).
-  let graced = false;
-  const heard = () => {
-    heardAt = Date.now();
-    graced = false;
-  };
+  const watchdog = ojSocketWatchdog({
+    pingMs,
+    socket: () => ws,
+    recover: (dead) => {
+      dead.onopen = dead.onmessage = dead.onclose = null;
+      connect();
+    },
+  });
+  const heard = watchdog.heard;
   // The retry a close scheduled. Whatever opens a socket first cancels it,
   // as Phoenix resets its reconnect timer: one scheduled before a page went
   // into the back/forward cache fires on the way back, after pageshow
@@ -303,57 +298,6 @@
     };
     ws.onclose = () => (retry = setTimeout(connect, 1000));
   };
-  // Drops the socket, open or still connecting, and opens a new one at
-  // once. Its handlers go first: a close that arrives late must not start
-  // a second reconnect. Said in the console and in the close, as Phoenix's
-  // "heartbeat timeout": a page that stopped updating leaves a trace.
-  const replace = (why) => {
-    if (!ws || ws.readyState > 1) return;
-    const dead = ws;
-    dead.onopen = dead.onmessage = dead.onclose = null;
-    console.log("[oj] " + why + "; reconnecting");
-    try {
-      dead.close(1000, "oj: " + why);
-    } catch {}
-    connect();
-  };
-  // The last time the watchdog ran. A run long after the one before means
-  // this page, not its socket, was stopped (a breakpoint, an alert(), a
-  // frozen or throttled tab, a sleeping laptop): frames may be waiting to be
-  // delivered, and replacing the socket now would drop them. So the socket
-  // gets one more ping's time (and a second) to be heard from, once; a
-  // still-silent socket is replaced at the next check after that.
-  let checkedAt = Date.now();
-  const checkAlive = () => {
-    const now = Date.now();
-    const stopped = now - checkedAt > deadMs;
-    checkedAt = now;
-    if (now - heardAt <= deadMs) return;
-    if (stopped && !graced) {
-      graced = true;
-      heardAt = now - deadMs + pingMs + 1000;
-      return;
-    }
-    replace("no word from the dev server in " + deadMs + "ms");
-  };
-  // The network came back: a socket from before it went (another network,
-  // a new address) is dead whether or not it has been silent long enough
-  // to tell. Socket.IO closes on "offline" for the same reason, and skips
-  // a dev server on this machine, whose loopback socket survives.
-  const local = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname || "");
-  const networkBack = () => (local ? checkAlive() : replace("the network came back"));
-  if (pingMs > 0) {
-    setInterval(checkAlive, Math.max(250, Math.floor(pingMs / 2)));
-    // A tab coming back (timers throttled while hidden) or the network
-    // returning: check now rather than at the next tick. `resume` too, as
-    // Phoenix does: Chrome does not reliably fire visibilitychange after a
-    // frozen page resumes (https://issues.chromium.org/issues/547062449).
-    document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible") checkAlive();
-    });
-    document.addEventListener("resume", checkAlive);
-    addEventListener("online", networkBack);
-  }
   // The back/forward cache, as Phoenix does: a page going in closes its
   // socket (an open one can keep it out, and would be dead on the way back
   // anyway), and one restored from it connects again; its stamps bring it
@@ -377,7 +321,7 @@
       try {
         msg = JSON.parse(data);
       } catch {}
-      // The server's keepalive: hearing it was the point (see checkAlive).
+      // The server's keepalive: hearing it was the point (socket-watchdog.js).
       if (msg && msg.type === "oj:ping") return;
       // Vite's bundled dev error frame ({type:"error", err}): the client
       // bundle failed, so the page keeps what it has and shows the overlay;

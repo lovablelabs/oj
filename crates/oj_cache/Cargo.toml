@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Content-addressed persistent cache for compiled module outputs"
+description = "oj's cache directory layout, its integrity-checked files and the module cache types"
 
 [dependencies]
 blake3.workspace = true
@@ -13,6 +13,3 @@ serde_json.workspace = true
 oj_env.workspace = true
 oj_stylex.workspace = true
 
-[dev-dependencies]
-proptest.workspace = true
-tempfile.workspace = true

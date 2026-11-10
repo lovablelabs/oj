@@ -3,7 +3,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 pub mod config_extract;
 pub mod integrity;
@@ -12,10 +11,6 @@ pub mod start_bundle;
 use serde::{Deserialize, Serialize};
 
 pub mod start_codegen;
-
-// Bump whenever CachedModule/HotMeta meaning changes, so older entries are
-// never deserialized with the new meaning.
-pub const CACHE_FORMAT: u32 = 7;
 
 pub const CACHE_ROOT_VERSION: u32 = 1;
 
@@ -109,6 +104,24 @@ fn is_lower_hex(s: &str) -> bool {
 
 /// blake3 over `fields` joined by NUL bytes. The separators keep field
 /// boundaries unambiguous ("a","bc" vs "ab","c").
+/// A module source's content hash, the part of a compile key that costs
+/// reading the whole source: computed once per compile and handed to
+/// [`module_key`] for every key derived from it.
+pub type SourceHash = [u8; 32];
+
+pub fn source_hash(source: &[u8]) -> SourceHash {
+    *blake3::hash(source).as_bytes()
+}
+
+/// The dev server's in-memory module cache key: the compile mode (with the
+/// import stamps and the other inputs the server folds in), the served url
+/// and the source's hash.
+pub fn module_key(source: &SourceHash, url: &str, mode: &str) -> String {
+    hash_nul_joined(&[mode.as_bytes(), url.as_bytes(), source])
+        .to_hex()
+        .to_string()
+}
+
 pub(crate) fn hash_nul_joined(fields: &[&[u8]]) -> blake3::Hash {
     let mut hasher = blake3::Hasher::new();
     for (i, field) in fields.iter().enumerate() {
@@ -164,180 +177,27 @@ pub struct HotMeta {
     pub accepted_exports: Option<Vec<String>>,
 }
 
-pub struct PersistentCache {
-    dir: PathBuf,
-    salt: String,
-}
-
-impl PersistentCache {
-    pub fn new(dir: PathBuf, tool_version: &str) -> Self {
-        Self {
-            dir,
-            salt: format!("{tool_version}:{CACHE_FORMAT}"),
-        }
-    }
-
-    /// Compiled modules embed inlined `import.meta.env` values, so anything
-    /// that changes the defines (dotenv edits, process env, plugin config()
-    /// mutations) must land in the salt or warm restarts serve stale env.
-    pub fn with_salt_extra(mut self, extra: &str) -> Self {
-        self.salt.push(':');
-        self.salt.push_str(extra);
-        self
-    }
-
-    pub fn key(&self, source: &[u8], url: &str, mode: &str) -> String {
-        hash_nul_joined(&[
-            self.salt.as_bytes(),
-            mode.as_bytes(),
-            url.as_bytes(),
-            source,
-        ])
-        .to_hex()
-        .to_string()
-    }
-
-    pub fn get(&self, key: &str) -> Option<CachedModule> {
-        integrity::read_json_or_remove(&self.path_for(key)?)
-    }
-
-    pub fn put(&self, key: &str, module: &CachedModule) {
-        let Some(path) = self.path_for(key) else {
-            return;
-        };
-        let Some(parent) = path.parent() else { return };
-        if fs::create_dir_all(parent).is_err() {
-            return;
-        }
-        // Per-write sequence: threads of one process may put the same key
-        // concurrently and must not share a temp file.
-        let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
-        let tmp = path.with_extension(format!("tmp-{}-{seq}", std::process::id()));
-        let bytes = serde_json::to_vec(module).unwrap_or_default();
-        let _ = integrity::write_via_tmp(&tmp, &path, &bytes);
-    }
-
-    /// `<dir>/<key[..2]>/<key>.json`; `None` for anything but a lowercase
-    /// blake3 hex digest, so a key can never escape the cache dir.
-    fn path_for(&self, key: &str) -> Option<PathBuf> {
-        if key.len() != 64 || !is_lower_hex(key) {
-            return None;
-        }
-        Some(self.dir.join(&key[..2]).join(format!("{key}.json")))
-    }
-}
-
-static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn temp_cache(label: &str) -> PersistentCache {
-        let dir =
-            std::env::temp_dir().join(format!("oj-cache-test-{}-{label}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        PersistentCache::new(dir, "0.0.1-test")
-    }
-
-    fn sample() -> CachedModule {
-        CachedModule {
-            code: "export const x = 1;".into(),
-            map_json: Some("data:application/json;base64,e30=".into()),
-            imports: vec!["/node_modules/react/index.js".into()],
-            is_boundary: true,
-            kind: "esm".into(),
-            require_map: vec![("react".into(), "/node_modules/react/index.js".into())],
-            css_exports: Vec::new(),
-            fs_allow: Vec::new(),
-            watch_files: Vec::new(),
-            import_bindings: Vec::new(),
-            hot: None,
-            stylex_rules: Vec::new(),
-        }
-    }
-
     #[test]
-    fn roundtrip() {
-        let cache = temp_cache("roundtrip");
-        let key = cache.key(b"source", "/src/App.tsx", "dev");
-        assert_eq!(cache.get(&key), None);
-        cache.put(&key, &sample());
-        assert_eq!(cache.get(&key), Some(sample()));
-    }
-
-    #[test]
-    fn every_input_changes_the_key() {
-        let cache = temp_cache("keys");
-        let base = cache.key(b"source", "/src/App.tsx", "dev");
+    fn module_key_changes_with_every_input_and_keeps_field_boundaries() {
+        let hash = source_hash(b"source");
+        let base = module_key(&hash, "/src/App.tsx", "dev");
+        assert_eq!(
+            base,
+            module_key(&source_hash(b"source"), "/src/App.tsx", "dev")
+        );
         assert_ne!(
             base,
-            cache.key(b"source2", "/src/App.tsx", "dev"),
+            module_key(&source_hash(b"source2"), "/src/App.tsx", "dev"),
             "content"
         );
-        assert_ne!(base, cache.key(b"source", "/src/Other.tsx", "dev"), "url");
-        assert_ne!(base, cache.key(b"source", "/src/App.tsx", "prod"), "mode");
-        let other_version = PersistentCache::new(std::env::temp_dir(), "9.9.9");
-        assert_ne!(
-            base,
-            other_version.key(b"source", "/src/App.tsx", "dev"),
-            "version"
-        );
-        let salted = PersistentCache::new(std::env::temp_dir(), "9.9.9").with_salt_extra("env-a");
-        let resalted = PersistentCache::new(std::env::temp_dir(), "9.9.9").with_salt_extra("env-b");
-        assert_ne!(
-            salted.key(b"source", "/src/App.tsx", "dev"),
-            resalted.key(b"source", "/src/App.tsx", "dev"),
-            "env defines salt"
-        );
-    }
-
-    #[test]
-    fn corrupt_entries_are_dropped_not_served() {
-        let cache = temp_cache("corrupt");
-        let key = cache.key(b"s", "/u", "dev");
-        cache.put(&key, &sample());
-        let path = cache.path_for(&key).unwrap();
-        std::fs::write(&path, b"{ not json").unwrap();
-        assert_eq!(cache.get(&key), None);
-        assert!(!path.exists(), "corrupt entry must be removed");
-    }
-
-    #[test]
-    fn shards_by_key_prefix_and_leaves_no_temp_file() {
-        let cache = temp_cache("shard");
-        let key = cache.key(b"s", "/u", "dev");
-        cache.put(&key, &sample());
-        let path = cache.path_for(&key).unwrap();
-        assert_eq!(
-            path.parent()
-                .unwrap()
-                .file_name()
-                .unwrap()
-                .to_str()
-                .unwrap(),
-            &key[..2]
-        );
-        assert!(path.exists());
-        let shard = path.parent().unwrap();
-        let leftovers: Vec<_> = std::fs::read_dir(shard)
-            .unwrap()
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|name| name.contains(".tmp"))
-            .collect();
-        assert!(
-            leftovers.is_empty(),
-            "temp files must be renamed away: {leftovers:?}"
-        );
-    }
-
-    #[test]
-    fn field_separators_prevent_key_collisions() {
-        let cache = temp_cache("sep");
-        let a = cache.key(b"bc", "a", "dev");
-        let b = cache.key(b"c", "ab", "dev");
-        assert_ne!(a, b, "url/source boundary must be unambiguous");
+        assert_ne!(base, module_key(&hash, "/src/Other.tsx", "dev"), "url");
+        assert_ne!(base, module_key(&hash, "/src/App.tsx", "dev@5"), "mode");
+        // The NUL separators keep "a","bc" apart from "ab","c".
+        assert_ne!(module_key(&hash, "a", "bc"), module_key(&hash, "ab", "c"));
     }
 
     #[test]

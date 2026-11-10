@@ -4,6 +4,7 @@
   "alias": null,
   "allowedHosts": [],
   "appType": "spa",
+  "assetsInclude": null,
   "assetsInlineLimit": 4096,
   "assetsInlineLimitEnvs": {
     "client": 4096,
