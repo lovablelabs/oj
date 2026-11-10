@@ -268,10 +268,17 @@ impl Server {
         path: &str,
         headers: &[(&str, String)],
     ) -> (u16, Vec<(String, String)>, Vec<u8>) {
-        let mut head = format!(
-            "{method} {path} HTTP/1.0\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\nContent-Length: 0\r\n",
-            self.port
-        );
+        // A `Host` among `headers` replaces the server's own.
+        let host = if headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("host"))
+        {
+            String::new()
+        } else {
+            format!("Host: 127.0.0.1:{}\r\n", self.port)
+        };
+        let mut head =
+            format!("{method} {path} HTTP/1.0\r\n{host}Connection: close\r\nContent-Length: 0\r\n");
         for (name, value) in headers {
             head.push_str(&format!("{name}: {value}\r\n"));
         }

@@ -65,8 +65,10 @@ struct StartState {
     hmr_ping: Option<Duration>,
     workspace_root: PathBuf,
     /// Vite's `publicDir` (`None` when disabled): its files answer ahead of
-    /// the router and the SSR handler, see [`serve_public_file`].
+    /// the router and the SSR handler, see [`public_file`].
     public_dir: Option<PathBuf>,
+    /// Vite's `server.headers`, which its sirv sets on a public file.
+    dev_headers: Arc<Vec<(header::HeaderName, header::HeaderValue)>>,
     /// The pages' reloads, as counts (see start_reloads).
     reloads: Arc<crate::start_reloads::Epochs>,
     /// The client bundle's last failure as a `{type:"error", err}` frame,
@@ -595,6 +597,7 @@ pub async fn start_dev(
         hmr_ping: hmr_ping(oj_env::get().knobs.hmr_ping_ms),
         workspace_root: workspace_root(&root),
         public_dir,
+        dev_headers: Arc::clone(&built.dev_headers),
         reloads: Arc::clone(&reloads),
         build_error: std::sync::RwLock::new(boot_error.clone()),
         error_tx: broadcast::channel(16).0,
@@ -711,13 +714,18 @@ pub async fn start_dev(
         });
     }
 
-    let app = built
-        .router
-        .clone()
-        .layer(axum::middleware::from_fn_with_state(
-            Arc::clone(&state),
-            start_route,
-        ));
+    // This server's routes run inside the dev server's cors and host gates,
+    // as Vite's corsMiddleware and hostValidationMiddleware come before every
+    // other middleware (a framework's SSR handler, its own module urls and
+    // the public dir included): a request from a host that is not allowed
+    // gets no document either.
+    {
+        let state = Arc::clone(&state);
+        let hook: oj_server::RouteHook =
+            Arc::new(move |req, next| Box::pin(start_route(State(Arc::clone(&state)), req, next)));
+        let _ = built.route_hook.set(hook);
+    }
+    let app = built.router.clone();
 
     let _ = app_tx.send(app.clone());
     let (listener, port) = built.bind_listener().await?;
@@ -2787,18 +2795,38 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
     if oj_server::is_websocket_upgrade(req.headers()) {
         return next.run(req).await;
     }
+    let route = classify_path(path, req.uri().path(), req.method(), &state.proxy_prefixes);
     // A file under `publicDir` answers before the router and the SSR handler
     // see the request, as Vite's servePublicMiddleware runs ahead of its html
     // middlewares for every appType: `/hub/index.html` is that file, not the
     // `/hub/` document (which the router would redirect or 404), and a
-    // dotted or extensionless public path is never the app's 404.
-    if let Some(resp) = serve_public_file(&state, path, req.uri().query(), req.method()).await {
-        return resp;
+    // dotted or extensionless public path is never the app's 404. Not for a
+    // proxied prefix (`Route::Pass`): Vite's proxy middleware comes before
+    // its public one.
+    if !matches!(route, Route::Pass) {
+        if let Some(hit) = public_file(
+            &state,
+            req.uri().path(),
+            path,
+            req.uri().query(),
+            req.method(),
+        )
+        .await
+        {
+            // A plugin's configureServer middleware comes before the public
+            // one in Vite: where the plugin middleware is asked first (a
+            // document), it still is.
+            if matches!(route, Route::Document) && state.plugin_serve.mw_port().is_some() {
+                let raw = path_and_query(&req);
+                return forward_document(&state, raw, req.headers(), Some(hit)).await;
+            }
+            return public_response(&state, &hit, req.method(), req.headers()).await;
+        }
     }
-    match classify_path(path, req.uri().path(), req.method(), &state.proxy_prefixes) {
+    match route {
         Route::Document => {
             let raw = path_and_query(&req);
-            forward_document(&state, raw, req.headers()).await
+            forward_document(&state, raw, req.headers(), None).await
         }
         Route::StaticOrDocument => {
             let raw = path_and_query(&req);
@@ -2807,7 +2835,7 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
             if resp.status() != StatusCode::NOT_FOUND {
                 return resp;
             }
-            forward_document(&state, raw, &headers).await
+            forward_document(&state, raw, &headers, None).await
         }
         Route::Api => forward_with_body(&state, req).await,
         Route::Pass => next.run(req).await,
@@ -3044,14 +3072,21 @@ fn path_and_query(req: &Request) -> String {
         .to_string()
 }
 
+/// `public`: the `publicDir` file the url names, when there is one. It is
+/// served instead of the document unless the plugin middleware answers the
+/// url or rewrites it (Vite runs a plugin's configureServer middlewares
+/// before its public one), and it does not wait for the client output.
 async fn forward_document(
     state: &Arc<StartState>,
     raw: String,
     headers: &header::HeaderMap,
+    mut public: Option<PublicHit>,
 ) -> Response {
     let hot_has = hot_has_now(state);
     // A document loads the client output: never one from before a hot update.
-    state.client_output_fresh().await;
+    if public.is_none() {
+        state.client_output_fresh().await;
+    }
     // Editor plugins (dev-server bridge) register configureServer routes
     // with no path prefix, so a GET like /_sandbox/preview/viewers can only
     // be told from an app route by asking the middleware first; it returns
@@ -3063,6 +3098,9 @@ async fn forward_document(
         let stamp = document_stamp(state, hot_has);
         match oj_server::forward_get_to_plugin_mw(port, &raw, headers).await {
             oj_server::Forwarded::Answered(resp) => {
+                if public.is_some() {
+                    state.client_output_fresh().await;
+                }
                 // A worker-served document needs the live-reload client like the
                 // runner-served ones, or edits never reload the page.
                 return inject_reload_client(resp, &state.base, &stamp);
@@ -3077,9 +3115,17 @@ async fn forward_document(
                     .path_and_query()
                     .map(|p| p.as_str().to_string())
                     .unwrap_or_else(|| target.path().to_string());
+                // The url the middleware left is the one to serve: no longer
+                // the public file's.
+                if public.take().is_some() {
+                    state.client_output_fresh().await;
+                }
             }
             oj_server::Forwarded::FellThrough { rewritten: None } => {}
         }
+    }
+    if let Some(hit) = public {
+        return public_response(state, &hit, &Method::GET, headers).await;
     }
     ensure_bundle_current(state).await;
     ensure_runner_fresh(state).await;
@@ -3465,11 +3511,13 @@ async fn serve_fs_asset(state: &StartState, abs: &str) -> Response {
 
 /// The file under `public_dir` that `path` names, or None when the request
 /// is not for one. Vite's servePublicMiddleware: the exact path of a file
-/// in the dir, percent-decoded, with no extension guessing and no
-/// `index.html` for a directory (sirv with `extensions: []`), skipping
-/// oj's own `/@` urls and the `?url` and `?import` requests whose module
-/// the transform pipeline makes (`/logo.svg?url` is a module, as in Vite).
-/// A `..` segment never leaves the dir.
+/// in the dir, decoded as `decodeURI` does (its `toFilePath`), with no
+/// extension guessing and no `index.html` for a directory (sirv with
+/// `extensions: []`), skipping oj's own `/@` urls (its `isInternalRequest`)
+/// and the `?url` and `?import` requests whose module the transform
+/// pipeline makes (`urlRE`, `isImportRequest`: `/logo.svg?url` is a module).
+/// Only a path of plain segments names a file: nothing that could leave the
+/// dir, on any platform.
 fn public_file_path(
     public_dir: &Path,
     path: &str,
@@ -3482,48 +3530,130 @@ fn public_file_path(
     if path.starts_with("/@") || oj_server::is_dev_server_path(path) {
         return None;
     }
-    if query.is_some_and(|q| q.split('&').any(|flag| flag == "url" || flag == "import")) {
+    // Vite's urlRE is `(\?|&)url(?:&|$)`, its importQueryRE
+    // `(\?|&)import=?(?:&|$)`.
+    if query.is_some_and(|q| {
+        q.split('&')
+            .any(|flag| flag == "url" || flag == "import" || flag == "import=")
+    }) {
         return None;
     }
-    let rel = percent_decode(path);
-    let rel = rel.trim_start_matches('/');
-    if rel.is_empty() || rel.ends_with('/') || rel.split('/').any(|seg| seg == "..") {
+    // A malformed escape leaves the path as it was written (Vite catches
+    // decodeURI's error), which then names a file only literally.
+    let decoded = if path.contains('%') {
+        decode_uri(path).unwrap_or_else(|| path.to_string())
+    } else {
+        path.to_string()
+    };
+    let rel = decoded.strip_prefix('/')?;
+    if rel.is_empty()
+        || rel
+            .split('/')
+            .any(|seg| seg.is_empty() || seg == "." || seg == "..")
+    {
+        return None;
+    }
+    // A drive, a root or a separator the platform reads inside a segment.
+    let plain = Path::new(rel)
+        .components()
+        .all(|c| matches!(c, std::path::Component::Normal(_)));
+    if !plain || rel.contains('\\') {
         return None;
     }
     Some(public_dir.join(rel))
 }
 
-/// A `publicDir` file, served as it is (never compiled, never given the
-/// live-reload client: Vite's public middleware serves the bytes), or None
-/// when `path` names no such file. See [`public_file_path`].
-async fn serve_public_file(
+/// JavaScript's `decodeURI`: every escape decoded but those of the reserved
+/// characters (`; / ? : @ & = + $ , #`), which stay as written, so `%2F` is
+/// never a path separator. None for what `decodeURI` throws on: an escape
+/// that is not two hex digits, or bytes that are not UTF-8.
+fn decode_uri(s: &str) -> Option<String> {
+    const RESERVED: &[u8] = b";/?:@&=+$,#";
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'%' {
+            out.push(bytes[i]);
+            i += 1;
+            continue;
+        }
+        let byte = hex_val(*bytes.get(i + 1)?)? << 4 | hex_val(*bytes.get(i + 2)?)?;
+        if RESERVED.contains(&byte) {
+            out.extend_from_slice(&bytes[i..i + 3]);
+        } else {
+            out.push(byte);
+        }
+        i += 3;
+    }
+    String::from_utf8(out).ok()
+}
+
+/// A `publicDir` file a request names: where it is and its metadata.
+struct PublicHit {
+    file: PathBuf,
+    meta: std::fs::Metadata,
+}
+
+/// The `publicDir` file the request is for, if it names one: see
+/// [`public_file_path`]. `raw` is the request's path, `path` the same past
+/// the dev `base`. Vite's base middleware comes before its public one, so
+/// with a `base` only a url under it names a public file. Vite matches the
+/// url against the names in the dir, so a name in another case is no match
+/// even where the file system would open it.
+async fn public_file(
     state: &StartState,
+    raw: &str,
     path: &str,
     query: Option<&str>,
     method: &Method,
-) -> Option<Response> {
+) -> Option<PublicHit> {
     let public = state.public_dir.as_deref()?;
-    let file = public_file_path(public, path, query, method)?;
-    let meta = tokio::fs::metadata(&file).await.ok()?;
-    if !meta.is_file() {
+    if !state.base.is_empty() && raw.len() == path.len() {
         return None;
     }
-    let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
-    Some(match tokio::fs::read(&file).await {
-        Ok(bytes) => (
-            [
-                (header::CONTENT_TYPE, asset_mime(ext)),
-                (header::CACHE_CONTROL, "no-cache"),
-            ],
-            bytes,
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("oj start: public file: {e}"),
-        )
-            .into_response(),
-    })
+    let file = public_file_path(public, path, query, method)?;
+    let meta = tokio::fs::metadata(&file).await.ok()?;
+    if !meta.is_file() || !named_as_written(public, &file).await {
+        return None;
+    }
+    Some(PublicHit { file, meta })
+}
+
+/// Whether `file` (which exists, under `public`) is spelled as its name on
+/// disk is. A case-insensitive file system opens `Hub/Index.html` for
+/// `hub/index.html`; Vite's set of public file names does not hold it. A
+/// name that resolves elsewhere altogether (a symlink) is the file asked for.
+async fn named_as_written(public: &Path, file: &Path) -> bool {
+    let (Ok(real_dir), Ok(real)) = (
+        tokio::fs::canonicalize(public).await,
+        tokio::fs::canonicalize(file).await,
+    ) else {
+        return true;
+    };
+    let (Ok(asked), Ok(found)) = (file.strip_prefix(public), real.strip_prefix(&real_dir)) else {
+        return true;
+    };
+    let (asked, found) = (asked.to_string_lossy(), found.to_string_lossy());
+    asked == found || asked.to_lowercase() != found.to_lowercase()
+}
+
+/// A `publicDir` file's response, as Vite's public middleware serves it:
+/// the bytes as they are (never compiled, never given the live-reload
+/// client), with sirv's type, validators and byte ranges
+/// ([`oj_server::public_file_response`]) and `server.headers`, which its
+/// sirv `setHeaders` puts on every file it serves.
+async fn public_response(
+    state: &StartState,
+    hit: &PublicHit,
+    method: &Method,
+    headers: &header::HeaderMap,
+) -> Response {
+    let mut response = oj_server::public_file_response(&hit.file, &hit.meta, method, headers).await;
+    for (name, value) in state.dev_headers.iter() {
+        response.headers_mut().insert(name.clone(), value.clone());
+    }
+    response
 }
 
 fn percent_decode(s: &str) -> String {
@@ -5531,6 +5661,34 @@ mod tests {
         assert_eq!(at("/@fs/etc/passwd", None), None);
         assert_eq!(at("/../package.json", None), None);
         assert_eq!(at("/a/%2e%2e/package.json", None), None);
+        assert_eq!(at("//etc/passwd", None), None);
+        assert_eq!(at("/a/./b.txt", None), None);
+        assert_eq!(at("/a\\..\\b.txt", None), None);
+        // Vite's importQueryRE takes `import=` too; `urlRE` only the bare flag.
+        assert_eq!(at("/logo.svg", Some("import=")), None);
+        assert_eq!(
+            at("/logo.svg", Some("url=1")),
+            Some(PathBuf::from("/app/public/logo.svg"))
+        );
+        // decodeURI leaves the reserved characters' escapes as written: an
+        // encoded separator is part of a name, never a separator.
+        assert_eq!(
+            at("/a%2Fb.txt", None),
+            Some(PathBuf::from("/app/public/a%2Fb.txt"))
+        );
+        assert_eq!(
+            at("/caf%C3%A9.txt", None),
+            Some(PathBuf::from("/app/public/café.txt"))
+        );
+        // What decodeURI throws on stays as written.
+        assert_eq!(
+            at("/100%.txt", None),
+            Some(PathBuf::from("/app/public/100%.txt"))
+        );
+        assert_eq!(
+            at("/bad%FFutf8.txt", None),
+            Some(PathBuf::from("/app/public/bad%FFutf8.txt"))
+        );
         assert_eq!(
             public_file_path(public, "/a.txt", None, &Method::POST),
             None
@@ -5539,6 +5697,52 @@ mod tests {
             public_file_path(public, "/a.txt", None, &Method::HEAD),
             Some(PathBuf::from("/app/public/a.txt"))
         );
+    }
+
+    #[test]
+    fn decode_uri_is_javascripts() {
+        assert_eq!(
+            decode_uri("/with%20space.txt").as_deref(),
+            Some("/with space.txt")
+        );
+        assert_eq!(decode_uri("/%E2%9C%93").as_deref(), Some("/✓"));
+        // decodeURI("%2F%3F%23%26%3D%2B%24%2C%3B%3A%40") is its input.
+        let reserved = "%2F%3F%23%26%3D%2B%24%2C%3B%3A%40";
+        assert_eq!(decode_uri(reserved).as_deref(), Some(reserved));
+        // URIError: malformed escapes and bytes that are not UTF-8.
+        assert_eq!(decode_uri("%"), None);
+        assert_eq!(decode_uri("a%2"), None);
+        assert_eq!(decode_uri("a%zz"), None);
+        assert_eq!(decode_uri("%FF"), None);
+        assert_eq!(decode_uri("%C3"), None);
+    }
+
+    // Vite matches a url against the names in the public dir, so one that
+    // differs only in case is no public file, whatever the file system opens.
+    #[tokio::test]
+    async fn a_public_file_is_named_as_it_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let public = dir.path().join("public");
+        std::fs::create_dir_all(public.join("Hub")).unwrap();
+        std::fs::write(public.join("Hub/Index.html"), "x").unwrap();
+        assert!(named_as_written(&public, &public.join("Hub/Index.html")).await);
+        // Only where the file system is case-insensitive does the other
+        // spelling exist at all; there it is refused.
+        let other = public.join("hub/index.html");
+        if other.exists() {
+            assert!(!named_as_written(&public, &other).await);
+        }
+        // A symlink names another file: the one asked for.
+        #[cfg(unix)]
+        {
+            std::fs::write(dir.path().join("outside.txt"), "y").unwrap();
+            std::os::unix::fs::symlink(dir.path().join("outside.txt"), public.join("link.txt"))
+                .unwrap();
+            std::os::unix::fs::symlink(public.join("Hub/Index.html"), public.join("alias.html"))
+                .unwrap();
+            assert!(named_as_written(&public, &public.join("link.txt")).await);
+            assert!(named_as_written(&public, &public.join("alias.html")).await);
+        }
     }
 
     #[test]

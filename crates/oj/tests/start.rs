@@ -311,6 +311,262 @@ fn dev_serves_public_dir_files_ahead_of_the_router() {
     );
 }
 
+/// The value of the response header `name` (lower-case), or "".
+fn header_of(headers: &[(String, String)], name: &str) -> String {
+    headers
+        .iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, value)| value.clone())
+        .unwrap_or_default()
+}
+
+/// The fixture with a `server` block in its config: `server.headers`, cors
+/// for any origin, the default host check (`allowedHosts` unset), a proxied
+/// `/api` (its target refuses connections) and a plugin whose
+/// configureServer middleware answers `/claimed/index.html`.
+fn app_with_server_options(name: &str) -> Option<start_app::App> {
+    let app = app(name)?;
+    let config = app.0.join("vite.config.ts");
+    let source = std::fs::read_to_string(&config).unwrap();
+    let options = r#"export default defineConfig({
+  server: {
+    headers: { "X-Fixture-Header": "from-server-headers" },
+    cors: true,
+    proxy: { "/api": { target: "http://127.0.0.1:9", changeOrigin: true } },
+  },
+"#;
+    let claims = r#"  plugins: [
+    {
+      name: "fixture-claims-a-public-url",
+      configureServer(server) {
+        server.middlewares.use((req, res, next) => {
+          if (req.url === "/claimed/index.html") {
+            res.setHeader("content-type", "text/plain");
+            res.end("claimed-by-the-plugin-middleware");
+            return;
+          }
+          next();
+        });
+      },
+    },
+"#;
+    assert!(
+        source.contains("export default defineConfig({\n") && source.contains("  plugins: [\n")
+    );
+    let source = source
+        .replacen("export default defineConfig({\n", options, 1)
+        .replacen("  plugins: [\n", claims, 1);
+    std::fs::write(&config, source).unwrap();
+    Some(app)
+}
+
+/// Vite's middleware order, for a public file and for the app's own
+/// responses (server/index.ts): cors and the host check come first, so a
+/// host that is not allowed gets neither a public file, nor a document, nor
+/// one of the server's own urls, and an allowed origin gets its cors header
+/// on all of them; a plugin's configureServer middleware and the proxy come
+/// before the public middleware, so a url either one owns is not the file;
+/// and sirv sets `server.headers` on the file it serves.
+#[test]
+fn dev_public_files_run_inside_vites_middleware_order() {
+    let Some(app) = app_with_server_options("dev-public-order") else {
+        return;
+    };
+    let public = app.0.join("public");
+    for (rel, bytes) in [
+        ("hub/index.html", "<h1>hub-public-marker</h1>"),
+        ("api/data.json", r#"{"from":"the-public-dir"}"#),
+        ("claimed/index.html", "<h1>the-public-file</h1>"),
+        ("unclaimed/index.html", "<h1>unclaimed-public-marker</h1>"),
+    ] {
+        let path = public.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+    let dev = Server::oj_dev(&app.0);
+    let origin = ("Origin", "http://other.example".to_string());
+
+    // server.headers and cors on a public file, dotted or a document-like one.
+    for path in ["/favicon.txt", "/hub/index.html"] {
+        let (status, headers, _) = dev.fetch("GET", path, std::slice::from_ref(&origin));
+        assert_eq!(status, 200, "GET {path}\n{}", dev.output());
+        assert_eq!(
+            header_of(&headers, "x-fixture-header"),
+            "from-server-headers",
+            "GET {path}: server.headers are set on a public file (sirv's setHeaders)"
+        );
+        assert_eq!(
+            header_of(&headers, "access-control-allow-origin"),
+            "http://other.example",
+            "GET {path}: cors comes before the public middleware"
+        );
+    }
+    // cors is on the app's documents too (corsMiddleware is first for all);
+    // server.headers are the files' only, not a framework's responses'.
+    let (status, headers, _) = dev.fetch("GET", "/", std::slice::from_ref(&origin));
+    assert_eq!(status, 200, "{}", dev.output());
+    assert_eq!(
+        header_of(&headers, "access-control-allow-origin"),
+        "http://other.example"
+    );
+    assert_eq!(header_of(&headers, "x-fixture-header"), "");
+
+    // The host check: nothing for a host that is not allowed, as Vite's
+    // hostValidationMiddleware answers 403 before any other middleware.
+    let evil = ("Host", "evil.example".to_string());
+    for path in [
+        "/favicon.txt",
+        "/hub/index.html",
+        "/",
+        "/about",
+        "/@oj-start/live-reload.js",
+    ] {
+        let (status, _, body) = dev.fetch("GET", path, std::slice::from_ref(&evil));
+        assert_eq!(
+            status,
+            403,
+            "GET {path} from a host that is not allowed: {}",
+            String::from_utf8_lossy(&body[..body.len().min(120)])
+        );
+    }
+    // The hosts Vite always allows still reach all of it.
+    for host in ["localhost", "127.0.0.1", "app.localhost"] {
+        let allowed = ("Host", format!("{host}:{}", dev.port));
+        for path in ["/favicon.txt", "/"] {
+            let (status, _, _) = dev.fetch("GET", path, std::slice::from_ref(&allowed));
+            assert_eq!(status, 200, "GET {path} with Host {host}");
+        }
+    }
+
+    // The proxy owns its prefix: the request goes to the target (which
+    // refuses the connection), not to public/api/data.json.
+    let (status, _, body) = dev.fetch("GET", "/api/data.json", &[]);
+    assert!(
+        status != 200 && !String::from_utf8_lossy(&body).contains("the-public-dir"),
+        "a proxied url served the public file ({status})"
+    );
+
+    // A plugin's configureServer middleware answers its url ahead of the
+    // public file; a url it passes on is the public file.
+    let (status, claimed) = get(&dev, "/claimed/index.html");
+    assert_eq!(status, 200, "{}", dev.output());
+    assert_eq!(claimed, "claimed-by-the-plugin-middleware");
+    let (status, unclaimed) = get(&dev, "/unclaimed/index.html");
+    assert_eq!(status, 200, "{}", dev.output());
+    assert_eq!(unclaimed, "<h1>unclaimed-public-marker</h1>");
+}
+
+/// A public file as Vite's sirv answers it (`dev: true, etag: true`): its
+/// content type from the shared table (the TypeScript extensions as
+/// JavaScript), a weak `W/"<size>-<mtime>"` validator answered with 304,
+/// `Last-Modified`, and byte ranges: 206 with `Content-Range`, 416 past the
+/// end. A browser plays and seeks a video through ranges.
+#[test]
+fn dev_public_files_answer_ranges_and_validators_as_sirv() {
+    let Some(app) = app("dev-public-sirv") else {
+        return;
+    };
+    let public = app.0.join("public");
+    let clip: Vec<u8> = (0..300_000usize).map(|i| (i % 251) as u8).collect();
+    let files: [(&str, &[u8]); 6] = [
+        ("clip.mp4", &clip),
+        ("clip.mov", b"quicktime-marker"),
+        ("app.webmanifest", br#"{"name":"fixture"}"#),
+        ("worker.ts", b"export const a: number = 1;\n"),
+        ("Hub/Index.html", b"<h1>cased-public-marker</h1>"),
+        ("a%2Fb.txt", b"encoded-separator-name"),
+    ];
+    for (rel, bytes) in files {
+        let path = public.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+    std::fs::create_dir_all(public.join("a")).unwrap();
+    std::fs::write(public.join("a/b.txt"), "nested-file").unwrap();
+    let dev = Server::oj_dev(&app.0);
+    let size = clip.len();
+
+    // Types: the shared asset table, not a short list.
+    for (path, mime) in [
+        ("/clip.mov", "video/quicktime"),
+        ("/app.webmanifest", "application/manifest+json"),
+        ("/worker.ts", "text/javascript"),
+        ("/Hub/Index.html", "text/html"),
+    ] {
+        let (status, headers, _) = dev.fetch("GET", path, &[]);
+        assert_eq!(status, 200, "GET {path}\n{}", dev.output());
+        assert!(
+            header_of(&headers, "content-type").starts_with(mime),
+            "GET {path}: content-type {:?}, wanted {mime}",
+            header_of(&headers, "content-type")
+        );
+    }
+    // The TypeScript file is served as written, not compiled.
+    let (_, _, worker) = dev.fetch("GET", "/worker.ts", &[]);
+    assert_eq!(worker, b"export const a: number = 1;\n");
+
+    // The whole file, with its validators.
+    let (status, headers, body) = dev.fetch("GET", "/clip.mp4", &[]);
+    assert_eq!(status, 200);
+    assert_eq!(body, clip);
+    assert_eq!(header_of(&headers, "accept-ranges"), "bytes");
+    assert_eq!(header_of(&headers, "content-length"), size.to_string());
+    assert_eq!(header_of(&headers, "cache-control"), "no-cache");
+    assert!(header_of(&headers, "last-modified").ends_with(" GMT"));
+    let etag = header_of(&headers, "etag");
+    assert!(
+        etag.starts_with(&format!("W/\"{size}-")),
+        "sirv's weak size-mtime validator: {etag}"
+    );
+
+    // Ranges.
+    let range = |spec: &str| dev.fetch("GET", "/clip.mp4", &[("Range", spec.to_string())]);
+    let (status, headers, body) = range("bytes=100-199");
+    assert_eq!(status, 206);
+    assert_eq!(
+        header_of(&headers, "content-range"),
+        format!("bytes 100-199/{size}")
+    );
+    assert_eq!(header_of(&headers, "content-length"), "100");
+    assert_eq!(body, &clip[100..200]);
+    let (status, headers, body) = range("bytes=299000-");
+    assert_eq!(status, 206);
+    assert_eq!(
+        header_of(&headers, "content-range"),
+        format!("bytes 299000-{}/{size}", size - 1)
+    );
+    assert_eq!(body, &clip[299_000..]);
+    let (status, _, body) = range("bytes=-500");
+    assert_eq!(status, 206);
+    assert_eq!(body, &clip[size - 500..]);
+    let (status, headers, _) = range(&format!("bytes={size}-"));
+    assert_eq!(status, 416);
+    assert_eq!(
+        header_of(&headers, "content-range"),
+        format!("bytes */{size}")
+    );
+
+    // The validator: 304 and no body.
+    let (status, _, body) = dev.fetch("GET", "/clip.mp4", &[("If-None-Match", etag)]);
+    assert_eq!(status, 304);
+    assert!(body.is_empty());
+    // HEAD: the headers of the GET, no body.
+    let (status, headers, body) = dev.fetch("HEAD", "/clip.mp4", &[]);
+    assert_eq!(status, 200);
+    assert_eq!(header_of(&headers, "content-length"), size.to_string());
+    assert!(body.is_empty());
+
+    // Vite matches the url against the names in the dir: another case is
+    // not the file, even where the file system would open it.
+    let (_, _, cased) = dev.fetch("GET", "/hub/index.html", &[]);
+    assert_ne!(cased, b"<h1>cased-public-marker</h1>");
+    // decodeURI keeps an encoded separator: `/a%2Fb.txt` is the file of
+    // that name, not a/b.txt.
+    let (status, _, encoded) = dev.fetch("GET", "/a%2Fb.txt", &[]);
+    assert_eq!(status, 200);
+    assert_eq!(encoded, b"encoded-separator-name");
+}
+
 /// A dotted GET no static file owns reaches the SSR handler (dotted route
 /// params, robots.txt-style server routes), static files still win, and
 /// requests run concurrently.
