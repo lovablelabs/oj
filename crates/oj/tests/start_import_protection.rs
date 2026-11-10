@@ -967,3 +967,146 @@ async fn a_file_routed_page_behind_a_granular_gate_rebuilds_without_denials() {
     )
     .await;
 }
+
+/// Server functions declared in the shapes Start's compiler accepts beyond
+/// `export const name = createServerFn()`: a type-annotated `const` through
+/// a renamed import, a `let` through a namespace import, and a chain through
+/// a variable holding the factory. Each handler loads a `*.server.ts` module
+/// with `await import()`, so a handler left in the client is denied there.
+const SHAPED_FNS: &str = r#"import { createServerFn as serverFn } from "@tanstack/react-start";
+import * as start from "@tanstack/react-start";
+
+type Plan = () => Promise<string>;
+
+export const plan: Plan = serverFn({ method: "POST" }).handler(async () => {
+  const { gate } = await import("./ai-gate.server");
+  return `plan-handler:${gate()}`;
+});
+
+export let audit = start.createServerFn({ method: "POST" }).handler(async () => {
+  const { gate } = await import("./ai-gate.server");
+  return `audit-handler:${gate()}`;
+});
+
+const base = serverFn({ method: "POST" });
+export const summarize = base.handler(async () => {
+  const { gate } = await import("./ai-gate.server");
+  return `summarize-handler:${gate()}`;
+});
+"#;
+
+const SHAPED_NAMES: [&str; 3] = ["plan", "audit", "summarize"];
+
+/// The server-only module the handlers load, importing the server entry.
+const GATE_SERVER: &str = r#"import { getRequestHeader } from "@tanstack/react-start/server";
+
+export const gate = () => getRequestHeader("x-gate") ?? "ai-gate-secret";
+"#;
+
+fn shaped_fn_files() -> [(&'static str, String); 3] {
+    [
+        ("src/lib/ai-gate.server.ts", GATE_SERVER.to_string()),
+        ("src/lib/plan.functions.ts", SHAPED_FNS.to_string()),
+        (
+            "src/routes/about.tsx",
+            about(
+                "import { plan, audit, summarize } from \"../lib/plan.functions\";",
+                r#"const [result, setResult] = useState("");
+  useEffect(() => {
+    Promise.all([plan(), audit(), summarize()]).then(
+      (r) => setResult(r.join("|")),
+      (e) => setResult("error " + String(e)),
+    );
+  }, []);
+  const extra = <p id="secret">{result}</p>;"#,
+            ),
+        ),
+    ]
+}
+
+#[test]
+fn server_fns_declared_in_other_shapes_keep_their_handlers_out_of_the_client() {
+    let Some(app) = app_with("sf-shapes", &shaped_fn_files(), None) else {
+        return;
+    };
+    let (ok, text) = build(&app.0);
+    assert!(ok, "the build failed:\n{text}");
+    assert!(!text.contains("[import-protection]"), "{text}");
+    assert!(
+        !client_has(&app.0, "ai-gate-secret"),
+        "the client holds the server module"
+    );
+    for name in SHAPED_NAMES {
+        assert!(
+            !client_has(&app.0, &format!("{name}-handler:")),
+            "the client holds the handler of {name}"
+        );
+        assert!(
+            client_has(
+                &app.0,
+                &oj_compiler::server_fns::server_fn_id("src/lib/plan.functions.ts", name)
+            ),
+            "the client does not call {name} by its id"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_hydrates_a_page_calling_server_fns_declared_in_other_shapes() {
+    let Some(app) = app_with("sf-shapes-dev", &shaped_fn_files(), None) else {
+        return;
+    };
+    let dev = Server::oj_dev(&app.0);
+    let (status, _) = dev.request("GET", "/@oj-start/client-entry.js", &[]);
+    assert_eq!(status, 200, "the client entry\n{}", dev.output());
+    assert!(
+        !dev.output().contains("[import-protection]"),
+        "import protection flagged a server-only import\n{}",
+        dev.output()
+    );
+    // The server side registered each one under its id, with its handler.
+    for name in SHAPED_NAMES {
+        let id = oj_compiler::server_fns::server_fn_id("src/lib/plan.functions.ts", name);
+        let (status, body) = dev.call(&id);
+        assert!(
+            status == 200 && body.contains(&format!("{name}-handler:ai-gate-secret")),
+            "{name} answered {status} {body:?}\n{}",
+            dev.output()
+        );
+    }
+    if browser::skip() {
+        return;
+    }
+    let page = Page::open(&dev.url("/about")).await;
+    let hydrated = page
+        .poll(
+            r##"document.querySelector("#hydrated")?.textContent === "hydrated""##,
+            Duration::from_secs(30),
+        )
+        .await;
+    let answered = page
+        .poll(
+            r##"document.querySelector("#secret")?.textContent === "plan-handler:ai-gate-secret|audit-handler:ai-gate-secret|summarize-handler:ai-gate-secret""##,
+            Duration::from_secs(30),
+        )
+        .await;
+    let (console, errors) = (page.console(), page.errors());
+    let result: Option<String> = page
+        .eval("document.querySelector('#secret')?.textContent ?? null")
+        .await;
+    page.close().await;
+    assert!(
+        hydrated,
+        "the page did not hydrate: {errors:?} {console:?}\n{}",
+        dev.output()
+    );
+    assert!(
+        answered,
+        "the page's calls answered {result:?}: {errors:?} {console:?}\n{}",
+        dev.output()
+    );
+    assert!(
+        !console.iter().any(|c| c.contains("[import-protection]")),
+        "import protection flagged a server-only import: {console:?}"
+    );
+}
