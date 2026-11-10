@@ -945,8 +945,10 @@ fn render_public_asset_urls(
 /// Vite 8's JSON transform (rolldown's `builtin:vite-json`, Vite's defaults
 /// `namedExports: true`, `stringify: 'auto'`, minified in the build): an
 /// object becomes named exports and a default object of them; a large
-/// non-object becomes `JSON.parse(...)`.
-fn vite_json_module(id: &str, code: &str) -> rolldown_plugin::HookTransformReturn {
+/// non-object becomes `JSON.parse(...)`. The output is a JavaScript module,
+/// so the bundler links and patches it as one (the Start bundles' hot
+/// updates depend on that: see `StartCodePlugin::transform`).
+pub(crate) fn vite_json_module(id: &str, code: &str) -> rolldown_plugin::HookTransformReturn {
     let special = rolldown_plugin_utils::is_special_query(id);
     let json_ext = id.ends_with(".json")
         || id.rfind(".json?").is_some_and(|i| {
