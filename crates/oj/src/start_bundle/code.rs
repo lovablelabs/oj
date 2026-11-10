@@ -20,6 +20,16 @@ use rolldown_plugin::{
     PluginContextResolveOptions, SharedTransformPluginContext,
 };
 
+/// One `import.meta.glob` a bundle expanded, with the module that holds it
+/// (glob-scopes.json): the dev server re-expands the importer when a file the
+/// call matches is created or deleted, as Vite's import-glob plugin adds the
+/// glob's importers to such an update (its `hotUpdate`).
+#[derive(Debug, Clone)]
+pub(crate) struct GlobScope {
+    pub importer: PathBuf,
+    pub call: GlobCall,
+}
+
 /// Which bundle the code goes to.
 #[derive(Debug, Clone)]
 pub(crate) enum CodeTarget {
@@ -36,9 +46,10 @@ pub(crate) enum CodeTarget {
 pub(crate) struct StartCodePlugin {
     root: PathBuf,
     target: CodeTarget,
-    /// Every glob a client bundle expanded, for the dev rebundle gate (a file
-    /// created that one matches changes the bundle).
-    glob_scopes: Option<Arc<Mutex<Vec<GlobCall>>>>,
+    /// Every glob a client bundle expanded, with its importer: the dev
+    /// server's rebundle gate (a file created or deleted that one matches
+    /// changes the bundle) and its server graphs (the importer re-expands).
+    glob_scopes: Option<Arc<Mutex<Vec<GlobScope>>>>,
     /// The app's `resolve.alias`, which an aliased glob pattern resolves
     /// through (Vite's toAbsoluteGlob -> resolveId).
     alias: Vec<AliasEntry>,
@@ -99,7 +110,7 @@ impl StartCodePlugin {
         self
     }
 
-    pub fn recording_globs(mut self, scopes: Arc<Mutex<Vec<GlobCall>>>) -> Self {
+    pub fn recording_globs(mut self, scopes: Arc<Mutex<Vec<GlobScope>>>) -> Self {
         self.glob_scopes = Some(scopes);
         self
     }
@@ -229,8 +240,29 @@ impl Plugin for StartCodePlugin {
             let alias = |id: &str| self.alias.iter().find_map(|e| e.apply(id));
             let out = meta_glob::transform_glob(&code, &file, &self.root, &alias, &mut scopes)
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
+            // What a glob expands to is read off the disk, not off this
+            // module's code: a file created or deleted under a pattern's scan
+            // base (every file it can match lives under one) changes the
+            // expansion. The directory is this module's watch dependency, as
+            // a Rollup plugin's `this.addWatchFile(dir)`: the engine watches
+            // it with everything below and re-transforms this module for a
+            // change there, which Vite's import-glob plugin does from its
+            // `hotUpdate` hook over the watcher of the whole root.
+            for base in scopes
+                .iter()
+                .map(GlobCall::matcher)
+                .flat_map(|m| m.bases().map(str::to_string).collect::<Vec<_>>())
+            {
+                ctx.add_watch_file(&base);
+            }
             if let Some(record) = &self.glob_scopes {
-                record.lock().unwrap().extend(scopes);
+                record
+                    .lock()
+                    .unwrap()
+                    .extend(scopes.into_iter().map(|call| GlobScope {
+                        importer: file.clone(),
+                        call,
+                    }));
             }
             if out != code {
                 code = Cow::Owned(out);

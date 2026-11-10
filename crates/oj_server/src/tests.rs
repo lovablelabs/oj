@@ -1164,6 +1164,11 @@ fn client_js_is_rendered_from_server_hmr_options() {
             && !real.contains("__FORWARD_CONSOLE__"),
         "no placeholder left"
     );
+    // The keepalive interval is filled in as the client is served.
+    let served = with_ping(&Bytes::from(real), 15000);
+    let served = String::from_utf8_lossy(&served);
+    assert!(!served.contains("__OJ_PING_MS__"));
+    assert!(served.contains("pingMs: 15000,"));
 }
 
 #[test]

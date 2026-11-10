@@ -92,6 +92,8 @@ The files in this directory:
   `cf-server-worker.mjs` the Worker bundle's `getCloudflareContext()`.
 - `hmr-runtime.js` is the dev client's hot-update runtime; `live-reload.js` is
   the dev client that snapshots and restores form state across a warm reload.
+  It is served with `crates/oj_server/src/assets/socket-watchdog.js` ahead of
+  it, the dead-socket watchdog it shares with the SPA client (`client.js`).
   `react-refresh-runtime.js` in the cache (oj's copy of plugin-react's
   runtime, `crates/oj_server/src/assets/refresh-runtime.js`) is bundled into
   the hot client bundle as `/@react-refresh`, with plugin-react's preamble

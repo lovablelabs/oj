@@ -1612,6 +1612,16 @@ async function detectSsrRunnerBacked(raw, configEnv, merge = mergeConfigLite) {
 // (the esbuild and plain-import loaders).
 //
 
+// `assetsInclude`: a string glob, a RegExp, or an array of either (Vite's
+// createFilter input), read off the RAW config: the resolved one holds the
+// function Vite made of it. A RegExp travels as its source and flags.
+function extractAssetsInclude(v) {
+  const list = Array.isArray(v) ? v : v != null ? [v] : [];
+  const out = list
+    .map((e) => (typeof e === "string" ? e : e instanceof RegExp ? { regex: e.source, flags: e.flags } : null))
+    .filter((e) => e !== null);
+  return out.length ? out : null;
+}
 function extractResolve(r) {
   if (!r || typeof r !== "object") return null;
   const out = {};
@@ -2121,6 +2131,7 @@ async function extractValues(input) {
         preview: extractPreview(c.preview),
         appType: typeof c.appType === "string" ? c.appType : null,
         html: typeof c.html?.cspNonce === "string" ? { cspNonce: c.html.cspNonce } : null,
+        assetsInclude: extractAssetsInclude(raw?.assetsInclude),
         activePlugins: await activePluginCount(raw),
         resolveError: resolveFailure ? String((resolveFailure && resolveFailure.message) || resolveFailure) : null,
         stylex: await stylexPlugin(raw),

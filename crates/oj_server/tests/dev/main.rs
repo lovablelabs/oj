@@ -10,6 +10,7 @@
 
 mod alias_order;
 mod assets;
+mod assets_include;
 mod browser;
 mod browser_errors;
 mod build_config_flag;
@@ -90,6 +91,8 @@ mod redirect_passthrough;
 mod refresh_harness;
 mod resolve_created_files;
 mod restart_check;
+mod silent_proxy;
+mod spa_socket_keepalive;
 mod ssr_externalize;
 mod stylex;
 mod svelte;

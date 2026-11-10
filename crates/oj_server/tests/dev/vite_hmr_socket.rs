@@ -149,3 +149,60 @@ async fn root_vite_hmr_socket_closes_a_client_that_stops_answering() {
         assert_eq!(frame.reason.as_str(), "oj: ping timeout");
     }
 }
+
+/// The client's watchdog counts on the interval the socket pings at, so
+/// `/@oj/client.js` carries it as served: a page loaded after the interval
+/// changes gets the new one, and the old body's validator no longer matches.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_served_client_carries_the_sockets_ping_interval() {
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"client-ping-app","version":"1.0.0"}"#,
+        ),
+        ("src/main.js", "document.title = \"v1\";\n"),
+        ("index.html", INDEX_HTML),
+    ]);
+    let server = app.serve().await;
+
+    server
+        .built
+        .set_hmr_ping(Some(std::time::Duration::from_millis(1500)));
+    let first = server.get("/@oj/client.js").await;
+    assert_eq!(first.status, 200);
+    assert!(
+        first.body.contains("pingMs: 1500,"),
+        "no interval in the client"
+    );
+    assert!(
+        first.body.contains("function ojSocketWatchdog("),
+        "the client does not carry the shared watchdog"
+    );
+    assert!(!first.body.contains("__OJ_PING_MS__"));
+    let etag = first.headers["etag"].to_str().unwrap().to_string();
+
+    // Unchanged: the validator still saves the transfer.
+    let again = server
+        .request(
+            axum::http::Request::get("/@oj/client.js")
+                .header("if-none-match", &etag)
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(again.status, 304);
+
+    // Off: the client has no watchdog, and the old body is not reused.
+    server.built.set_hmr_ping(None);
+    let off = server
+        .request(
+            axum::http::Request::get("/@oj/client.js")
+                .header("if-none-match", &etag)
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(off.status, 200, "a stale validator still matched");
+    assert!(off.body.contains("pingMs: 0,"));
+    assert_ne!(off.headers["etag"].to_str().unwrap(), etag);
+}

@@ -1790,6 +1790,13 @@ pub fn is_importable_asset_ext(ext: &str) -> bool {
     oj_compiler::assets::is_asset_ext(ext) && !ext.eq_ignore_ascii_case("svg")
 }
 
+/// [`is_importable_asset_ext`] for a path or url (query ignored), or a file
+/// the config's `assetsInclude` names (Vite's `config.assetsInclude(file)`).
+pub fn is_importable_asset(path: &str) -> bool {
+    oj_compiler::assets::clean_ext(path).is_some_and(is_importable_asset_ext)
+        || oj_compiler::assets::is_included_asset(path)
+}
+
 /// `module.builtinModules` without the `node:` scheme, sorted for binary search.
 const NODE_BUILTINS: &[&str] = &[
     "assert",
