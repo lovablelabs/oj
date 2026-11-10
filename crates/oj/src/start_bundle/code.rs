@@ -184,6 +184,20 @@ impl Plugin for StartCodePlugin {
         args: &HookTransformArgs<'_>,
     ) -> HookTransformReturn {
         let id = args.id;
+        // A JSON module becomes a JavaScript one here, with named exports and
+        // a default, as Vite's json plugin makes it (plugins/json.ts; under
+        // Vite 8 rolldown's `builtin:vite-json`, whose transform returns
+        // `moduleType: "js"`). Rolldown would give a `ModuleType::Json`
+        // module the same exports itself, but only in its link stage, on the
+        // module table a full build consumes; a hot update renders a module
+        // from the AST as scanned, where a JSON module is still a bare
+        // expression statement with no exports. So a JSON file edited in
+        // place, or imported for the first time by an edited component,
+        // reached the page as a module exporting nothing, and the patched
+        // importer read `undefined.url`.
+        if *args.module_type == rolldown_common::ModuleType::Json {
+            return crate::build::vite_json_module(id, args.code);
+        }
         if !is_script(id) {
             return Ok(None);
         }

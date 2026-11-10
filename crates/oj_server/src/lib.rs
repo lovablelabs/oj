@@ -101,7 +101,7 @@ mod preview;
 mod proxy;
 use css_engine::CssEngine;
 use middleware::*;
-use oj_graph::{HmrDecision, ModuleGraph};
+use oj_graph::ModuleGraph;
 use oj_resolver::OjResolver;
 use plugins::PluginHost;
 pub use preview::*;
