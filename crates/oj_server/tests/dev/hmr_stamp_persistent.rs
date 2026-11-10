@@ -195,3 +195,147 @@ async fn a_cached_importer_names_an_updated_module_as_the_others_do() {
         );
     }
 }
+
+/// A plugin whose `transform` records each run over `/src/b.ts`: a
+/// persistent-cache hit skips the transform (Vite's cached transform result
+/// is served as is), a compile runs it.
+const COUNTING_PLUGIN: &str = r#"import fs from "node:fs";
+export default {
+  plugins: [{
+    name: "count-b-transforms",
+    transform(code, id) {
+      if (id.split("?")[0].endsWith("/src/b.ts")) {
+        fs.appendFileSync(new URL("./transforms.log", import.meta.url), id + "\n");
+      }
+      return null;
+    },
+  }],
+};
+"#;
+
+/// How many times the plugin transformed `/src/b.ts` so far.
+fn b_transforms(root: &Path) -> usize {
+    std::fs::read_to_string(root.join("transforms.log"))
+        .unwrap_or_default()
+        .lines()
+        .count()
+}
+
+/// The rule from both sides, as Vite's per-server transform cache behaves:
+/// a cached compile is served (no transform runs) while the stamps of its
+/// imports still hold, both in a later session with no update and on a
+/// repeat request; it is recompiled only once an import of its was updated;
+/// and the bare compile stays valid for a session that starts with no stamps.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cached_compile_is_served_under_its_stamps_and_recompiled_otherwise() {
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"stamp-cache-hits","version":"1.0.0"}"#,
+        ),
+        ("vite.config.mjs", COUNTING_PLUGIN),
+        ("index.html", INDEX),
+        (
+            "node_modules/served-dep/package.json",
+            r#"{"name":"served-dep","version":"1.0.0","type":"module","main":"index.js"}"#,
+        ),
+        ("node_modules/served-dep/index.js", "export const dep = 1;\n"),
+        (
+            "src/main.ts",
+            "import { dep } from \"served-dep\";\nimport { a } from \"./a\";\nexport const loadB = () => import(\"./b\");\nconsole.log(dep, a(), loadB);\n",
+        ),
+        ("src/a.ts", &importer("a")),
+        ("src/b.ts", &importer("b")),
+        ("src/ctx.ts", "export const value = \"v1\";\n"),
+    ]);
+    let root = app.root.clone();
+    let cache = oj_cache::cache_root(&root);
+
+    // Cold: b compiles once (the transform runs) and lands in the cache.
+    {
+        let server = serve_cached(&app).await;
+        server.text("/src/main.ts").await;
+        crate::crawled(&root).await;
+        wait_until(
+            "the optimizer never wrote its manifest",
+            Duration::from_secs(20),
+            || file_under(&cache, "manifest.json"),
+        )
+        .await;
+        assert_eq!(ctx_stamp(&server.text("/src/b.ts").await), None);
+        assert_eq!(b_transforms(&root), 1, "the cold compile ran the transform");
+        wait_until(
+            "the cold run never persisted b.ts",
+            Duration::from_secs(10),
+            || crate::warm_transform_virtual::cached_module_contains(&cache, "marker-b"),
+        )
+        .await;
+    }
+
+    // Warm, nothing updated: the cached compile is served, no transform.
+    {
+        let server = serve_cached(&app).await;
+        server.text("/src/main.ts").await;
+        assert_eq!(ctx_stamp(&server.text("/src/b.ts").await), None);
+        assert_eq!(
+            b_transforms(&root),
+            1,
+            "a cached compile whose import stamps hold is served without a transform"
+        );
+    }
+
+    // Warm, ctx updated before b is first requested: the cached compile
+    // (bare import) is rejected, b compiles (one transform) with the stamp
+    // a.ts carries, and the repeat request is a memory hit.
+    {
+        let server = serve_cached(&app).await;
+        server.text("/src/main.ts").await;
+        server.text("/src/a.ts").await;
+        app.write(&[("src/ctx.ts", "export const value = \"v2\";\n")]);
+        let stamp = stamped(&server, "/src/a.ts", Duration::from_secs(20))
+            .await
+            .expect("a.ts re-stamps its import after the edit");
+        assert_eq!(
+            ctx_stamp(&server.text("/src/b.ts").await).as_deref(),
+            Some(stamp.as_str())
+        );
+        assert_eq!(
+            b_transforms(&root),
+            2,
+            "the cached compile under other stamps was recompiled"
+        );
+        assert_eq!(
+            ctx_stamp(&server.text("/src/b.ts").await).as_deref(),
+            Some(stamp.as_str())
+        );
+        assert_eq!(b_transforms(&root), 2, "the repeat request is a cache hit");
+        wait_until(
+            "the warm run never persisted the stamped compile",
+            Duration::from_secs(10),
+            || {
+                crate::warm_transform_virtual::cached_module_contains(
+                    &cache,
+                    &format!("ctx.ts?t={stamp}"),
+                )
+            },
+        )
+        .await;
+    }
+
+    // A later session starts with no stamps: the bare compile from the cold
+    // run is the one that holds, served without a transform; the stamped
+    // one is never found under this session's key.
+    {
+        let server = serve_cached(&app).await;
+        server.text("/src/main.ts").await;
+        let a = server.text("/src/a.ts").await;
+        let b = server.text("/src/b.ts").await;
+        assert_eq!(ctx_stamp(&a), None, "{a}");
+        assert_eq!(ctx_stamp(&b), None, "{b}");
+        assert_eq!(
+            b_transforms(&root),
+            2,
+            "the bare compile is served from the cache in a session with no stamps"
+        );
+    }
+}

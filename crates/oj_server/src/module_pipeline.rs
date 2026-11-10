@@ -110,13 +110,21 @@ pub(crate) async fn ensure_module_as(
 
     let is_server = is_server_module(file) && !is_dep;
     let imports_stamp = imports_stamp_known(state, url);
+    // The source is hashed once: the re-key after the compile (below) derives
+    // its key from the same hash.
+    let source_hash = oj_cache::source_hash(source.as_bytes());
     let CompileKey {
         key,
         class_field_semantics,
-    } = compile_key(state, file, url, &source, is_server, stamp, imports_stamp);
-    // Kept for the re-key after the compile (below); a dep's imports are
-    // other deps, which are never stamped, so a dep is never re-keyed.
-    let key_source = (!is_dep).then(|| source.clone());
+    } = compile_key(
+        state,
+        file,
+        url,
+        &source_hash,
+        is_server,
+        stamp,
+        imports_stamp,
+    );
 
     if let Some(module) = memory_hit(state, url, &key) {
         return Ok((key, module));
@@ -319,12 +327,13 @@ pub(crate) async fn ensure_module_as(
     // yet). Store it under the stamps it bakes in, so a later session, whose
     // stamps start at 0 again, never finds a stamped compile under its
     // unstamped key and serves one importer stamped beside another bare.
+    // A dep's imports are other deps, which are never stamped, so a dep is
+    // never re-keyed.
     let baked = imports_stamp_of(state, &module.imports);
-    let key = match key_source {
-        Some(source) if baked != imports_stamp => {
-            compile_key(state, file, url, &source, is_server, stamp, baked).key
-        }
-        _ => key,
+    let key = if !is_dep && baked != imports_stamp {
+        compile_key(state, file, url, &source_hash, is_server, stamp, baked).key
+    } else {
+        key
     };
     store_module(state, url, &key, &module);
     state
@@ -540,15 +549,17 @@ fn imports_stamp_known(state: &ServerState, url: &str) -> u64 {
 }
 
 /// The content cache key, also recorded against the file's stamp for the warm
-/// path. `imports_stamp` is the newest HMR stamp among the module's imports
-/// (see [`imports_stamp_of`]), folded in so an unchanged importer recompiles
-/// after a dep update and its import carries the new `?t=`, and so a cached
-/// compile is found only under the stamps it bakes in.
+/// path. `source` is the source's hash, computed once per compile
+/// ([`oj_cache::source_hash`]), since a compile may be keyed twice.
+/// `imports_stamp` is the newest HMR stamp among the module's imports (see
+/// [`imports_stamp_of`]), folded in so an unchanged importer recompiles after
+/// a dep update and its import carries the new `?t=`, and so a cached compile
+/// is found only under the stamps it bakes in.
 fn compile_key(
     state: &ServerState,
     file: &Path,
     url: &str,
-    source: &str,
+    source: &oj_cache::SourceHash,
     is_server: bool,
     stamp: Option<FileStamp>,
     imports_stamp: u64,
@@ -583,7 +594,7 @@ fn compile_key(
         mode_key.push_str("+stylex");
         mode_key.push_str(stylex.fingerprint());
     }
-    let key = state.cache.key(source.as_bytes(), url, &mode_key);
+    let key = state.cache.key_for(source, url, &mode_key);
     if let Some((mtime, size)) = stamp {
         state
             .mtime_keys
