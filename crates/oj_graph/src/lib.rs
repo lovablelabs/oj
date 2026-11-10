@@ -206,9 +206,9 @@ impl ModuleGraph {
 
     /// Accept a client's `import.meta.hot.invalidate()` for `changed`: only a
     /// self-accepting module an update already touched, and only once per
-    /// update (Vite's `lastHMRInvalidationReceived`). Its importers up to the
-    /// next boundaries are stamped so their re-fetch sees the invalidated
-    /// module's current version; the module itself keeps its stamp, so the
+    /// update (Vite's `lastHMRInvalidationReceived`). Its importers (see
+    /// [`ModuleGraph::dirty_closure`]) are stamped so their re-fetch sees the
+    /// invalidated module's current version; the module itself keeps its stamp, so the
     /// instance the browser already loaded is reused rather than re-evaluated.
     /// Returns the stamped importers, or `None` when the call is ignored.
     pub fn accept_invalidation(&mut self, changed: &Path, timestamp: u64) -> Option<Vec<PathBuf>> {
@@ -244,9 +244,9 @@ impl ModuleGraph {
     }
 
     /// Record an HMR update of `changed`: stamp it and every module it dirties
-    /// (its importers up to and including the accepting boundaries) with
-    /// `timestamp`, and return that dirty set. Mirrors Vite's
-    /// `moduleGraph.invalidateModule` walking importers.
+    /// (its importers, through the accepting boundaries and above them, see
+    /// [`ModuleGraph::dirty_closure`]) with `timestamp`, and return that dirty
+    /// set. Mirrors Vite's `moduleGraph.invalidateModule` walking importers.
     pub fn stamp_update(&mut self, changed: &Path, timestamp: u64) -> Vec<PathBuf> {
         let dirty = self.dirty_closure(changed);
         self.stamp_all(&dirty, timestamp);
@@ -393,25 +393,34 @@ mod tests {
     }
 
     #[test]
-    fn stamp_update_marks_the_chain_up_to_the_boundary() {
-        // main -> App (boundary) -> hooks -> utils
+    fn stamp_update_marks_the_chain_through_the_boundary() {
+        // main -> App (boundary) -> hooks -> utils; Page -> hooks too, and
+        // Page accepts hooks itself.
         let mut g = ModuleGraph::new();
-        let (main, app, hooks, utils) = (
+        let (main, app, hooks, utils, page) = (
             Path::new("/src/main.tsx"),
             Path::new("/src/App.tsx"),
             Path::new("/src/hooks.ts"),
             Path::new("/src/utils.ts"),
+            Path::new("/src/Page.tsx"),
         );
         g.add_import(main, app);
         g.add_import(app, hooks);
         g.add_import(hooks, utils);
+        g.add_import(page, hooks);
         g.set_self_accepting(app, true);
+        g.set_accepted_deps(page, &[hooks.to_path_buf()]);
 
         let mut dirty = g.stamp_update(utils, 7);
         dirty.sort();
         assert_eq!(
             dirty,
-            vec![app.to_path_buf(), hooks.to_path_buf(), utils.to_path_buf()]
+            vec![
+                app.to_path_buf(),
+                hooks.to_path_buf(),
+                main.to_path_buf(),
+                utils.to_path_buf()
+            ]
         );
         assert_eq!(g.hmr_timestamp(utils), 7);
         assert_eq!(g.hmr_timestamp(hooks), 7);
@@ -420,10 +429,19 @@ mod tests {
             7,
             "the boundary is re-fetched, so it is stamped"
         );
+        // Not re-fetched by this update, but its compiled output names App
+        // by url: as Vite's invalidateModule walks past a self-accepting
+        // importer, it is stamped (and recompiled) so it names App under the
+        // same `?t=` as any importer compiled after the update.
         assert_eq!(
             g.hmr_timestamp(main),
+            7,
+            "above the boundary is stamped too"
+        );
+        assert_eq!(
+            g.hmr_timestamp(page),
             0,
-            "above the boundary nothing is re-fetched"
+            "an importer that accepts the dep itself is not (acceptedHmrDeps)"
         );
         assert_eq!(g.hmr_timestamp(Path::new("/nope.ts")), 0);
     }
@@ -644,9 +662,11 @@ mod tests {
                 boundaries: vec![p("A.tsx"), p("B.tsx")]
             }
         );
+        // The entry above both boundaries is stamped too (Vite's
+        // invalidateModule walks past them), once.
         assert_eq!(
             g.stamp_update(&p("shared.ts"), 1),
-            vec![p("A.tsx"), p("B.tsx"), p("shared.ts")]
+            vec![p("A.tsx"), p("B.tsx"), p("main.tsx"), p("shared.ts")]
         );
     }
 
@@ -881,9 +901,14 @@ mod tests {
         g.stamp_update(&p("Button.tsx"), 3);
         assert_eq!(
             g.accept_invalidation(&p("Button.tsx"), 5),
-            Some(vec![p("App.tsx")])
+            Some(vec![p("App.tsx"), p("main.tsx")])
         );
         assert_eq!(g.hmr_timestamp(&p("App.tsx")), 5, "the importer is stamped");
+        assert_eq!(
+            g.hmr_timestamp(&p("main.tsx")),
+            5,
+            "and the importer's importer, as Vite's updateModules invalidates them"
+        );
         assert_eq!(
             g.hmr_timestamp(&p("Button.tsx")),
             3,
