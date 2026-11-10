@@ -277,13 +277,15 @@ test("a chunk gone from the server reloads the page that asked for it, and no ot
 
 // One tab's documents, one after another: each asks for `names` and is told
 // each is gone. Returns how many times it reloaded.
-const goneIn = (storage) => async (stamp, ...names) => {
-  const page = loadPage({ stamp, storage });
-  page.open();
-  for (const name of names) page.fetched(`http://localhost/@oj-start/${name}`);
-  for (const name of names) await page.receive({ type: "oj:chunk-gone", name });
-  return reloadsIn(page.log);
-};
+const goneIn =
+  (storage) =>
+  async (stamp, ...names) => {
+    const page = loadPage({ stamp, storage });
+    page.open();
+    for (const name of names) page.fetched(`http://localhost/@oj-start/${name}`);
+    for (const name of names) await page.receive({ type: "oj:chunk-gone", name });
+    return reloadsIn(page.log);
+  };
 
 test("a gone chunk reloads once per document and chunk, so a cached document cannot loop", async () => {
   const reloads = goneIn(new Map());
