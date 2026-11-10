@@ -102,6 +102,7 @@ mod tailwind_js_import;
 mod tailwind_postcss_imports;
 mod tailwind_sheet_stale;
 mod tailwind_v4_persistent;
+mod tsconfig_module;
 mod unresolved_bare;
 mod vite_esm_entry;
 mod vite_hmr_socket;
