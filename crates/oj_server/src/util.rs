@@ -47,12 +47,14 @@ pub(crate) fn is_asset_ext(ext: &str) -> bool {
     oj_compiler::assets::is_asset_ext(ext) || ext.eq_ignore_ascii_case("wasm")
 }
 
-pub(crate) fn is_asset_path(file: &Path) -> bool {
+/// Whether `file` is an asset of the app at `root`: a known type, or one
+/// its config's `assetsInclude` names.
+pub(crate) fn is_asset_path(root: &Path, file: &Path) -> bool {
     file.extension()
         .and_then(|e| e.to_str())
         .map(is_asset_ext)
         .unwrap_or(false)
-        || oj_compiler::assets::is_included_asset(&file.to_string_lossy())
+        || oj_compiler::assets::is_included_asset(root, &file.to_string_lossy())
 }
 
 pub(crate) fn content_type(ext: &str) -> &'static str {

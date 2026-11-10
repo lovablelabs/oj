@@ -265,6 +265,7 @@ pub(crate) async fn serve_fallback(
 /// chunks. An app asset is imported as `?url` (an `.svg` stays bare when
 /// `svg_compiled`, for svgr), never by the url its `<img src>` fetches.
 pub(crate) fn preload_href(
+    root: &Path,
     path: &str,
     entries: &HashMap<String, String>,
     svg_compiled: bool,
@@ -273,7 +274,7 @@ pub(crate) fn preload_href(
         format!("{path}?import")
     } else if !path.starts_with("/@")
         && !path.contains("/node_modules/")
-        && is_asset_path(Path::new(path))
+        && is_asset_path(root, Path::new(path))
         && !(svg_compiled && path.ends_with(".svg"))
     {
         format!("{path}?url")
@@ -389,7 +390,7 @@ pub(crate) fn inject_module_preloads(html: String, state: &ServerState, file: &P
         .map(|p| {
             format!(
                 "<link rel=\"modulepreload\" href=\"{}\"{nonce} />\n",
-                preload_href(p, &entries, state.plugins_have_transform)
+                preload_href(&state.root, p, &entries, state.plugins_have_transform)
             )
         })
         .collect();

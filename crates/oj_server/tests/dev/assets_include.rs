@@ -85,12 +85,15 @@ async fn a_file_assets_include_names_imports_as_its_url() {
     );
 }
 
-// The filter is the app's own: a second server booting in the same process
-// from a config without `assetsInclude` leaves the first one's as it is
-// (each Vite server consults its own resolved config). The process used to
-// hold one filter, which that second config cleared: the first server then
+// The filter is the app's own, as each Vite server consults its own resolved
+// config's `assetsInclude(file)`: a second server booting in the same process
+// from a config without `assetsInclude` leaves the first one's as it is, and
+// no app is judged by another's patterns, whether its config names other
+// types, names none, or does not exist. The process used to hold one filter,
+// which a config without `assetsInclude` cleared (the first server then
 // served its named files as the files, not as URL modules, whenever another
-// test's server booted while this file's test ran.
+// test's server booted while this file's test ran) and which every app
+// without one was judged by.
 #[tokio::test(flavor = "multi_thread")]
 async fn another_apps_config_leaves_this_apps_assets_include() {
     let app = App::new(&[
@@ -100,9 +103,10 @@ async fn another_apps_config_leaves_this_apps_assets_include() {
         ),
         (
             "vite.config.mjs",
-            "export default { assetsInclude: [\"**/*.gltf\"] };\n",
+            "export default { assetsInclude: [\"**/*.gltf\", /\\.bin$/] };\n",
         ),
         ("src/scene.gltf", SCENE),
+        ("src/data.bin", "bin-bytes"),
         (
             "src/main.js",
             "import scene from \"./scene.gltf\";\nwindow.__SCENE = scene;\n",
@@ -112,6 +116,18 @@ async fn another_apps_config_leaves_this_apps_assets_include() {
     let server = app.serve().await;
     let module = imported(&server, "/src/scene.gltf").await;
     assert!(module.body.contains("export default"), "{}", module.body);
+    // What an app that names neither type serves for the same two urls:
+    // the files, as what they are, never a URL module.
+    async fn serves_the_files(server: &Server, which: &str) {
+        for path in ["/src/scene.gltf", "/src/data.bin"] {
+            let module = imported(server, path).await;
+            assert!(
+                !module.body.contains(&format!("export default \"{path}\"")),
+                "{which}: another app's assetsInclude made {path} a URL module:\n{}",
+                module.body
+            );
+        }
+    }
 
     // Another app, whose config names no extra asset types, and one whose
     // config names its own.
@@ -125,6 +141,7 @@ async fn another_apps_config_leaves_this_apps_assets_include() {
             "export default { define: { __X__: \"1\" } };\n",
         ),
         ("src/scene.gltf", SCENE),
+        ("src/data.bin", "bin-bytes"),
         (
             "src/main.js",
             "import scene from \"./scene.gltf\";\nwindow.__SCENE = scene;\n",
@@ -132,6 +149,23 @@ async fn another_apps_config_leaves_this_apps_assets_include() {
         ("index.html", INDEX_HTML),
     ]);
     let plain_server = plain.serve().await;
+    serves_the_files(&plain_server, "a config without assetsInclude").await;
+    // An app with no vite.config at all installs no filter of its own.
+    let bare = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"assets-include-bare","version":"1.0.0"}"#,
+        ),
+        ("src/scene.gltf", SCENE),
+        ("src/data.bin", "bin-bytes"),
+        (
+            "src/main.js",
+            "import scene from \"./scene.gltf\";\nwindow.__SCENE = scene;\n",
+        ),
+        ("index.html", INDEX_HTML),
+    ]);
+    let bare_server = bare.serve().await;
+    serves_the_files(&bare_server, "no vite.config").await;
     let other = App::new(&[
         (
             "package.json",
@@ -142,6 +176,8 @@ async fn another_apps_config_leaves_this_apps_assets_include() {
             "export default { assetsInclude: [\"**/*.voxels\"] };\n",
         ),
         ("src/a.voxels", "voxels"),
+        ("src/scene.gltf", SCENE),
+        ("src/data.bin", "bin-bytes"),
         (
             "src/main.js",
             "import v from \"./a.voxels\";\nwindow.__V = v;\n",
@@ -149,6 +185,7 @@ async fn another_apps_config_leaves_this_apps_assets_include() {
         ("index.html", INDEX_HTML),
     ]);
     let other_server = other.serve().await;
+    serves_the_files(&other_server, "a config naming another type").await;
 
     // The first server's file is still a URL module, after a fresh request
     // for its importer too.
@@ -168,5 +205,14 @@ async fn another_apps_config_leaves_this_apps_assets_include() {
         "{}",
         voxels.body
     );
-    drop(plain_server);
+    // And the first app does not take the third's.
+    let voxels = imported(&server, "/src/a.voxels").await;
+    assert!(
+        !voxels.body.contains("export default \"/src/a.voxels\""),
+        "{}",
+        voxels.body
+    );
+    // The others answer the same with all three filters installed.
+    serves_the_files(&plain_server, "a config without assetsInclude, later").await;
+    serves_the_files(&bare_server, "no vite.config, later").await;
 }

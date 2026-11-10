@@ -1234,46 +1234,49 @@ fn ws_token_is_demanded_only_from_browser_upgrades() {
 
 #[test]
 fn stamp_import_url_marks_only_compilable_module_urls() {
-    assert_eq!(stamp_import_url("/src/utils.ts", 5), "/src/utils.ts?t=5");
     assert_eq!(
-        stamp_import_url("/src/r.tsx?tsr-shared=1", 5),
+        stamp_import_url(Path::new("/app"), "/src/utils.ts", 5),
+        "/src/utils.ts?t=5"
+    );
+    assert_eq!(
+        stamp_import_url(Path::new("/app"), "/src/r.tsx?tsr-shared=1", 5),
         "/src/r.tsx?tsr-shared=1&t=5"
     );
     assert_eq!(
-        stamp_import_url("/src/utils.ts", 0),
+        stamp_import_url(Path::new("/app"), "/src/utils.ts", 0),
         "/src/utils.ts",
         "unstamped module"
     );
     assert_eq!(
-        stamp_import_url("/src/utils.ts?t=3", 5),
+        stamp_import_url(Path::new("/app"), "/src/utils.ts?t=3", 5),
         "/src/utils.ts?t=3",
         "never doubled"
     );
     assert_eq!(
-        stamp_import_url("/src/data.json", 5),
+        stamp_import_url(Path::new("/app"), "/src/data.json", 5),
         "/src/data.json?t=5",
         "json is a module"
     );
     assert_eq!(
-        stamp_import_url("/src/a.css?import", 5),
+        stamp_import_url(Path::new("/app"), "/src/a.css?import", 5),
         "/src/a.css?import&t=5",
         "a CSS module's importer must fetch its new class exports"
     );
     assert_eq!(
-        stamp_import_url("/src/a.css?inline", 5),
+        stamp_import_url(Path::new("/app"), "/src/a.css?inline", 5),
         "/src/a.css?inline&t=5"
     );
     assert_eq!(
-        stamp_import_url("/src/hero.png?url", 5),
+        stamp_import_url(Path::new("/app"), "/src/hero.png?url", 5),
         "/src/hero.png?url&t=5",
         "an updated image's importer must fetch its new url"
     );
     assert_eq!(
-        stamp_import_url("/@oj-deps/react.js", 5),
+        stamp_import_url(Path::new("/app"), "/@oj-deps/react.js", 5),
         "/@oj-deps/react.js"
     );
     assert_eq!(
-        stamp_import_url("/@fs/x/node_modules/a/index.js", 5),
+        stamp_import_url(Path::new("/app"), "/@fs/x/node_modules/a/index.js", 5),
         "/@fs/x/node_modules/a/index.js"
     );
 }
@@ -2863,51 +2866,66 @@ fn preload_hints_name_the_exact_import_url() {
     )]
     .into();
     assert_eq!(
-        preload_href("/src/main.tsx", &entries, false),
+        preload_href(Path::new("/app"), "/src/main.tsx", &entries, false),
         "/src/main.tsx"
     );
     assert_eq!(
-        preload_href("/src/a.css", &entries, false),
+        preload_href(Path::new("/app"), "/src/a.css", &entries, false),
         "/src/a.css?import"
     );
     // A pre-bundled entry preloads under the URL importers name it by now,
     // not the session's base version, so the preload and the later import
     // hit one immutable cache entry and a rerun leaves no stale hint.
     assert_eq!(
-        preload_href("/@oj-deps/react.mjs", &entries, false),
+        preload_href(Path::new("/app"), "/@oj-deps/react.mjs", &entries, false),
         "/@oj-deps/react.mjs?v=1d335a14"
     );
     assert_eq!(
-        preload_href("/@oj-deps/chunk-AB12CD.mjs", &entries, false),
+        preload_href(
+            Path::new("/app"),
+            "/@oj-deps/chunk-AB12CD.mjs",
+            &entries,
+            false
+        ),
         "/@oj-deps/chunk-AB12CD.mjs",
         "dep files import chunks bare"
     );
     assert_eq!(
-        preload_href("/@oj-deps/react.mjs", &HashMap::new(), false),
+        preload_href(
+            Path::new("/app"),
+            "/@oj-deps/react.mjs",
+            &HashMap::new(),
+            false
+        ),
         "/@oj-deps/react.mjs",
         "no entry, no query"
     );
     assert_eq!(
-        preload_href("/@id/6e6f6465", &entries, false),
+        preload_href(Path::new("/app"), "/@id/6e6f6465", &entries, false),
         "/@id/6e6f6465",
         "stubs are unversioned"
     );
     // The bare asset url is the `<img src>`'s raw file; the import is `?url`.
     assert_eq!(
-        preload_href("/src/assets/hero.png", &entries, false),
+        preload_href(Path::new("/app"), "/src/assets/hero.png", &entries, false),
         "/src/assets/hero.png?url"
     );
     assert_eq!(
-        preload_href("/src/logo.svg", &entries, false),
+        preload_href(Path::new("/app"), "/src/logo.svg", &entries, false),
         "/src/logo.svg?url"
     );
     assert_eq!(
-        preload_href("/src/logo.svg", &entries, true),
+        preload_href(Path::new("/app"), "/src/logo.svg", &entries, true),
         "/src/logo.svg",
         "a transform plugin may componentize a bare svg import"
     );
     assert_eq!(
-        preload_href("/node_modules/pkg/icon.png", &entries, false),
+        preload_href(
+            Path::new("/app"),
+            "/node_modules/pkg/icon.png",
+            &entries,
+            false
+        ),
         "/node_modules/pkg/icon.png",
         "a dependency's asset import is not marked"
     );

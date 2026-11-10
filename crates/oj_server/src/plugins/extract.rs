@@ -1294,13 +1294,22 @@ pub fn adopt_vite_config_values_default_mode(
     Ok(())
 }
 
-/// The config's `assetsInclude` becomes the process's asset filter
+/// The config's `assetsInclude` becomes the app's asset filter
 /// (`oj_compiler::assets::is_included_asset`), as Vite's resolved config
-/// carries the one `assetsInclude(file)` every plugin consults.
+/// carries the one `assetsInclude(file)` every plugin consults. A relative
+/// glob resolves against the directory oj was started from, as Vite's
+/// `createFilter` resolves one against the process's working directory
+/// (an in-process plugin host changes the process's own to its app root).
 fn install_assets_include(config: &oj_config::OjConfig, root: &Path) {
+    let started_in = crate::watch::STARTUP_CWD
+        .get()
+        .cloned()
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| root.to_path_buf());
     oj_compiler::assets::install_assets_include(
         config.assets_include.as_deref().unwrap_or(&[]),
         root,
+        &started_in,
     );
 }
 

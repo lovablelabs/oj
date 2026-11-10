@@ -119,7 +119,12 @@ pub(crate) fn rewrite_specifier(
     // on-disk fast path is for app source.
     if (spec.starts_with("./") || spec.starts_with("../")) && !in_node_modules(dir) {
         if let Some(p) = find_relative_on_disk(dir, dir_cache, spec) {
-            return Some(mark_css_import(url_of(root, &p), &p, css_import_marker));
+            return Some(mark_css_import(
+                root,
+                url_of(root, &p),
+                &p,
+                css_import_marker,
+            ));
         }
     }
 
@@ -127,7 +132,7 @@ pub(crate) fn rewrite_specifier(
         // An alias (`@/assets/logo.svg`) or root-absolute import of a style
         // or asset gets the same `?import` / `?url` marks a relative one does.
         Ok(resolved) if !in_node_modules(&resolved) && resolved.starts_with(root) => Some(
-            mark_css_import(url_of(root, &resolved), &resolved, css_import_marker),
+            mark_css_import(root, url_of(root, &resolved), &resolved, css_import_marker),
         ),
         Ok(resolved) => {
             allow_package(fs_allow, &resolved);
@@ -224,10 +229,10 @@ fn find_relative_on_disk(dir: &Path, dir_cache: &Mutex<DirCache>, spec: &str) ->
 }
 
 /// Marks a style import `?import` and an asset import `?url`, when requested.
-fn mark_css_import(url: String, file: &Path, css_import_marker: bool) -> String {
+fn mark_css_import(root: &Path, url: String, file: &Path, css_import_marker: bool) -> String {
     if css_import_marker && is_style_url(&url) {
         format!("{url}?import")
-    } else if css_import_marker && is_asset_path(file) {
+    } else if css_import_marker && is_asset_path(root, file) {
         format!("{url}?url")
     } else {
         url

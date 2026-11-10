@@ -70,16 +70,27 @@ pub fn is_asset_url(url: &str) -> bool {
 }
 
 /// Vite's `assetsInclude`, resolved: the files beyond the known types whose
-/// import is their URL (`config.assetsInclude(file)` in Vite, the
-/// `DEFAULT_ASSETS_RE` test or this filter). A string is a glob resolved
-/// against the root, as `createFilter` resolves one against its base; a
-/// RegExp is tested against the file's absolute path. Installed from the
-/// resolved config ([`install_assets_include`]), as Vite's resolved config
-/// carries the one function every plugin consults: one filter per app root,
-/// so a process that loads several apps' configs (the dev server's tests
-/// boot many servers side by side) keeps each app's own.
+/// import is their URL (`config.assetsInclude(file)` in Vite: the
+/// `DEFAULT_ASSETS_RE` test or `createFilter(config.assetsInclude)`).
+/// Patterns are read as that `createFilter` (@rollup/pluginutils, called
+/// with no `resolve` option) reads them:
+///
+/// - a glob that starts with `**` or is absolute is used as written, so
+///   `**/*.gltf` names a `.gltf` anywhere, in the app or outside it;
+/// - any other glob is resolved against the directory the process was
+///   started from (`resolve("")`), not the app root;
+/// - a RegExp is tested against the whole path;
+/// - picomatch runs with `dot: true`, and an id holding a NUL names nothing.
+///
+/// Installed from the resolved config ([`install_assets_include`]), one
+/// filter per app root, as each Vite server consults its own resolved
+/// config: a lookup names the app it is for, so a process that loads
+/// several apps (the dev server's tests boot many servers side by side)
+/// never judges one app's file by another's patterns.
 struct AssetsInclude {
-    root: std::path::PathBuf,
+    /// The root as it was given and as it resolves, so either spelling of
+    /// one app finds its filter.
+    roots: Vec<std::path::PathBuf>,
     globs: globset::GlobSet,
     regexes: Vec<regex::Regex>,
 }
@@ -89,93 +100,104 @@ impl AssetsInclude {
         self.globs.is_match(path) || self.regexes.iter().any(|re| re.is_match(path))
     }
 
-    fn names_nothing(&self) -> bool {
-        self.globs.is_empty() && self.regexes.is_empty()
+    fn is_for(&self, root: &std::path::Path) -> bool {
+        self.roots.iter().any(|r| r == root)
     }
 }
 
-/// Each root's filter, the last installed for it. A root whose config names
-/// nothing keeps an empty one: its files are its own, never another root's.
+/// Each root's filter, the last installed for it.
 static ASSETS_INCLUDE: std::sync::RwLock<Vec<AssetsInclude>> = std::sync::RwLock::new(Vec::new());
 
 /// Installs `root`'s `assetsInclude` for [`is_included_asset`]: string
 /// globs and `{ "regex": source, "flags": flags }` objects, as the config
-/// extraction carries them. An empty list names nothing under `root`; it
-/// leaves every other root's filter as it is. A pattern that does not parse
-/// is skipped, as picomatch would never have matched it.
-pub fn install_assets_include(patterns: &[serde_json::Value], root: &std::path::Path) {
-    let installed = {
-        let mut globs = globset::GlobSetBuilder::new();
-        let mut regexes = Vec::new();
-        let root_slash = root.to_string_lossy().replace('\\', "/");
-        for p in patterns {
-            match p {
-                serde_json::Value::String(glob) => {
-                    // createFilter resolves a relative pattern against its
-                    // base (`**/*.gltf` is `<root>/**/*.gltf`); an absolute
-                    // one stands.
-                    let absolute = if glob.starts_with('/') {
-                        glob.clone()
-                    } else {
-                        format!(
-                            "{}/{}",
-                            root_slash.trim_end_matches('/'),
-                            glob.trim_start_matches("./")
-                        )
-                    };
-                    // picomatch: `*` stops at `/`, `**` crosses directories,
-                    // and createFilter matches dotfiles (`dot: true`).
-                    if let Ok(g) = globset::GlobBuilder::new(&absolute)
-                        .literal_separator(true)
-                        .build()
-                    {
-                        globs.add(g);
-                    }
+/// extraction carries them. `base` is the directory relative globs resolve
+/// against: the one the process was started from, as Vite's. An empty list
+/// names nothing for `root`; every other root's filter stays as it is. A
+/// pattern that does not parse is skipped, as picomatch would never have
+/// matched it.
+pub fn install_assets_include(
+    patterns: &[serde_json::Value],
+    root: &std::path::Path,
+    base: &std::path::Path,
+) {
+    let mut globs = globset::GlobSetBuilder::new();
+    let mut regexes = Vec::new();
+    let base_slash = base.to_string_lossy().replace('\\', "/");
+    for p in patterns {
+        match p {
+            serde_json::Value::String(glob) => {
+                // getMatcherString: `**...` and absolute patterns stand as
+                // written, the rest join the resolution base.
+                let pattern = if glob.starts_with("**") || std::path::Path::new(glob).is_absolute()
+                {
+                    glob.replace('\\', "/")
+                } else {
+                    format!(
+                        "{}/{}",
+                        globset::escape(base_slash.trim_end_matches('/')),
+                        glob.trim_start_matches("./").replace('\\', "/")
+                    )
+                };
+                // picomatch: `*` stops at `/`, `**` crosses directories,
+                // and createFilter matches dotfiles (`dot: true`).
+                if let Ok(g) = globset::GlobBuilder::new(&pattern)
+                    .literal_separator(true)
+                    .build()
+                {
+                    globs.add(g);
                 }
-                serde_json::Value::Object(o) => {
-                    let Some(source) = o.get("regex").and_then(|v| v.as_str()) else {
-                        continue;
-                    };
-                    let flags = o.get("flags").and_then(|v| v.as_str()).unwrap_or("");
-                    if let Ok(re) = regex::RegexBuilder::new(source)
-                        .case_insensitive(flags.contains('i'))
-                        .multi_line(flags.contains('m'))
-                        .dot_matches_new_line(flags.contains('s'))
-                        .build()
-                    {
-                        regexes.push(re);
-                    }
-                }
-                _ => {}
             }
+            serde_json::Value::Object(o) => {
+                let Some(source) = o.get("regex").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                let flags = o.get("flags").and_then(|v| v.as_str()).unwrap_or("");
+                if let Ok(re) = regex::RegexBuilder::new(source)
+                    .case_insensitive(flags.contains('i'))
+                    .multi_line(flags.contains('m'))
+                    .dot_matches_new_line(flags.contains('s'))
+                    .build()
+                {
+                    regexes.push(re);
+                }
+            }
+            _ => {}
         }
-        AssetsInclude {
-            root: root.to_path_buf(),
-            globs: globs.build().unwrap_or_else(|_| globset::GlobSet::empty()),
-            regexes,
+    }
+    let mut roots = vec![root.to_path_buf()];
+    if let Ok(real) = std::fs::canonicalize(root) {
+        if real != root {
+            roots.push(real);
         }
+    }
+    let installed = AssetsInclude {
+        roots,
+        globs: globs.build().unwrap_or_else(|_| globset::GlobSet::empty()),
+        regexes,
     };
     let mut filters = ASSETS_INCLUDE
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    match filters.iter_mut().find(|f| f.root == root) {
-        Some(slot) => *slot = installed,
-        None => filters.push(installed),
-    }
+    // Either spelling of the root replaces the filter it had.
+    filters.retain(|f| !installed.roots.iter().any(|r| f.is_for(r)));
+    filters.push(installed);
 }
 
-/// Whether a config's `assetsInclude` names this file (query and hash
-/// ignored). A file under an installed root is judged by that root's filter
-/// alone, as Vite judges a file by its own config. Any other path is tried
-/// against each: a served url's root-relative path (`/src/x.gltf`, no file
-/// at the filesystem root) under the root too, so a glob resolved against
-/// the root matches it as well; an absolute path that is a file elsewhere
-/// as it is, as Vite judges the file's own path.
-pub fn is_included_asset(path: &str) -> bool {
+/// Whether the `assetsInclude` of the app at `root` names this file (query
+/// and hash ignored): Vite's `config.assetsInclude(cleanUrl(id))` beyond
+/// the known types. The path is judged as it is, as Vite judges the id it
+/// is handed; a served url's root-relative path (`/src/x.gltf`, no file at
+/// the filesystem root) is tried under the root too, where a glob resolved
+/// against a directory finds it. An app that installed no filter (no
+/// config, or one without `assetsInclude`) names nothing.
+pub fn is_included_asset(root: &std::path::Path, path: &str) -> bool {
     let filters = ASSETS_INCLUDE
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if filters.iter().all(AssetsInclude::names_nothing) {
+    let Some(filter) = filters.iter().find(|f| f.is_for(root)) else {
+        return false;
+    };
+    if filter.globs.is_empty() && filter.regexes.is_empty() {
         return false;
     }
     let clean = path
@@ -183,34 +205,24 @@ pub fn is_included_asset(path: &str) -> bool {
         .next()
         .unwrap_or(path)
         .replace('\\', "/");
-    if clean.is_empty() || clean.starts_with('\0') {
+    if clean.is_empty() || clean.contains('\0') {
         return false;
     }
-    let as_path = std::path::Path::new(&clean);
-    // The innermost installed root the file is under owns it.
-    let owner = filters
-        .iter()
-        .filter(|f| as_path.starts_with(&f.root))
-        .max_by_key(|f| f.root.as_os_str().len());
-    if let Some(owner) = owner {
-        return owner.matches(&clean);
-    }
-    if filters.iter().any(|f| f.matches(&clean)) {
+    if filter.matches(&clean) {
         return true;
     }
-    if as_path.exists() {
+    let as_path = std::path::Path::new(&clean);
+    if filter.roots.iter().any(|r| as_path.starts_with(r)) || as_path.exists() {
         return false;
     }
-    filters.iter().any(|f| {
-        let under_root = f.root.join(clean.trim_start_matches('/'));
-        f.matches(&under_root.to_string_lossy().replace('\\', "/"))
-    })
+    let under_root = root.join(clean.trim_start_matches('/'));
+    filter.matches(&under_root.to_string_lossy().replace('\\', "/"))
 }
 
-/// Whether a path or url is an asset: a known type by its extension, or a
-/// file the config's `assetsInclude` names.
-pub fn is_asset_path(path: &str) -> bool {
-    is_asset_url(path) || is_included_asset(path)
+/// Whether a path or url is an asset of the app at `root`: a known type by
+/// its extension, or a file its config's `assetsInclude` names.
+pub fn is_asset_path(root: &std::path::Path, path: &str) -> bool {
+    is_asset_url(path) || is_included_asset(root, path)
 }
 
 /// MIME type for an asset extension (case-insensitive), used for `data:` URLs
@@ -288,10 +300,11 @@ mod tests {
         assert_eq!(clean_ext("/a/b.min.JS?x"), Some("JS"));
     }
 
-    // Vite's `assetsInclude` beyond the known types: a glob resolved against
-    // the root (createFilter's base), a RegExp with its flags against the
-    // absolute path; a served url's root-relative path is tried under the
-    // root, a file that exists elsewhere is not.
+    // Vite's `assetsInclude` beyond the known types, pattern by pattern as
+    // its `createFilter(config.assetsInclude)` answers (checked against
+    // Vite 8's own createFilter): a `**` glob names a file anywhere, a
+    // relative glob resolves against the directory the process started in,
+    // a RegExp is tested against the whole path with its flags.
     #[test]
     fn configured_assets_include_names_more_files() {
         let dir = std::env::temp_dir().join(format!("oj-assets-include-{}", std::process::id()));
@@ -301,59 +314,88 @@ mod tests {
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::write(outside.join("x.gltf"), "x").unwrap();
+        std::fs::write(outside.join("x.obj"), "x").unwrap();
         let under = |rel: &str| root.join(rel).to_string_lossy().replace('\\', "/");
+        let included = |path: &str| is_included_asset(&root, path);
+        // The process started in the app's root: Vite's usual run.
         install_assets_include(
             &[
                 serde_json::json!("**/*.gltf"),
                 serde_json::json!("./models/*.obj"),
+                serde_json::json!("meshes/*.ply"),
                 serde_json::json!({ "regex": "\\.BIN$", "flags": "i" }),
                 serde_json::json!(7),
             ],
             &root,
+            &root,
         );
-        assert!(is_included_asset(&under("src/scene.gltf")));
-        assert!(is_included_asset(&format!(
-            "{}?url",
-            under("src/scene.gltf")
-        )));
+        assert!(included(&under("src/scene.gltf")));
+        assert!(included(&format!("{}?url", under("src/scene.gltf"))));
+        assert!(included("/src/deep/scene.gltf"), "a served url's path");
+        assert!(included(&under(".hidden/scene.gltf")), "dot: true");
+        // createFilter("**/*.gltf")("/outside/x.gltf") is true: a `**`
+        // pattern is not resolved against anything.
         assert!(
-            is_included_asset("/src/deep/scene.gltf"),
-            "a served url's path"
+            included(&outside.join("x.gltf").to_string_lossy()),
+            "a `**` glob names a file outside the root too, as in Vite"
         );
-        assert!(is_included_asset(&under("models/x.obj")), "a `./` pattern");
+        assert!(included(&under("models/x.obj")), "a `./` pattern");
+        assert!(included(&under("meshes/x.ply")), "a relative pattern");
+        assert!(included("/models/x.obj"), "a served url under the root");
+        assert!(!included(&under("src/models/x.obj")), "`*` stops at `/`");
         assert!(
-            !is_included_asset(&under("src/models/x.obj")),
-            "`*` stops at `/`"
+            !included(&outside.join("x.obj").to_string_lossy()),
+            "a resolved pattern names files under its base only"
         );
+        assert!(included(&under("a/b.bin")), "the RegExp's `i` flag");
         assert!(
-            is_included_asset(&under("a/b.bin")),
-            "the RegExp's `i` flag"
+            included(&outside.join("c.BIN").to_string_lossy()),
+            "a RegExp is tested against the whole path, anywhere"
         );
-        assert!(!is_included_asset(&under("src/scene.png")));
-        assert!(!is_included_asset("\0virtual:scene.gltf"));
+        assert!(!included(&under("src/scene.png")));
+        assert!(!included("\0virtual:scene.gltf"));
+        assert!(!included(&format!("{}\0x.gltf", under("src/"))), "a NUL");
+        assert!(is_asset_path(&root, &under("src/scene.gltf")));
+        assert!(is_asset_path(&root, &under("src/photo.PNG")));
+
+        // Started elsewhere (`oj dev ./app` from the parent): a relative
+        // glob resolves against that directory, a `**` one is unchanged.
+        install_assets_include(
+            &[
+                serde_json::json!("**/*.gltf"),
+                serde_json::json!("models/*.obj"),
+            ],
+            &root,
+            &dir,
+        );
+        assert!(included(&under("src/scene.gltf")));
         assert!(
-            !is_included_asset(&outside.join("x.gltf").to_string_lossy()),
-            "a file outside the root is judged by its own path, as Vite does"
+            !included(&under("models/x.obj")),
+            "Vite resolves a relative pattern against the working directory"
         );
-        assert!(is_asset_path(&under("src/scene.gltf")));
-        assert!(is_asset_path(&under("src/photo.PNG")));
-        install_assets_include(&[], &root);
-        assert!(!is_included_asset(&under("src/scene.gltf")), "uninstalled");
-        assert!(is_asset_path(&under("src/photo.PNG")));
+        assert!(included(&dir.join("models/x.obj").to_string_lossy()));
+
+        install_assets_include(&[], &root, &root);
+        assert!(!included(&under("src/scene.gltf")), "uninstalled");
+        assert!(is_asset_path(&root, &under("src/photo.PNG")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // One filter per root: a process that loads a second app's config (the
-    // dev server's tests boot many servers in one process) leaves the first
-    // app's filter as it is, and neither app's patterns name the other's
-    // files. A config without `assetsInclude` used to clear the one filter
-    // the process had, under a server still using it.
+    // One filter per root, and a lookup names its app: a process that loads
+    // several apps' configs (the dev server's tests boot many servers in one
+    // process) judges each app's files by its own config alone, as each Vite
+    // server consults its own resolved config. A `**` glob and a RegExp match
+    // anywhere, so nothing short of naming the app keeps one app's patterns
+    // off another's files; an app that installed nothing names nothing.
     #[test]
     fn each_root_keeps_its_own_assets_include() {
         let dir =
             std::env::temp_dir().join(format!("oj-assets-include-roots-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let (first, second) = (dir.join("first"), dir.join("second"));
+        let (first, second, third) = (dir.join("first"), dir.join("second"), dir.join("third"));
+        for root in [&first, &second, &third] {
+            std::fs::create_dir_all(root.join("src")).unwrap();
+        }
         let at =
             |root: &std::path::Path, rel: &str| root.join(rel).to_string_lossy().replace('\\', "/");
         install_assets_include(
@@ -362,37 +404,52 @@ mod tests {
                 serde_json::json!({ "regex": "\\.pointcloud$", "flags": "" }),
             ],
             &first,
+            &first,
         );
-        assert!(is_included_asset(&at(&first, "src/a.splat")));
+        assert!(is_included_asset(&first, &at(&first, "src/a.splat")));
 
-        // A second app whose config names nothing.
-        install_assets_include(&[], &second);
+        // A second app whose config names nothing leaves the first's filter.
+        install_assets_include(&[], &second, &second);
         assert!(
-            is_included_asset(&at(&first, "src/a.splat")),
+            is_included_asset(&first, &at(&first, "src/a.splat")),
             "another root's empty config cleared this root's filter"
         );
-        assert!(
-            is_included_asset("/src/roots-only/a.splat"),
-            "a served url's path"
-        );
-        assert!(
-            !is_included_asset(&at(&second, "src/a.pointcloud")),
-            "the first root's RegExp named the second root's file"
-        );
-        assert!(is_included_asset(&at(&first, "src/a.pointcloud")));
+        assert!(is_included_asset(&first, "/src/a.splat"), "a served url");
+        // Neither the second app nor one that never installed a filter (an
+        // app with no vite.config) is judged by the first app's patterns:
+        // not its files, not its served urls.
+        for other in [&second, &third] {
+            for path in [
+                at(other, "src/a.pointcloud"),
+                at(other, "src/a.splat"),
+                "/src/a.pointcloud".to_string(),
+                "/src/a.splat".to_string(),
+            ] {
+                assert!(
+                    !is_included_asset(other, &path),
+                    "the first app's patterns named {path} for another app"
+                );
+            }
+        }
+        // The first app's own patterns still reach a file anywhere, another
+        // app's directory included: it is the asking app that matters.
+        assert!(is_included_asset(&first, &at(&second, "src/a.splat")));
 
-        // The second app names its own type: each root answers for its files.
-        install_assets_include(&[serde_json::json!("**/*.voxels")], &second);
-        assert!(is_included_asset(&at(&second, "src/a.voxels")));
-        assert!(!is_included_asset(&at(&first, "src/a.voxels")));
-        assert!(is_included_asset(&at(&first, "src/a.splat")));
-        assert!(!is_included_asset(&at(&second, "src/a.splat")));
+        // The second app names its own type: each root answers for itself.
+        install_assets_include(&[serde_json::json!("**/*.voxels")], &second, &second);
+        assert!(is_included_asset(&second, &at(&second, "src/a.voxels")));
+        assert!(!is_included_asset(&first, &at(&first, "src/a.voxels")));
+        assert!(!is_included_asset(&second, &at(&second, "src/a.splat")));
 
-        // A root's own config replaces its filter, and only its own.
-        install_assets_include(&[], &first);
-        assert!(!is_included_asset(&at(&first, "src/a.splat")));
-        assert!(is_included_asset(&at(&second, "src/a.voxels")));
-        install_assets_include(&[], &second);
+        // A root's own config replaces its filter, and only its own; the
+        // root's other spelling (as it resolves) is the same app.
+        let real = std::fs::canonicalize(&first).unwrap();
+        assert!(is_included_asset(&real, &at(&real, "src/a.splat")));
+        install_assets_include(&[], &real, &real);
+        assert!(!is_included_asset(&first, &at(&first, "src/a.splat")));
+        assert!(!is_included_asset(&real, &at(&real, "src/a.splat")));
+        assert!(is_included_asset(&second, &at(&second, "src/a.voxels")));
+        install_assets_include(&[], &second, &second);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
