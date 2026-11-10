@@ -31,13 +31,7 @@ pub(crate) async fn delegate_to_node_proxy(
     }
     // Re-route only origin-form paths; an absolute or
     // protocol-relative bypass URL must never hit native routing.
-    if let Some(uri) = resp
-        .headers()
-        .get("x-oj-rewritten-url")
-        .and_then(|v| v.to_str().ok())
-        .filter(|s| s.starts_with('/') && !s.starts_with("//"))
-        .and_then(|s| s.parse::<Uri>().ok())
-    {
+    if let Some(uri) = rewritten_url(resp.headers(), &pq) {
         parts.uri = uri;
     }
     next.run(axum::extract::Request::from_parts(parts, Body::empty()))

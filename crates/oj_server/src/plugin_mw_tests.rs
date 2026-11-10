@@ -123,3 +123,29 @@ async fn browser_hop_clients_never_follow_a_redirect() {
     assert_eq!(visits.load(Ordering::SeqCst), 0);
     server.abort();
 }
+
+/// A fall-through names the url a middleware left in `req.url` only when it
+/// is an origin-form path other than the one asked for: an absolute or
+/// protocol-relative url (a proxy `bypass` may return one) never reaches
+/// native routing, and an unchanged url is no rewrite.
+#[test]
+fn a_fall_through_reports_an_origin_form_rewrite_only() {
+    let with = |url: &str| {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-oj-fallthrough", "1".parse().unwrap());
+        headers.insert("x-oj-rewritten-url", url.parse().unwrap());
+        headers
+    };
+    let asked = "/services/fire";
+    let rewritten = |url: &str| rewritten_url(&with(url), asked).map(|u| u.to_string());
+    assert_eq!(
+        rewritten("/services/fire/index.html"),
+        Some("/services/fire/index.html".to_string())
+    );
+    assert_eq!(rewritten("/about?tab=1"), Some("/about?tab=1".to_string()));
+    assert_eq!(rewritten(asked), None, "the url as asked is no rewrite");
+    assert_eq!(rewritten("//evil.example/x"), None);
+    assert_eq!(rewritten("https://evil.example/x"), None);
+    assert_eq!(rewritten("about"), None);
+    assert_eq!(rewritten_url(&HeaderMap::new(), asked), None);
+}
