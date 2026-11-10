@@ -694,8 +694,21 @@ mod tests {
             "{react}export default {{ plugins: [react()], server: {{ host: true }} }};\n"
         ))
         .is_some_and(|r| r.starts_with("config is outside the literal shape")));
+        // `assetsInclude` is the engine's to read (vite-extract.mjs
+        // extracts globs and RegExps); the template answers `null` for a
+        // config that sets none, as the extractor does.
+        assert!(decline(&format!(
+            "{react}export default {{ plugins: [react()], assetsInclude: [\"**/*.gltf\"] }};\n"
+        ))
+        .is_some_and(|r| r.starts_with("config is outside the literal shape")));
         let literal = format!("{react}export default {{ plugins: [react()] }};\n");
         assert_eq!(decline(&literal), None);
+        let out = read_static(&root, &config, "serve", "development").unwrap();
+        assert_eq!(
+            out.get("assetsInclude"),
+            Some(&serde_json::Value::Null),
+            "the output names assetsInclude as the extractor does for a config without one"
+        );
         std::fs::write(root.join("node_modules/.modules.yaml"), "").unwrap();
         assert_eq!(
             decline(&literal).as_deref(),

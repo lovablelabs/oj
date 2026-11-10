@@ -15,7 +15,7 @@ pub mod start_codegen;
 
 // Bump whenever CachedModule/HotMeta meaning changes, so older entries are
 // never deserialized with the new meaning.
-pub const CACHE_FORMAT: u32 = 7;
+pub const CACHE_FORMAT: u32 = 8;
 
 pub const CACHE_ROOT_VERSION: u32 = 1;
 
@@ -109,6 +109,15 @@ fn is_lower_hex(s: &str) -> bool {
 
 /// blake3 over `fields` joined by NUL bytes. The separators keep field
 /// boundaries unambiguous ("a","bc" vs "ab","c").
+/// A module source's content hash, the part of a compile key that costs
+/// reading the whole source: computed once per compile and handed to
+/// [`PersistentCache::key_for`] for every key derived from it.
+pub type SourceHash = [u8; 32];
+
+pub fn source_hash(source: &[u8]) -> SourceHash {
+    *blake3::hash(source).as_bytes()
+}
+
 pub(crate) fn hash_nul_joined(fields: &[&[u8]]) -> blake3::Hash {
     let mut hasher = blake3::Hasher::new();
     for (i, field) in fields.iter().enumerate() {
@@ -187,6 +196,13 @@ impl PersistentCache {
     }
 
     pub fn key(&self, source: &[u8], url: &str, mode: &str) -> String {
+        self.key_for(&source_hash(source), url, mode)
+    }
+
+    /// [`key`](Self::key) from a source's hash computed once
+    /// ([`source_hash`]): a compile keyed more than once (re-keyed under the
+    /// import stamps it baked in) hashes its source once.
+    pub fn key_for(&self, source: &SourceHash, url: &str, mode: &str) -> String {
         hash_nul_joined(&[
             self.salt.as_bytes(),
             mode.as_bytes(),
@@ -277,6 +293,15 @@ mod tests {
         );
         assert_ne!(base, cache.key(b"source", "/src/Other.tsx", "dev"), "url");
         assert_ne!(base, cache.key(b"source", "/src/App.tsx", "prod"), "mode");
+        // The key from a source hash computed once is the key from the source.
+        let hash = source_hash(b"source");
+        assert_eq!(base, cache.key_for(&hash, "/src/App.tsx", "dev"));
+        assert_eq!(
+            cache.key(b"source", "/src/App.tsx", "dev@5"),
+            cache.key_for(&hash, "/src/App.tsx", "dev@5"),
+            "another mode off the same hash"
+        );
+        assert_ne!(hash, source_hash(b"source2"));
         let other_version = PersistentCache::new(std::env::temp_dir(), "9.9.9");
         assert_ne!(
             base,
