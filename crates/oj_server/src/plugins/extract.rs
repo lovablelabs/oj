@@ -1865,14 +1865,12 @@ fn merge_css(config: &mut oj_config::OjConfig, css: &serde_json::Value) {
 mod exit_signal_tests {
     use super::*;
 
-    /// The sweep test kills every registered child, the other tests' stand-in
-    /// children included: tests that spawn one run one at a time.
-    static CHILDREN: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
+    /// A sweep (`kill_all`) kills every registered child of the process, the
+    /// other tests' stand-in children included, and the registry lifecycle
+    /// test in `crate::tests` sweeps too: every test that registers a child
+    /// or sweeps holds the registry's test lock.
     fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
-        CHILDREN
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        crate::watch::child_groups::test_lock()
     }
 
     #[test]

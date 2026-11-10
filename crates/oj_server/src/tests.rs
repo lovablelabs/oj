@@ -1836,6 +1836,9 @@ fn sweep_drops_unreadable_files_and_skips_our_own() {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn child_registry_lifecycle_persists_and_drains() {
+    // The sweep below is process-wide: no other test's child may be
+    // registered meanwhile (see `child_groups::test_lock`).
+    let _registry = child_groups::test_lock();
     let dir = tempfile::tempdir().unwrap();
     child_groups::init_registry(dir.path());
     let own_file = dir.path().join(format!("{}.json", std::process::id()));

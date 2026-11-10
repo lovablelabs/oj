@@ -115,6 +115,20 @@ pub(crate) mod child_groups {
     /// This process's registry file, set once by `init_registry`.
     static REGISTRY: OnceLock<PathBuf> = OnceLock::new();
 
+    /// The registry and its sweep are process-wide, and the unit tests of one
+    /// binary run in parallel: a test that registers a child or sweeps the
+    /// registry holds this for its duration, so another test's `kill_all`
+    /// never takes its child (a SIGKILL the test then reads as the signal it
+    /// was testing for), and its own sweep never finds another test's child
+    /// (a registry the test expects drained).
+    #[cfg(test)]
+    pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static TESTS: Mutex<()> = Mutex::new(());
+        TESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     pub fn register(pid: u32, own_group: bool) {
         let start = proc_start_time(pid);
         let mut children = CHILDREN.lock().unwrap();
