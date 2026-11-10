@@ -1111,7 +1111,7 @@ fn export_default_url(url: &str) -> String {
 /// is trimmed, inter-tag whitespace dropped, double quotes turned single, and
 /// `% # < >` plus whitespace runs percent-encoded (`%20` keeps srcset valid).
 /// A backslash is encoded too, so the url is safe inside a `"…"` CSS string.
-fn svg_data_url(text: &str) -> String {
+pub(crate) fn svg_data_url(text: &str) -> String {
     if text.contains("<text") || text.contains("<foreignObject") || has_nested_quotes(text) {
         return format!("data:image/svg+xml;base64,{}", b64(text.as_bytes()));
     }

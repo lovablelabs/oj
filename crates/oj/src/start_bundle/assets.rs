@@ -938,11 +938,19 @@ fn normalize(path: &Path) -> PathBuf {
     out
 }
 
-/// A file as a `data:` URI (`?inline` of a non-stylesheet).
+/// A file as a `data:` URI (`?inline` of a non-stylesheet): an SVG as Vite's
+/// `svgToDataURL` writes it (percent-encoded markup; base64 only for `<text`,
+/// `<foreignObject` or nested quotes), any other file base64, as Vite's
+/// `assetToDataURL`.
 fn data_uri(path: &Path) -> Result<String, String> {
     use base64::Engine;
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mime = oj_compiler::assets::asset_mime(ext_of(&path.to_string_lossy()));
+    let name = path.to_string_lossy();
+    let ext = ext_of(&name);
+    if ext.eq_ignore_ascii_case("svg") {
+        return Ok(crate::build::svg_data_url(&String::from_utf8_lossy(&bytes)));
+    }
+    let mime = oj_compiler::assets::asset_mime(ext);
     Ok(format!(
         "data:{mime};base64,{}",
         base64::engine::general_purpose::STANDARD.encode(bytes)

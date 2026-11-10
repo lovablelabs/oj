@@ -1226,11 +1226,19 @@ impl StartHost {
                     self.bridge.start_dev_inline_style(Path::new(path)).await
                 } else {
                     let bytes = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
-                    let url = format!(
-                        "data:{};base64,{}",
-                        mime_of(path),
-                        crate::ssr_host::base64(&bytes)
-                    );
+                    // An SVG as Vite's `svgToDataURL` writes it (percent-encoded
+                    // markup; base64 only for `<text`, `<foreignObject` or nested
+                    // quotes), as the client bundle, plain dev and the build do;
+                    // any other file base64, as Vite's `assetToDataURL`.
+                    let url = if ext == "svg" {
+                        crate::build::svg_data_url(&String::from_utf8_lossy(&bytes))
+                    } else {
+                        format!(
+                            "data:{};base64,{}",
+                            mime_of(path),
+                            crate::ssr_host::base64(&bytes)
+                        )
+                    };
                     Ok(format!("export default {};", json_str(&url)))
                 }
             }

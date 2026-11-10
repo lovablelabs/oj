@@ -120,14 +120,16 @@ fn a_raw_svg_import_is_the_files_text_on_both_sides() {
         "the ?raw text import is missing from the render:\n{html}"
     );
     // `?inline` on the same file is a data URI, as vite:asset's shouldInline,
-    // not the served URL either.
+    // not the served URL either: Vite's `svgToDataURL` form, the markup
+    // percent-encoded (a plain SVG; base64 only for `<text`, `<foreignObject`
+    // or nested quotes), as plain dev and the build write it.
     let inline = html
         .split_once("<pre id=\"inline-svg\">")
         .and_then(|(_, rest)| rest.split_once("</pre>"))
         .map(|(text, _)| text)
         .unwrap_or_default();
     assert!(
-        inline.starts_with("data:image/svg+xml;base64,"),
+        inline.starts_with("data:image/svg+xml,%3csvg") && inline.contains("%3cpolygon"),
         "the server render printed {inline:?} for the ?inline SVG\n{}",
         dev.output()
     );
@@ -146,8 +148,9 @@ fn a_raw_svg_import_is_the_files_text_on_both_sides() {
         !code.contains("star.svg\""),
         "{path} still points at the file:\n{code}"
     );
+    // The same form on the client, so the hydration agrees.
     assert!(
-        code.contains("\"data:image/svg+xml;base64,"),
-        "{path} carries no data URI for the ?inline SVG"
+        code.contains("\"data:image/svg+xml,%3csvg"),
+        "{path} carries no Vite-shaped data URI for the ?inline SVG"
     );
 }
