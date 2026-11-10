@@ -175,3 +175,33 @@ fn a_request_ends_the_wait_before_evaluating_again() {
     asked.wait(Duration::from_millis(50));
     assert!(started.elapsed() >= Duration::from_millis(50));
 }
+
+// Which requests a check's last evaluation answered. Vite's restart() during
+// a restart returns the one running (server/index.ts, `_restartPromise`), so
+// an edit landing while the config loads is never loaded; oj checks again for
+// a request made while the evaluation ran, and only for that one: a request
+// made during the wait before it was answered by it.
+#[test]
+fn a_request_is_answered_by_the_evaluation_that_began_after_it() {
+    let asked = Asked::default();
+    // The request that starts the check, taken up as the check begins.
+    asked.note();
+    asked.take_up();
+    assert!(asked.all_taken_up());
+
+    // Made while the evaluation runs: not answered, checked next.
+    asked.note();
+    assert!(!asked.all_taken_up());
+
+    // The evaluation was interrupted; the wait before the next one takes the
+    // request up, and one made during that wait too.
+    asked.wait(Duration::from_secs(60));
+    assert!(asked.all_taken_up());
+    asked.note();
+    asked.wait(Duration::from_secs(60));
+    assert!(asked.all_taken_up());
+
+    // Made while that next evaluation runs: checked next again.
+    asked.note();
+    assert!(!asked.all_taken_up());
+}

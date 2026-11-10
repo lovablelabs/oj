@@ -443,7 +443,9 @@ impl Asked {
     }
 
     /// Waits `delay`, or until a request the check has not taken up is made
-    /// (one made since the last `take_up` or `wait` ends it at once).
+    /// (one made since the last `take_up` or `wait` ends it at once), and
+    /// takes up every request made by then: the evaluation that follows the
+    /// wait reads what they asked to check.
     pub(crate) fn wait(&self, delay: Duration) {
         let counts = self.counts.lock().unwrap();
         let (mut counts, _) = self
@@ -451,6 +453,13 @@ impl Asked {
             .wait_timeout_while(counts, delay, |(made, taken)| made == taken)
             .unwrap();
         counts.1 = counts.0;
+    }
+
+    /// Whether every request made was taken up before the check's last
+    /// evaluation began, so that evaluation answers them all.
+    pub(crate) fn all_taken_up(&self) -> bool {
+        let counts = self.counts.lock().unwrap();
+        counts.0 == counts.1
     }
 }
 
@@ -538,10 +547,23 @@ impl Restarter {
                     }
                 }
             };
-            match this.failure() {
-                // Vite's restart loops while requests are pending: one that
-                // came during this check is checked before the exec.
-                None if this.pending.lock().unwrap().1.is_some() => {}
+            let failure = this.failure();
+            // A request made while the check's last evaluation ran is checked
+            // next: that evaluation may have read the config before the edit
+            // (Vite's restart() during a restart joins the one running; oj
+            // checks again, so the edit is not lost). One made before it
+            // began (during a wait to evaluate again) was answered by it:
+            // checking it again would evaluate the same config twice.
+            let (answered, reason) = {
+                let mut pending = this.pending.lock().unwrap();
+                if this.asked.all_taken_up() {
+                    (true, pending.1.take().unwrap_or(reason))
+                } else {
+                    (false, reason)
+                }
+            };
+            match failure {
+                None if !answered => {}
                 // The shutdown sweep killed the check's engine job: the
                 // server is stopping, so there is no restart to fail.
                 Some(error) if shutting_down() => {
