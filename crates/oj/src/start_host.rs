@@ -448,8 +448,12 @@ fn classify_id(abs: &str, intent: Option<&'static str>, svg_react: bool) -> Stri
         return format!("{abs}?ojasset=css");
     }
     // wasm is asset-classified like the loader (URL export only). A plain
-    // import is `asset`: served like `?url`, but its id has no query.
-    if oj_server::is_importable_asset(abs) || ext == "wasm" {
+    // import is `asset`: served like `?url`, but its id has no query. An
+    // import carrying a query of its own (`hero.png?w=64`) is left as it
+    // is, for the plugin that answers that query (an `enforce: "pre"` load
+    // runs before Vite's asset plugin): tagged, the plugin would read its
+    // query with the tag appended, or never see the id.
+    if !abs.contains('?') && (oj_server::is_importable_asset(abs) || ext == "wasm") {
         return format!("{abs}?ojasset=asset");
     }
     abs.to_string()
@@ -863,7 +867,7 @@ impl StartHost {
                 if svg_react
                     || intent.is_some()
                     || oj_server::is_style_ext(&ext)
-                    || oj_server::is_importable_asset(&abs)
+                    || (!abs.contains('?') && oj_server::is_importable_asset(&abs))
                 {
                     let id = classify_id(&abs, intent, svg_react);
                     return Ok(Some(self.module_url(&id, importer_id)));
@@ -1733,6 +1737,13 @@ mod tests {
             classify_id("/a/m.wasm", None, false),
             "/a/m.wasm?ojasset=asset"
         );
+        // An import's own query is a plugin's to answer (the fixture's
+        // `hero.png?w=64`): no tag appended to it.
+        assert_eq!(
+            classify_id("/a/hero.png?w=64", None, false),
+            "/a/hero.png?w=64"
+        );
+        assert_eq!(classify_id("/a/m.wasm?init", None, false), "/a/m.wasm?init");
     }
 
     #[test]
