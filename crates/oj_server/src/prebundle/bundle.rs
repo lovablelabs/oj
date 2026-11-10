@@ -676,7 +676,7 @@ const DEP_NAMES_JS: &str = include_str!("../assets/dep-names.mjs");
 
 fn diagnostics(errs: &[rolldown_error::BuildDiagnostic]) -> String {
     errs.iter()
-        .map(|e| e.to_diagnostic().to_string())
+        .map(|e| crate::load_error::render(e).to_string())
         .collect::<Vec<_>>()
         .join("\n")
 }

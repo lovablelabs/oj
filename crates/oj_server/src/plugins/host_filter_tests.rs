@@ -21,7 +21,7 @@ async fn hosted_names(
     extra: serde_json::Value,
 ) -> Vec<String> {
     let root = std::env::temp_dir().join(format!("oj-host-filter-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    crate::plugins::test_roots::remove_root(&root);
     std::fs::create_dir_all(&root).unwrap();
     let path = root.join(file);
     std::fs::write(&path, plugins_src).unwrap();
@@ -37,7 +37,7 @@ async fn hosted_names(
         .expect("the host spawns");
     let names = host.plugin_names().await;
     host.shutdown();
-    let _ = std::fs::remove_dir_all(&root);
+    crate::plugins::test_roots::remove_root(&root);
     names
 }
 
