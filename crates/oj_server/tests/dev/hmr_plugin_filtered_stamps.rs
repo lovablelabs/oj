@@ -29,7 +29,9 @@ export default [
     hotUpdate({ file, modules, timestamp }) {
       if (!file.endsWith("label.js")) return;
       fs.writeFileSync(__MARKS__ + "/timestamp", String(timestamp));
-      return modules;
+      // More than it was handed: a filter of its own, not the default path
+      // (returning `modules` as they came is; see hmr_plugin_passthrough).
+      return [...modules, { url: "/src/other.js" }];
     },
   },
 ];
@@ -74,9 +76,11 @@ async fn a_hot_update_returning_modules_stamps_the_chain_with_the_hooks_timestam
             r#"{"name":"hmr-filtered","version":"1.0.0"}"#,
         ),
         ("src/label.js", "export const label = \"v1\";\n"),
+        ("src/other.js", "export const other = \"o\";\n"),
         (
             "src/App.js",
-            "import { label } from \"./label.js\";\nexport const text = label;\n\
+            "import { label } from \"./label.js\";\nimport { other } from \"./other.js\";\n\
+             export const text = label + other;\n\
              if (import.meta.hot) import.meta.hot.accept();\n",
         ),
         (
@@ -88,7 +92,12 @@ async fn a_hot_update_returning_modules_stamps_the_chain_with_the_hooks_timestam
     ]);
     let server = app.serve().await;
     // A page load: every module served and cached once.
-    for url in ["/src/main.js", "/src/App.js", "/src/label.js"] {
+    for url in [
+        "/src/main.js",
+        "/src/App.js",
+        "/src/label.js",
+        "/src/other.js",
+    ] {
         server.text(url).await;
     }
     assert_eq!(
@@ -113,6 +122,11 @@ async fn a_hot_update_returning_modules_stamps_the_chain_with_the_hooks_timestam
     assert_eq!(
         stamp, timestamp,
         "App.js names label.js under {stamp:?}; hotUpdate was handed {timestamp:?}"
+    );
+    assert_eq!(
+        stamp_of(&server.text("/src/App.js").await, "/src/other.js"),
+        timestamp,
+        "the module the hook added is a module of the update too"
     );
     // And above the boundary, as for an update no plugin filtered.
     assert_eq!(

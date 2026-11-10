@@ -9,7 +9,7 @@ import { rpcSidecar, tmpProject } from "./harness.mjs";
 // The plugin host must pass a Vite-shaped HmrContext ({ file, timestamp, type,
 // modules, read }) to handleHotUpdate and honor a returned filtered module list.
 // Before, the ctx was only { file, timestamp } and a non-empty array was ignored.
-test("plugin-host enriches the handleHotUpdate ctx and honors a filtered return", async () => {
+test("plugin-host enriches the handleHotUpdate ctx; the modules returned as handed are no filter", async () => {
   const fx = tmpProject({ prefix: "oj-hmr-" });
   fx.write("a.tsx", "export const x = 1;\n");
   fx.write(
@@ -25,8 +25,8 @@ test("plugin-host enriches the handleHotUpdate ctx and honors a filtered return"
           ctx.modules[0] && ctx.modules[0].url === "/a.tsx" &&
           ctx.modules[0].isSelfAccepting === true &&
           content.includes("export const x");
-        // Only narrow to the module set when the whole ctx was delivered; a
-        // wrong ctx forces a full-reload, which the test detects as a failure.
+        // The modules as they came when the whole ctx was delivered; a wrong
+        // ctx forces a full-reload, which the test detects as a failure.
         return ok ? ctx.modules : "full-reload";
       },
     }];\n`,
@@ -44,9 +44,9 @@ test("plugin-host enriches the handleHotUpdate ctx and honors a filtered return"
       args: [path.join(fx.root, "a.tsx"), "123", "update", modules],
     });
     assert.equal(res.id, 1);
-    const parsed = JSON.parse(res.result);
-    assert.equal(parsed.action, "filter", "the ctx was fully delivered and the return honored");
-    assert.deepEqual(parsed.modules, ["/a.tsx"], "returned module urls forwarded as the filter set");
+    // Vite's updateModules runs on the same modules as with no hook: the
+    // change takes the default path (null), not a filter of its own.
+    assert.equal(res.result, null, "the ctx was fully delivered, and the same modules are the default update");
   } finally {
     host.close();
     fx.cleanup();
@@ -76,7 +76,12 @@ test("plugin-host treats an empty handleHotUpdate array as a suppressed update",
     const res = await host.send({
       id: 1,
       hook: "handleHotUpdate",
-      args: [path.join(fx.root, "a.tsx"), "123", "update", "[]"],
+      args: [
+        path.join(fx.root, "a.tsx"),
+        "123",
+        "update",
+        JSON.stringify([{ url: "/a.tsx", isSelfAccepting: true, importers: [] }]),
+      ],
     });
     assert.equal(res.result, "skip", "empty array suppresses the update");
   } finally {
@@ -139,9 +144,58 @@ test("plugin-host lets a later empty handleHotUpdate return suppress an earlier 
     const res = await host.send({
       id: 1,
       hook: "handleHotUpdate",
-      args: [path.join(fx.root, "a.tsx"), "123", "update", "[]"],
+      args: [
+        path.join(fx.root, "a.tsx"),
+        "123",
+        "update",
+        JSON.stringify([{ url: "/a.tsx", isSelfAccepting: true, importers: [] }]),
+      ],
     });
     assert.equal(res.result, "skip", "the last plugin's empty array wins");
+  } finally {
+    host.close();
+    fx.cleanup();
+  }
+});
+
+// What the hooks leave is compared with what they were handed, as sets: the
+// same modules are the update Vite's updateModules would run with no hook, so
+// the host answers null and the default path decides. That path is also where
+// a file oj's graph holds no module for is decided (a `<link>` stylesheet, an
+// html page): handed none, a hook returning them (or `[]`) changes nothing.
+test("plugin-host answers null when the hooks leave the modules they were handed", async () => {
+  const fx = tmpProject({ prefix: "oj-hmr-" });
+  fx.write("a.tsx", "export const x = 1;\n");
+  fx.write(
+    "oj.plugins.mjs",
+    `export default [{
+      name: "by-file",
+      handleHotUpdate({ file, modules }) {
+        if (file.endsWith("copy.tsx")) return [...modules].reverse();
+        if (file.endsWith("more.tsx")) return [...modules, { url: "/extra.tsx" }];
+        if (file.endsWith("fewer.tsx")) return modules.slice(0, 1);
+        return modules;
+      },
+    }];\n`,
+  );
+  const host = rpcSidecar("plugin-host.mjs", {
+    args: [path.join(fx.root, "oj.plugins.mjs"), JSON.stringify({ root: fx.root })],
+    env: { OJ_CACHE_ROOT: fx.root },
+    cwd: fx.root,
+  });
+  const two = JSON.stringify([{ url: "/a.tsx" }, { url: "/b.tsx" }]);
+  const ask = async (id, file, modules) =>
+    (await host.send({ id, hook: "handleHotUpdate", args: [path.join(fx.root, file), "123", "update", modules] }))
+      .result;
+  try {
+    assert.equal(await ask(1, "index.html", "[]"), null, "handed none, returned none: the default path");
+    assert.equal(await ask(2, "a.tsx", two), null, "the same array");
+    assert.equal(await ask(3, "copy.tsx", two), null, "the same modules in another array and order");
+    assert.deepEqual(JSON.parse(await ask(4, "more.tsx", two)), {
+      action: "filter",
+      modules: ["/a.tsx", "/b.tsx", "/extra.tsx"],
+    });
+    assert.deepEqual(JSON.parse(await ask(5, "fewer.tsx", two)), { action: "filter", modules: ["/a.tsx"] });
   } finally {
     host.close();
     fx.cleanup();
