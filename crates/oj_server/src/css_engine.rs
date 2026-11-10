@@ -360,6 +360,7 @@ fn map_engine_error(kind: &str, e: EngineError) -> String {
         EngineError::Deadline => format!("{kind} compile timed out"),
         EngineError::MemoryLimit => format!("{kind} compile exceeded the JS memory limit"),
         EngineError::Boot(e) => format!("cannot start the {kind} engine: {e}"),
+        EngineError::Interrupted(why) => format!("the {kind} compile was interrupted: {why}"),
         EngineError::Closed => format!("the {kind} engine is shut down"),
     }
 }
