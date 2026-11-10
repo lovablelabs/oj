@@ -107,6 +107,7 @@ async fn another_apps_config_leaves_this_apps_assets_include() {
         ),
         ("src/scene.gltf", SCENE),
         ("src/data.bin", "bin-bytes"),
+        ("src/a.voxels", "export const voxels = 1;\n"),
         (
             "src/main.js",
             "import scene from \"./scene.gltf\";\nwindow.__SCENE = scene;\n",
@@ -207,8 +208,10 @@ async fn another_apps_config_leaves_this_apps_assets_include() {
     );
     // And the first app does not take the third's.
     let voxels = imported(&server, "/src/a.voxels").await;
+    assert_eq!(voxels.status, 200, "{}", voxels.body);
     assert!(
-        !voxels.body.contains("export default \"/src/a.voxels\""),
+        voxels.body.contains("voxels = 1")
+            && !voxels.body.contains("export default \"/src/a.voxels\""),
         "{}",
         voxels.body
     );

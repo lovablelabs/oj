@@ -788,8 +788,11 @@ pub(crate) fn prepare_out_dir(
     Ok(())
 }
 
-fn is_build_asset(id: &str) -> bool {
-    oj_compiler::assets::is_asset_url(id)
+/// Whether the build loads `id` as an asset of the app at `root`: Vite's
+/// `config.assetsInclude(cleanUrl(id))` in vite:asset's load, a known type
+/// or a file the config's `assetsInclude` names.
+fn is_build_asset(root: &Path, id: &str) -> bool {
+    oj_compiler::assets::is_asset_path(root, id)
 }
 
 fn asset_mime(ext: &str) -> &'static str {
@@ -2116,7 +2119,7 @@ impl Plugin for OjCssPlugin {
                     }
                 }
             }
-            if !id.contains('?') && is_build_asset(&id) {
+            if !id.contains('?') && is_build_asset(&root, &id) {
                 let bytes =
                     std::fs::read(&id).map_err(|e| anyhow::anyhow!("cannot read {id}: {e}"))?;
                 let code = emit_or_inline(&ctx, &root, &id, bytes, inline_limit, false)?;
@@ -9667,7 +9670,7 @@ mod tests {
             "ttf", "otf", "eot", "mp4", "webm", "mov", "mp3", "wav", "ogg",
         ] {
             assert!(
-                is_build_asset(&format!("/src/a.{ext}")),
+                is_build_asset(Path::new("/"), &format!("/src/a.{ext}")),
                 "{ext} not an asset"
             );
             assert_ne!(
@@ -9677,15 +9680,15 @@ mod tests {
             );
         }
         // A query does not change the classification.
-        assert!(is_build_asset("/src/a.png?url"));
+        assert!(is_build_asset(Path::new("/"), "/src/a.png?url"));
         // Same list as the dev server, case-insensitive like Vite.
-        assert!(is_build_asset("/src/photo.JPG"));
-        assert!(is_build_asset("/src/doc.pdf"));
-        assert!(is_build_asset("/src/site.webmanifest"));
+        assert!(is_build_asset(Path::new("/"), "/src/photo.JPG"));
+        assert!(is_build_asset(Path::new("/"), "/src/doc.pdf"));
+        assert!(is_build_asset(Path::new("/"), "/src/site.webmanifest"));
         assert_eq!(asset_mime("PNG"), "image/png");
-        assert!(!is_build_asset("/src/a.tsx"));
-        assert!(!is_build_asset("/src/a.png.tsx"));
-        assert!(!is_build_asset(""));
+        assert!(!is_build_asset(Path::new("/"), "/src/a.tsx"));
+        assert!(!is_build_asset(Path::new("/"), "/src/a.png.tsx"));
+        assert!(!is_build_asset(Path::new("/"), ""));
         // An unknown extension falls back rather than guessing.
         assert_eq!(asset_mime("xyz"), "application/octet-stream");
     }

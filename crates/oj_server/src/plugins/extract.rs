@@ -1301,15 +1301,20 @@ pub fn adopt_vite_config_values_default_mode(
 /// `createFilter` resolves one against the process's working directory
 /// (an in-process plugin host changes the process's own to its app root).
 fn install_assets_include(config: &oj_config::OjConfig, root: &Path) {
-    let started_in = crate::watch::STARTUP_CWD
-        .get()
-        .cloned()
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_else(|| root.to_path_buf());
+    // Read once: where no launch directory was pinned (a test process, whose
+    // in-process hosts change the current directory as they come and go),
+    // every app resolves against the same one.
+    static STARTED_IN: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    let started_in = STARTED_IN.get_or_init(|| {
+        crate::watch::STARTUP_CWD
+            .get()
+            .cloned()
+            .or_else(|| std::env::current_dir().ok())
+    });
     oj_compiler::assets::install_assets_include(
         config.assets_include.as_deref().unwrap_or(&[]),
         root,
-        &started_in,
+        started_in.as_deref().unwrap_or(root),
     );
 }
 

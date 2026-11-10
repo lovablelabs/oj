@@ -165,6 +165,28 @@ impl Server {
         server
     }
 
+    /// `oj dev [args]` started in `cwd`, on the port it reports: for a root
+    /// given as an argument, relative or through a symlink, or left to the
+    /// directory oj starts in.
+    pub fn oj_dev_in(cwd: &Path, args: &[&str]) -> Server {
+        let mut server = Server::spawn(
+            Command::new(env!("CARGO_BIN_EXE_oj"))
+                .arg("dev")
+                .args(args)
+                .args(["--port", &free_port().to_string()])
+                .current_dir(cwd),
+        );
+        let deadline = Instant::now() + WAIT;
+        server.port = loop {
+            if let Some(port) = listening_port(&server.output()) {
+                break port;
+            }
+            server.assert_alive("oj dev", deadline);
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        server
+    }
+
     /// `node dist/server.mjs` in `root`, once it listens.
     pub fn node_server(root: &Path) -> Server {
         let port = free_port();
