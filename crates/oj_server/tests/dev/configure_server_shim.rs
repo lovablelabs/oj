@@ -296,6 +296,7 @@ fn ssr_app() -> App {
 /// builtin is itself; `import.meta.env` carries the mode with SSR on.
 #[tokio::test(flavor = "multi_thread")]
 async fn ssr_load_module_fetches_modules_as_vite_does() {
+    require_fixture!("vite", "react");
     let app = ssr_app();
     let server = app.serve().await;
     middleware_ready(&server).await;
@@ -323,6 +324,7 @@ async fn ssr_load_module_fetches_modules_as_vite_does() {
 /// file as it is now.
 #[tokio::test(flavor = "multi_thread")]
 async fn ssr_load_module_sees_a_changed_module_on_the_next_load() {
+    require_fixture!("vite", "react");
     let app = ssr_app();
     let server = app.serve().await;
     middleware_ready(&server).await;
@@ -358,6 +360,7 @@ async fn ssr_load_module_sees_a_changed_module_on_the_next_load() {
 /// `ERR_MODULE_NOT_FOUND` naming the import.
 #[tokio::test(flavor = "multi_thread")]
 async fn ssr_load_module_errors_reach_the_middleware() {
+    require_fixture!("vite", "react");
     let app = ssr_app();
     let server = app.serve().await;
     middleware_ready(&server).await;
