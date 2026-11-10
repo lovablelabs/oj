@@ -4653,6 +4653,208 @@ async function createProxyMiddleware(proxyConfig, appRoot) {
 // setup runs once, there; a host of the ssr environment (a build's) runs none.
 const ownsServer = hostEnvName === "client";
 
+// Vite's `server.ssrLoadModule` (ssr/ssrModuleLoader.ts) runs the url in a
+// ModuleRunner over the ssr environment: the runner asks for each module
+// through `fetchModule` (ssr/fetchModule.ts), which transforms a file of the
+// app and externalizes a bare import to Node's own loader, and evaluates the
+// `ssrTransform`ed code (imports as `__vite_ssr_import__` calls). The app's
+// Vite supplies the runner (`vite/module-runner`) and the transform
+// (`moduleRunnerTransform`); the modules go through this host's plugin chains,
+// as the SSR bundle's do. One runner per server, as Vite keeps one.
+let ssrCompatRunner = null;
+let appModuleRunner;
+async function loadAppModuleRunner() {
+  if (appModuleRunner !== undefined) return appModuleRunner;
+  try {
+    const root = main.resolvedConfig?.root ?? initial.config?.root ?? process.cwd();
+    const entry = appViteEntry(root);
+    appModuleRunner = await import(pathResolve(dirname(entry), "module-runner.js"));
+  } catch (e) {
+    process.stderr.write(`${OJ} plugin host: could not load the app vite's module runner: ${(e && e.message) || e}\n`);
+    appModuleRunner = null;
+  }
+  return appModuleRunner;
+}
+// Vite's import.meta.env on the server (`envProxy` in module-runner): the
+// mode's values, with SSR on.
+function ssrImportMetaEnv() {
+  const config = main.resolvedConfig ?? {};
+  const mode = config.mode ?? env.mode ?? "development";
+  const prod = config.isProduction ?? mode === "production";
+  return { ...(config.env ?? {}), MODE: mode, BASE_URL: config.base ?? "/", DEV: !prod, PROD: prod, SSR: true };
+}
+async function ssrLoadModule(server, url, opts) {
+  const vite = await loadAppVite();
+  const runnerModule = await loadAppModuleRunner();
+  if (typeof vite?.moduleRunnerTransform !== "function" || typeof runnerModule?.ModuleRunner !== "function") {
+    throw new Error("oj: server.ssrLoadModule needs the app's vite to export its module runner (vite 6 or later)");
+  }
+  const root = main.resolvedConfig?.root ?? initial.config?.root ?? process.cwd();
+  if (!ssrCompatRunner) {
+    const importMetaEnv = ssrImportMetaEnv();
+    const base = typeof runnerModule.createNodeImportMeta === "function" ? runnerModule.createNodeImportMeta : null;
+    ssrCompatRunner = new runnerModule.ModuleRunner(
+      {
+        root,
+        hmr: false,
+        sourcemapInterceptor: false,
+        // The runner's requests (shared/invokeMethods.ts): the builtins it
+        // externalizes without asking (server/environment.ts getBuiltins:
+        // `resolve.builtins`, serialized), and a module's code or what to
+        // externalize instead.
+        transport: {
+          async invoke(payload) {
+            const { name, data } = payload?.data ?? {};
+            try {
+              if (name === "getBuiltins") {
+                const builtins = main.resolvedConfig?.resolve?.builtins ?? [];
+                return {
+                  result: builtins.map((b) =>
+                    typeof b === "string"
+                      ? { type: "string", value: b }
+                      : { type: "RegExp", source: b.source, flags: b.flags },
+                  ),
+                };
+              }
+              if (name !== "fetchModule") throw new Error(`oj: module runner method ${name} is not available`);
+              return { result: await ssrFetchModule(vite, root, ...(data ?? [])) };
+            } catch (e) {
+              return { error: e instanceof Error ? e : new Error(String(e)) };
+            }
+          },
+        },
+        createImportMeta: (modulePath) => {
+          const meta = base ? base(modulePath) : { url: pathToFileURL(modulePath).href, filename: modulePath };
+          return { ...meta, env: importMetaEnv };
+        },
+      },
+      new runnerModule.ESModulesEvaluator(),
+    );
+  }
+  try {
+    return await ssrCompatRunner.import(String(url).replace(/^\/@id\//, ""));
+  } catch (e) {
+    if (opts?.fixStacktrace && e && typeof e.stack === "string") ssrFixStacktrace(server, e);
+    throw e;
+  }
+}
+// The ssr environment's container, for the plugin chains a server module goes
+// through (the SSR bundle's own, when it is up), else the host's.
+function ssrContainer() {
+  return [...containers.values()].find((x) => x.durable && !x.buildStartOwner && x.environment.name === "ssr") ?? main;
+}
+// Vite's `isFilePathESM`: `.mjs` is a module, `.cjs` is not, anything else
+// is what the nearest package.json's `type` says.
+function filePathIsESM(file) {
+  if (file.endsWith(".mjs")) return true;
+  if (file.endsWith(".cjs")) return false;
+  let dir = dirname(file);
+  for (;;) {
+    try {
+      return JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).type === "module";
+    } catch {}
+    const parent = dirname(dir);
+    if (parent === dir) return false;
+    dir = parent;
+  }
+}
+const OXC_STRIP_LANG_RE = /\.(m?ts|[jt]sx)$/;
+// Vite's fetchModule for one url: a builtin, a `data:` or a remote url and a
+// bare import are externalized (the bare one resolved to the file Node would
+// load, and typed by it); a file of the app is loaded and transformed through
+// the plugin chains, stripped of TypeScript and JSX as vite:oxc would, and
+// `ssrTransform`ed for the runner.
+async function ssrFetchModule(vite, root, url, importer) {
+  if (typeof url !== "string") throw new Error("oj: ssrLoadModule needs a url");
+  if (url.startsWith("data:") || url.startsWith("node:") || isBuiltin(url))
+    return { externalize: url, type: "builtin" };
+  if (/^(https?:)?\/\//.test(url)) return { externalize: url, type: "network" };
+  const c = ssrContainer();
+  const importerFile =
+    typeof importer === "string" && importer && !importer.startsWith("\0")
+      ? isAbsolute(importer) && existsSync(importer.split("?")[0])
+        ? importer
+        : join(root, importer)
+      : undefined;
+  const clean = url.split("?")[0];
+  let id;
+  if (url.startsWith("file:")) id = fileURLToPath(url);
+  else if (clean.startsWith("/") && existsSync(join(root, clean))) id = join(root, url);
+  else if (isAbsolute(clean) && existsSync(clean)) id = url;
+  else {
+    // The plugins' resolveId hooks first (a virtual module's), then oj's own
+    // resolver for the ssr environment, as Vite's vite:resolve answers after
+    // them; never a running bundle's resolver, whose graph this module is
+    // outside of.
+    const viaPlugins = await resolveIdFull(c, url, importerFile, {});
+    let resolved = viaPlugins?.id ?? null;
+    if (resolved == null) {
+      const own = await ctxRpc("resolve", [url, importerFile ?? "", "ssr", "server"]);
+      if (typeof own === "string") resolved = own;
+    }
+    if (resolved == null) {
+      const err = new Error(`Cannot find module '${url}'${importer ? ` imported from '${importer}'` : ""}`);
+      err.code = "ERR_MODULE_NOT_FOUND";
+      throw err;
+    }
+    id = resolved;
+  }
+  const file = id.split("?")[0];
+  // An import that resolved into an installed package runs under Node's
+  // loader, as Vite externalizes one: by where the file is, not by the
+  // specifier's shape (external.ts `isExternalizable` keeps a bare specifier
+  // internal unless it resolves under node_modules, and importAnalysis never
+  // externalizes an aliased one). So an alias, a tsconfig path or a package
+  // `imports` entry that lands in the app is a module of this graph, through
+  // the plugin chains like a relative import.
+  if (!file.startsWith("\0") && isAbsolute(file) && file.includes("/node_modules/")) {
+    return { externalize: pathToFileURL(file).href, type: filePathIsESM(file) ? "module" : "commonjs" };
+  }
+  const loaded = await loadFull(c, id);
+  let code = loaded?.code;
+  if (code == null) {
+    if (file.startsWith("\0") || !isAbsolute(file))
+      throw new Error(`[vite] transform failed for module '${url}': nothing loads it`);
+    code = await readFile(file, "utf8");
+  }
+  const original = code;
+  if (file.endsWith(".json")) code = `export default ${code}`;
+  const transformed = await transform(c, code, id, null);
+  if (transformed) code = JSON.parse(transformed).code;
+  if (viteTransformWithOxc && OXC_STRIP_LANG_RE.test(file) && !file.startsWith("\0")) {
+    const stripped = await viteTransformWithOxc(code, file, oxcStripOptions(c) ?? {});
+    if (stripped && typeof stripped.code === "string") code = stripped.code;
+  }
+  const moduleUrl = isAbsolute(file) && file.startsWith(root) ? `/${relative(root, file).replace(/\\/g, "/")}` : id;
+  const result = await vite.moduleRunnerTransform(code, null, moduleUrl, original);
+  if (!result)
+    throw new Error(`[vite] transform failed for module '${url}'${importer ? ` imported from '${importer}'` : ""}.`);
+  return { code: result.code, file: isAbsolute(file) ? file : null, id, url: moduleUrl, invalidate: true };
+}
+// Vite's ssrRewriteStacktrace (ssr/ssrStacktrace.ts): each `at file:line:col`
+// frame of a module the ssr graph holds a sourcemap for is mapped back to its
+// source, and a frame of a module without one comes back as it is. The ssr
+// graph here records no transform results, so every frame is the latter.
+function ssrRewriteStacktrace(_server, stack) {
+  return typeof stack === "string" ? stack : String(stack ?? "");
+}
+// Vite's ssrFixStacktrace: the error's stack replaced in place (rebindErrorStacktrace),
+// so a `catch (e) { server.ssrFixStacktrace(e) }` in a middleware never throws itself.
+function ssrFixStacktrace(server, e) {
+  if (!e || typeof e !== "object" || typeof e.stack !== "string") return;
+  const stack = ssrRewriteStacktrace(server, e.stack);
+  const desc = Object.getOwnPropertyDescriptor(e, "stack");
+  if (desc && desc.configurable === false && desc.writable === false) return;
+  try {
+    Object.defineProperty(e, "stack", {
+      value: stack,
+      enumerable: desc?.enumerable ?? false,
+      configurable: true,
+      writable: true,
+    });
+  } catch {}
+}
+
 async function setupConfigureServer() {
   const stack = [];
   function runStack(req, res, done) {
@@ -4679,11 +4881,14 @@ async function setupConfigureServer() {
       const upstream = req.headers["x-oj-forward-to"];
       if (typeof upstream === "string" && /^\d+$/.test(upstream)) return forwardUpstream(req, res, Number(upstream));
       res.setHeader("x-oj-fallthrough", "1");
-      // A proxy `bypass` returning a string rewrote req.url and fell through
-      // (nothing in the stack served it): report the rewritten url so the Rust
-      // delegate can serve it via normal routing instead of returning this 404.
+      // A middleware (or a proxy `bypass` returning a string) rewrote req.url
+      // and fell through (nothing in the stack served it): report the url it
+      // left so the Rust side serves that one via its own routing instead of
+      // this 404. In the browser's form: Vite's baseMiddleware (below the
+      // user's middlewares) stripped the base for the ones after it, and the
+      // Rust side strips it again itself.
       try {
-        res.setHeader("x-oj-rewritten-url", req.url);
+        res.setHeader("x-oj-rewritten-url", req.ojStrippedBase ? ojJoinBase(req.ojStrippedBase, req.url) : req.url);
       } catch {}
       res.statusCode = 404;
       res.end();
@@ -4782,9 +4987,14 @@ async function setupConfigureServer() {
     close: async () => {},
     transformIndexHtml: async (url, html, originalUrl) => devTransformIndexHtml(url, html, originalUrl),
     transformRequest: async () => null,
-    ssrLoadModule: async () => {
-      throw new Error("oj: server.ssrLoadModule is not available in configureServer");
-    },
+    // Vite's server.ssrLoadModule, ssrFixStacktrace and ssrRewriteStacktrace
+    // (server/index.ts): a module run in a module runner over the ssr
+    // environment, and an error's stack mapped back through the modules'
+    // sourcemaps. A configureServer middleware loads a server module this
+    // way and fixes the stack of an error it threw.
+    ssrLoadModule: async (url, opts) => ssrLoadModule(server, url, opts),
+    ssrFixStacktrace: (e) => ssrFixStacktrace(server, e),
+    ssrRewriteStacktrace: (stack) => ssrRewriteStacktrace(server, stack),
   };
   // A plugin that drives its own dev runtime DECLARES it, Vite's way: its
   // `config` hook returns `environments.<name>.dev.createEnvironment` and
@@ -4898,7 +5108,12 @@ async function setupConfigureServer() {
   if (devBase !== "/") {
     middlewares.use(function viteBaseMiddleware(req, _res, next) {
       const pathname = req.url.split(/[?#]/)[0];
-      if (pathname.startsWith(devBase)) req.url = ojStripBase(req.url, devBase);
+      if (pathname.startsWith(devBase)) {
+        req.url = ojStripBase(req.url, devBase);
+        // For the fall-through report (see runStack): the url goes back to
+        // the Rust side with its base.
+        req.ojStrippedBase = devBase;
+      }
       next();
     });
   }
@@ -4945,6 +5160,13 @@ function ojStripBase(url, base) {
   if (url === base) return "/";
   const devBase = base.endsWith("/") ? base : `${base}/`;
   return url.startsWith(devBase) ? url.slice(devBase.length - 1) : url;
+}
+
+// The inverse, for a url stripped by `ojStripBase`: `/page?q` under `/app/`
+// is `/app/page?q` again, and `/` is the base itself.
+function ojJoinBase(base, url) {
+  const devBase = base.endsWith("/") ? base.slice(0, -1) : base;
+  return url.startsWith("/") ? `${devBase}${url}` : `${devBase}/${url}`;
 }
 
 function ojPushServeInfo() {
@@ -5034,6 +5256,7 @@ async function ensureConfigureServerMiddleware() {
             enqueueResync(() => {
               resyncPending = false;
               resyncEnvironments(server.environments);
+              ssrCompatRunner?.clearCache();
               ctl({ ojResyncDone: true });
             }).catch(() => {
               resyncPending = false;
@@ -5049,6 +5272,10 @@ async function ensureConfigureServerMiddleware() {
         // (null: the walk threw, the caller must assume a hit): the Rust side
         // reloads the browser only when something actually served changed.
         const matchedCount = await invalidateEnvironments(server.environments, fileWatcher, changes);
+        // Vite's runner hears each invalidation over its HMR channel and drops
+        // the module; this one has no channel, so a change drops every module
+        // and the next ssrLoadModule evaluates afresh.
+        ssrCompatRunner?.clearCache();
         res.statusCode = 200;
         res.setHeader("content-type", "application/json");
         res.end(JSON.stringify({ matched: matchedCount === null ? null : matchedCount || 0 }));
@@ -5077,24 +5304,6 @@ let serveInfoRepush = null;
 function stopServeInfoRepush() {
   if (serveInfoRepush) clearInterval(serveInfoRepush);
   serveInfoRepush = null;
-}
-if (env.command !== "build") {
-  await setupConfigureServer();
-  // Push the serve info the moment it exists (like the {ojWs} pushes): the
-  // hook entry point only becomes callable after every top-level await, so on
-  // a slow boot (many plugins, Miniflare) Rust's boot-time RPCs cannot be
-  // answered and the worker path would silently never activate. The push
-  // reaches Rust whenever the host comes up, however late, and Rust flips to
-  // the middleware then (it also flips Rust's "initialized" gate for RPC
-  // timeouts).
-  ojPushServeInfo();
-  if (!ojEnginePost) {
-    let repushes = 0;
-    serveInfoRepush = setInterval(() => {
-      if (++repushes > 120) return stopServeInfoRepush();
-      ojPushServeInfo();
-    }, 1000);
-  }
 }
 
 // Vite's plugin order puts `vite:oxc` (the TS/JSX strip) after the user's
@@ -6855,6 +7064,33 @@ export function ojPing() {
   return JSON.stringify(
     [...runningHooks].map((r) => ({ hook: r.hook, id: r.id, phase: r.phase, plugin: r.plugin, ms: now - r.since })),
   );
+}
+
+// The configureServer hooks run here, after every top-level declaration of
+// this module: a hook may call a resolve or load chain through
+// `server.environments.<name>.pluginContainer` (TanStack Start's dev styles
+// middleware collects a route's CSS that way), and the chains read module
+// constants declared below the hooks' old place, which a `const` still in
+// its temporal dead zone failed with "Cannot access 'htmlProxy' before
+// initialization", skipping the hook. Vite's createServer runs the hooks
+// once its module is loaded whole, as every ESM module is.
+if (env.command !== "build") {
+  await setupConfigureServer();
+  // Push the serve info the moment it exists (like the {ojWs} pushes): the
+  // hook entry point only becomes callable after every top-level await, so on
+  // a slow boot (many plugins, Miniflare) Rust's boot-time RPCs cannot be
+  // answered and the worker path would silently never activate. The push
+  // reaches Rust whenever the host comes up, however late, and Rust flips to
+  // the middleware then (it also flips Rust's "initialized" gate for RPC
+  // timeouts).
+  ojPushServeInfo();
+  if (!ojEnginePost) {
+    let repushes = 0;
+    serveInfoRepush = setInterval(() => {
+      if (++repushes > 120) return stopServeInfoRepush();
+      ojPushServeInfo();
+    }, 1000);
+  }
 }
 
 // Under plain `node` (the direct-drive unit tests) the stdio protocol stays:

@@ -3042,12 +3042,27 @@ async fn forward_document(
     // x-oj-fallthrough when it does not own the path, and then we SSR.
     // The changes the document has, stamped before it renders: one that goes
     // out while it loads reaches its socket on connect.
+    let mut raw = raw;
     if let Some(port) = state.plugin_serve.mw_port() {
         let stamp = document_stamp(state, hot_has);
-        if let Some(resp) = oj_server::forward_get_to_plugin_mw(port, &raw, headers).await {
-            // A worker-served document needs the live-reload client like the
-            // runner-served ones, or edits never reload the page.
-            return inject_reload_client(resp, &state.base, &stamp);
+        match oj_server::forward_get_to_plugin_mw(port, &raw, headers).await {
+            oj_server::Forwarded::Answered(resp) => {
+                // A worker-served document needs the live-reload client like the
+                // runner-served ones, or edits never reload the page.
+                return inject_reload_client(resp, &state.base, &stamp);
+            }
+            // A middleware rewrote `req.url` and passed the request on: the
+            // document it named is the one to render, as Vite's own
+            // middlewares after it would serve that url.
+            oj_server::Forwarded::FellThrough {
+                rewritten: Some(target),
+            } => {
+                raw = target
+                    .path_and_query()
+                    .map(|p| p.as_str().to_string())
+                    .unwrap_or_else(|| target.path().to_string());
+            }
+            oj_server::Forwarded::FellThrough { rewritten: None } => {}
         }
     }
     ensure_bundle_current(state).await;

@@ -21,6 +21,7 @@ mod config_function;
 mod config_proxy;
 mod config_temp_file;
 mod config_wrapper;
+mod configure_server_shim;
 mod css_asset_hmr;
 mod css_import_inline;
 mod css_importer_invalidation;
