@@ -192,8 +192,8 @@ fn rewrite_absolute(
 /// load serves `export default "/assets/logo.png"` (fileToDevUrl) where the
 /// bare url is the file's bytes. One that already carries a query (`?url`,
 /// `?raw`, `?inline`) is left as written: the server reads that query. A
-/// public file that is not an asset is left alone too; Vite refuses the
-/// import ("Cannot import non-asset file ... which is inside /public").
+/// public file that is not an asset never gets here: the import is refused
+/// first (see [`public_non_asset_import`]).
 fn mark_public_asset_import(
     root: &Path,
     public_dir: Option<&Path>,
@@ -208,6 +208,88 @@ fn mark_public_asset_import(
     let file = normalize(&public.join(rel));
     (file.starts_with(public) && is_file_cached(dir_cache, &file) && is_asset_path(root, &file))
         .then(|| format!("{spec}?url"))
+}
+
+/// Vite's urlRE (`(\?|&)url(?:&|$)`): the import asks for the file's url.
+fn asks_for_url(spec: &str) -> bool {
+    spec.split_once('?')
+        .is_some_and(|(_, query)| query.split('&').any(|param| param == "url"))
+}
+
+/// Whether `spec` imports a file under the public dir that is not an asset,
+/// the import Vite's importAnalysis refuses before it resolves anything:
+/// `specifier[0] === '/'`, not `config.assetsInclude(cleanUrl(specifier))`,
+/// no `?url`, and `checkPublicFile(specifier, config)`. A script, a
+/// stylesheet or a JSON file in `public/` is copied as it is by the build
+/// and has no module to import; only its url can be asked for.
+pub(crate) fn public_non_asset_import(
+    root: &Path,
+    public_dir: Option<&Path>,
+    dir_cache: &Mutex<DirCache>,
+    spec: &str,
+) -> bool {
+    let (Some(public), Some(rel)) = (public_dir, spec.strip_prefix('/')) else {
+        return false;
+    };
+    if rel.starts_with('/') || asks_for_url(spec) {
+        return false;
+    }
+    let clean = rel.split(['?', '#']).next().unwrap_or(rel);
+    let file = normalize(&public.join(clean));
+    file.starts_with(public) && is_file_cached(dir_cache, &file) && !is_asset_path(root, &file)
+}
+
+pub(crate) const PUBLIC_NON_ASSET_MARK: &str = "Cannot import non-asset file ";
+
+/// Vite's error for [`public_non_asset_import`], word for word, in oj's
+/// `title\nfile:line:col message\nframe` shape.
+pub(crate) fn public_non_asset_import_error(
+    root: &Path,
+    file: &Path,
+    source: &str,
+    spec: &str,
+) -> String {
+    let (rel, line, col, frame) = import_site(root, file, source, spec);
+    // Vite's injectQuery(specifier, 'url').
+    let with_url = if spec.contains('?') {
+        format!("{spec}&url")
+    } else {
+        format!("{spec}?url")
+    };
+    format!(
+        "compile error:\n{rel}:{line}:{col} {PUBLIC_NON_ASSET_MARK}{spec} which is inside /public. \
+         JS/CSS files inside /public are copied as-is on build and can only be referenced via \
+         <script src> or <link href> in html. If you want to get the URL of that file, use \
+         {with_url} instead.\n{line:>4} | {frame}\n"
+    )
+}
+
+/// Where `spec` is quoted in `source`: the importer's path under the root,
+/// the line and column of the specifier, and that line.
+fn import_site<'a>(
+    root: &Path,
+    file: &Path,
+    source: &'a str,
+    spec: &str,
+) -> (String, usize, usize, &'a str) {
+    let rel = file
+        .strip_prefix(root)
+        .unwrap_or(file)
+        .display()
+        .to_string();
+    let quoted = ['"', '\'', '`']
+        .iter()
+        .find_map(|q| source.find(&format!("{q}{spec}{q}")).map(|p| p + 1));
+    let (line, col) = match quoted {
+        Some(pos) => {
+            let before = &source[..pos];
+            let line = before.matches('\n').count() + 1;
+            let col = before.rsplit('\n').next().unwrap_or("").chars().count() + 1;
+            (line, col)
+        }
+        None => (1, 1),
+    };
+    (rel, line, col, source.lines().nth(line - 1).unwrap_or(""))
 }
 
 /// The file a relative import names, trying `.ts`/`.tsx` for a missing `.js`/`.jsx`
@@ -316,24 +398,7 @@ pub(crate) fn unresolved_import_error(
     source: &str,
     spec: &str,
 ) -> String {
-    let rel = file
-        .strip_prefix(root)
-        .unwrap_or(file)
-        .display()
-        .to_string();
-    let quoted = ['"', '\'', '`']
-        .iter()
-        .find_map(|q| source.find(&format!("{q}{spec}{q}")).map(|p| p + 1));
-    let (line, col) = match quoted {
-        Some(pos) => {
-            let before = &source[..pos];
-            let line = before.matches('\n').count() + 1;
-            let col = before.rsplit('\n').next().unwrap_or("").chars().count() + 1;
-            (line, col)
-        }
-        None => (1, 1),
-    };
-    let frame = source.lines().nth(line - 1).unwrap_or("");
+    let (rel, line, col, frame) = import_site(root, file, source, spec);
     format!(
         "compile error:\n{rel}:{line}:{col} {UNRESOLVED_IMPORT_MARK}{spec}\" from \"{rel}\". Does the file exist?\n{line:>4} | {frame}\n"
     )

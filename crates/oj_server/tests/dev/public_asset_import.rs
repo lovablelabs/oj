@@ -109,3 +109,104 @@ async fn page_importing_a_public_file_by_its_url_gets_the_url() {
     assert_eq!(page.errors(), Vec::<String>::new(), "page errors");
     page.close().await;
 }
+
+/// A project whose `src/main.js` is `main`, with a JSON file, a script and a
+/// stylesheet in `public/`.
+fn non_asset_app(main: &str) -> App {
+    App::new(&[
+        (
+            "package.json",
+            r#"{"name":"public-non-asset","version":"1.0.0"}"#,
+        ),
+        ("src/main.js", main),
+        ("public/data.json", "{\"a\":1}\n"),
+        ("public/lib.js", "window.__LIB = 1;\n"),
+        ("public/theme.css", "body { color: red }\n"),
+        ("index.html", INDEX_HTML),
+    ])
+}
+
+// Vite's importAnalysis refuses an import of a file in the public dir that
+// is not an asset, before resolving it: such a file is copied as it is by
+// the build and has no module. oj left the import as written, and the
+// browser failed on the file's MIME type with nothing saying why.
+#[tokio::test(flavor = "multi_thread")]
+async fn importing_a_non_asset_public_file_fails_with_vites_error() {
+    for (spec, with_url) in [
+        ("/data.json", "/data.json?url"),
+        ("/lib.js", "/lib.js?url"),
+        ("/theme.css", "/theme.css?url"),
+        ("/data.json?raw", "/data.json?raw&url"),
+    ] {
+        let app = non_asset_app(&format!(
+            "import \"./ok.js\";\nimport thing from \"{spec}\";\nwindow.__THING = thing;\n"
+        ));
+        app.write(&[("src/ok.js", "export {};\n")]);
+        let server = app.serve().await;
+        let res = server.get("/src/main.js").await;
+        assert_ne!(res.status, 200, "{spec} was served:\n{}", res.body);
+        let said = format!(
+            "Cannot import non-asset file {spec} which is inside /public. JS/CSS files inside \
+             /public are copied as-is on build and can only be referenced via <script src> or \
+             <link href> in html. If you want to get the URL of that file, use {with_url} instead."
+        );
+        assert!(
+            res.body.contains(&said),
+            "{spec}: Vite's message, word for word:\n{}",
+            res.body
+        );
+        assert!(
+            res.body.contains("src/main.js:2:20"),
+            "{spec}: the error points at the specifier:\n{}",
+            res.body
+        );
+    }
+}
+
+// What the error tells the user to write works: `?url` is the file's url.
+// A dynamic import the analysis cannot read is still a request the server
+// answers, and the file itself (a `<script src>`, a `<link href>`) is served.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_non_asset_public_file_is_importable_by_its_url_and_served_as_a_file() {
+    let app = non_asset_app(
+        "import data from \"/data.json?url\";\nimport lib from \"/lib.js?url\";\n\
+         window.__URLS = [data, lib];\n",
+    );
+    let server = app.serve().await;
+    let main = server.text("/src/main.js").await;
+    assert!(
+        main.contains("\"/data.json?url\"") && main.contains("\"/lib.js?url\""),
+        "the `?url` imports are left as written:\n{main}"
+    );
+    for (url, exported) in [("/data.json?url", "/data.json"), ("/lib.js?url", "/lib.js")] {
+        let body = server.text(url).await;
+        assert!(
+            body.contains(&format!("export default \"{exported}\"")),
+            "{url}:\n{body}"
+        );
+    }
+    assert_eq!(server.text("/lib.js").await, "window.__LIB = 1;\n");
+    assert_eq!(server.text("/theme.css").await, "body { color: red }\n");
+}
+
+// A file of the same name under the root is not a public file: the check is
+// Vite's checkPublicFile, on the public dir alone.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_root_file_that_is_not_in_public_is_imported_as_ever() {
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"public-non-asset","version":"1.0.0"}"#,
+        ),
+        (
+            "src/main.js",
+            "import { x } from \"/src/x.js\";\nwindow.__X = x;\n",
+        ),
+        ("src/x.js", "export const x = 1;\n"),
+        ("public/other.js", "window.__OTHER = 1;\n"),
+        ("index.html", INDEX_HTML),
+    ]);
+    let server = app.serve().await;
+    let main = server.text("/src/main.js").await;
+    assert!(main.contains("\"/src/x.js\""), "{main}");
+}

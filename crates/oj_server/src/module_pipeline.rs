@@ -1087,6 +1087,7 @@ impl CompileJob {
         let rw = ImportRewrite {
             job: &self,
             unresolved: RefCell::new(None),
+            public_non_asset: RefCell::new(None),
             interop_urls: RefCell::default(),
         };
         let output = if self.is_dep {
@@ -1095,6 +1096,14 @@ impl CompileJob {
             self.compile_app(&rw)
         }
         .map_err(|err| format!("compile error:\n{err}"))?;
+        if let Some(spec) = rw.public_non_asset.borrow().as_ref() {
+            return Err(crate::rewrite::public_non_asset_import_error(
+                &self.state.root,
+                &self.file,
+                &self.source,
+                spec,
+            ));
+        }
         if let Some(spec) = rw.unresolved.borrow().as_ref() {
             return Err(unresolved_import_error(
                 &self.state.root,
@@ -1208,6 +1217,9 @@ struct ImportRewrite<'a> {
     /// First unresolvable relative import: Vite's import analysis fails the
     /// transform for it; shipping it unchanged would only 404 with no overlay.
     unresolved: RefCell<Option<String>>,
+    /// First import of a file in the public dir that is not an asset: Vite's
+    /// import analysis refuses it (see `rewrite::public_non_asset_import`).
+    public_non_asset: RefCell<Option<String>>,
     /// The URLs the CJS interop pass wrote into the source: final already, so
     /// a catch-all resolveId filter must not send them back through `/@id/`.
     interop_urls: RefCell<std::collections::HashSet<String>>,
@@ -1303,6 +1315,21 @@ impl ImportRewrite<'_> {
             }
             // Interop deps rewrite through cjs_interop_url, which sees the
             // registration through the live map.
+        }
+        // Vite's importAnalysis refuses an import of a non-asset file in the
+        // public dir before it resolves it.
+        if !job.is_dep
+            && crate::rewrite::public_non_asset_import(
+                &state.root,
+                state.public_dir.as_deref(),
+                &state.dir_cache,
+                spec,
+            )
+        {
+            self.public_non_asset
+                .borrow_mut()
+                .get_or_insert_with(|| spec.to_string());
+            return None;
         }
         if let Some(url) = rewrite_specifier(
             &state.root,
