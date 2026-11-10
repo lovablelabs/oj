@@ -6305,6 +6305,14 @@ async function handleHotUpdate(c, file, timestamp, type, modulesJson) {
     }
   }
   if (filtered === null) return null;
+  // The hooks left the update's modules as they were handed (the common
+  // `hotUpdate({ modules }) { return modules }`): Vite's updateModules then
+  // runs on the same modules as with no hook at all, so the change takes the
+  // default path. That path also decides what Vite's graph holds a module
+  // for and oj's does not (a `<link>` stylesheet's `css-update`, an html
+  // page's reload, both with no module to hand a hook here).
+  const handed = new Set(modules.map((m) => m && (m.url ?? m.id)));
+  if (filtered.length === handed.size && filtered.every((u) => handed.has(u))) return null;
   if (filtered.length === 0) return "skip";
   return JSON.stringify({ action: "filter", modules: filtered });
 }

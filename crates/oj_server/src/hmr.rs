@@ -1419,6 +1419,10 @@ async fn run_plugin_hooks(
             messages.push(error_frame(&e));
             Flow::Done
         }
+        // Vite's `hmr()` with no modules left: nothing to update, except
+        // that an html page still reloads ("html file cannot be hot
+        // updated"), which the default decision does.
+        Ok(Some(d)) if d == "skip" && path.extension().is_some_and(|e| e == "html") => Flow::Next,
         Ok(Some(d)) if d == "skip" => {
             println!("oj: change {file} -> HMR suppressed by plugin");
             Flow::Done
@@ -1519,7 +1523,17 @@ fn plugin_filtered_update(
             let boundaries: Vec<&Path> = targets.iter().map(|t| t.boundary.as_path()).collect();
             println!("oj: change {file} -> plugin-filtered update {boundaries:?}");
             stamp_chains(state, &seed_refs, timestamp);
-            updates.extend(targets.iter().map(|t| update_entry_for(t, timestamp, None)));
+            // A `<link>`-loaded sheet swaps its link, as on the default
+            // path (Vite types each entry by its boundary, `css-update` for
+            // a sheet the page links).
+            updates.extend(targets.iter().map(|t| {
+                let sheet = t.boundary.display().to_string();
+                if is_style_url(&sheet) && link_loaded(state, &sheet) {
+                    update_entry("css-update", &sheet, timestamp)
+                } else {
+                    update_entry_for(t, timestamp, None)
+                }
+            }));
             Flow::Done
         }
         Err(reason) => {
