@@ -108,7 +108,11 @@ test("a socket silent past the deadline is dropped, and the page reloads once th
   await page.settle();
   assert.deepEqual(page.sockets[0].closedWith, [1000, "oj: no word from the dev server in 3000ms"]);
   assert.ok(page.said.includes("[oj] no word from the dev server in 3000ms; reconnecting"));
-  assert.deepEqual(page.log, [["poll"], ["close", 0], ["reload"]], "it missed whatever changed: it reloads, as Vite does");
+  assert.deepEqual(
+    page.log,
+    [["poll"], ["close", 0], ["reload"]],
+    "it missed whatever changed: it reloads, as Vite does",
+  );
 });
 
 test("the server's pings keep an idle socket", async () => {

@@ -79,7 +79,9 @@ function loadPage({
   page.globalThis = page;
   vm.createContext(page);
   // Served as oj serves it: the shared socket watchdog ahead of the client.
-  const source = (readFileSync(asset("socket-watchdog.js"), "utf8") + readFileSync(asset("start/live-reload.js"), "utf8"))
+  const source = (
+    readFileSync(asset("socket-watchdog.js"), "utf8") + readFileSync(asset("start/live-reload.js"), "utf8")
+  )
     .replaceAll("__HMR_ENABLE_OVERLAY__", "true")
     .replaceAll("__OJ_DEV_BASE__", '""')
     .replaceAll("__OJ_PAGE_STAMP__", stamp)
