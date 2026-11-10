@@ -241,7 +241,9 @@
       if (Array.isArray(kept)) marks = kept.filter((m) => typeof m === "string");
     } catch {}
     if (marks.includes(mark)) {
-      console.warn("[oj] a chunk of this page is gone from the dev server (" + what + "), and reloading served the same document");
+      console.warn(
+        "[oj] a chunk of this page is gone from the dev server (" + what + "), and reloading served the same document",
+      );
       return;
     }
     marks.push(mark);
