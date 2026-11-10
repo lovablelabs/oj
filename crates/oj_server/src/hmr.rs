@@ -436,7 +436,12 @@ pub(crate) fn stamp_import_url(url: &str, timestamp: u64) -> String {
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("");
-    if !COMPILABLE.contains(&ext) && ext != "json" && !is_style_ext(ext) && !is_asset_ext(ext) {
+    if !COMPILABLE.contains(&ext)
+        && ext != "json"
+        && !is_style_ext(ext)
+        && !is_asset_ext(ext)
+        && !oj_compiler::assets::is_included_asset(path)
+    {
         return url.to_string();
     }
     if query.split('&').any(|kv| kv.starts_with("t=")) {
@@ -1486,6 +1491,7 @@ fn decide_file(
         || is_style_ext(ext)
         || ext == "json"
         || is_asset_ext(ext)
+        || oj_compiler::assets::is_included_asset(&path.to_string_lossy())
         || css_dep())
     {
         return Flow::Done;

@@ -10,6 +10,7 @@
 
 mod alias_order;
 mod assets;
+mod assets_include;
 mod browser;
 mod browser_errors;
 mod build_config_flag;
