@@ -387,7 +387,8 @@ pub(crate) const INTERRUPTED_RETRY_DELAYS: [Duration; 3] = [
 
 /// Runs the restart check's config evaluation, again after each interruption
 /// per [`INTERRUPTED_RETRY_DELAYS`] (waiting through `sleep`), and never
-/// again once the server is stopping. The error is the one to report.
+/// again once the server is stopping, whether it began to before the wait or
+/// during it. The error is the one to report.
 pub(crate) fn evaluate_with_retries<T>(
     mut evaluate: impl FnMut() -> Result<T, plugins::ExtractionError>,
     mut sleep: impl FnMut(Duration),
@@ -406,9 +407,50 @@ pub(crate) fn evaluate_with_retries<T>(
                     delay.as_secs()
                 );
                 sleep(*delay);
+                // The sweep that began during the wait would kill the next
+                // evaluation's child too, or miss it.
+                if stopping() {
+                    return Err(plugins::ExtractionError::Interrupted(why));
+                }
             }
             outcome => return outcome,
         }
+    }
+}
+
+/// Restart requests as a count a waiter can sleep on: a restart check waiting
+/// to evaluate an interrupted config again stops waiting when a new request
+/// arrives, since what it asks to check (an edited config) is what the next
+/// evaluation reads.
+#[derive(Default)]
+pub(crate) struct Asked {
+    /// Requests made, and how many of them the check has taken up.
+    counts: Mutex<(u64, u64)>,
+    more: std::sync::Condvar,
+}
+
+impl Asked {
+    /// A request was made.
+    pub(crate) fn note(&self) {
+        self.counts.lock().unwrap().0 += 1;
+        self.more.notify_all();
+    }
+
+    /// The check takes up every request made so far.
+    pub(crate) fn take_up(&self) {
+        let mut counts = self.counts.lock().unwrap();
+        counts.1 = counts.0;
+    }
+
+    /// Waits `delay`, or until a request the check has not taken up is made
+    /// (one made since the last `take_up` or `wait` ends it at once).
+    pub(crate) fn wait(&self, delay: Duration) {
+        let counts = self.counts.lock().unwrap();
+        let (mut counts, _) = self
+            .more
+            .wait_timeout_while(counts, delay, |(made, taken)| made == taken)
+            .unwrap();
+        counts.1 = counts.0;
     }
 }
 
@@ -422,6 +464,8 @@ pub struct Restarter {
     pub(crate) start: bool,
     /// A check is running; the newest reason asked for meanwhile.
     pending: Mutex<(bool, Option<String>)>,
+    /// Every request made, for a check waiting to evaluate again.
+    asked: Asked,
     /// A check failed: the config on disk does not boot.
     failed: std::sync::atomic::AtomicBool,
 }
@@ -439,6 +483,7 @@ impl Restarter {
             mode,
             start,
             pending: Mutex::new((false, None)),
+            asked: Asked::default(),
             failed: std::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -472,6 +517,7 @@ impl Restarter {
         {
             let mut pending = self.pending.lock().unwrap();
             pending.1 = Some(reason.to_string());
+            self.asked.note();
             if pending.0 {
                 return;
             }
@@ -482,7 +528,10 @@ impl Restarter {
             let reason = {
                 let mut pending = this.pending.lock().unwrap();
                 match pending.1.take() {
-                    Some(reason) => reason,
+                    Some(reason) => {
+                        this.asked.take_up();
+                        reason
+                    }
                     None => {
                         pending.0 = false;
                         return;
@@ -532,6 +581,8 @@ impl Restarter {
         };
         // An evaluation a signal cut short is run again, bounded: the config
         // did not fail, its process was killed (see `evaluate_with_retries`).
+        // A request made meanwhile ends the wait: the config it asks about is
+        // the one the next evaluation reads.
         let values = evaluate_with_retries(
             || {
                 crate::plugins::reextract_vite_values(
@@ -541,7 +592,7 @@ impl Restarter {
                     &check.mode,
                 )
             },
-            std::thread::sleep,
+            |delay| check.asked.wait(delay),
             shutting_down,
         );
         match values {

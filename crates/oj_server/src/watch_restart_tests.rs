@@ -110,4 +110,68 @@ fn an_interrupted_evaluation_runs_again_per_the_schedule() {
     );
     assert_eq!(out, Err(interrupted()));
     assert_eq!(runs, 1);
+
+    // The server began stopping during the wait: no second run either, its
+    // sweep would kill that evaluation's child or miss it.
+    let mut runs = 0;
+    let stopping = std::cell::Cell::new(false);
+    let out: Result<(), _> = evaluate_with_retries(
+        || {
+            runs += 1;
+            Err(interrupted())
+        },
+        |_| stopping.set(true),
+        || stopping.get(),
+    );
+    assert_eq!(out, Err(interrupted()));
+    assert_eq!(runs, 1);
+}
+
+// A check waiting to evaluate an interrupted config again stops waiting when
+// a restart is requested: the request is for a config edited meanwhile, which
+// is what the next evaluation reads. Vite's restart has no wait to cut short
+// (it never retries); this keeps oj's from delaying a fixed config.
+#[test]
+fn a_request_ends_the_wait_before_evaluating_again() {
+    let long = Duration::from_secs(60);
+
+    // No request: the wait lasts its delay.
+    let asked = Asked::default();
+    let started = std::time::Instant::now();
+    asked.wait(Duration::from_millis(50));
+    assert!(started.elapsed() >= Duration::from_millis(50));
+
+    // A request during the wait ends it.
+    let asked = std::sync::Arc::new(Asked::default());
+    let waiter = {
+        let asked = std::sync::Arc::clone(&asked);
+        std::thread::spawn(move || {
+            let started = std::time::Instant::now();
+            asked.wait(long);
+            started.elapsed()
+        })
+    };
+    std::thread::sleep(Duration::from_millis(50));
+    asked.note();
+    assert!(
+        waiter.join().unwrap() < long / 2,
+        "the request did not end the wait"
+    );
+
+    // One made before the wait (during the interrupted evaluation) ends it at
+    // once, and only once: the next wait lasts its delay.
+    let started = std::time::Instant::now();
+    asked.note();
+    asked.wait(long);
+    assert!(started.elapsed() < long / 2);
+    let started = std::time::Instant::now();
+    asked.wait(Duration::from_millis(50));
+    assert!(started.elapsed() >= Duration::from_millis(50));
+
+    // The request that started the check is taken up, so it ends no wait.
+    asked.note();
+    asked.take_up();
+    let started = std::time::Instant::now();
+    asked.wait(Duration::from_millis(50));
+    assert!(started.elapsed() >= Duration::from_millis(50));
 }

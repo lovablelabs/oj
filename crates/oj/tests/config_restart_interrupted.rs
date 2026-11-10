@@ -152,8 +152,8 @@ fn restart_survives_an_interrupted_evaluation(signal: &str) {
         !output[from..].contains("server restart failed"),
         "an interrupted evaluation was reported as a failed config\n{output}"
     );
-    // Boot, the killed check, the check again; the restarted boot may read
-    // the check's stored evaluation or run its own.
+    // Boot, the killed check, the check again. The restarted boot reads the
+    // check's stored evaluation (asserted below: it serves run 3's values).
     assert!(
         app.runs() >= 3,
         "the killed evaluation was not run again ({} runs)\n{output}",

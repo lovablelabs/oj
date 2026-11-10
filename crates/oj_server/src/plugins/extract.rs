@@ -489,9 +489,10 @@ pub(crate) fn run_engine_job_subprocess(
     let envelope = std::fs::read_to_string(&result_file);
     let _ = std::fs::remove_file(&result_file);
     if let Some(signal) = killed_by(&status) {
-        // A signal came from outside the job: the kernel's memory killer, a
+        // A signal sent from outside the job: the kernel's memory killer, a
         // supervisor stopping the process group, a sweep. The job itself did
-        // nothing wrong, so the caller may run it again.
+        // nothing wrong, so the caller may run it again. A fault the child
+        // raised on itself (SIGSEGV, SIGABRT, ...) is a crash, below.
         return Err(oj_js::EngineError::Interrupted(format!(
             "the engine job child was killed by {}",
             signal_name(signal)
@@ -523,11 +524,17 @@ impl Drop for RegisteredChild {
     }
 }
 
-/// The signal that ended `status`, if one did.
+/// The signal that ended `status`, if it is one other processes send to end
+/// a process: SIGHUP, SIGINT, SIGKILL, SIGTERM (the same numbers on every
+/// unix). The rest are faults a process raises on itself (SIGSEGV, SIGBUS,
+/// SIGILL, SIGABRT, SIGTRAP, ...): an addon or the engine crashing, which
+/// running the job again would only repeat.
 #[cfg(unix)]
 fn killed_by(status: &std::process::ExitStatus) -> Option<i32> {
     use std::os::unix::process::ExitStatusExt;
-    status.signal()
+    status
+        .signal()
+        .filter(|signal| matches!(signal, 1 | 2 | 9 | 15))
 }
 
 #[cfg(not(unix))]
@@ -1946,6 +1953,16 @@ mod exit_signal_tests {
                 assert!(why.contains("the engine job child died"), "{why}");
             }
             other => panic!("an exit code is a crash, not an interruption: {other:?}"),
+        }
+        // A fault the child raised on itself is a crash too: running the job
+        // again would crash again.
+        for fault in ["SEGV", "ABRT"] {
+            match job_with_child(&format!("kill -{fault} $$")) {
+                Err(oj_js::EngineError::Boot(why)) => {
+                    assert!(why.contains("the engine job child died"), "{why}");
+                }
+                other => panic!("SIG{fault} is a crash, not an interruption: {other:?}"),
+            }
         }
     }
 
