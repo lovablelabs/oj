@@ -5,28 +5,6 @@ pub(crate) type DirCache = std::collections::HashMap<
     std::sync::Arc<std::collections::HashMap<std::ffi::OsString, bool>>,
 >;
 
-// Whether a cached module imports a plugin-served virtual: a filesystem-path import
-// with no file on disk, checked both root-relative and absolute. Such a module's
-// transform produced in-memory plugin state a warm start loses, so re-transform it.
-pub(crate) fn imports_a_plugin_virtual(
-    imports: &[String],
-    root: &Path,
-    dir_cache: &Mutex<DirCache>,
-) -> bool {
-    imports.iter().any(|imp| {
-        let p = imp.split('?').next().unwrap_or(imp);
-        if !p.starts_with('/') || p.starts_with("/@") || p.contains("://") {
-            return false;
-        }
-        let as_root = root.join(p.trim_start_matches('/'));
-        if is_file_cached(dir_cache, &as_root) {
-            return false;
-        }
-        let as_abs = Path::new(p);
-        !is_file_cached(dir_cache, as_abs)
-    })
-}
-
 pub(crate) fn is_file_cached(cache: &Mutex<DirCache>, path: &Path) -> bool {
     let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
         return path.is_file();

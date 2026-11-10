@@ -49,7 +49,6 @@ mod hmr_disabled;
 mod hmr_gate;
 mod hmr_hot_accept;
 mod hmr_protocol;
-mod hmr_stamp_persistent;
 mod host_binding;
 mod hot_update_burst;
 mod html_entry;
@@ -106,7 +105,6 @@ mod tailwind_v4_persistent;
 mod unresolved_bare;
 mod vite_esm_entry;
 mod vite_hmr_socket;
-mod warm_transform_virtual;
 mod wasm;
 mod watch_reads;
 mod watcher;
@@ -181,8 +179,6 @@ impl App {
             port: None,
             host: None,
             config: None,
-            enable_cache: false,
-            no_cache: false,
             lazy: false,
             typecheck: false,
             mode: None,

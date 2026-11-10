@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- The experimental on-disk module cache and its `oj dev --enable-cache` / `--no-cache` flags. Compiled modules were never persisted by default, and the TanStack Start dev server never used the cache; keeping it meant keeping a second cache coherent with the HMR stamps (see the `--enable-cache` entry below) for a path nothing ran. The in-memory module cache is unchanged, and `.oj-cache` keeps the other caches (the dep pre-bundle, the Start bundle, the config extraction). An `oj dev` invocation that passed either flag now fails to parse.
+
 ### Fixed
 
 - The `ViteDevServer` a plugin's `configureServer` hook receives under `oj dev` now carries the pieces plugins reach for beyond `middlewares.use`, as Vite's does (server/index.ts):

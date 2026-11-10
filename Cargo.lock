@@ -6365,10 +6365,8 @@ dependencies = [
  "blake3",
  "oj_env",
  "oj_stylex",
- "proptest",
  "serde",
  "serde_json",
- "tempfile",
 ]
 
 [[package]]
