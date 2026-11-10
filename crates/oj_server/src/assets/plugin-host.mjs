@@ -4777,7 +4777,6 @@ async function ssrFetchModule(vite, root, url, importer) {
         : join(root, importer)
       : undefined;
   const clean = url.split("?")[0];
-  const bare = url[0] !== "." && url[0] !== "/" && !isAbsolute(url) && !url.startsWith("file:");
   let id;
   if (url.startsWith("file:")) id = fileURLToPath(url);
   else if (clean.startsWith("/") && existsSync(join(root, clean))) id = join(root, url);
@@ -4801,9 +4800,14 @@ async function ssrFetchModule(vite, root, url, importer) {
     id = resolved;
   }
   const file = id.split("?")[0];
-  // A bare import that resolved to an installed package, or any import of one,
-  // runs under Node's loader, as Vite externalizes it.
-  if (!file.startsWith("\0") && isAbsolute(file) && (bare || file.includes("/node_modules/"))) {
+  // An import that resolved into an installed package runs under Node's
+  // loader, as Vite externalizes one: by where the file is, not by the
+  // specifier's shape (external.ts `isExternalizable` keeps a bare specifier
+  // internal unless it resolves under node_modules, and importAnalysis never
+  // externalizes an aliased one). So an alias, a tsconfig path or a package
+  // `imports` entry that lands in the app is a module of this graph, through
+  // the plugin chains like a relative import.
+  if (!file.startsWith("\0") && isAbsolute(file) && file.includes("/node_modules/")) {
     return { externalize: pathToFileURL(file).href, type: filePathIsESM(file) ? "module" : "commonjs" };
   }
   const loaded = await loadFull(c, id);

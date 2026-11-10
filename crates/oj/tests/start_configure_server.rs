@@ -40,6 +40,18 @@ export function greeting(): Greeting {
 "#,
     )
     .unwrap();
+    // The same through the app's `#lib/*` alias (package.json `imports` and
+    // tsconfig `paths`): a bare specifier that resolves into the app.
+    std::fs::write(
+        root.join("src/server/shim-alias.ts"),
+        r##"import { shout } from "#lib/format";
+
+export function greeting(): string {
+  return shout("alias loaded");
+}
+"##,
+    )
+    .unwrap();
     let shim = format!(
         r#"import fs from "node:fs";
 import path from "node:path";
@@ -61,6 +73,17 @@ const shim = {{
           const mod = await server.ssrLoadModule("/src/server/shim-greeting.ts");
           res.setHeader("content-type", "application/json");
           res.end(JSON.stringify(mod.greeting()));
+        }} catch (e) {{
+          res.statusCode = 500;
+          res.end(`ssrLoadModule failed: ${{e.stack || e}}`);
+        }}
+        return;
+      }}
+      if (url === "/__shim/ssr-load-alias") {{
+        try {{
+          const mod = await server.ssrLoadModule("/src/server/shim-alias.ts");
+          res.setHeader("content-type", "text/plain");
+          res.end(mod.greeting());
         }} catch (e) {{
           res.statusCode = 500;
           res.end(`ssrLoadModule failed: ${{e.stack || e}}`);
@@ -118,6 +141,27 @@ fn ssr_load_module_runs_a_module_of_the_app_for_a_middleware() {
             200,
             r#"{"text":"SHIM LOADED!","file":"greeting.ts","ssr":true}"#
         ),
+        "{}",
+        dev.output()
+    );
+}
+
+/// A bare import that resolves into the app (the fixture's `#lib/*`, a
+/// package `imports` entry and tsconfig path) is a module of the runner's
+/// graph, through the plugin chains like a relative import: Vite
+/// externalizes a bare specifier only when it resolves under node_modules
+/// (external.ts `isExternalizable`). Handed to Node's loader instead, the
+/// TypeScript file failed to load.
+#[test]
+fn ssr_load_module_follows_an_alias_into_the_app() {
+    let Some((app, _log)) = shim_app("shim-ssr-alias") else {
+        return;
+    };
+    let dev = shim_dev(&app.0);
+    let (status, body) = dev.request("GET", "/__shim/ssr-load-alias", &[]);
+    assert_eq!(
+        (status, body.as_str()),
+        (200, "ALIAS LOADED!"),
         "{}",
         dev.output()
     );
