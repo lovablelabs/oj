@@ -77,6 +77,8 @@ struct StartState {
     /// Vite's bundled dev `lastBuildError`: sent to every page when a bundle
     /// fails, replayed to each page that connects until one succeeds.
     build_error: std::sync::RwLock<Option<String>>,
+    /// Frames for every open page, sent as they are: the build's failures,
+    /// and the name of a chunk a page asked for that is gone (`chunk_gone`).
     error_tx: broadcast::Sender<String>,
     // The oj_server /__ws broadcast: the channel the editor reads boot +
     // update narration frames from (the start path's own /@oj-start/hmr socket
@@ -1914,13 +1916,16 @@ fn save_stylex_rules(bundler: &ClientBundler, cache: &Path, key: &str) {
 
 /// Serve a fresh client output, with the inputs it was built from.
 fn install_bundle(state: &StartState, cache: &Path, pinned: oj_cache::start_bundle::PinnedBundle) {
-    let mut served = state
-        .bundle
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    served.install(pinned);
-    state.gzip.retain(|h| served.has_hash(h));
-    drop(served);
+    let current = {
+        let mut served = state
+            .bundle
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        served.install(pinned);
+        served.current()
+    };
+    // With the bundles unlocked: chunk requests are not held up by it.
+    state.gzip.retain_hashes_of(&current);
     load_inputs(state, cache);
 }
 
@@ -3257,6 +3262,16 @@ async fn forward_with_body(state: &Arc<StartState>, req: Request) -> Response {
     }
 }
 
+/// Tells the open pages that `name`, which one of them just asked for, is
+/// not a chunk the dev server can serve any more: the one that asked reloads
+/// (see [`crate::start_chunks::chunk_gone_frame`]). A source map is asked
+/// for by the browser's tools, not by a page.
+fn chunk_gone(pages: &broadcast::Sender<String>, name: &str) {
+    if !name.ends_with(".map") {
+        let _ = pages.send(crate::start_chunks::chunk_gone_frame(name));
+    }
+}
+
 async fn serve_client_chunk(
     state: &StartState,
     req: &axum::http::HeaderMap,
@@ -3269,6 +3284,7 @@ async fn serve_client_chunk(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .chunk(&name);
     let Some(served) = served else {
+        chunk_gone(&state.error_tx, &name);
         return (
             StatusCode::NOT_FOUND,
             format!("oj start: {name} is not in the client bundle manifest"),
@@ -3276,6 +3292,7 @@ async fn serve_client_chunk(
             .into_response();
     };
     let chunk = served.chunk;
+    let pages = state.error_tx.clone();
     let expected = oj_cache::integrity::ExpectedFile {
         size: chunk.size,
         hash: chunk.hash.clone().unwrap_or_default(),
@@ -3300,6 +3317,7 @@ async fn serve_client_chunk(
             Ok(Err(oj_cache::integrity::VerifyError::Io(e)))
                 if retained && e.kind() == std::io::ErrorKind::NotFound =>
             {
+                chunk_gone(&pages, &what);
                 Err((
                     StatusCode::NOT_FOUND,
                     format!("oj start: {what} is from an earlier bundle and no longer on disk; reload the page"),

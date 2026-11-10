@@ -102,10 +102,24 @@ impl ServedBundles {
             })
     }
 
-    /// Whether any served bundle has a chunk with content hash `hash`.
-    pub(crate) fn has_hash(&self, hash: &str) -> bool {
-        self.current.has_hash(hash) || self.previous.iter().any(|b| b.has_hash(hash))
+    /// The bundle every new document loads.
+    pub(crate) fn current(&self) -> Arc<PinnedBundle> {
+        Arc::clone(&self.current)
     }
+}
+
+/// The frame that tells the open pages a chunk one of them asked for is gone
+/// from the dev server: its name fell out of the bundles still served, or
+/// its file was swept. The page that asked reloads (its entry is too old to
+/// run on); the others ignore it. Vite's dev server answers a request for a
+/// pre-bundled chunk it no longer has the same way, the page reloaded by the
+/// `full-reload` it sent when the chunks changed (optimizer.ts `fullReload`,
+/// transform.ts "Outdated Optimize Dep"); here a page can be behind without
+/// having been told to reload (the editor's gate holds it), so the server
+/// says so when the page trips over it. Not on the page's own promise
+/// rejection: a router catches a failed lazy import, and nothing would hear.
+pub(crate) fn chunk_gone_frame(name: &str) -> String {
+    serde_json::json!({ "type": "oj:chunk-gone", "name": name }).to_string()
 }
 
 /// Below this a gzip frame costs more than it saves.
@@ -134,6 +148,17 @@ impl GzipCache {
     /// after it, which the next swap removes.
     pub(crate) fn retain(&self, live: impl Fn(&str) -> bool) {
         self.lock().retain(|h, _| live(h));
+    }
+
+    /// Keep the bodies of `bundle`'s chunks only. The current bundle's: a
+    /// retained bundle's chunk is asked for once in a while, by a page left
+    /// behind, and is compressed again then, so the cache holds one bundle's
+    /// bodies and not eight's. The hashes are gathered into a set first: one
+    /// pass over the bundle and one over the cache, where asking the bundle
+    /// about each cached hash is a scan of every chunk per body.
+    pub(crate) fn retain_hashes_of(&self, bundle: &PinnedBundle) {
+        let live: std::collections::HashSet<&str> = bundle.hashes().collect();
+        self.retain(|h| live.contains(h));
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, GzipBodies> {
@@ -360,6 +385,76 @@ mod tests {
         assert!(map.contains_key("new") && !map.contains_key("old"));
     }
 
+    // A rebundle prunes the gzip bodies to the current bundle's chunks: a
+    // retained bundle's are dropped and compressed again when asked for.
+    #[tokio::test]
+    async fn a_rebundle_keeps_the_current_bundles_gzip_bodies_only() {
+        let cache = GzipCache::default();
+        let mut served = ServedBundles::new(generation(1));
+        for hash in [
+            "hash-route-1.js",
+            "hash-entry-1",
+            "hash-route-2.js",
+            "hash-entry-2",
+        ] {
+            cache.get_or_compress(hash, body()).await;
+        }
+        served.install(generation(2));
+        cache.retain_hashes_of(&served.current());
+        let map = cache.lock();
+        let mut kept: Vec<&str> = map.keys().map(String::as_str).collect();
+        kept.sort_unstable();
+        assert_eq!(kept, ["hash-entry-2", "hash-route-2.js"]);
+        // The retained chunk is still served, without a cached body.
+        assert!(served.chunk("route-1.js").is_some_and(|c| !c.current));
+    }
+
+    // One pass over the bundle and one over the cache: pruning a large
+    // cache against a large bundle stays far from the chunk-count squared
+    // it was (2,000 x 2,000 hash comparisons took tens of milliseconds,
+    // with the bundle lock held; this is two set passes).
+    #[test]
+    fn pruning_a_large_gzip_cache_is_linear() {
+        let chunks = 2_000usize;
+        let bundle = PinnedBundle::new(
+            "client-entry.js".into(),
+            (0..chunks).map(|i| {
+                (
+                    format!("c{i}.js"),
+                    PinnedChunk {
+                        path: "/blobs/x".into(),
+                        size: 1,
+                        hash: Some(format!("current-{i:08}")),
+                    },
+                )
+            }),
+        );
+        let cache = GzipCache::default();
+        {
+            let mut map = cache.lock();
+            for i in 0..chunks {
+                map.insert(format!("current-{i:08}"), Default::default());
+                map.insert(format!("retired-{i:08}"), Default::default());
+            }
+        }
+        let started = std::time::Instant::now();
+        cache.retain_hashes_of(&bundle);
+        let took = started.elapsed();
+        assert_eq!(cache.lock().len(), chunks);
+        assert!(
+            took < std::time::Duration::from_millis(100),
+            "pruning {chunks} chunks took {took:?}"
+        );
+    }
+
+    #[test]
+    fn the_chunk_gone_frame_names_the_chunk() {
+        let frame: serde_json::Value =
+            serde_json::from_str(&chunk_gone_frame("about-\"x\".js")).unwrap();
+        assert_eq!(frame["type"], "oj:chunk-gone");
+        assert_eq!(frame["name"], "about-\"x\".js");
+    }
+
     /// A bundle of generation `n`: an entry and a route chunk named by `n`.
     fn generation(n: usize) -> PinnedBundle {
         let chunk = |name: &str| PinnedChunk {
@@ -386,7 +481,6 @@ mod tests {
         assert_eq!(old.chunk.hash.as_deref(), Some("hash-route-1.js"));
         let new = served.chunk("route-2.js").expect("the new route chunk");
         assert!(new.current && !new.entry);
-        assert!(served.has_hash("hash-route-1.js") && served.has_hash("hash-route-2.js"));
         assert!(served.chunk("route-3.js").is_none());
     }
 
@@ -426,7 +520,6 @@ mod tests {
             served.chunk("route-1.js").is_some(),
             "the next oldest is kept"
         );
-        assert!(!served.has_hash("hash-route-0.js"));
     }
 
     #[test]

@@ -93,6 +93,11 @@ impl PinnedBundle {
         name == self.entry || name == "client-entry.js"
     }
 
+    /// The content hash of each chunk that has one.
+    pub fn hashes(&self) -> impl Iterator<Item = &str> {
+        self.chunks.values().filter_map(|c| c.hash.as_deref())
+    }
+
     /// Whether any chunk of this bundle has content hash `hash`.
     pub fn has_hash(&self, hash: &str) -> bool {
         self.chunks

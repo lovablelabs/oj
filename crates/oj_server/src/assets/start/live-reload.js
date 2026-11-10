@@ -218,34 +218,86 @@
     !(docHas != null && msg.change <= docHas);
   // </oj:missed-change>
   const BEHIND_KEY = "oj:start:behind:" + location.pathname;
-  // A lazy import of a chunk this document names and the dev server no
-  // longer has: the chunk was renamed by a rebundle this page missed, and
-  // its old name has fallen out of the bundles the server keeps serving. The
-  // import fails ("Failed to fetch dynamically imported module", Safari's
-  // "Importing a module script failed") and the page would stay broken on
-  // its stale entry. Vite's build-side answer is the `vite:preloadError`
-  // event, for the page to reload on; the dev server's chunks load through
-  // no preload helper that could raise it, so the import's own rejection
-  // stands in. Reload once per document, as a behind connect does: a
-  // document that comes back with the same stamp was served from a cache,
-  // and reloading again would only loop.
-  const STALE_IMPORT_KEY = "oj:start:stale-import:" + location.pathname;
+  // A chunk this document names and the dev server no longer has: a rebundle
+  // this page missed renamed it, and the old name has fallen out of the
+  // bundles the server keeps serving (or its file was swept). The page's
+  // entry is too old to run on, so it reloads, once per document as a
+  // behind connect does: a document that comes back with the same stamp was
+  // served from a cache, and reloading again would only loop.
+  const GONE_CHUNK_KEY = "oj:start:stale-import:" + location.pathname;
+  const reloadForGoneChunk = (what) => {
+    if (stamp == null) return;
+    let last = null;
+    try {
+      last = sessionStorage.getItem(GONE_CHUNK_KEY);
+    } catch {}
+    if (last === stamp) return;
+    try {
+      sessionStorage.setItem(GONE_CHUNK_KEY, stamp);
+    } catch {}
+    console.warn("[oj] a chunk of this page is gone from the dev server (" + what + "); reloading");
+    snapshot();
+    location.reload();
+  };
+  // The server says which chunk is gone (oj:chunk-gone) to every open page,
+  // and the one that asked for it is the one to reload: the others, behind
+  // or not, have nothing broken. A page knows what it asked for from its
+  // resource timeline, kept here by an observer since the timeline's own
+  // buffer fills on a large app. The import's rejection would not do: a
+  // router catches a failed lazy import (TanStack Router's
+  // lazyRouteComponent), so no unhandled rejection is ever raised, where
+  // Vite's `vite:preloadError` is dispatched by its preload helper before
+  // the import rejects, caught or not.
+  const CHUNKS = base + "/@oj-start/";
+  const asked = new Set();
+  const noteAsked = (entries) => {
+    for (const entry of entries) {
+      const url = String(entry.name).split(/[?#]/)[0];
+      const at = url.indexOf(CHUNKS);
+      if (at < 0) continue;
+      let name = url.slice(at + CHUNKS.length);
+      try {
+        name = decodeURIComponent(name);
+      } catch {}
+      asked.add(name);
+    }
+  };
+  try {
+    new PerformanceObserver((list) => noteAsked(list.getEntries())).observe({ type: "resource", buffered: true });
+  } catch {}
+  const askedFor = (name) => {
+    if (!asked.has(name)) {
+      try {
+        noteAsked(performance.getEntriesByType("resource"));
+      } catch {}
+    }
+    return asked.has(name);
+  };
+  // The frame can outrun the 404 it is about: look again shortly.
+  const goneChunk = (name, waits = [50, 250, 1000]) => {
+    if (askedFor(name)) return reloadForGoneChunk(name);
+    if (waits.length) setTimeout(() => goneChunk(name, waits.slice(1)), waits[0]);
+  };
+  // With no socket to hear the server on, an import nothing caught still
+  // says so ("Failed to fetch dynamically imported module", Firefox's "error
+  // loading ...", Safari's "Importing a module script failed"). Only for the
+  // dev server's own chunks, where the message names the url, and only if
+  // the server answers: an import that failed because the server is
+  // restarting is not a chunk gone, and reloading would trade the page for
+  // a connection error, with no client left to bring it back.
   addEventListener("unhandledrejection", (e) => {
     const reason = e && e.reason;
     const message = reason && typeof reason.message === "string" ? reason.message : "";
     if (stamp == null || !/dynamically imported module|Importing a module script failed/.test(message)) return;
-    let last = null;
-    try {
-      last = sessionStorage.getItem(STALE_IMPORT_KEY);
-    } catch {}
-    if (last === stamp) return;
-    try {
-      sessionStorage.setItem(STALE_IMPORT_KEY, stamp);
-    } catch {}
-    console.warn("[oj] a chunk of this page is gone from the dev server (" + message + "); reloading");
-    if (e.preventDefault) e.preventDefault();
-    snapshot();
-    location.reload();
+    const named = /https?:\/\/\S+/.exec(message);
+    if (named && !named[0].includes(CHUNKS)) return;
+    if (typeof fetch !== "function") return;
+    fetch(CHUNKS + "client-entry.js", { method: "HEAD", cache: "no-store" }).then(
+      (answer) => {
+        if (answer && answer.ok) reloadForGoneChunk(message);
+      },
+      () => {},
+    );
   });
   // Liveness (socket-watchdog.js, served ahead of this file): the server
   // sends every open socket a frame at least every `pingMs` (oj:ping when
@@ -329,6 +381,12 @@
       if (msg && msg.type === "error") {
         await notify("vite:error", msg);
         showError(msg.err);
+        return;
+      }
+      // A chunk some page asked for is gone from the server: this page
+      // reloads if it was the one asking, and is otherwise left as it is.
+      if (msg && msg.type === "oj:chunk-gone") {
+        if (typeof msg.name === "string") goneChunk(msg.name);
         return;
       }
       // A plugin's `server.ws.send`: to the page's `import.meta.hot.on`.

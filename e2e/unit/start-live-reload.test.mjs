@@ -17,6 +17,9 @@ function loadPage({
   ping = 0,
   hostname = "localhost",
   storage = new Map(),
+  // What `fetch` answers (a Response-like), or throws: the dev server's
+  // answer to the page's own request.
+  fetch = async () => ({ ok: true }),
 } = {}) {
   const log = [];
   const sockets = [];
@@ -26,6 +29,15 @@ function loadPage({
   const listeners = {};
   const clock = { now: 0 };
   const said = [];
+  // The page's resource timeline: the urls it has fetched, and its observers.
+  const resources = [];
+  const observers = [];
+  class PerformanceObserver {
+    constructor(seen) {
+      observers.push(seen);
+    }
+    observe() {}
+  }
   class WebSocket {
     constructor(url) {
       this.url = url;
@@ -43,6 +55,9 @@ function loadPage({
   }
   const page = {
     WebSocket,
+    PerformanceObserver,
+    performance: { getEntriesByType: (type) => (type === "resource" ? resources.map((name) => ({ name })) : []) },
+    fetch: (...args) => fetch(...args),
     URL,
     console: { error() {}, debug() {}, warn() {}, log: (line) => said.push(line) },
     location: { protocol: "http:", host: hostname, hostname, pathname: "/", reload: () => log.push(["reload"]) },
@@ -135,8 +150,20 @@ function loadPage({
     pageshow: (persisted) => emit(listeners, "pageshow", { persisted }),
     said,
     online: () => emit(listeners, "online"),
-    // A promise rejection nothing in the page handled (a failed import()).
-    rejected: (reason) => emit(listeners, "unhandledrejection", { reason, preventDefault() {} }),
+    // A promise rejection nothing in the page handled (a failed import()),
+    // and the page's request to the server it leads to, settled.
+    rejected: async (reason) => {
+      emit(listeners, "unhandledrejection", { reason, preventDefault() {} });
+      await new Promise((r) => setImmediate(r));
+    },
+    // The page fetched `url`: on its timeline, and told to its observers
+    // unless `observed` is false (an entry the observer has yet to deliver).
+    fetched: (url, observed = true) => {
+      resources.push(url);
+      if (observed) observers.forEach((seen) => seen({ getEntries: () => [{ name: url }] }));
+    },
+    // The page's timers come due.
+    elapse: () => timers.splice(0).forEach((fn) => fn()),
   };
 }
 
@@ -212,26 +239,117 @@ test("a page found behind on connect reloads once per stamp, so a cached documen
   assert.equal(await reloadsFor('"1f-5"', "reload"), 1);
 });
 
-test("a lazy import of a chunk the server no longer has reloads the page, once per document", () => {
+const reloadsIn = (log) => log.filter(([kind]) => kind === "reload").length;
+const GONE = { type: "oj:chunk-gone", name: "about-DEADBEEF.js" };
+const GONE_URL = "http://localhost/@oj-start/about-DEADBEEF.js";
+
+test("a chunk gone from the server reloads the page that asked for it, and no other", async () => {
+  // The page that asked: a lazy import of the route's chunk, answered 404.
+  // Its router caught the rejection, so nothing but the server's frame says so.
+  const asking = loadPage({ stamp: '"1f-4"' });
+  asking.open();
+  asking.fetched(GONE_URL);
+  await asking.receive(GONE);
+  assert.equal(reloadsIn(asking.log), 1);
+
+  // A page that never asked for it is left alone: behind or not, nothing of
+  // its own is broken, and an unknown frame must not reload it either.
+  const other = loadPage({ stamp: '"1f-4"' });
+  other.open();
+  other.fetched("http://localhost/@oj-start/index-CAFEBABE.js");
+  await other.receive(GONE);
+  other.elapse();
+  other.elapse();
+  other.elapse();
+  other.elapse();
+  assert.equal(reloadsIn(other.log), 0);
+  assert.equal(other.timers.length, 0, "it stops looking");
+
+  // Another chunk's name, a frame without one, and a document the dev
+  // server did not stamp: nothing.
+  await asking.receive({ type: "oj:chunk-gone" });
+  const unstamped = loadPage();
+  unstamped.open();
+  unstamped.fetched(GONE_URL);
+  await unstamped.receive(GONE);
+  assert.equal(reloadsIn(unstamped.log), 0);
+});
+
+test("a gone chunk reloads once per document, so a cached document cannot loop", async () => {
   const storage = new Map();
-  const reloads = (stamp, reason) => {
-    const { log, rejected } = loadPage({ stamp, storage });
-    rejected(reason);
-    return log.filter(([kind]) => kind === "reload").length;
+  const reloads = async (stamp) => {
+    const page = loadPage({ stamp, storage });
+    page.open();
+    page.fetched(GONE_URL);
+    await page.receive(GONE);
+    return reloadsIn(page.log);
   };
-  const gone = new TypeError(
-    "Failed to fetch dynamically imported module: http://localhost/@oj-start/about-DEADBEEF.js",
+  assert.equal(await reloads('"1f-4"'), 1);
+  // The reload served the same document (a cache): it would fail the same way.
+  assert.equal(await reloads('"1f-4"'), 0);
+  assert.equal(await reloads('"1f-5"'), 1);
+});
+
+test("the gone-chunk frame can outrun the 404 it is about", async () => {
+  const page = loadPage({ stamp: '"1f-4"' });
+  page.open();
+  await page.receive(GONE);
+  assert.equal(reloadsIn(page.log), 0, "not asked for yet");
+  // The response lands; the timeline has it before the observer is told.
+  page.fetched("http://localhost/@oj-start/about-DEADBEEF.js?v=1", false);
+  page.elapse();
+  assert.equal(reloadsIn(page.log), 1);
+});
+
+test("the chunk's name is matched under the dev base and percent-decoded", async () => {
+  const page = loadPage({ stamp: '"1f-4"' });
+  page.open();
+  page.fetched("http://localhost/@oj-start/a%20b-DEADBEEF.js");
+  await page.receive({ type: "oj:chunk-gone", name: "a b-DEADBEEF.js" });
+  assert.equal(reloadsIn(page.log), 1);
+});
+
+test("with no frame, an uncaught failed import reloads only for the dev server's chunks, and only if it answers", async () => {
+  const gone = new TypeError(`Failed to fetch dynamically imported module: ${GONE_URL}`);
+  const reloads = async (reason, options = {}) => {
+    const page = loadPage({ stamp: '"1f-4"', ...options });
+    await page.rejected(reason);
+    return reloadsIn(page.log);
+  };
+  const asked = [];
+  assert.equal(
+    await reloads(gone, {
+      fetch: async (url, init) => {
+        asked.push([url, init.method]);
+        return { ok: true };
+      },
+    }),
+    1,
   );
-  assert.equal(reloads('"1f-4"', gone), 1);
-  // The reload served the same document (a cache): it would fail the same way, so no loop.
-  assert.equal(reloads('"1f-4"', gone), 0);
-  // A newer document reloads again; Safari words the failure differently.
-  assert.equal(reloads('"1f-5"', new TypeError("Importing a module script failed.")), 1);
-  // Any other rejection is the app's business.
-  assert.equal(reloads('"1f-6"', new Error("Failed to fetch")), 0);
-  assert.equal(reloads('"1f-7"', "not an error"), 0);
-  // A document the dev server did not stamp is not one of its pages.
-  assert.equal(reloads("null", gone), 0);
+  assert.deepEqual(asked, [["/@oj-start/client-entry.js", "HEAD"]], "it asks the server first");
+  // Firefox's and Safari's wording (Safari names no url).
+  assert.equal(await reloads(new TypeError(`error loading dynamically imported module: ${GONE_URL}`)), 1);
+  assert.equal(await reloads(new TypeError("Importing a module script failed.")), 1);
+  // The server is not answering (restarting): the import failed for that,
+  // and reloading would replace the page with a connection error.
+  assert.equal(
+    await reloads(gone, {
+      fetch: async () => {
+        throw new TypeError("Failed to fetch");
+      },
+    }),
+    0,
+  );
+  assert.equal(await reloads(gone, { fetch: async () => ({ ok: false }) }), 0);
+  // An import from somewhere else is the app's business.
+  assert.equal(
+    await reloads(new TypeError("Failed to fetch dynamically imported module: https://cdn.example/widget.js")),
+    0,
+  );
+  // Any other rejection too, and a document the dev server did not stamp.
+  assert.equal(await reloads(new Error("Failed to fetch")), 0);
+  assert.equal(await reloads("not an error"), 0);
+  assert.equal(await reloads(gone, { stamp: "null" }), 0);
 });
 
 test("the socket names the hot changes the document has, beside its stamp", () => {
