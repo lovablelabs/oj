@@ -217,52 +217,6 @@ async fn ssr_compiles_feed_the_same_sheet() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_disk_cache_carries_each_modules_rules() {
-    require_fixture!("vite");
-    let app = app("{}");
-    let dev = || oj_server::DevServer {
-        enable_cache: true,
-        ..app.dev()
-    };
-    {
-        let server = crate::serve(dev()).await;
-        server.text("/src/main.ts").await;
-        // A warm start serves this entry without compiling, so the rules must
-        // travel in it. Cache writes are asynchronous.
-        let cache = oj_cache::cache_root(&app.root);
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while !persisted(&cache, "\"stylex_rules\"", "color:red") {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "main.ts never persisted its rules"
-            );
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    }
-    let server = crate::serve(dev()).await;
-    server.text("/src/main.ts").await;
-    let css = server.text("/virtual:stylex.css").await;
-    assert!(css.contains("color: red"), "{css}");
-}
-
-/// Whether a persisted module under `dir` mentions both needles.
-fn persisted(dir: &std::path::Path, a: &str, b: &str) -> bool {
-    std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .any(|e| {
-            let path = e.path();
-            if path.is_dir() {
-                persisted(&path, a, b)
-            } else {
-                path.extension().is_some_and(|x| x == "json")
-                    && std::fs::read_to_string(&path).is_ok_and(|s| s.contains(a) && s.contains(b))
-            }
-        })
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn the_runtime_restyles_the_page_on_an_edit() {
     if crate::browser::skip() {
         return;

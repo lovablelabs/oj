@@ -139,22 +139,6 @@ pub(crate) async fn ensure_module_as(
     if let Some(module) = memory_hit(state, url, &key) {
         return Ok((key, module));
     }
-    // A module the graph has no edges for yet keys on no import stamps, which
-    // finds an entry compiled when none of its imports had been updated. Its
-    // imports may have been since (a module first requested after an update
-    // of a dep of its): served as is, it would name the dep's bare url while
-    // the importers recompiled after the update name the stamped one, two
-    // instances of one module in the page. Vite's transform cache lives per
-    // server, so a first transform always sees the current stamps; the
-    // on-disk entry is used only when it bakes in the stamps of now.
-    if let Some(module) = persistent_hit(state, &key, is_dep)
-        .filter(|module| imports_stamp_of(state, &module.imports) == imports_stamp)
-    {
-        memory_put(state, url, &key, &module);
-        register_in_graph(state, url, &module);
-        replay_module_parsed(state, file, &key, is_dep, is_server).await;
-        return Ok((key, module));
-    }
 
     if is_server {
         let code = server_fn_stub(&oj_compiler::exports(&source, file), url);
@@ -323,12 +307,11 @@ pub(crate) async fn ensure_module_as(
         Err(join_err) => return Err(format!("compiler task failed: {join_err}")),
     };
     // The compile stamped its imports with the graph's stamps of now; a
-    // module served for the first time this session keyed on none (no edges
-    // yet). Store it under the stamps it bakes in, so a later session, whose
-    // stamps start at 0 again, never finds a stamped compile under its
-    // unstamped key and serves one importer stamped beside another bare.
-    // A dep's imports are other deps, which are never stamped, so a dep is
-    // never re-keyed.
+    // module served for the first time keyed on none (no edges yet). Store it
+    // under the stamps it bakes in: the key the next request computes once
+    // the edges exist, so it is a hit rather than a second compile. A dep's
+    // imports are other deps, which are never stamped, so a dep is never
+    // re-keyed.
     let baked = imports_stamp_of(state, &module.imports);
     let key = if !is_dep && baked != imports_stamp {
         compile_key(state, file, url, &source_hash, is_server, stamp, baked).key
@@ -341,9 +324,6 @@ pub(crate) async fn ensure_module_as(
         .lock()
         .unwrap()
         .remove(url.split('?').next().unwrap_or(url));
-    if state.plugins_use_module_parsed && !is_dep && !is_server {
-        state.parsed_fired.lock().unwrap().insert(key.clone());
-    }
     Ok((key, module))
 }
 
@@ -388,17 +368,6 @@ fn memory_hit(state: &ServerState, url: &str, key: &str) -> Option<Arc<CachedMod
 }
 
 fn store_module(state: &ServerState, url: &str, key: &str, module: &Arc<CachedModule>) {
-    // A sheet that may have inlined a file it names (a small svg; any file
-    // under `?inline`, a JSON one included) embeds its content as it is now:
-    // kept in memory, recompiled when one changes, never persisted. A `t=`
-    // stamp is 0 after a restart, so a sheet with only asset URLs persists.
-    let inlines_assets =
-        module.kind == "css" && !module.imports.is_empty() && module.code.contains("data:");
-    if state.persistent_cache && !inlines_assets {
-        let _ = state
-            .cache_writes
-            .try_send((key.to_string(), Arc::clone(module)));
-    }
     memory_put(state, url, key, module);
     register_in_graph(state, url, module);
 }
@@ -538,8 +507,7 @@ fn imports_stamp_of(state: &ServerState, imports: &[String]) -> u64 {
 }
 
 /// [`imports_stamp_of`] for a module the graph knows: 0 for one it has no
-/// edges for yet (never served this session), which a compile or a
-/// persistent-cache hit settles ([`compile_module`]).
+/// edges for yet (never served), which its compile settles.
 fn imports_stamp_known(state: &ServerState, url: &str) -> u64 {
     state
         .graph
@@ -548,7 +516,7 @@ fn imports_stamp_known(state: &ServerState, url: &str) -> u64 {
         .imports_timestamp(Path::new(graph_url(url)))
 }
 
-/// The content cache key, also recorded against the file's stamp for the warm
+/// The memory cache key, also recorded against the file's stamp for the warm
 /// path. `source` is the source's hash, computed once per compile
 /// ([`oj_cache::source_hash`]), since a compile may be keyed twice.
 /// `imports_stamp` is the newest HMR stamp among the module's imports (see
@@ -594,7 +562,7 @@ fn compile_key(
         mode_key.push_str("+stylex");
         mode_key.push_str(stylex.fingerprint());
     }
-    let key = state.cache.key_for(source, url, &mode_key);
+    let key = oj_cache::module_key(source, url, &mode_key);
     if let Some((mtime, size)) = stamp {
         state
             .mtime_keys
@@ -606,23 +574,6 @@ fn compile_key(
         key,
         class_field_semantics,
     }
-}
-
-// Cached post-transform code may import a plugin-served virtual whose content
-// lives only in plugin memory (wyw-in-js cssLookup) and 404s on a warm start:
-// re-run the transform for cached modules whose imports name a filesystem path
-// with no file on disk; all-real-file modules keep the fast persistent cache.
-fn persistent_hit(state: &ServerState, key: &str, is_dep: bool) -> Option<Arc<CachedModule>> {
-    let module = Arc::new(
-        state
-            .persistent_cache
-            .then(|| state.cache.get(key))
-            .flatten()?,
-    );
-    let needs_retransform = state.plugins_have_transform
-        && !is_dep
-        && imports_a_plugin_virtual(&module.imports, &state.root, &state.dir_cache);
-    (!needs_retransform).then_some(module)
 }
 
 pub(crate) struct Transformed {
@@ -1617,24 +1568,6 @@ pub(crate) fn optimized_url_of(state: &ServerState, id: &str) -> Option<String> 
 pub(crate) fn optimized_file<'a>(state: &ServerState, id: &'a str) -> Option<&'a str> {
     let path = Path::new(id.split('?').next().unwrap_or(id));
     (path.parent()? == state.optimized.dir()).then(|| path.file_name()?.to_str())?
-}
-
-pub(crate) async fn replay_module_parsed(
-    state: &Arc<ServerState>,
-    file: &Path,
-    key: &str,
-    is_dep: bool,
-    is_server: bool,
-) {
-    if !state.plugins_use_module_parsed || is_dep || is_server {
-        return;
-    }
-    if !state.parsed_fired.lock().unwrap().insert(key.to_string()) {
-        return;
-    }
-    if let Some(host) = &state.plugins {
-        let _ = host.module_parsed(&file.to_string_lossy()).await;
-    }
 }
 
 pub(crate) fn package_root(path: &Path) -> PathBuf {

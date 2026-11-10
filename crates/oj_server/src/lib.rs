@@ -16,7 +16,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use oj_cache::{CachedModule, PersistentCache};
+use oj_cache::CachedModule;
 
 pub mod css_engine;
 pub mod etag;
@@ -268,10 +268,6 @@ pub struct DevServer {
     pub port: Option<u16>,
     pub host: Option<String>,
     pub config: Option<PathBuf>,
-    /// Enable the experimental on-disk module cache (off by default).
-    pub enable_cache: bool,
-    /// Force the on-disk module cache off even if enabled.
-    pub no_cache: bool,
     /// Skip the eager graph crawl; compile modules on demand (Vite's default).
     pub lazy: bool,
     /// `--typecheck`: keep a TypeScript checker warm for `/@oj/typecheck`.
@@ -288,7 +284,6 @@ struct ServerState {
     root: PathBuf,
     /// Vite's `publicDir`; None when the config disables it (`publicDir: false`).
     public_dir: Option<PathBuf>,
-    persistent_cache: bool,
     reload_tx: broadcast::Sender<String>,
     graph: Mutex<ModuleGraph>,
     resolver: Arc<OjResolver>,
@@ -300,7 +295,6 @@ struct ServerState {
     ssr_external_resolver: Arc<OjResolver>,
     /// The ssr environment's aliases: Vite never externalizes an aliased import.
     ssr_aliases: Vec<(String, String)>,
-    cache: PersistentCache,
     memory: Mutex<MemoryCache>,
     mtime_keys: Mutex<HashMap<String, (std::time::SystemTime, u64, String)>>,
     /// Files' content hashes and the baselines consumers compare them to.
@@ -322,7 +316,6 @@ struct ServerState {
     fs_strict: bool,
     fs_deny: Vec<(glob::Pattern, bool)>,
     dir_cache: Arc<Mutex<DirCache>>,
-    cache_writes: tokio::sync::mpsc::Sender<(String, Arc<CachedModule>)>,
     tailwind: tokio::sync::OnceCell<std::sync::Arc<CssEngine>>,
     preprocess: tokio::sync::OnceCell<std::sync::Arc<CssEngine>>,
     svelte: tokio::sync::OnceCell<std::sync::Arc<CssEngine>>,
@@ -417,7 +410,6 @@ struct ServerState {
     watch_feed: WatchFeed,
     /// `--typecheck`: the warm checker `/@oj/typecheck` asks.
     typecheck: Option<Arc<typecheck::Typecheck>>,
-    plugins_use_module_parsed: bool,
     plugins_have_transform: bool,
     plugins_have_load: bool,
     /// Some active plugin has `resolveId`: an import oj cannot resolve may
@@ -447,7 +439,6 @@ struct ServerState {
     /// `envPrefix`, for the HTML env hook's undefined-variable warning.
     env_prefixes: Vec<String>,
     html_env: std::collections::BTreeMap<String, String>,
-    parsed_fired: Mutex<std::collections::HashSet<String>>,
     rt: tokio::runtime::Handle,
     base: Option<String>,
     optimized: Arc<optimize::OptimizedDeps>,
@@ -871,22 +862,13 @@ impl ClientDefines<'_> {
 /// What the final client define list yields for the server state.
 struct InstalledDefines {
     html_env: std::collections::BTreeMap<String, String>,
-    /// Salts the persistent cache: a cached compile embeds the defines.
-    digest: String,
 }
 
 impl InstalledDefines {
     fn of(defines: &Defines) -> Self {
-        let html_env = oj_env::html_env_map(defines);
-        let mut hasher = blake3::Hasher::new();
-        for (k, v) in defines {
-            hasher.update(k.as_bytes());
-            hasher.update(&[0]);
-            hasher.update(v.as_bytes());
-            hasher.update(&[0]);
+        InstalledDefines {
+            html_env: oj_env::html_env_map(defines),
         }
-        let digest = hasher.finalize().to_hex().to_string();
-        InstalledDefines { html_env, digest }
     }
 }
 
@@ -1172,7 +1154,6 @@ async fn fold_plugin_defines(host: &PluginHost, defines: &ClientDefines<'_>) -> 
 /// are skipped (the tagger case: no transform, no HMR hooks).
 #[derive(Default)]
 struct PluginCaps {
-    use_module_parsed: bool,
     have_transform: bool,
     have_load: bool,
     have_resolve_id: bool,
@@ -1197,7 +1178,6 @@ async fn pre_resolve_filters(
 
 impl PluginCaps {
     async fn probe(host: &PluginHost) -> Self {
-        let use_module_parsed = host.has_module_parsed().await;
         let have_transform = host.has_transform().await;
         let have_load = host.has_load().await;
         let have_resolve_id = host.has_resolve_id().await;
@@ -1210,7 +1190,6 @@ impl PluginCaps {
         let _ = host.build_hook_plan().await;
         let have_transform_index_html = host.has_transform_index_html().await;
         PluginCaps {
-            use_module_parsed,
             have_transform,
             have_load,
             have_resolve_id,
@@ -1565,10 +1544,9 @@ fn optimized_deps(
     )
 }
 
-/// Plugin server events, the cache writer thread and the file watcher.
+/// Plugin server events and the file watcher.
 fn spawn_state_tasks(
     state: &Arc<ServerState>,
-    mut write_rx: tokio::sync::mpsc::Receiver<(String, Arc<CachedModule>)>,
     watch_rx: std::sync::mpsc::Receiver<WatchMsg>,
     watch_ready: tokio::sync::watch::Sender<bool>,
 ) {
@@ -1594,14 +1572,6 @@ fn spawn_state_tasks(
                         host.rpc_reply(rpc.id, result);
                     }
                 });
-            }
-        });
-    }
-    {
-        let state = Arc::clone(state);
-        std::thread::spawn(move || {
-            while let Some((key, module)) = write_rx.blocking_recv() {
-                state.cache.put(&key, &module);
             }
         });
     }
@@ -1815,12 +1785,6 @@ impl DevServer {
         Ok(())
     }
 
-    /// On-disk module cache: experimental, off by default (--enable-cache);
-    /// --no-cache forces it off.
-    fn persistent_cache_enabled(&self) -> bool {
-        self.enable_cache && !self.no_cache
-    }
-
     fn dev_mode(&self) -> String {
         self.mode
             .clone()
@@ -1929,7 +1893,6 @@ impl DevServer {
         let server_cfg = config.server.clone().unwrap_or_default();
         let port = self.port.or(server_cfg.port).unwrap_or(5199);
         let strict_port = oj_config::server_strict_port(&config);
-        let persistent_cache = self.persistent_cache_enabled();
         let host = resolve_host(self.host.as_deref().or(server_cfg.host.as_deref()));
         let proxy: Vec<(String, oj_config::ProxyEntry)> = server_cfg
             .proxy
@@ -2181,7 +2144,6 @@ impl DevServer {
         let started = Instant::now();
         let (reload_tx, _) = broadcast::channel::<String>(64);
         let (crawl_tx, crawl_rx) = tokio::sync::watch::channel(false);
-        let (write_tx, write_rx) = tokio::sync::mpsc::channel::<(String, Arc<CachedModule>)>(65536);
         let (watch_tx, watch_rx) = std::sync::mpsc::channel::<WatchMsg>();
         let (watch_ready_tx, watch_ready) = tokio::sync::watch::channel(false);
         let public_dir = oj_config::public_dir(&config, &root);
@@ -2230,7 +2192,6 @@ impl DevServer {
             })));
         }
         let state = Arc::new(ServerState {
-            persistent_cache,
             engine_registry: engine_registry.clone(),
             root: root.clone(),
             public_dir,
@@ -2241,13 +2202,6 @@ impl DevServer {
             ssr_resolver,
             ssr_external_resolver: Arc::new(ssr_external_resolver(&root, &config)),
             ssr_aliases: oj_config::resolve_alias(&config, "ssr"),
-            cache: PersistentCache::new(oj_cache::cache_root(&root), env!("CARGO_PKG_VERSION"))
-                .with_salt_extra(&installed.digest)
-                // A cached compile embeds the JSX runtime import; a changed
-                // importSource/runtime must not serve the old module.
-                .with_salt_extra(&format!("jsx={jsx:?}"))
-                // A cached module embeds its asset URLs (origin, base, inlined svgs).
-                .with_salt_extra(&format!("asset-urls={asset_urls:?}")),
             memory: Mutex::new(MemoryCache::new(memory_cache_budget())),
             mtime_keys: Mutex::new(HashMap::new()),
             content: Arc::default(),
@@ -2286,7 +2240,6 @@ impl DevServer {
             fs_strict,
             fs_deny: compile_fs_deny(&oj_config::server_fs_deny(&config)),
             dir_cache: Arc::new(Mutex::new(DirCache::new())),
-            cache_writes: write_tx,
             preload_snapshot: load_graph_snapshot(&root),
             proxy,
             proxy_regex,
@@ -2330,7 +2283,6 @@ impl DevServer {
             } else {
                 None
             },
-            plugins_use_module_parsed: caps.use_module_parsed,
             plugins_have_transform: caps.have_transform,
             plugins_have_load: caps.have_load,
             plugins_have_resolve_id: caps.have_resolve_id,
@@ -2344,7 +2296,6 @@ impl DevServer {
             html_proxy: Default::default(),
             env_prefixes: oj_config::env_prefixes(&config),
             html_env: installed.html_env,
-            parsed_fired: Mutex::new(std::collections::HashSet::new()),
             rt: tokio::runtime::Handle::current(),
             base: dev_base(config.base.as_deref()),
             buffered_frame: Mutex::new(None),
@@ -2377,7 +2328,7 @@ impl DevServer {
                 ))
             },
         });
-        spawn_state_tasks(&state, write_rx, watch_rx, watch_ready_tx);
+        spawn_state_tasks(&state, watch_rx, watch_ready_tx);
         // A dep re-optimization that changed previously served chunks (or
         // whose batch failed) commits a new map: drop every compiled module
         // (their rewrites carry the old URLs) and reload the page, Vite's

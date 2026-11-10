@@ -311,8 +311,6 @@ pub async fn start_dev(
             port,
             host,
             config: config_file.clone(),
-            enable_cache: false,
-            no_cache: false,
             lazy: false,
             typecheck,
             mode: Some(mode.clone()),

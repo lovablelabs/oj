@@ -425,60 +425,6 @@ fn sec_fetch_dest_decides_raw_vs_module_form() {
 }
 
 #[test]
-fn imports_a_plugin_virtual_flags_only_missing_fs_paths() {
-    // A cached module is re-transformed on warm start only if it imports a
-    // plugin-served virtual: a filesystem-path import with no file on disk.
-    // Real files (source, svgr's .svg) and oj-internal /@ routes keep the
-    // fast persistent cache.
-    let root = std::env::temp_dir().join(format!("oj-ipv-test-{}", std::process::id()));
-    let src = root.join("src");
-    std::fs::create_dir_all(&src).unwrap();
-    std::fs::write(src.join("real.ts"), "export {}\n").unwrap();
-    let dc = Mutex::new(DirCache::new());
-    let r = root.as_path();
-
-    // All-real imports -> keep cache.
-    assert!(!imports_a_plugin_virtual(
-        &["/src/real.ts".to_string()],
-        r,
-        &dc
-    ));
-    // oj-internal routes and external urls are never plugin-state virtuals.
-    assert!(!imports_a_plugin_virtual(
-        &[
-            "/@id/abc".to_string(),
-            "/@virtual/x".to_string(),
-            "https://cdn/x.js".to_string()
-        ],
-        r,
-        &dc,
-    ));
-    // A missing absolute path (wyw's .wyw-in-js.css) -> re-transform.
-    assert!(imports_a_plugin_virtual(
-        &[
-            "/src/real.ts".to_string(),
-            "/Users/nope/x.wyw-in-js.css".to_string()
-        ],
-        r,
-        &dc,
-    ));
-    // A missing root-relative path -> re-transform.
-    assert!(imports_a_plugin_virtual(
-        &["/src/gone.css".to_string()],
-        r,
-        &dc
-    ));
-    // Query strings are stripped before the on-disk check.
-    assert!(!imports_a_plugin_virtual(
-        &["/src/real.ts?import".to_string()],
-        r,
-        &dc
-    ));
-
-    std::fs::remove_dir_all(&root).ok();
-}
-
-#[test]
 fn lingui_macro_specifiers_are_matched_exactly() {
     assert!(is_lingui_macro_specifier("@lingui/macro"));
     assert!(is_lingui_macro_specifier("@lingui/core/macro"));

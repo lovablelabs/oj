@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- The experimental on-disk module cache and its `oj dev --enable-cache` / `--no-cache` flags. Compiled modules were never persisted by default, and the TanStack Start dev server never used the cache; keeping it meant keeping a second cache coherent with the HMR stamps (see the `--enable-cache` entry below) for a path nothing ran. The in-memory module cache is unchanged, and `.oj-cache` keeps the other caches (the dep pre-bundle, the Start bundle, the config extraction). An `oj dev` invocation that passed either flag now fails to parse.
+
 ### Fixed
 
 - `assetsInclude` globs are read as Vite's `createFilter` reads them: one that starts with `**` (or is absolute) is used as written, so `**/*.gltf` also names a `.gltf` outside the app root (a linked workspace package's), where oj only looked under the root; any other glob is resolved against the directory oj was started from, as Vite resolves it against the working directory, not against the root (they differ under `oj dev ./web`). Each app's `assetsInclude` is its own: the patterns are no longer held once per process.

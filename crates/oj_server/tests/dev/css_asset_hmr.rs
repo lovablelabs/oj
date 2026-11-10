@@ -3,8 +3,7 @@
 
 //! An asset a `<link>`-loaded sheet names is one of the sheet's deps (Vite's
 //! watch files): editing it sends a `css-update` for the sheet, whose
-//! recompile names the asset with its new `t=`, and a sheet naming assets is
-//! never served from the persistent cache with an asset as it was.
+//! recompile names the asset with its new `t=`.
 
 use axum::body::Body;
 use axum::http::Request;
@@ -68,97 +67,6 @@ async fn a_linked_sheets_asset_edit_sends_a_css_update_for_the_sheet() {
     let second = linked_sheet(&server).await;
     assert!(second.contains("/src/bg.png?t="), "{second}");
     close(socket).await;
-}
-
-/// Waits until the persistent cache holds a module whose code has `marker`:
-/// writes are queued in order, so every earlier write has landed too.
-async fn wait_cached(root: &std::path::Path, marker: &str) {
-    let dir = oj_cache::cache_root(root);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        let found = walk(&dir)
-            .iter()
-            .any(|f| std::fs::read_to_string(f).is_ok_and(|text| text.contains(marker)));
-        if found {
-            return;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "{marker} never cached"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-}
-
-fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    entries
-        .flatten()
-        .flat_map(|e| match e.path() {
-            p if p.is_dir() => walk(&p),
-            p => vec![p],
-        })
-        .collect()
-}
-
-// A sheet that inlined a file it names (a small svg, a JSON file under
-// `?inline`) is never served from the persistent cache with the file as it
-// was; a sheet compiled after it is cached, so its write had its turn.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_sheet_naming_assets_is_not_served_stale_from_the_persistent_cache() {
-    let cases = [
-        (
-            "url(./dot.svg)",
-            "src/dot.svg",
-            "<svg><g/></svg>",
-            "<svg><rect/></svg>",
-            "%3cg/%3e",
-            "%3crect/%3e",
-        ),
-        // base64 of `{"v":1}` and `{"v":2}`.
-        (
-            "url(./d.json?inline)",
-            "src/d.json",
-            r#"{"v":1}"#,
-            r#"{"v":2}"#,
-            "eyJ2IjoxfQ==",
-            "eyJ2IjoyfQ==",
-        ),
-    ];
-    for (url, file, before, after, old, new) in cases {
-        let sheet = format!(".b {{ background: {url} }}\n");
-        let app = App::new(&[
-            (
-                "package.json",
-                r#"{"name":"css-asset-cache","version":"1.0.0"}"#,
-            ),
-            ("src/style.css", &sheet),
-            ("src/plain.css", ".cache-marker { color: red }\n"),
-            (file, before),
-            ("index.html", INDEX),
-        ]);
-        let serve = || {
-            let mut dev = app.dev();
-            dev.enable_cache = true;
-            crate::serve(dev)
-        };
-        let server = serve().await;
-        let first = linked_sheet(&server).await;
-        assert!(first.contains(old), "{first}");
-        server.text("/src/plain.css?direct").await;
-        wait_cached(&app.root, "cache-marker").await;
-        drop(server);
-
-        app.write(&[(file, after)]);
-        let server = serve().await;
-        let second = linked_sheet(&server).await;
-        assert!(
-            second.contains(new) && !second.contains(old),
-            "{url}: {second}"
-        );
-    }
 }
 
 // A page's `<style>` resolves its relative urls against the page's directory,

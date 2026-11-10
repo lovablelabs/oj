@@ -38,8 +38,6 @@ pub async fn ssr_dev(
         port,
         host,
         config: None,
-        enable_cache: false,
-        no_cache: false,
         lazy: false,
         typecheck,
         mode: None,

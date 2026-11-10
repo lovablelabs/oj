@@ -80,13 +80,6 @@ enum Command {
         /// Vite's `--mode` for the dev server (default `development`).
         #[arg(long)]
         mode: Option<String>,
-        /// Enable the experimental on-disk module cache.
-        /// Off by default; warm restarts then re-serve compiled modules from disk.
-        #[arg(long)]
-        enable_cache: bool,
-        /// Force the on-disk module cache off even if enabled.
-        #[arg(long)]
-        no_cache: bool,
         /// Compile modules on demand instead of eagerly crawling the whole graph
         /// on boot. Opt-in: the eager crawl pre-compiles in parallel and warms
         /// HMR, which is usually the faster default; --lazy suits apps that
@@ -632,8 +625,6 @@ async fn run(cli: Cli, rolldown: tokio::runtime::Handle) -> anyhow::Result<()> {
             host,
             config,
             mode,
-            enable_cache,
-            no_cache,
             lazy,
             typecheck,
         } => {
@@ -648,8 +639,6 @@ async fn run(cli: Cli, rolldown: tokio::runtime::Handle) -> anyhow::Result<()> {
                     port,
                     host,
                     config,
-                    enable_cache,
-                    no_cache,
                     lazy,
                     typecheck,
                     mode,
