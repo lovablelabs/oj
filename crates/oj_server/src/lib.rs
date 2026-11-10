@@ -20,6 +20,8 @@ use oj_cache::CachedModule;
 
 pub mod css_engine;
 pub mod etag;
+mod public_file;
+pub use public_file::{public_content_type, public_file_response};
 pub mod load_error;
 pub mod optimize;
 pub mod plugins;
@@ -94,6 +96,7 @@ pub use style_file::{
     start_dev_inline_style, start_dev_url_base, style_slot, StyleInputs, StyleModule, StyleSlots,
 };
 mod middleware;
+pub use middleware::{RouteHook, RouteHookSlot};
 mod preview;
 mod proxy;
 use css_engine::CssEngine;
@@ -687,6 +690,13 @@ async fn catch_up_resync(host: &Arc<PluginHost>, p: u16) {
 
 pub struct BuiltApp {
     pub router: Router,
+    /// A server built on this one (Start dev) answers its own requests from
+    /// here: inside the cors and host gates, ahead of everything else. See
+    /// [`RouteHookSlot`].
+    pub route_hook: RouteHookSlot,
+    /// Vite's `server.headers`: the router's own files carry them, and so
+    /// does a file the route hook serves as Vite's sirv would.
+    pub dev_headers: Arc<Vec<(header::HeaderName, header::HeaderValue)>>,
     pub host: std::net::IpAddr,
     pub port: u16,
     pub strict_port: bool,
@@ -1627,7 +1637,11 @@ fn build_router(
     state: Arc<ServerState>,
     server_cfg: &oj_config::ServerConfig,
     hmr_ws_path: &str,
-) -> Router {
+) -> (
+    Router,
+    RouteHookSlot,
+    Arc<Vec<(header::HeaderName, header::HeaderValue)>>,
+) {
     let mut app =
         Router::new()
             .route("/@oj/client.js", get(serve_client_js))
@@ -1714,12 +1728,22 @@ fn build_router(
                 .collect()
         })
         .unwrap_or_default();
+    let extra_headers = Arc::new(extra_headers);
     if !extra_headers.is_empty() {
         app = app.layer(axum::middleware::from_fn_with_state(
-            Arc::new(extra_headers),
+            Arc::clone(&extra_headers),
             apply_dev_headers,
         ));
     }
+    // A server built on this one answers here: after cors and the host
+    // check, as every Vite middleware runs after those two (a framework's
+    // SSR handler included), and outside `server.headers`, which Vite sets
+    // on the files it serves itself, not on a framework's responses.
+    let route_hook = RouteHookSlot::default();
+    app = app.layer(axum::middleware::from_fn_with_state(
+        Arc::clone(&route_hook),
+        route_hook_middleware,
+    ));
     if !state.host_policy.allow_all {
         app = app.layer(axum::middleware::from_fn_with_state(
             Arc::clone(&state),
@@ -1732,7 +1756,7 @@ fn build_router(
             cors_middleware,
         ));
     }
-    app.with_state(state)
+    (app.with_state(state), route_hook, extra_headers)
 }
 
 /// Load the serve config and adopt the vite.config's values.
@@ -2413,9 +2437,11 @@ impl DevServer {
         let watch_feed = state.watch_feed.clone();
         let typecheck = state.typecheck.clone();
         let base = state.base.clone();
-        let router = build_router(state, &server_cfg, &hmr.ws_path);
+        let (router, route_hook, dev_headers) = build_router(state, &server_cfg, &hmr.ws_path);
         Ok(BuiltApp {
             router,
+            route_hook,
+            dev_headers,
             host,
             port,
             strict_port,

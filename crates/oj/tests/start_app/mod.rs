@@ -256,10 +256,29 @@ impl Server {
     /// or reset is retried until `WAIT` (a dev server can restart once early
     /// on), with the server's output in the panic if it never answers.
     pub fn request(&self, method: &str, path: &str, headers: &[(&str, String)]) -> (u16, String) {
-        let mut head = format!(
-            "{method} {path} HTTP/1.0\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\nContent-Length: 0\r\n",
-            self.port
-        );
+        let (status, _, body) = self.fetch(method, path, headers);
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    /// [`Server::request`] with the response headers (lower-cased names) and
+    /// the body's bytes.
+    pub fn fetch(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, String)],
+    ) -> (u16, Vec<(String, String)>, Vec<u8>) {
+        // A `Host` among `headers` replaces the server's own.
+        let host = if headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("host"))
+        {
+            String::new()
+        } else {
+            format!("Host: 127.0.0.1:{}\r\n", self.port)
+        };
+        let mut head =
+            format!("{method} {path} HTTP/1.0\r\n{host}Connection: close\r\nContent-Length: 0\r\n");
         for (name, value) in headers {
             head.push_str(&format!("{name}: {value}\r\n"));
         }
@@ -275,9 +294,7 @@ impl Server {
                 Ok::<_, std::io::Error>(bytes)
             })();
             match attempt {
-                Ok(bytes) if !bytes.is_empty() => {
-                    break String::from_utf8_lossy(&bytes).into_owned()
-                }
+                Ok(bytes) if !bytes.is_empty() => break bytes,
                 result => assert!(
                     Instant::now() < deadline,
                     "{method} {path} got no response ({result:?})\n{}",
@@ -286,16 +303,24 @@ impl Server {
             }
             std::thread::sleep(Duration::from_millis(200));
         };
-        let status = response
+        let split = response
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .unwrap_or(response.len());
+        let head = String::from_utf8_lossy(&response[..split]).into_owned();
+        let body = response.get(split + 4..).unwrap_or_default().to_vec();
+        let status = head
             .split(' ')
             .nth(1)
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-        let body = response
-            .split_once("\r\n\r\n")
-            .map(|(_, b)| b.to_string())
-            .unwrap_or_default();
-        (status, body)
+        let headers = head
+            .lines()
+            .skip(1)
+            .filter_map(|line| line.split_once(':'))
+            .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_string()))
+            .collect();
+        (status, headers, body)
     }
 
     /// A server-function call the way Start's client makes it: a

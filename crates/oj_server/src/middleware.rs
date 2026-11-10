@@ -179,6 +179,32 @@ pub(crate) async fn base_middleware(
     next.run(req).await
 }
 
+/// What a server built on this one runs for each request that passed the
+/// cors and host gates: it answers, or hands the request on with `next`.
+pub type RouteHook = Arc<
+    dyn Fn(
+            axum::extract::Request,
+            axum::middleware::Next,
+        ) -> futures_util::future::BoxFuture<'static, Response>
+        + Send
+        + Sync,
+>;
+
+/// Where a [`RouteHook`] is set, once, after the router is built (the Start
+/// dev server's state exists only then). Empty, requests pass straight on.
+pub type RouteHookSlot = Arc<std::sync::OnceLock<RouteHook>>;
+
+pub(crate) async fn route_hook_middleware(
+    State(slot): State<RouteHookSlot>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    match slot.get() {
+        Some(hook) => hook(req, next).await,
+        None => next.run(req).await,
+    }
+}
+
 pub(crate) async fn host_check_middleware(
     State(state): State<Arc<ServerState>>,
     req: axum::extract::Request,

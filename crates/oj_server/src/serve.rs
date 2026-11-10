@@ -387,7 +387,12 @@ async fn serve_file(
         return vary_on_fetch_dest(serve_style(state, headers, file, query).await);
     }
     if in_public {
-        return serve_static_file(file, ext).await;
+        // Vite's servePublicMiddleware: the bytes, with sirv's validators
+        // and byte ranges.
+        return match tokio::fs::metadata(file).await {
+            Ok(meta) => crate::public_file_response(file, &meta, &Method::GET, headers).await,
+            Err(err) => read_error(err),
+        };
     }
     if COMPILABLE.contains(&ext) || ext == "json" {
         let url = url_of(&state.root, file);
@@ -515,14 +520,6 @@ async fn serve_raw_file(state: &Arc<ServerState>, file: &Path, ext: &str) -> Res
             }
         }
         _ => bytes_response(bytes, ext),
-    }
-}
-
-/// The file's bytes as-is with its content type (publicDir files).
-pub(crate) async fn serve_static_file(file: &Path, ext: &str) -> Response {
-    match tokio::fs::read(file).await {
-        Ok(bytes) => bytes_response(bytes, ext),
-        Err(err) => read_error(err),
     }
 }
 
