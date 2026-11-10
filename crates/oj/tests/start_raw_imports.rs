@@ -26,6 +26,10 @@ fn write_route(root: &Path) {
 
 import star from "../star.svg?raw";
 import starInline from "../star.svg?inline";
+import starUrl from "../star.svg?url";
+import starFile from "../star.svg?url&no-inline";
+import bigUrl from "../big.svg?url";
+import dot from "../../art/dot.svg";
 import note from "../content/answer.txt?raw";
 
 import { rootRoute } from "./__root";
@@ -43,10 +47,31 @@ function RawSvg() {
       <pre id="raw-svg-text">{star}</pre>
       <pre id="raw-note">{note}</pre>
       <pre id="inline-svg">{starInline}</pre>
+      <pre id="url-svg">{starUrl}</pre>
+      <pre id="file-svg">{starFile}</pre>
+      <pre id="big-svg">{bigUrl}</pre>
+      <pre id="bare-svg">{dot}</pre>
     </main>
   );
 }
 "#,
+    )
+    .unwrap();
+    // Over Vite's 4096-byte assetsInlineLimit: stays a url.
+    std::fs::write(
+        root.join("src/big.svg"),
+        format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\">{}</svg>\n",
+            "<g/>".repeat(1500)
+        ),
+    )
+    .unwrap();
+    // Outside `src/`, where the fixture's svgr `include` never reaches: a
+    // bare import vite:asset answers.
+    std::fs::create_dir_all(root.join("art")).unwrap();
+    std::fs::write(
+        root.join("art/dot.svg"),
+        "<svg xmlns=\"http://www.w3.org/2000/svg\"><circle r=\"1\"/></svg>\n",
     )
     .unwrap();
     let tree = root.join("src/routeTree.ts");
@@ -134,6 +159,37 @@ fn a_raw_svg_import_is_the_files_text_on_both_sides() {
         dev.output()
     );
 
+    // Vite's dev inlines an svg the build would (`fileToDevUrl`): a small
+    // `?url` import is the data URL, `?url&no-inline` and one over the
+    // limit stay the served url, and a bare svg no plugin claims is inlined
+    // as well.
+    let pre = |id: &str| {
+        html.split_once(&format!("<pre id=\"{id}\">"))
+            .and_then(|(_, rest)| rest.split_once("</pre>"))
+            .map(|(text, _)| text.to_string())
+            .unwrap_or_default()
+    };
+    let url_svg = pre("url-svg");
+    assert!(
+        url_svg.starts_with("data:image/svg+xml,%3csvg"),
+        "a small `?url` svg is its data URL in dev: {url_svg:?}"
+    );
+    let file_svg = pre("file-svg");
+    assert!(
+        file_svg.contains("/@oj-start/fs/") && file_svg.ends_with("/star.svg"),
+        "`?url&no-inline` is the served url: {file_svg:?}"
+    );
+    let big_svg = pre("big-svg");
+    assert!(
+        big_svg.contains("/@oj-start/fs/") && big_svg.ends_with("/big.svg"),
+        "an svg over assetsInlineLimit is the served url: {big_svg:?}"
+    );
+    let bare_svg = pre("bare-svg");
+    assert!(
+        bare_svg.starts_with("data:image/svg+xml,%3csvg") && bare_svg.contains("%3ccircle"),
+        "a bare small svg outside the svgr include is inlined: {bare_svg:?}"
+    );
+
     let (path, code) = client_chunk(&dev);
     let json = serde_json::Value::String(svg.clone()).to_string();
     assert!(
@@ -144,13 +200,33 @@ fn a_raw_svg_import_is_the_files_text_on_both_sides() {
             .collect::<Vec<_>>()
             .join("\n")
     );
-    assert!(
-        !code.contains("star.svg\""),
-        "{path} still points at the file:\n{code}"
-    );
-    // The same form on the client, so the hydration agrees.
+    // (The chunk still names the file for `?url&no-inline`, asserted below;
+    // the `?raw` value is the text, asserted above.)
+    // The same forms on the client, so the hydration agrees: the `?inline`,
+    // `?url` and bare values as data URLs, `?url&no-inline` and the big one
+    // as urls.
     assert!(
         code.contains("\"data:image/svg+xml,%3csvg"),
         "{path} carries no Vite-shaped data URI for the ?inline SVG"
+    );
+    // The render escapes the data URL's quotes as HTML text (`&#x27;`); the
+    // chunk carries the value itself.
+    let unescape = |s: &str| {
+        s.replace("&#x27;", "'")
+            .replace("&quot;", "\"")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&amp;", "&")
+    };
+    let json = |s: &str| serde_json::Value::String(s.to_string()).to_string();
+    for (id, value) in [("url-svg", &url_svg), ("bare-svg", &bare_svg)] {
+        assert!(
+            code.contains(&json(&unescape(value))),
+            "{path} does not carry the server's value for {id}:\n{value}"
+        );
+    }
+    assert!(
+        code.contains(&json(&file_svg)) && code.contains(&json(&big_svg)),
+        "{path} does not carry the served urls the server rendered"
     );
 }

@@ -452,6 +452,7 @@ pub async fn start_dev(
             entry,
             oj_config::ssr_externals(&config),
             public_dir.clone(),
+            crate::start_bundle::assets::client_inline_limit(&config),
             init_env,
         )?);
         (engine, public_dir)

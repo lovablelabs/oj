@@ -89,7 +89,7 @@ pub use html::*;
 mod ssr;
 mod style_file;
 pub mod stylex;
-pub use assets_serve::inline_url_under;
+pub use assets_serve::{asset_data_url, inline_url_under, svg_to_data_url};
 pub use ssr::*;
 pub use style_file::{
     compile_style_file, needs_css_compile, needs_preprocess_engine, read_style_source,
