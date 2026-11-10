@@ -1666,7 +1666,7 @@ pub(crate) fn register_in_graph(state: &ServerState, url: &str, module: &CachedM
     if !pruned.is_empty() {
         // Dropped deps nothing imports any more: the client runs their `hot.prune`
         // callbacks, stamped so a re-import re-runs them (Vite's handlePrunedModules).
-        graph.stamp_pruned(&pruned, now_millis() as u64);
+        graph.stamp_pruned(&pruned, crate::hmr::hmr_now());
         let paths: Vec<String> = pruned.iter().map(|p| p.display().to_string()).collect();
         println!("oj: prune {paths:?}");
         let _ = state
