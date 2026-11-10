@@ -63,12 +63,28 @@ pub(crate) async fn serve_client_js(
     headers: HeaderMap,
 ) -> Response {
     // Browsers refetch /@oj/client.js on every reload; the body is fixed for
-    // the server's lifetime, so a matching validator saves the transfer.
-    cached_js_response(
-        &headers,
-        state.client_js_etag.clone(),
-        state.client_js.clone(),
-    )
+    // the server's lifetime but for the keepalive interval its watchdog counts
+    // on, read as served (it follows `BuiltApp::set_hmr_ping`), so a matching
+    // validator saves the transfer.
+    let ping_ms = state.hmr_ping_ms.load(std::sync::atomic::Ordering::SeqCst);
+    let etag = format!("{}-{ping_ms}\"", state.client_js_etag.trim_end_matches('"'));
+    // A 304 needs no body: fill it in only for a page that has none.
+    let fresh = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        == Some(etag.as_str());
+    let body = if fresh {
+        Bytes::new()
+    } else {
+        with_ping(&state.client_js, ping_ms)
+    };
+    cached_js_response(&headers, etag, body)
+}
+
+/// The rendered client with its `__OJ_PING_MS__` filled in (0: no watchdog).
+pub(crate) fn with_ping(client_js: &Bytes, ping_ms: u64) -> Bytes {
+    let js = String::from_utf8_lossy(client_js);
+    Bytes::from(js.replace("__OJ_PING_MS__", &ping_ms.to_string()))
 }
 
 /// A cached, immutable-for-this-process JS body: 304 on a matching validator, else the
