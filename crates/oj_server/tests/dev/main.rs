@@ -49,6 +49,8 @@ mod hmr_disabled;
 mod hmr_gate;
 mod hmr_hot_accept;
 mod hmr_importer_stamps;
+mod hmr_invalidate;
+mod hmr_plugin_filtered_stamps;
 mod hmr_protocol;
 mod host_binding;
 mod hot_update_burst;
