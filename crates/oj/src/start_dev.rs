@@ -546,7 +546,9 @@ pub async fn start_dev(
                 }
             }
             let _ = runner_documents_tx.send(());
-            let _ = engine
+            // The render read to its end, so the deferred content's modules
+            // are warm too.
+            if let Ok(resp) = engine
                 .handle(engine_request(
                     "GET".into(),
                     "/".into(),
@@ -554,7 +556,10 @@ pub async fn start_dev(
                     None,
                     false,
                 ))
-                .await;
+                .await
+            {
+                let _ = resp.body_bytes().await;
+            }
             oj_server::boot_phase("prewarm complete");
             if engine.revalidate().await {
                 reloads.bump();
@@ -3222,8 +3227,9 @@ async fn forward_with_body(state: &Arc<StartState>, req: Request) -> Response {
     // A configureServer middleware may claim the request first; since a
     // streamed body cannot be replayed, the plugin host pipes an unclaimed
     // request on to the engine's loopback shim (x-oj-forward-to) instead of
-    // falling through. Without a middleware the body is read whole and handed
-    // to the engine (the call transport is buffered).
+    // falling through. Without a middleware the request body is read whole
+    // and handed to the engine (the call takes it as one argument); the
+    // response body streams back on either path.
     let Some(port) = state.plugin_serve.mw_port() else {
         let body = match read_body_capped(req.into_body(), start_max_body_bytes()).await {
             Ok(body) => body,
@@ -3770,8 +3776,10 @@ fn engine_request(
     }
 }
 
+/// The runner's reply as the HTTP response, its body streamed chunk by chunk
+/// as the handler writes them (hyper flushes each one).
 fn engine_response(resp: StartResponse) -> Response {
-    let mut out = Response::new(axum::body::Body::from(resp.body));
+    let mut out = Response::new(axum::body::Body::from_stream(resp.body));
     *out.status_mut() =
         StatusCode::from_u16(resp.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let headers = out.headers_mut();
@@ -3792,7 +3800,7 @@ fn engine_response(resp: StartResponse) -> Response {
 }
 
 async fn forward(
-    engine: &StartEngine,
+    engine: &Arc<StartEngine>,
     url_base: &str,
     stamp: &str,
     method: String,

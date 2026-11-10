@@ -22,8 +22,11 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
+
+use futures_util::Stream;
 
 use oj_js::EngineConfig;
 use oj_js::HostModule;
@@ -1319,15 +1322,64 @@ pub struct StartRequest {
     pub body: Option<Vec<u8>>,
 }
 
-/// The handler's reply: status/headers/set-cookies plus the whole body (the
-/// stream is read to completion in the bootstrap, so deferred TanStack
-/// content is present).
-#[derive(Debug)]
+/// The handler's reply: status, headers and set-cookies, with the body as a
+/// stream of the chunks the handler writes, pulled from the runner one by one
+/// as they come, so a server-sent event or a render's deferred content
+/// reaches the client live, as Node's response streams it under Vite's
+/// middleware for Start (srvx's `sendNodeResponse` pipes the web body).
 pub struct StartResponse {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub set_cookies: Vec<String>,
-    pub body: Vec<u8>,
+    pub body: StartBody,
+}
+
+/// A response body's chunks in order; an error ends it short (the stream
+/// failed, or the runner was replaced under it).
+pub type StartBody = Pin<Box<dyn Stream<Item = Result<Vec<u8>, String>> + Send>>;
+
+impl StartResponse {
+    /// The whole body, read to its end (the prewarm's render).
+    pub async fn body_bytes(self) -> Result<Vec<u8>, String> {
+        use futures_util::TryStreamExt;
+        let mut body = self.body;
+        let mut out = Vec::new();
+        while let Some(chunk) = body.try_next().await? {
+            out.extend_from_slice(&chunk);
+        }
+        Ok(out)
+    }
+}
+
+/// A body still being pulled from the runner. Dropped short of its end (the
+/// client went away), it cancels the body there, so the handler's producer
+/// stops writing for nobody, as srvx's `streamBody` cancels the reader when
+/// Node's response closes.
+struct InFlightBody {
+    engine: Arc<StartEngine>,
+    id: String,
+    finished: bool,
+}
+
+impl InFlightBody {
+    /// The stream ended in the runner, which forgot the reader: nothing is
+    /// left to cancel.
+    fn ended(mut self) {
+        self.finished = true;
+    }
+}
+
+impl Drop for InFlightBody {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        let engine = Arc::clone(&self.engine);
+        let id = std::mem::take(&mut self.id);
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move { engine.cancel_body(&id).await });
+        }
+    }
 }
 
 /// The Start runner handle `start_dev` calls per request. Wraps the engine so
@@ -1410,8 +1462,10 @@ impl StartEngine {
     }
 
     /// One request through the handler; concurrent calls interleave on the
-    /// isolate (the engine's call scheduler).
-    pub async fn handle(&self, req: StartRequest) -> Result<StartResponse, String> {
+    /// isolate (the engine's call scheduler). The reply comes back once the
+    /// handler's Response resolves, its body still streaming: each chunk is
+    /// one more call to the runner, made as the client reads.
+    pub async fn handle(self: &Arc<Self>, req: StartRequest) -> Result<StartResponse, String> {
         let slot = self.engine.read().await;
         slot.inited
             .get_or_try_init(|| self.init(&slot.engine))
@@ -1459,17 +1513,74 @@ impl StartEngine {
                     .collect()
             })
             .unwrap_or_default();
-        let body = value
-            .get("bodyBase64")
-            .and_then(|b| b.as_str())
-            .map(base64_decode)
-            .unwrap_or_default();
+        let body = match value.get("body").and_then(|b| b.as_str()) {
+            Some(id) => self.body_stream(id.to_string()),
+            None => Box::pin(futures_util::stream::empty()),
+        };
         Ok(StartResponse {
             status,
             headers: pairs("headers"),
             set_cookies,
             body,
         })
+    }
+
+    /// The chunks of the body `id` names in the runner, one pull each, until
+    /// the stream ends or fails.
+    fn body_stream(self: &Arc<Self>, id: String) -> StartBody {
+        let body = InFlightBody {
+            engine: Arc::clone(self),
+            id,
+            finished: false,
+        };
+        Box::pin(futures_util::stream::unfold(body, |mut body| async move {
+            if body.finished {
+                return None;
+            }
+            match body.engine.pull_body(&body.id).await {
+                Ok(Some(chunk)) => Some((Ok(chunk), body)),
+                Ok(None) => {
+                    body.ended();
+                    None
+                }
+                Err(e) => {
+                    body.finished = true;
+                    Some((Err(e), body))
+                }
+            }
+        }))
+    }
+
+    /// The next chunk of a body in flight, or None at its end. The read lock
+    /// is held per pull, not across the body, so a respawn is never held up
+    /// by a long-lived stream (an event feed): the stream fails at the next
+    /// pull instead, the runner that owned it being gone.
+    async fn pull_body(&self, id: &str) -> Result<Option<Vec<u8>>, String> {
+        let slot = self.engine.read().await;
+        let value = slot
+            .engine
+            .call(self.bootstrap.clone(), "pull", vec![id.into()], None)
+            .await
+            .map_err(|e| e.to_string())?;
+        if value.get("done").and_then(|d| d.as_bool()) == Some(true) {
+            return Ok(None);
+        }
+        Ok(Some(
+            value
+                .get("chunkBase64")
+                .and_then(|c| c.as_str())
+                .map(base64_decode)
+                .unwrap_or_default(),
+        ))
+    }
+
+    /// Cancels a body in flight whose reader went away.
+    async fn cancel_body(&self, id: &str) {
+        let slot = self.engine.read().await;
+        let _ = slot
+            .engine
+            .call(self.bootstrap.clone(), "cancel", vec![id.into()], None)
+            .await;
     }
 
     /// The watcher's reload: drop changed modules (and their importers) and
