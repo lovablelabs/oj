@@ -358,7 +358,7 @@ async fn serve_file(
         let url = format!("{}?react", url_of(&state.root, file));
         return serve_compiled(state, file, &url, None, headers).await;
     }
-    if ext.eq_ignore_ascii_case("svg") || is_importable_asset_ext(ext) {
+    if ext.eq_ignore_ascii_case("svg") || is_importable_asset(&file.to_string_lossy()) {
         return vary_on_fetch_dest(serve_bare_asset(state, headers, file, ext, query).await);
     }
     serve_raw_file(state, file, ext).await
@@ -386,7 +386,7 @@ async fn serve_bare_asset(
             asset_module(file, &url, "url", &state.asset_urls, "client").await,
         );
     }
-    if is_importable_asset_ext(ext) && wants_module_import(headers, query) {
+    if is_importable_asset(&file.to_string_lossy()) && wants_module_import(headers, query) {
         let url = url_of(&state.root, file);
         return js_module_response(
             asset_module(file, &url, "url", &state.asset_urls, "client").await,

@@ -1555,6 +1555,7 @@ fn merge_adopts_only_unset_fields() {
         preview: None,
         app_type: None,
         html: None,
+        assets_include: None,
         active_plugins: None,
         stylex: None,
         editor_hmr_gate: false,
@@ -1612,6 +1613,7 @@ fn merge_never_overrides_config() {
         preview: None,
         app_type: None,
         html: None,
+        assets_include: None,
         active_plugins: None,
         stylex: None,
         editor_hmr_gate: false,
@@ -1962,6 +1964,34 @@ fn merge_adopts_cors_and_allowed_hosts() {
         sc.allowed_hosts,
         Some(oj_config::AllowedHosts::All(true))
     ));
+}
+
+// `assetsInclude` reaches the config as the extractor carries it: string
+// globs and RegExps as `{ regex, flags }`; an empty list is no value.
+#[test]
+fn merge_adopts_assets_include() {
+    let mut config = oj_config::OjConfig::default();
+    let patterns = vec![
+        serde_json::json!("**/*.gltf"),
+        serde_json::json!({ "regex": "\\.bin$", "flags": "" }),
+    ];
+    merge_vite_values(
+        &mut config,
+        ViteValues {
+            assets_include: Some(patterns.clone()),
+            ..Default::default()
+        },
+    );
+    assert_eq!(config.assets_include, Some(patterns));
+    let mut empty = oj_config::OjConfig::default();
+    merge_vite_values(
+        &mut empty,
+        ViteValues {
+            assets_include: Some(Vec::new()),
+            ..Default::default()
+        },
+    );
+    assert_eq!(empty.assets_include, None);
 }
 
 #[test]

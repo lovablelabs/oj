@@ -449,7 +449,7 @@ fn classify_id(abs: &str, intent: Option<&'static str>, svg_react: bool) -> Stri
     }
     // wasm is asset-classified like the loader (URL export only). A plain
     // import is `asset`: served like `?url`, but its id has no query.
-    if oj_server::is_importable_asset_ext(&ext) || ext == "wasm" {
+    if oj_server::is_importable_asset(abs) || ext == "wasm" {
         return format!("{abs}?ojasset=asset");
     }
     abs.to_string()
@@ -863,7 +863,7 @@ impl StartHost {
                 if svg_react
                     || intent.is_some()
                     || oj_server::is_style_ext(&ext)
-                    || oj_server::is_importable_asset_ext(&ext)
+                    || oj_server::is_importable_asset(&abs)
                 {
                     let id = classify_id(&abs, intent, svg_react);
                     return Ok(Some(self.module_url(&id, importer_id)));
@@ -1036,10 +1036,7 @@ impl StartHost {
         // An asset under a query no intent names (vite-imagetools'
         // `x.webp?w=768`): the load hooks Vite runs before vite:asset see the
         // full id; unclaimed, it is the file's served URL, as vite:asset's.
-        if is_path
-            && query.is_some()
-            && oj_server::is_importable_asset_ext(&ext_of(&clean).to_ascii_lowercase())
-        {
+        if is_path && query.is_some() && oj_server::is_importable_asset(&clean) {
             let loaded = match self.bridge.plugin_host().await {
                 Some(host) if host.hook_wants_load(id) => {
                     host.load_pre(id).await.map_err(|e| format!("{id}: {e}"))?

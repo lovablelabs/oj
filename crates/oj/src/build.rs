@@ -1894,7 +1894,8 @@ impl Plugin for OjCssPlugin {
                     || Path::new(&rest)
                         .extension()
                         .and_then(|e| e.to_str())
-                        .is_some_and(oj_compiler::assets::is_asset_ext);
+                        .is_some_and(oj_compiler::assets::is_asset_ext)
+                    || oj_compiler::assets::is_included_asset(&root.join(&rest).to_string_lossy());
                 if asset && !worker && public_file(&public_dir, &rest).is_some() {
                     let id = with_query(&format!("{PUBLIC_FILE_ID}{rest}"));
                     return Ok(Some(HookResolveIdOutput::from_id(id)));

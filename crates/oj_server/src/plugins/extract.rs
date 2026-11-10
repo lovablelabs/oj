@@ -60,6 +60,8 @@ pub struct ViteValues {
     pub app_type: Option<String>,
     /// `html` block (`cspNonce`).
     pub html: Option<serde_json::Value>,
+    /// `assetsInclude`: string globs and `{ regex, flags }` objects.
+    pub assets_include: Option<Vec<serde_json::Value>>,
     /// The config's plugins the plugin host would run (none of oj's native
     /// set); an over-count. None when extraction could not read the list.
     pub active_plugins: Option<usize>,
@@ -1157,6 +1159,9 @@ pub(crate) fn parse_vite_values(json: &serde_json::Value) -> ViteValues {
         preview: non_null(json, "preview"),
         app_type: str_field(json, "appType"),
         html: non_null(json, "html"),
+        assets_include: json
+            .get("assetsInclude")
+            .and_then(|v| v.as_array().cloned()),
         active_plugins: json
             .get("activePlugins")
             .and_then(|v| v.as_u64())
@@ -1188,6 +1193,7 @@ pub fn adopt_vite_config_values(
         return no_values_verdict(root, config_file);
     };
     merge_vite_values(config, v);
+    install_assets_include(config, root);
     exclude_stylex_dependencies(config, root, command);
     Ok(())
 }
@@ -1205,8 +1211,19 @@ pub fn adopt_vite_config_values_default_mode(
         return no_values_verdict(root, config_file);
     };
     merge_vite_values(config, v);
+    install_assets_include(config, root);
     exclude_stylex_dependencies(config, root, command);
     Ok(())
+}
+
+/// The config's `assetsInclude` becomes the process's asset filter
+/// (`oj_compiler::assets::is_included_asset`), as Vite's resolved config
+/// carries the one `assetsInclude(file)` every plugin consults.
+fn install_assets_include(config: &oj_config::OjConfig, root: &Path) {
+    oj_compiler::assets::install_assets_include(
+        config.assets_include.as_deref().unwrap_or(&[]),
+        root,
+    );
 }
 
 /// No values extracted: no vite.config means nothing to adopt, but a
@@ -1419,6 +1436,11 @@ pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues)
     }
     if let Some(css) = v.css.as_ref() {
         merge_css(config, css);
+    }
+    if config.assets_include.is_none() {
+        if let Some(a) = v.assets_include.filter(|a| !a.is_empty()) {
+            config.assets_include = Some(a);
+        }
     }
     if config.env_prefix.is_none() {
         if let Some(p) = v.env_prefix.filter(|p| !p.is_empty()) {

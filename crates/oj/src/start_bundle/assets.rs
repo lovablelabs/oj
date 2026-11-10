@@ -138,7 +138,10 @@ pub(crate) fn asset_tag(source: &str, dev: bool) -> Option<AssetTag> {
     if has_inline(query) {
         return Some(AssetTag::Inline);
     }
-    if has_flag(query, "url") || is_asset_ext(ext_of(path)) {
+    if has_flag(query, "url")
+        || is_asset_ext(ext_of(path))
+        || oj_compiler::assets::is_included_asset(path)
+    {
         return Some(AssetTag::Url);
     }
     is_style_path(path).then_some(AssetTag::Css)
