@@ -55,8 +55,10 @@ impl<'a> Importer<'a> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn rewrite_specifier(
     root: &Path,
+    public_dir: Option<&Path>,
     from: Importer<'_>,
     resolver: &OjResolver,
     fs_allow: &Mutex<std::collections::HashSet<PathBuf>>,
@@ -66,7 +68,8 @@ pub(crate) fn rewrite_specifier(
 ) -> Option<String> {
     let (dir, importer) = (from.dir, from.file);
     if spec.starts_with('/') {
-        return rewrite_absolute(root, fs_allow, dir_cache, spec);
+        return rewrite_absolute(root, fs_allow, dir_cache, spec)
+            .or_else(|| mark_public_asset_import(root, public_dir, dir_cache, spec));
     }
     if spec.contains("://") {
         return None;
@@ -80,7 +83,7 @@ pub(crate) fn rewrite_specifier(
     if let Some((base, query)) = spec.split_once('?') {
         if PASSTHROUGH_QUERIES.contains(&query) {
             let resolved = rewrite_specifier(
-                root, from, resolver, fs_allow, dir_cache, base, false,
+                root, public_dir, from, resolver, fs_allow, dir_cache, base, false,
             )
             .or_else(|| {
                 resolve_in(resolver, dir, importer, base).ok().map(|p| {
@@ -177,6 +180,34 @@ fn rewrite_absolute(
         Some(q) => format!("{url}?{q}"),
         None => url,
     })
+}
+
+/// A root-relative import of an asset under the public dir (`/assets/logo.png`
+/// for `public/assets/logo.png`), marked `?url` so the browser asks for its
+/// url module, as a relative asset import is marked by [`mark_css_import`].
+/// Vite's resolver finds nothing under the root for such a specifier and
+/// vite:asset's resolveId answers with the url as written (checkPublicFile);
+/// importAnalysis then marks it `?import` (isExplicitImportRequired), the
+/// mark its servePublicMiddleware steps aside for, so the asset plugin's
+/// load serves `export default "/assets/logo.png"` (fileToDevUrl) where the
+/// bare url is the file's bytes. One that already carries a query (`?url`,
+/// `?raw`, `?inline`) is left as written: the server reads that query. A
+/// public file that is not an asset is left alone too; Vite refuses the
+/// import ("Cannot import non-asset file ... which is inside /public").
+fn mark_public_asset_import(
+    root: &Path,
+    public_dir: Option<&Path>,
+    dir_cache: &Mutex<DirCache>,
+    spec: &str,
+) -> Option<String> {
+    let public = public_dir?;
+    let rel = spec.strip_prefix('/')?;
+    if rel.starts_with('/') || spec.contains(['?', '#']) {
+        return None;
+    }
+    let file = normalize(&public.join(rel));
+    (file.starts_with(public) && is_file_cached(dir_cache, &file) && is_asset_path(root, &file))
+        .then(|| format!("{spec}?url"))
 }
 
 /// The file a relative import names, trying `.ts`/`.tsx` for a missing `.js`/`.jsx`

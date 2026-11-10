@@ -1306,6 +1306,7 @@ impl ImportRewrite<'_> {
         }
         if let Some(url) = rewrite_specifier(
             &state.root,
+            state.public_dir.as_deref(),
             crate::rewrite::Importer {
                 dir: &job.dir,
                 file: Some(&job.file),

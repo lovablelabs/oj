@@ -87,6 +87,7 @@ mod postcss_from_vite;
 #[cfg(unix)]
 mod pre_resolve_id;
 mod preprocessors;
+mod public_asset_import;
 mod query_assets;
 mod redirect_passthrough;
 mod refresh_harness;
