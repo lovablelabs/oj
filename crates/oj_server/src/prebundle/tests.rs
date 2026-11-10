@@ -20,6 +20,15 @@ struct App {
     root: PathBuf,
 }
 
+impl Drop for App {
+    /// A host booted here moved the process into this root (a real chdir);
+    /// step out before the TempDir goes, or every concurrent test loses its
+    /// current directory (see `plugins::test_roots`).
+    fn drop(&mut self) {
+        crate::plugins::test_roots::step_out_of(self._dir.path());
+    }
+}
+
 impl App {
     fn new() -> App {
         App::in_dir("app")

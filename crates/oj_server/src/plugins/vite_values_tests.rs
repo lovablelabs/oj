@@ -11,7 +11,7 @@ fn finds_commonjs_vite_config_formats() {
         let path = root.join(format!("vite.config.{extension}"));
         std::fs::write(&path, "module.exports = {};").unwrap();
         assert_eq!(vite_config_file(&root, None), Some(path));
-        std::fs::remove_dir_all(&root).unwrap();
+        crate::plugins::test_roots::remove_root(&root);
     }
 }
 
@@ -222,7 +222,7 @@ fn merge_adopts_extractor_ssr_when_the_oj_side_is_not_an_object() {
 /// a call: the shared setup of the revive tests.
 async fn spawn_live_host(tag: &str) -> (PathBuf, std::sync::Arc<PluginHost>) {
     let root = std::env::temp_dir().join(format!("oj-revive-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    crate::plugins::test_roots::remove_root(&root);
     std::fs::create_dir_all(&root).unwrap();
     let plugins = root.join("oj.plugins.mjs");
     std::fs::write(&plugins, "export default [];\n").unwrap();
@@ -338,7 +338,7 @@ async fn a_worker_container_handle_dies_with_its_engine() {
 #[tokio::test]
 async fn a_revived_host_reopens_its_environment_containers() {
     let root = std::env::temp_dir().join(format!("oj-revive-env-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    crate::plugins::test_roots::remove_root(&root);
     std::fs::create_dir_all(&root).unwrap();
     let plugins = root.join("oj.plugins.mjs");
     std::fs::write(
@@ -401,7 +401,7 @@ async fn a_revived_host_reopens_its_environment_containers() {
 #[tokio::test]
 async fn an_open_the_engine_dies_in_adopts_the_revived_container() {
     let root = std::env::temp_dir().join(format!("oj-revive-open-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    crate::plugins::test_roots::remove_root(&root);
     std::fs::create_dir_all(&root).unwrap();
     let flag = root.join("died-once");
     let plugins = root.join("oj.plugins.mjs");
@@ -465,7 +465,7 @@ export default [{{
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_open_adopts_a_container_another_caller_revived() {
     let root = std::env::temp_dir().join(format!("oj-revive-race-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    crate::plugins::test_roots::remove_root(&root);
     std::fs::create_dir_all(&root).unwrap();
     let flag = root.join("died-once");
     let plugins = root.join("oj.plugins.mjs");
@@ -534,7 +534,7 @@ export default [{{
 #[tokio::test]
 async fn an_open_waits_out_a_held_back_revive_without_spinning() {
     let root = std::env::temp_dir().join(format!("oj-revive-spacing-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    crate::plugins::test_roots::remove_root(&root);
     std::fs::create_dir_all(&root).unwrap();
     let flag = root.join("wedged-once");
     let plugins = root.join("oj.plugins.mjs");
@@ -606,7 +606,7 @@ export default [{{
 #[tokio::test]
 async fn a_revived_host_gates_by_the_plugins_filters_again() {
     let root = std::env::temp_dir().join(format!("oj-revive-plan-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    crate::plugins::test_roots::remove_root(&root);
     std::fs::create_dir_all(&root).unwrap();
     let plugins = root.join("oj.plugins.mjs");
     std::fs::write(
@@ -680,7 +680,7 @@ async fn a_shutdown_host_is_never_revived() {
 #[tokio::test]
 async fn addon_keeper_tolerates_unloadable_addons() {
     let root = std::env::temp_dir().join(format!("oj-keeper-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    crate::plugins::test_roots::remove_root(&root);
     std::fs::create_dir_all(&root).unwrap();
     keep_addons_alive(
         &root,
@@ -722,7 +722,7 @@ fn node_options_heap_cap_parses_like_node() {
 #[tokio::test]
 async fn a_memory_blowup_declares_the_host_gone_and_the_next_call_revives_it() {
     let root = std::env::temp_dir().join(format!("oj-revive-oom-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    crate::plugins::test_roots::remove_root(&root);
     std::fs::create_dir_all(&root).unwrap();
     let plugins = root.join("oj.plugins.mjs");
     std::fs::write(
@@ -822,7 +822,7 @@ async fn the_respawn_budget_is_finite_and_spaced() {
 #[tokio::test]
 async fn lazy_call_during_an_init_slower_than_the_probe_window_is_served() {
     let root = std::env::temp_dir().join(format!("oj-lazy-slow-init-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    crate::plugins::test_roots::remove_root(&root);
     std::fs::create_dir_all(&root).unwrap();
     // Init outlasts several 500ms probe windows, then completes.
     let plugins = root.join("oj.plugins.mjs");
@@ -865,7 +865,7 @@ async fn lazy_call_during_an_init_slower_than_the_probe_window_is_served() {
 #[tokio::test]
 async fn pre_init_calls_never_fail_on_elapsed_time_only_on_host_death() {
     let root = std::env::temp_dir().join(format!("oj-lazy-window-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    crate::plugins::test_roots::remove_root(&root);
     std::fs::create_dir_all(&root).unwrap();
     // Init never completes; the interval keeps the event loop alive.
     let plugins = root.join("oj.plugins.mjs");
@@ -942,7 +942,7 @@ async fn pre_init_calls_never_fail_on_elapsed_time_only_on_host_death() {
 #[tokio::test]
 async fn boot_host_stall_monitor_flips_evidence_without_a_call_and_init_clears_it() {
     let root = std::env::temp_dir().join(format!("oj-boot-stall-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    crate::plugins::test_roots::remove_root(&root);
     std::fs::create_dir_all(&root).unwrap();
     let config = serde_json::json!({
         "config": { "root": root.display().to_string() },
@@ -1039,7 +1039,7 @@ async fn boot_host_stall_monitor_flips_evidence_without_a_call_and_init_clears_i
 #[tokio::test]
 async fn synchronously_wedged_hook_silences_the_probes_and_the_host_is_revived() {
     let root = std::env::temp_dir().join(format!("oj-wedged-sync-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    crate::plugins::test_roots::remove_root(&root);
     std::fs::create_dir_all(&root).unwrap();
     let plugins = root.join("oj.plugins.mjs");
     std::fs::write(
@@ -1103,7 +1103,7 @@ return null;
 #[tokio::test]
 async fn natively_blocked_hook_declares_the_host_gone_and_the_next_call_revives_it() {
     let root = std::env::temp_dir().join(format!("oj-wedged-native-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    crate::plugins::test_roots::remove_root(&root);
     std::fs::create_dir_all(&root).unwrap();
     let plugins = root.join("oj.plugins.mjs");
     std::fs::write(
@@ -1186,7 +1186,7 @@ return null;
 #[tokio::test]
 async fn hung_hook_promise_waits_and_the_host_keeps_serving() {
     let root = std::env::temp_dir().join(format!("oj-hung-hook-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    crate::plugins::test_roots::remove_root(&root);
     std::fs::create_dir_all(&root).unwrap();
     let plugins = root.join("oj.plugins.mjs");
     std::fs::write(
@@ -1254,7 +1254,7 @@ return null;
 #[tokio::test]
 async fn plugin_env_writes_and_cwd_stay_inside_the_host_shadow() {
     let root = std::env::temp_dir().join(format!("oj-env-shadow-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    crate::plugins::test_roots::remove_root(&root);
     std::fs::create_dir_all(&root).unwrap();
     let plugins = root.join("oj.plugins.mjs");
     std::fs::write(
@@ -1291,9 +1291,10 @@ async fn plugin_env_writes_and_cwd_stay_inside_the_host_shadow() {
         std::env::var("OJ_HOST_CWD_BEFORE").is_err() && std::env::var("OJ_HOST_CWD_AFTER").is_err(),
         "a plugin's env write must never reach oj's real environment"
     );
-    assert_ne!(
-        std::env::current_dir().unwrap(),
-        std::path::PathBuf::from("/"),
+    // The real cwd is wherever the last host booted (another test's root,
+    // possibly gone by now): anything but the plugin's "/".
+    assert!(
+        std::env::current_dir().map_or(true, |cwd| cwd != std::path::Path::new("/")),
         "a plugin's chdir must not move oj's real cwd"
     );
     host.shutdown();
@@ -1304,7 +1305,7 @@ async fn plugin_env_writes_and_cwd_stay_inside_the_host_shadow() {
 #[tokio::test]
 async fn build_start_settles_before_any_load_even_under_concurrent_first_calls() {
     let root = std::env::temp_dir().join(format!("oj-buildstart-gate-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    crate::plugins::test_roots::remove_root(&root);
     std::fs::create_dir_all(&root).unwrap();
     let plugins = root.join("oj.plugins.mjs");
     std::fs::write(
@@ -1358,7 +1359,7 @@ return null;
 #[tokio::test]
 async fn push_channel_delivers_serve_info_ws_and_server_events() {
     let root = std::env::temp_dir().join(format!("oj-push-dispatch-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    crate::plugins::test_roots::remove_root(&root);
     std::fs::create_dir_all(&root).unwrap();
     let plugins = root.join("oj.plugins.mjs");
     std::fs::write(
@@ -1464,7 +1465,7 @@ fn extraction_env_hash_tracks_vite_vars_and_node_env_only() {
 #[test]
 fn config_discovery_precedence_matches_vite() {
     let root = std::env::temp_dir().join(format!("oj-config-precedence-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    crate::plugins::test_roots::remove_root(&root);
     std::fs::create_dir_all(&root).unwrap();
     let order = ["js", "mjs", "ts", "cjs", "mts", "cts"];
     for ext in order.iter().rev() {
@@ -1483,7 +1484,7 @@ fn config_discovery_precedence_matches_vite() {
         std::fs::remove_file(root.join(format!("vite.config.{ext}"))).unwrap();
     }
     assert_eq!(vite_config_file(&root, None), None);
-    std::fs::remove_dir_all(&root).unwrap();
+    crate::plugins::test_roots::remove_root(&root);
 }
 
 #[test]
@@ -2093,7 +2094,7 @@ fn merge_unions_watch_ignored() {
 #[tokio::test]
 async fn a_prewarmed_engine_hosts_the_plugins_and_revives_normally() {
     let root = std::env::temp_dir().join(format!("oj-prewarm-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    crate::plugins::test_roots::remove_root(&root);
     std::fs::create_dir_all(&root).unwrap();
     let plugins = root.join("oj.plugins.mjs");
     std::fs::write(
@@ -2129,7 +2130,7 @@ async fn a_prewarmed_engine_hosts_the_plugins_and_revives_normally() {
         .await
         .expect("a revive boots a fresh engine and serves");
     assert_eq!(host.core.revive.lock().unwrap().generation, generation + 1);
-    let _ = std::fs::remove_dir_all(&root);
+    crate::plugins::test_roots::remove_root(&root);
 }
 
 // The app's vite, warmed ahead of the host, is the module the host's
@@ -2139,7 +2140,7 @@ async fn a_prewarmed_engine_hosts_the_plugins_and_revives_normally() {
 #[tokio::test]
 async fn a_prewarmed_vite_is_shared_and_its_timers_never_hold_the_boot() {
     let root = std::env::temp_dir().join(format!("oj-prewarm-vite-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    crate::plugins::test_roots::remove_root(&root);
     let vite = root.join("node_modules/vite");
     std::fs::create_dir_all(&vite).unwrap();
     std::fs::write(
@@ -2199,7 +2200,7 @@ export async function loadConfigFromFile() {
         "vite evaluates once"
     );
     host.shutdown();
-    let _ = std::fs::remove_dir_all(&root);
+    crate::plugins::test_roots::remove_root(&root);
 }
 
 // Vite's order: `vite`'s cli.js statically imports the chunk its index.js
@@ -2210,7 +2211,7 @@ export async function loadConfigFromFile() {
 #[tokio::test]
 async fn a_prewarmed_vite_evaluates_before_the_node_env_default_like_vite() {
     let root = std::env::temp_dir().join(format!("oj-prewarm-order-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    crate::plugins::test_roots::remove_root(&root);
     let vite = root.join("node_modules/vite");
     std::fs::create_dir_all(&vite).unwrap();
     std::fs::write(
@@ -2264,7 +2265,7 @@ export async function loadConfigFromFile() {
         format!("import {at_import}\nconfig {at_config}\n"),
     );
     host.shutdown();
-    let _ = std::fs::remove_dir_all(&root);
+    crate::plugins::test_roots::remove_root(&root);
 }
 
 #[test]

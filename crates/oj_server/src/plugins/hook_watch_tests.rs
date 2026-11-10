@@ -11,7 +11,7 @@ use super::*;
 
 fn plugins_root(name: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!("oj-hook-watch-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    crate::plugins::test_roots::remove_root(&root);
     std::fs::create_dir_all(&root).unwrap();
     root
 }
