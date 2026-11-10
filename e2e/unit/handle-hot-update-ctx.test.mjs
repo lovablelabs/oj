@@ -76,7 +76,12 @@ test("plugin-host treats an empty handleHotUpdate array as a suppressed update",
     const res = await host.send({
       id: 1,
       hook: "handleHotUpdate",
-      args: [path.join(fx.root, "a.tsx"), "123", "update", JSON.stringify([{ url: "/a.tsx", isSelfAccepting: true, importers: [] }])],
+      args: [
+        path.join(fx.root, "a.tsx"),
+        "123",
+        "update",
+        JSON.stringify([{ url: "/a.tsx", isSelfAccepting: true, importers: [] }]),
+      ],
     });
     assert.equal(res.result, "skip", "empty array suppresses the update");
   } finally {
@@ -139,7 +144,12 @@ test("plugin-host lets a later empty handleHotUpdate return suppress an earlier 
     const res = await host.send({
       id: 1,
       hook: "handleHotUpdate",
-      args: [path.join(fx.root, "a.tsx"), "123", "update", JSON.stringify([{ url: "/a.tsx", isSelfAccepting: true, importers: [] }])],
+      args: [
+        path.join(fx.root, "a.tsx"),
+        "123",
+        "update",
+        JSON.stringify([{ url: "/a.tsx", isSelfAccepting: true, importers: [] }]),
+      ],
     });
     assert.equal(res.result, "skip", "the last plugin's empty array wins");
   } finally {
@@ -175,7 +185,8 @@ test("plugin-host answers null when the hooks leave the modules they were handed
   });
   const two = JSON.stringify([{ url: "/a.tsx" }, { url: "/b.tsx" }]);
   const ask = async (id, file, modules) =>
-    (await host.send({ id, hook: "handleHotUpdate", args: [path.join(fx.root, file), "123", "update", modules] })).result;
+    (await host.send({ id, hook: "handleHotUpdate", args: [path.join(fx.root, file), "123", "update", modules] }))
+      .result;
   try {
     assert.equal(await ask(1, "index.html", "[]"), null, "handed none, returned none: the default path");
     assert.equal(await ask(2, "a.tsx", two), null, "the same array");
