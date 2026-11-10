@@ -398,10 +398,30 @@ function socketUrl() {
   return `${proto}://${host}${hmrPath}?token=${wsToken}`;
 }
 
-(function connect() {
+// Liveness (socket-watchdog.js, served ahead of this file): the server pings
+// every open socket each `pingMs` with Vite's {"type":"ping"}, and a socket
+// silent past the deadline died without a close. Dropping it takes the path
+// a close takes: this page has no record of the updates it missed, so once
+// the server answers it reloads, as Vite's client does on any reconnect.
+// 0: no keepalive, no watchdog.
+const watchdog = ojSocketWatchdog({
+  pingMs: __OJ_PING_MS__,
+  socket: () => socket,
+  recover: (dead) => {
+    socket = null;
+    lost(dead);
+  },
+});
+
+function connect() {
   const ws = new WebSocket(socketUrl());
   socket = ws;
+  watchdog.heard();
+  // Events of a socket the watchdog dropped are no longer this page's.
+  const current = () => socket === ws;
   ws.addEventListener("message", (event) => {
+    if (!current()) return;
+    watchdog.heard();
     let msg;
     try {
       msg = JSON.parse(event.data);
@@ -452,28 +472,37 @@ function socketUrl() {
     }
   });
   ws.addEventListener("open", () => {
+    if (!current()) return;
+    watchdog.heard();
     hadConnection = true;
     emit("vite:ws:connect", { webSocket: ws });
     for (const frame of forwardQueue.splice(0)) ws.send(frame);
     console.log("[oj] dev server connected");
   });
-  ws.addEventListener("close", async () => {
-    emit("vite:ws:disconnect", { webSocket: ws });
-    if (hadConnection) {
-      // The server went away (a config or .env change restarts it): its module
-      // graph, defines, caches and socket token are new, so the page's modules
-      // are stale. Like Vite's client, poll until it answers again, then reload
-      // (the fresh page loads a client carrying the new token).
-      console.log("[oj] dev server connection lost, polling for restart...");
-      await waitForSuccessfulPing();
-      console.log("[oj] dev server restarted, reloading");
-      location.reload();
-      return;
-    }
-    console.log("[oj] dev server disconnected, retrying in 1s…");
-    setTimeout(connect, 1000);
+  ws.addEventListener("close", () => {
+    if (current()) lost(ws);
   });
-})();
+}
+
+// The page's socket closed, or the watchdog dropped it.
+async function lost(ws) {
+  emit("vite:ws:disconnect", { webSocket: ws });
+  if (hadConnection) {
+    // The server went away (a config or .env change restarts it): its module
+    // graph, defines, caches and socket token are new, so the page's modules
+    // are stale. Like Vite's client, poll until it answers again, then reload
+    // (the fresh page loads a client carrying the new token).
+    console.log("[oj] dev server connection lost, polling for restart...");
+    await waitForSuccessfulPing();
+    console.log("[oj] dev server restarted, reloading");
+    location.reload();
+    return;
+  }
+  console.log("[oj] dev server disconnected, retrying in 1s…");
+  setTimeout(connect, 1000);
+}
+
+connect();
 
 // Vite's waitForSuccessfulPing: any HTTP answer from the socket's host means
 // the server is back (the ws route itself replies to a plain GET).

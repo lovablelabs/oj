@@ -107,9 +107,11 @@ use sidecar::is_tailwind_css;
 use tokio::sync::broadcast;
 
 // The overlay is its own asset so the Start live-reload client serves the
-// same element; the SPA client carries (and exports) it inline.
+// same element; the SPA client carries (and exports) it inline. Both clients
+// carry the socket watchdog ahead of their own code.
 const CLIENT_JS: &str = concat!(
     include_str!("assets/error-overlay.js"),
+    include_str!("assets/socket-watchdog.js"),
     include_str!("assets/client.js")
 );
 pub const OJ_ROUTES_JS: &str = include_str!("assets/oj-routes.js");
@@ -150,7 +152,10 @@ const START_ASSETS: &[(&str, &str)] = &[
     ("error-overlay.js", include_str!("assets/error-overlay.js")),
     (
         "live-reload.js",
-        include_str!("assets/start/live-reload.js"),
+        concat!(
+            include_str!("assets/socket-watchdog.js"),
+            include_str!("assets/start/live-reload.js")
+        ),
     ),
     (
         "hmr-runtime.js",

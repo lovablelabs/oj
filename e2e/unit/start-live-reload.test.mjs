@@ -43,6 +43,7 @@ function loadPage({
   }
   const page = {
     WebSocket,
+    URL,
     console: { error() {}, debug() {}, warn() {}, log: (line) => said.push(line) },
     location: { protocol: "http:", host: hostname, hostname, pathname: "/", reload: () => log.push(["reload"]) },
     sessionStorage: {
@@ -77,7 +78,8 @@ function loadPage({
   page.window = { addEventListener() {}, scrollX: 0, scrollY: 0 };
   page.globalThis = page;
   vm.createContext(page);
-  const source = readFileSync(asset("start/live-reload.js"), "utf8")
+  // Served as oj serves it: the shared socket watchdog ahead of the client.
+  const source = (readFileSync(asset("socket-watchdog.js"), "utf8") + readFileSync(asset("start/live-reload.js"), "utf8"))
     .replaceAll("__HMR_ENABLE_OVERLAY__", "true")
     .replaceAll("__OJ_DEV_BASE__", '""')
     .replaceAll("__OJ_PAGE_STAMP__", stamp)
@@ -519,4 +521,64 @@ test("with no keepalive interval there is no watchdog", () => {
   tick();
   visible();
   assert.equal(sockets.length, 1);
+});
+
+// Cases from Phoenix's socket tests (heartbeatTimeout, visibilitychange and
+// resume) and engine.io's, applied to this client.
+
+test("a dead socket is dropped once: every trigger after it leaves the replacement alone", () => {
+  const { open, sockets, clock, advanceTo, tick, visible, resume, online } = loadPage({ ping: 1000 });
+  open();
+  advanceTo(3500);
+  assert.equal(sockets.length, 2);
+  // Phoenix's "closes the connection only once": the tab shows, resumes,
+  // the network returns and the watchdog ticks, all before the new socket opens.
+  clock.now = 3600;
+  visible();
+  resume();
+  online();
+  tick();
+  assert.equal(sockets.length, 2, "the replacement, still connecting, is kept");
+  assert.equal(sockets[0].closedWith[1], "oj: no word from the dev server in 3000ms");
+});
+
+test("resume and visibilitychange both firing keep the socket the first one opened", () => {
+  // Phoenix: "keeps the new connection when visibilitychange follows resume".
+  const { open, sockets, clock, resume, visible } = loadPage({ ping: 1000 });
+  open();
+  clock.now = 60000;
+  resume(); // the grace, after a freeze
+  clock.now = 62100;
+  resume();
+  assert.equal(sockets.length, 2);
+  visible();
+  assert.equal(sockets.length, 2, "visibilitychange right after does not replace it again");
+});
+
+test("a closed socket waiting for its retry is left to it: the watchdog opens no second one", () => {
+  // Phoenix: "does not let the scheduled reconnect replace a connection created by connect".
+  const { open, sockets, advanceTo, timers } = loadPage({ ping: 1000 });
+  open();
+  sockets[0].readyState = 3;
+  sockets[0].onclose();
+  assert.equal(timers.length, 1, "the close scheduled its retry");
+  advanceTo(10000);
+  assert.equal(sockets.length, 1, "nothing to replace: the retry owns the reconnect");
+  timers.shift()();
+  assert.equal(sockets.length, 2);
+});
+
+test("the replacement's own silence is timed from when it was opened, not from the old socket's last frame", () => {
+  const { open, sockets, clock, tick, advanceTo } = loadPage({ ping: 1000 });
+  open();
+  advanceTo(3500);
+  assert.equal(sockets.length, 2);
+  open();
+  // Its deadline runs from 3500.
+  clock.now = 6400;
+  tick();
+  assert.equal(sockets.length, 2);
+  clock.now = 6600;
+  tick();
+  assert.equal(sockets.length, 3);
 });
