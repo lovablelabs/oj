@@ -729,22 +729,6 @@ fn a_rebuild_behind_a_full_reload_gate_keeps_a_handler_only_server_import() {
 /// strict shape: errors, and a directory pattern in place of the default file
 /// patterns (so `*.server.ts` is not denied by name, only what it imports).
 fn file_routed_app(name: &str) -> Option<start_app::App> {
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../e2e/fixtures/start-app");
-    if !fixture.join("node_modules/@tanstack/react-start").is_dir() {
-        if std::env::var_os("OJ_REQUIRE_FIXTURES").is_some() {
-            panic!("OJ_REQUIRE_FIXTURES is set but the start-app fixture is not installed");
-        }
-        eprintln!("skipping: npm ci --prefix e2e/fixtures/start-app");
-        return None;
-    }
-    let root = std::env::temp_dir()
-        .canonicalize()
-        .unwrap()
-        .join(format!("oj-start-fr-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(root.join("src/routes")).unwrap();
-    std::fs::create_dir_all(root.join("src/lib")).unwrap();
-    std::os::unix::fs::symlink(fixture.join("node_modules"), root.join("node_modules")).unwrap();
     let files: &[(&str, String)] = &[
         (
             "package.json",
@@ -815,10 +799,7 @@ function Home() {
         ("src/lib/auth.server.ts", auth_server(0)),
         ("src/lib/session.server.ts", session_server(0)),
     ];
-    for (rel, body) in files {
-        std::fs::write(root.join(rel), body).unwrap();
-    }
-    Some(start_app::App(root))
+    start_app::app_from(name, files)
 }
 
 fn root_route(n: u32) -> String {

@@ -26,8 +26,8 @@ impl Drop for App {
     }
 }
 
-/// The app, or None (after saying why) when the fixture is not installed.
-pub fn app(name: &str) -> Option<App> {
+/// The installed fixture, or None (after saying why) when it is not.
+fn installed_fixture() -> Option<PathBuf> {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../e2e/fixtures/start-app")
         .canonicalize()
@@ -40,12 +40,41 @@ pub fn app(name: &str) -> Option<App> {
         eprintln!("skipping: npm ci --prefix e2e/fixtures/start-app");
         return None;
     }
+    Some(fixture)
+}
+
+/// An empty root for one test's app under the temp dir, a stale one from an
+/// earlier run removed.
+fn fresh_root(prefix: &str, name: &str) -> PathBuf {
     let root = std::env::temp_dir()
         .canonicalize()
         .unwrap()
-        .join(format!("oj-start-app-{name}-{}", std::process::id()));
+        .join(format!("{prefix}-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
+    root
+}
+
+/// The app, or None (after saying why) when the fixture is not installed.
+pub fn app(name: &str) -> Option<App> {
+    let fixture = installed_fixture()?;
+    let root = fresh_root("oj-start-app", name);
     copy_sources(&fixture, &root);
+    std::os::unix::fs::symlink(fixture.join("node_modules"), root.join("node_modules")).unwrap();
+    Some(App(root))
+}
+
+/// An app of `files` alone (none of the fixture's sources), sharing the
+/// fixture's installed `node_modules`: a layout the fixture does not have, a
+/// file-routed app, say. None (after saying why) when the fixture is not
+/// installed.
+pub fn app_from(name: &str, files: &[(&str, String)]) -> Option<App> {
+    let fixture = installed_fixture()?;
+    let root = fresh_root("oj-start-from", name);
+    for (rel, body) in files {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
     std::os::unix::fs::symlink(fixture.join("node_modules"), root.join("node_modules")).unwrap();
     Some(App(root))
 }
