@@ -55,7 +55,7 @@ fn virt_url_from(main: &str) -> String {
 /// writes go through a background thread, so the warm run waits for the cold
 /// run's entry instead of racing it, and fails rather than passing vacuously
 /// when the cache is off.
-fn cached_module_contains(cache: &Path, needle: &str) -> bool {
+pub(crate) fn cached_module_contains(cache: &Path, needle: &str) -> bool {
     let is_hex = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_hexdigit());
     let Ok(shards) = std::fs::read_dir(cache) else {
         return false;
