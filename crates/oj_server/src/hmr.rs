@@ -321,7 +321,7 @@ pub(crate) fn handle_client_message(state: &Arc<ServerState>, text: &str) {
         };
         let first_invalidated_by = body["firstInvalidatedBy"].as_str();
         let reply = {
-            let timestamp = now_millis() as u64;
+            let timestamp = hmr_now();
             let (dirty, targets) = {
                 let mut graph = state.graph.lock().unwrap();
                 // Only a self-accepting module an update touched, once per update
@@ -422,6 +422,26 @@ pub(crate) fn strip_hmr_timestamp(url: &str) -> String {
         base.to_string()
     } else {
         format!("{base}?{}", kept.join("&"))
+    }
+}
+
+/// The HMR clock: the time in milliseconds, strictly increasing across
+/// calls as Vite's `monotonicDateNow` is (its `handleHMRUpdate` takes one
+/// value per change). The compile key of an importer folds in the newest
+/// stamp among its imports: two updates in one millisecond (two files of
+/// one batch) would share a stamp, and an importer compiled between them
+/// would be served again for the second with the first's urls baked in.
+pub(crate) fn hmr_now() -> u64 {
+    static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    use std::sync::atomic::Ordering::Relaxed;
+    let now = now_millis() as u64;
+    let mut last = LAST.load(Relaxed);
+    loop {
+        let next = if now > last { now } else { last + 1 };
+        match LAST.compare_exchange_weak(last, next, Relaxed, Relaxed) {
+            Ok(_) => return next,
+            Err(seen) => last = seen,
+        }
     }
 }
 
@@ -1017,7 +1037,7 @@ pub(crate) async fn decide(
                 .is_some_and(|e| COMPILABLE.contains(&e))
     });
     if source_changed {
-        let timestamp = now_millis() as u64;
+        let timestamp = hmr_now();
         for url in state.tailwind_urls.lock().unwrap().iter() {
             updates.push(update_entry("css-update", url, timestamp));
         }
@@ -1340,7 +1360,7 @@ async fn run_plugin_hooks(
     }
     let file = path.display().to_string();
     let change_type = change_type(state, path, created);
-    let ts = now_millis() as u64;
+    let ts = hmr_now();
     let modules_json = hot_update_modules_json(state, path);
     // The client's hooks first, then the ssr environment's, as Vite's
     // handleHMRUpdate runs the client environment before the others.
@@ -1413,7 +1433,7 @@ fn plugin_filtered_update(
     match decision {
         HmrDecision::Update { boundaries } => {
             println!("oj: change {file} -> plugin-filtered update {boundaries:?}");
-            let timestamp = now_millis() as u64;
+            let timestamp = hmr_now();
             updates.extend(
                 boundaries
                     .iter()
@@ -1455,7 +1475,7 @@ fn decide_file(
         // Nor imports its `?inline` module (a node of its own).
         if link_loaded(state, &url) {
             println!("oj: change {url} -> css-update");
-            updates.push(update_entry("css-update", &url, now_millis() as u64));
+            updates.push(update_entry("css-update", &url, hmr_now()));
             return Flow::Done;
         }
     }
@@ -1508,7 +1528,7 @@ fn decide_file(
         Ok(targets) => {
             let boundaries: Vec<&Path> = targets.iter().map(|t| t.boundary.as_path()).collect();
             println!("oj: change {url} -> update {boundaries:?}");
-            let timestamp = now_millis() as u64;
+            let timestamp = hmr_now();
             // Stamp the invalidated chain so re-fetched importers point at new versions
             // of unchanged deps; drop their mtime fast-path keys so they recompile with the stamps.
             let dirty = {

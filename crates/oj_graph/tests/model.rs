@@ -124,15 +124,12 @@ impl Model {
         Ok(())
     }
 
-    /// Everything that has to be re-fetched: the change plus its importers,
-    /// stopping at accepting modules.
+    /// Everything an update stamps: the change plus every transitive
+    /// importer, through accepting modules too (Vite's invalidateModule).
     fn dirty(&self, changed: u8) -> BTreeSet<u8> {
         let mut dirty = BTreeSet::from([changed]);
         let mut queue = vec![changed];
         while let Some(current) = queue.pop() {
-            if self.accepting.contains(&current) && current != changed {
-                continue;
-            }
             for importer in self.importers_of(current) {
                 if dirty.insert(importer) {
                     queue.push(importer);
