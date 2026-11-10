@@ -10,9 +10,20 @@
 
 use std::borrow::Cow;
 
-use rolldown_error::{BuildDiagnostic, CausedPlugin, EventKind};
+use rolldown_error::{BuildDiagnostic, CausedPlugin, DiagnosticOptions, EventKind};
 
 const COULD_NOT_LOAD: &str = "Could not load ";
+
+/// `diagnostic` rendered for the terminal or the overlay. rolldown's
+/// `to_diagnostic` reads the process's current directory to shorten paths
+/// and panics when that directory is gone (a plugin host boots with a real
+/// chdir into its root, and a root can be deleted under a running process);
+/// a diagnostic is the last thing that should fail then, so the paths stay
+/// as they are instead.
+pub fn render(diagnostic: &BuildDiagnostic) -> rolldown_error::Diagnostic {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
+    diagnostic.to_diagnostic_with(&DiagnosticOptions { cwd })
+}
 
 /// `e`, raised by `plugin` loading `id`, as the diagnostic rolldown surfaces.
 /// The cause is an inner diagnostic, so it renders as written: no source box,
@@ -35,7 +46,7 @@ pub fn failed_load(diagnostic: &BuildDiagnostic) -> Option<(String, String)> {
     if !matches!(diagnostic.kind(), EventKind::PluginError) {
         return None;
     }
-    let rendered = diagnostic.to_diagnostic();
+    let rendered = render(diagnostic);
     let plugin = rendered.kind();
     let text = rendered.to_string();
     // `[plugin] title`; ariadne pads a short code (`[p ]`).
@@ -59,7 +70,7 @@ mod tests {
             "/app/src/a.scss",
             anyhow::anyhow!("sass error: Undefined variable."),
         ));
-        let text = d.to_diagnostic().to_string();
+        let text = render(&d).to_string();
         assert!(
             text.starts_with(
                 "[oj:build] Could not load /app/src/a.scss\nsass error: Undefined variable."
@@ -73,6 +84,48 @@ mod tests {
         );
     }
 
+    /// Rendering survives the process's current directory being gone (a
+    /// plugin host's root deleted under it): the message is intact and the
+    /// absolute path stands as written. The directory goes in a child
+    /// process running this same test, so no other test of this binary
+    /// loses its current directory meanwhile.
+    #[test]
+    fn a_diagnostic_renders_with_no_current_directory() {
+        const CHILD: &str = "OJ_TEST_GONE_CWD_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "load_error::tests::a_diagnostic_renders_with_no_current_directory",
+                ])
+                .env(CHILD, "1")
+                .status()
+                .expect("the test binary runs itself");
+            assert!(status.success(), "the child's run: {status}");
+            return;
+        }
+        let gone = std::env::temp_dir().join(format!("oj-gone-cwd-{}", std::process::id()));
+        std::fs::create_dir_all(&gone).unwrap();
+        std::env::set_current_dir(&gone).unwrap();
+        std::fs::remove_dir_all(&gone).unwrap();
+        let d = diagnostic(load_failed(
+            "p".into(),
+            "/app/src/a.ts",
+            anyhow::anyhow!("boom"),
+        ));
+        let text = render(&d).to_string();
+        // ariadne pads a short plugin name (`[p ]`); the module and cause
+        // follow as written.
+        assert!(
+            text.starts_with("[p") && text.contains("Could not load /app/src/a.ts\nboom"),
+            "{text}"
+        );
+        assert_eq!(
+            failed_load(&d),
+            Some(("p".to_string(), "/app/src/a.ts".to_string()))
+        );
+    }
+
     #[test]
     fn a_virtual_id_round_trips() {
         let d = diagnostic(load_failed(
@@ -80,7 +133,7 @@ mod tests {
             "\0virtual:x",
             anyhow::anyhow!("boom"),
         ));
-        let text = d.to_diagnostic().to_string();
+        let text = render(&d).to_string();
         assert!(text.contains("Could not load \\0virtual:x"), "{text}");
         assert_eq!(
             failed_load(&d).map(|(_, id)| id).as_deref(),

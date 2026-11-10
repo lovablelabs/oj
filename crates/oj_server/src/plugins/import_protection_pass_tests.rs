@@ -14,7 +14,7 @@ use super::*;
 #[tokio::test]
 async fn the_first_pass_over_a_change_names_the_changed_file() {
     let root = std::env::temp_dir().join(format!("oj-ip-pass-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    crate::plugins::test_roots::remove_root(&root);
     std::fs::create_dir_all(root.join("src/lib")).unwrap();
     let log = root.join("hot-updates.log");
     let config = root.join("vite.config.mjs");
@@ -62,7 +62,7 @@ export default {{
         .lines()
         .map(|l| serde_json::from_str(l).unwrap())
         .collect();
-    let _ = std::fs::remove_dir_all(&root);
+    crate::plugins::test_roots::remove_root(&root);
     assert_eq!(
         passes,
         [vec![Some(file)]],
