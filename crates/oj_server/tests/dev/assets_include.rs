@@ -84,3 +84,61 @@ async fn a_file_assets_include_names_imports_as_its_url() {
         notes.body
     );
 }
+
+fn typed_app(name: &str, assets_include: &str) -> App {
+    App::new(&[
+        (
+            "package.json",
+            &format!(r#"{{"name":"{name}","version":"1.0.0"}}"#),
+        ),
+        (
+            "vite.config.mjs",
+            &format!("export default {{ assetsInclude: {assets_include} }};\n"),
+        ),
+        ("index.html", INDEX_HTML),
+        ("src/main.js", "console.log(1);\n"),
+        ("src/scene.gltf", SCENE),
+        ("src/mesh.obj", "o mesh\n"),
+    ])
+}
+
+/// What `path` is when a script imports it from `server`: a URL module, or
+/// the file's own text served as a script.
+async fn import_kind(server: &Server, path: &str) -> &'static str {
+    let module = imported(server, path).await;
+    assert_eq!(module.status, 200, "{path}: {}", module.body);
+    if module.body.contains("export default") && module.body.contains(path) {
+        "url module"
+    } else {
+        "script"
+    }
+}
+
+/// Each server judges `assetsInclude` by its own config, as Vite's resolved
+/// config carries the filter per server. Three servers in one process, each
+/// configured after the last: a filter is neither overwritten by the next
+/// server's nor dropped by one that names no pattern.
+#[tokio::test(flavor = "multi_thread")]
+async fn each_server_keeps_its_own_assets_include() {
+    let gltf = typed_app("include-gltf", r#"["**/*.gltf"]"#).serve().await;
+    let obj = typed_app("include-obj", r#"["**/*.obj"]"#).serve().await;
+    let none = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"include-none","version":"1.0.0"}"#,
+        ),
+        ("index.html", INDEX_HTML),
+        ("src/main.js", "console.log(1);\n"),
+        ("src/scene.gltf", SCENE),
+    ])
+    .serve()
+    .await;
+
+    assert_eq!(import_kind(&gltf, "/src/scene.gltf").await, "url module");
+    assert_eq!(import_kind(&gltf, "/src/mesh.obj").await, "script");
+    assert_eq!(import_kind(&obj, "/src/mesh.obj").await, "url module");
+    assert_eq!(import_kind(&obj, "/src/scene.gltf").await, "script");
+    assert_eq!(import_kind(&none, "/src/scene.gltf").await, "script");
+    // The first server's filter survives the two configured after it.
+    assert_eq!(import_kind(&gltf, "/src/scene.gltf").await, "url module");
+}

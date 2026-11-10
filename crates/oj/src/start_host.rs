@@ -436,7 +436,12 @@ fn json_str(s: &str) -> String {
 /// plain path (source modules, svg, json, mdx), or a path with an `?ojasset` /
 /// `?react` tag for asset intents, styles and importable assets (resolve
 /// first, classify second — Vite's ordering).
-fn classify_id(abs: &str, intent: Option<&'static str>, svg_react: bool) -> String {
+fn classify_id(
+    include: Option<&oj_compiler::assets::AssetsInclude>,
+    abs: &str,
+    intent: Option<&'static str>,
+    svg_react: bool,
+) -> String {
     if svg_react {
         return format!("{abs}?react");
     }
@@ -453,7 +458,7 @@ fn classify_id(abs: &str, intent: Option<&'static str>, svg_react: bool) -> Stri
     // is, for the plugin that answers that query (an `enforce: "pre"` load
     // runs before Vite's asset plugin): tagged, the plugin would read its
     // query with the tag appended, or never see the id.
-    if !abs.contains('?') && (oj_server::is_importable_asset(abs) || ext == "wasm") {
+    if !abs.contains('?') && (oj_server::is_importable_asset(include, abs) || ext == "wasm") {
         return format!("{abs}?ojasset=asset");
     }
     abs.to_string()
@@ -604,6 +609,8 @@ pub struct StartHost {
     root: PathBuf,
     /// `publicDir` (adopted from the config); `None` when disabled.
     public_dir: Option<PathBuf>,
+    /// The config's `assetsInclude`, resolved (none when it names nothing).
+    assets_include: Option<Arc<oj_compiler::assets::AssetsInclude>>,
     /// The Start framework-seam aliases (the loader's ALIASES map): resolved
     /// targets under the app or the start cache dir.
     aliases: Vec<(String, PathBuf)>,
@@ -624,12 +631,14 @@ impl StartHost {
         bridge: SsrBridge,
         no_external: oj_config::SsrExternals,
         public_dir: Option<PathBuf>,
+        assets_include: Option<Arc<oj_compiler::assets::AssetsInclude>>,
     ) -> Arc<StartHost> {
         let aliases = framework_aliases(&root, cache);
         Arc::new(StartHost {
             bridge,
             root,
             public_dir,
+            assets_include,
             aliases,
             no_external: NoExternal::new(no_external),
             graph: VersionGraph::default(),
@@ -798,7 +807,12 @@ impl StartHost {
                     .and_then(|public| probe(&public.join(rel)))
             };
             if let Some(hit) = probe(&self.root.join(rel)).or_else(public_hit) {
-                let id = classify_id(&hit.to_string_lossy(), intent, svg_react);
+                let id = classify_id(
+                    self.assets_include.as_deref(),
+                    &hit.to_string_lossy(),
+                    intent,
+                    svg_react,
+                );
                 return Ok(Some(self.module_url(&id, importer_id)));
             }
         }
@@ -847,7 +861,7 @@ impl StartHost {
         match resolution {
             StartResolution::Module(id) if Path::new(&id).is_absolute() => {
                 let (file, intent, svg_react) = split_intent(&id);
-                let tagged = classify_id(&file, intent, svg_react);
+                let tagged = classify_id(self.assets_include.as_deref(), &file, intent, svg_react);
                 // A CommonJS file (a linked `file:` dependency, a .cjs
                 // module) is Node's to load: byonm gives it require
                 // semantics and lexed named exports, like the node
@@ -867,9 +881,10 @@ impl StartHost {
                 if svg_react
                     || intent.is_some()
                     || oj_server::is_style_ext(&ext)
-                    || (!abs.contains('?') && oj_server::is_importable_asset(&abs))
+                    || (!abs.contains('?')
+                        && oj_server::is_importable_asset(self.assets_include.as_deref(), &abs))
                 {
-                    let id = classify_id(&abs, intent, svg_react);
+                    let id = classify_id(self.assets_include.as_deref(), &abs, intent, svg_react);
                     return Ok(Some(self.module_url(&id, importer_id)));
                 }
                 // A dependency the pipeline claims (`ssr.noExternal`, raw TS)
@@ -1040,7 +1055,10 @@ impl StartHost {
         // An asset under a query no intent names (vite-imagetools'
         // `x.webp?w=768`): the load hooks Vite runs before vite:asset see the
         // full id; unclaimed, it is the file's served URL, as vite:asset's.
-        if is_path && query.is_some() && oj_server::is_importable_asset(&clean) {
+        if is_path
+            && query.is_some()
+            && oj_server::is_importable_asset(self.assets_include.as_deref(), &clean)
+        {
             let loaded = match self.bridge.plugin_host().await {
                 Some(host) if host.hook_wants_load(id) => {
                     host.load_pre(id).await.map_err(|e| format!("{id}: {e}"))?
@@ -1349,6 +1367,7 @@ impl EngineSlot {
 }
 
 impl StartEngine {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         root: PathBuf,
         cache: &Path,
@@ -1356,11 +1375,19 @@ impl StartEngine {
         entry_abs: PathBuf,
         no_external: oj_config::SsrExternals,
         public_dir: Option<PathBuf>,
+        assets_include: Option<Arc<oj_compiler::assets::AssetsInclude>>,
         init_env: Vec<(String, String)>,
     ) -> anyhow::Result<StartEngine> {
         let bootstrap = cache.join("start-bootstrap.mjs");
         std::fs::write(&bootstrap, START_BOOTSTRAP_JS)?;
-        let host = StartHost::new(root.clone(), cache, bridge, no_external, public_dir);
+        let host = StartHost::new(
+            root.clone(),
+            cache,
+            bridge,
+            no_external,
+            public_dir,
+            assets_include,
+        );
         let engine = spawn_engine(&root, &host)?;
         Ok(StartEngine {
             host,
@@ -1717,33 +1744,39 @@ mod tests {
 
     #[test]
     fn classification_tags_assets_styles_and_sources() {
-        assert_eq!(classify_id("/a/b.css", None, false), "/a/b.css?ojasset=css");
         assert_eq!(
-            classify_id("/a/b.module.scss", None, false),
+            classify_id(None, "/a/b.css", None, false),
+            "/a/b.css?ojasset=css"
+        );
+        assert_eq!(
+            classify_id(None, "/a/b.module.scss", None, false),
             "/a/b.module.scss?ojasset=css"
         );
         assert_eq!(
-            classify_id("/a/hero.png", None, false),
+            classify_id(None, "/a/hero.png", None, false),
             "/a/hero.png?ojasset=asset"
         );
         assert_eq!(
-            classify_id("/a/n.txt", Some("raw"), false),
+            classify_id(None, "/a/n.txt", Some("raw"), false),
             "/a/n.txt?ojasset=raw"
         );
-        assert_eq!(classify_id("/a/l.svg", None, true), "/a/l.svg?react");
-        assert_eq!(classify_id("/a/l.svg", None, false), "/a/l.svg");
-        assert_eq!(classify_id("/a/x.tsx", None, false), "/a/x.tsx");
+        assert_eq!(classify_id(None, "/a/l.svg", None, true), "/a/l.svg?react");
+        assert_eq!(classify_id(None, "/a/l.svg", None, false), "/a/l.svg");
+        assert_eq!(classify_id(None, "/a/x.tsx", None, false), "/a/x.tsx");
         assert_eq!(
-            classify_id("/a/m.wasm", None, false),
+            classify_id(None, "/a/m.wasm", None, false),
             "/a/m.wasm?ojasset=asset"
         );
         // An import's own query is a plugin's to answer (the fixture's
         // `hero.png?w=64`): no tag appended to it.
         assert_eq!(
-            classify_id("/a/hero.png?w=64", None, false),
+            classify_id(None, "/a/hero.png?w=64", None, false),
             "/a/hero.png?w=64"
         );
-        assert_eq!(classify_id("/a/m.wasm?init", None, false), "/a/m.wasm?init");
+        assert_eq!(
+            classify_id(None, "/a/m.wasm?init", None, false),
+            "/a/m.wasm?init"
+        );
     }
 
     #[test]

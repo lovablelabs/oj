@@ -77,12 +77,14 @@ impl<'a> Importer<'a> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn rewrite_specifier(
     root: &Path,
     from: Importer<'_>,
     resolver: &OjResolver,
     fs_allow: &Mutex<std::collections::HashSet<PathBuf>>,
     dir_cache: &Mutex<DirCache>,
+    assets_include: Option<&oj_compiler::assets::AssetsInclude>,
     spec: &str,
     css_import_marker: bool,
 ) -> Option<String> {
@@ -102,7 +104,14 @@ pub(crate) fn rewrite_specifier(
     if let Some((base, query)) = spec.split_once('?') {
         if PASSTHROUGH_QUERIES.contains(&query) {
             let resolved = rewrite_specifier(
-                root, from, resolver, fs_allow, dir_cache, base, false,
+                root,
+                from,
+                resolver,
+                fs_allow,
+                dir_cache,
+                assets_include,
+                base,
+                false,
             )
             .or_else(|| {
                 resolve_in(resolver, dir, importer, base).ok().map(|p| {
@@ -119,16 +128,26 @@ pub(crate) fn rewrite_specifier(
     // on-disk fast path is for app source.
     if (spec.starts_with("./") || spec.starts_with("../")) && !in_node_modules(dir) {
         if let Some(p) = find_relative_on_disk(dir, dir_cache, spec) {
-            return Some(mark_css_import(url_of(root, &p), &p, css_import_marker));
+            return Some(mark_css_import(
+                url_of(root, &p),
+                &p,
+                css_import_marker,
+                assets_include,
+            ));
         }
     }
 
     match resolve_in(resolver, dir, importer, spec) {
         // An alias (`@/assets/logo.svg`) or root-absolute import of a style
         // or asset gets the same `?import` / `?url` marks a relative one does.
-        Ok(resolved) if !in_node_modules(&resolved) && resolved.starts_with(root) => Some(
-            mark_css_import(url_of(root, &resolved), &resolved, css_import_marker),
-        ),
+        Ok(resolved) if !in_node_modules(&resolved) && resolved.starts_with(root) => {
+            Some(mark_css_import(
+                url_of(root, &resolved),
+                &resolved,
+                css_import_marker,
+                assets_include,
+            ))
+        }
         Ok(resolved) => {
             allow_package(fs_allow, &resolved);
             Some(url_of(root, &resolved))
@@ -224,10 +243,15 @@ fn find_relative_on_disk(dir: &Path, dir_cache: &Mutex<DirCache>, spec: &str) ->
 }
 
 /// Marks a style import `?import` and an asset import `?url`, when requested.
-fn mark_css_import(url: String, file: &Path, css_import_marker: bool) -> String {
+fn mark_css_import(
+    url: String,
+    file: &Path,
+    css_import_marker: bool,
+    assets_include: Option<&oj_compiler::assets::AssetsInclude>,
+) -> String {
     if css_import_marker && is_style_url(&url) {
         format!("{url}?import")
-    } else if css_import_marker && is_asset_path(file) {
+    } else if css_import_marker && is_asset_path(assets_include, file) {
         format!("{url}?url")
     } else {
         url

@@ -268,12 +268,13 @@ pub(crate) fn preload_href(
     path: &str,
     entries: &HashMap<String, String>,
     svg_compiled: bool,
+    assets_include: Option<&oj_compiler::assets::AssetsInclude>,
 ) -> String {
     if is_style_url(path) {
         format!("{path}?import")
     } else if !path.starts_with("/@")
         && !path.contains("/node_modules/")
-        && is_asset_path(Path::new(path))
+        && is_asset_path(assets_include, Path::new(path))
         && !(svg_compiled && path.ends_with(".svg"))
     {
         format!("{path}?url")
@@ -389,7 +390,12 @@ pub(crate) fn inject_module_preloads(html: String, state: &ServerState, file: &P
         .map(|p| {
             format!(
                 "<link rel=\"modulepreload\" href=\"{}\"{nonce} />\n",
-                preload_href(p, &entries, state.plugins_have_transform)
+                preload_href(
+                    p,
+                    &entries,
+                    state.plugins_have_transform,
+                    state.assets_include.as_deref(),
+                )
             )
         })
         .collect();

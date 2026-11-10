@@ -575,6 +575,7 @@ impl DevBundler {
                     Arc::clone(&emit),
                     start.jsx_config(),
                 )
+                .with_assets_include(start.assets_include.clone())
                 .compiling(
                     StartCodePlugin::new(&start.root, CodeTarget::Client)
                         .with_route_tree(start.route_tree())
@@ -616,7 +617,8 @@ impl DevBundler {
                     url_base: start.dev_url_base(),
                 },
             )
-            .with_plugins(host.map(|h| Arc::clone(&h.host))),
+            .with_plugins(host.map(|h| Arc::clone(&h.host)))
+            .with_assets_include(start.assets_include.clone()),
         ));
         plugins.push(Pluginable::new_shared(NodeBuiltinShims {
             production: false,
@@ -1107,6 +1109,7 @@ pub(crate) mod tests {
             ),
             base: "/".into(),
             stylex: None,
+            assets_include: None,
             rolldown: test_runtime(),
         }
     }

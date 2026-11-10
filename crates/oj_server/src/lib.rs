@@ -288,6 +288,10 @@ struct ServerState {
     root: PathBuf,
     /// Vite's `publicDir`; None when the config disables it (`publicDir: false`).
     public_dir: Option<PathBuf>,
+    /// The config's `assetsInclude`, resolved (none when it names nothing):
+    /// the files beyond the known types that import as their URL. Per
+    /// server, as Vite's resolved config carries it.
+    assets_include: Option<Arc<oj_compiler::assets::AssetsInclude>>,
     persistent_cache: bool,
     reload_tx: broadcast::Sender<String>,
     graph: Mutex<ModuleGraph>,
@@ -2233,6 +2237,7 @@ impl DevServer {
             persistent_cache,
             engine_registry: engine_registry.clone(),
             root: root.clone(),
+            assets_include: plugins::assets_include_of(&config, &root),
             public_dir,
             reload_tx: reload_tx.clone(),
             graph: Mutex::new(ModuleGraph::new()),
@@ -2617,6 +2622,7 @@ async fn serve_oj_routes(State(state): State<Arc<ServerState>>) -> Response {
     let resolver = Arc::clone(&state.resolver);
     let fs_allow = Arc::clone(&state.fs_allow);
     let dir_cache = Arc::clone(&state.dir_cache);
+    let assets_include = state.assets_include.clone();
     let synthetic = root.join("oj-routes.tsx");
     let compile_opts = dev_compile_opts(&state);
     let compiled = tokio::task::spawn_blocking(move || {
@@ -2628,6 +2634,7 @@ async fn serve_oj_routes(State(state): State<Arc<ServerState>>) -> Response {
                 &resolver,
                 &fs_allow,
                 &dir_cache,
+                assets_include.as_deref(),
                 s,
                 true,
             )

@@ -1271,7 +1271,6 @@ pub fn adopt_vite_config_values(
         return no_values_verdict(root, config_file);
     };
     merge_vite_values(config, v);
-    install_assets_include(config, root);
     exclude_stylex_dependencies(config, root, command);
     Ok(())
 }
@@ -1289,19 +1288,21 @@ pub fn adopt_vite_config_values_default_mode(
         return no_values_verdict(root, config_file);
     };
     merge_vite_values(config, v);
-    install_assets_include(config, root);
     exclude_stylex_dependencies(config, root, command);
     Ok(())
 }
 
-/// The config's `assetsInclude` becomes the process's asset filter
-/// (`oj_compiler::assets::is_included_asset`), as Vite's resolved config
-/// carries the one `assetsInclude(file)` every plugin consults.
-fn install_assets_include(config: &oj_config::OjConfig, root: &Path) {
-    oj_compiler::assets::install_assets_include(
-        config.assets_include.as_deref().unwrap_or(&[]),
-        root,
-    );
+/// The config's `assetsInclude` as the asset filter every check of this
+/// server (or build) consults, as Vite's resolved config carries the one
+/// `assetsInclude(file)` every plugin consults; `None` when the config
+/// names no pattern. Per server: another server in the same process has
+/// its own.
+pub fn assets_include_of(
+    config: &oj_config::OjConfig,
+    root: &Path,
+) -> Option<std::sync::Arc<oj_compiler::assets::AssetsInclude>> {
+    oj_compiler::assets::AssetsInclude::new(config.assets_include.as_deref().unwrap_or(&[]), root)
+        .map(std::sync::Arc::new)
 }
 
 /// No values extracted: no vite.config means nothing to adopt, but a

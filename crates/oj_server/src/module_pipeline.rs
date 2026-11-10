@@ -52,7 +52,7 @@ pub(crate) async fn ensure_module_as(
         && ext == Some("svg")
         && query_asset_kind(url.split_once('?').map(|(_, q)| q)).is_none();
 
-    if !react_svg && !svgr_candidate && is_asset_path(file) {
+    if !react_svg && !svgr_candidate && is_asset_path(state.assets_include.as_deref(), file) {
         return Ok(register_uncached(
             state,
             url,
@@ -1293,7 +1293,11 @@ impl ImportRewrite<'_> {
         if self.interop_urls.borrow().contains(spec) {
             let path = Path::new(spec.split('?').next().unwrap_or(spec));
             let stamp = state.graph.lock().unwrap().hmr_timestamp(path);
-            return Some(stamp_import_url(spec, stamp));
+            return Some(stamp_import_url(
+                self.job.state.assets_include.as_deref(),
+                spec,
+                stamp,
+            ));
         }
         if state.virtual_ids.contains(spec) {
             return Some(format!("/@virtual/{spec}"));
@@ -1362,6 +1366,7 @@ impl ImportRewrite<'_> {
             resolver,
             &state.fs_allow,
             &state.dir_cache,
+            state.assets_include.as_deref(),
             spec,
             true,
         ) {
@@ -1379,7 +1384,11 @@ impl ImportRewrite<'_> {
                 .lock()
                 .unwrap()
                 .hmr_timestamp(Path::new(url.split('?').next().unwrap_or(&url)));
-            return Some(stamp_import_url(&url, stamp));
+            return Some(stamp_import_url(
+                self.job.state.assets_include.as_deref(),
+                &url,
+                stamp,
+            ));
         }
         // Vite's import analysis fails an import nothing resolves; oj asked
         // every plugin's resolveId before compiling.
@@ -1582,7 +1591,7 @@ pub(crate) fn pre_resolved_url(state: &ServerState, id: &str) -> String {
     allow_root(&state.fs_allow, path.to_path_buf());
     let url = url_of(&state.root, path);
     let stamp = state.graph.lock().unwrap().hmr_timestamp(Path::new(&url));
-    let url = stamp_import_url(&url, stamp);
+    let url = stamp_import_url(state.assets_include.as_deref(), &url, stamp);
     match query {
         Some(q) if url.contains('?') => format!("{url}&{q}"),
         Some(q) => format!("{url}?{q}"),
@@ -1854,10 +1863,13 @@ pub fn is_importable_asset_ext(ext: &str) -> bool {
 }
 
 /// [`is_importable_asset_ext`] for a path or url (query ignored), or a file
-/// the config's `assetsInclude` names (Vite's `config.assetsInclude(file)`).
-pub fn is_importable_asset(path: &str) -> bool {
+/// the server's `assetsInclude` names (Vite's `config.assetsInclude(file)`).
+pub fn is_importable_asset(
+    include: Option<&oj_compiler::assets::AssetsInclude>,
+    path: &str,
+) -> bool {
     oj_compiler::assets::clean_ext(path).is_some_and(is_importable_asset_ext)
-        || oj_compiler::assets::is_included_asset(path)
+        || oj_compiler::assets::is_included_asset(include, path)
 }
 
 /// `module.builtinModules` without the `node:` scheme, sorted for binary search.

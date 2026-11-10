@@ -46,6 +46,9 @@ pub(crate) struct StartConfig {
     /// Vite's `--mode`.
     pub mode: String,
     pub config: oj_config::OjConfig,
+    /// The config's `assetsInclude`, resolved: the files beyond the known
+    /// types that import as their URL (none when it names nothing).
+    pub assets_include: Option<std::sync::Arc<oj_compiler::assets::AssetsInclude>>,
     pub app_env: oj_env::AppEnv,
     /// Vite's `base`, normalized (`/`, `/x/` or `./`).
     pub base: String,

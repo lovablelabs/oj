@@ -760,12 +760,17 @@ async fn ssr_query_asset(
         // names it as it names `?url`.
         None if id.starts_with('/')
             && !Path::new(id).is_file()
-            && public_file(state, id).is_some_and(|f| is_asset_path(&f)) =>
+            && public_file(state, id)
+                .is_some_and(|f| is_asset_path(state.assets_include.as_deref(), &f)) =>
         {
             (id, "url")
         }
         // A plain import of any other asset (`./logo.svg`) likewise.
-        None if is_asset_path(Path::new(id)) && Path::new(id).is_file() => (id, "url"),
+        None if is_asset_path(state.assets_include.as_deref(), Path::new(id))
+            && Path::new(id).is_file() =>
+        {
+            (id, "url")
+        }
         None => return Ok(None),
     };
     let kind = match query_asset_kind(Some(query)) {
@@ -783,7 +788,7 @@ async fn ssr_query_asset(
         return Ok(None);
     }
     // `?inline` on a file vite:asset does not load is the plain module.
-    if kind == "inline" && !is_asset_path(path) {
+    if kind == "inline" && !is_asset_path(state.assets_include.as_deref(), path) {
         // Every parameter `[?&]inline\b` reads as `inline` goes (`inline=1`
         // too), so the plain id never asks for `?inline` again.
         let rest: Vec<&str> = query

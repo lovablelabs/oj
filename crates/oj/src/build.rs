@@ -251,6 +251,8 @@ struct OjCssPlugin {
     /// `css.preprocessorOptions` (Sass additionalData/loadPaths, Less/Stylus
     /// options), applied the same way the dev server applies them.
     css: Option<oj_config::CssConfig>,
+    /// The config's `assetsInclude`, resolved (none when it names nothing).
+    assets_include: Option<Arc<oj_compiler::assets::AssetsInclude>>,
     /// `resolve.alias`, root and public dir for specifiers inside stylesheets.
     resolve: oj_css::CssResolveConfig,
     /// Inline `<script type="module">` bodies keyed by their html-proxy id.
@@ -1841,6 +1843,7 @@ impl Plugin for OjCssPlugin {
             .filter(|rest| !rest.starts_with('/') && !Path::new(spec_path).starts_with(&self.root))
             .map(str::to_string);
         let root = self.root.clone();
+        let assets_include = self.assets_include.clone();
         let public_dir = self.resolve.public_dir.clone();
         let html_proxy = args.specifier.contains("?html-proxy&index=").then(|| {
             let spec = args.specifier.strip_prefix("./").unwrap_or(args.specifier);
@@ -1895,7 +1898,10 @@ impl Plugin for OjCssPlugin {
                         .extension()
                         .and_then(|e| e.to_str())
                         .is_some_and(oj_compiler::assets::is_asset_ext)
-                    || oj_compiler::assets::is_included_asset(&root.join(&rest).to_string_lossy());
+                    || oj_compiler::assets::is_included_asset(
+                        assets_include.as_deref(),
+                        &root.join(&rest).to_string_lossy(),
+                    );
                 if asset && !worker && public_file(&public_dir, &rest).is_some() {
                     let id = with_query(&format!("{PUBLIC_FILE_ID}{rest}"));
                     return Ok(Some(HookResolveIdOutput::from_id(id)));
@@ -1947,6 +1953,7 @@ impl Plugin for OjCssPlugin {
         let css_transform_enabled = Arc::clone(&self.css_transform_enabled);
         let self_has_postcss = self.has_postcss;
         let css_cfg = self.css.clone();
+        let assets_include = self.assets_include.clone();
         let css_resolve = self.resolve.clone();
         let html_inline = Arc::clone(&self.html_inline);
         let worker = self.worker.clone();
@@ -2256,6 +2263,7 @@ impl Plugin for OjCssPlugin {
                     host: None,
                     css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
                     css: css_cfg.clone(),
+                    assets_include: assets_include.clone(),
                     html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
                     worker: worker.clone(),
                     resolve: css_resolve.clone(),
@@ -4119,6 +4127,7 @@ pub async fn build(
         host: plugin_host.clone(),
         css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
         css: config.css.clone(),
+        assets_include: oj_server::plugins::assets_include_of(&config, &root),
         html_inline: Arc::clone(&html_inline),
         worker: Some(Arc::new(WorkerBundleOpts {
             config: config.clone(),
@@ -5576,6 +5585,7 @@ pub(crate) async fn build_ssr(
         host: plugin_host.clone(),
         css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
         css: config.css.clone(),
+        assets_include: oj_server::plugins::assets_include_of(config, root),
         html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
         worker: None,
         worker_bundles: Default::default(),
@@ -5765,6 +5775,7 @@ async fn build_server_fns(
                 host: None,
                 css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
                 css: config.css.clone(),
+                assets_include: oj_server::plugins::assets_include_of(config, root),
                 html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
                 worker: None,
                 worker_bundles: Default::default(),
@@ -6185,6 +6196,7 @@ async fn build_client_entry(
         host: plugin_host.clone(),
         css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
         css: config.css.clone(),
+        assets_include: oj_server::plugins::assets_include_of(config, root),
         html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
         worker: None,
         worker_bundles: Default::default(),
@@ -6500,6 +6512,7 @@ async fn build_library(
                 host: plugin_host.clone(),
                 css_transform_enabled: Arc::new(tokio::sync::OnceCell::new()),
                 css: config.css.clone(),
+                assets_include: oj_server::plugins::assets_include_of(config, root),
                 html_inline: Arc::new(Mutex::new(std::collections::HashMap::new())),
                 worker: None,
                 worker_bundles: Default::default(),

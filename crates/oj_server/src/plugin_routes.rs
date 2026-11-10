@@ -59,6 +59,7 @@ async fn compile_plugin_source(
     let resolver = Arc::clone(&state.resolver);
     let fs_allow = Arc::clone(&state.fs_allow);
     let dir_cache = Arc::clone(&state.dir_cache);
+    let assets_include = state.assets_include.clone();
     let mut compile_opts = dev_compile_opts(state);
     // StyleX compiles the loaded source under its id (its hashes derive from
     // it, and its rules are recorded there), not under the synthetic path the
@@ -103,6 +104,7 @@ async fn compile_plugin_source(
                 &resolver,
                 &fs_allow,
                 &dir_cache,
+                assets_include.as_deref(),
                 spec,
                 true,
             ) {

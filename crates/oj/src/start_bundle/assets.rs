@@ -105,7 +105,11 @@ pub(crate) fn is_css_module(path: &str) -> bool {
 /// The asset an import (a specifier, or a resolved `/abs/x.png?url` id) is,
 /// by its query and extension; `None` when it is no asset import. `dev`: the
 /// unbundled dev pipeline ignores `&inline` on a worker, as Vite's does.
-pub(crate) fn asset_tag(source: &str, dev: bool) -> Option<AssetTag> {
+pub(crate) fn asset_tag(
+    source: &str,
+    dev: bool,
+    include: Option<&oj_compiler::assets::AssetsInclude>,
+) -> Option<AssetTag> {
     if source.starts_with('\0') {
         return None;
     }
@@ -140,7 +144,7 @@ pub(crate) fn asset_tag(source: &str, dev: bool) -> Option<AssetTag> {
     }
     if has_flag(query, "url")
         || is_asset_ext(ext_of(path))
-        || oj_compiler::assets::is_included_asset(path)
+        || oj_compiler::assets::is_included_asset(include, path)
     {
         return Some(AssetTag::Url);
     }
@@ -1153,6 +1157,8 @@ pub(crate) struct StartAssetsPlugin {
     /// stylesheet runs through as it compiles ("post" ones run on the module
     /// this loads, as rolldown transforms it).
     plugins: Option<Arc<oj_server::plugins::PluginHost>>,
+    /// The config's `assetsInclude`, resolved (none when it names nothing).
+    assets_include: Option<Arc<oj_compiler::assets::AssetsInclude>>,
 }
 
 impl std::fmt::Debug for StartAssetsPlugin {
@@ -1168,11 +1174,22 @@ impl StartAssetsPlugin {
             styles,
             mode,
             plugins: None,
+            assets_include: None,
         }
     }
 
     pub fn with_plugins(mut self, host: Option<Arc<oj_server::plugins::PluginHost>>) -> Self {
         self.plugins = host;
+        self
+    }
+
+    /// The config's `assetsInclude`: the files beyond the known types this
+    /// plugin loads as their URL.
+    pub fn with_assets_include(
+        mut self,
+        include: Option<Arc<oj_compiler::assets::AssetsInclude>>,
+    ) -> Self {
+        self.assets_include = include;
         self
     }
 
@@ -1212,7 +1229,11 @@ impl StartAssetsPlugin {
         let json = |s: &str| serde_json::Value::String(s.to_string()).to_string();
         let dev = matches!(self.mode, AssetMode::Dev { .. });
         // A plugin-served sheet's `\0` id takes the tag of what it names.
-        let Some(tag) = asset_tag(id.trim_start_matches('\0'), dev) else {
+        let Some(tag) = asset_tag(
+            id.trim_start_matches('\0'),
+            dev,
+            self.assets_include.as_deref(),
+        ) else {
             // A bare `.svg` (or `?react` one) no plugin componentized: its URL.
             if path.extension().is_some_and(|e| e == "svg") {
                 return Ok(Some(format!(
@@ -1512,17 +1533,17 @@ mod tests {
             ("\0/a/x.png", false, None),
         ];
         for (id, dev, want) in cases {
-            assert_eq!(asset_tag(id, *dev), *want, "{id}");
+            assert_eq!(asset_tag(id, *dev, None), *want, "{id}");
         }
         assert_eq!(
-            asset_tag("/w.ts?worker&inline", false),
+            asset_tag("/w.ts?worker&inline", false, None),
             Some(Worker {
                 shared: false,
                 form: WorkerForm::Inline
             })
         );
         assert_eq!(
-            asset_tag("/w.ts?worker&inline", true),
+            asset_tag("/w.ts?worker&inline", true, None),
             Some(Worker {
                 shared: false,
                 form: WorkerForm::Module
@@ -1530,14 +1551,14 @@ mod tests {
             "unbundled dev ignores &inline"
         );
         assert_eq!(
-            asset_tag("/w.ts?sharedworker&url", true),
+            asset_tag("/w.ts?sharedworker&url", true, None),
             Some(Worker {
                 shared: true,
                 form: WorkerForm::Url
             })
         );
         assert_eq!(
-            asset_tag("/w.ts?url&worker", false),
+            asset_tag("/w.ts?url&worker", false, None),
             Some(Worker {
                 shared: false,
                 form: WorkerForm::Url

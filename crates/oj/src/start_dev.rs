@@ -370,6 +370,7 @@ pub async fn start_dev(
             mode: mode.clone(),
             stylex: oj_server::stylex::plugin_for(&root, &inputs.config, "serve")
                 .map_err(|e| anyhow::anyhow!(e))?,
+            assets_include: oj_server::plugins::assets_include_of(&inputs.config, &root),
             config: inputs.config,
             app_env: inputs.app_env,
             rolldown,
@@ -448,6 +449,7 @@ pub async fn start_dev(
             entry,
             oj_config::ssr_externals(&config),
             oj_config::public_dir(&config, &root),
+            oj_server::plugins::assets_include_of(&config, &root),
             init_env,
         )?)
     };
@@ -2151,6 +2153,7 @@ pub async fn start_build(
         mode: mode.to_string(),
         stylex: oj_server::stylex::plugin_for(&root, &config, "build")
             .map_err(|e| anyhow::anyhow!(e))?,
+        assets_include: oj_server::plugins::assets_include_of(&config, &root),
         config,
         app_env,
         rolldown,

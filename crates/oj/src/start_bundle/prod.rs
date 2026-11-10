@@ -211,6 +211,7 @@ fn client_plugins(
                 Arc::clone(emit),
                 start.jsx_config(),
             )
+            .with_assets_include(start.assets_include.clone())
             .with_module_parsed()
             .compiling(
                 StartCodePlugin::new(&start.root, target.clone())
@@ -250,7 +251,8 @@ fn client_plugins(
                 worker_chain,
             },
         )
-        .with_plugins(host.map(|h| Arc::clone(&h.host))),
+        .with_plugins(host.map(|h| Arc::clone(&h.host)))
+        .with_assets_include(start.assets_include.clone()),
     ));
     plugins.push(Pluginable::new_shared(NodeBuiltinShims {
         production: true,
@@ -577,6 +579,7 @@ pub(crate) async fn build(
                         Arc::clone(&emit),
                         start.jsx_config(),
                     )
+                    .with_assets_include(start.assets_include.clone())
                     .with_module_parsed()
                     .compiling(
                         StartCodePlugin::new(&start.root, CodeTarget::Server)
@@ -613,7 +616,8 @@ pub(crate) async fn build(
                         worker_chain: Vec::new(),
                     },
                 )
-                .with_plugins(server_host.as_ref().map(|h| Arc::clone(&h.host))),
+                .with_plugins(server_host.as_ref().map(|h| Arc::clone(&h.host)))
+                .with_assets_include(start.assets_include.clone()),
             ));
             plugins
         };
