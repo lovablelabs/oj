@@ -220,11 +220,23 @@ impl ModuleGraph {
             return None;
         }
         node.last_hmr_invalidation_received = true;
-        let dirty: Vec<PathBuf> = self
-            .dirty_closure(changed)
-            .into_iter()
+        // Every importer is a module of the update, one that accepts
+        // `changed` as a dep included: Vite passes `[...mod.importers]`
+        // (self-imports left out) to `updateModules`, which invalidates each
+        // and walks up from it.
+        let importers: Vec<PathBuf> = node
+            .importers
+            .iter()
+            .filter(|p| p.as_path() != changed)
+            .cloned()
+            .collect();
+        let mut dirty: Vec<PathBuf> = importers
+            .iter()
+            .flat_map(|importer| self.dirty_closure(importer))
             .filter(|p| p != changed)
             .collect();
+        dirty.sort();
+        dirty.dedup();
         self.stamp_all(&dirty, timestamp);
         Some(dirty)
     }
@@ -890,6 +902,33 @@ mod tests {
             g.set_imports(&p("App.tsx"), &[p("Button.tsx"), p("a.css")]),
             Vec::<PathBuf>::new()
         );
+    }
+
+    /// Vite's `vite:invalidate` handler passes `[...mod.importers]` to
+    /// `updateModules`, which invalidates each one whether or not it accepts
+    /// the invalidated module as a dep (that filter is on the walk up from a
+    /// module, not on the update's own modules).
+    #[test]
+    fn an_invalidation_stamps_an_importer_that_accepts_the_module_as_a_dep() {
+        // main -> Page -> Widget (self-accepting); Page accepts Widget.
+        let mut g = ModuleGraph::new();
+        let (main, page, widget) = (p("main.tsx"), p("Page.tsx"), p("Widget.tsx"));
+        g.add_import(&main, &page);
+        g.add_import(&page, &widget);
+        g.set_self_accepting(&widget, true);
+        g.set_accepted_deps(&page, std::slice::from_ref(&widget));
+
+        // An edit of Widget stops at Page, which takes the new module itself.
+        assert_eq!(g.stamp_update(&widget, 3), vec![widget.clone()]);
+        assert_eq!(g.hmr_timestamp(&page), 0);
+
+        assert_eq!(
+            g.accept_invalidation(&widget, 5),
+            Some(vec![page.clone(), main.clone()])
+        );
+        assert_eq!(g.hmr_timestamp(&page), 5, "the accepting importer");
+        assert_eq!(g.hmr_timestamp(&main), 5, "and what imports it");
+        assert_eq!(g.hmr_timestamp(&widget), 3, "the module keeps its stamp");
     }
 
     #[test]

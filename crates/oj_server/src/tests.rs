@@ -3088,3 +3088,33 @@ fn the_watcher_ignores_what_vites_chokidar_ignores_by_default() {
         );
     }
 }
+
+/// Vite's `monotonicDateNow` (utils.ts): never the same value twice, never
+/// going back, and not behind the clock. Two updates in one millisecond must
+/// not share a stamp, since an importer's compile is keyed by the newest
+/// stamp among its imports.
+#[test]
+fn the_hmr_clock_is_strictly_increasing_across_threads() {
+    let before = now_millis() as u64;
+    let threads: Vec<_> = (0..8)
+        .map(|_| {
+            std::thread::spawn(|| {
+                let stamps: Vec<u64> = (0..2000).map(|_| crate::hmr::hmr_now()).collect();
+                assert!(
+                    stamps.windows(2).all(|w| w[0] < w[1]),
+                    "a thread's own stamps increase"
+                );
+                stamps
+            })
+        })
+        .collect();
+    let mut all: Vec<u64> = threads
+        .into_iter()
+        .flat_map(|t| t.join().unwrap())
+        .collect();
+    let count = all.len();
+    all.sort_unstable();
+    all.dedup();
+    assert_eq!(all.len(), count, "no stamp is handed out twice");
+    assert!(all[0] >= before, "a stamp is never behind the clock");
+}

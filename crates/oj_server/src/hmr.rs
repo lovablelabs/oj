@@ -1062,22 +1062,40 @@ pub(crate) async fn decide(
     // event on its own: a hook that debounces a burst by awaiting a timer and
     // checking for a newer call sees that newer call. The outcomes are then
     // applied in path order.
-    let hooked = futures_util::future::join_all(paths.iter().map(|path| async move {
-        let (mut messages, mut updates) = (Vec::new(), Vec::new());
-        let flow = match &state.plugins {
-            Some(host) => {
-                run_plugin_hooks(state, host, path, created, &mut messages, &mut updates).await
-            }
-            None => Flow::Next,
-        };
-        (flow, messages, updates)
-    }))
+    //
+    // One stamp per changed file, as Vite's handleHMRUpdate takes one
+    // `monotonicDateNow()` per event: the hooks' `timestamp`, the graph's
+    // stamps and the update payload all carry it.
+    let stamps: Vec<u64> = paths.iter().map(|_| hmr_now()).collect();
+    let hooked = futures_util::future::join_all(paths.iter().zip(&stamps).map(
+        |(path, &timestamp)| async move {
+            let (mut messages, mut updates) = (Vec::new(), Vec::new());
+            let flow = match &state.plugins {
+                Some(host) => {
+                    run_plugin_hooks(
+                        state,
+                        host,
+                        path,
+                        created,
+                        timestamp,
+                        &mut messages,
+                        &mut updates,
+                    )
+                    .await
+                }
+                None => Flow::Next,
+            };
+            (flow, messages, updates)
+        },
+    ))
     .await;
-    for (path, (mut flow, hook_messages, hook_updates)) in paths.iter().zip(hooked) {
+    for ((path, &timestamp), (mut flow, hook_messages, hook_updates)) in
+        paths.iter().zip(&stamps).zip(hooked)
+    {
         messages.extend(hook_messages);
         updates.extend(hook_updates);
         if let Flow::Next = flow {
-            flow = decide_file(state, path, &plugin_watched, &mut updates);
+            flow = decide_file(state, path, &plugin_watched, timestamp, &mut updates);
         }
         if let Flow::Reload(frame) = flow {
             messages.push(frame);
@@ -1351,6 +1369,7 @@ async fn run_plugin_hooks(
     host: &PluginHost,
     path: &PathBuf,
     created: &std::collections::HashSet<PathBuf>,
+    ts: u64,
     messages: &mut Vec<String>,
     updates: &mut Vec<serde_json::Value>,
 ) -> Flow {
@@ -1360,7 +1379,6 @@ async fn run_plugin_hooks(
     }
     let file = path.display().to_string();
     let change_type = change_type(state, path, created);
-    let ts = hmr_now();
     let modules_json = hot_update_modules_json(state, path);
     // The client's hooks first, then the ssr environment's, as Vite's
     // handleHMRUpdate runs the client environment before the others.
@@ -1404,7 +1422,7 @@ async fn run_plugin_hooks(
             Flow::Reload(full_reload_frame("plugin", None, Some(path)))
         }
         Ok(Some(d)) => match parse_hmr_filter(&d) {
-            Some(seeds) => plugin_filtered_update(state, &file, path, &seeds, updates),
+            Some(seeds) => plugin_filtered_update(state, &file, path, &seeds, ts, updates),
             None => Flow::Next,
         },
         Ok(None) => Flow::Next,
@@ -1420,12 +1438,38 @@ fn emit_hook_failure(hook: &str, file: &str, error: &str) {
     );
 }
 
-/// A `hotUpdate` that returned a module subset: propagate from those seeds.
+/// Stamp the chain an update of each of `seeds` invalidates (see
+/// `ModuleGraph::dirty_closure`) with `timestamp`, so re-fetched importers
+/// point at new versions of unchanged deps, and drop the chain's mtime
+/// fast-path keys so each module recompiles with the stamps: Vite's
+/// `updateModules` calling `moduleGraph.invalidateModule(mod, seen,
+/// timestamp, true)` for every module of the update.
+fn stamp_chains(state: &ServerState, seeds: &[&Path], timestamp: u64) {
+    let dirty: Vec<PathBuf> = {
+        let mut g = state.graph.lock().unwrap();
+        let mut dirty = Vec::new();
+        for seed in seeds {
+            dirty.extend(g.stamp_update(seed, timestamp));
+        }
+        dirty
+    };
+    let mut keys = state.mtime_keys.lock().unwrap();
+    for d in &dirty {
+        for url in url_variants(&d.display().to_string()) {
+            keys.remove(&url);
+        }
+    }
+}
+
+/// A `hotUpdate` that returned a module subset: propagate from those seeds,
+/// which are the update's modules as Vite's `updateModules(environment, file,
+/// hotContext.modules, timestamp)` takes them, stamped like any other's.
 fn plugin_filtered_update(
     state: &ServerState,
     file: &str,
     path: &Path,
     seeds: &[PathBuf],
+    timestamp: u64,
     updates: &mut Vec<serde_json::Value>,
 ) -> Flow {
     let seed_refs: Vec<&Path> = seeds.iter().map(PathBuf::as_path).collect();
@@ -1433,7 +1477,7 @@ fn plugin_filtered_update(
     match decision {
         HmrDecision::Update { boundaries } => {
             println!("oj: change {file} -> plugin-filtered update {boundaries:?}");
-            let timestamp = hmr_now();
+            stamp_chains(state, &seed_refs, timestamp);
             updates.extend(
                 boundaries
                     .iter()
@@ -1454,6 +1498,7 @@ fn decide_file(
     state: &ServerState,
     path: &PathBuf,
     plugin_watched: &std::collections::HashSet<PathBuf>,
+    timestamp: u64,
     updates: &mut Vec<serde_json::Value>,
 ) -> Flow {
     if !plugin_watched.is_empty() {
@@ -1475,7 +1520,7 @@ fn decide_file(
         // Nor imports its `?inline` module (a node of its own).
         if link_loaded(state, &url) {
             println!("oj: change {url} -> css-update");
-            updates.push(update_entry("css-update", &url, hmr_now()));
+            updates.push(update_entry("css-update", &url, timestamp));
             return Flow::Done;
         }
     }
@@ -1528,25 +1573,9 @@ fn decide_file(
         Ok(targets) => {
             let boundaries: Vec<&Path> = targets.iter().map(|t| t.boundary.as_path()).collect();
             println!("oj: change {url} -> update {boundaries:?}");
-            let timestamp = hmr_now();
-            // Stamp the invalidated chain so re-fetched importers point at new versions
-            // of unchanged deps; drop their mtime fast-path keys so they recompile with the stamps.
-            let dirty = {
-                let mut g = state.graph.lock().unwrap();
-                let mut dirty = g.stamp_update(Path::new(&url), timestamp);
-                if let Some(inline) = inline.as_ref().filter(|i| g.contains(Path::new(i))) {
-                    dirty.extend(g.stamp_update(Path::new(inline), timestamp));
-                }
-                dirty
-            };
-            {
-                let mut keys = state.mtime_keys.lock().unwrap();
-                for d in &dirty {
-                    for url in url_variants(&d.display().to_string()) {
-                        keys.remove(&url);
-                    }
-                }
-            }
+            let mut seeds = vec![Path::new(&url)];
+            seeds.extend(inline.as_deref().map(Path::new));
+            stamp_chains(state, &seeds, timestamp);
             if targets.is_empty() {
                 println!("oj: change {url} -> no update (nothing loaded imports it)");
             }
