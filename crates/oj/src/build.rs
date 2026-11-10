@@ -1360,7 +1360,14 @@ async fn compile_stylesheet(
 pub(crate) fn split_asset_query(spec: &str) -> Option<(String, String)> {
     let (base, query) = spec.split_once('?')?;
     let params: Vec<&str> = query.split('&').filter(|p| !p.is_empty()).collect();
-    let has = |k: &str| params.contains(&k);
+    // `url`, `raw`, the workers and `init` match whole (Vite's urlRE, rawRE,
+    // workerOrSharedWorkerRE); `inline` and `no-inline` as Vite's
+    // word-bounded inlineRE / noInlineRE (`inline=1`, `no-inline-x` too).
+    let word = |p: &str, name: &str| oj_server::has_word_param(&format!("?{p}"), name);
+    let has = |k: &str| match k {
+        "inline" | "no-inline" => params.iter().any(|p| word(p, k)),
+        _ => params.contains(&k),
+    };
     let worker_kind = if has("worker") {
         Some("worker")
     } else if has("sharedworker") {
@@ -1393,7 +1400,7 @@ pub(crate) fn split_asset_query(spec: &str) -> Option<(String, String)> {
     if !params.is_empty()
         && params
             .iter()
-            .all(|p| ["url", "inline", "no-inline"].contains(p))
+            .all(|p| *p == "url" || word(p, "inline") || word(p, "no-inline"))
     {
         let q = if has("no-inline") {
             "no-inline"
@@ -9716,6 +9723,28 @@ mod tests {
             "foreign params are not oj queries"
         );
         assert_eq!(split_asset_query("./a.png?v=1"), None);
+        // Vite's inlineRE / noInlineRE are word-bounded: `inline=1` and
+        // `no-inline-x` count, `inlinex` does not; `url` matches whole.
+        for (spec, want) in [
+            ("./a.png?no-inline=1", "no-inline"),
+            ("./a.png?url&no-inline-x", "no-inline"),
+            ("./a.png?inline=1", "inline"),
+            ("./a.png?url&inline-x", "inline"),
+            ("./a.png?inline&no-inline=1", "no-inline"),
+            ("./w.ts?worker&inline=1", "worker&inline"),
+        ] {
+            assert_eq!(
+                split_asset_query(spec),
+                Some((spec.split('?').next().unwrap().into(), want.into())),
+                "{spec}"
+            );
+        }
+        assert_eq!(split_asset_query("./a.png?inlinex"), None);
+        assert_eq!(
+            split_asset_query("./a.png?url=1"),
+            None,
+            "urlRE matches whole"
+        );
         // Vite's rawRE: `raw` anywhere, ahead of `url`/`inline`, after workers.
         for spec in [
             "./a.css?v=1&raw",
