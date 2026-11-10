@@ -54,6 +54,12 @@ fn has_flag(query: &str, name: &str) -> bool {
         .any(|part| part == name)
 }
 
+/// Vite's noInlineRE (`[?&]no-inline\b`): also `?no-inline=...` and
+/// `?no-inline-x`, as [`has_inline`] reads `inline`.
+fn has_no_inline(query: &str) -> bool {
+    oj_server::has_word_param(&format!("?{}", query.trim_start_matches('?')), "no-inline")
+}
+
 /// Vite's inlineRE (`[?&]inline\b`): also `?inline=...` and `?inline-x`.
 fn has_inline(query: &str) -> bool {
     query.trim_start_matches('?').split('&').any(|part| {
@@ -132,7 +138,7 @@ pub(crate) fn asset_tag(root: &Path, source: &str, dev: bool) -> Option<AssetTag
         return Some(AssetTag::Raw);
     }
     // Vite's shouldInline: `no-inline` wins, then `inline` (even with `url`).
-    if has_flag(query, "no-inline") {
+    if has_no_inline(query) {
         return Some(AssetTag::Url);
     }
     if has_inline(query) {
@@ -1143,7 +1149,7 @@ pub(crate) fn dev_svg_inline(path: &Path, id: &str, inline_limit: u64) -> Option
         return None;
     }
     let query = id.split_once('?').map_or("", |(_, q)| q);
-    if has_flag(query, "no-inline") || id.contains('#') {
+    if has_no_inline(query) || id.contains('#') {
         return None;
     }
     let bytes = std::fs::read(path).ok()?;
@@ -1558,6 +1564,10 @@ mod tests {
             ("/a/x.css?inline", false, Some(Inline)),
             ("/a/x.png?url&no-inline", false, Some(Url)),
             ("/a/x.png?no-inline&inline", false, Some(Url)),
+            // noInlineRE is word-bounded, as inlineRE is.
+            ("/a/x.png?url&no-inline=1", false, Some(Url)),
+            ("/a/x.png?no-inline-x&inline", false, Some(Url)),
+            ("/a/x.svg?inline=1", false, Some(Inline)),
             ("/a/x.png?url&inline", false, Some(Inline)),
             ("/a/x.ts?rawx", false, None),
             ("/a/x.ts?raw=1", false, None),
@@ -1685,6 +1695,10 @@ mod tests {
         assert!(
             dev_svg_inline(&small, &id(&small, "?url&no-inline"), 4096).is_none(),
             "`no-inline` keeps the url"
+        );
+        assert!(
+            dev_svg_inline(&small, &id(&small, "?url&no-inline=1"), 4096).is_none(),
+            "`no-inline=1` too (Vite's noInlineRE is word-bounded)"
         );
         assert!(
             dev_svg_inline(&small, &id(&small, "#top"), 4096).is_none(),

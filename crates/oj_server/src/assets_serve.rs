@@ -26,8 +26,9 @@ pub(crate) fn query_asset_kind(query: Option<&str>) -> Option<&'static str> {
             return Some(kind);
         }
     }
-    // `?no-inline` only differs from `?url` in the build (never inlined).
-    if q.split('&').any(|kv| kv == "no-inline") {
+    // `?no-inline` (Vite's `[?&]no-inline\b`, so `no-inline=1` too) only
+    // differs from `?url` in the build (never inlined).
+    if has_word_param(&format!("?{q}"), "no-inline") {
         return Some("url");
     }
     None
@@ -277,7 +278,11 @@ impl DevAssetUrls {
 /// Whether `url`'s query has `name` as Vite's `[?&]name\b` reads it: the
 /// parameter starts with it and no word character follows (`inline`,
 /// `inline=1`, `inline-x`, never `inlinex`).
-pub(crate) fn has_word_param(url: &str, name: &str) -> bool {
+/// Whether `url`'s query has `name` as Vite's word-bounded regexes read it
+/// (`[?&]inline\b`, `[?&]no-inline\b`): the parameter as is, or followed by
+/// anything but a word character (`inline=1`, `inline-x`), never a longer
+/// word (`inlinex`).
+pub fn has_word_param(url: &str, name: &str) -> bool {
     url.split_once('?').is_some_and(|(_, q)| {
         q.split('&').any(|kv| {
             kv.strip_prefix(name).is_some_and(|rest| {

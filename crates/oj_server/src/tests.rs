@@ -2708,6 +2708,12 @@ fn inline_params_match_as_vites_word_bounded_regexes() {
         assert!(!has_word_param(url, "inline"), "{url}");
     }
     assert_eq!(query_asset_kind(Some("inline-x")), Some("inline"));
+    // `no-inline` reads the same way (Vite's noInlineRE): the url, as in
+    // the build (shouldInline checks it first).
+    for query in ["no-inline", "no-inline=1", "url&no-inline-x"] {
+        assert_eq!(query_asset_kind(Some(query)), Some("url"), "{query}");
+    }
+    assert_eq!(query_asset_kind(Some("no-inlinex")), None);
 }
 
 // A prelude of N lines moves every generated line of the map down by N.

@@ -1681,6 +1681,15 @@ mod tests {
             ("./hero.png".into(), Some("no-inline"), false)
         );
         assert_eq!(
+            split_intent("./hero.png?no-inline=1"),
+            ("./hero.png".into(), Some("no-inline"), false),
+            "Vite's noInlineRE is word-bounded"
+        );
+        assert_eq!(
+            split_intent("./hero.png?inline=1"),
+            ("./hero.png".into(), Some("inline"), false)
+        );
+        assert_eq!(
             split_intent("./hero.png?inline&no-inline"),
             ("./hero.png".into(), Some("no-inline"), false)
         );
