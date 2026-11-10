@@ -292,7 +292,9 @@ pub(crate) fn has_word_param(url: &str, name: &str) -> bool {
 
 /// Vite's assetToDataURL: an svg as Vite's svgToDataURL encodes it, anything
 /// else base64 under its MIME type.
-pub(crate) fn asset_data_url(file: &Path, content: &[u8]) -> String {
+/// Vite's `assetToDataURL`: an `.svg` as [`svg_to_data_url`] writes it, any
+/// other file base64 under its MIME type.
+pub fn asset_data_url(file: &Path, content: &[u8]) -> String {
     let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
     if ext == "svg" {
         return svg_to_data_url(content);
@@ -306,7 +308,7 @@ pub(crate) fn asset_data_url(file: &Path, content: &[u8]) -> String {
 
 /// Vite's svgToDataURL: URL-encoded markup, or base64 when the svg holds text,
 /// a foreignObject or nested quotes, where the rewrite would be unsafe.
-pub(crate) fn svg_to_data_url(content: &[u8]) -> String {
+pub fn svg_to_data_url(content: &[u8]) -> String {
     let text = String::from_utf8_lossy(content);
     static NESTED_QUOTES: std::sync::LazyLock<regex::Regex> =
         std::sync::LazyLock::new(|| regex::Regex::new(r#""[^"']*'[^"]*"|'[^'"]*"[^']*'"#).unwrap());

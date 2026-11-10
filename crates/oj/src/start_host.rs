@@ -394,40 +394,6 @@ fn has_esm_syntax(src: &str) -> bool {
     re.is_match(src)
 }
 
-fn mime_of(path: &str) -> &'static str {
-    match ext_of(path).to_ascii_lowercase().as_str() {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "avif" => "image/avif",
-        "ico" => "image/x-icon",
-        "svg" => "image/svg+xml",
-        "woff" => "font/woff",
-        "woff2" => "font/woff2",
-        "ttf" => "font/ttf",
-        "otf" => "font/otf",
-        "eot" => "application/vnd.ms-fontobject",
-        "mp4" => "video/mp4",
-        "webm" => "video/webm",
-        "ogg" => "audio/ogg",
-        "mp3" => "audio/mpeg",
-        "wav" => "audio/wav",
-        "flac" => "audio/flac",
-        "m4a" => "audio/mp4",
-        "aac" => "audio/aac",
-        "mov" => "video/quicktime",
-        "bmp" => "image/bmp",
-        "pdf" => "application/pdf",
-        "webmanifest" => "application/manifest+json",
-        "wasm" => "application/wasm",
-        "css" => "text/css",
-        "json" => "application/json",
-        "txt" => "text/plain",
-        _ => "application/octet-stream",
-    }
-}
-
 fn json_str(s: &str) -> String {
     serde_json::Value::String(s.to_string()).to_string()
 }
@@ -468,7 +434,9 @@ fn split_intent(spec: &str) -> (String, Option<&'static str>, bool) {
     let tag: &'static str = match query.as_str() {
         "react" if clean.ends_with(".svg") => return (clean, None, true),
         "raw" => "raw",
-        "url" | "no-inline" => "url",
+        "url" => "url",
+        // `?no-inline`: the url, never a data URL (Vite's shouldInline).
+        "no-inline" => "no-inline",
         "inline" => "inline",
         // Unbundled dev ignores `&inline` on a worker (Vite's worker load only
         // inlines when the environment is bundled), so `&url` wins whenever it
@@ -604,6 +572,9 @@ pub struct StartHost {
     root: PathBuf,
     /// `publicDir` (adopted from the config); `None` when disabled.
     public_dir: Option<PathBuf>,
+    /// The client's `build.assetsInlineLimit`: dev inlines an `.svg` under
+    /// it, as Vite's `fileToDevUrl` does for build parity.
+    inline_limit: u64,
     /// The Start framework-seam aliases (the loader's ALIASES map): resolved
     /// targets under the app or the start cache dir.
     aliases: Vec<(String, PathBuf)>,
@@ -624,12 +595,14 @@ impl StartHost {
         bridge: SsrBridge,
         no_external: oj_config::SsrExternals,
         public_dir: Option<PathBuf>,
+        inline_limit: u64,
     ) -> Arc<StartHost> {
         let aliases = framework_aliases(&root, cache);
         Arc::new(StartHost {
             bridge,
             root,
             public_dir,
+            inline_limit,
             aliases,
             no_external: NoExternal::new(no_external),
             graph: VersionGraph::default(),
@@ -1008,8 +981,13 @@ impl StartHost {
         let is_path = Path::new(&clean).is_absolute();
 
         // svgr: the plugin owns .svg modules (bare and ?react); without a
-        // claiming plugin the module is its served URL.
-        if is_path && clean.ends_with(".svg") {
+        // claiming plugin the module is its served URL. An intent on the
+        // import (`?raw`, `?inline`, `?url`) is not the plugin's: Vite's
+        // vite:asset answers `?raw` with the file's text before any rule
+        // on the extension (`rawRE` first in its load), and an SVG
+        // component plugin's filter never matches the queried id.
+        let intent = query.as_deref().and_then(|q| q.strip_prefix("ojasset="));
+        if is_path && clean.ends_with(".svg") && intent.is_none() {
             let plugin_id = match &query {
                 Some(q) => format!("{clean}?{q}"),
                 None => clean.clone(),
@@ -1020,19 +998,21 @@ impl StartHost {
                 }
                 _ => None,
             };
+            // Unclaimed: vite:asset's value, the data URL of a small svg
+            // (Vite's dev inlines what the build would) or the served url.
             let code = loaded.unwrap_or_else(|| {
-                format!(
-                    "export default {};",
-                    json_str(&format!(
-                        "{}/@oj-start/fs{clean}",
-                        self.bridge.start_url_base()
-                    ))
+                let value = crate::start_bundle::assets::dev_svg_inline(
+                    Path::new(&clean),
+                    id,
+                    self.inline_limit,
                 )
+                .unwrap_or_else(|| format!("{}/@oj-start/fs{clean}", self.bridge.start_url_base()));
+                format!("export default {};", json_str(&value))
             });
             return Ok(js(code));
         }
 
-        if let Some(kind) = query.as_deref().and_then(|q| q.strip_prefix("ojasset=")) {
+        if let Some(kind) = intent {
             let code = self.asset_module(&clean, kind).await?;
             return Ok(js(self.asset_transform(&clean, kind, code).await?));
         }
@@ -1188,7 +1168,7 @@ impl StartHost {
         code: String,
     ) -> Result<String, String> {
         let style = oj_server::is_style_ext(&ext_of(path).to_ascii_lowercase());
-        if !matches!(kind, "raw" | "url" | "asset") && !(kind == "inline" && !style) {
+        if !matches!(kind, "raw" | "url" | "no-inline" | "asset") && !(kind == "inline" && !style) {
             return Ok(code);
         }
         // A plain asset import's id is the file's, as Vite's.
@@ -1220,12 +1200,11 @@ impl StartHost {
                     // inlines it.
                     self.bridge.start_dev_inline_style(Path::new(path)).await
                 } else {
+                    // Vite's `assetToDataURL`: an svg as `svgToDataURL` writes
+                    // it, any other file base64; the client bundle, plain dev
+                    // and the build write the same.
                     let bytes = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
-                    let url = format!(
-                        "data:{};base64,{}",
-                        mime_of(path),
-                        crate::ssr_host::base64(&bytes)
-                    );
+                    let url = oj_server::asset_data_url(Path::new(path), &bytes);
                     Ok(format!("export default {};", json_str(&url)))
                 }
             }
@@ -1260,7 +1239,20 @@ impl StartHost {
                     json_str(&url)
                 ))
             }
-            // "url" and anything unrecognized: the served-URL module.
+            // `?url` of a small svg is its data URL in dev, as Vite's
+            // `fileToDevUrl` inlines what the build would (`?url&no-inline`
+            // and a large one stay the url).
+            "url" => {
+                let value = crate::start_bundle::assets::dev_svg_inline(
+                    Path::new(path),
+                    &format!("{path}?url"),
+                    self.inline_limit,
+                )
+                .unwrap_or_else(|| format!("{}/@oj-start/fs{path}", self.bridge.start_url_base()));
+                Ok(format!("export default {};", json_str(&value)))
+            }
+            // "no-inline", "asset" and anything unrecognized: the served-URL
+            // module.
             _ => Ok(format!(
                 "export default {};",
                 json_str(&format!(
@@ -1349,6 +1341,7 @@ impl EngineSlot {
 }
 
 impl StartEngine {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         root: PathBuf,
         cache: &Path,
@@ -1356,11 +1349,19 @@ impl StartEngine {
         entry_abs: PathBuf,
         no_external: oj_config::SsrExternals,
         public_dir: Option<PathBuf>,
+        inline_limit: u64,
         init_env: Vec<(String, String)>,
     ) -> anyhow::Result<StartEngine> {
         let bootstrap = cache.join("start-bootstrap.mjs");
         std::fs::write(&bootstrap, START_BOOTSTRAP_JS)?;
-        let host = StartHost::new(root.clone(), cache, bridge, no_external, public_dir);
+        let host = StartHost::new(
+            root.clone(),
+            cache,
+            bridge,
+            no_external,
+            public_dir,
+            inline_limit,
+        );
         let engine = spawn_engine(&root, &host)?;
         Ok(StartEngine {
             host,
@@ -1614,6 +1615,11 @@ mod tests {
             split_intent("../notes.txt?raw"),
             ("../notes.txt".into(), Some("raw"), false)
         );
+        // An intent on an svg is the intent's, not the component's.
+        assert_eq!(
+            split_intent("./logo.svg?raw"),
+            ("./logo.svg".into(), Some("raw"), false)
+        );
         assert_eq!(
             split_intent("./hero.png?url"),
             ("./hero.png".into(), Some("url"), false)
@@ -1665,18 +1671,18 @@ mod tests {
         }
         assert_eq!(
             split_intent("./hero.png?no-inline"),
-            ("./hero.png".into(), Some("url"), false)
+            ("./hero.png".into(), Some("no-inline"), false)
         );
         // Vite's combinable asset grammar: no-inline always wins, inline
         // beats url, and dev serves `worker&inline&url` as the URL export
         // (inline is a bundled-only concern).
         assert_eq!(
             split_intent("./hero.png?url&no-inline"),
-            ("./hero.png".into(), Some("url"), false)
+            ("./hero.png".into(), Some("no-inline"), false)
         );
         assert_eq!(
             split_intent("./hero.png?inline&no-inline"),
-            ("./hero.png".into(), Some("url"), false)
+            ("./hero.png".into(), Some("no-inline"), false)
         );
         assert_eq!(
             split_intent("./hero.png?url&inline"),
@@ -1732,6 +1738,15 @@ mod tests {
         assert_eq!(
             classify_id(Path::new("/a"), "/a/n.txt", Some("raw"), false),
             "/a/n.txt?ojasset=raw"
+        );
+        // An intent on an svg is the intent's, not the component's.
+        assert_eq!(
+            classify_id(Path::new("/a"), "/a/l.svg", Some("raw"), false),
+            "/a/l.svg?ojasset=raw"
+        );
+        assert_eq!(
+            classify_id(Path::new("/a"), "/a/l.svg", Some("inline"), false),
+            "/a/l.svg?ojasset=inline"
         );
         assert_eq!(
             classify_id(Path::new("/a"), "/a/l.svg", None, true),

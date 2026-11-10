@@ -1109,57 +1109,22 @@ fn export_default_url(url: &str) -> String {
     )
 }
 
-/// Vite's `svgToDataURL` (asset.ts): an SVG with `<text`, `<foreignObject` or
-/// nested quotes is base64 (any rewrite would be unsafe); otherwise the markup
-/// is trimmed, inter-tag whitespace dropped, double quotes turned single, and
-/// `% # < >` plus whitespace runs percent-encoded (`%20` keeps srcset valid).
-/// A backslash is encoded too, so the url is safe inside a `"…"` CSS string.
-fn svg_data_url(text: &str) -> String {
-    if text.contains("<text") || text.contains("<foreignObject") || has_nested_quotes(text) {
-        return format!("data:image/svg+xml;base64,{}", b64(text.as_bytes()));
-    }
-    let mut out = String::with_capacity(text.len() + 16);
-    let mut pending_ws = false;
-    for ch in text.trim().chars() {
-        if ch.is_whitespace() {
-            pending_ws = true;
-            continue;
-        }
-        if pending_ws {
-            // `>   <` collapses to `><`; any other whitespace run is one `%20`.
-            if !(ch == '<' && out.ends_with("%3e")) {
-                out.push_str("%20");
-            }
-            pending_ws = false;
-        }
-        match ch {
-            '%' => out.push_str("%25"),
-            '#' => out.push_str("%23"),
-            '<' => out.push_str("%3c"),
-            '>' => out.push_str("%3e"),
-            '\\' => out.push_str("%5C"),
-            '"' => out.push('\''),
-            other => out.push(other),
-        }
-    }
-    format!("data:image/svg+xml,{out}")
+/// Vite's `svgToDataURL` (asset.ts), the dev server's copy: an SVG with
+/// `<text`, `<foreignObject` or nested quotes is base64 (any rewrite would
+/// be unsafe); otherwise the markup is trimmed, inter-tag whitespace dropped,
+/// double quotes turned single, and `% # < >` plus whitespace runs
+/// percent-encoded (`%20` keeps srcset valid). A backslash stands, as in
+/// Vite; a JavaScript string literal escapes it, and the CSS site encodes it
+/// ([`css_url_safe`]).
+pub(crate) fn svg_data_url(text: &str) -> String {
+    oj_server::svg_to_data_url(text.as_bytes())
 }
 
-/// Vite's `nestedQuotesRE`: a double-quoted run containing a single quote, or
-/// the reverse, which the quote swap would corrupt.
-fn has_nested_quotes(text: &str) -> bool {
-    for (open, inner) in [('"', '\''), ('\'', '"')] {
-        let mut rest = text;
-        while let Some(start) = rest.find(open) {
-            let after = &rest[start + 1..];
-            let Some(end) = after.find(open) else { break };
-            if after[..end].contains(inner) {
-                return true;
-            }
-            rest = &after[end + 1..];
-        }
-    }
-    false
+/// A data URL as a CSS `url("…")` string: a backslash starts a CSS escape,
+/// so one in an inlined SVG is percent-encoded here. Vite writes it as is
+/// and the browser drops it on parsing; this keeps the svg's own text.
+fn css_url_safe(url: String) -> String {
+    url.replace('\\', "%5C")
 }
 
 /// Emit an asset file, or inline it as a data URL when it is under
@@ -6918,7 +6883,7 @@ fn emit_css_url(
     // except an svg with a fragment, which must stay a file to keep its `#id`.
     if (data.len() as u64) < opts.inline_limit && !suffix.starts_with('#') {
         if ext.eq_ignore_ascii_case("svg") {
-            return Some(svg_data_url(&String::from_utf8_lossy(&data)));
+            return Some(css_url_safe(svg_data_url(&String::from_utf8_lossy(&data))));
         }
         return Some(format!("data:{};base64,{}", asset_mime(ext), b64(&data)));
     }
@@ -9600,7 +9565,8 @@ mod tests {
             ("<svg a=\"b\"/>", "%3csvg%20a='b'/%3e"),
             ("<svg>100%</svg>", "%3csvg%3e100%25%3c/svg%3e"),
             ("<svg fill=\"#fff\"/>", "%3csvg%20fill='%23fff'/%3e"),
-            ("<svg>a\\b</svg>", "%3csvg%3ea%5Cb%3c/svg%3e"),
+            // A backslash stands, as in Vite (the module literal escapes it).
+            ("<svg>a\\b</svg>", "%3csvg%3ea\\b%3c/svg%3e"),
             // Vite: whitespace between tags is dropped, other runs become one %20.
             (
                 "  <svg>\n  <rect   x=\"1\"/>\n</svg>  ",
@@ -9624,6 +9590,9 @@ mod tests {
             "<svg><foreignObject/></svg>",
             "<svg title=\"it's\"/>",
             "<svg title='say \"hi\"'/>",
+            // Vite's nestedQuotesRE reads across an unbalanced pair too:
+            // `"c'd"` here, though the quotes pair up as `"b"` and `"e"`.
+            "<svg a=\"b\"c'd\"e\"/>",
         ] {
             let url = svg_data_url(svg);
             assert!(
@@ -9636,8 +9605,13 @@ mod tests {
             );
         }
         assert!(
-            !has_nested_quotes("<svg a=\"b\" c='d'/>"),
+            svg_data_url("<svg a=\"b\" c='d'/>").starts_with("data:image/svg+xml,"),
             "separate quote styles are fine"
+        );
+        // In a CSS string the backslash is encoded instead.
+        assert_eq!(
+            css_url_safe(svg_data_url("<svg>a\\b</svg>")),
+            "data:image/svg+xml,%3csvg%3ea%5Cb%3c/svg%3e"
         );
     }
 
