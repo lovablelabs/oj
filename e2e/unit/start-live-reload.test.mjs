@@ -396,6 +396,25 @@ test("with no frame, an uncaught failed import reloads only for the dev server's
   assert.equal(await reloads(gone, { stamp: "null" }), 0);
 });
 
+test("a failed import the page and the server both report is reloaded for once", async () => {
+  // An import nothing caught: the rejection names the chunk's url, and the
+  // server's frame its name. A cached document that fails the same way hears
+  // both again, in either order, and stays.
+  const storage = new Map();
+  const gone = new TypeError(`Failed to fetch dynamically imported module: ${GONE_URL}`);
+  const first = loadPage({ stamp: '"1f-4"', storage });
+  first.open();
+  first.fetched(GONE_URL);
+  await first.receive(GONE);
+  assert.equal(reloadsIn(first.log), 1, "the frame reloads it");
+  const again = loadPage({ stamp: '"1f-4"', storage });
+  again.open();
+  again.fetched(GONE_URL);
+  await again.rejected(gone);
+  await again.receive(GONE);
+  assert.equal(reloadsIn(again.log), 0, "the rejection is the same chunk gone");
+});
+
 test("the socket names the hot changes the document has, beside its stamp", () => {
   assert.equal(loadPage({ stamp: '"1f-4"', hot: "3" }).url, "ws://localhost/@oj-start/hmr?g=1f-4&h=3");
   assert.equal(loadPage({ hot: "0" }).url, "ws://localhost/@oj-start/hmr?h=0");

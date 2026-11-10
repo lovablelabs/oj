@@ -263,16 +263,23 @@
   // the import rejects, caught or not.
   const CHUNKS = base + "/@oj-start/";
   const asked = new Set();
+  // The chunk a url names (null for a url that is not one of the dev
+  // server's chunks), as the server names it in oj:chunk-gone.
+  const chunkNamed = (raw) => {
+    const url = String(raw).split(/[?#]/)[0];
+    const at = url.indexOf(CHUNKS);
+    if (at < 0) return null;
+    const name = url.slice(at + CHUNKS.length);
+    try {
+      return decodeURIComponent(name);
+    } catch {
+      return name;
+    }
+  };
   const noteAsked = (entries) => {
     for (const entry of entries) {
-      const url = String(entry.name).split(/[?#]/)[0];
-      const at = url.indexOf(CHUNKS);
-      if (at < 0) continue;
-      let name = url.slice(at + CHUNKS.length);
-      try {
-        name = decodeURIComponent(name);
-      } catch {}
-      asked.add(name);
+      const name = chunkNamed(entry.name);
+      if (name != null) asked.add(name);
     }
   };
   try {
@@ -306,11 +313,14 @@
     const message = reason && typeof reason.message === "string" ? reason.message : "";
     if (stamp == null || !/dynamically imported module|Importing a module script failed/.test(message)) return;
     const named = /https?:\/\/\S+/.exec(message);
-    if (named ? !named[0].includes(CHUNKS) : ws && ws.readyState === 1) return;
+    // The chunk by its name, as the server's frame has it: the two can both
+    // speak of one failed import, and it is reloaded for once.
+    const chunk = named ? chunkNamed(named[0]) : null;
+    if (named ? chunk == null : ws && ws.readyState === 1) return;
     if (typeof fetch !== "function") return;
     fetch(CHUNKS + "client-entry.js", { method: "HEAD", cache: "no-store" }).then(
       (answer) => {
-        if (answer && answer.ok) reloadForGoneChunk(message);
+        if (answer && answer.ok) reloadForGoneChunk(chunk ?? message);
       },
       () => {},
     );
