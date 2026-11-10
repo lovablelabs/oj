@@ -19,9 +19,10 @@ use crate::silent_proxy::SilentProxy;
 use crate::{require_fixture, App};
 
 const WAIT: Duration = Duration::from_secs(20);
-/// A 900ms deadline: two pings and one more.
-const PING: Duration = Duration::from_millis(300);
-const WATCHDOG: &str = "[oj] no word from the dev server in 900ms; reconnecting";
+/// A 3s deadline (two pings and one more): short enough to see, long enough
+/// that a loaded test machine does not miss it on a healthy socket.
+const PING: Duration = Duration::from_millis(1000);
+const WATCHDOG: &str = "[oj] no word from the dev server in 3000ms; reconnecting";
 
 const INDEX: &str = r#"<!doctype html><html><head><title>t</title></head><body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body></html>"#;
 const MAIN: &str = "import { createRoot } from \"react-dom/client\";\nimport { App } from \"./App\";\ncreateRoot(document.getElementById(\"root\")!).render(<App />);\n";

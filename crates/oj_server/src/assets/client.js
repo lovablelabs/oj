@@ -71,8 +71,9 @@ export function createHotContext(ownerId) {
       const data = { path: id, message, firstInvalidatedBy };
       emit("vite:invalidate", data);
       console.warn(`[oj] ${id} invalidated${message ? ": " + message : ""}`);
-      if (socket && socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({ type: "custom", event: "vite:invalidate", data }));
+      const live = liveSocket();
+      if (live) {
+        live.send(JSON.stringify({ type: "custom", event: "vite:invalidate", data }));
       } else {
         location.reload();
       }
@@ -86,9 +87,7 @@ export function createHotContext(ownerId) {
       customListeners.get(event)?.delete(cb);
     },
     send(event, payload) {
-      if (socket && socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({ type: "custom", event, data: payload }));
-      }
+      liveSocket()?.send(JSON.stringify({ type: "custom", event, data: payload }));
     },
   };
 }
@@ -263,6 +262,30 @@ function swapCss(update) {
 let socket = null;
 let hadConnection = false;
 
+// Liveness (socket-watchdog.js, served ahead of this file): the server pings
+// every open socket each `pingMs` with Vite's {"type":"ping"}, and a socket
+// silent past the deadline died without a close. Dropping it takes the path
+// a close takes: this page has no record of the updates it missed, so once
+// the server answers it reloads, as Vite's client does on any reconnect.
+// 0: no keepalive, no watchdog.
+const watchdog = ojSocketWatchdog({
+  pingMs: __OJ_PING_MS__,
+  socket: () => socket,
+  recover: (dead) => {
+    socket = null;
+    lost(dead);
+  },
+});
+
+// The page's socket when it is open and still within its deadline, else
+// null. The deadline is checked first, as engine.io checks its ping timeout
+// before a write (a throttled timer may not have fired yet): a frame never
+// goes into a socket already presumed dead.
+function liveSocket() {
+  watchdog.check();
+  return socket && socket.readyState === WebSocket.OPEN ? socket : null;
+}
+
 // Vite 8's forwardConsole channel (src/shared/forwardConsole.ts): unhandled
 // errors and the configured console levels travel to the dev server as the
 // custom event `vite:forward-console`, so the server (and whatever supervises
@@ -281,7 +304,8 @@ function forwardSend(data) {
   if (forwardSpent >= 100) return;
   forwardSpent++;
   const frame = JSON.stringify({ type: "custom", event: "vite:forward-console", data });
-  if (socket && socket.readyState === WebSocket.OPEN) socket.send(frame);
+  const live = liveSocket();
+  if (live) live.send(frame);
   else if (forwardQueue.length < 50) forwardQueue.push(frame);
 }
 
@@ -373,8 +397,9 @@ if (forwardConsole && forwardConsole.enabled) {
 // equivalent signal): the server records it as an hmr_apply_failed diagnostic
 // instead of the failure living and dying in this console.
 function reportHmrFailure(path, error) {
-  if (socket && socket.readyState === WebSocket.OPEN) {
-    socket.send(
+  const live = liveSocket();
+  if (live) {
+    live.send(
       JSON.stringify({
         type: "custom",
         event: "oj:hmr-result",
@@ -397,21 +422,6 @@ function socketUrl() {
   const host = port ? `${hostname}:${port}` : hostname;
   return `${proto}://${host}${hmrPath}?token=${wsToken}`;
 }
-
-// Liveness (socket-watchdog.js, served ahead of this file): the server pings
-// every open socket each `pingMs` with Vite's {"type":"ping"}, and a socket
-// silent past the deadline died without a close. Dropping it takes the path
-// a close takes: this page has no record of the updates it missed, so once
-// the server answers it reloads, as Vite's client does on any reconnect.
-// 0: no keepalive, no watchdog.
-const watchdog = ojSocketWatchdog({
-  pingMs: __OJ_PING_MS__,
-  socket: () => socket,
-  recover: (dead) => {
-    socket = null;
-    lost(dead);
-  },
-});
 
 function connect() {
   const ws = new WebSocket(socketUrl());

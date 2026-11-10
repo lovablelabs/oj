@@ -30,12 +30,14 @@ function ojSocketWatchdog({ pingMs, socket, recover }) {
   // Drops the socket, open or still connecting. `recover` detaches its
   // handlers first: a close that arrives late must not start a second
   // reconnect. Said in the console and in the close, as Phoenix's "heartbeat
-  // timeout": a page that stopped updating leaves a trace.
+  // timeout": a page that stopped updating leaves a trace. The log comes
+  // after `recover`: a client that forwards console lines over its socket
+  // checks the deadline before sending, and must find the dead one gone.
   const replace = (why) => {
     const dead = socket();
     if (!dead || dead.readyState > 1) return;
-    console.log("[oj] " + why + "; reconnecting");
     recover(dead);
+    console.log("[oj] " + why + "; reconnecting");
     try {
       dead.close(1000, "oj: " + why);
     } catch {}
@@ -80,8 +82,10 @@ function ojSocketWatchdog({ pingMs, socket, recover }) {
     // a dev server on this machine, whose loopback socket survives.
     // Socket.IO asks the host its socket dials (`hostname !== "localhost"`),
     // not the page's: `server.hmr.host` can point the socket elsewhere.
-    // Loopback here is also localhost's subdomains (which browsers resolve
-    // to loopback), 127.0.0.0/8 and ::1.
+    // This machine here is also localhost's subdomains (which browsers
+    // resolve to loopback), 127.0.0.0/8, ::1, 127.0.0.0/8 mapped into IPv6
+    // (which URL writes as ::ffff:7fXX:XXXX), and the unspecified addresses
+    // 0.0.0.0 and :: (which browsers connect to this machine).
     const dials = () => {
       try {
         return new URL(socket().url).hostname;
@@ -89,7 +93,10 @@ function ojSocketWatchdog({ pingMs, socket, recover }) {
         return location.hostname || "";
       }
     };
-    const loopback = () => /^(localhost|.+\.localhost|127(\.\d+){3}|\[::1\])$/i.test(dials());
+    const loopback = () =>
+      /^(localhost|.+\.localhost|127(\.\d+){3}|0\.0\.0\.0|\[::1?\]|\[::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}\])$/i.test(
+        dials(),
+      );
     addEventListener("online", () => (loopback() ? check() : replace("the network came back")));
   }
   // `check` before a send: never into a socket already past its deadline, as

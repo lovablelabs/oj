@@ -11,7 +11,13 @@ import { asset } from "./harness.mjs";
 // rules (the grace, resume, the network coming back) are covered through the
 // Start client in start-live-reload.test.mjs; these cover what this client
 // does with a socket the watchdog drops. `clock.now` is what Date.now reads.
-function loadPage({ ping = 0, hostname = "app.test", hmrHost = null, worker = false } = {}) {
+function loadPage({
+  ping = 0,
+  hostname = "app.test",
+  hmrHost = null,
+  worker = false,
+  forwardConsole = '{"enabled":false}',
+} = {}) {
   const log = [];
   const docListeners = {};
   const listeners = {};
@@ -62,6 +68,7 @@ function loadPage({ ping = 0, hostname = "app.test", hmrHost = null, worker = fa
     clearTimeout() {},
     setInterval: (fn, ms) => intervals.push({ fn, ms }),
   };
+  page.window = { addEventListener() {} };
   if (worker) delete page.document;
   page.globalThis = page;
   vm.createContext(page);
@@ -74,7 +81,7 @@ function loadPage({ ping = 0, hostname = "app.test", hmrHost = null, worker = fa
     .replaceAll("__HMR_PATH__", '"/__ws"')
     .replaceAll("__HMR_ENABLE_OVERLAY__", "true")
     .replaceAll("__WS_TOKEN__", '"tok"')
-    .replaceAll("__FORWARD_CONSOLE__", '{"enabled":false}')
+    .replaceAll("__FORWARD_CONSOLE__", forwardConsole)
     .replaceAll("__OJ_PING_MS__", String(ping));
   vm.runInContext(readFileSync(asset("socket-watchdog.js"), "utf8") + client, page);
   const ws = () => sockets[sockets.length - 1];
@@ -253,7 +260,16 @@ test("the network coming back drops a remote dev server's socket at once, silent
   assert.deepEqual(page.log, [["poll"], ["close", 0], ["reload"]]);
 });
 
-for (const hostname of ["localhost", "app.localhost", "127.0.0.1", "127.1.2.3", "[::1]"]) {
+for (const hostname of [
+  "localhost",
+  "app.localhost",
+  "127.0.0.1",
+  "127.1.2.3",
+  "[::1]",
+  "[::ffff:127.0.0.1]",
+  "0.0.0.0",
+  "[::]",
+]) {
   test(`a dev server on this machine (${hostname}) keeps its socket when the network comes back`, async () => {
     const page = loadPage({ ping: 1000, hostname });
     page.ws().emit("open");
@@ -357,4 +373,51 @@ test("a worker importing the client, with no document, still loads it and gets t
   page.advanceTo(3500);
   await page.settle();
   assert.deepEqual(page.log, [["poll"], ["close", 0], ["reload"]]);
+});
+
+test("an IPv6-mapped address outside 127.0.0.0/8 is another host: its socket is dropped when the network comes back", async () => {
+  const page = loadPage({ ping: 1000, hostname: "[::ffff:10.0.0.1]" });
+  page.ws().emit("open");
+  page.fire("online");
+  await page.settle();
+  assert.deepEqual(page.log, [["poll"], ["close", 0], ["reload"]]);
+});
+
+test("a message is never written into a socket past its deadline", async () => {
+  const page = loadPage({ ping: 1000 });
+  page.ws().emit("open");
+  page.advanceTo(3000);
+  // Past the deadline before the next tick ran (a throttled timer).
+  page.clock.now = 3400;
+  page.page.createHotContext("/src/a.js").send("app:x", { n: 1 });
+  await page.settle();
+  assert.ok(!page.log.some((e) => e[0] === "send"), "nothing was sent into the dead socket");
+  assert.deepEqual(page.log, [["poll"], ["close", 0], ["reload"]]);
+});
+
+test("a message within the deadline is sent", () => {
+  const page = loadPage({ ping: 1000 });
+  page.ws().emit("open");
+  page.advanceTo(2000);
+  page.page.createHotContext("/src/a.js").send("app:x", { n: 1 });
+  assert.deepEqual(page.log, [["send", '{"type":"custom","event":"app:x","data":{"n":1}}']]);
+});
+
+test("forwarding console lines, the watchdog's own line does not loop back into the dead socket", async () => {
+  const page = loadPage({
+    ping: 1000,
+    forwardConsole: '{"enabled":true,"unhandledErrors":false,"logLevels":["log"]}',
+  });
+  page.ws().emit("open");
+  // The client's own "connected" line goes out while the socket is alive.
+  const before = page.log.splice(0);
+  assert.equal(before.length, 1);
+  assert.match(before[0][1], /dev server connected/);
+  page.advanceTo(3500);
+  await page.settle();
+  assert.ok(!page.log.some((e) => e[0] === "send"), "the line waits for a socket instead");
+  assert.deepEqual(page.log, [["poll"], ["close", 0], ["reload"]]);
+  // A loop would end only in a stack overflow the console wrapper swallows,
+  // having printed the line once per frame.
+  assert.equal(page.said.filter((line) => /no word from the dev server/.test(line)).length, 1);
 });
