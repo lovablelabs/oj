@@ -333,8 +333,9 @@ impl StartCodePlugin {
         };
         let path = file.to_string_lossy();
         let reexported = self.reexported_factories(ctx, &code, &path, id).await?;
+        let instances = self.start_instances(ctx, &code, &path, id).await?;
         if let Some(out) =
-            oj_compiler::env_fns::rewrite_env_fns_with(&code, &path, env, &reexported)
+            oj_compiler::env_fns::rewrite_env_fns_with(&code, &path, env, &reexported, &instances)
                 .map_err(|e| anyhow::anyhow!("{id}: {e}"))?
         {
             code = Cow::Owned(out);
@@ -468,8 +469,62 @@ impl StartCodePlugin {
         importer: &str,
     ) -> anyhow::Result<Vec<(String, String)>> {
         use oj_compiler::env_fns::{foreign_factory_imports, reexport_of, ReExport};
+        self.imports_declaring(
+            ctx,
+            foreign_factory_imports(code, file),
+            importer,
+            |text, path, export| match reexport_of(text, path, export) {
+                Some(ReExport::TanStack) => Declares::Yes,
+                Some(via) => Declares::Via(via),
+                None => Declares::No,
+            },
+        )
+        .await
+    }
+
+    /// The imports the module calls `createMiddleware` on whose module
+    /// declares the app's Start instance (`createStart(..)`), followed the
+    /// same way: TanStack's compiler resolves `startInstance.createMiddleware()`
+    /// through the binding to `createStart`.
+    async fn start_instances(
+        &self,
+        ctx: &SharedTransformPluginContext,
+        code: &str,
+        file: &str,
+        importer: &str,
+    ) -> anyhow::Result<Vec<(String, String)>> {
+        use oj_compiler::env_fns::{
+            declares_start_instance, instance_imports, reexport_of, ReExport,
+        };
+        self.imports_declaring(
+            ctx,
+            instance_imports(code, file),
+            importer,
+            |text, path, export| {
+                if declares_start_instance(text, path, export) {
+                    return Declares::Yes;
+                }
+                match reexport_of(text, path, export) {
+                    Some(ReExport::TanStack) | None => Declares::No,
+                    Some(via) => Declares::Via(via),
+                }
+            },
+        )
+        .await
+    }
+
+    /// The `(source, name)` imports among `imports` whose module `declares`
+    /// the name, directly or through the modules it re-exports it from.
+    async fn imports_declaring(
+        &self,
+        ctx: &SharedTransformPluginContext,
+        imports: Vec<(String, String)>,
+        importer: &str,
+        declares: impl Fn(&str, &str, &str) -> Declares,
+    ) -> anyhow::Result<Vec<(String, String)>> {
+        use oj_compiler::env_fns::ReExport;
         let mut out = Vec::new();
-        for (source, name) in foreign_factory_imports(code, file) {
+        for (source, name) in imports {
             let mut queue = vec![(source.clone(), name.clone(), importer.to_string())];
             let mut seen = HashSet::new();
             while let Some((spec, export, from)) = queue.pop() {
@@ -483,23 +538,33 @@ impl StartCodePlugin {
                     continue;
                 };
                 let path = path.to_string_lossy().into_owned();
-                match reexport_of(&text, &path, &export) {
-                    Some(ReExport::TanStack) => {
+                match declares(&text, &path, &export) {
+                    Declares::Yes => {
                         out.push((source, name));
                         break;
                     }
-                    Some(ReExport::From { source, name }) => queue.push((source, name, path)),
-                    Some(ReExport::Stars(sources)) => queue.extend(
+                    Declares::Via(ReExport::From { source, name }) => {
+                        queue.push((source, name, path))
+                    }
+                    Declares::Via(ReExport::Stars(sources)) => queue.extend(
                         sources
                             .into_iter()
                             .map(|s| (s, export.clone(), path.clone())),
                     ),
-                    None => {}
+                    Declares::Via(ReExport::TanStack) | Declares::No => {}
                 }
             }
         }
         Ok(out)
     }
+}
+
+/// Whether a module declares what an import asks of it, or where it
+/// re-exports it from.
+enum Declares {
+    Yes,
+    No,
+    Via(oj_compiler::env_fns::ReExport),
 }
 
 #[cfg(test)]
