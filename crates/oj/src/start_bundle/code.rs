@@ -320,7 +320,7 @@ impl StartCodePlugin {
     pub(crate) fn may_compile(&self, id: &str, code: &str) -> bool {
         is_script(id)
             && (oj_compiler::env_fns::has_factory_name(code)
-                || code.contains("createServerFn")
+                || oj_compiler::server_fns::may_declare(code)
                 || (matches!(self.target, CodeTarget::Client)
                     && oj_compiler::route_options::names_a_route_factory(code)))
     }
@@ -354,15 +354,20 @@ impl StartCodePlugin {
             code = Cow::Owned(out);
         }
 
-        if is_app_code(id) && code.contains("createServerFn") {
+        if is_app_code(id) && oj_compiler::server_fns::may_declare(&code) {
             let rel = file
                 .strip_prefix(&self.root)
                 .map(|p| p.to_string_lossy().replace('\\', "/"))
                 .unwrap_or_else(|_| file.to_string_lossy().into_owned());
+            let modules = oj_compiler::server_fns::FsModules { root: &self.root };
             let rewritten = match self.target {
-                CodeTarget::Client => oj_compiler::server_fns::rewrite_client(&code, &rel)
-                    .map_err(|e| anyhow::anyhow!("{e}"))?,
-                CodeTarget::Server => oj_compiler::server_fns::rewrite_server(&code, &rel),
+                CodeTarget::Client => {
+                    oj_compiler::server_fns::rewrite_client(&code, &rel, &modules)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?
+                }
+                CodeTarget::Server => {
+                    oj_compiler::server_fns::rewrite_server(&code, &rel, &modules)
+                }
                 CodeTarget::Worker { .. } => None,
             };
             if let Some(out) = rewritten {

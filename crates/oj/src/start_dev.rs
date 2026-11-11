@@ -1575,7 +1575,7 @@ async fn rebundle_worker(
                     is_ts
                         && (!p.exists()
                             || std::fs::read_to_string(p)
-                                .is_ok_and(|s| s.contains("createServerFn")))
+                                .is_ok_and(|s| oj_compiler::server_fns::may_declare(&s)))
                 });
                 if routes_changed || server_fn_changed {
                     let _ = generate_server_fn_resolver(&r, &c, true);
