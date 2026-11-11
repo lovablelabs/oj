@@ -119,7 +119,10 @@ fn imported_names(stmt: &Statement) -> Vec<String> {
 /// it gets. oj's SSR engine keeps imports as ES syntax and does honour the
 /// attribute: it asks for a JSON module and the JavaScript module the host
 /// serves is no match ("Cannot resolve module ./recipe.json"). A dynamic
-/// import keeps its options, as in Vite.
+/// import keeps its options: Vite's importAnalysis strips a static import's
+/// attributes only, and its ssrTransform renames `import(` to
+/// `__vite_ssr_dynamic_import__(`, whose runner takes the specifier alone;
+/// oj's runner loads a dynamic import by its specifier too.
 fn drop_import_attributes(stmt: &mut Statement) {
     match stmt {
         Statement::ImportDeclaration(decl) => decl.with_clause = None,

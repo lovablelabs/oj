@@ -35,7 +35,15 @@ fn write_route(root: &Path) {
 export { default as pantry } from "./pantry.json" with { type: "json" };
 
 export const recipeTitle = `${recipe.title}:${recipe.serves}`;
+// A dynamic import keeps its options in the compiled code; the runner loads
+// it by its specifier, as Vite's `__vite_ssr_dynamic_import__` does.
+export const later = (await import("./later.json", { with: { type: "json" } })).default;
 "#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/lib/later.json"),
+        r#"{ "when": "later-marker" }"#,
     )
     .unwrap();
     std::fs::write(
@@ -47,7 +55,7 @@ export const recipeTitle = `${recipe.title}:${recipe.serves}`;
         root.join("src/routes/recipe.tsx"),
         r#"import { createRoute } from "@tanstack/react-router";
 
-import { pantry, recipeTitle } from "../lib/recipe.js";
+import { later, pantry, recipeTitle } from "../lib/recipe.js";
 
 import { rootRoute } from "./__root";
 
@@ -62,6 +70,7 @@ function Recipe() {
     <main>
       <pre id="recipe-title">{recipeTitle}</pre>
       <pre id="pantry">{pantry.staple}</pre>
+      <pre id="later">{later.when}</pre>
     </main>
   );
 }
@@ -97,7 +106,9 @@ fn a_json_import_with_attributes_renders_on_the_server() {
         dev.output()
     );
     assert!(
-        html.contains("lentil-soup-marker:4") && html.contains("pantry-marker"),
+        html.contains("lentil-soup-marker:4")
+            && html.contains("pantry-marker")
+            && html.contains("later-marker"),
         "the server render is missing the JSON values:\n{html}\n{}",
         dev.output()
     );
