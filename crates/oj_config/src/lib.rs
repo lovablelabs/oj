@@ -40,8 +40,8 @@ pub use resolve::{
 };
 pub use schema::*;
 pub use server::{
-    config_defines, env_prefixes, environment_defines, html_csp_nonce, public_dir, server_fs_deny,
-    server_strict_port, server_warmup_files,
+    cache_dir, config_defines, env_prefixes, environment_defines, html_csp_nonce, public_dir,
+    server_fs_deny, server_strict_port, server_warmup_files,
 };
 pub use ssr::{package_name_of, ssr_externals, ssr_runner_backed, SsrExternals};
 pub use start::{start_route_tree, start_routes_dir, StartRouterPaths};

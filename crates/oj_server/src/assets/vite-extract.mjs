@@ -2079,6 +2079,7 @@ async function extractValues(input) {
         ),
         base: typeof c.base === "string" ? c.base : null,
         publicDir: typeof c.publicDir === "string" ? c.publicDir : c.publicDir === false ? false : null,
+        cacheDir: typeof c.cacheDir === "string" ? c.cacheDir : null,
         port: typeof c.server?.port === "number" ? c.server.port : null,
         origin: typeof c.server?.origin === "string" ? c.server.origin : null,
         host: typeof c.server?.host === "string" ? c.server.host : null,

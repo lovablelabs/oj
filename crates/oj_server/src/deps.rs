@@ -1,5 +1,92 @@
 use super::*;
 
+/// `GET <cacheDir>/deps/<flattenId(dep)>.js` (`/node_modules/.vite/deps/
+/// react.js` under the default `cacheDir`), Vite's URL for an optimized dep:
+/// a module re-exporting the pre-bundle entry oj's own import rewriting
+/// hands the app for that dep, at the URL it hands it (`/@oj-deps/
+/// <file>?v=<version>`). The browser keys its module map by the URL it
+/// requested, so serving the pre-bundle's bytes here (or redirecting) would
+/// evaluate the dep a second time next to the app's copy: two Reacts. The
+/// re-export holds no state of its own, so a script that imports Vite's path
+/// gets the one instance the page runs on. A stem the optimizer does not
+/// know but that decodes to an installed dependency registers it, as Vite's
+/// resolve does for a missing import (registerMissingImport), and the request
+/// waits for the re-optimization like any dep request; one whose rerun then
+/// commits without it (the bundle failed) is Vite's processing error, a 504;
+/// any other stem is the 404 Vite's optimizedDeps load gives a file that is
+/// not in its cache dir. Vite's `?v=` is its own browserHash and never oj's:
+/// it is ignored rather than 504ed as outdated, and the response is
+/// `no-cache` since the URL it re-exports moves with every rerun.
+pub(crate) async fn serve_vite_dep_url(
+    state: &Arc<ServerState>,
+    headers: &HeaderMap,
+    path: &str,
+) -> Response {
+    let file = path
+        .strip_prefix(state.vite_deps_prefix.as_str())
+        .unwrap_or(path);
+    if file.contains('/') || file.contains("..") {
+        return (StatusCode::FORBIDDEN, "oj: bad optimized dep path").into_response();
+    }
+    state.optimized.ready().await;
+    let Some(dep) = vite_dep_id(state, path) else {
+        return (
+            StatusCode::NOT_FOUND,
+            format!("oj: no optimized dep {file}"),
+        )
+            .into_response();
+    };
+    let registered = state.optimized.meta_now(&dep).or_else(|| {
+        let resolved = state.resolver.resolve(&state.root, &dep).ok()?;
+        register_missing_import(state, &dep, &resolved)
+    });
+    let Some(meta) = registered else {
+        return (
+            StatusCode::NOT_FOUND,
+            format!("oj: no optimized dep {file}"),
+        )
+            .into_response();
+    };
+    // A registered dep's request holds until its rerun commits; the commit
+    // may have moved the URL, so the live entry is read after the wait. A
+    // commit without the dep (its bundle failed, or it could not be
+    // pre-bundled) is Vite's processing error: a 504, never a re-export of
+    // a URL nothing serves. Its importers recompile onto the per-file path
+    // after the reload the failure sent, and the dep registers no more.
+    state.optimized.await_dep(&meta.file, None).await;
+    let Some(meta) = state.optimized.meta_now(&dep) else {
+        return (
+            StatusCode::GATEWAY_TIMEOUT,
+            format!("oj: optimizing {dep} failed"),
+        )
+            .into_response();
+    };
+    let mut code = format!("export * from \"{}\";\n", meta.url);
+    if pre_bundle_has_default(state, &meta) {
+        code.push_str(&format!("export {{ default }} from \"{}\";\n", meta.url));
+    }
+    dep_response(headers, false, code.into_bytes())
+}
+
+/// Whether the pre-bundle entry has a default export to re-export: a
+/// CommonJS dep's always does (its bundle exports `module.exports` as the
+/// default, and the named-export facade re-exports it); an ES module dep's
+/// entry is read, as `export *` passes over the default and a re-export of
+/// one the entry lacks would fail to link.
+fn pre_bundle_has_default(state: &ServerState, meta: &optimize::DepMeta) -> bool {
+    if meta.needs_interop || meta.file.ends_with("__oj_named.mjs") {
+        return true;
+    }
+    let path = state.optimized.dir().join(&meta.file);
+    std::fs::read_to_string(&path)
+        .map(|code| {
+            oj_compiler::exports(&code, &path)
+                .iter()
+                .any(|e| e == "default")
+        })
+        .unwrap_or(false)
+}
+
 /// Vite's DEP_VERSION_RE: the request carries a `v=` query, i.e. it was reached
 /// through a versioned dep URL and may be cached forever.
 pub(crate) fn has_version_query(query: Option<&str>) -> bool {

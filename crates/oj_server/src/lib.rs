@@ -287,6 +287,10 @@ struct ServerState {
     root: PathBuf,
     /// Vite's `publicDir`; None when the config disables it (`publicDir: false`).
     public_dir: Option<PathBuf>,
+    /// The URL prefix Vite would serve this app's optimized deps under
+    /// (`/node_modules/.vite/deps/` for the default `cacheDir`), which oj
+    /// answers with re-exports of its own pre-bundles. See `vite_dep_id`.
+    vite_deps_prefix: String,
     reload_tx: broadcast::Sender<String>,
     graph: Mutex<ModuleGraph>,
     resolver: Arc<OjResolver>,
@@ -2219,6 +2223,10 @@ impl DevServer {
             engine_registry: engine_registry.clone(),
             root: root.clone(),
             public_dir,
+            vite_deps_prefix: optimize::vite_deps_url_prefix(
+                &root,
+                &oj_config::cache_dir(&config, &root),
+            ),
             reload_tx: reload_tx.clone(),
             graph: Mutex::new(ModuleGraph::new()),
             require_resolver: Arc::new(client_resolver.require_variant()),

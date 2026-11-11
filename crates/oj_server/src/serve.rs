@@ -59,6 +59,9 @@ async fn serve_internal_route(
     if let Some(resp) = crate::stylex::serve_route(state, path) {
         return Some(resp);
     }
+    if path.starts_with(state.vite_deps_prefix.as_str()) {
+        return Some(serve_vite_dep_url(state, headers, path).await);
+    }
     if let Some(name) = path.strip_prefix("/@oj-deps/") {
         if name.contains('/') || name.contains("..") {
             return Some((StatusCode::FORBIDDEN, "oj: bad optimized dep path").into_response());

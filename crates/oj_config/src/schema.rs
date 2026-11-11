@@ -16,6 +16,10 @@ pub struct OjConfig {
     /// Vite's `publicDir`: a directory (default `public`), or `false` for no
     /// public directory at all. See `public_dir`.
     pub public_dir: Option<BoolOrString>,
+    /// Vite's `cacheDir`, where its optimizer writes the pre-bundles whose
+    /// URLs a page may name (default `node_modules/.vite` under the nearest
+    /// package.json). See `cache_dir`.
+    pub cache_dir: Option<String>,
     pub server: Option<ServerConfig>,
     pub resolve: Option<ResolveConfig>,
     /// The user-authored top-level `resolve` (the extractor's `rawResolve`).

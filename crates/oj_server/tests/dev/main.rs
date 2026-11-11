@@ -109,6 +109,7 @@ mod tailwind_sheet_stale;
 mod tailwind_v4_persistent;
 mod tsconfig_module;
 mod unresolved_bare;
+mod vite_dep_paths;
 mod vite_esm_entry;
 mod vite_hmr_socket;
 mod wasm;
