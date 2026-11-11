@@ -709,19 +709,22 @@ impl Watch {
         Watch { child, output }
     }
 
-    /// Waits for the `n`th compilation to finish and returns what it printed.
-    fn compilation(&self, n: usize) -> String {
+    /// Waits until the last finished compilation's report holds for `done`
+    /// and returns it. One edit can reach the watcher as more than one event
+    /// (a write is a truncate and a write), so compilations are not counted.
+    fn settles(&self, what: &str, done: impl Fn(&str) -> bool) -> String {
         const DONE: &str = "Watching for file changes.";
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         loop {
             let output = self.output.lock().unwrap().clone();
-            let runs: Vec<&str> = output.split(DONE).collect();
-            if runs.len() > n {
-                return runs[n - 1].to_string();
+            let mut runs: Vec<&str> = output.split(DONE).collect();
+            runs.pop(); // what follows the last finished compilation
+            if let Some(last) = runs.last().filter(|last| done(last)) {
+                return last.to_string();
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "compilation {n} never finished:\n{output}"
+                "{what}: the watcher never reported it:\n{output}"
             );
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
@@ -769,46 +772,45 @@ fn typecheck_watch_rechecks_a_jsx_project_after_each_edit() {
     };
     app.write("src/app.tsx", &page("\"x\""));
 
+    const APP_ERROR: &str =
+        "src/app.tsx(2,31): error TS2322: Type 'number' is not assignable to type 'string'.";
+    const A_ERROR: &str =
+        "src/a.ts(1,14): error TS2322: Type 'number' is not assignable to type 'string'.";
+
     let watch = Watch::start(&app.0);
-    let first = watch.compilation(1);
-    assert!(first.contains("Found 0 errors."), "{first}");
+    watch.settles("the first compilation", |r| r.contains("Found 0 errors."));
 
     // An edit that keeps the file's imports: the program is reused.
     app.write("src/app.tsx", &page("{n}"));
-    let second = watch.compilation(2);
-    assert!(
-        second.contains(
-            "src/app.tsx(2,31): error TS2322: Type 'number' is not assignable to type 'string'."
-        ) && second.contains("Found 1 error."),
-        "{second}"
-    );
+    watch.settles("an error in the JSX file", |r| {
+        r.contains(APP_ERROR) && r.contains("Found 1 error.")
+    });
 
     // An edit to the file it imports: the JSX file's own error is gone with
     // the type it came from, and the imported file's is reported.
     app.write("src/a.ts", "export const n: string = 1;\n");
-    let third = watch.compilation(3);
-    assert!(
-        third.contains(
-            "src/a.ts(1,14): error TS2322: Type 'number' is not assignable to type 'string'."
-        ) && third.contains("Found 1 error.")
-            && !third.contains("src/app.tsx"),
-        "{third}"
-    );
+    watch.settles("an error in the imported file", |r| {
+        r.contains(A_ERROR) && r.contains("Found 1 error.") && !r.contains("src/app.tsx")
+    });
 
-    // An edit that adds an import: a full rebuild, with the same report.
+    // An edit that adds an import: a full rebuild. The new call's type shows
+    // the rebuilt program is the one checked.
+    app.write(
+        "src/app.tsx",
+        "import { n } from \"./a\";\nimport { useState } from \"react\";\nexport const App = () => <div id={useState(n)}>{n}</div>;\n",
+    );
+    watch.settles("the errors after an added import", |r| {
+        r.contains(A_ERROR)
+            && r.contains("src/app.tsx(3,31): error TS2322")
+            && r.contains("Found 2 errors.")
+    });
+
+    app.write("src/a.ts", "export const n: number = 1;\n");
     app.write(
         "src/app.tsx",
         "import { n } from \"./a\";\nimport { useState } from \"react\";\nexport const App = () => <div id=\"x\">{useState(n)[0]}</div>;\n",
     );
-    let fourth = watch.compilation(4);
-    assert!(
-        fourth.contains("src/a.ts(1,14): error TS2322") && fourth.contains("Found 1 error."),
-        "{fourth}"
-    );
-
-    app.write("src/a.ts", "export const n: number = 1;\n");
-    let fifth = watch.compilation(5);
-    assert!(fifth.contains("Found 0 errors."), "{fifth}");
+    watch.settles("the fix", |r| r.contains("Found 0 errors."));
 
     // What the watcher ended on is what a fresh run reports.
     let fresh = Command::new(env!("CARGO_BIN_EXE_oj"))
