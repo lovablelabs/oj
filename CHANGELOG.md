@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- TanStack Start dev: a literal `index.html` path reaches the app as written. `GET /x/index.html` was rewritten to `/x/` before Start saw it, which Start's trailing-slash handling redirected to `/x`, a path with no route: a server route (or a route with `server.handlers`) at `/x/index.html` answered 307 and then 404 where Vite ran its handler, and `/about/index.html` was redirected to the `/about` page where Vite answers Start's 404. Start sets `appType: "custom"`, under which Vite installs no html fallback and no index.html middleware (server/index.ts): the url goes through `servePublicMiddleware` and on to Start's handler unchanged. A `public/<dir>/index.html` was already served as that file; what Start does with a trailing slash (`/about/` to `/about`) is still Start's.
+
 ## [0.4.13] - 2026-11-11
 
 ### Changed

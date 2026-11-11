@@ -2760,7 +2760,12 @@ fn classify_path(path: &str, raw: &str, method: &Method, proxy_prefixes: &[Strin
     }
     // A dotted non-GET (`POST /api/export.csv`, `PUT /files/a.b`) can only be
     // the app's: static files and modules are GET-only, so it goes straight
-    // to the SSR handler like every other request nothing else owns.
+    // to the SSR handler like every other request nothing else owns. An
+    // `index.html` path is a document: Vite's static middleware never serves
+    // an `.html` file (serveStaticMiddleware hands them on) and Start sets
+    // `appType: "custom"`, under which Vite installs no html fallback and no
+    // index.html middleware (server/index.ts), so the url reaches the public
+    // dir and then Start's handler as written, never rewritten to `/x/`.
     let last = path.rsplit('/').next().unwrap_or("");
     if last != "index.html" && last.contains('.') {
         return if *method == Method::GET {
@@ -2776,18 +2781,6 @@ fn classify_path(path: &str, raw: &str, method: &Method, proxy_prefixes: &[Strin
         Method::GET => Route::Document,
         _ => Route::Api,
     }
-}
-
-fn document_url(url: &str) -> String {
-    let (path, query) = match url.split_once('?') {
-        Some((p, q)) => (p, format!("?{q}")),
-        None => (url, String::new()),
-    };
-    let path = match path.strip_suffix("/index.html") {
-        Some(prefix) => format!("{prefix}/"),
-        None => path.to_string(),
-    };
-    format!("{path}{query}")
 }
 
 /// `path` with the dev `base` stripped (Vite's base middleware); a path
@@ -2915,11 +2908,10 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
     let route = classify_path(path, req.uri().path(), req.method(), &state.proxy_prefixes);
     // A file under `publicDir` answers before the router and the SSR handler
     // see the request, as Vite's servePublicMiddleware runs ahead of its html
-    // middlewares for every appType: `/hub/index.html` is that file, not the
-    // `/hub/` document (which the router would redirect or 404), and a
-    // dotted or extensionless public path is never the app's 404. Not for a
-    // proxied prefix (`Route::Pass`): Vite's proxy middleware comes before
-    // its public one.
+    // middlewares for every appType: `/hub/index.html` is that file, not a
+    // document the router would 404, and a dotted or extensionless public
+    // path is never the app's 404. Not for a proxied prefix (`Route::Pass`):
+    // Vite's proxy middleware comes before its public one.
     if !matches!(route, Route::Pass) {
         if let Some(hit) = public_file(
             &state,
@@ -3250,7 +3242,7 @@ async fn forward_document(
         state,
         &document_stamp(state, hot_has),
         "GET".into(),
-        document_url(&raw),
+        raw,
         headers,
         None,
     )
@@ -5910,19 +5902,6 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
-    #[test]
-    fn document_url_rewrites_index_html_to_directory() {
-        assert_eq!(document_url("/"), "/");
-        assert_eq!(document_url("/index.html"), "/");
-        assert_eq!(document_url("/guides/index.html"), "/guides/");
-        assert_eq!(document_url("/a/b/index.html"), "/a/b/");
-        assert_eq!(document_url("/index.html?tab=1"), "/?tab=1");
-        assert_eq!(document_url("/a/index.html?x=y&z=1"), "/a/?x=y&z=1");
-        assert_eq!(document_url("/about"), "/about");
-        assert_eq!(document_url("/guides/foo"), "/guides/foo");
-        assert_eq!(document_url("/notindex.html"), "/notindex.html");
-    }
-
     /// The id route serves only what a plugin serves: a `\0` id or a path
     /// with no file behind it, never a file on disk (inside the workspace or
     /// not) nor a relative id.
@@ -6157,6 +6136,10 @@ mod tests {
             classify(&req("GET", "/about"), &no_proxy),
             Route::Document
         ));
+        // An `index.html` path is a document for the app as written (a
+        // public file, a server route, or Start's 404), never a static file
+        // and never the `/guides/` page: Vite's static middleware hands
+        // `.html` on, and Start's `appType: "custom"` has no html fallback.
         assert!(matches!(
             classify(&req("GET", "/index.html"), &no_proxy),
             Route::Document
