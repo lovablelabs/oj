@@ -236,7 +236,8 @@ pub fn reexport_of(code: &str, path: &str, name: &str) -> Option<ReExport> {
 /// startInstance`), a default import as `default`: the ones whose module
 /// declares a Start instance go to [`rewrite_env_fns_with`].
 pub fn instance_imports(code: &str, path: &str) -> Vec<(String, String)> {
-    if !code.contains("createMiddleware") {
+    // A member call, however it is laid out, has the `.` before the name.
+    if !code.contains(".createMiddleware") {
         return Vec::new();
     }
     let allocator = Allocator::default();
@@ -267,10 +268,23 @@ pub fn instance_imports(code: &str, path: &str) -> Vec<(String, String)> {
     }
     let mut called = CalledAsInstance::default();
     called.visit_program(&parsed.program);
-    // An alias of the import is an instance where the import is one.
-    for (_, init) in module_declarators(&parsed.program) {
-        if let Expression::Identifier(id) = init.get_inner_expression() {
-            called.names.insert(id.name.to_string());
+    if called.names.is_empty() {
+        return Vec::new();
+    }
+    // What a variable `createMiddleware` is called on aliases is called on
+    // too (`const s = startInstance; s.createMiddleware()`), to a fixed point.
+    let declarators: Vec<_> = module_declarators(&parsed.program).collect();
+    loop {
+        let before = called.names.len();
+        for (name, init) in &declarators {
+            if let Expression::Identifier(id) = init.get_inner_expression() {
+                if called.names.contains(*name) {
+                    called.names.insert(id.name.to_string());
+                }
+            }
+        }
+        if called.names.len() == before {
+            break;
         }
     }
     imports
@@ -288,7 +302,7 @@ struct CalledAsInstance {
 
 impl<'a> Visit<'a> for CalledAsInstance {
     fn visit_static_member_expression(&mut self, m: &oxc_ast::ast::StaticMemberExpression<'a>) {
-        if m.property.name == "createMiddleware" {
+        if m.property.name == "createMiddleware" && !m.optional {
             if let Expression::Identifier(id) = m.object.get_inner_expression() {
                 self.names.insert(id.name.to_string());
             }
@@ -587,13 +601,14 @@ impl Bindings {
     /// Whether `expr` is a middleware: the factory's call, a chain on one, or
     /// a variable holding one.
     fn is_middleware(&self, expr: &Expression) -> bool {
-        match expr.without_parentheses() {
+        match expr.get_inner_expression() {
             Expression::Identifier(id) => self.middlewares.iter().any(|m| *m == id.name.as_str()),
             Expression::CallExpression(call) => {
                 self.factory(&call.callee) == Some(Factory::Middleware)
                     || matches!(
                         call.callee.without_parentheses(),
-                        Expression::StaticMemberExpression(m) if self.is_middleware(&m.object)
+                        Expression::StaticMemberExpression(m)
+                            if !m.optional && self.is_middleware(&m.object)
                     )
             }
             _ => false,
@@ -609,7 +624,9 @@ impl Bindings {
                 .iter()
                 .find(|(local, _)| *local == id.name.as_str())
                 .map(|(_, f)| *f),
-            Expression::StaticMemberExpression(m) => {
+            // `a?.createMiddleware()` is no candidate of TanStack's compiler
+            // (an OptionalCallExpression), nor is a chain on one.
+            Expression::StaticMemberExpression(m) if !m.optional => {
                 let property = m.property.name.as_str();
                 if let Expression::Identifier(object) = m.object.without_parentheses() {
                     if self.namespaces.iter().any(|n| *n == object.name.as_str()) {
@@ -736,7 +753,12 @@ impl Finder<'_> {
         let Expression::StaticMemberExpression(m) = call.callee.without_parentheses() else {
             return None;
         };
-        let (root_end, mut links, inner) = match m.object.without_parentheses() {
+        if m.optional {
+            return None;
+        }
+        // Through parentheses and TypeScript's wrappers, as the instance is
+        // (`base!.server(..)`, `(createMiddleware() as any).server(..)`).
+        let (root_end, mut links, inner) = match m.object.get_inner_expression() {
             Expression::CallExpression(c) => {
                 let (root_end, links, mut inner) = self.middleware_links(c)?;
                 inner.push((c.span.start, c.span.end));
@@ -1500,6 +1522,105 @@ mod tests {
             "startInstance",
             &reexported
         ));
+    }
+
+    // A middleware is followed through the wrappers the instance is
+    // (TanStack's `unwrapExpression` on a binding's initializer and on what a
+    // link is called on), for the factory and the instance alike.
+    #[test]
+    fn a_middleware_chain_is_followed_through_typescript_wrappers() {
+        let server = ".server(() => import(\"./x.server\"))";
+        let instances = [("../start".to_string(), "startInstance".to_string())];
+        for (import, root) in [
+            (
+                "import { createMiddleware } from \"@tanstack/react-start\";\n",
+                "createMiddleware()",
+            ),
+            (
+                "import { startInstance } from \"../start\";\n",
+                "startInstance.createMiddleware()",
+            ),
+        ] {
+            for (label, body, kept) in [
+                (
+                    "a cast variable",
+                    format!("const base = {root} as any;\nexport const m = base{server};\n"),
+                    "export const m = base;".to_string(),
+                ),
+                (
+                    "a non-null variable",
+                    format!("const base = {root};\nexport const m = base!{server};\n"),
+                    "export const m = base!;".to_string(),
+                ),
+                (
+                    "a cast chain",
+                    format!("export const m = ({root} as any){server};\n"),
+                    format!("export const m = ({root} as any);"),
+                ),
+                (
+                    "a satisfied variable of a variable",
+                    format!("const a = {root};\nconst base = (a satisfies object).middleware([]);\nexport const m = base{server};\n"),
+                    "export const m = base;".to_string(),
+                ),
+            ] {
+                let code = format!("{import}{body}");
+                let out = rewrite_env_fns_with(&code, "a.ts", Env::Client, &[], &instances)
+                    .unwrap()
+                    .unwrap_or_else(|| panic!("{root}, {label}: left as written"));
+                assert!(!out.contains("x.server"), "{root}, {label}:\n{out}");
+                assert!(out.contains(&kept), "{root}, {label}:\n{out}");
+                assert_eq!(out.lines().count(), code.lines().count(), "{label}");
+            }
+        }
+    }
+
+    // An optional chain is an OptionalCallExpression to TanStack's compiler,
+    // never a candidate: it stays as written.
+    #[test]
+    fn an_optional_chain_is_left_as_written() {
+        let instances = [("../start".to_string(), "startInstance".to_string())];
+        for code in [
+            "import { startInstance } from \"../start\";\nexport const m = startInstance?.createMiddleware().server(() => 1);\n",
+            "import { startInstance } from \"../start\";\nexport const m = startInstance.createMiddleware()?.server(() => 1);\n",
+            "import { createMiddleware } from \"@tanstack/react-start\";\nexport const m = createMiddleware()?.middleware([]).server(() => 1);\n",
+            "import * as start from \"@tanstack/react-start\";\nexport const m = start?.createMiddleware().server(() => 1);\n",
+        ] {
+            assert_eq!(
+                rewrite_env_fns_with(code, "a.ts", Env::Client, &[], &instances),
+                Ok(None),
+                "{code}"
+            );
+        }
+        assert!(instance_imports(
+            "import { startInstance } from \"../start\";\nexport const m = startInstance?.createMiddleware().server(() => 1);\n",
+            "a.ts"
+        )
+        .is_empty());
+    }
+
+    // Only an import `createMiddleware` is called on, itself or through its
+    // aliases, is asked about: its module is read and parsed for the answer.
+    #[test]
+    fn only_an_import_called_as_an_instance_is_asked_about() {
+        let code = [
+            "import { startInstance } from \"../start\";",
+            "import { config } from \"./config\";",
+            "import other from \"./other\";",
+            "import { createMiddleware } from \"@tanstack/react-start\";",
+            "const settings = config;",
+            "const a = startInstance;",
+            "const b = a as any;",
+            "export const m = b.createMiddleware().server(() => settings);",
+            "export const n = createMiddleware().server(() => other);",
+        ]
+        .join("\n");
+        assert_eq!(
+            instance_imports(&code, "a.ts"),
+            [("../start".to_string(), "startInstance".to_string())]
+        );
+        // The factory called by its name is no member call.
+        let plain = "import { helper } from \"./helper\";\nimport { createMiddleware } from \"@tanstack/react-start\";\nconst h = helper;\nexport const n = createMiddleware().server(() => h);\n";
+        assert!(instance_imports(plain, "a.ts").is_empty());
     }
 
     #[test]

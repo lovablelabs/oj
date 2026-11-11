@@ -517,7 +517,8 @@ impl StartCodePlugin {
                 }
                 // `createStart` from a module of the app: an instance when
                 // that module re-exports TanStack's.
-                let foreign = foreign_factory_imports(text, path);
+                let mut foreign = foreign_factory_imports(text, path);
+                foreign.retain(|(_, name)| name == "createStart");
                 if !foreign.is_empty() && declares_start_instance(text, path, export, &foreign) {
                     return Declares::IfFactories(foreign);
                 }

@@ -1436,3 +1436,55 @@ fn a_formatted_middleware_chain_on_the_start_instance_keeps_its_server_half_out_
         "middleware-dynamic-secret",
     );
 }
+
+/// A `createStart` of the app's own is no Start instance, whatever else its
+/// module imports: here TanStack's `createMiddleware`, re-exported by a
+/// module of the app, beside it. Start's compiler resolves the binding to
+/// the app's function (`resolveKnownImportKind` matches by the resolved
+/// binding's identity), so the chain is left alone and its `.server(..)`
+/// argument reaches the client.
+const OWN_START: &str = r#"export const createStart = () => ({
+  createMiddleware: () => ({ server: (run: () => string) => ({ run }) }),
+});
+"#;
+
+const OWN_KIT: &str = r#"export { createMiddleware } from "@tanstack/react-start";
+"#;
+
+const OWN_INSTANCE: &str = r#"import { createStart } from "./own-start";
+import { createMiddleware } from "./own-kit";
+
+export const plain = createMiddleware();
+export const startInstance = createStart();
+"#;
+
+const OWN_USER: &str = r#"import { startInstance } from "./own-instance";
+
+export const own = startInstance.createMiddleware().server(() => "own-server-half-kept");
+"#;
+
+#[test]
+fn a_create_start_of_the_apps_own_makes_no_start_instance() {
+    let files = [
+        ("src/lib/own-start.ts", OWN_START.to_string()),
+        ("src/lib/own-kit.ts", OWN_KIT.to_string()),
+        ("src/lib/own-instance.ts", OWN_INSTANCE.to_string()),
+        ("src/lib/own.ts", OWN_USER.to_string()),
+        (
+            "src/routes/about.tsx",
+            about(
+                "import { own } from \"../lib/own\";",
+                "const extra = <p id=\"own\">{own.run()}</p>;",
+            ),
+        ),
+    ];
+    let Some(app) = app_with("ip-own-create-start", &files, None) else {
+        return;
+    };
+    let (ok, text) = build(&app.0);
+    assert!(ok, "the build failed:\n{text}");
+    assert!(
+        client_has(&app.0, "own-server-half-kept"),
+        "the chain on the app's own object lost its .server(..) link"
+    );
+}
