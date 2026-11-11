@@ -993,7 +993,7 @@ impl ScriptNonceScan {
         buf.extend_from_slice(chunk);
         let mut at = 0;
         while let Some(lt) = script_open(&buf, at) {
-            let Some(gt) = buf[lt..].iter().position(|&b| b == b'>') else {
+            let Some(gt) = tag_end(&buf[lt..]) else {
                 self.keep(&buf[lt..]);
                 return;
             };
@@ -1027,19 +1027,37 @@ impl ScriptNonceScan {
 
 /// The offset of the next `<script` start tag at or after `from`: the name
 /// in any case, ended by whitespace, `>` or `/`, or by the buffer (a tag the
-/// next chunk continues).
+/// next chunk continues). Every document passes through here whole when it
+/// has no nonce, so the search goes from `<` to `<` rather than byte by byte.
 fn script_open(buf: &[u8], from: usize) -> Option<usize> {
-    const OPEN: &[u8] = b"<script";
+    const NAME: &[u8] = b"script";
     let mut i = from;
-    while i + OPEN.len() <= buf.len() {
-        if buf[i..i + OPEN.len()].eq_ignore_ascii_case(OPEN)
+    while let Some(lt) = buf.get(i..)?.iter().position(|&b| b == b'<') {
+        let name = i + lt + 1;
+        let found = buf.get(name..name + NAME.len())?;
+        if found.eq_ignore_ascii_case(NAME)
             && buf
-                .get(i + OPEN.len())
+                .get(name + NAME.len())
                 .is_none_or(|b| b.is_ascii_whitespace() || matches!(b, b'>' | b'/'))
         {
-            return Some(i);
+            return Some(i + lt);
         }
-        i += 1;
+        i = name;
+    }
+    None
+}
+
+/// The offset of the `>` that ends the start tag `tag` begins with: one
+/// inside a quoted attribute value (`data-x="a>b"`) is the value's.
+fn tag_end(tag: &[u8]) -> Option<usize> {
+    let mut quote = None;
+    for (i, &b) in tag.iter().enumerate() {
+        match (quote, b) {
+            (None, b'"' | b'\'') => quote = Some(b),
+            (None, b'>') => return Some(i),
+            (Some(q), _) if q == b => quote = None,
+            _ => {}
+        }
     }
     None
 }
@@ -5723,6 +5741,42 @@ mod tests {
         let configured = inject(&page, Some("cfg"));
         assert!(configured.contains(" nonce=\"cfg\""), "{configured}");
         assert!(!configured.contains("n1"), "{configured}");
+        // A `>` inside a quoted attribute value is the value's, not the
+        // tag's end: the nonce after it is still read, whichever quote, and
+        // when the stream splits the tag inside that value.
+        let quoted =
+            ["<html><body><script data-when=\"a>b\" nonce=\"n5\">x()</script></body></html>"];
+        assert!(
+            inject(&quoted, None).contains(" nonce=\"n5\""),
+            "{quoted:?}"
+        );
+        let single_quoted =
+            ["<html><body><script data-when='a>\"b' nonce='n6'>x()</script></body></html>"];
+        assert!(
+            inject(&single_quoted, None).contains(" nonce=\"n6\""),
+            "{single_quoted:?}"
+        );
+        let split_value = [
+            "<html><body><script data-when=\"a>",
+            "b\" nonce=\"n7\">x()</script></body></html>",
+        ];
+        assert!(
+            inject(&split_value, None).contains(" nonce=\"n7\""),
+            "{split_value:?}"
+        );
+        // Tags and stray `<` before the script, and a chunk that ends on a
+        // bare `<`, are passed over.
+        let busy = [
+            "<html><head><style>a<b{}</style><scripts></scripts></head><body><p>1 < 2 <",
+            "b>x</b></p><script nonce=\"n8\">x()</script></body></html>",
+        ];
+        assert!(inject(&busy, None).contains(" nonce=\"n8\""), "{busy:?}");
+        assert_eq!(script_open(b"<p><a><script>", 0), Some(6));
+        assert_eq!(script_open(b"<p><a><script>", 7), None);
+        assert_eq!(script_open(b"<scripts><ScRiPt ", 0), Some(9));
+        assert_eq!(script_open(b"text <scr", 0), None);
+        assert_eq!(tag_end(b"<script a=\"x>y\" b='z>'>rest>"), Some(22));
+        assert_eq!(tag_end(b"<script a=\"x>y"), None);
         // The tag's name in any case; another tag starting with the name is
         // no script.
         let mut scan = ScriptNonceScan::default();
