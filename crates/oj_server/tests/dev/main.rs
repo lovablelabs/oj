@@ -50,6 +50,7 @@ mod hmr_gate;
 mod hmr_hot_accept;
 mod hmr_importer_stamps;
 mod hmr_invalidate;
+mod hmr_json_context_identity;
 mod hmr_plugin_filtered_stamps;
 mod hmr_plugin_passthrough;
 mod hmr_protocol;
