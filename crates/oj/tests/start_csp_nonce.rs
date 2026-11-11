@@ -9,9 +9,9 @@
 //! Vite never happens: Vite adds no tag of its own to a Start document (its
 //! client arrives as an import of the nonced client entry), and the tags it
 //! does inject into a page take `html.cspNonce` (plugins/html.ts
-//! `injectNonceAttributeTagHook`). So oj's tag takes the config's nonce when
-//! there is one, else the nonce the document's own `<script>` tags carry,
-//! and the tags the app wrote itself are left as they are. The browser half
+//! `injectNonceAttributeTagHook`). So oj's tag takes the nonce the document's
+//! own `<script>` tags carry (the one the request's policy names), else the
+//! config's, and the tags the app wrote itself are left as they are. The browser half
 //! skips without Chrome, unless `OJ_REQUIRE_BROWSER` is set.
 
 #[path = "../../oj_server/tests/dev/browser.rs"]
@@ -193,9 +193,10 @@ async fn the_page_hydrates_under_its_policy() {
     page.close().await;
 }
 
-/// `html.cspNonce` names the nonce for oj's tag, as it does for the tags
-/// Vite injects into a page; the app's own tags, which had none, get none,
-/// as Vite leaves a Start document's own tags alone.
+/// `html.cspNonce` names the nonce for oj's tag when the document's tags
+/// carry none, as it does for the tags Vite injects into a page; the app's
+/// own tags, which had none, get none, as Vite leaves a Start document's own
+/// tags alone.
 #[test]
 fn the_configs_csp_nonce_names_ojs_tags_nonce() {
     let Some(app) = app("csp-nonce-config") else {

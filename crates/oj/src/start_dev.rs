@@ -63,7 +63,8 @@ struct StartState {
     /// `server.hmr.overlay` (default true), filled into the live-reload client.
     hmr_overlay: bool,
     /// Vite's `html.cspNonce`: the nonce the live-reload client's tag carries
-    /// (see [`inject_reload_client`]), as the tags Vite injects into a page do.
+    /// when the document's own tags name none (see [`inject_reload_client`]),
+    /// as the tags Vite injects into a page carry it.
     csp_nonce: Option<String>,
     /// How often a page socket sends [`PING_FRAME`] (`OJ_HMR_PING_MS`); none
     /// turns the keepalive and the client's watchdog off.
@@ -3972,14 +3973,17 @@ async fn spawn_engine_loopback(engine: Arc<StartEngine>) -> anyhow::Result<u16> 
 /// page) and the script tag follows the final chunk; browsers parse a trailing
 /// `<script>` after `</html>` into the body.
 ///
-/// The tag carries a CSP nonce when the document has one: `config_nonce`
-/// (Vite's `html.cspNonce`, which its `injectNonceAttributeTagHook` in
-/// plugins/html.ts puts on the tags it injects), else the nonce the
-/// document's own script tags carry ([`ScriptNonceScan`]). Under a strict
-/// policy (`script-src 'nonce-..' 'strict-dynamic'`) a tag without it is
-/// refused; Vite's own client needs none there, since it arrives as an import
-/// of the app's nonced client entry rather than as a tag of its own. The
-/// app's tags are left as they are: Vite adds no nonce to a Start document.
+/// The tag carries a CSP nonce when the document has one: the nonce the
+/// document's own script tags carry ([`ScriptNonceScan`]), which is the one
+/// this request's policy header names (the app writes both from the same
+/// request context), else `config_nonce` (Vite's `html.cspNonce`, which its
+/// `injectNonceAttributeTagHook` in plugins/html.ts puts on the tags it
+/// injects into a page, a static value the app's policy must name). Under a
+/// strict policy (`script-src 'nonce-..' 'strict-dynamic'`) a tag without it
+/// is refused; Vite's own client needs none there, since it arrives as an
+/// import of the app's nonced client entry rather than as a tag of its own.
+/// The app's tags are left as they are: Vite adds no nonce to a Start
+/// document.
 fn inject_reload_client(
     resp: Response,
     url_base: &str,
@@ -4010,7 +4014,7 @@ fn inject_reload_client(
             reload_client(
                 &url_base,
                 &stamp,
-                config_nonce.as_deref().or(document_nonce),
+                document_nonce.or(config_nonce.as_deref()),
             )
         }
     };
@@ -5665,10 +5669,10 @@ mod tests {
         assert!(!inject(resp("text/javascript", None)).contains(&tag));
     }
 
-    // The live-reload tag takes the document's CSP nonce: `html.cspNonce`
-    // first, else the one the document's own script tags carry, found while
-    // the body streams (a tag split across chunks included); a document
-    // whose tags have none gets a tag without one.
+    // The live-reload tag takes the document's CSP nonce: the one the
+    // document's own script tags carry, found while the body streams (a tag
+    // split across chunks included), else `html.cspNonce`; a document whose
+    // tags have none gets a tag without one.
     #[test]
     fn reload_client_tag_carries_the_documents_nonce() {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -5736,11 +5740,15 @@ mod tests {
             "</body></html>",
         ];
         assert!(!inject(&none, None).contains("nonce"), "{none:?}");
-        // The config's nonce wins over the document's, as Vite's hook puts
-        // `html.cspNonce` on the tags it injects.
-        let configured = inject(&page, Some("cfg"));
+        // The document's nonce wins over the config's: the document's tags
+        // name the nonce this request's policy accepts, the config's is a
+        // static value for the tags Vite injects into a page. The config's
+        // stands in when the document's tags carry none.
+        let both = inject(&page, Some("cfg"));
+        assert!(both.contains(" nonce=\"n1\""), "{both}");
+        assert!(!both.contains("cfg"), "{both}");
+        let configured = inject(&none, Some("cfg"));
         assert!(configured.contains(" nonce=\"cfg\""), "{configured}");
-        assert!(!configured.contains("n1"), "{configured}");
         // A `>` inside a quoted attribute value is the value's, not the
         // tag's end: the nonce after it is still read, whichever quote, and
         // when the stream splits the tag inside that value.
