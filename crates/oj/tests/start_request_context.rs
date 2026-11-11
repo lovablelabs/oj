@@ -6,11 +6,15 @@
 //! with `getGlobalStartContext()` while the request renders: in a route's
 //! loader (the document) and in a server route's handler. Start's
 //! `createStartHandler` takes the context from its second argument
-//! (`requestOpts.context`, start-server-core's createStartHandler.js) and the
-//! package's `server-entry` default passes every argument of `fetch` on to
-//! it. oj's stand-in for that module dropped the second argument, so the
-//! context was always empty: an app putting its CSP nonce there rendered its
-//! bootstrap scripts without it and never hydrated.
+//! (`requestOpts.context`, start-server-core's createStartHandler.js), seeds
+//! the request middleware chain with it and makes it the global start context;
+//! the package's `server-entry` default passes every argument of `fetch` on to
+//! it, and so does oj's stand-in for that module (`start_server_entry` covers
+//! the entry's surface and a server route's `context`; this is the global
+//! context an app's router, loaders and handlers read, a CSP nonce being the
+//! usual case). Before the stand-in passed the options on, the context was
+//! always empty: an app putting its CSP nonce there rendered its bootstrap
+//! scripts without it and never hydrated.
 //!
 //! The app is the Start fixture (see `start_app`) with a context-reading
 //! route added and its `src/ssr-entry.ts` passing the context.

@@ -20,7 +20,6 @@ export function createServerEntry(entry: ServerEntry): ServerEntry {
 }
 
 const handler = createStartHandler(defaultStreamHandler);
-type RequestOptions = Parameters<typeof handler>[1];
 
 // A Worker runtime calls `fetch(request, env, ctx)`: its third argument is the
 // execution context.
@@ -29,18 +28,22 @@ function isExecutionContext(ctx: unknown): boolean {
 }
 
 // Start's handler is `(request, opts?)`, and an app's entry hands it the
-// request's options, `handler.fetch(request, { context })`: they reach the
-// handler as they do through the package's entry. Vite's dev and preview
-// middlewares call `fetch(request)` alone, and a Worker runtime calls
-// `fetch(request, env, ctx)`: only then is the second argument the Worker's
-// bindings, stashed for `getCloudflareContext()`.
+// request's options, `handler.fetch(request, { context })`: every argument
+// reaches the handler as it does through the package's entry, whose default
+// is `createServerEntry({ fetch })` over the handler itself (`fetch(...args)`
+// passed on whole). Vite's dev and preview middlewares call `fetch(request)`
+// alone, and a Worker runtime calls `fetch(request, env, ctx)`: only then is
+// the second argument the Worker's bindings, stashed for
+// `getCloudflareContext()` and kept from the handler, whose options they are
+// not.
 export default createServerEntry({
-  async fetch(request: Request, second?: unknown, third?: unknown): Promise<Response> {
+  async fetch(request: Request, ...args: unknown[]): Promise<Response> {
+    const [second, third] = args;
     if (isExecutionContext(third)) {
       (globalThis as Record<string, unknown>).__OJ_CF_ENV = second;
       (globalThis as Record<string, unknown>).__OJ_CF_CTX = third;
       return await handler(request);
     }
-    return await handler(request, second as RequestOptions);
+    return await (handler as (request: Request, ...rest: unknown[]) => Promise<Response>)(request, ...args);
   },
 });
