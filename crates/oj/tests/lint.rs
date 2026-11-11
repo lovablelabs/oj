@@ -203,7 +203,7 @@ fn fake_oxlint(app: &App, rel: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     app.write(
         rel,
-        "#!/bin/sh\necho \"args: $*\"\necho \"backend: $OXLINT_TSGOLINT_PATH\"\n\"$OXLINT_TSGOLINT_PATH\" headless < payload.json | wc -c | tr -d ' '\nexit 3\n",
+        "#!/bin/sh\necho \"args: $*\"\necho \"backend: $OXLINT_TSGOLINT_PATH\"\n\"$OXLINT_TSGOLINT_PATH\" headless < payload.json | wc -c | tr -d ' '\necho \"mimalloc: ${MIMALLOC_ARENA_PURGE_MULT-unset}\"\necho \"vite: ${VITE_CONFIG_NATIVE_IGNORE_WARNING-unset}\"\nexit 3\n",
     );
     let path = app.0.join(rel);
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -218,7 +218,9 @@ fn oj_lint(cwd: &Path, args: &[&str], env: &[(&str, &Path)]) -> (i32, String, St
         .args(args)
         .current_dir(cwd)
         .env_remove("OJ_OXLINT_PATH")
-        .env_remove("OXLINT_TSGOLINT_PATH");
+        .env_remove("OXLINT_TSGOLINT_PATH")
+        .env_remove("MIMALLOC_ARENA_PURGE_MULT")
+        .env_remove("VITE_CONFIG_NATIVE_IGNORE_WARNING");
     for (name, value) in env {
         command.env(name, value);
     }
@@ -259,6 +261,12 @@ fn oj_lint_runs_the_projects_oxlint_with_oj_as_the_type_aware_backend() {
         "the backend wrote {} bytes",
         lines[2]
     );
+
+    // oxlint gets the caller's environment: what oj sets for its dev server
+    // (mimalloc's purge delay, which oxlint's own allocator would read, and
+    // Vite's native-loader warning switch) is not handed on.
+    assert_eq!(lines[3], "mimalloc: unset", "{stdout}");
+    assert_eq!(lines[4], "vite: unset", "{stdout}");
 
     // Every argument is oxlint's, a bare `--` and the flags that would be
     // oj's own included.

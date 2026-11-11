@@ -500,6 +500,21 @@ fn default_dev_root() -> PathBuf {
 
 fn main() -> anyhow::Result<()> {
     raise_fd_limit();
+    // `oj typecheck` takes tsc's command line, which clap cannot parse: every
+    // argument goes to the tsc driver as it is (`oj typecheck --help` is tsc's).
+    // `oj lint` takes oxlint's command line and `oj headless` what oxlint
+    // passes its backend, the same way: clap would drop a `--` on the way.
+    // They run before the dev server's environment below is set: the oxlint
+    // `oj lint` starts (built on mimalloc) is not handed the server's tuning.
+    let mut args = std::env::args_os().skip(1);
+    let command = args.next();
+    let rest = || -> Vec<String> { args.map(|arg| arg.to_string_lossy().into_owned()).collect() };
+    match command.as_ref().and_then(|c| c.to_str()) {
+        Some("typecheck") => std::process::exit(oj_typecheck::tsc(rest()).into()),
+        Some("lint") => std::process::exit(lint::lint(rest())),
+        Some("headless") => std::process::exit(lint::headless(rest()).into()),
+        _ => {}
+    }
     // Every engine and one-shot child that loads the app's vite.config through
     // rolldown-vite's native loader inherits this: the migration warning it
     // suppresses (one line per incompatibility in the config graph, 200+ on
@@ -519,19 +534,6 @@ fn main() -> anyhow::Result<()> {
     // any engine exists; a user-set value wins.
     if std::env::var_os("MIMALLOC_ARENA_PURGE_MULT").is_none() {
         std::env::set_var("MIMALLOC_ARENA_PURGE_MULT", "0");
-    }
-    // `oj typecheck` takes tsc's command line, which clap cannot parse: every
-    // argument goes to the tsc driver as it is (`oj typecheck --help` is tsc's).
-    // `oj lint` takes oxlint's command line and `oj headless` what oxlint
-    // passes its backend, the same way: clap would drop a `--` on the way.
-    let mut args = std::env::args_os().skip(1);
-    let command = args.next();
-    let rest = || -> Vec<String> { args.map(|arg| arg.to_string_lossy().into_owned()).collect() };
-    match command.as_ref().and_then(|c| c.to_str()) {
-        Some("typecheck") => std::process::exit(oj_typecheck::tsc(rest()).into()),
-        Some("lint") => std::process::exit(lint::lint(rest())),
-        Some("headless") => std::process::exit(lint::headless(rest()).into()),
-        _ => {}
     }
     // Vite sorts its lockfile-format preference by `npm_config_user_agent`
     // (optimizer/index.ts), which every package-manager launch sets and a
