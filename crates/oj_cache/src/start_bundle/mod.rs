@@ -68,6 +68,16 @@ pub struct PinnedChunk {
 }
 
 impl PinnedBundle {
+    /// A bundle from its entry's name and its chunks by name (the store pins
+    /// one from a generation's manifest; this is for a bundle assembled
+    /// elsewhere, tests included).
+    pub fn new(entry: String, chunks: impl IntoIterator<Item = (String, PinnedChunk)>) -> Self {
+        Self {
+            entry,
+            chunks: chunks.into_iter().collect(),
+        }
+    }
+
     pub fn chunk(&self, name: &str) -> Option<&PinnedChunk> {
         self.chunks
             .get(name)
@@ -81,6 +91,11 @@ impl PinnedBundle {
     /// Whether `name` is the entry chunk (also served as `client-entry.js`).
     pub fn is_entry(&self, name: &str) -> bool {
         name == self.entry || name == "client-entry.js"
+    }
+
+    /// The content hash of each chunk that has one.
+    pub fn hashes(&self) -> impl Iterator<Item = &str> {
+        self.chunks.values().filter_map(|c| c.hash.as_deref())
     }
 
     /// Whether any chunk of this bundle has content hash `hash`.

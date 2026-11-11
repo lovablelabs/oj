@@ -1564,18 +1564,7 @@ fn invalidate_changed(state: &ServerState, paths: &[PathBuf]) {
         if !path.exists() {
             continue;
         }
-        let url = url_of(&state.root, path);
-        let hard = state
-            .graph
-            .lock()
-            .unwrap()
-            .invalidate_on_change(Path::new(&url), |m| !is_style_url(&m.to_string_lossy()));
-        let mut keys = state.mtime_keys.lock().unwrap();
-        for module in hard {
-            for url in url_variants(&module.display().to_string()) {
-                keys.remove(&url);
-            }
-        }
+        crate::hmr::hard_invalidate(state, &url_of(&state.root, path));
     }
 }
 

@@ -95,8 +95,17 @@ impl ModuleGraph {
         }
     }
 
-    /// The dirty set an update of `changed` would stamp (its importers up to
-    /// and including the accepting boundaries), without mutating anything.
+    /// The dirty set an update of `changed` would stamp, without mutating
+    /// anything: the module and every importer reached through modules that
+    /// do not accept what they import, as Vite's `moduleGraph.invalidateModule`
+    /// walks `importers` (only `acceptedHmrDeps` stops it). A self-accepting
+    /// importer is a boundary the update stops at, but the walk goes on above
+    /// it: its own importers are not re-fetched by this update, yet each names
+    /// it by url in its compiled output, and served again (a fresh page, a
+    /// later update of its own) one must name it under the same `?t=` as the
+    /// importers compiled after this update do, or the page loads two
+    /// instances of one module. Vite soft-invalidates them for the same
+    /// reason.
     pub fn dirty_closure(&self, changed: &Path) -> Vec<PathBuf> {
         let mut dirty: Vec<PathBuf> = vec![changed.to_path_buf()];
         let mut queue = vec![changed.to_path_buf()];
@@ -105,9 +114,6 @@ impl ModuleGraph {
             let Some(node) = self.modules.get(&current) else {
                 continue;
             };
-            if node.is_self_accepting && current != changed {
-                continue;
-            }
             for importer in &node.importers {
                 // A dep-accepting importer is not re-fetched: its callback receives
                 // the new dependency module instead.

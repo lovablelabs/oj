@@ -99,6 +99,7 @@ async fn compile_plugin_source(
             }
             if let Some(url) = rewrite_specifier(
                 &root,
+                claim_state.public_dir.as_deref(),
                 crate::rewrite::Importer::dir(&root),
                 &resolver,
                 &fs_allow,

@@ -370,28 +370,47 @@ async fn serve_file(
         .public_dir
         .as_deref()
         .is_some_and(|p| file.starts_with(p));
+    // Vite's checkPublicFile: public when the request path names a file
+    // under the public dir, so `/public/logo.png` is not `/logo.png`.
+    let public_url = state
+        .public_dir
+        .as_deref()
+        .is_some_and(|p| in_public && p.join(rel) == file);
     // `?inline` on a file Vite's asset plugin does not load (not an asset or
     // a stylesheet) is the plain module, as vite:asset's load filter has it.
     let asset_query = query_asset_kind(query)
         .filter(|kind| *kind != "inline" || is_style_ext(ext) || is_asset_path(&state.root, file));
     if let Some(kind) = asset_query {
-        // Vite's checkPublicFile: public when the request path names a file
-        // under the public dir, so `/public/logo.png` is not `/logo.png`.
-        let public_url = state
-            .public_dir
-            .as_deref()
-            .is_some_and(|p| in_public && p.join(rel) == file);
         return serve_asset_query(state, file, ext, kind, query, public_url).await;
     }
     if is_style_ext(ext) && !in_public {
         return vary_on_fetch_dest(serve_style(state, headers, file, query).await);
     }
     if in_public {
+        // A public asset a module imports by its url: Vite's
+        // servePublicMiddleware steps aside for an import request (`?import`,
+        // isImportRequest) and vite:asset's load answers it with the url
+        // (checkPublicFile, fileToDevUrl), so the page gets a module where
+        // the bare url is the image. An import the browser marks
+        // `Sec-Fetch-Dest: script` is the same request, as it is for a bare
+        // asset under the root (serve_bare_asset). Only an asset answers it;
+        // a public script or stylesheet is the file, whatever asks.
+        let asset = public_url && is_asset_path(&state.root, file);
+        if asset && wants_module_import(headers, query) {
+            return vary_on_fetch_dest(
+                serve_asset_query(state, file, ext, "url", query, true).await,
+            );
+        }
         // Vite's servePublicMiddleware: the bytes, with sirv's validators
         // and byte ranges.
-        return match tokio::fs::metadata(file).await {
+        let response = match tokio::fs::metadata(file).await {
             Ok(meta) => crate::public_file_response(file, &meta, &Method::GET, headers).await,
             Err(err) => read_error(err),
+        };
+        return if asset {
+            vary_on_fetch_dest(response)
+        } else {
+            response
         };
     }
     if COMPILABLE.contains(&ext) || ext == "json" {

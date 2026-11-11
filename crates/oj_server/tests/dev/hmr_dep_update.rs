@@ -4,8 +4,9 @@
 //! An edit to a module that is not itself an HMR boundary (a plain `.ts`
 //! util two imports below a React component) reaches the page hot, with
 //! component state kept: the re-fetched boundary imports the util's new
-//! version (`?t=<stamp>`) down the chain, not the browser's cached bare url,
-//! and nothing above the boundary is stamped.
+//! version (`?t=<stamp>`) down the chain, not the browser's cached bare url;
+//! the entry above the boundary, served again, names the boundary under its
+//! stamp too.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -103,9 +104,14 @@ async fn non_boundary_dep_edit_stamps_the_chain_and_stays_hot() {
             .is_match(&hooks_js),
         "hooks.ts import of label.ts is unstamped:\n{hooks_js}"
     );
+    // Above the boundary nothing was re-fetched, but the entry names the
+    // boundary by url: served again it carries the boundary's stamp, as
+    // Vite soft-invalidates every importer of a stamped module.
     let main_js = server.text("/src/main.tsx").await;
     assert!(
-        !main_js.contains("App.tsx?t="),
-        "above the boundary nothing is stamped:\n{main_js}"
+        Regex::new(r#""/src/App\.tsx\?t=\d+""#)
+            .unwrap()
+            .is_match(&main_js),
+        "the entry names the boundary under its stamp:\n{main_js}"
     );
 }

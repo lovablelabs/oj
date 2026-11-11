@@ -101,7 +101,7 @@ mod preview;
 mod proxy;
 use css_engine::CssEngine;
 use middleware::*;
-use oj_graph::{HmrDecision, ModuleGraph};
+use oj_graph::ModuleGraph;
 use oj_resolver::OjResolver;
 use plugins::PluginHost;
 pub use preview::*;
@@ -2596,11 +2596,13 @@ async fn serve_oj_routes(State(state): State<Arc<ServerState>>) -> Response {
     let dir_cache = Arc::clone(&state.dir_cache);
     let synthetic = root.join("oj-routes.tsx");
     let compile_opts = dev_compile_opts(&state);
+    let public_dir = state.public_dir.clone();
     let compiled = tokio::task::spawn_blocking(move || {
         let dir = root.clone();
         let mut rewrite = |s: &str| {
             rewrite_specifier(
                 &root,
+                public_dir.as_deref(),
                 crate::rewrite::Importer::dir(&dir),
                 &resolver,
                 &fs_allow,
