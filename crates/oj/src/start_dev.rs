@@ -126,6 +126,10 @@ struct StartState {
     /// them itself: `StartCodePlugin`'s transform registers each glob's base
     /// as the importer's watch file.
     client_glob_importers: std::sync::RwLock<Vec<(PathBuf, oj_compiler::glob::GlobMatcher)>>,
+    /// The chunk each module of the client bundle is in, by the stable id the
+    /// page's runtime names it (client-modules.json): what a hot-updated
+    /// module's dynamic import of a module the page never loaded fetches.
+    client_module_chunks: std::sync::RwLock<std::collections::HashMap<String, String>>,
     /// False after a failed rebundle: the closure may be a torso (the build
     /// stopped early), so every next batch rebundles until one succeeds.
     bundle_ok: std::sync::atomic::AtomicBool,
@@ -639,6 +643,7 @@ pub async fn start_dev(
         client_closure: std::sync::RwLock::new(load_client_closure(&cache)),
         client_glob_scopes: std::sync::RwLock::new(load_client_glob_scopes(&cache)),
         client_glob_importers: std::sync::RwLock::new(load_client_glob_importers(&cache)),
+        client_module_chunks: std::sync::RwLock::new(load_client_module_chunks(&cache)),
         // A failed boot bundle rebundles on every next batch until one succeeds.
         bundle_ok: std::sync::atomic::AtomicBool::new(boot_error.is_none()),
         bundle_loaded: std::sync::atomic::AtomicBool::new(false),
@@ -1120,6 +1125,14 @@ fn load_client_closure(cache: &Path) -> std::collections::HashSet<PathBuf> {
         .ok()
         .and_then(|s| serde_json::from_str::<Vec<PathBuf>>(&s).ok())
         .map(|v| v.into_iter().collect())
+        .unwrap_or_default()
+}
+
+/// The chunk each module of the last client output is in (client-modules.json).
+fn load_client_module_chunks(cache: &Path) -> std::collections::HashMap<String, String> {
+    std::fs::read_to_string(cache.join(crate::start_bundle::dev::CLIENT_MODULES_FILE))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default()
 }
 
@@ -2053,6 +2066,10 @@ fn load_inputs(state: &StartState, cache: &Path) {
         .client_glob_importers
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = load_client_glob_importers(cache);
+    *state
+        .client_module_chunks
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = load_client_module_chunks(cache);
 }
 
 /// How long edits must pause before the refresher writes the client output:
@@ -2882,6 +2899,16 @@ async fn start_route(State(state): State<Arc<StartState>>, req: Request, next: N
         let overlay = state.live_reload.with_file_name("error-overlay.js");
         return serve_js(&overlay, "error overlay").await;
     }
+    // A hot-updated module's dynamic import of a module the page never
+    // loaded (hmr-runtime.js `initModule`): the chunk of the client bundle
+    // that holds it. Vite serves the module behind a dynamic import on
+    // demand, at its current code (plugins/importAnalysis.ts rewrites
+    // `import()` with the module's `?t=`); the bundle's unit for that is the
+    // chunk, from an output that covers every hot update, so a module edited
+    // before it was ever loaded comes as it is now.
+    if path == "/@oj-start/hmr/module" {
+        return serve_module_chunk(&state, req.uri().query()).await;
+    }
     if let Some(name) = path.strip_prefix(crate::start_hot::PATCH_PREFIX) {
         return state.bundler.hot.serve(name);
     }
@@ -3372,6 +3399,48 @@ async fn forward_with_body(state: &Arc<StartState>, req: Request) -> Response {
 fn chunk_gone(pages: &broadcast::Sender<String>, name: &str) {
     if !name.ends_with(".map") {
         let _ = pages.send(crate::start_chunks::chunk_gone_frame(name));
+    }
+}
+
+/// The URL of the client bundle's chunk holding the module `id=` names (a
+/// stable id, as the page's runtime knows modules), as JSON; 404 when no
+/// chunk of the bundle holds it.
+async fn serve_module_chunk(state: &StartState, query: Option<&str>) -> Response {
+    let Some(id) = query
+        .and_then(|q| q.split('&').find_map(|pair| pair.strip_prefix("id=")))
+        .map(percent_decode)
+    else {
+        return (StatusCode::BAD_REQUEST, "oj start: no module id").into_response();
+    };
+    state.client_output_fresh().await;
+    let name = state
+        .client_module_chunks
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&id)
+        .cloned();
+    let served = name.filter(|name| {
+        state
+            .bundle
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .chunk(name)
+            .is_some()
+    });
+    match served {
+        Some(name) => (
+            [
+                (header::CONTENT_TYPE, "application/json"),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            serde_json::json!({ "url": format!("{}/@oj-start/{name}", state.base) }).to_string(),
+        )
+            .into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            format!("oj start: no chunk of the client bundle holds module {id}"),
+        )
+            .into_response(),
     }
 }
 

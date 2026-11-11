@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- TanStack Start dev: a dynamic import inside a hot-updated module resolves when the page never loaded the imported module. A component whose effect does `await import("../lib/photo-canvas")` (a module with its own chunk, a heavy dependency inside), hot-updated before the import ever ran, threw `No factory registered for module src/lib/photo-canvas.ts` from its patch at the first import, so the feature behind it never opened until a reload. The patch renders the import as a lookup in the page's runtime, which knows a module once the page ran it or a patch carried its factory, and no patch carries a module that did not change. Under Vite the import is just the module's URL, served on demand (`importAnalysis` rewrites `import()` with the module's current `?t=`), so it can never lack a module. The runtime now asks the dev server which chunk of the client bundle holds the module and loads that chunk, once the output covers every hot update, so the import gets the module's current code even when it was edited before it was ever loaded. The client bundle writes each module's chunk beside its chunk index (`client-modules.json`, restored from the bundle cache with the other artifacts).
+
 ## [0.4.13] - 2026-11-11
 
 ### Changed

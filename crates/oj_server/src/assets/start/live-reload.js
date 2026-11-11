@@ -184,6 +184,8 @@
     return true;
   };
   bus.send = send;
+  // The runtime fetches a chunk from the dev server under `base` too.
+  bus.base = base;
   // `import.meta.hot.send`: one sent before the socket opens waits for it.
   const outbox = (bus.outbox ??= []);
   bus.post = (msg) => send(msg) || outbox.push(msg);
