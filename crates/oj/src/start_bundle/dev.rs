@@ -9,9 +9,11 @@
 //!
 //! A bundle leaves its outputs in the Start cache directory, the contract the
 //! dev server serves and gates from: `client-chunks/` with
-//! `client-chunks.json`, `client-entry.modules`, `closure.json` (every file
-//! the bundle read, the rebundle gate's input set and the bundle cache's
-//! key), `glob-scopes.json`, `manifest.ts`, `css-urls.json`, and the
+//! `client-chunks.json`, `client-modules.json` (the chunk each module is
+//! in, for a hot-updated module's dynamic import of one the page never
+//! loaded), `client-entry.modules`, `closure.json` (every file the bundle
+//! read, the rebundle gate's input set and the bundle cache's key),
+//! `glob-scopes.json`, `manifest.ts`, `css-urls.json`, and the
 //! `client-error.json` / `client-hmr.json` records of how the run went.
 
 use std::collections::HashSet;
@@ -37,6 +39,8 @@ use crate::build::EmitState;
 
 pub(crate) const CLIENT_ERROR_FILE: &str = "client-error.json";
 pub(crate) const CLIENT_HMR_FILE: &str = "client-hmr.json";
+/// The chunk each module of the client bundle is in, by stable id.
+pub(crate) const CLIENT_MODULES_FILE: &str = "client-modules.json";
 /// The path the dev server serves the client entry chunk at, under `base`.
 const CLIENT_ENTRY_PATH: &str = "/@oj-start/client-entry.js";
 
@@ -812,11 +816,22 @@ pub(crate) fn write_outputs<'a>(
     let mut modules = 0usize;
     let mut entry = None;
     let mut closure: Vec<String> = Vec::new();
+    // Each module's chunk, by the id the page's runtime knows it under
+    // (rolldown's stable id: the path relative to the root, as a patch's
+    // `initModule("src/lib/x.ts")` names it). A hot-updated module's dynamic
+    // import of a module the page never loaded fetches that chunk.
+    let mut module_chunks = serde_json::Map::new();
     for out in outputs {
         let (name, bytes): (&str, &[u8]) = match out {
             Output::Chunk(c) => {
                 modules += c.modules.keys.len();
                 closure.extend(c.modules.keys.iter().map(|k| k.as_str().to_string()));
+                for id in &c.modules.keys {
+                    module_chunks.insert(
+                        rolldown_utils::stabilize_id::stabilize_id(id.as_str(), &start.root),
+                        serde_json::Value::String(c.filename.to_string()),
+                    );
+                }
                 if c.is_entry && entry.is_none() {
                     entry = Some(c.filename.to_string());
                 }
@@ -840,6 +855,10 @@ pub(crate) fn write_outputs<'a>(
     write_json(
         &cache.join("client-chunks.json"),
         &serde_json::json!({ "entry": entry, "files": files }),
+    )?;
+    write_json(
+        &cache.join(CLIENT_MODULES_FILE),
+        &serde_json::Value::Object(module_chunks),
     )?;
     // Module count for the editor's update-progress narration.
     std::fs::write(cache.join("client-entry.modules"), modules.to_string())?;

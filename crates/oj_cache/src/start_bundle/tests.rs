@@ -87,6 +87,11 @@ impl Fixture {
         fs::write(self.start.join("client-entry.modules"), "2").unwrap();
         fs::write(self.start.join("manifest.ts"), format!("// {marker}")).unwrap();
         fs::write(self.start.join(GLOB_SCOPES_FILE), "[]").unwrap();
+        fs::write(
+            self.start.join("client-modules.json"),
+            r#"{"src/a.tsx":"client-entry.js"}"#,
+        )
+        .unwrap();
     }
 
     fn clear_start_dir(&self) {

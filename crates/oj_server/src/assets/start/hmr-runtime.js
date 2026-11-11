@@ -341,6 +341,44 @@ class OjDevRuntime extends DevRuntime {
       createModuleHotContext: (id) => new OjHotContext(hmr, id),
       onModuleCacheRemoval: (id) => hmr.disposeModule(id),
     };
+    // The chunks being fetched for modules the page never loaded, by module.
+    this.chunkLoads = new Map();
+  }
+  // A patch renders `import("./x")` as `initModule(id)` and, a microtask
+  // later, `loadExports(id)`. The runtime knows a module once the page ran
+  // it or a patch carried its factory, and no patch carries a module that
+  // did not change, so a module reached only through that `import()` (its
+  // own chunk, never loaded) threw "No factory registered" at the first
+  // import after its importer's patch. Vite's import analysis rewrites a
+  // dynamic import to the module's URL, served on demand
+  // (plugins/importAnalysis.ts), so it can never lack a module; here the
+  // unit is the chunk of the client bundle that holds it, which the dev
+  // server names and which registers the module as it evaluates, and the
+  // import resolves through `loadExports`, which waits for it. A module
+  // nothing imports dynamically still throws: a static import of a module
+  // the page lacks is a broken patch, not a chunk to fetch.
+  initModule(id) {
+    if (this.moduleCache.has(id) || this.factories.has(id) || !this.dynamicImporters.get(id)?.size) {
+      return super.initModule(id);
+    }
+    if (!this.chunkLoads.has(id)) {
+      this.chunkLoads.set(
+        id,
+        this.loadChunkOf(id).finally(() => this.chunkLoads.delete(id)),
+      );
+    }
+  }
+  loadExports(id) {
+    const loading = this.chunkLoads.get(id);
+    if (loading && !this.moduleCache.has(id)) return loading.then(() => super.loadExports(id));
+    return super.loadExports(id);
+  }
+  async loadChunkOf(id) {
+    const res = await fetch(`${__ojBus.base ?? ""}/@oj-start/hmr/module?id=${encodeURIComponent(id)}`);
+    if (!res.ok) throw new Error(`[oj] no chunk of the client bundle holds module ${id}`);
+    const { url } = await res.json();
+    await import(/* @vite-ignore */ url);
+    if (!this.moduleCache.has(id)) throw new Error(`[oj] ${url} did not register module ${id}`);
   }
   payloadDelivered(filename) {
     __ojBus.send?.({ type: "oj:delivered", filename });
