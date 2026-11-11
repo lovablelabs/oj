@@ -4,10 +4,10 @@
 //! A page whose only script is a refresh preamble that then imports the app
 //! (TanStack Start's dev client entry) recovers from a reloading dep rerun.
 //! The app imports deps the scan never saw; their rerun moves a pre-bundled
-//! dep's chunk, so the commit reloads and an older held request is the
-//! outdated 504 that fails the app's dynamic import. As under Vite, the
-//! refresh runtime brings the HMR client in with the preamble, so the reload
-//! still reaches the page and the reloaded page runs.
+//! dep's chunk, so the commit reloads the page (the requests it held are
+//! served first, as Vite's optimizedDeps load serves them). As under Vite,
+//! the refresh runtime brings the HMR client in with the preamble, so the
+//! reload still reaches the page and the reloaded page runs.
 
 use std::time::Duration;
 
@@ -86,18 +86,20 @@ async fn a_preamble_page_reloads_past_an_outdated_dep() {
     let listening = server.listen().await;
 
     let page = Page::open(&format!("http://127.0.0.1:{}/page", listening.addr.port())).await;
-    let ran = page
-        .poll(r#"window.__R === "acbcd""#, Duration::from_secs(30))
+    // The first document may run the app too (its held dep requests are
+    // served at the commit); the reload must reach it and the reloaded page
+    // must run.
+    let reloaded = page
+        .poll(
+            r#"performance.getEntriesByType("navigation")[0].type === "reload" && window.__R === "acbcd""#,
+            Duration::from_secs(30),
+        )
         .await;
     assert!(
-        ran,
-        "the page never ran its app; errors: {:?}, console: {:?}",
+        reloaded,
+        "the reloaded page never ran its app; errors: {:?}, console: {:?}",
         page.errors(),
         page.console()
     );
-    let nav: String = page
-        .eval(r#"performance.getEntriesByType("navigation")[0].type"#)
-        .await;
-    assert_eq!(nav, "reload", "the page ran only after the rerun's reload");
     page.close().await;
 }
