@@ -12,6 +12,9 @@ import { asset } from "./harness.mjs";
 // is what the page's Date.now reads, and `tick()` runs its intervals.
 function loadPage({
   overlays = [],
+  // The document's elements by selector (`querySelector`), each `{ nonce }`
+  // or `{ attrs: { nonce } }`: the tags a policy's nonce is read from.
+  elements = {},
   stamp = "null",
   hot = "null",
   ping = 0,
@@ -29,6 +32,8 @@ function loadPage({
   const listeners = {};
   const clock = { now: 0 };
   const said = [];
+  // The elements the client appended to the document's head.
+  const added = [];
   // The page's resource timeline: the urls it has fetched, and its observers.
   const resources = [];
   const observers = [];
@@ -60,7 +65,14 @@ function loadPage({
     fetch: (...args) => fetch(...args),
     URL,
     console: { error() {}, debug() {}, warn() {}, log: (line) => said.push(line) },
-    location: { protocol: "http:", host: hostname, hostname, pathname: "/", reload: () => log.push(["reload"]) },
+    location: {
+      protocol: "http:",
+      host: hostname,
+      hostname,
+      pathname: "/",
+      href: `http://${hostname}/`,
+      reload: () => log.push(["reload"]),
+    },
     sessionStorage: {
       setItem: (k, v) => storage.set(k, String(v)),
       getItem: (k) => (storage.has(k) ? storage.get(k) : null),
@@ -71,6 +83,18 @@ function loadPage({
       activeElement: null,
       visibilityState: "visible",
       querySelectorAll: (sel) => (sel === "vite-error-overlay" ? overlays : []),
+      querySelector: (sel) => {
+        const el = elements[sel];
+        return el ? { nonce: el.nonce ?? "", getAttribute: (name) => el.attrs?.[name] ?? null } : null;
+      },
+      // An element is its properties and attributes; the head keeps what
+      // was appended to it.
+      createElement: (tag) => {
+        const el = { tag, attrs: {} };
+        el.setAttribute = (name, value) => (el.attrs[name] = value);
+        return el;
+      },
+      head: { appendChild: (el) => added.push(el) },
       addEventListener: (type, fn) => (docListeners[type] ??= []).push(fn),
     },
     addEventListener: (type, fn) => (listeners[type] ??= []).push(fn),
@@ -132,6 +156,7 @@ function loadPage({
   const emit = (on, type, event = {}) => (on[type] || []).forEach((fn) => fn(event));
   return {
     bus: page.__ojStartHmr,
+    added,
     log,
     open,
     receive,
@@ -790,4 +815,40 @@ test("the replacement's own silence is timed from when it was opened, not from t
   clock.now = 6600;
   tick();
   assert.equal(sockets.length, 3);
+});
+
+// A hot update's new stylesheet is a link this client adds. Under a policy
+// that names a nonce (`style-src 'nonce-..'`) the link needs it, as the tags
+// Vite's client creates take the one in `<meta property="csp-nonce">`
+// (client.ts `updateStyle`, overlay.ts `cspNonce`); a Start document has no
+// such meta unless the app writes one, so the nonce the server gave this
+// client's own tag stands in.
+const SHEET = { type: "oj:css", relink: false, add: ["/@oj-start/fs/app/src/new.css"] };
+const linked = async (elements) => {
+  const page = loadPage({ elements });
+  page.open();
+  await page.receive(SHEET);
+  assert.equal(page.added.length, 1);
+  const [link] = page.added;
+  assert.equal(link.tag, "link");
+  assert.equal(link.rel, "stylesheet");
+  assert.equal(link.href, "/@oj-start/fs/app/src/new.css");
+  return link.attrs;
+};
+
+test("a stylesheet link added for a hot update carries the document's nonce", async () => {
+  const OWN = 'script[src*="/@oj-start/live-reload.js"]';
+  const META = "meta[property=csp-nonce]";
+  // No nonce anywhere: a link without one, as before.
+  assert.deepEqual(await linked({}), {});
+  // The nonce of this client's own tag (hidden from the attribute once the
+  // document is parsed, so read as the property).
+  assert.deepEqual(await linked({ [OWN]: { nonce: "tag-nonce" } }), { nonce: "tag-nonce" });
+  // Vite's meta names it first, as an attribute or as the property.
+  assert.deepEqual(await linked({ [META]: { nonce: "meta-nonce" }, [OWN]: { nonce: "tag-nonce" } }), {
+    nonce: "meta-nonce",
+  });
+  assert.deepEqual(await linked({ [META]: { attrs: { nonce: "meta-attr" } } }), { nonce: "meta-attr" });
+  // A tag without a nonce (no policy) gives none.
+  assert.deepEqual(await linked({ [OWN]: {} }), {});
 });

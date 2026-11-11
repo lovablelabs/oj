@@ -141,6 +141,18 @@
     }
   }
 
+  // The nonce for the tags this client creates, under a policy that names
+  // one: Vite's `<meta property="csp-nonce">` (its client's `cspNonce`, which
+  // `updateStyle` puts on each style tag it adds), else the nonce the server
+  // gave this client's own tag, the one the document's tags carry.
+  function cspNonce() {
+    const of = (el) => (el && (el.nonce || el.getAttribute("nonce"))) || "";
+    return (
+      of(document.querySelector("meta[property=csp-nonce]")) ||
+      of(document.querySelector('script[src*="/@oj-start/live-reload.js"]'))
+    );
+  }
+
   // Sheets an update imported for the first time (a CSS import is a link in
   // Start dev, never a module that injects its own sheet).
   function linkStyles(hrefs) {
@@ -152,6 +164,8 @@
       const el = document.createElement("link");
       el.rel = "stylesheet";
       el.href = href;
+      const nonce = cspNonce();
+      if (nonce) el.setAttribute("nonce", nonce);
       document.head.appendChild(el);
     }
   }
