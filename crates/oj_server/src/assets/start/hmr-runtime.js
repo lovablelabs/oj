@@ -108,6 +108,8 @@ class OjHmrClient {
     // Each module's own listeners, by event (Vite's ctxToListenersMap).
     this.ownListeners = new Map();
     this.queue = Promise.resolve();
+    // Patches announced and not yet applied.
+    this.pending = [];
     this.lastSeq = 0;
     this.reloadPending = false;
     this.firstInvalidatedBy = undefined;
@@ -182,7 +184,8 @@ class OjHmrClient {
   }
 
   push(frame) {
-    this.queue = this.queue.then(() => this.applyPush(frame)).catch((err) => this.failed(err, frame.changedIds));
+    this.pending.push(frame);
+    this.queue = this.queue.then(() => this.applyPending()).catch((err) => this.failed(err, frame.changedIds));
   }
 
   invalidate(id, message) {
@@ -218,22 +221,39 @@ class OjHmrClient {
     };
   }
 
-  async applyPush({ url, seq, changedIds }) {
-    if (this.reloadPending) return;
-    if (seq !== this.lastSeq + 1)
-      return this.requestReload(`update sequence gap (expected ${this.lastSeq + 1}, got ${seq})`);
-    this.lastSeq = seq;
-    const update = this.compute(changedIds);
+  // Every patch in hand is one update: the editor's gate releases the
+  // patches of one change together (one per file it wrote, each built
+  // before the next write), and a page far from its server is sent the
+  // next while it still fetches this one. Applied one by one, as sent, a
+  // module re-run by the first would bind to another module's exports as
+  // they were before the edit (an export added in the same change is
+  // `undefined` there; a render that throws on it unmounts the page, and
+  // the next patch has nothing left to refresh). Vite invalidates every
+  // changed file in its module graph as the watcher reports it
+  // (server/index.ts onFileChange, hmr.ts updateModules), so the boundary
+  // its update re-imports loads each import fresh; here the patches are
+  // fetched first, then the changed modules re-run once, over all of them.
+  async applyPending() {
+    if (this.reloadPending || !this.pending.length) return;
+    const changedIds = new Set();
+    while (this.pending.length) {
+      const { url, seq, changedIds: ids } = this.pending.shift();
+      if (seq !== this.lastSeq + 1)
+        return this.requestReload(`update sequence gap (expected ${this.lastSeq + 1}, got ${seq})`);
+      this.lastSeq = seq;
+      try {
+        await import(/* @vite-ignore */ url);
+      } catch {
+        return this.requestReload(`failed to import hmr patch ${url}`);
+      }
+      for (const id of ids) changedIds.add(id);
+    }
+    const update = this.compute([...changedIds]);
     if (!update) return;
     if (update.reload) return this.requestReload(update.reload);
     const payload = this.payload(update.boundaries, undefined);
     await this.notify("vite:beforeUpdate", payload);
     if (this.beforeApply() === "reload") return;
-    try {
-      await import(/* @vite-ignore */ url);
-    } catch {
-      return this.requestReload(`failed to import hmr patch ${url}`);
-    }
     await this.apply(update);
     await this.notify("vite:afterUpdate", payload);
   }
