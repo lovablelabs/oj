@@ -124,7 +124,9 @@ Dev SSR:
 Framework entries (synthesized, what the TanStack Vite plugin would inject):
 
 - `server-entry.tsx` wraps `createStartHandler(defaultStreamHandler)` into a
-  `{ fetch(request) }` default export.
+  `{ fetch(request) }` default export and exports `createServerEntry`, the
+  same surface as the package's `@tanstack/react-start/server-entry`, so an
+  app's own entry imports from it as it would from the package.
 - `client-entry.tsx` hydrates the document with `<StartClient/>`.
 - `start-entry.ts`, `plugin-adapters.ts`, `manifest.ts` fill the remaining
   seam specifiers.
