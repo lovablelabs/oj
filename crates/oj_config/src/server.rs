@@ -36,6 +36,24 @@ pub fn public_dir(config: &OjConfig, root: &Path) -> Option<PathBuf> {
     }
 }
 
+/// Vite's `cacheDir`, absolute (resolveConfig in config.ts): the config's
+/// value resolved against the root; else `node_modules/.vite` under the
+/// nearest directory at or above the root holding a package.json (Vite's
+/// findNearestPackageData, so a root inside a package caches above itself);
+/// else, with no manifest anywhere, under the root's node_modules when it
+/// has one and `<root>/.vite` otherwise. An empty string is unset, as Vite's
+/// `if (config.cacheDir)` reads it.
+pub fn cache_dir(config: &OjConfig, root: &Path) -> PathBuf {
+    if let Some(dir) = config.cache_dir.as_deref().filter(|d| !d.is_empty()) {
+        return root.join(dir);
+    }
+    match root.ancestors().find(|d| d.join("package.json").is_file()) {
+        Some(pkg) => pkg.join("node_modules/.vite"),
+        None if root.join("node_modules").is_dir() => root.join("node_modules/.vite"),
+        None => root.join(".vite"),
+    }
+}
+
 /// `server.strictPort` (Vite default false: try the next free port).
 pub fn server_strict_port(config: &OjConfig) -> bool {
     config
@@ -239,5 +257,65 @@ mod tests {
         assert!(!server_strict_port(&off));
         let empty: OjConfig = serde_json::from_str("{}").unwrap();
         assert!(!server_strict_port(&empty));
+    }
+}
+
+#[cfg(test)]
+mod cache_dir_tests {
+    use super::*;
+
+    fn config(json: &str) -> OjConfig {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn the_configs_cache_dir_resolves_against_the_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("app");
+        std::fs::create_dir_all(root.join("node_modules")).unwrap();
+        assert_eq!(
+            cache_dir(&config(r#"{"cacheDir":".cache/vite"}"#), &root),
+            root.join(".cache/vite")
+        );
+        assert_eq!(
+            cache_dir(&config(r#"{"cacheDir":"/abs/cache"}"#), &root),
+            PathBuf::from("/abs/cache")
+        );
+        assert_eq!(
+            cache_dir(&config(r#"{"cacheDir":""}"#), &root),
+            root.join("node_modules/.vite"),
+            "empty is unset"
+        );
+    }
+
+    #[test]
+    fn the_default_sits_under_the_nearest_package_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("pkg/app");
+        std::fs::create_dir_all(&root).unwrap();
+        let none = config("{}");
+        assert_eq!(
+            cache_dir(&none, &root),
+            root.join(".vite"),
+            "no manifest, no node_modules"
+        );
+        std::fs::create_dir_all(root.join("node_modules")).unwrap();
+        assert_eq!(
+            cache_dir(&none, &root),
+            root.join("node_modules/.vite"),
+            "no manifest, a node_modules dir in the root"
+        );
+        std::fs::write(dir.path().join("pkg/package.json"), "{}").unwrap();
+        assert_eq!(
+            cache_dir(&none, &root),
+            dir.path().join("pkg/node_modules/.vite"),
+            "the manifest above the root wins over the root's node_modules"
+        );
+        std::fs::write(root.join("package.json"), "{}").unwrap();
+        assert_eq!(
+            cache_dir(&none, &root),
+            root.join("node_modules/.vite"),
+            "the root's own manifest is the nearest"
+        );
     }
 }
