@@ -182,6 +182,121 @@ pub fn dep_url(file: &str, version: &str) -> String {
     }
 }
 
+/// The URL prefix Vite serves its optimized deps under, from the resolved
+/// `cacheDir` (createIsOptimizedDepUrl): `<cacheDir>/deps` as a path under
+/// the root, `/node_modules/.vite/deps/` by default, or `/@fs/<absolute>/
+/// deps/` when the cache dir is outside the root (a root inside a package,
+/// whose manifest above it places the cache). A dep's URL is
+/// `<prefix><flattenId(dep)>.js?v=<browserHash>`.
+pub fn vite_deps_url_prefix(root: &Path, cache_dir: &Path) -> String {
+    let deps = cache_dir.join("deps");
+    match deps.strip_prefix(root) {
+        Ok(rel) => format!("/{}/", rel.display()),
+        Err(_) => format!("/@fs{}/", deps.display()),
+    }
+}
+
+/// Vite's `flattenId` (utils.ts), the file stem its optimizer gives a dep:
+/// `react-dom/client` is `react-dom_client`, `@tanstack/react-query` is
+/// `@tanstack_react-query`, `lodash.merge` is `lodash__merge`. A literal
+/// underscore run gains two more before the other replacements, a nested
+/// `a > b` id joins on `_n_`, and a character the file system would refuse
+/// becomes `_0<hex>_`. Vite hashes a stem past 170 characters; such an id is
+/// left long here, as no dep in practice reaches it.
+pub fn vite_flat_id(dep: &str) -> String {
+    let mut out = String::with_capacity(dep.len() + 8);
+    let mut chars = dep.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '_' => {
+                out.push(c);
+                while chars.peek() == Some(&'_') {
+                    out.push(chars.next().unwrap());
+                }
+                out.push_str("__");
+            }
+            '/' => out.push('_'),
+            '.' => out.push_str("__"),
+            '>' => {
+                while out.ends_with(char::is_whitespace) {
+                    out.pop();
+                }
+                while chars.peek().is_some_and(|n| n.is_whitespace()) {
+                    chars.next();
+                }
+                out.push_str("_n_");
+            }
+            '\u{0}'..='\u{1f}'
+            | '"'
+            | '#'
+            | '$'
+            | '%'
+            | '&'
+            | '*'
+            | '+'
+            | ','
+            | ':'
+            | ';'
+            | '<'
+            | '='
+            | '?'
+            | '['
+            | ']'
+            | '^'
+            | '`'
+            | '{'
+            | '|'
+            | '}'
+            | '\u{7f}' => {
+                out.push_str(&format!("_0{:x}_", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// The dep ids a Vite flat stem can stand for, the likeliest first: the
+/// flattening is not one to one (`lodash___es` is `lodash_es`, `lodash/.es`
+/// or `lodash./es`), so each spend of an underscore run on `/`, `.` or a
+/// literal run is tried, kept when it flattens back to the stem and reads as
+/// a specifier (no empty or dot-led path segment). The caller resolves the
+/// candidates in order; the installed one wins, and a nested (`_n_`) or
+/// escaped (`_0xx_`) stem's readings resolve to nothing.
+pub fn vite_flat_candidates(flat: &str) -> Vec<String> {
+    fn expand(rest: &str, prefix: String, out: &mut Vec<String>) {
+        if out.len() >= 64 {
+            return;
+        }
+        if rest.is_empty() {
+            out.push(prefix);
+            return;
+        }
+        if !rest.starts_with('_') {
+            let end = rest.find('_').unwrap_or(rest.len());
+            return expand(&rest[end..], prefix + &rest[..end], out);
+        }
+        let run = rest.len() - rest.trim_start_matches('_').len();
+        for take in 1..=run {
+            let piece = match take {
+                1 => "/".to_string(),
+                2 => ".".to_string(),
+                k => "_".repeat(k - 2),
+            };
+            expand(&rest[take..], format!("{prefix}{piece}"), out);
+        }
+    }
+    let mut out = Vec::new();
+    expand(flat, String::new(), &mut out);
+    out.retain(|dep| {
+        vite_flat_id(dep) == flat
+            && dep
+                .split('/')
+                .all(|seg| !seg.is_empty() && !seg.starts_with('.'))
+    });
+    out
+}
+
 /// Rolldown links a chunk to an entry chunk as `./<entry>.mjs`, which the
 /// browser resolves without the `?v=` the app's imports of that entry carry:
 /// two URLs, so the entry evaluates twice. Each such import moves to the
@@ -427,6 +542,27 @@ impl OptimizedDeps {
             .values()
             .find(|meta| meta.file == file)
             .cloned()
+    }
+
+    /// The dep (id and entry) `pred` picks, from the live map, else from the
+    /// deps registered since and not bundled yet: how a request that names a
+    /// dep other than by its id (Vite's flat file stem) finds it.
+    pub fn find_dep(&self, pred: impl Fn(&str) -> bool) -> Option<(String, DepMeta)> {
+        if let Some(found) = self
+            .rx
+            .borrow()
+            .as_ref()
+            .and_then(|map| map.iter().find(|(dep, _)| pred(dep)))
+            .map(|(dep, meta)| (dep.clone(), meta.clone()))
+        {
+            return Some(found);
+        }
+        let r = self.rerun.as_ref()?;
+        let discovered = r.discovered.lock().unwrap();
+        discovered
+            .iter()
+            .find(|(dep, _)| pred(dep))
+            .map(|(dep, meta)| (dep.clone(), meta.clone()))
     }
 
     /// The URL importers name the pre-bundle `file` by: a committed or planned
@@ -1987,6 +2123,68 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(r#"{"dep":{"file":"dep.js"}}"#).unwrap();
         let map = parse_metadata(&v, "0123456789abcdef").unwrap();
         assert!(map["dep"].needs_interop);
+    }
+
+    #[test]
+    fn vite_flat_ids_match_the_optimizers_file_names() {
+        // The stems of Vite's own deps dir (`_metadata.json` of a Vite run).
+        for (dep, flat) in [
+            ("react", "react"),
+            ("react-dom/client", "react-dom_client"),
+            ("react/jsx-dev-runtime", "react_jsx-dev-runtime"),
+            ("@tanstack/react-query", "@tanstack_react-query"),
+            ("@radix-ui/react-dialog", "@radix-ui_react-dialog"),
+            ("lodash.merge", "lodash__merge"),
+            ("lodash_es", "lodash___es"),
+            ("deep-requires/sub", "deep-requires_sub"),
+            (
+                "@tanstack/react-router > @tanstack/react-store",
+                "@tanstack_react-router_n_@tanstack_react-store",
+            ),
+            ("pkg/a:b", "pkg_a_03a_b"),
+        ] {
+            assert_eq!(vite_flat_id(dep), flat, "{dep}");
+        }
+    }
+
+    #[test]
+    fn the_vite_deps_url_prefix_follows_the_cache_dir() {
+        let root = Path::new("/work/app");
+        assert_eq!(
+            vite_deps_url_prefix(root, &root.join("node_modules/.vite")),
+            "/node_modules/.vite/deps/"
+        );
+        assert_eq!(
+            vite_deps_url_prefix(root, &root.join(".cache/vite")),
+            "/.cache/vite/deps/"
+        );
+        // Outside the root (the manifest above it owns the cache): Vite's
+        // `/@fs/` form of the absolute path.
+        assert_eq!(
+            vite_deps_url_prefix(root, Path::new("/work/node_modules/.vite")),
+            "/@fs/work/node_modules/.vite/deps/"
+        );
+    }
+
+    #[test]
+    fn a_flat_id_decodes_to_the_deps_it_can_name() {
+        assert_eq!(vite_flat_candidates("react"), ["react"]);
+        assert_eq!(
+            vite_flat_candidates("react-dom_client"),
+            ["react-dom/client"]
+        );
+        assert_eq!(
+            vite_flat_candidates("@tanstack_react-query"),
+            ["@tanstack/react-query"]
+        );
+        assert_eq!(vite_flat_candidates("lodash__merge"), ["lodash.merge"]);
+        // Ambiguous: every reading that flattens back and reads as a
+        // specifier, the single-character spends first.
+        let under = vite_flat_candidates("lodash___es");
+        assert_eq!(under, ["lodash./es", "lodash_es"], "{under:?}");
+        // A nested id's stem reads as a deep path, which resolution rejects.
+        assert_eq!(vite_flat_candidates("a_n_b"), ["a/n/b"]);
+        assert!(vite_flat_candidates("_leading").is_empty());
     }
 
     #[test]
