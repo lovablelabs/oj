@@ -32,8 +32,8 @@ oxc_codegen.workspace = true
 oxc_sourcemap = "9.0.0"
 thiserror.workspace = true
 oj_stylex.workspace = true
+oj_env.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
 tempfile.workspace = true
-oj_env.workspace = true

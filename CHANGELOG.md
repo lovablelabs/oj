@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A key the config's `define` adds to `import.meta.env` (`define: { "import.meta.env.VITE_API_URL": JSON.stringify("https://api.example") }`, with no `.env` entry) is in the `import.meta.env` object too, so `import.meta.env["VITE_API_URL"]`, `const env = import.meta.env; env.VITE_API_URL` and `{ ...import.meta.env }` give the value in `oj build`, the TanStack Start bundles and the dev server, where only the dotted `import.meta.env.VITE_API_URL` did and the other forms were `undefined` (a generated client reading its keys with bracket access failed every page in production). Vite's define plugin folds the user's `import.meta.env.*` defines into the object it replaces `import.meta.env` with (plugins/define.ts, `serializeDefine({ ...importMetaEnvKeys, SSR, ...userDefineEnv })`), per environment, and its import analysis does the same in dev; oj's define lists now rebuild the object from every `import.meta.env.<KEY>` entry once the layers (the loaded env, the config's `define`, the environment's, the plugins') are assembled, later layers winning, with the SSR object keeping `SSR: true` and an `environments.ssr.define` key reaching the server object alone.
+
 ## [0.4.13] - 2026-11-11
 
 ### Changed

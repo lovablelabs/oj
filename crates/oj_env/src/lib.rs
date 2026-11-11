@@ -14,7 +14,8 @@ mod snapshot;
 
 pub use app::AppEnv;
 pub use defines::{
-    import_meta_env_defines, import_meta_env_defines_with, resolve_node_env, with_process_env,
+    fold_env_keys_into_object, import_meta_env_defines, import_meta_env_defines_with,
+    resolve_node_env, with_process_env,
 };
 pub use dotenv::{env_files, load, load_with, parse};
 pub use html::{html_env_map, replace_html_env};
