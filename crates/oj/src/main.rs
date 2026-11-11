@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Raphael Amorim
 
 mod build;
+mod lint;
 mod ssr_dev;
 mod ssr_host;
 mod start_bundle;
@@ -235,6 +236,22 @@ enum Command {
     /// does, for tools that call tsc or tsgo.
     #[command(disable_help_flag = true)]
     Typecheck {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// The project's oxlint with oj as its type-aware backend: takes oxlint's
+    /// command line (`oj lint`, `oj lint --fix src`) and prints and exits as
+    /// oxlint does. The rules that need types (`typescript/no-floating-promises`
+    /// and the rest of tsgolint's) run on oj's built-in checker.
+    #[command(disable_help_flag = true)]
+    Lint {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Internal: the type-aware lint backend, as oxlint runs it
+    /// (`<OXLINT_TSGOLINT_PATH> headless [flags]`, the payload on stdin).
+    #[command(hide = true, disable_help_flag = true)]
+    Headless {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -483,6 +500,21 @@ fn default_dev_root() -> PathBuf {
 
 fn main() -> anyhow::Result<()> {
     raise_fd_limit();
+    // `oj typecheck` takes tsc's command line, which clap cannot parse: every
+    // argument goes to the tsc driver as it is (`oj typecheck --help` is tsc's).
+    // `oj lint` takes oxlint's command line and `oj headless` what oxlint
+    // passes its backend, the same way: clap would drop a `--` on the way.
+    // They run before the dev server's environment below is set: the oxlint
+    // `oj lint` starts (built on mimalloc) is not handed the server's tuning.
+    let mut args = std::env::args_os().skip(1);
+    let command = args.next();
+    let rest = || -> Vec<String> { args.map(|arg| arg.to_string_lossy().into_owned()).collect() };
+    match command.as_ref().and_then(|c| c.to_str()) {
+        Some("typecheck") => std::process::exit(oj_typecheck::tsc(rest()).into()),
+        Some("lint") => std::process::exit(lint::lint(rest())),
+        Some("headless") => std::process::exit(lint::headless(rest()).into()),
+        _ => {}
+    }
     // Every engine and one-shot child that loads the app's vite.config through
     // rolldown-vite's native loader inherits this: the migration warning it
     // suppresses (one line per incompatibility in the config graph, 200+ on
@@ -502,13 +534,6 @@ fn main() -> anyhow::Result<()> {
     // any engine exists; a user-set value wins.
     if std::env::var_os("MIMALLOC_ARENA_PURGE_MULT").is_none() {
         std::env::set_var("MIMALLOC_ARENA_PURGE_MULT", "0");
-    }
-    // `oj typecheck` takes tsc's command line, which clap cannot parse: every
-    // argument goes to the tsc driver as it is (`oj typecheck --help` is tsc's).
-    let mut args = std::env::args_os().skip(1);
-    if args.next().is_some_and(|arg| arg == "typecheck") {
-        let args = args.map(|arg| arg.to_string_lossy().into_owned()).collect();
-        std::process::exit(oj_typecheck::tsc(args).into());
     }
     // Vite sorts its lockfile-format preference by `npm_config_user_agent`
     // (optimizer/index.ts), which every package-manager launch sets and a
@@ -717,6 +742,8 @@ async fn run(cli: Cli, rolldown: tokio::runtime::Handle) -> anyhow::Result<()> {
             Ok(())
         }
         Command::Typecheck { args } => std::process::exit(oj_typecheck::tsc(args).into()),
+        Command::Lint { args } => std::process::exit(lint::lint(args)),
+        Command::Headless { args } => std::process::exit(lint::headless(args).into()),
         Command::DevTypecheck {
             root,
             changed,

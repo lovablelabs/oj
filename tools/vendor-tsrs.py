@@ -6,8 +6,9 @@
 Usage: tools/vendor-tsrs.py <tsrs checkout>
 
 The checkout is a clone of https://github.com/oxc-project/tsrs at the
-release tag to vendor. Every crate `tsrs_api` depends on, transitively, is
-copied to `crates/typecheck/oj_<name>` without its tests, benches and
+release tag to vendor. Every crate `tsrs_api` (the type checker) or
+`tsrs_lint` (the type-aware lint backend behind `oj lint`) depends on,
+transitively, is copied to `crates/typecheck/oj_<name>` without its tests, benches and
 examples. The package is renamed `oj_<name>`; the dependency keys stay
 `tsrs_*` (each points at its renamed package), so the sources are copied
 unchanged. Each manifest is made self-contained: the tsrs workspace's
@@ -19,6 +20,11 @@ Patches applied while copying:
   `^1.2`, and Cargo cannot hold two 1.x versions of one crate.
 - tsrs_execute's build.rs reads the tsrs workspace manifest for the
   TypeScript version; the copy embeds the values instead.
+- tsrs_lint is copied as a library: its `tsrs-lint` binary (src/main.rs) and
+  the mimalloc dependency only that binary uses stay behind, since oj runs
+  `tsrs_lint::cli` itself, under its own allocator. Its rules are a port of
+  oxc-project/tsgolint (MIT), whose license tsrs keeps in tools/tsgolint: the
+  copy carries it as `LICENSE-tsgolint`.
 - Every `tools/tsrs-patches/*.patch` is applied with `git apply`, in name
   order, after the crates are copied: oj's own changes to the vendored code.
   `incremental-diagnostics.patch` adds the API methods the warm checker uses
@@ -59,7 +65,9 @@ import tomllib
 OJ = pathlib.Path(__file__).resolve().parent.parent
 DEST = OJ / "crates" / "typecheck"
 PATCHES = OJ / "tools" / "tsrs-patches"
-ROOT_CRATE = "tsrs_api"
+ROOT_CRATES = ("tsrs_api", "tsrs_lint")
+# Per crate: files that are not copied, and dependencies only they use.
+LEFT_OUT = {"tsrs_lint": ({"main.rs"}, {"mimalloc-safe"})}
 SKIPPED_DIRS = {"tests", "benches", "examples", "testdata", "target"}
 PATCHED_VERSIONS = {"unicode-id-start": "1.1.2"}
 LOCAL_CLIPPY = {"multiple_crate_versions": "allow", "cargo_common_metadata": "allow"}
@@ -76,7 +84,7 @@ def main(tsrs: pathlib.Path) -> None:
         ["git", "-C", str(tsrs), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
     ).stdout.strip()
 
-    crates = closure(tsrs, ROOT_CRATE)
+    crates = closure(tsrs, ROOT_CRATES)
     for old in DEST.glob("oj_tsrs_*"):
         shutil.rmtree(old)
     for name in crates:
@@ -89,8 +97,8 @@ def main(tsrs: pathlib.Path) -> None:
     print(f"vendored {len(crates)} tsrs crates at {package['version']} ({commit[:12]})")
 
 
-def closure(tsrs: pathlib.Path, root: str) -> list[str]:
-    seen, stack = set(), [root]
+def closure(tsrs: pathlib.Path, roots: tuple[str, ...]) -> list[str]:
+    seen, stack = set(), list(roots)
     while stack:
         name = stack.pop()
         if name in seen:
@@ -126,12 +134,20 @@ def copy_crate(tsrs: pathlib.Path, name: str, shared: dict, package: dict, types
             shutil.copy2(entry, target / entry.name)
     for legal in ("LICENSE", "NOTICE"):
         shutil.copy2(tsrs / legal, target / legal)
+    if name == "tsrs_lint":
+        shutil.copy2(tsrs / "tools" / "tsgolint" / "LICENSE", target / "LICENSE-tsgolint")
     rustfmt = next(p for p in (tsrs / ".rustfmt.toml", tsrs / "rustfmt.toml") if p.is_file())
     shutil.copy2(rustfmt, target / "rustfmt.toml")
     # Its paths name the crates; inside each crate the name is now `oj_tsrs_*`.
     clippy = (tsrs / "clippy.toml").read_text().replace('"tsrs_', '"oj_tsrs_')
     (target / "clippy.toml").write_text(clippy)
     manifest = tomllib.loads((source / "Cargo.toml").read_text())
+    files, deps = LEFT_OUT.get(name, (set(), set()))
+    for file in files:
+        (target / "src" / file).unlink()
+    for table in dependency_tables(manifest, build=True):
+        for dep in deps:
+            table.pop(dep, None)
     (target / "Cargo.toml").write_text(rewrite_manifest(name, manifest, shared, package, lints))
     if name == "tsrs_execute":
         (target / "build.rs").write_text(execute_build_rs(package["version"], typescript))
@@ -259,6 +275,8 @@ def readme(version: str, commit: str, typescript: dict, crates: list[str]) -> st
 `oj dev-typecheck` and `/@oj/typecheck` under `oj dev --typecheck`). It runs on
 [tsrs](https://github.com/oxc-project/tsrs), the Rust port of the
 TypeScript 7 compiler, whose crates are vendored here as `oj_tsrs_*`.
+`oj_tsrs_lint` is tsrs's type-aware lint backend (the tsgolint rules on the
+same checker), which `oj lint` hands to oxlint.
 
 Vendored: tsrs {version} (`{commit}`), TypeScript {typescript['version']}.
 Licensed Apache-2.0; each crate carries tsrs's `LICENSE` and `NOTICE`.

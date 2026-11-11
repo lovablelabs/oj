@@ -29,6 +29,15 @@ pub const ROOT_CONFIG: &str = "tsconfig.json";
 /// (Go's goroutine stacks grow on demand).
 const TSC_STACK: usize = 512 << 20;
 
+/// The type-aware lint backend oxlint drives (tsgolint's headless protocol,
+/// on tsrs's port of its rules): `args` is what oxlint passes its backend,
+/// `headless [--fix] [--fix-suggestions]`; the payload (tsconfigs, files and
+/// rules) is read from stdin and the diagnostics are framed on stdout.
+/// Returns the exit status.
+pub fn lint_headless(args: Vec<String>) -> u8 {
+    u8::try_from(tsrs_lint::cli::main(args)).unwrap_or(1)
+}
+
 /// Runs tsrs's `tsc` over the real file system with `args` as tsc's
 /// command line, printing what tsc prints, and returns tsc's exit status.
 pub fn tsc(args: Vec<String>) -> u8 {
