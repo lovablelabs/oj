@@ -686,7 +686,9 @@ mod host_seam {
                         } => {
                             let _ = reply.send(host.resolve(&specifier));
                         }
-                        HostRequest::Load { specifier, reply } => {
+                        HostRequest::Load {
+                            specifier, reply, ..
+                        } => {
                             let _ = reply.send(host.load(&specifier));
                         }
                     }

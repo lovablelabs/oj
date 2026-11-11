@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- TanStack Start dev: `import recipe from "./recipe.json" with { type: "json" }` in a module the server renders no longer fails every page with "Cannot resolve module ./recipe.json" (500). The SSR compile kept the attribute, which the runner honours: it asked for a JSON module and the JavaScript module oj serves for a JSON file (`export default {...}` plus named exports, as Vite's json plugin) was no match. Vite's ssrTransform replaces each static import with a `__vite_ssr_import__` call, so no attribute reaches its module runner; oj's SSR compile now drops a static import's or re-export's attributes as its dev server has since 0.4.3, and a dynamic import keeps its options, which the runner does not read (Vite's `__vite_ssr_dynamic_import__` takes the specifier alone), so `await import("./recipe.json", { with: { type: "json" } })` loads the same module. A dependency that imports its own JSON with the attribute (an ES module package under `node_modules`, where Node requires it) renders too: Vite externalizes the package and Node loads the file as a JSON module, so oj's runtime now does, where the host answered every dependency JSON with the json plugin's JavaScript module, no match for the JSON module the import asks for. Node requires the attribute for JSON, so the source could not drop it.
+
 ## [0.4.11] - 2026-11-11
 
 ### Fixed

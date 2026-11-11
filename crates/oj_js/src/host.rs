@@ -52,6 +52,12 @@ pub enum HostRequest {
     /// engine's async load path; several may be in flight at once.
     Load {
         specifier: String,
+        /// The import asked for a JSON module (`with { type: "json" }`): only
+        /// a module the engine loads itself keeps the attribute, a
+        /// dependency Node would load. A host answering with JavaScript
+        /// (Vite's json plugin shape) is no match for it; `Ok(None)` leaves
+        /// the file to the engine, a JSON module as in Node.
+        requested_json: bool,
         reply: oneshot::Sender<Result<Option<HostModule>, String>>,
     },
 }
@@ -91,11 +97,16 @@ impl ModuleHost {
             .map_err(|_| "the module host dropped the resolve reply".to_string())?
     }
 
-    pub(crate) async fn load(&self, specifier: &str) -> Result<Option<HostModule>, String> {
+    pub(crate) async fn load(
+        &self,
+        specifier: &str,
+        requested_json: bool,
+    ) -> Result<Option<HostModule>, String> {
         let (reply, reply_rx) = oneshot::channel();
         self.tx
             .send(HostRequest::Load {
                 specifier: specifier.to_string(),
+                requested_json,
                 reply,
             })
             .map_err(|_| "the module host is gone".to_string())?;
