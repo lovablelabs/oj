@@ -704,7 +704,13 @@ impl StartHost {
         // './FunctionsClient'), so the same resolver finishes the edge —
         // extension inference, and a directory's package.json entry under
         // the server mainFields — where plain Node 500s with
-        // ERR_MODULE_NOT_FOUND on every request before first render.
+        // ERR_MODULE_NOT_FOUND on every request before first render. Every
+        // specifier starting with `.` is relative here, as Vite's resolve
+        // plugin reads it (`id[0] === '.'`, plugins/resolve.ts): a bare `.`
+        // or `..` names the importer's own directory or its parent (antd's
+        // `es/*/style/pure-panel.js` imports `'.'`), which Node's ESM
+        // loader refuses with ERR_UNSUPPORTED_DIR_IMPORT and the resolver
+        // finishes at its `index.js`, as it does for `./style`.
         // A dependency module the host claimed for the pipeline is past this:
         // Vite never externalizes a relative or absolute specifier
         // (createIsExternal), so the imports of a module it transformed go
@@ -735,7 +741,7 @@ impl StartHost {
                     }
                 }
             }
-            if spec.starts_with("./") || spec.starts_with("../") {
+            if spec.starts_with('.') {
                 if let Some(dir) = Path::new(&importer_id).parent() {
                     if !normalize_path(&dir.join(spec)).is_file() {
                         if let Ok(StartResolution::Dependency(p)) =
@@ -837,8 +843,15 @@ impl StartHost {
             StartResolution::Dependency(p) => {
                 let (abs, intent, svg_react) = split_intent(&p.to_string_lossy());
                 let ext = ext_of(&abs).to_ascii_lowercase();
+                // A dependency file that is no JavaScript is the host's,
+                // never the runtime's: Vite externalizes a resolved file
+                // only when `canExternalizeFile` admits it (js, mjs, cjs or
+                // no extension; external.ts), so a package's `.svg` goes
+                // through its asset plugin and is its URL, where Node would
+                // parse the markup as a module.
                 if svg_react
                     || intent.is_some()
+                    || ext == "svg"
                     || oj_server::is_style_ext(&ext)
                     || (!abs.contains('?') && oj_server::is_importable_asset(&self.root, &abs))
                 {
@@ -1133,7 +1146,12 @@ impl StartHost {
             )
             .map_err(|e| format!("{clean}: {e}"))?
             .unwrap_or(raw);
-            oj_compiler::server_fns::rewrite_server(&raw, &rel).unwrap_or(raw)
+            oj_compiler::server_fns::rewrite_server(
+                &raw,
+                &rel,
+                &oj_compiler::server_fns::FsModules { root: &self.root },
+            )
+            .unwrap_or(raw)
         } else {
             raw
         };

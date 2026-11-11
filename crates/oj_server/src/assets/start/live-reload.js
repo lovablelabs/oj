@@ -218,6 +218,115 @@
     !(docHas != null && msg.change <= docHas);
   // </oj:missed-change>
   const BEHIND_KEY = "oj:start:behind:" + location.pathname;
+  // A chunk this document names and the dev server no longer has: a rebundle
+  // this page missed renamed it, and the old name has fallen out of the
+  // bundles the server keeps serving (or its file was swept). The page's
+  // entry is too old to run on, so it reloads, once per document and chunk:
+  // a document that comes back asking for the same gone chunk was served
+  // from a cache, and reloading again would only loop. Not once per stamp
+  // alone, as a behind connect is: the stamp counts the reloads the pages
+  // were sent (start_reloads), and hot updates rebundle (and rename chunks)
+  // without one, so a tab that reloaded for one gone chunk would be left
+  // blank at the next, its document still under the same stamp. The marks
+  // are kept as a list, not the last one: a document that asks for two gone
+  // chunks as it loads would otherwise reload for each in turn, forever.
+  const GONE_CHUNK_KEY = "oj:start:stale-import:" + location.pathname;
+  const GONE_CHUNK_MARKS = 64;
+  const reloadForGoneChunk = (what) => {
+    if (stamp == null) return;
+    const mark = stamp + "|" + what;
+    let marks = [];
+    try {
+      const kept = JSON.parse(sessionStorage.getItem(GONE_CHUNK_KEY) || "[]");
+      if (Array.isArray(kept)) marks = kept.filter((m) => typeof m === "string");
+    } catch {}
+    if (marks.includes(mark)) {
+      console.warn(
+        "[oj] a chunk of this page is gone from the dev server (" + what + "), and reloading served the same document",
+      );
+      return;
+    }
+    marks.push(mark);
+    try {
+      sessionStorage.setItem(GONE_CHUNK_KEY, JSON.stringify(marks.slice(-GONE_CHUNK_MARKS)));
+    } catch {}
+    console.warn("[oj] a chunk of this page is gone from the dev server (" + what + "); reloading");
+    snapshot();
+    location.reload();
+  };
+  // The server says which chunk is gone (oj:chunk-gone) to every open page,
+  // and the one that asked for it is the one to reload: the others, behind
+  // or not, have nothing broken. A page knows what it asked for from its
+  // resource timeline, kept here by an observer since the timeline's own
+  // buffer fills on a large app. The import's rejection would not do: a
+  // router catches a failed lazy import (TanStack Router's
+  // lazyRouteComponent), so no unhandled rejection is ever raised, where
+  // Vite's `vite:preloadError` is dispatched by its preload helper before
+  // the import rejects, caught or not.
+  const CHUNKS = base + "/@oj-start/";
+  const asked = new Set();
+  // The chunk a url names (null for a url that is not one of the dev
+  // server's chunks), as the server names it in oj:chunk-gone.
+  const chunkNamed = (raw) => {
+    const url = String(raw).split(/[?#]/)[0];
+    const at = url.indexOf(CHUNKS);
+    if (at < 0) return null;
+    const name = url.slice(at + CHUNKS.length);
+    try {
+      return decodeURIComponent(name);
+    } catch {
+      return name;
+    }
+  };
+  const noteAsked = (entries) => {
+    for (const entry of entries) {
+      const name = chunkNamed(entry.name);
+      if (name != null) asked.add(name);
+    }
+  };
+  try {
+    new PerformanceObserver((list) => noteAsked(list.getEntries())).observe({ type: "resource", buffered: true });
+  } catch {}
+  const askedFor = (name) => {
+    if (!asked.has(name)) {
+      try {
+        noteAsked(performance.getEntriesByType("resource"));
+      } catch {}
+    }
+    return asked.has(name);
+  };
+  // The frame can outrun the 404 it is about: look again shortly.
+  const goneChunk = (name, waits = [50, 250, 1000]) => {
+    if (askedFor(name)) return reloadForGoneChunk(name);
+    if (waits.length) setTimeout(() => goneChunk(name, waits.slice(1)), waits[0]);
+  };
+  // With no socket to hear the server on, an import nothing caught still
+  // says so ("Failed to fetch dynamically imported module", Firefox's "error
+  // loading ...", Safari's "Importing a module script failed"). Only for the
+  // dev server's own chunks, where the message names the url, and only if
+  // the server answers: an import that failed because the server is
+  // restarting is not a chunk gone, and reloading would trade the page for
+  // a connection error, with no client left to bring it back. Safari's
+  // message names no url, so it could be any import of the app's (a script
+  // from a CDN): it counts only while the socket is down, when the server's
+  // own word for it (oj:chunk-gone) cannot arrive.
+  addEventListener("unhandledrejection", (e) => {
+    const reason = e && e.reason;
+    const message = reason && typeof reason.message === "string" ? reason.message : "";
+    if (stamp == null || !/dynamically imported module|Importing a module script failed/.test(message)) return;
+    const named = /https?:\/\/\S+/.exec(message);
+    // The chunk by its name, as the server's frame has it: the two can both
+    // speak of one failed import, and it is reloaded for once.
+    const chunk = named ? chunkNamed(named[0]) : null;
+    if (named ? chunk == null : ws && ws.readyState === 1) return;
+    if (typeof fetch !== "function") return;
+    fetch(CHUNKS + "client-entry.js", { method: "HEAD", cache: "no-store" }).then(
+      (answer) => {
+        if (answer && answer.ok) reloadForGoneChunk(chunk ?? message);
+      },
+      () => {},
+    );
+  });
   // Liveness (socket-watchdog.js, served ahead of this file): the server
   // sends every open socket a frame at least every `pingMs` (oj:ping when
   // it has nothing else), and a socket silent past the deadline is replaced
@@ -300,6 +409,12 @@
       if (msg && msg.type === "error") {
         await notify("vite:error", msg);
         showError(msg.err);
+        return;
+      }
+      // A chunk some page asked for is gone from the server: this page
+      // reloads if it was the one asking, and is otherwise left as it is.
+      if (msg && msg.type === "oj:chunk-gone") {
+        if (typeof msg.name === "string") goneChunk(msg.name);
         return;
       }
       // A plugin's `server.ws.send`: to the page's `import.meta.hot.on`.

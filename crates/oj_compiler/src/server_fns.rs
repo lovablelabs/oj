@@ -6,28 +6,59 @@
 //! the server provider (the dev SSR module host and the server bundle) and the
 //! client RPC stub (the client bundles).
 //!
-//! Which calls count is decided textually: `const NAME = createServerFn(...)`
-//! followed by a method chain up to the `.handler(` of the SAME expression,
-//! with strings, template literals, comments and regex literals skipped, so a
-//! `)` in a comment (`// 1) read the key`) cannot end the chain early. A
-//! factory split across statements (`const f = createServerFn(); export const
-//! x = f.handler(...)`) is left alone: TanStack's compiler resolves that shape
-//! through bindings, which a textual pass cannot do safely.
+//! Which calls count is decided on the module's AST, as Start's compiler
+//! decides it (`@tanstack/start-plugin-core`, start-compiler/compiler.js): a
+//! module variable, exported or not, `const`, `let` or `var`, with or without
+//! a type annotation, whose initializer is a method chain ending in
+//! `.handler(..)` and rooted at the factory. The factory is `createServerFn`
+//! as imported, under its own name or another (`import { createServerFn as
+//! fn }`), or as a namespace import's member (`start.createServerFn()`), and
+//! a chain may run through another module variable (`const factory =
+//! createServerFn(); export const x = factory.handler(..)`), as the compiler's
+//! `resolveExprKind` follows a binding to the call that made it a Builder.
+//! The variable may come from another of the app's modules (`import { base }
+//! from "./base"`, `export const base = createServerFn()` there), reached
+//! through its re-exports, as the compiler's `resolveImportKind` follows the
+//! import to the binding that made it a Builder; so may the factory itself
+//! (`export { createServerFn } from "@tanstack/react-start"`). TypeScript's
+//! `as`, `satisfies` and `!` around the chain are looked through
+//! (`unwrapExpression`). A `.handler(..)` call that is not a variable's
+//! initializer (a property of an object literal, a `return`) is not a server
+//! function, as the compiler's `getVariableDeclaratorForExpressionPath` finds
+//! none for it.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::path::{Component, Path, PathBuf};
 
 use oxc_allocator::Allocator;
-use oxc_ast::ast::{Argument, CallExpression, Expression, Program};
-use oxc_ast_visit::{walk, Visit};
+use oxc_ast::ast::{
+    Argument, BindingPattern, CallExpression, Declaration, Expression, ImportDeclarationSpecifier,
+    ModuleExportName, Program, Statement, VariableDeclaration,
+};
 use oxc_parser::Parser;
 use oxc_span::{GetSpan, SourceType};
 
-/// A `const NAME = createServerFn(...)...handler(` declaration.
+/// The factory's name as Start exports it.
+const FACTORY: &str = "createServerFn";
+
+/// The chain links the client drops (`stripMethodCall` in
+/// handleCreateServerFn): the input validation runs on the server only.
+const STRIPPED_LINKS: [&str; 2] = ["validator", "inputValidator"];
+
+/// A `NAME = createServerFn(...)...handler(` module variable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerFn {
     pub name: String,
-    /// Byte offset of the declaration (`export const` / `const`).
+    /// Byte offset of the declaration statement (`export const`, `let`, ...).
     pub decl_start: usize,
     /// Byte offset just past the handler call's `(`.
     pub args_at: usize,
+    /// The handler's first argument, as a span, when it has one.
+    first_arg: Option<(usize, usize)>,
+    /// `.validator(...)` / `.inputValidator(...)` links to delete on the
+    /// client, as the span from the link's object end to the link's end.
+    stripped_links: Vec<(usize, usize)>,
 }
 
 /// The id a server function is registered and called under:
@@ -51,42 +82,515 @@ pub fn vite_dev_server_fn_id(rel: &str, name: &str) -> String {
         .encode(format!("{{\"file\":{file},\"export\":{export}}}").as_bytes())
 }
 
-/// Every server function declared in `code`, in source order.
-pub fn find_server_fns(code: &str) -> Vec<ServerFn> {
-    if !code.contains("createServerFn") {
+/// Whether `code` may declare a server function, as Start's compiler decides
+/// which modules to read (`KindDetectionPatterns.ServerFn`): it names the
+/// factory, or calls `.handler(..)`, whose chain may root at a builder another
+/// module exports.
+pub fn may_declare(code: &str) -> bool {
+    static HANDLER: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    code.contains(FACTORY)
+        || HANDLER
+            .get_or_init(|| regex::Regex::new(r"\.\s*handler\s*\(").expect("handler call regex"))
+            .is_match(code)
+}
+
+/// The app's modules a chain may import its builder or factory from.
+pub trait Modules {
+    /// The module `specifier` names from the module at `from`, as its own
+    /// app-relative path and its source. None for a specifier that is not one
+    /// of the app's files (a package, a missing file): such a binding is
+    /// nothing to the chain, as the compiler's unresolved import is.
+    fn read(&self, from: &str, specifier: &str) -> Option<(String, String)>;
+}
+
+/// No other module: a chain roots in its own module only.
+impl Modules for () {
+    fn read(&self, _from: &str, _specifier: &str) -> Option<(String, String)> {
+        None
+    }
+}
+
+/// The app's files under `root`, a relative specifier resolved as Vite's
+/// `tryCleanFsResolve` resolves it: the file as written; a `.js`, `.jsx`,
+/// `.mjs` or `.cjs` import's TypeScript source; the default extensions in
+/// Vite's order; then a directory's index.
+pub struct FsModules<'a> {
+    pub root: &'a Path,
+}
+
+/// Vite's `DEFAULT_EXTENSIONS`, less `.json`, which declares nothing.
+const EXTENSIONS: [&str; 6] = ["mjs", "js", "mts", "ts", "jsx", "tsx"];
+
+impl Modules for FsModules<'_> {
+    fn read(&self, from: &str, specifier: &str) -> Option<(String, String)> {
+        if !specifier.starts_with('.') {
+            return None;
+        }
+        let dir = Path::new(from).parent().unwrap_or_else(|| Path::new(""));
+        let rel = resolve_file(self.root, &normalize(&dir.join(specifier)))?;
+        let code = std::fs::read_to_string(self.root.join(&rel)).ok()?;
+        Some((rel, code))
+    }
+}
+
+/// `rel` (app-relative, normalized) as the file Vite would load, app-relative
+/// with `/` separators, or None when no file answers.
+fn resolve_file(root: &Path, rel: &Path) -> Option<String> {
+    let file = |candidate: &Path| root.join(candidate).is_file().then(|| slash(candidate));
+    if let Some(found) = file(rel) {
+        return Some(found);
+    }
+    // `isPossibleTsOutput`: a JS import may name its TypeScript source.
+    if let Some(ext) = rel.extension().and_then(|e| e.to_str()) {
+        if matches!(ext, "js" | "jsx" | "mjs" | "cjs") {
+            let mut candidates = vec![rel.with_extension(ext.replace("js", "ts"))];
+            if ext == "js" {
+                candidates.push(rel.with_extension("tsx"));
+            }
+            if let Some(found) = candidates.iter().find_map(|c| file(c)) {
+                return Some(found);
+            }
+        }
+    }
+    let as_str = slash(rel);
+    if let Some(found) = EXTENSIONS
+        .iter()
+        .find_map(|ext| file(Path::new(&format!("{as_str}.{ext}"))))
+    {
+        return Some(found);
+    }
+    if root.join(rel).is_dir() {
+        return EXTENSIONS
+            .iter()
+            .find_map(|ext| file(&rel.join(format!("index.{ext}"))));
+    }
+    None
+}
+
+/// `path` without `.` and `..` segments.
+fn normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::Normal(part) => out.push(part),
+            Component::CurDir | Component::RootDir | Component::Prefix(_) => {}
+        }
+    }
+    out
+}
+
+fn slash(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+/// Every server function declared in `code`, in source order. `path`, the
+/// module's app-relative path, picks the parser's language and locates the
+/// modules a chain imports from, read through `modules`. A module the parser
+/// cannot read declares none.
+pub fn find_server_fns(code: &str, path: &str, modules: &dyn Modules) -> Vec<ServerFn> {
+    if !may_declare(code) {
         return Vec::new();
     }
-    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let re = RE.get_or_init(|| {
-        regex::Regex::new(
-            r"(?:^|[\n;])[ \t]*((?:export\s+)?const\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*createServerFn)\b",
-        )
-        .expect("server-fn declaration regex")
-    });
-    re.captures_iter(code)
-        .filter_map(|caps| {
-            let decl = caps.get(1)?;
-            let args_at = scan_chain_to_handler(code, decl.end())?;
-            Some(ServerFn {
-                name: caps[2].to_string(),
-                decl_start: decl.start(),
+    let allocator = Allocator::default();
+    let parsed = Parser::new(&allocator, code, source_type(path)).parse();
+    if parsed.fatal_error {
+        return Vec::new();
+    }
+    find_in(&parsed.program, code, path, modules)
+}
+
+fn source_type(path: &str) -> SourceType {
+    SourceType::from_path(path).unwrap_or_else(|_| SourceType::tsx())
+}
+
+/// The server functions of a parsed module.
+fn find_in(program: &Program, code: &str, path: &str, modules: &dyn Modules) -> Vec<ServerFn> {
+    let bindings = Bindings::of(program, path, modules, &[]);
+    let mut out = Vec::new();
+    for (decl_start, var) in module_declarations(program) {
+        for d in &var.declarations {
+            let (BindingPattern::BindingIdentifier(id), Some(init)) = (&d.id, &d.init) else {
+                continue;
+            };
+            let Expression::CallExpression(call) = init.get_inner_expression() else {
+                continue;
+            };
+            let Some(("handler", property_end, chain)) = bindings.chain(call) else {
+                continue;
+            };
+            let Some(args_at) = args_start(code, call, property_end) else {
+                continue;
+            };
+            let first_arg = call.arguments.first().map(|a: &Argument| {
+                let span = a.span();
+                (span.start as usize, span.end as usize)
+            });
+            out.push(ServerFn {
+                name: id.name.to_string(),
+                decl_start,
                 args_at,
+                first_arg,
+                stripped_links: chain,
+            });
+        }
+    }
+    out
+}
+
+/// The module's variable declarations, exported or not, each with the
+/// offset of its statement (the `export` when there is one).
+fn module_declarations<'a>(
+    program: &'a Program<'a>,
+) -> impl Iterator<Item = (usize, &'a VariableDeclaration<'a>)> {
+    program.body.iter().filter_map(|statement| match statement {
+        Statement::VariableDeclaration(var) => Some((var.span.start as usize, &**var)),
+        Statement::ExportDeclaration(export) => match &export.declaration {
+            Declaration::VariableDeclaration(var) => Some((export.span.start as usize, &**var)),
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
+/// The offset just past the `(` of `call`, whose callee's property ends at
+/// `property_end`: after any type arguments, whitespace and comments.
+fn args_start(code: &str, call: &CallExpression, property_end: usize) -> Option<usize> {
+    let from = call
+        .type_arguments
+        .as_ref()
+        .map_or(property_end, |t| t.span.end as usize);
+    let at = skip_ws_and_comments(code.as_bytes(), from)?;
+    (code.as_bytes()[at] == b'(').then_some(at + 1)
+}
+
+/// The last link of a chain on the factory: its name, where the name ends,
+/// and the `.validator(..)` / `.inputValidator(..)` links before it, as spans
+/// from each link's object end to its end.
+type LastLink<'s> = (&'s str, usize, Vec<(usize, usize)>);
+
+/// What a name stands for in a chain: Start's `Root` (the factory) and
+/// `Builder` (a chain on it short of `.handler(..)`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Factory,
+    Builder,
+    None,
+}
+
+/// The module's names for the factory and for the chains built on it.
+struct Bindings<'m> {
+    modules: &'m dyn Modules,
+    /// The module's own app-relative path, which its imports resolve from.
+    path: String,
+    /// This module and the modules whose exports are being resolved above it,
+    /// so a cycle of re-exports ends.
+    visiting: Vec<String>,
+    /// Local names bound to `createServerFn`: the name itself, what an
+    /// import of it is called locally, and a local that another of the app's
+    /// modules exports it as.
+    factories: Vec<String>,
+    /// Namespace imports of packages, whose `createServerFn` member is the
+    /// factory.
+    namespaces: Vec<String>,
+    /// Namespace imports of the app's own modules, with the specifier: a
+    /// member may be a builder that module exports.
+    module_namespaces: Vec<(String, String)>,
+    /// Names holding a chain on the factory that has not reached
+    /// `.handler(..)` yet (Start's `Builder`), which another chain may
+    /// continue: module variables, and imports of such a variable from
+    /// another of the app's modules.
+    builders: Vec<String>,
+    /// What another module exports under a name, once asked: by specifier
+    /// and exported name.
+    exported: RefCell<HashMap<(String, String), Kind>>,
+}
+
+impl<'m> Bindings<'m> {
+    fn of(program: &Program, path: &str, modules: &'m dyn Modules, above: &[String]) -> Self {
+        let mut visiting = above.to_vec();
+        visiting.push(path.to_string());
+        let mut out = Bindings {
+            modules,
+            path: path.to_string(),
+            visiting,
+            factories: vec![FACTORY.to_string()],
+            namespaces: Vec::new(),
+            module_namespaces: Vec::new(),
+            builders: Vec::new(),
+            exported: RefCell::new(HashMap::new()),
+        };
+        for statement in &program.body {
+            let Statement::ImportDeclaration(import) = statement else {
+                continue;
+            };
+            let source = crate::lit_str(import.source.value);
+            let own_module = source.starts_with('.');
+            for specifier in import.specifiers.iter().flatten() {
+                match specifier {
+                    ImportDeclarationSpecifier::ImportSpecifier(s) => {
+                        let imported = export_name(&s.imported);
+                        let local = s.local.name.as_str();
+                        if own_module {
+                            match out.exported_kind(source, imported) {
+                                Kind::Factory => out.factories.push(local.to_string()),
+                                Kind::Builder => out.builders.push(local.to_string()),
+                                Kind::None => {}
+                            }
+                        } else if imported == FACTORY && local != FACTORY {
+                            out.factories.push(local.to_string());
+                        }
+                    }
+                    ImportDeclarationSpecifier::ImportNamespaceSpecifier(s) => {
+                        if own_module {
+                            out.module_namespaces
+                                .push((s.local.name.to_string(), source.to_string()));
+                        } else {
+                            out.namespaces.push(s.local.name.to_string());
+                        }
+                    }
+                    ImportDeclarationSpecifier::ImportDefaultSpecifier(_) => {}
+                }
+            }
+        }
+        // A variable's chain may root at a variable declared after it: to a
+        // fixed point, as the compiler resolves a binding wherever it is.
+        let declarators: Vec<_> = module_declarations(program)
+            .flat_map(|(_, var)| var.declarations.iter())
+            .filter_map(|d| match (&d.id, &d.init) {
+                (BindingPattern::BindingIdentifier(id), Some(init)) => {
+                    Some((id.name.as_str(), init))
+                }
+                _ => None,
             })
-        })
-        .collect()
+            .collect();
+        loop {
+            let found: Vec<String> = declarators
+                .iter()
+                .filter(|(name, init)| {
+                    !out.builders.iter().any(|b| b == name)
+                        && out.kind_of_init(init) == Kind::Builder
+                })
+                .map(|(name, _)| name.to_string())
+                .collect();
+            if found.is_empty() {
+                break;
+            }
+            out.builders.extend(found);
+        }
+        out
+    }
+
+    /// What a module variable's initializer makes it: the factory under
+    /// another name, a builder, or neither.
+    fn kind_of_init(&self, init: &Expression) -> Kind {
+        let init = init.get_inner_expression();
+        if self.is_factory(init) {
+            return Kind::Factory;
+        }
+        match init {
+            Expression::Identifier(id) => self.kind_of_name(id.name.as_str()),
+            Expression::CallExpression(call) => {
+                if self.is_factory(&call.callee)
+                    || matches!(self.chain(call), Some((link, _, _)) if link != "handler")
+                {
+                    Kind::Builder
+                } else {
+                    Kind::None
+                }
+            }
+            _ => Kind::None,
+        }
+    }
+
+    /// What a local name stands for.
+    fn kind_of_name(&self, name: &str) -> Kind {
+        if self.factories.iter().any(|f| f == name) {
+            Kind::Factory
+        } else if self.builders.iter().any(|b| b == name) {
+            Kind::Builder
+        } else {
+            Kind::None
+        }
+    }
+
+    /// What the module `specifier` names from this one exports as `name`,
+    /// through `export const`, `export { local as name }`, `export { .. }
+    /// from` and `export * from`, as the compiler's `findExportInModule`
+    /// follows them. None for a module that is not the app's, that the parser
+    /// cannot read, that exports no such name, or that is already being
+    /// resolved above this one.
+    fn exported_kind(&self, specifier: &str, name: &str) -> Kind {
+        let key = (specifier.to_string(), name.to_string());
+        if let Some(kind) = self.exported.borrow().get(&key) {
+            return *kind;
+        }
+        let kind = self.resolve_exported(specifier, name);
+        self.exported.borrow_mut().insert(key, kind);
+        kind
+    }
+
+    fn resolve_exported(&self, specifier: &str, name: &str) -> Kind {
+        let Some((path, code)) = self.modules.read(&self.path, specifier) else {
+            // A package's `createServerFn`, re-exported by the app's module,
+            // is the factory, as a direct import of it is.
+            return if !specifier.starts_with('.') && name == FACTORY {
+                Kind::Factory
+            } else {
+                Kind::None
+            };
+        };
+        if self.visiting.contains(&path) {
+            return Kind::None;
+        }
+        let allocator = Allocator::default();
+        let parsed = Parser::new(&allocator, &code, source_type(&path)).parse();
+        if parsed.fatal_error {
+            return Kind::None;
+        }
+        let bindings = Bindings::of(&parsed.program, &path, self.modules, &self.visiting);
+        for statement in &parsed.program.body {
+            match statement {
+                Statement::ExportDeclaration(export) => {
+                    if let Declaration::VariableDeclaration(var) = &export.declaration {
+                        for d in &var.declarations {
+                            if let (BindingPattern::BindingIdentifier(id), Some(init)) =
+                                (&d.id, &d.init)
+                            {
+                                if id.name == name {
+                                    return bindings.kind_of_init(init);
+                                }
+                            }
+                        }
+                    }
+                }
+                Statement::ExportNamedDeclaration(export) => {
+                    if let Some(s) = export
+                        .specifiers
+                        .iter()
+                        .find(|s| export_name(&s.exported) == name)
+                    {
+                        return bindings.kind_of_name(export_name(&s.local));
+                    }
+                }
+                Statement::ExportFromDeclaration(export) => {
+                    if let Some(s) = export
+                        .specifiers
+                        .iter()
+                        .find(|s| export_name(&s.exported) == name)
+                    {
+                        return bindings.exported_kind(
+                            crate::lit_str(export.source.value),
+                            export_name(&s.local),
+                        );
+                    }
+                }
+                Statement::ExportAllDeclaration(export) if export.exported.is_none() => {
+                    let kind = bindings.exported_kind(crate::lit_str(export.source.value), name);
+                    if kind != Kind::None {
+                        return kind;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Kind::None
+    }
+
+    /// Whether `callee` is the factory: a name bound to it, or a namespace
+    /// import's `createServerFn`.
+    fn is_factory(&self, callee: &Expression) -> bool {
+        match callee.without_parentheses() {
+            Expression::Identifier(id) => self.factories.iter().any(|f| f == id.name.as_str()),
+            Expression::StaticMemberExpression(m) => {
+                m.property.name == FACTORY
+                    && matches!(m.object.without_parentheses(), Expression::Identifier(object)
+                        if self.namespaces.iter().any(|n| n == object.name.as_str()))
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether `node` names a builder: a local bound to one, or a member of
+    /// a namespace import of the app's module that exports one.
+    fn is_builder(&self, node: &Expression) -> bool {
+        match node {
+            Expression::Identifier(id) => self.builders.iter().any(|b| b == id.name.as_str()),
+            Expression::StaticMemberExpression(m) => {
+                let Expression::Identifier(object) = m.object.without_parentheses() else {
+                    return false;
+                };
+                self.module_namespaces
+                    .iter()
+                    .find(|(local, _)| local == object.name.as_str())
+                    .is_some_and(|(_, specifier)| {
+                        self.exported_kind(specifier, m.property.name.as_str()) == Kind::Builder
+                    })
+            }
+            _ => false,
+        }
+    }
+
+    /// `call` as the last link of a chain rooted at the factory, or at a
+    /// name holding a chain on it. None for a call that is the factory's
+    /// own, or no chain on it.
+    fn chain<'b>(&self, call: &'b CallExpression) -> Option<LastLink<'b>> {
+        let Expression::StaticMemberExpression(m) = call.callee.without_parentheses() else {
+            return None;
+        };
+        let name = m.property.name.as_str();
+        let property_end = m.property.span.end as usize;
+        let mut stripped = Vec::new();
+        let mut node = m.object.without_parentheses();
+        loop {
+            match node {
+                Expression::CallExpression(link) => {
+                    if self.is_factory(&link.callee) {
+                        break;
+                    }
+                    let Expression::StaticMemberExpression(inner) =
+                        link.callee.without_parentheses()
+                    else {
+                        return None;
+                    };
+                    if STRIPPED_LINKS.contains(&inner.property.name.as_str()) {
+                        stripped.push((inner.object.span().end as usize, link.span.end as usize));
+                    }
+                    node = inner.object.without_parentheses();
+                }
+                _ if self.is_builder(node) => break,
+                _ => return None,
+            }
+        }
+        stripped.reverse();
+        Some((name, property_end, stripped))
+    }
+}
+
+fn export_name<'a>(name: &'a ModuleExportName) -> &'a str {
+    match name {
+        ModuleExportName::IdentifierName(id) => id.name.as_str(),
+        ModuleExportName::IdentifierReference(id) => id.name.as_str(),
+        ModuleExportName::StringLiteral(lit) => crate::lit_str(lit.value),
+    }
 }
 
 /// The server provider: every server function grows a sibling
 /// `NAME_createServerFn_handler = createServerRpc(meta, ...)` export, passed as
 /// the handler's first argument. Adds no lines, so stack traces keep their
-/// positions. `None` when the module declares no server function.
-pub fn rewrite_server(code: &str, rel: &str) -> Option<String> {
+/// positions. `rel` is the app-relative path, `modules` reads the app's
+/// other modules for an imported builder. `None` when the module declares no
+/// server function.
+pub fn rewrite_server(code: &str, rel: &str, modules: &dyn Modules) -> Option<String> {
     let mut edits: Vec<(usize, String)> = Vec::new();
     for ServerFn {
         name,
         decl_start,
         args_at,
-    } in find_server_fns(code)
+        ..
+    } in find_server_fns(code, rel, modules)
     {
         let id = server_fn_id(rel, &name);
         let meta = format!("{{ id: {id:?}, name: {name:?}, filename: {rel:?} }}");
@@ -114,8 +618,9 @@ pub fn rewrite_server(code: &str, rel: &str) -> Option<String> {
     Some(out)
 }
 
-/// A client rewrite that could not be applied: a server function the AST walk
-/// could not match would ship its handler to the browser, so this is fatal.
+/// A client rewrite that could not be applied: a server function whose
+/// handler call has no argument to replace would ship its handler to the
+/// browser, so this is fatal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientRewriteError(pub String);
 
@@ -131,46 +636,49 @@ impl std::error::Error for ClientRewriteError {}
 /// `handleCreateServerFn` edits its Babel AST: the handler's first argument
 /// becomes `createClientRpc(id)` and every `.validator()` / `.inputValidator()`
 /// link is dropped, so neither the handler nor the validator reaches the
-/// browser. A text scan cannot delimit a handler body (`return /\)/`, a `(` in
-/// JSX text), hence the parse. A module-level binding only the dropped code
-/// used goes too, as Start's dead-code pass drops it. Line counts are kept.
-/// `rel` is the app-relative path, which also picks the parser's language. `Ok(None)` when the module
-/// declares no server function.
-pub fn rewrite_client(code: &str, rel: &str) -> Result<Option<String>, ClientRewriteError> {
-    let fns = find_server_fns(code);
-    if fns.is_empty() {
+/// browser. A module-level binding only the dropped code used goes too, as
+/// Start's dead-code pass drops it. Line counts are kept. `rel` is the
+/// app-relative path, which also picks the parser's language; `modules` reads
+/// the app's other modules for an imported builder. `Ok(None)` when the module
+/// declares no server function. A module that names the factory but does not
+/// parse is an error: it may hold a handler that would ship.
+pub fn rewrite_client(
+    code: &str,
+    rel: &str,
+    modules: &dyn Modules,
+) -> Result<Option<String>, ClientRewriteError> {
+    if !may_declare(code) {
         return Ok(None);
     }
     let allocator = Allocator::default();
-    let source_type = SourceType::from_path(rel).unwrap_or_else(|_| SourceType::tsx());
-    let parsed = Parser::new(&allocator, code, source_type).parse();
+    let parsed = Parser::new(&allocator, code, source_type(rel)).parse();
     if parsed.fatal_error {
+        if !code.contains(FACTORY) {
+            return Ok(None);
+        }
         return Err(ClientRewriteError(format!(
             "oj: could not parse {rel} to rewrite its server functions for the client"
         )));
     }
-    let mut finder = HandlerCalls::default();
-    finder.visit_program(&parsed.program);
+    let fns = find_in(&parsed.program, code, rel, modules);
+    if fns.is_empty() {
+        return Ok(None);
+    }
 
     let mut edits: Vec<(usize, usize, String)> = Vec::new();
     for f in &fns {
-        let call = finder
-            .calls
-            .iter()
-            .find(|c| c.property_end < f.args_at && f.args_at <= c.first_arg_start);
-        let Some((arg_start, arg_end)) = call.and_then(|c| c.first_arg) else {
+        let Some((arg_start, arg_end)) = f.first_arg else {
             return Err(ClientRewriteError(format!(
                 "oj: could not rewrite server function {} in {rel} for the client",
                 f.name
             )));
         };
-        let call = call.expect("matched above");
         edits.push((
             arg_start,
             arg_end,
             format!("createClientRpc({:?})", server_fn_id(rel, &f.name)),
         ));
-        for &(start, end) in &call.stripped_links {
+        for &(start, end) in &f.stripped_links {
             edits.push((start, end, String::new()));
         }
     }
@@ -218,114 +726,6 @@ fn prologue_end(program: &Program, code: &str) -> usize {
     0
 }
 
-/// A `.handler(...)` call whose method chain roots at `createServerFn(...)`.
-struct HandlerCall {
-    /// End of the `handler` property name.
-    property_end: usize,
-    /// Start of the first argument, else the call's end.
-    first_arg_start: usize,
-    first_arg: Option<(usize, usize)>,
-    /// `.validator(...)` / `.inputValidator(...)` links to delete, as the span
-    /// from the link's object end to the link's end.
-    stripped_links: Vec<(usize, usize)>,
-}
-
-#[derive(Default)]
-struct HandlerCalls {
-    calls: Vec<HandlerCall>,
-}
-
-/// The method call `callee.object.name(...)` as (object, property name,
-/// property end), when `call` is one.
-fn method_call<'b, 'a>(call: &'b CallExpression<'a>) -> Option<(&'b Expression<'a>, &'b str, u32)> {
-    match &call.callee {
-        Expression::StaticMemberExpression(m) => {
-            Some((&m.object, m.property.name.as_str(), m.property.span.end))
-        }
-        _ => None,
-    }
-}
-
-impl<'a> Visit<'a> for HandlerCalls {
-    fn visit_call_expression(&mut self, call: &CallExpression<'a>) {
-        if let Some((object, "handler", property_end)) = method_call(call) {
-            let mut stripped = Vec::new();
-            let mut node = object;
-            let mut roots_at_create = false;
-            while let Expression::CallExpression(link) = node {
-                match method_call(link) {
-                    Some((inner, name, _)) => {
-                        if name == "validator" || name == "inputValidator" {
-                            stripped.push((inner.span().end as usize, link.span.end as usize));
-                        }
-                        node = inner;
-                    }
-                    None => {
-                        roots_at_create = matches!(
-                            &link.callee,
-                            Expression::Identifier(id) if id.name == "createServerFn"
-                        );
-                        break;
-                    }
-                }
-            }
-            if roots_at_create {
-                let first_arg = call.arguments.first().map(|a: &Argument| {
-                    let span = a.span();
-                    (span.start as usize, span.end as usize)
-                });
-                self.calls.push(HandlerCall {
-                    property_end: property_end as usize,
-                    first_arg_start: first_arg.map_or(call.span.end as usize, |a| a.0),
-                    first_arg,
-                    stripped_links: stripped,
-                });
-            }
-        }
-        walk::walk_call_expression(self, call);
-    }
-}
-
-/// Follows a `createServerFn` method chain from `from` (the byte right after
-/// the identifier) to the `.handler(` of the same expression, returning the
-/// offset just past its opening paren. The chain grammar is strict (a call's
-/// balanced arguments, then `.name` and the next call), so the scan ends at
-/// anything else: a `;`, a new statement on the next line, an unexpected
-/// token.
-fn scan_chain_to_handler(code: &str, from: usize) -> Option<usize> {
-    let bytes = code.as_bytes();
-    let mut i = from;
-    loop {
-        i = skip_ws_and_comments(bytes, i)?;
-        if bytes[i] != b'(' {
-            return None;
-        }
-        i = skip_balanced_parens(bytes, i)?;
-        i = skip_ws_and_comments(bytes, i)?;
-        if bytes[i] != b'.' {
-            return None;
-        }
-        i = skip_ws_and_comments(bytes, i + 1)?;
-        let name_start = i;
-        while i < bytes.len()
-            && (bytes[i] == b'$' || bytes[i] == b'_' || bytes[i].is_ascii_alphanumeric())
-        {
-            i += 1;
-        }
-        if i == name_start {
-            return None;
-        }
-        let method = &code[name_start..i];
-        i = skip_ws_and_comments(bytes, i)?;
-        if bytes[i] != b'(' {
-            return None;
-        }
-        if method == "handler" {
-            return Some(i + 1);
-        }
-    }
-}
-
 fn skip_ws_and_comments(bytes: &[u8], mut i: usize) -> Option<usize> {
     loop {
         while i < bytes.len() && bytes[i].is_ascii_whitespace() {
@@ -352,174 +752,22 @@ fn skip_ws_and_comments(bytes: &[u8], mut i: usize) -> Option<usize> {
     }
 }
 
-/// From an opening `(` at `open`, the index just past its matching `)`. Every
-/// bracket kind is tracked; strings, template literals (with nested `${}`
-/// code), comments and regex literals are skipped. `None` on EOF or a
-/// mismatched bracket.
-fn skip_balanced_parens(bytes: &[u8], open: usize) -> Option<usize> {
-    debug_assert_eq!(bytes[open], b'(');
-    // b'T' marks a template-literal `${` substitution, b'`' template text.
-    let mut stack: Vec<u8> = vec![b'('];
-    // The previous significant code byte, for the regex-vs-division call.
-    let mut prev: Option<u8> = Some(b'(');
-    let mut i = open + 1;
-    while i < bytes.len() {
-        if stack.last() == Some(&b'`') {
-            match bytes[i] {
-                b'\\' => i += 2,
-                b'`' => {
-                    stack.pop();
-                    // A closed template is a value: a `/` after it divides.
-                    prev = Some(b'"');
-                    i += 1;
-                }
-                b'$' if bytes.get(i + 1) == Some(&b'{') => {
-                    stack.push(b'T');
-                    prev = Some(b'{');
-                    i += 2;
-                }
-                _ => i += 1,
-            }
-            continue;
-        }
-        let c = bytes[i];
-        match c {
-            b'\'' | b'"' => {
-                i = skip_string(bytes, i)?;
-                prev = Some(b'"');
-            }
-            b'`' => {
-                stack.push(b'`');
-                i += 1;
-            }
-            b'/' if bytes.get(i + 1) == Some(&b'/') => {
-                while i < bytes.len() && bytes[i] != b'\n' {
-                    i += 1;
-                }
-            }
-            b'/' if bytes.get(i + 1) == Some(&b'*') => {
-                i += 2;
-                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-                    i += 1;
-                }
-                if i + 1 >= bytes.len() {
-                    return None;
-                }
-                i += 2;
-            }
-            b'/' if regex_can_follow(prev) => {
-                i = skip_regex_literal(bytes, i)?;
-                prev = Some(b'/');
-            }
-            b'(' | b'[' | b'{' => {
-                stack.push(c);
-                prev = Some(c);
-                i += 1;
-            }
-            b')' | b']' => {
-                let want = if c == b')' { b'(' } else { b'[' };
-                if stack.pop() != Some(want) {
-                    return None;
-                }
-                if stack.is_empty() {
-                    return Some(i + 1);
-                }
-                prev = Some(c);
-                i += 1;
-            }
-            b'}' => {
-                match stack.pop() {
-                    Some(b'{') | Some(b'T') => {}
-                    _ => return None,
-                }
-                prev = Some(c);
-                i += 1;
-            }
-            _ => {
-                if !c.is_ascii_whitespace() {
-                    prev = Some(c);
-                }
-                i += 1;
-            }
-        }
-    }
-    None
-}
-
-/// Whether a `/` after this significant byte starts a regex literal rather
-/// than a division: after an operator, an opener or a separator it can only
-/// be a regex (`.validator((s) => /x\(/.test(s))`), after a value it is a
-/// division. Keyword-preceded regexes (`return /x/`) read as division here;
-/// inside call arguments, where the scan runs, a bare `return` is rare, and
-/// the client rewrite's AST pass covers handler bodies.
-fn regex_can_follow(prev: Option<u8>) -> bool {
-    match prev {
-        None => true,
-        Some(c) => matches!(
-            c,
-            b'(' | b'['
-                | b'{'
-                | b','
-                | b';'
-                | b':'
-                | b'!'
-                | b'&'
-                | b'|'
-                | b'?'
-                | b'='
-                | b'+'
-                | b'-'
-                | b'*'
-                | b'%'
-                | b'<'
-                | b'>'
-                | b'~'
-                | b'^'
-        ),
-    }
-}
-
-fn skip_string(bytes: &[u8], start: usize) -> Option<usize> {
-    let quote = bytes[start];
-    let mut i = start + 1;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' => i += 2,
-            c if c == quote => return Some(i + 1),
-            // Unterminated: fail soft at the line end.
-            b'\n' => return Some(i + 1),
-            _ => i += 1,
-        }
-    }
-    None
-}
-
-fn skip_regex_literal(bytes: &[u8], start: usize) -> Option<usize> {
-    let mut i = start + 1;
-    let mut in_class = false;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' => i += 2,
-            b'[' => {
-                in_class = true;
-                i += 1;
-            }
-            b']' if in_class => {
-                in_class = false;
-                i += 1;
-            }
-            b'/' if !in_class => return Some(i + 1),
-            // Not a regex after all.
-            b'\n' => return None,
-            _ => i += 1,
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The module's own chains: no other module to import a builder from.
+    fn find_server_fns(code: &str, path: &str) -> Vec<ServerFn> {
+        super::find_server_fns(code, path, &())
+    }
+
+    fn rewrite_client(code: &str, rel: &str) -> Result<Option<String>, ClientRewriteError> {
+        super::rewrite_client(code, rel, &())
+    }
+
+    fn rewrite_server(code: &str, rel: &str) -> Option<String> {
+        super::rewrite_server(code, rel, &())
+    }
 
     const CLIENT_IMPORT: &str =
         "import { createClientRpc } from \"@tanstack/react-start/client-rpc\"; ";
@@ -565,11 +813,12 @@ mod tests {
         );
     }
 
-    // The shape that blanked a preview: a comment inside the handler with an
-    // unbalanced `)`. A paren count ended the handler there and left the rest
-    // of the comment and the body in the bundle.
+    // The shape that blanked a preview under the first, textual finder: a
+    // comment inside the handler with an unbalanced `)`, where a paren count
+    // ended the handler. The handler's span is the parser's, so the whole
+    // body goes, comment and all.
     #[test]
-    fn a_paren_inside_a_handler_comment_does_not_end_the_handler() {
+    fn a_handler_with_an_unbalanced_paren_in_a_comment_is_replaced_whole() {
         let code = [
             "import { createServerFn } from \"@tanstack/react-start\";",
             "export const saveKey = createServerFn({ method: \"POST\" })",
@@ -669,8 +918,10 @@ mod tests {
         parses(&out, rel);
     }
 
+    // Brackets inside strings, templates and regex literals are the handler's
+    // own: its span covers them.
     #[test]
-    fn brackets_in_strings_templates_and_regexes_stay_inside_the_handler() {
+    fn brackets_in_strings_templates_and_regexes_are_part_of_the_handler() {
         let code = [
             "export const run = createServerFn()",
             "  .handler(async () => {",
@@ -691,11 +942,11 @@ mod tests {
         parses(&out, "src/run.ts");
     }
 
-    // A `/` right after a template literal divides. Read as a regex start, it
-    // lost the chain: the function went unregistered on the server and in
-    // the resolver.
+    // A `/` right after a template literal divides. The first finder read it
+    // as a regex start and lost the chain, so the function went unregistered
+    // on the server and in the resolver; the parser knows the difference.
     #[test]
-    fn a_division_after_a_template_literal_keeps_the_chain() {
+    fn a_division_after_a_template_literal_in_a_validator_keeps_the_chain() {
         let code = [
             "export const half = createServerFn({ method: `GET` })",
             "  .inputValidator((n: number) => `${n}`.length / 2)",
@@ -703,11 +954,17 @@ mod tests {
             "",
         ]
         .join("\n");
-        let found: Vec<String> = find_server_fns(&code).into_iter().map(|f| f.name).collect();
+        let found: Vec<String> = find_server_fns(&code, "src/half.ts")
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
         assert_eq!(found, ["half"]);
-        // Right after an opener, the template's own `prev` is the `(`.
+        // A division right after an opener.
         let code = code.replace("`${n}`.length / 2", "(`4`/2) * n");
-        let found: Vec<String> = find_server_fns(&code).into_iter().map(|f| f.name).collect();
+        let found: Vec<String> = find_server_fns(&code, "src/half.ts")
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
         assert_eq!(found, ["half"], "a division right after the template");
     }
 
@@ -739,7 +996,10 @@ mod tests {
             "",
         ]
         .join("\n");
-        let names: Vec<_> = find_server_fns(&code).into_iter().map(|f| f.name).collect();
+        let names: Vec<_> = find_server_fns(&code, "src/user.ts")
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
         assert_eq!(names, ["getUser"]);
         let out = client(&code, "src/user.ts");
         assert!(
@@ -770,35 +1030,287 @@ mod tests {
         );
     }
 
-    // The client and the server must agree on the set, so neither guesses.
+    // Start's compiler resolves `factory` through its binding to the call
+    // that made it a Builder (`resolveIdentifierKind`), so `factory.handler(..)`
+    // is a server function named after its own variable, on both sides; the
+    // factory variable itself is not one.
     #[test]
-    fn split_statement_factories_are_left_alone_on_both_sides() {
+    fn a_factory_held_in_a_variable_is_resolved_on_both_sides() {
         let split = "const factory = createServerFn({ method: \"POST\" });\nexport const doIt = factory.handler(async () => 1);\n";
-        assert_eq!(rewrite_client(split, "src/split.ts"), Ok(None));
-        assert_eq!(rewrite_server(split, "src/split.ts"), None);
-        let inline = "const factory = createServerFn({ method: \"POST\" }); export const doIt = factory.handler(async () => 1);\n";
-        assert_eq!(rewrite_server(inline, "src/split.ts"), None);
-        let asi = "const factory = createServerFn({ method: \"POST\" })\nexport const doIt = factory.handler(async () => 1)\n";
-        assert_eq!(rewrite_server(asi, "src/asi.ts"), None);
-
-        let mixed = "const factory = createServerFn({ method: \"POST\" });\nexport const real = createServerFn({ method: \"GET\" }).handler(async () => 2);\nexport const viaFactory = factory.handler(async () => 3);\n";
-        let names: Vec<_> = find_server_fns(mixed).into_iter().map(|f| f.name).collect();
-        assert_eq!(names, ["real"]);
-        assert!(client(mixed, "src/mixed.ts").contains(".handler(async () => 3)"));
-        let server = rewrite_server(mixed, "src/mixed.ts").unwrap();
-        assert!(server.contains(".handler(real_createServerFn_handler, async () => 2)"));
+        let names = |code: &str| -> Vec<String> {
+            find_server_fns(code, "src/split.ts")
+                .into_iter()
+                .map(|f| f.name)
+                .collect()
+        };
+        assert_eq!(names(split), ["doIt"]);
+        let out = client(split, "src/split.ts");
+        assert!(
+            out.contains(&format!(
+                "factory.handler({});",
+                rpc("src/split.ts", "doIt")
+            )),
+            "{out}"
+        );
+        let server = rewrite_server(split, "src/split.ts").unwrap();
+        assert!(
+            server.contains("export const doIt_createServerFn_handler = createServerRpc("),
+            "{server}"
+        );
+        assert!(
+            server.contains("factory.handler(doIt_createServerFn_handler, async () => 1)"),
+            "{server}"
+        );
         assert!(
             !server.contains("factory_createServerFn_handler"),
             "{server}"
         );
-        assert!(server.contains(".handler(async () => 3)"), "{server}");
+        let asi = "const factory = createServerFn({ method: \"POST\" })\nexport const doIt = factory.handler(async () => 1)\n";
+        assert_eq!(names(asi), ["doIt"]);
+
+        // A chain through two variables, declared after their use. The
+        // compiler's method-chain walk stops at the variable, so a validator
+        // link on the way stays, as it does in Start.
+        let chained = "export const doIt = checked.handler(async () => 1);\nconst checked = factory.validator((d) => d);\nconst factory = createServerFn();\n";
+        assert_eq!(names(chained), ["doIt"]);
+        let out = client(chained, "src/chained.ts");
+        assert!(
+            out.contains(&format!(
+                "checked.handler({});",
+                rpc("src/chained.ts", "doIt")
+            )),
+            "{out}"
+        );
+        assert!(
+            out.contains("const checked = factory.validator((d) => d);"),
+            "{out}"
+        );
+
+        let mixed = "const factory = createServerFn({ method: \"POST\" });\nexport const real = createServerFn({ method: \"GET\" }).handler(async () => 2);\nexport const viaFactory = factory.handler(async () => 3);\n";
+        assert_eq!(names(mixed), ["real", "viaFactory"]);
+        let server = rewrite_server(mixed, "src/mixed.ts").unwrap();
+        assert!(server.contains(".handler(real_createServerFn_handler, async () => 2)"));
+        assert!(server.contains(".handler(viaFactory_createServerFn_handler, async () => 3)"));
+    }
+
+    // Start's compiler finds a candidate in any variable declaration
+    // (`t.isVariableDeclaration`, whatever its kind), and names the function
+    // after the declarator's identifier, type annotation and all. The
+    // textual finder knew `const NAME =` only, so these shipped their
+    // handlers, and the server import inside, to the browser.
+    #[test]
+    fn a_type_annotated_declaration_is_a_server_fn() {
+        let code = [
+            "import { createServerFn, type ServerFn } from \"@tanstack/react-start\";",
+            "type Input = { q: string };",
+            "export const plan: ServerFn<Input> = createServerFn({ method: \"POST\" })",
+            "  .inputValidator((d: Input) => d)",
+            "  .handler(async ({ data }) => {",
+            "    const { gate } = await import(\"./ai-gate.server\");",
+            "    return gate(data.q);",
+            "  });",
+            "",
+        ]
+        .join("\n");
+        let rel = "src/lib/plan.functions.ts";
+        let names: Vec<_> = find_server_fns(&code, rel)
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        assert_eq!(names, ["plan"]);
+        let out = client(&code, rel);
+        assert!(
+            out.contains(&format!(
+                "export const plan: ServerFn<Input> = createServerFn({{ method: \"POST\" }})\n\n  .handler({}",
+                rpc(rel, "plan")
+            )),
+            "{out}"
+        );
+        for gone in ["ai-gate.server", "gate(", "inputValidator"] {
+            assert!(!out.contains(gone), "{gone} left in:\n{out}");
+        }
+        assert_eq!(lines(&out), lines(&code));
+        parses(&out, rel);
+        let server = rewrite_server(&code, rel).unwrap();
+        assert!(
+            server.contains("export const plan_createServerFn_handler = createServerRpc("),
+            "{server}"
+        );
+        assert!(
+            server.contains(".handler(plan_createServerFn_handler, async ({ data }) => {"),
+            "{server}"
+        );
+        assert_eq!(lines(&server), lines(&code));
+    }
+
+    #[test]
+    fn let_var_and_unexported_declarations_are_server_fns() {
+        let code = [
+            "import { createServerFn } from \"@tanstack/react-start\";",
+            "export let a = createServerFn().handler(async () => \"a-secret\");",
+            "var b = createServerFn().handler(async () => \"b-secret\");",
+            "const c = createServerFn().handler(async () => \"c-secret\");",
+            "export const call = () => Promise.all([a(), b(), c()]);",
+            "",
+        ]
+        .join("\n");
+        let rel = "src/abc.ts";
+        let names: Vec<_> = find_server_fns(&code, rel)
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        assert_eq!(names, ["a", "b", "c"]);
+        let out = client(&code, rel);
+        for name in ["a", "b", "c"] {
+            assert!(
+                out.contains(&format!(".handler({});", rpc(rel, name))),
+                "{out}"
+            );
+            assert!(!out.contains(&format!("{name}-secret")), "{out}");
+        }
+        parses(&out, rel);
+        let server = rewrite_server(&code, rel).unwrap();
+        assert!(
+            server.contains("export const b_createServerFn_handler = createServerRpc({ id: \"c3JjL2FiYy50cyNi\", name: \"b\", filename: \"src/abc.ts\" }, (opts) => b.__executeServer(opts)); var b = createServerFn().handler(b_createServerFn_handler, async () => \"b-secret\");"),
+            "{server}"
+        );
+        assert!(
+            server.contains("export let a = createServerFn().handler(a_createServerFn_handler, "),
+            "{server}"
+        );
+        assert!(
+            server.contains("const c = createServerFn().handler(c_createServerFn_handler, "),
+            "{server}"
+        );
+    }
+
+    // Start's `handleCreateServerFn` takes the function's name from the
+    // declarator the `.handler(..)` call initializes
+    // (`getVariableDeclaratorForExpressionPath`) and has none for a property
+    // or a `return`; its fast scan over the module's declarations never
+    // reaches them. Neither side treats them as server functions, so the
+    // client and the server agree.
+    #[test]
+    fn a_handler_in_an_object_literal_or_a_return_is_not_one() {
+        let shapes = [
+            "export const api = { plan: createServerFn().handler(async () => 1) };\n",
+            "function make() { return createServerFn().handler(async () => 1); }\nexport const made = make();\n",
+            "export const make = () => createServerFn().handler(async () => 1);\n",
+            "export const x = createServerFn().handler(async () => 1).extra();\n",
+        ];
+        for shape in shapes {
+            let code =
+                format!("import {{ createServerFn }} from \"@tanstack/react-start\";\n{shape}");
+            assert!(find_server_fns(&code, "src/o.ts").is_empty(), "{shape}");
+            assert_eq!(rewrite_client(&code, "src/o.ts"), Ok(None), "{shape}");
+            assert_eq!(rewrite_server(&code, "src/o.ts"), None, "{shape}");
+        }
+    }
+
+    // The compiler knows the factory through the import binding
+    // (`resolveImportKind`), whatever the module calls it, and through a
+    // namespace import's member (`resolveCalleeKind`).
+    #[test]
+    fn the_factory_under_another_name_or_a_namespace_is_resolved() {
+        let renamed = [
+            "import { createServerFn as fn } from \"@tanstack/react-start\";",
+            "export const a = fn({ method: \"POST\" }).handler(async () => \"a-secret\");",
+            "",
+        ]
+        .join("\n");
+        let out = client(&renamed, "src/r.ts");
+        assert!(
+            out.contains(&format!(
+                "fn({{ method: \"POST\" }}).handler({});",
+                rpc("src/r.ts", "a")
+            )),
+            "{out}"
+        );
+        assert!(!out.contains("a-secret"), "{out}");
+        assert!(rewrite_server(&renamed, "src/r.ts")
+            .unwrap()
+            .contains("fn({ method: \"POST\" }).handler(a_createServerFn_handler, "),);
+
+        let namespace = [
+            "import * as start from \"@tanstack/react-start\";",
+            "export const b = start.createServerFn().validator((d) => d).handler(async () => \"b-secret\");",
+            "",
+        ]
+        .join("\n");
+        let out = client(&namespace, "src/n.ts");
+        assert!(
+            out.contains(&format!(
+                "start.createServerFn().handler({});",
+                rpc("src/n.ts", "b")
+            )),
+            "{out}"
+        );
+        assert!(!out.contains("b-secret"), "{out}");
+        assert!(rewrite_server(&namespace, "src/n.ts").unwrap().contains(
+            "start.createServerFn().validator((d) => d).handler(b_createServerFn_handler, "
+        ),);
+
+        // Another namespace's member of that name is not the factory, nor is
+        // an unrelated import called `fn`.
+        let other = "import * as mine from \"./mine\";\nimport { fn } from \"./fn\";\nexport const c = mine.other().handler(async () => 1);\nexport const d = fn().handler(async () => 2);\n";
+        assert!(find_server_fns(other, "src/m.ts").is_empty());
+    }
+
+    // `unwrapExpression`: TypeScript's `as`, `satisfies`, `!` and parentheses
+    // around the chain are looked through, and a type argument on the
+    // handler call keeps the edit on its first argument.
+    #[test]
+    fn ts_wrappers_around_the_chain_are_looked_through() {
+        let code = [
+            "import { createServerFn } from \"@tanstack/react-start\";",
+            "export const a = createServerFn().handler(async () => \"a-secret\") as unknown as Fn;",
+            "export const b = (createServerFn().validator((d) => d)).handler(async () => \"b-secret\") satisfies Fn;",
+            "export const c = createServerFn().handler<Ctx>(async () => \"c-secret\")!;",
+            "",
+        ]
+        .join("\n");
+        let rel = "src/w.ts";
+        let names: Vec<_> = find_server_fns(&code, rel)
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        assert_eq!(names, ["a", "b", "c"]);
+        let out = client(&code, rel);
+        assert!(
+            out.contains(&format!(
+                "createServerFn().handler({}) as unknown as Fn;",
+                rpc(rel, "a")
+            )),
+            "{out}"
+        );
+        assert!(
+            out.contains(&format!(
+                "(createServerFn()).handler({}) satisfies Fn;",
+                rpc(rel, "b")
+            )),
+            "{out}"
+        );
+        assert!(
+            out.contains(&format!(
+                "createServerFn().handler<Ctx>({})!;",
+                rpc(rel, "c")
+            )),
+            "{out}"
+        );
+        assert!(!out.contains("-secret"), "{out}");
+        parses(&out, rel);
+        let server = rewrite_server(&code, rel).unwrap();
+        assert!(
+            server.contains(".handler<Ctx>(c_createServerFn_handler, async () => \"c-secret\")!;"),
+            "{server}"
+        );
     }
 
     #[test]
     fn a_commented_out_server_fn_is_not_one() {
         let code =
             "// export const old = createServerFn().handler(async () => 1);\nexport const y = 2;\n";
-        assert!(find_server_fns(code).is_empty());
+        assert!(find_server_fns(code, "src/y.ts").is_empty());
         assert_eq!(rewrite_client(code, "src/y.ts"), Ok(None));
     }
 
@@ -859,10 +1371,11 @@ mod tests {
         assert_eq!(rewrite_server("export const x = 1;", "src/x.ts"), None);
     }
 
-    // A text scan cannot delimit these handler bodies: a regex after a keyword,
-    // a `(` in JSX text. It gave up, and the handler shipped to the browser.
+    // A regex after a keyword, a `(` in JSX text: the first finder could not
+    // delimit these bodies and shipped the handler to the browser. The
+    // handler's span covers them.
     #[test]
-    fn handler_bodies_a_text_scan_cannot_delimit_are_still_replaced() {
+    fn handler_bodies_with_a_keyword_regex_or_jsx_parens_are_replaced() {
         let cases = [
             (
                 "src/re.ts",
@@ -934,5 +1447,204 @@ mod tests {
             "{out}"
         );
         parses(&out, "src/u.ts");
+    }
+
+    /// The app's modules by path, a relative specifier resolved as a `.ts`
+    /// file next to the importer.
+    struct MapModules(Vec<(&'static str, &'static str)>);
+
+    impl Modules for MapModules {
+        fn read(&self, from: &str, specifier: &str) -> Option<(String, String)> {
+            if !specifier.starts_with('.') {
+                return None;
+            }
+            let dir = Path::new(from).parent()?;
+            let path = format!("{}.ts", slash(&normalize(&dir.join(specifier))));
+            self.0
+                .iter()
+                .find(|(p, _)| *p == path)
+                .map(|(p, code)| (p.to_string(), code.to_string()))
+        }
+    }
+
+    // Start's compiler follows an import to the binding that made it a
+    // Builder (`resolveImportKind`, `findExportInModule` through `export {}`
+    // and `export * from`), and reads a module for `.handler(` alone
+    // (`KindDetectionPatterns.ServerFn`), so a server function whose builder
+    // another module exports is one, named after its own variable, on both
+    // sides. The builder's module declares none.
+    #[test]
+    fn a_builder_another_module_exports_is_resolved_on_both_sides() {
+        let modules = MapModules(vec![
+            (
+                "src/lib/base.ts",
+                "import { createServerFn } from \"@tanstack/react-start\";\nexport const base = createServerFn({ method: \"POST\" }).middleware([]);\nconst guarded = base.validator((d: unknown) => d);\nexport { guarded as checked };\nexport const done = base.handler(async () => 1);\n",
+            ),
+            (
+                "src/lib/again.ts",
+                "export { base } from \"./base\";\nexport * from \"./base\";\n",
+            ),
+            (
+                "src/lib/start.ts",
+                "export { createServerFn } from \"@tanstack/react-start\";\nimport { createServerFn as make } from \"@tanstack/react-start\";\nexport const factory = make;\n",
+            ),
+        ]);
+        // No `createServerFn` in the text: the handler call alone reads it.
+        let code = [
+            "import { base, checked } from \"../lib/base\";",
+            "import * as fns from \"../lib/again\";",
+            "export const x = base.handler(async () => \"x-secret\");",
+            "export const y = checked.validator((d) => d).handler(async () => \"y-secret\");",
+            "export const z = fns.base.handler(async () => \"z-secret\");",
+            "export const w = fns.checked.handler(async () => \"w-secret\");",
+            "",
+        ]
+        .join("\n");
+        let rel = "src/routes/fns.ts";
+        let names: Vec<_> = super::find_server_fns(&code, rel, &modules)
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        assert_eq!(names, ["x", "y", "z", "w"]);
+        let out = super::rewrite_client(&code, rel, &modules)
+            .unwrap()
+            .unwrap();
+        for name in ["x", "y", "z", "w"] {
+            assert!(
+                out.contains(&format!(".handler({});", rpc(rel, name))),
+                "{out}"
+            );
+        }
+        assert!(
+            out.contains(&format!(
+                "export const y = checked.handler({});",
+                rpc(rel, "y")
+            )),
+            "{out}"
+        );
+        assert!(!out.contains("-secret"), "{out}");
+        assert_eq!(lines(&out), lines(&code));
+        parses(&out, rel);
+        let server = super::rewrite_server(&code, rel, &modules).unwrap();
+        for name in ["x", "y", "z", "w"] {
+            assert!(
+                server.contains(&format!(
+                    "export const {name}_createServerFn_handler = createServerRpc("
+                )),
+                "{server}"
+            );
+        }
+        assert!(
+            server.contains("fns.checked.handler(w_createServerFn_handler, "),
+            "{server}"
+        );
+
+        // The factory itself through the app's module: as the module
+        // re-exports it, and as a variable the module binds it to.
+        let code = [
+            "import { createServerFn as fn, factory } from \"../lib/start\";",
+            "export const a = fn().handler(async () => \"a-secret\");",
+            "export const b = factory({ method: \"GET\" }).handler(async () => \"b-secret\");",
+            "",
+        ]
+        .join("\n");
+        let names: Vec<_> = super::find_server_fns(&code, rel, &modules)
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        assert_eq!(names, ["a", "b"]);
+
+        // The builder's own module: `base` and `checked` are builders, not
+        // functions; `done` is one of its own.
+        let (_, base) = modules.read("src/routes/fns.ts", "../lib/base").unwrap();
+        let names: Vec<_> = super::find_server_fns(&base, "src/lib/base.ts", &modules)
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        assert_eq!(names, ["done"]);
+    }
+
+    // An import that is not a builder, a module the app does not hold, and a
+    // cycle of re-exports: none is a server function, and the walk ends.
+    #[test]
+    fn an_import_that_is_no_builder_is_not_a_server_fn() {
+        let modules = MapModules(vec![
+            (
+                "src/other.ts",
+                "export const other = { handler: (f: () => unknown) => f };\nexport const fromPkg = somePackageThing();\n",
+            ),
+            ("src/a.ts", "export { b as a } from \"./b\";\n"),
+            ("src/b.ts", "export { a as b } from \"./a\";\nexport * from \"./a\";\n"),
+        ]);
+        let code = [
+            "import { other, fromPkg } from \"./other\";",
+            "import { missing } from \"./missing\";",
+            "import { a } from \"./a\";",
+            "import { handler } from \"some-package\";",
+            "export const p = other.handler(async () => 1);",
+            "export const q = fromPkg.handler(async () => 1);",
+            "export const r = missing.handler(async () => 1);",
+            "export const s = a.handler(async () => 1);",
+            "export const t = handler.handler(async () => 1);",
+            "",
+        ]
+        .join("\n");
+        assert!(super::find_server_fns(&code, "src/fns.ts", &modules).is_empty());
+        assert_eq!(
+            super::rewrite_client(&code, "src/fns.ts", &modules),
+            Ok(None)
+        );
+        assert_eq!(super::rewrite_server(&code, "src/fns.ts", &modules), None);
+    }
+
+    // `FsModules` resolves a relative specifier as Vite's `tryCleanFsResolve`
+    // does: the file as written, a JS import's TypeScript source, the default
+    // extensions in order, a directory's index; a package is not the app's.
+    #[test]
+    fn fs_modules_resolve_a_relative_import_as_vite_does() {
+        let root = std::env::temp_dir().join(format!("oj-server-fns-fs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for (path, code) in [
+            ("src/lib/base.functions.ts", "export const base = 1;\n"),
+            ("src/lib/plain.mjs", "export const plain = 1;\n"),
+            ("src/lib/plain.ts", "export const shadowed = 1;\n"),
+            ("src/lib/typed.ts", "export const typed = 1;\n"),
+            ("src/lib/wide.tsx", "export const wide = 1;\n"),
+            ("src/lib/dir/index.ts", "export const dir = 1;\n"),
+            ("src/lib/withExt.js", "export const js = 1;\n"),
+        ] {
+            let file = root.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, code).unwrap();
+        }
+        let modules = FsModules { root: &root };
+        let from = "src/routes/index.tsx";
+        let read = |specifier: &str| modules.read(from, specifier).map(|(path, _)| path);
+        assert_eq!(
+            read("../lib/base.functions").as_deref(),
+            Some("src/lib/base.functions.ts")
+        );
+        assert_eq!(
+            read("../lib/withExt.js").as_deref(),
+            Some("src/lib/withExt.js")
+        );
+        assert_eq!(read("../lib/typed.js").as_deref(), Some("src/lib/typed.ts"));
+        assert_eq!(read("../lib/wide.js").as_deref(), Some("src/lib/wide.tsx"));
+        // `.mjs` comes before `.ts` in Vite's extension order.
+        assert_eq!(read("../lib/plain").as_deref(), Some("src/lib/plain.mjs"));
+        assert_eq!(read("../lib/dir").as_deref(), Some("src/lib/dir/index.ts"));
+        assert_eq!(
+            read("./../lib/./dir/index").as_deref(),
+            Some("src/lib/dir/index.ts")
+        );
+        assert_eq!(read("../lib/missing"), None);
+        assert_eq!(read("@tanstack/react-start"), None);
+        assert_eq!(read("some-package/base"), None);
+        let (path, code) = modules.read(from, "../lib/base.functions").unwrap();
+        assert_eq!(
+            (path.as_str(), code.as_str()),
+            ("src/lib/base.functions.ts", "export const base = 1;\n")
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

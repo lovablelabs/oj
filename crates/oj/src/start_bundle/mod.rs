@@ -368,15 +368,19 @@ pub(crate) fn write_server_fn_resolver(
         let Ok(code) = std::fs::read_to_string(path) else {
             continue;
         };
-        let fns = oj_compiler::server_fns::find_server_fns(&code);
-        if fns.is_empty() {
-            continue;
-        }
         let rel = path
             .strip_prefix(root)
             .unwrap_or(path)
             .to_string_lossy()
             .replace('\\', "/");
+        let fns = oj_compiler::server_fns::find_server_fns(
+            &code,
+            &rel,
+            &oj_compiler::server_fns::FsModules { root },
+        );
+        if fns.is_empty() {
+            continue;
+        }
         // One importer per file, shared by the file's functions. It memoizes
         // the loaded module, not the promise (Start's `module ??= await
         // importer()`): a file that failed to resolve is retried on the next

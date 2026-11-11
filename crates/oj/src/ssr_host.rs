@@ -317,9 +317,13 @@ impl SsrHost {
         // relative specifier with no exact file on disk (an extensionless
         // import inside a dependency shipping raw TypeScript, which only the
         // pipeline can serve): the Vite-style resolver finishes that edge
-        // with its extension inference, as the Start host does. A dependency
-        // module the pipeline transformed (a raw-TS source) asks the pipeline
-        // first: Vite never externalizes a relative or absolute specifier
+        // with its extension inference, as the Start host does. Any
+        // specifier starting with `.` is relative, as Vite's resolve plugin
+        // reads it (`id[0] === '.'`): a bare `.` or `..` names a directory,
+        // which Node's ESM loader refuses (ERR_UNSUPPORTED_DIR_IMPORT) and
+        // the resolver finishes at its index. A dependency module the
+        // pipeline transformed (a raw-TS source) asks the pipeline first:
+        // Vite never externalizes a relative or absolute specifier
         // (createIsExternal), so its `import "./select.css"` reaches the css
         // pipeline instead of the runtime loading the stylesheet as JS.
         if node_resolves_imports_of(importer) {
@@ -331,7 +335,7 @@ impl SsrHost {
                     return Ok(Some(HostResolved::Url(spec)));
                 }
             }
-            if specifier.starts_with("./") || specifier.starts_with("../") {
+            if specifier.starts_with('.') {
                 if let Some(dir) = Path::new(&importer_id).parent() {
                     if !crate::ssr_dev::normalize_path(&dir.join(specifier)).is_file() {
                         if let Ok(oj_server::StartResolution::Dependency(p)) =
