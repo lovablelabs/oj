@@ -43,6 +43,18 @@ const VIRTUAL_SCHEME: &str = "oj-ssr";
 /// for the slow leak.
 const STALE_MODULE_RESPAWN_THRESHOLD: usize = 500;
 
+/// The threshold, or `OJ_START_RESPAWN_STALE` when set (a test respawns on
+/// the first reload with it at 1).
+fn respawn_threshold() -> usize {
+    static THRESHOLD: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *THRESHOLD.get_or_init(|| {
+        oj_env::get()
+            .knobs
+            .start_respawn_stale
+            .unwrap_or(STALE_MODULE_RESPAWN_THRESHOLD)
+    })
+}
+
 /// Versioned module ids plus the importer graph, mirroring the registry the
 /// node runner kept: mtimes recorded at load, dirtiness propagated up the
 /// importers, dirty records dropped so the next request rebuilds them.
@@ -203,7 +215,7 @@ impl VersionGraph {
     }
 
     pub(crate) fn should_respawn(&self) -> bool {
-        self.graph.lock().unwrap().stale >= STALE_MODULE_RESPAWN_THRESHOLD
+        self.graph.lock().unwrap().stale >= respawn_threshold()
     }
 
     /// A fresh isolate has an empty module map: no records are live and no

@@ -22,8 +22,11 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
+
+use futures_util::Stream;
 
 use oj_js::EngineConfig;
 use oj_js::HostModule;
@@ -1319,15 +1322,113 @@ pub struct StartRequest {
     pub body: Option<Vec<u8>>,
 }
 
-/// The handler's reply: status/headers/set-cookies plus the whole body (the
-/// stream is read to completion in the bootstrap, so deferred TanStack
-/// content is present).
-#[derive(Debug)]
+/// The handler's reply: status, headers and set-cookies, with the body as a
+/// stream of the chunks the handler writes, pulled from the runner one by one
+/// as they come, so a server-sent event or a render's deferred content
+/// reaches the client live, as Node's response streams it under Vite's
+/// middleware for Start (srvx's `sendNodeResponse` pipes the web body).
 pub struct StartResponse {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub set_cookies: Vec<String>,
-    pub body: Vec<u8>,
+    pub body: StartBody,
+}
+
+/// A response body's chunks in order; an error ends it short (the stream
+/// failed in the handler).
+pub type StartBody = Pin<Box<dyn Stream<Item = Result<Vec<u8>, String>> + Send>>;
+
+impl StartResponse {
+    /// The whole body, read to its end (the prewarm's render).
+    pub async fn body_bytes(self) -> Result<Vec<u8>, String> {
+        use futures_util::TryStreamExt;
+        let mut body = self.body;
+        let mut out = Vec::new();
+        while let Some(chunk) = body.try_next().await? {
+            out.extend_from_slice(&chunk);
+        }
+        Ok(out)
+    }
+}
+
+/// A body still being pulled from the runner that produced it. It holds that
+/// runner, not the engine's lock: a pull waits for the handler's next chunk,
+/// as long as that takes, and a respawn (the write lock) must never queue
+/// behind it, nor every request behind the respawn, as tokio's read-write
+/// lock is write-preferring. A runner replaced while a body streams lives on
+/// in the body until the body ends, so the stream completes on the code that
+/// started it, as a module graph swap under Vite never stops a running
+/// handler. Dropped short of its end (the client went away), the body is
+/// cancelled in its runner, so the handler's producer stops writing for
+/// nobody, as srvx's `streamBody` cancels the reader when Node's response
+/// closes.
+struct InFlightBody {
+    runner: Arc<JsEngine>,
+    bootstrap: String,
+    id: String,
+    finished: bool,
+}
+
+impl InFlightBody {
+    /// The stream ended in the runner, which forgot the reader: nothing is
+    /// left to cancel.
+    fn ended(mut self) {
+        self.finished = true;
+    }
+}
+
+impl Drop for InFlightBody {
+    fn drop(&mut self) {
+        let runner = Arc::clone(&self.runner);
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        if self.finished {
+            // The last body of a replaced runner releases it: its isolate
+            // thread is joined off the async workers.
+            drop_runner(runner);
+            return;
+        }
+        let bootstrap = std::mem::take(&mut self.bootstrap);
+        let id = std::mem::take(&mut self.id);
+        runtime.spawn(async move {
+            let _ = runner
+                .call(bootstrap, "cancel", vec![id.into()], None)
+                .await;
+            drop_runner(runner);
+        });
+    }
+}
+
+/// Lets go of a runner handle where dropping the last one (joining the
+/// isolate's thread) cannot stall an async worker.
+fn drop_runner(runner: Arc<JsEngine>) {
+    if Arc::strong_count(&runner) > 1 {
+        return;
+    }
+    tokio::task::spawn_blocking(move || drop(runner));
+}
+
+/// The next chunk of the body `id` names in `runner`, or None at its end.
+async fn pull_body(
+    runner: &JsEngine,
+    bootstrap: &str,
+    id: &str,
+) -> Result<Option<Vec<u8>>, String> {
+    let value = runner
+        .call(bootstrap.to_string(), "pull", vec![id.into()], None)
+        .await
+        .map_err(|e| e.to_string())?;
+    if value.get("done").and_then(|d| d.as_bool()) == Some(true) {
+        return Ok(None);
+    }
+    Ok(Some(
+        value
+            .get("chunkBase64")
+            .and_then(|c| c.as_str())
+            .map(base64_decode)
+            .unwrap_or_default(),
+    ))
 }
 
 /// The Start runner handle `start_dev` calls per request. Wraps the engine so
@@ -1343,16 +1444,19 @@ pub struct StartEngine {
 }
 
 /// A spawned engine plus its one-time bootstrap init (the env priming runs
-/// once per isolate; a respawn gets a fresh slot and re-primes).
+/// once per isolate; a respawn gets a fresh slot and re-primes). The engine
+/// is shared: a response body in flight keeps the runner that produced it
+/// until the body ends, so a respawn never cuts a stream and never waits on
+/// one.
 struct EngineSlot {
-    engine: JsEngine,
+    engine: Arc<JsEngine>,
     inited: tokio::sync::OnceCell<()>,
 }
 
 impl EngineSlot {
     fn new(engine: JsEngine) -> EngineSlot {
         EngineSlot {
-            engine,
+            engine: Arc::new(engine),
             inited: tokio::sync::OnceCell::new(),
         }
     }
@@ -1410,7 +1514,10 @@ impl StartEngine {
     }
 
     /// One request through the handler; concurrent calls interleave on the
-    /// isolate (the engine's call scheduler).
+    /// isolate (the engine's call scheduler). The reply comes back once the
+    /// handler's Response resolves, its body still streaming: each chunk is
+    /// one more call to the runner, made as the client reads, outside the
+    /// engine's lock.
     pub async fn handle(&self, req: StartRequest) -> Result<StartResponse, String> {
         let slot = self.engine.read().await;
         slot.inited
@@ -1459,17 +1566,43 @@ impl StartEngine {
                     .collect()
             })
             .unwrap_or_default();
-        let body = value
-            .get("bodyBase64")
-            .and_then(|b| b.as_str())
-            .map(base64_decode)
-            .unwrap_or_default();
+        let body = match value.get("body").and_then(|b| b.as_str()) {
+            Some(id) => self.body_stream(Arc::clone(&slot.engine), id.to_string()),
+            None => Box::pin(futures_util::stream::empty()),
+        };
         Ok(StartResponse {
             status,
             headers: pairs("headers"),
             set_cookies,
             body,
         })
+    }
+
+    /// The chunks of the body `id` names in `runner`, one pull each, until
+    /// the stream ends or fails.
+    fn body_stream(&self, runner: Arc<JsEngine>, id: String) -> StartBody {
+        let body = InFlightBody {
+            runner,
+            bootstrap: self.bootstrap.clone(),
+            id,
+            finished: false,
+        };
+        Box::pin(futures_util::stream::unfold(body, |mut body| async move {
+            if body.finished {
+                return None;
+            }
+            match pull_body(&body.runner, &body.bootstrap, &body.id).await {
+                Ok(Some(chunk)) => Some((Ok(chunk), body)),
+                Ok(None) => {
+                    body.ended();
+                    None
+                }
+                Err(e) => {
+                    body.finished = true;
+                    Some((Err(e), body))
+                }
+            }
+        }))
     }
 
     /// The watcher's reload: drop changed modules (and their importers) and
@@ -1512,6 +1645,10 @@ impl StartEngine {
         hit
     }
 
+    /// Replaces the runner once enough stale module instances piled up. The
+    /// write lock waits for the requests in the handler, never for a body
+    /// streaming (those hold their runner, not the lock); a body still
+    /// streaming from the old runner keeps it alive until the body ends.
     async fn maybe_respawn(&self) {
         if !self.host.graph().should_respawn() {
             return;
