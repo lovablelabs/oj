@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Dev server: a file under `publicDir` imported by its url (`import logo from "/assets/logo.png"` for `public/assets/logo.png`) is a module exporting that url, as Vite serves it: its import analysis marks such an import as a module request (`?import`), its public middleware steps aside for one (`isImportRequest`) and `vite:asset` answers with the url (`checkPublicFile`, `fileToDevUrl`). oj left the import as written and served the url as the file, so the browser got `image/png` for a module script, the whole module graph failed and the page stayed empty. The import is now marked `?url`, as a relative asset import is, and a request for a public asset that asks for the module (`?import`, `?url`, or the browser's `Sec-Fetch-Dest: script`) gets `export default "/assets/logo.png"`; the bare url is still the file, and a public script or stylesheet is always the file. An import of a public file that is not an asset (a script, a stylesheet, a JSON file) fails the importer with Vite's error, word for word ("Cannot import non-asset file /data.json which is inside /public. ... use /data.json?url instead."), where it was left as written for the browser to fail on its MIME type; `?url` on it is its url, as the message says.
+
 ## [0.4.10] - 2026-11-11
 
 ### Removed
