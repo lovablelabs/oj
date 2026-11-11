@@ -76,3 +76,71 @@ fn the_server_entry_module_exports_create_server_entry() {
     let built = Server::node_server(root);
     answers_through_the_entry("build", &built);
 }
+
+/// The entry handing Start's handler the request's options, the documented
+/// way to give a request its context: `handler.fetch(request, { context })`.
+/// Start's handler is `(request, opts?)` (`RequestHandler` in
+/// `@tanstack/start-server-core`), and the package's entry passes every
+/// argument on, so a server route's handler reads the context. oj's handler
+/// took its second argument for a Worker's bindings and called Start's with
+/// the request alone.
+const ENTRY_WITH_CONTEXT: &str = r#"import handler, { createServerEntry } from "@tanstack/react-start/server-entry";
+
+export default createServerEntry({
+  async fetch(request) {
+    return handler.fetch(request, { context: { fromEntry: "entry-context-marker" } });
+  },
+});
+"#;
+
+const CONTEXT_ROUTE: &str = r#"import { createRoute } from "@tanstack/react-router";
+
+import { rootRoute } from "./__root";
+
+export const requestUrlRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/api/request-url",
+  server: {
+    handlers: {
+      GET: ({ context }: { context?: { fromEntry?: string } }) =>
+        Response.json({
+          fromEntry: context?.fromEntry ?? null,
+          stashed: (globalThis as Record<string, unknown>).__OJ_CF_ENV !== undefined,
+        }),
+    },
+  },
+});
+"#;
+
+fn reads_the_entrys_context(label: &str, server: &Server) {
+    let (status, body) = server.request("GET", "/api/request-url", &[]);
+    assert_eq!(status, 200, "{label}: {body}\n{}", server.output());
+    assert!(
+        body.contains(r#""fromEntry":"entry-context-marker""#),
+        "{label}: the request's context did not reach the route: {body}\n{}",
+        server.output()
+    );
+    // The options are no Worker bindings.
+    assert!(
+        body.contains(r#""stashed":false"#),
+        "{label}: the request's options were kept as a Worker's env: {body}"
+    );
+}
+
+#[test]
+fn the_default_handler_takes_the_request_options_an_entry_hands_it() {
+    let Some(app) = app("server-entry-context") else {
+        return;
+    };
+    let root = &app.0;
+    std::fs::write(root.join("src/ssr-entry.ts"), ENTRY_WITH_CONTEXT).unwrap();
+    std::fs::write(root.join("src/routes/request-url.tsx"), CONTEXT_ROUTE).unwrap();
+
+    let dev = Server::oj_dev(root);
+    reads_the_entrys_context("dev", &dev);
+    drop(dev);
+
+    build(root);
+    let built = Server::node_server(root);
+    reads_the_entrys_context("build", &built);
+}
