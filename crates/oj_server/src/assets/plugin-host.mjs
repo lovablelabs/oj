@@ -6106,11 +6106,26 @@ async function cloudflareEnvironmentFacts(c, fns) {
     rootOutDir: stringOr(userViteConfig?.build?.outDir),
   };
 }
+// The config function behind handle `index`. A handle outlives the engine
+// that handed it out: a bundle reads its facts once, when its container
+// opens, and keeps the handles for the life of the dev server, while a
+// respawned engine reopens that container (openEnvironmentContainer, from the
+// boot seed) with an empty registry. The facts derive from the config in one
+// fixed order, so reading them again on the fresh engine hands out the same
+// functions under the same handles, and the bundle's handles stay callable.
+async function startFn(c, index) {
+  let fn = c.startFns[Number(index)];
+  if (typeof fn !== "function" && c.startFns.length === 0) {
+    await startFacts(c);
+    fn = c.startFns[Number(index)];
+  }
+  if (typeof fn !== "function") throw new Error(`oj: no config function #${index}`);
+  return fn;
+}
 // A config function a fact handed out (`$fn`), called with JSON arguments
 // (an `external` function: `(id, importer, isResolved)`).
 async function callStartFn(c, index, argsJson) {
-  const fn = c.startFns[Number(index)];
-  if (typeof fn !== "function") throw new Error(`oj: no config function #${index}`);
+  const fn = await startFn(c, index);
   const r = await fn(...JSON.parse(argsJson ?? "[]"));
   return JSON.stringify(r === undefined ? null : factValue(r, c.startFns));
 }
@@ -6122,8 +6137,7 @@ async function callStartFn(c, index, argsJson) {
 // server never evaluates these functions, so one written for the build (fed
 // by a build-only plugin) must not take the dev server down.
 async function callStartFnBatch(c, index, idsJson, generation, infosJson, tolerant) {
-  const fn = c.startFns[Number(index)];
-  if (typeof fn !== "function") throw new Error(`oj: no config function #${index}`);
+  const fn = await startFn(c, index);
   if (c.chunkInfos.generation !== generation) c.chunkInfos = { generation, byId: new Map() };
   const { byId } = c.chunkInfos;
   if (infosJson) for (const info of JSON.parse(infosJson)) byId.set(info.id, info);

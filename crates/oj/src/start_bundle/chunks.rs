@@ -33,10 +33,10 @@ pub(crate) struct ChunkPolicy {
     pub preserve_entry_signatures: PreserveEntrySignatures,
 }
 
-/// The policy `facts` describe. `dev`: a group whose function throws steps
-/// aside with one warning (Vite's dev server never evaluates these, and one
-/// written for the build may read state only a build-only plugin produces);
-/// a build stays loud, as `vite build` is.
+/// The policy `facts` describe. `dev`: a group whose function throws, or
+/// whose host cannot run it, steps aside with one warning (Vite's dev server
+/// never evaluates these, and one written for the build may read state only
+/// a build-only plugin produces); a build stays loud, as `vite build` is.
 pub(crate) fn chunk_policy(
     facts: &Facts,
     host: &Arc<PluginHost>,
@@ -167,19 +167,41 @@ impl Guard {
         out.into_iter()
             .map(|r| match r.get("$threw").and_then(Value::as_str) {
                 Some(message) => {
-                    let mut warned = self.warned.lock().unwrap();
-                    if !*warned {
-                        *warned = true;
-                        eprintln!(
-                            "oj: codeSplitting group {} threw under dev and steps aside (a build-only plugin it expects did not run): {message}",
-                            self.label
-                        );
-                    }
+                    self.warn_once(&format!(
+                        "threw under dev and steps aside (a build-only plugin it expects did not run): {message}"
+                    ));
                     None
                 }
                 None => Some(r),
             })
             .collect()
+    }
+
+    /// A batch the host could not run at all (`error`, the host's): under
+    /// dev the group steps aside for the batch, a miss per id, with one
+    /// warning; a build fails, as rolldown fails `vite build` when a group's
+    /// function cannot be called.
+    fn step_aside(
+        &self,
+        what: &str,
+        error: String,
+        ids: usize,
+    ) -> anyhow::Result<Vec<Option<Value>>> {
+        if !self.dev {
+            anyhow::bail!("codeSplitting group {} {what}: {error}", self.label);
+        }
+        self.warn_once(&format!(
+            "{what} could not run under dev and steps aside: {error}"
+        ));
+        Ok(vec![None; ids])
+    }
+
+    fn warn_once(&self, why: &str) {
+        let mut warned = self.warned.lock().unwrap();
+        if !*warned {
+            *warned = true;
+            eprintln!("oj: codeSplitting group {} {why}", self.label);
+        }
     }
 }
 
@@ -284,12 +306,14 @@ fn name_fn(host: Arc<PluginHost>, handle: u64, guard: Arc<Guard>) -> Arc<NameFn>
         let host = Arc::clone(&host);
         let guard = Arc::clone(&guard);
         Box::pin(async move {
-            let out = host
+            let out = match host
                 .call_start_fn_batch(handle, &ids, generation, infos.as_deref(), guard.dev)
                 .await
-                .map_err(|e| anyhow::anyhow!("codeSplitting group {} name: {e}", guard.label))?;
-            Ok(guard
-                .results(out)
+            {
+                Ok(out) => guard.results(out),
+                Err(e) => guard.step_aside("name", e, ids.len())?,
+            };
+            Ok(out
                 .into_iter()
                 .map(|r| r.and_then(|v| v.as_str().map(str::to_string)))
                 .collect())
@@ -303,12 +327,14 @@ fn test_fn(host: Arc<PluginHost>, handle: u64, guard: Arc<Guard>) -> Arc<TestFn>
         let host = Arc::clone(&host);
         let guard = Arc::clone(&guard);
         Box::pin(async move {
-            let out = host
+            let out = match host
                 .call_start_fn_batch(handle, &ids, generation, infos.as_deref(), guard.dev)
                 .await
-                .map_err(|e| anyhow::anyhow!("codeSplitting group {} test: {e}", guard.label))?;
-            Ok(guard
-                .results(out)
+            {
+                Ok(out) => guard.results(out),
+                Err(e) => guard.step_aside("test", e, ids.len())?,
+            };
+            Ok(out
                 .into_iter()
                 .map(|r| r.is_some_and(|v| truthy(&v)))
                 .collect())
@@ -427,5 +453,31 @@ mod tests {
         ]);
         assert_eq!(out, vec![Some(json!("a")), None, None]);
         assert!(*guard.warned.lock().unwrap());
+    }
+
+    #[test]
+    fn a_host_that_cannot_run_the_function_steps_aside_under_dev_and_fails_a_build() {
+        let dev = Guard {
+            label: "#0".into(),
+            dev: true,
+            warned: Mutex::new(false),
+        };
+        let out = dev
+            .step_aside("name", "oj: no config function #0".into(), 2)
+            .expect("dev steps aside");
+        assert_eq!(out, vec![None, None]);
+        assert!(*dev.warned.lock().unwrap());
+        let build = Guard {
+            label: "#0".into(),
+            dev: false,
+            warned: Mutex::new(false),
+        };
+        let err = build
+            .step_aside("name", "oj: no config function #0".into(), 2)
+            .expect_err("a build stays loud");
+        assert_eq!(
+            err.to_string(),
+            "codeSplitting group #0 name: oj: no config function #0"
+        );
     }
 }
