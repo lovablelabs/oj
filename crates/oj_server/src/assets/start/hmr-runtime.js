@@ -231,31 +231,47 @@ class OjHmrClient {
   // the next patch has nothing left to refresh). Vite invalidates every
   // changed file in its module graph as the watcher reports it
   // (server/index.ts onFileChange, hmr.ts updateModules), so the boundary
-  // its update re-imports loads each import fresh; here the patches are
-  // fetched first, then the changed modules re-run once, over all of them.
+  // its update re-imports loads each import fresh, and its client fetches
+  // every update queued in one tick before it runs any accept callback
+  // (shared/hmr.ts queueUpdate); here the patches are fetched first, then
+  // the changed modules re-run once, over all of them. Each batch keeps
+  // Vite's order for one update (client.ts `case 'update'`): the listeners
+  // hear vite:beforeUpdate, an overlay up before the first update reloads
+  // instead, and only then is the patch fetched.
   async applyPending() {
     if (this.reloadPending || !this.pending.length) return;
     const changedIds = new Set();
+    const announced = new Set();
+    let update = null;
     while (this.pending.length) {
-      const { url, seq, changedIds: ids } = this.pending.shift();
-      if (seq !== this.lastSeq + 1)
-        return this.requestReload(`update sequence gap (expected ${this.lastSeq + 1}, got ${seq})`);
-      this.lastSeq = seq;
-      try {
-        await import(/* @vite-ignore */ url);
-      } catch {
-        return this.requestReload(`failed to import hmr patch ${url}`);
+      const frames = this.pending.splice(0);
+      for (const { seq, changedIds: ids } of frames) {
+        if (seq !== this.lastSeq + 1)
+          return this.requestReload(`update sequence gap (expected ${this.lastSeq + 1}, got ${seq})`);
+        this.lastSeq = seq;
+        for (const id of ids) changedIds.add(id);
       }
-      for (const id of ids) changedIds.add(id);
+      // Over every change so far: a boundary found by an earlier batch is
+      // found again, and re-run once at the end.
+      const next = this.compute([...changedIds]);
+      if (!next) continue;
+      if (next.reload) return this.requestReload(next.reload);
+      update = next;
+      const fresh = update.boundaries.filter((b) => !announced.has(`${b.boundary}\n${b.acceptedVia}`));
+      for (const b of fresh) announced.add(`${b.boundary}\n${b.acceptedVia}`);
+      if (fresh.length) await this.notify("vite:beforeUpdate", this.payload(fresh, undefined));
+      if (this.beforeApply() === "reload") return;
+      for (const { url } of frames) {
+        try {
+          await import(/* @vite-ignore */ url);
+        } catch {
+          return this.requestReload(`failed to import hmr patch ${url}`);
+        }
+      }
     }
-    const update = this.compute([...changedIds]);
     if (!update) return;
-    if (update.reload) return this.requestReload(update.reload);
-    const payload = this.payload(update.boundaries, undefined);
-    await this.notify("vite:beforeUpdate", payload);
-    if (this.beforeApply() === "reload") return;
     await this.apply(update);
-    await this.notify("vite:afterUpdate", payload);
+    await this.notify("vite:afterUpdate", this.payload(update.boundaries, undefined));
   }
 
   async applyInvalidate(id) {
