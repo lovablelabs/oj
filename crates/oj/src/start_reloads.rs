@@ -73,6 +73,16 @@ impl Epochs {
         self.publish_locked(*latest)
     }
 
+    /// Whether a change the pages must reload for is still unpublished (the
+    /// gate holds it, or a run in flight will publish it at its end).
+    pub(crate) fn parked(&self) -> bool {
+        let latest = *self
+            .latest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        latest > *self.published.borrow()
+    }
+
     fn publish_locked(&self, latest: u64) -> bool {
         self.published.send_if_modified(|p| {
             let moved = *p < latest;
@@ -143,6 +153,81 @@ impl PageEpoch {
                 return Some(());
             }
         }
+    }
+}
+
+/// When a gate flush takes effect against the rebundle worker's runs.
+///
+/// A flush releases what the gate holds: the parked reloads publish and the
+/// parked hot updates go out (or are dropped, when a reload makes them moot).
+/// One that lands while a rebundle runs must not do that yet: the counts it
+/// would publish can hold a change unrelated to the run (the boot's
+/// revalidation found a module edited while it warmed, and bumped), and
+/// publishing then reloads the pages onto the output from before the run,
+/// after which the run's own end reloads them again. The flush instead waits
+/// for the run, whose end releases everything once, onto its output. The
+/// editor's gate for a plain Vite dev server has the same shape: the flush
+/// consumes the hold at once, the reload goes out with the rebuild's result.
+///
+/// Lock-free, so a flush and a run's end can cross: whichever of the two
+/// sees the other's mark applies the release, and exactly one of them does.
+#[derive(Default)]
+pub(crate) struct FlushTiming {
+    /// A relevant change was seen and its run has not ended yet.
+    rebundling: std::sync::atomic::AtomicBool,
+    /// A flush landed while `rebundling`, for the run's end to apply.
+    deferred: std::sync::atomic::AtomicBool,
+    /// The watcher has seen a change this session (never cleared).
+    seen: std::sync::atomic::AtomicBool,
+}
+
+impl FlushTiming {
+    /// A run was asked for (a deferred bundle): in flight until it ends.
+    pub(crate) fn rebundle_wanted(&self) {
+        self.rebundling
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The watcher saw a change a run will take (set at the event, where the
+    /// gate takes its hold, so no flush can slip between the two).
+    pub(crate) fn watcher_change(&self) {
+        self.seen.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.rebundle_wanted();
+    }
+
+    /// Whether the watcher's runs cover a reload the boot's revalidation
+    /// would send: it is for an edit made before the watcher armed, which
+    /// nothing else reloads for; one the watcher saw is rebuilt and reloaded
+    /// by its run (whose output the revalidation's reload would predate), so
+    /// once a change has been seen, or a run is in flight, the revalidation
+    /// only drops its stale modules and sends nothing.
+    pub(crate) fn runs_cover_reloads(&self) -> bool {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.seen.load(SeqCst) || self.rebundling.load(SeqCst)
+    }
+
+    /// A flush landed: true to release now, false when a run in flight takes
+    /// it (its end then reports it from `run_ended`).
+    pub(crate) fn flush_now(&self) -> bool {
+        use std::sync::atomic::Ordering::SeqCst;
+        // Marked before the check: a run ending between the two finds the
+        // mark and applies it, or clears `rebundling` first and the swap
+        // below takes the mark back.
+        self.deferred.store(true, SeqCst);
+        if self.rebundling.load(SeqCst) {
+            return false;
+        }
+        self.deferred.swap(false, SeqCst)
+    }
+
+    /// A run ended; `more` when another is queued behind it. True when a
+    /// flush landed during the run and is this caller's to apply.
+    pub(crate) fn run_ended(&self, more: bool) -> bool {
+        use std::sync::atomic::Ordering::SeqCst;
+        if !more {
+            self.rebundling.store(false, SeqCst);
+        }
+        self.deferred.swap(false, SeqCst)
     }
 }
 
@@ -255,5 +340,89 @@ mod tests {
             assert_eq!(stamp_in(Some(bad)), None, "{bad}");
         }
         assert_eq!(stamp_in(None), None);
+    }
+
+    #[test]
+    fn a_held_change_is_parked_until_it_publishes() {
+        let (epochs, hold) = gated();
+        assert!(!epochs.parked());
+        hold.store(true, SeqCst);
+        assert!(!epochs.bump());
+        assert!(epochs.parked(), "held, not published");
+        hold.store(false, SeqCst);
+        assert!(epochs.flushed());
+        assert!(!epochs.parked());
+        assert!(epochs.bump(), "published at once without a hold");
+        assert!(!epochs.parked());
+    }
+
+    #[test]
+    fn the_boot_revalidation_reloads_only_before_the_watcher_saw_a_change() {
+        let timing = FlushTiming::default();
+        assert!(
+            !timing.runs_cover_reloads(),
+            "no run, no change: the revalidation reloads"
+        );
+        timing.rebundle_wanted();
+        assert!(
+            timing.runs_cover_reloads(),
+            "a deferred bundle in flight reloads for it"
+        );
+        assert!(!timing.run_ended(false));
+        assert!(
+            !timing.runs_cover_reloads(),
+            "ended, and no watcher change yet"
+        );
+        timing.watcher_change();
+        assert!(!timing.run_ended(false));
+        assert!(
+            timing.runs_cover_reloads(),
+            "a watcher change stays covered after its run"
+        );
+    }
+
+    #[test]
+    fn a_flush_between_runs_releases_at_once() {
+        let timing = FlushTiming::default();
+        assert!(timing.flush_now());
+        assert!(!timing.run_ended(false), "nothing waited for a run");
+    }
+
+    #[test]
+    fn a_flush_during_a_run_is_released_by_the_runs_end() {
+        let timing = FlushTiming::default();
+        timing.rebundle_wanted();
+        assert!(!timing.flush_now(), "the run in flight takes the flush");
+        assert!(timing.run_ended(false), "the run's end applies it");
+        assert!(!timing.run_ended(false), "once");
+        assert!(
+            timing.flush_now(),
+            "the next flush, between runs, releases at once"
+        );
+    }
+
+    #[test]
+    fn a_run_with_another_queued_still_applies_the_flush_it_took() {
+        let timing = FlushTiming::default();
+        timing.rebundle_wanted();
+        assert!(!timing.flush_now());
+        assert!(timing.run_ended(true));
+        // The queued run is still in flight for the next flush.
+        assert!(!timing.flush_now());
+        assert!(timing.run_ended(false));
+    }
+
+    #[test]
+    fn a_flush_and_a_runs_end_crossing_release_exactly_once() {
+        // Many interleavings of the two, each must release once in all.
+        for _ in 0..200 {
+            let timing = Arc::new(FlushTiming::default());
+            timing.rebundle_wanted();
+            let t = Arc::clone(&timing);
+            let flush = std::thread::spawn(move || t.flush_now());
+            let at_end = timing.run_ended(false);
+            let at_flush = flush.join().unwrap();
+            assert!(at_end != at_flush, "end={at_end} flush={at_flush}");
+        }
     }
 }

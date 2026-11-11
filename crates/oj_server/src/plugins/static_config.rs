@@ -115,6 +115,17 @@ fn read_static(root: &Path, vite: &Path, command: &str, mode: &str) -> Result<Va
         "publicDir".into(),
         Value::String(root.join("public").to_string_lossy().into_owned()),
     );
+    // Vite's default `cacheDir` (the config's own is outside the literal
+    // shape, so evaluation reads it): `node_modules/.vite` under the nearest
+    // package.json.
+    fields.insert(
+        "cacheDir".into(),
+        Value::String(
+            oj_config::cache_dir(&oj_config::OjConfig::default(), root)
+                .to_string_lossy()
+                .into_owned(),
+        ),
+    );
     fields.insert("fsAllow".into(), allow);
     fields.insert("port".into(), Value::from(config.port.unwrap_or(5173)));
     if let Some(host) = &config.host {

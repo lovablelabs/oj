@@ -164,6 +164,9 @@ struct StartState {
     /// saw. The first refresh started after that reloads the pages once its
     /// output is current (Vite's reload-needed flush).
     reload_wanted: std::sync::Mutex<Option<u64>>,
+    /// Whether a gate flush releases at once or waits for the rebundle run
+    /// in flight (see `FlushTiming`).
+    flush_timing: Arc<crate::start_reloads::FlushTiming>,
 }
 
 impl StartState {
@@ -430,6 +433,9 @@ pub async fn start_dev(
             .clone()
             .map(|gate| -> crate::start_reloads::Held { Arc::new(move || gate.reload_is_held()) }),
     ));
+    // When a gate flush takes effect against the rebundle runs, and whether
+    // the boot's revalidation below still owes the pages a reload.
+    let flush_timing = Arc::new(crate::start_reloads::FlushTiming::default());
     oj_server::boot_phase("bundle+build joined");
     // The in-process Start runner: an embedded engine whose module host runs
     // the dev server's SSR pipeline (StartHost); it needs the built app's
@@ -496,6 +502,7 @@ pub async fn start_dev(
     {
         let engine = Arc::clone(&engine);
         let reloads = Arc::clone(&reloads);
+        let flush_timing = Arc::clone(&flush_timing);
         let warm_host = built.plugin_host.clone();
         tokio::spawn(async move {
             if cf_hint {
@@ -565,7 +572,14 @@ pub async fn start_dev(
                 let _ = resp.body_bytes().await;
             }
             oj_server::boot_phase("prewarm complete");
-            if engine.revalidate().await {
+            // Modules edited while the engine warmed are dropped; the pages
+            // reload for them only when no watcher run does (an edit before
+            // the watcher armed). An edit the watcher saw is rebuilt and
+            // reloaded by its run: a reload from here too, after the gate's
+            // flush consumed the hold (or parked, for the flush to publish
+            // ahead of the run), reloaded the pages a second time, or onto
+            // the bundle from before the edit.
+            if engine.revalidate().await && !flush_timing.runs_cover_reloads() {
                 reloads.bump();
             }
             oj_server::boot_phase("revalidate complete");
@@ -651,6 +665,7 @@ pub async fn start_dev(
         urgent: std::sync::atomic::AtomicBool::new(false),
         refreshes: std::sync::atomic::AtomicU64::new(0),
         reload_wanted: std::sync::Mutex::new(None),
+        flush_timing,
     });
 
     // The activation handler: when the plugin middleware comes up after boot,
@@ -681,8 +696,12 @@ pub async fn start_dev(
     }
 
     // A gate flush (the editor's POST /__hmr_flush, or the hold cap) releases
-    // the changes held for it. One still building (the editor flushes right
-    // after its writes) reaches the pages when its run ends, with its output.
+    // the changes held for it. One that lands while a rebundle runs (the
+    // editor flushes right after its writes) waits for that run: its end
+    // releases everything once, onto its output (`FlushTiming`). Releasing at
+    // the flush could publish a reload parked by something other than the
+    // run (the boot's revalidation), onto the output from before it, and the
+    // run's end would reload the pages a second time.
     if let Some(gate) = &state.gate {
         let mut flushes = gate.subscribe_flush();
         let weak = Arc::downgrade(&state);
@@ -694,13 +713,17 @@ pub async fn start_dev(
                 Err(broadcast::error::RecvError::Closed)
             ) {
                 let Some(state) = weak.upgrade() else { return };
-                // A reload this flush publishes takes every page onto output
-                // that carries the parked hot updates: drop them instead of
-                // patching a page that is about to unload (a patch fetch cut
-                // off by the reload). Otherwise they go out, in order.
-                if state.reloads.flushed() {
+                if state.flush_timing.flush_now() {
+                    release_gate_flush(&state);
+                } else if state.reloads.parked() {
+                    // The run's end publishes the parked reload; the hot
+                    // frames parked so far are moot under it.
                     state.bundler.hot.discard();
                 } else {
+                    // The frames parked so far go out now, ahead of the ones
+                    // the run makes (the hold is consumed, so those pass
+                    // straight through at its end): a later frame must not
+                    // overtake an earlier one, or the page sees a gap.
                     state.bundler.hot.release();
                 }
             }
@@ -775,6 +798,7 @@ fn start_deferred_bundle(state: &Arc<StartState>) {
     }
     let (tx, rx) = tokio::sync::oneshot::channel();
     state.deferred_build.send_replace(true);
+    state.flush_timing.rebundle_wanted();
     {
         let mut slot = state
             .rebundles
@@ -1521,6 +1545,7 @@ fn spawn_start_watcher(
             // while the rebuild below still runs, and a hold taken only at
             // rebuild end would wait out the cap for a flush that already
             // happened, serving the previous bundle for minutes.
+            state.flush_timing.watcher_change();
             if let Some(gate) = &state.gate {
                 let batch_paths: Vec<PathBuf> = paths.iter().cloned().collect();
                 gate.hold_reload(&batch_paths);
@@ -1880,6 +1905,21 @@ async fn rebundle_worker(
         // run built released it, and the reload reaches the pages now, with
         // the fresh bundle; otherwise it waits for the flush.
         let held = reload && !state.reloads.bump();
+        // A flush that landed during this run publishes now, with the run's
+        // output in place (its hot frames went out, or were dropped, at the
+        // flush): a reload this run published already covers everything;
+        // otherwise the flush publishes what it would have at the time.
+        let more = pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some();
+        if state.flush_timing.run_ended(more) {
+            if reload && !held {
+                state.bundler.hot.discard();
+            } else {
+                release_gate_flush(&state);
+            }
+        }
         let modules = client_module_count(&cache);
         let _ = state.ws_tx.send(oj_server::update_progress_frame(
             run.batch,
@@ -1911,6 +1951,19 @@ async fn rebundle_worker(
                 if bundled { "rebuilt" } else { "updated" }
             );
         }
+    }
+}
+
+/// A gate flush taking effect: the parked reloads publish, and the parked
+/// hot updates go out, or are dropped when a reload makes them moot. A
+/// reload the flush publishes takes every page onto output that carries the
+/// parked hot updates: patching a page that is about to unload would be a
+/// patch fetch cut off by the reload. Otherwise they go out, in order.
+fn release_gate_flush(state: &StartState) {
+    if state.reloads.flushed() {
+        state.bundler.hot.discard();
+    } else {
+        state.bundler.hot.release();
     }
 }
 
