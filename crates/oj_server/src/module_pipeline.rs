@@ -1258,6 +1258,13 @@ impl ImportRewrite<'_> {
             let stamp = state.graph.lock().unwrap().hmr_timestamp(path);
             return Some(stamp_import_url(&state.root, spec, stamp));
         }
+        // Vite's URL for an optimized dep (`/node_modules/.vite/deps/react.js`),
+        // written by hand or by tooling that knows Vite's cache: the import
+        // of the dep itself, so the page keeps the one copy its bare imports
+        // load (see `vite_dep_id`).
+        if let Some(dep) = vite_dep_id(state, spec) {
+            return self.rewrite(&dep, resolver);
+        }
         if state.virtual_ids.contains(spec) {
             return Some(format!("/@virtual/{spec}"));
         }
@@ -1418,6 +1425,11 @@ impl ImportRewrite<'_> {
 
     fn cjs_interop_target(&self, spec: &str) -> Option<String> {
         let job = self.job;
+        // A Vite optimized-dep URL is the dep's own import (Vite's import
+        // analysis interops a named import of its optimized file the same way).
+        if let Some(dep) = vite_dep_id(&job.state, spec) {
+            return self.cjs_interop_target(&dep);
+        }
         // A claimed CommonJS file under node_modules is served as is, so its
         // named imports read off module.exports, as for a directly served dep.
         if let Some(answer) = job.pre_resolved.get(spec) {
@@ -1596,6 +1608,39 @@ pub(crate) fn optimized_url_of(state: &ServerState, id: &str) -> Option<String> 
 pub(crate) fn optimized_file<'a>(state: &ServerState, id: &'a str) -> Option<&'a str> {
     let path = Path::new(id.split('?').next().unwrap_or(id));
     (path.parent()? == state.optimized.dir()).then(|| path.file_name()?.to_str())?
+}
+
+/// The dep a Vite optimized-dep URL names (`/node_modules/.vite/deps/
+/// react-dom_client.js?v=…` is `react-dom/client`, under the config's
+/// `cacheDir` as Vite resolves it): one the optimizer knows,
+/// else the installed dependency the flat stem decodes to, which the caller
+/// registers as a bare import of it would. A page written against Vite's
+/// cache paths (a script, a retained test) then shares the pre-bundle the
+/// app's own imports load; Vite's `?v=` is its browserHash, meaningless here,
+/// and is dropped. `None` for any other specifier, or a stem that names no
+/// dependency of the project.
+pub(crate) fn vite_dep_id(state: &ServerState, spec: &str) -> Option<String> {
+    let file = spec.strip_prefix(state.vite_deps_prefix.as_str())?;
+    let file = file.split('?').next().unwrap_or(file);
+    let flat = file.strip_suffix(".js")?;
+    if flat.is_empty() || flat.contains('/') {
+        return None;
+    }
+    if let Some((dep, _)) = state
+        .optimized
+        .find_dep(|dep| optimize::vite_flat_id(dep) == flat)
+    {
+        return Some(dep);
+    }
+    optimize::vite_flat_candidates(flat)
+        .into_iter()
+        .find(|dep| {
+            may_register_import(state, &state.root, dep)
+                && state
+                    .resolver
+                    .resolve(&state.root, dep)
+                    .is_ok_and(|resolved| is_optimizable_dep_file(&resolved))
+        })
 }
 
 pub(crate) fn package_root(path: &Path) -> PathBuf {

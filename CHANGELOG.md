@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Dev server: Vite's URL for a pre-bundled dependency, `/node_modules/.vite/deps/react.js` (`react-dom_client.js` for `react-dom/client`, `@tanstack_react-query.js` for `@tanstack/react-query`: the optimizer's `flattenId`), is served, where oj answered 404 and knew its pre-bundles by `/@oj-deps/<file>?v=<version>` alone. A script or a retained test written against Vite's cache paths, or tooling that drives the page with them, loads the dependency the app itself runs on: an import of the Vite URL in a served module is rewritten to the pre-bundle's own URL, as the bare import is, and a request for the URL itself (a dynamic import from outside oj's transform) gets a module re-exporting that pre-bundle, so the page keeps one instance of each dependency however the import was spelled. Serving the bundle's bytes under the second URL, or redirecting to the first, would have evaluated it twice, the second React or QueryClient some worked around the 404 with by importing an `/@oj-deps/` URL by hand. A CommonJS dependency's names come with it (`createRoot` from `react-dom_client.js`), as Vite's import analysis gives them to an importer of its optimized file. A stem that names an installed dependency nothing has imported yet registers it with the optimizer, as a bare import would (Vite's `registerMissingImport`), and the request waits for the re-optimization; one that is not a dependency is a 404, as Vite's optimized-deps plugin answers a file missing from its cache dir, and one whose re-optimization fails is Vite's processing error, a 504. The URL follows the config's `cacheDir` as Vite resolves it: `/.cache/vite/deps/` for `cacheDir: ".cache/vite"`, else `node_modules/.vite` under the nearest package.json at or above the root, which for a root inside a package is the `/@fs/` form of that directory. Vite's `?v=` hash on such a URL is Vite's and is ignored.
+
 ## [0.4.12] - 2026-11-11
 
 ### Added

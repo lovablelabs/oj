@@ -1492,6 +1492,7 @@ fn parse_reads_all_fields() {
     let json = serde_json::json!({
         "base": "/app/",
         "publicDir": "/abs/shared/public",
+        "cacheDir": "/abs/shared/node_modules/.vite",
         "port": 3010,
         "host": "0.0.0.0",
         "define": { "__X__": "1" },
@@ -1501,6 +1502,10 @@ fn parse_reads_all_fields() {
     let v = parse_vite_values(&json);
     assert_eq!(v.base.as_deref(), Some("/app/"));
     assert_eq!(v.public_dir, Some("/abs/shared/public".into()));
+    assert_eq!(
+        v.cache_dir.as_deref(),
+        Some("/abs/shared/node_modules/.vite")
+    );
     assert_eq!(v.port, Some(3010));
     assert_eq!(v.host.as_deref(), Some("0.0.0.0"));
     assert!(v.define.unwrap().contains_key("__X__"));
@@ -1513,6 +1518,7 @@ fn parse_tolerates_nulls_and_missing() {
     let v = parse_vite_values(&serde_json::json!({ "base": null, "port": null }));
     assert!(v.base.is_none());
     assert!(v.public_dir.is_none());
+    assert!(v.cache_dir.is_none());
     assert!(v.port.is_none());
     assert!(v.define.is_none());
 }
@@ -1523,6 +1529,7 @@ fn merge_adopts_only_unset_fields() {
     let v = ViteValues {
         base: Some("/vite-base/".into()),
         public_dir: Some("shared/public".into()),
+        cache_dir: None,
         port: Some(3010),
         host: Some("localhost".into()),
         origin: Some("https://cdn.example".into()),
@@ -1581,6 +1588,7 @@ fn merge_never_overrides_config() {
     let v = ViteValues {
         base: Some("/vite-base/".into()),
         public_dir: Some("shared/public".into()),
+        cache_dir: None,
         port: None,
         host: None,
         origin: None,
