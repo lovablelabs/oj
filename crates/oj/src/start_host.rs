@@ -1146,7 +1146,12 @@ impl StartHost {
             )
             .map_err(|e| format!("{clean}: {e}"))?
             .unwrap_or(raw);
-            oj_compiler::server_fns::rewrite_server(&raw, &rel).unwrap_or(raw)
+            oj_compiler::server_fns::rewrite_server(
+                &raw,
+                &rel,
+                &oj_compiler::server_fns::FsModules { root: &self.root },
+            )
+            .unwrap_or(raw)
         } else {
             raw
         };
