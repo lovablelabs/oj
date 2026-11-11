@@ -970,11 +970,13 @@ async fn a_file_routed_page_behind_a_granular_gate_rebuilds_without_denials() {
 
 /// Server functions declared in the shapes Start's compiler accepts beyond
 /// `export const name = createServerFn()`: a type-annotated `const` through
-/// a renamed import, a `let` through a namespace import, and a chain through
-/// a variable holding the factory. Each handler loads a `*.server.ts` module
-/// with `await import()`, so a handler left in the client is denied there.
+/// a renamed import, a `let` through a namespace import, a chain through a
+/// variable holding the factory, and a chain through a builder another module
+/// exports. Each handler loads a `*.server.ts` module with `await import()`,
+/// so a handler left in the client is denied there.
 const SHAPED_FNS: &str = r#"import { createServerFn as serverFn } from "@tanstack/react-start";
 import * as start from "@tanstack/react-start";
+import { shared } from "./shared.functions";
 
 type Plan = () => Promise<string>;
 
@@ -993,9 +995,22 @@ export const summarize = base.handler(async () => {
   const { gate } = await import("./ai-gate.server");
   return `summarize-handler:${gate()}`;
 });
+
+export const digest = shared.handler(async () => {
+  const { gate } = await import("./ai-gate.server");
+  return `digest-handler:${gate()}`;
+});
 "#;
 
-const SHAPED_NAMES: [&str; 3] = ["plan", "audit", "summarize"];
+/// A builder another module exports: Start's compiler resolves `shared`
+/// through the import to this declaration. No handler here, so this module
+/// declares no server function of its own.
+const SHARED_BUILDER: &str = r#"import { createServerFn } from "@tanstack/react-start";
+
+export const shared = createServerFn({ method: "POST" });
+"#;
+
+const SHAPED_NAMES: [&str; 4] = ["plan", "audit", "summarize", "digest"];
 
 /// The server-only module the handlers load, importing the server entry.
 const GATE_SERVER: &str = r#"import { getRequestHeader } from "@tanstack/react-start/server";
@@ -1003,17 +1018,18 @@ const GATE_SERVER: &str = r#"import { getRequestHeader } from "@tanstack/react-s
 export const gate = () => getRequestHeader("x-gate") ?? "ai-gate-secret";
 "#;
 
-fn shaped_fn_files() -> [(&'static str, String); 3] {
+fn shaped_fn_files() -> [(&'static str, String); 4] {
     [
         ("src/lib/ai-gate.server.ts", GATE_SERVER.to_string()),
+        ("src/lib/shared.functions.ts", SHARED_BUILDER.to_string()),
         ("src/lib/plan.functions.ts", SHAPED_FNS.to_string()),
         (
             "src/routes/about.tsx",
             about(
-                "import { plan, audit, summarize } from \"../lib/plan.functions\";",
+                "import { plan, audit, summarize, digest } from \"../lib/plan.functions\";",
                 r#"const [result, setResult] = useState("");
   useEffect(() => {
-    Promise.all([plan(), audit(), summarize()]).then(
+    Promise.all([plan(), audit(), summarize(), digest()]).then(
       (r) => setResult(r.join("|")),
       (e) => setResult("error " + String(e)),
     );
@@ -1086,7 +1102,7 @@ async fn dev_hydrates_a_page_calling_server_fns_declared_in_other_shapes() {
         .await;
     let answered = page
         .poll(
-            r##"document.querySelector("#secret")?.textContent === "plan-handler:ai-gate-secret|audit-handler:ai-gate-secret|summarize-handler:ai-gate-secret""##,
+            r##"document.querySelector("#secret")?.textContent === "plan-handler:ai-gate-secret|audit-handler:ai-gate-secret|summarize-handler:ai-gate-secret|digest-handler:ai-gate-secret""##,
             Duration::from_secs(30),
         )
         .await;

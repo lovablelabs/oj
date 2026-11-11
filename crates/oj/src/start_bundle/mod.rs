@@ -373,7 +373,11 @@ pub(crate) fn write_server_fn_resolver(
             .unwrap_or(path)
             .to_string_lossy()
             .replace('\\', "/");
-        let fns = oj_compiler::server_fns::find_server_fns(&code, &rel);
+        let fns = oj_compiler::server_fns::find_server_fns(
+            &code,
+            &rel,
+            &oj_compiler::server_fns::FsModules { root },
+        );
         if fns.is_empty() {
             continue;
         }

@@ -16,15 +16,24 @@
 //! a chain may run through another module variable (`const factory =
 //! createServerFn(); export const x = factory.handler(..)`), as the compiler's
 //! `resolveExprKind` follows a binding to the call that made it a Builder.
-//! TypeScript's `as`, `satisfies` and `!` around the chain are looked through
+//! The variable may come from another of the app's modules (`import { base }
+//! from "./base"`, `export const base = createServerFn()` there), reached
+//! through its re-exports, as the compiler's `resolveImportKind` follows the
+//! import to the binding that made it a Builder; so may the factory itself
+//! (`export { createServerFn } from "@tanstack/react-start"`). TypeScript's
+//! `as`, `satisfies` and `!` around the chain are looked through
 //! (`unwrapExpression`). A `.handler(..)` call that is not a variable's
 //! initializer (a property of an object literal, a `return`) is not a server
 //! function, as the compiler's `getVariableDeclaratorForExpressionPath` finds
 //! none for it.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::path::{Component, Path, PathBuf};
+
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    Argument, BindingPattern, CallExpression, Expression, ImportDeclarationSpecifier,
+    Argument, BindingPattern, CallExpression, Declaration, Expression, ImportDeclarationSpecifier,
     ModuleExportName, Program, Statement, VariableDeclaration,
 };
 use oxc_parser::Parser;
@@ -73,10 +82,116 @@ pub fn vite_dev_server_fn_id(rel: &str, name: &str) -> String {
         .encode(format!("{{\"file\":{file},\"export\":{export}}}").as_bytes())
 }
 
-/// Every server function declared in `code`, in source order. `path` picks
-/// the parser's language. A module the parser cannot read declares none.
-pub fn find_server_fns(code: &str, path: &str) -> Vec<ServerFn> {
-    if !code.contains(FACTORY) {
+/// Whether `code` may declare a server function, as Start's compiler decides
+/// which modules to read (`KindDetectionPatterns.ServerFn`): it names the
+/// factory, or calls `.handler(..)`, whose chain may root at a builder another
+/// module exports.
+pub fn may_declare(code: &str) -> bool {
+    static HANDLER: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    code.contains(FACTORY)
+        || HANDLER
+            .get_or_init(|| regex::Regex::new(r"\.\s*handler\s*\(").expect("handler call regex"))
+            .is_match(code)
+}
+
+/// The app's modules a chain may import its builder or factory from.
+pub trait Modules {
+    /// The module `specifier` names from the module at `from`, as its own
+    /// app-relative path and its source. None for a specifier that is not one
+    /// of the app's files (a package, a missing file): such a binding is
+    /// nothing to the chain, as the compiler's unresolved import is.
+    fn read(&self, from: &str, specifier: &str) -> Option<(String, String)>;
+}
+
+/// No other module: a chain roots in its own module only.
+impl Modules for () {
+    fn read(&self, _from: &str, _specifier: &str) -> Option<(String, String)> {
+        None
+    }
+}
+
+/// The app's files under `root`, a relative specifier resolved as Vite's
+/// `tryCleanFsResolve` resolves it: the file as written; a `.js`, `.jsx`,
+/// `.mjs` or `.cjs` import's TypeScript source; the default extensions in
+/// Vite's order; then a directory's index.
+pub struct FsModules<'a> {
+    pub root: &'a Path,
+}
+
+/// Vite's `DEFAULT_EXTENSIONS`, less `.json`, which declares nothing.
+const EXTENSIONS: [&str; 6] = ["mjs", "js", "mts", "ts", "jsx", "tsx"];
+
+impl Modules for FsModules<'_> {
+    fn read(&self, from: &str, specifier: &str) -> Option<(String, String)> {
+        if !specifier.starts_with('.') {
+            return None;
+        }
+        let dir = Path::new(from).parent().unwrap_or_else(|| Path::new(""));
+        let rel = resolve_file(self.root, &normalize(&dir.join(specifier)))?;
+        let code = std::fs::read_to_string(self.root.join(&rel)).ok()?;
+        Some((rel, code))
+    }
+}
+
+/// `rel` (app-relative, normalized) as the file Vite would load, app-relative
+/// with `/` separators, or None when no file answers.
+fn resolve_file(root: &Path, rel: &Path) -> Option<String> {
+    let file = |candidate: &Path| root.join(candidate).is_file().then(|| slash(candidate));
+    if let Some(found) = file(rel) {
+        return Some(found);
+    }
+    // `isPossibleTsOutput`: a JS import may name its TypeScript source.
+    if let Some(ext) = rel.extension().and_then(|e| e.to_str()) {
+        if matches!(ext, "js" | "jsx" | "mjs" | "cjs") {
+            let mut candidates = vec![rel.with_extension(ext.replace("js", "ts"))];
+            if ext == "js" {
+                candidates.push(rel.with_extension("tsx"));
+            }
+            if let Some(found) = candidates.iter().find_map(|c| file(c)) {
+                return Some(found);
+            }
+        }
+    }
+    let as_str = slash(rel);
+    if let Some(found) = EXTENSIONS
+        .iter()
+        .find_map(|ext| file(Path::new(&format!("{as_str}.{ext}"))))
+    {
+        return Some(found);
+    }
+    if root.join(rel).is_dir() {
+        return EXTENSIONS
+            .iter()
+            .find_map(|ext| file(&rel.join(format!("index.{ext}"))));
+    }
+    None
+}
+
+/// `path` without `.` and `..` segments.
+fn normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::Normal(part) => out.push(part),
+            Component::CurDir | Component::RootDir | Component::Prefix(_) => {}
+        }
+    }
+    out
+}
+
+fn slash(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+/// Every server function declared in `code`, in source order. `path`, the
+/// module's app-relative path, picks the parser's language and locates the
+/// modules a chain imports from, read through `modules`. A module the parser
+/// cannot read declares none.
+pub fn find_server_fns(code: &str, path: &str, modules: &dyn Modules) -> Vec<ServerFn> {
+    if !may_declare(code) {
         return Vec::new();
     }
     let allocator = Allocator::default();
@@ -84,7 +199,7 @@ pub fn find_server_fns(code: &str, path: &str) -> Vec<ServerFn> {
     if parsed.fatal_error {
         return Vec::new();
     }
-    find_in(&parsed.program, code)
+    find_in(&parsed.program, code, path, modules)
 }
 
 fn source_type(path: &str) -> SourceType {
@@ -92,8 +207,8 @@ fn source_type(path: &str) -> SourceType {
 }
 
 /// The server functions of a parsed module.
-fn find_in(program: &Program, code: &str) -> Vec<ServerFn> {
-    let bindings = Bindings::of(program);
+fn find_in(program: &Program, code: &str, path: &str, modules: &dyn Modules) -> Vec<ServerFn> {
+    let bindings = Bindings::of(program, path, modules, &[]);
     let mut out = Vec::new();
     for (decl_start, var) in module_declarations(program) {
         for d in &var.declarations {
@@ -133,9 +248,7 @@ fn module_declarations<'a>(
     program.body.iter().filter_map(|statement| match statement {
         Statement::VariableDeclaration(var) => Some((var.span.start as usize, &**var)),
         Statement::ExportDeclaration(export) => match &export.declaration {
-            oxc_ast::ast::Declaration::VariableDeclaration(var) => {
-                Some((export.span.start as usize, &**var))
-            }
+            Declaration::VariableDeclaration(var) => Some((export.span.start as usize, &**var)),
             _ => None,
         },
         _ => None,
@@ -158,39 +271,85 @@ fn args_start(code: &str, call: &CallExpression, property_end: usize) -> Option<
 /// from each link's object end to its end.
 type LastLink<'s> = (&'s str, usize, Vec<(usize, usize)>);
 
-/// The module's names for the factory and for the chains built on it.
-#[derive(Default)]
-struct Bindings {
-    /// Local names bound to `createServerFn`: the name itself, and what an
-    /// import of it is called locally.
-    factories: Vec<String>,
-    /// Namespace imports, whose `createServerFn` member is the factory.
-    namespaces: Vec<String>,
-    /// Module variables holding a chain on the factory that has not reached
-    /// `.handler(..)` yet (Start's `Builder`), which another chain may
-    /// continue.
-    builders: Vec<String>,
+/// What a name stands for in a chain: Start's `Root` (the factory) and
+/// `Builder` (a chain on it short of `.handler(..)`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Factory,
+    Builder,
+    None,
 }
 
-impl Bindings {
-    fn of(program: &Program) -> Bindings {
+/// The module's names for the factory and for the chains built on it.
+struct Bindings<'m> {
+    modules: &'m dyn Modules,
+    /// The module's own app-relative path, which its imports resolve from.
+    path: String,
+    /// This module and the modules whose exports are being resolved above it,
+    /// so a cycle of re-exports ends.
+    visiting: Vec<String>,
+    /// Local names bound to `createServerFn`: the name itself, what an
+    /// import of it is called locally, and a local that another of the app's
+    /// modules exports it as.
+    factories: Vec<String>,
+    /// Namespace imports of packages, whose `createServerFn` member is the
+    /// factory.
+    namespaces: Vec<String>,
+    /// Namespace imports of the app's own modules, with the specifier: a
+    /// member may be a builder that module exports.
+    module_namespaces: Vec<(String, String)>,
+    /// Names holding a chain on the factory that has not reached
+    /// `.handler(..)` yet (Start's `Builder`), which another chain may
+    /// continue: module variables, and imports of such a variable from
+    /// another of the app's modules.
+    builders: Vec<String>,
+    /// What another module exports under a name, once asked: by specifier
+    /// and exported name.
+    exported: RefCell<HashMap<(String, String), Kind>>,
+}
+
+impl<'m> Bindings<'m> {
+    fn of(program: &Program, path: &str, modules: &'m dyn Modules, above: &[String]) -> Self {
+        let mut visiting = above.to_vec();
+        visiting.push(path.to_string());
         let mut out = Bindings {
+            modules,
+            path: path.to_string(),
+            visiting,
             factories: vec![FACTORY.to_string()],
-            ..Bindings::default()
+            namespaces: Vec::new(),
+            module_namespaces: Vec::new(),
+            builders: Vec::new(),
+            exported: RefCell::new(HashMap::new()),
         };
         for statement in &program.body {
             let Statement::ImportDeclaration(import) = statement else {
                 continue;
             };
+            let source = crate::lit_str(import.source.value);
+            let own_module = source.starts_with('.');
             for specifier in import.specifiers.iter().flatten() {
                 match specifier {
                     ImportDeclarationSpecifier::ImportSpecifier(s) => {
-                        if export_name(&s.imported) == FACTORY && s.local.name != FACTORY {
-                            out.factories.push(s.local.name.to_string());
+                        let imported = export_name(&s.imported);
+                        let local = s.local.name.as_str();
+                        if own_module {
+                            match out.exported_kind(source, imported) {
+                                Kind::Factory => out.factories.push(local.to_string()),
+                                Kind::Builder => out.builders.push(local.to_string()),
+                                Kind::None => {}
+                            }
+                        } else if imported == FACTORY && local != FACTORY {
+                            out.factories.push(local.to_string());
                         }
                     }
                     ImportDeclarationSpecifier::ImportNamespaceSpecifier(s) => {
-                        out.namespaces.push(s.local.name.to_string());
+                        if own_module {
+                            out.module_namespaces
+                                .push((s.local.name.to_string(), source.to_string()));
+                        } else {
+                            out.namespaces.push(s.local.name.to_string());
+                        }
                     }
                     ImportDeclarationSpecifier::ImportDefaultSpecifier(_) => {}
                 }
@@ -212,9 +371,7 @@ impl Bindings {
                 .iter()
                 .filter(|(name, init)| {
                     !out.builders.iter().any(|b| b == name)
-                        && matches!(init.get_inner_expression(), Expression::CallExpression(call)
-                            if out.is_factory(&call.callee)
-                                || matches!(out.chain(call), Some((link, _, _)) if link != "handler"))
+                        && out.kind_of_init(init) == Kind::Builder
                 })
                 .map(|(name, _)| name.to_string())
                 .collect();
@@ -224,6 +381,122 @@ impl Bindings {
             out.builders.extend(found);
         }
         out
+    }
+
+    /// What a module variable's initializer makes it: the factory under
+    /// another name, a builder, or neither.
+    fn kind_of_init(&self, init: &Expression) -> Kind {
+        let init = init.get_inner_expression();
+        if self.is_factory(init) {
+            return Kind::Factory;
+        }
+        match init {
+            Expression::Identifier(id) => self.kind_of_name(id.name.as_str()),
+            Expression::CallExpression(call) => {
+                if self.is_factory(&call.callee)
+                    || matches!(self.chain(call), Some((link, _, _)) if link != "handler")
+                {
+                    Kind::Builder
+                } else {
+                    Kind::None
+                }
+            }
+            _ => Kind::None,
+        }
+    }
+
+    /// What a local name stands for.
+    fn kind_of_name(&self, name: &str) -> Kind {
+        if self.factories.iter().any(|f| f == name) {
+            Kind::Factory
+        } else if self.builders.iter().any(|b| b == name) {
+            Kind::Builder
+        } else {
+            Kind::None
+        }
+    }
+
+    /// What the module `specifier` names from this one exports as `name`,
+    /// through `export const`, `export { local as name }`, `export { .. }
+    /// from` and `export * from`, as the compiler's `findExportInModule`
+    /// follows them. None for a module that is not the app's, that the parser
+    /// cannot read, that exports no such name, or that is already being
+    /// resolved above this one.
+    fn exported_kind(&self, specifier: &str, name: &str) -> Kind {
+        let key = (specifier.to_string(), name.to_string());
+        if let Some(kind) = self.exported.borrow().get(&key) {
+            return *kind;
+        }
+        let kind = self.resolve_exported(specifier, name);
+        self.exported.borrow_mut().insert(key, kind);
+        kind
+    }
+
+    fn resolve_exported(&self, specifier: &str, name: &str) -> Kind {
+        let Some((path, code)) = self.modules.read(&self.path, specifier) else {
+            // A package's `createServerFn`, re-exported by the app's module,
+            // is the factory, as a direct import of it is.
+            return if !specifier.starts_with('.') && name == FACTORY {
+                Kind::Factory
+            } else {
+                Kind::None
+            };
+        };
+        if self.visiting.contains(&path) {
+            return Kind::None;
+        }
+        let allocator = Allocator::default();
+        let parsed = Parser::new(&allocator, &code, source_type(&path)).parse();
+        if parsed.fatal_error {
+            return Kind::None;
+        }
+        let bindings = Bindings::of(&parsed.program, &path, self.modules, &self.visiting);
+        for statement in &parsed.program.body {
+            match statement {
+                Statement::ExportDeclaration(export) => {
+                    if let Declaration::VariableDeclaration(var) = &export.declaration {
+                        for d in &var.declarations {
+                            if let (BindingPattern::BindingIdentifier(id), Some(init)) =
+                                (&d.id, &d.init)
+                            {
+                                if id.name == name {
+                                    return bindings.kind_of_init(init);
+                                }
+                            }
+                        }
+                    }
+                }
+                Statement::ExportNamedDeclaration(export) => {
+                    if let Some(s) = export
+                        .specifiers
+                        .iter()
+                        .find(|s| export_name(&s.exported) == name)
+                    {
+                        return bindings.kind_of_name(export_name(&s.local));
+                    }
+                }
+                Statement::ExportFromDeclaration(export) => {
+                    if let Some(s) = export
+                        .specifiers
+                        .iter()
+                        .find(|s| export_name(&s.exported) == name)
+                    {
+                        return bindings.exported_kind(
+                            crate::lit_str(export.source.value),
+                            export_name(&s.local),
+                        );
+                    }
+                }
+                Statement::ExportAllDeclaration(export) if export.exported.is_none() => {
+                    let kind = bindings.exported_kind(crate::lit_str(export.source.value), name);
+                    if kind != Kind::None {
+                        return kind;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Kind::None
     }
 
     /// Whether `callee` is the factory: a name bound to it, or a namespace
@@ -240,8 +513,28 @@ impl Bindings {
         }
     }
 
+    /// Whether `node` names a builder: a local bound to one, or a member of
+    /// a namespace import of the app's module that exports one.
+    fn is_builder(&self, node: &Expression) -> bool {
+        match node {
+            Expression::Identifier(id) => self.builders.iter().any(|b| b == id.name.as_str()),
+            Expression::StaticMemberExpression(m) => {
+                let Expression::Identifier(object) = m.object.without_parentheses() else {
+                    return false;
+                };
+                self.module_namespaces
+                    .iter()
+                    .find(|(local, _)| local == object.name.as_str())
+                    .is_some_and(|(_, specifier)| {
+                        self.exported_kind(specifier, m.property.name.as_str()) == Kind::Builder
+                    })
+            }
+            _ => false,
+        }
+    }
+
     /// `call` as the last link of a chain rooted at the factory, or at a
-    /// variable holding a chain on it. None for a call that is the factory's
+    /// name holding a chain on it. None for a call that is the factory's
     /// own, or no chain on it.
     fn chain<'b>(&self, call: &'b CallExpression) -> Option<LastLink<'b>> {
         let Expression::StaticMemberExpression(m) = call.callee.without_parentheses() else {
@@ -267,11 +560,7 @@ impl Bindings {
                     }
                     node = inner.object.without_parentheses();
                 }
-                Expression::Identifier(id)
-                    if self.builders.iter().any(|b| b == id.name.as_str()) =>
-                {
-                    break;
-                }
+                _ if self.is_builder(node) => break,
                 _ => return None,
             }
         }
@@ -291,15 +580,17 @@ fn export_name<'a>(name: &'a ModuleExportName) -> &'a str {
 /// The server provider: every server function grows a sibling
 /// `NAME_createServerFn_handler = createServerRpc(meta, ...)` export, passed as
 /// the handler's first argument. Adds no lines, so stack traces keep their
-/// positions. `None` when the module declares no server function.
-pub fn rewrite_server(code: &str, rel: &str) -> Option<String> {
+/// positions. `rel` is the app-relative path, `modules` reads the app's
+/// other modules for an imported builder. `None` when the module declares no
+/// server function.
+pub fn rewrite_server(code: &str, rel: &str, modules: &dyn Modules) -> Option<String> {
     let mut edits: Vec<(usize, String)> = Vec::new();
     for ServerFn {
         name,
         decl_start,
         args_at,
         ..
-    } in find_server_fns(code, rel)
+    } in find_server_fns(code, rel, modules)
     {
         let id = server_fn_id(rel, &name);
         let meta = format!("{{ id: {id:?}, name: {name:?}, filename: {rel:?} }}");
@@ -347,20 +638,29 @@ impl std::error::Error for ClientRewriteError {}
 /// link is dropped, so neither the handler nor the validator reaches the
 /// browser. A module-level binding only the dropped code used goes too, as
 /// Start's dead-code pass drops it. Line counts are kept. `rel` is the
-/// app-relative path, which also picks the parser's language. `Ok(None)` when
-/// the module declares no server function.
-pub fn rewrite_client(code: &str, rel: &str) -> Result<Option<String>, ClientRewriteError> {
-    if !code.contains(FACTORY) {
+/// app-relative path, which also picks the parser's language; `modules` reads
+/// the app's other modules for an imported builder. `Ok(None)` when the module
+/// declares no server function. A module that names the factory but does not
+/// parse is an error: it may hold a handler that would ship.
+pub fn rewrite_client(
+    code: &str,
+    rel: &str,
+    modules: &dyn Modules,
+) -> Result<Option<String>, ClientRewriteError> {
+    if !may_declare(code) {
         return Ok(None);
     }
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, code, source_type(rel)).parse();
     if parsed.fatal_error {
+        if !code.contains(FACTORY) {
+            return Ok(None);
+        }
         return Err(ClientRewriteError(format!(
             "oj: could not parse {rel} to rewrite its server functions for the client"
         )));
     }
-    let fns = find_in(&parsed.program, code);
+    let fns = find_in(&parsed.program, code, rel, modules);
     if fns.is_empty() {
         return Ok(None);
     }
@@ -456,6 +756,19 @@ fn skip_ws_and_comments(bytes: &[u8], mut i: usize) -> Option<usize> {
 mod tests {
     use super::*;
 
+    // The module's own chains: no other module to import a builder from.
+    fn find_server_fns(code: &str, path: &str) -> Vec<ServerFn> {
+        super::find_server_fns(code, path, &())
+    }
+
+    fn rewrite_client(code: &str, rel: &str) -> Result<Option<String>, ClientRewriteError> {
+        super::rewrite_client(code, rel, &())
+    }
+
+    fn rewrite_server(code: &str, rel: &str) -> Option<String> {
+        super::rewrite_server(code, rel, &())
+    }
+
     const CLIENT_IMPORT: &str =
         "import { createClientRpc } from \"@tanstack/react-start/client-rpc\"; ";
 
@@ -500,11 +813,12 @@ mod tests {
         );
     }
 
-    // The shape that blanked a preview: a comment inside the handler with an
-    // unbalanced `)`. A paren count ended the handler there and left the rest
-    // of the comment and the body in the bundle.
+    // The shape that blanked a preview under the first, textual finder: a
+    // comment inside the handler with an unbalanced `)`, where a paren count
+    // ended the handler. The handler's span is the parser's, so the whole
+    // body goes, comment and all.
     #[test]
-    fn a_paren_inside_a_handler_comment_does_not_end_the_handler() {
+    fn a_handler_with_an_unbalanced_paren_in_a_comment_is_replaced_whole() {
         let code = [
             "import { createServerFn } from \"@tanstack/react-start\";",
             "export const saveKey = createServerFn({ method: \"POST\" })",
@@ -604,8 +918,10 @@ mod tests {
         parses(&out, rel);
     }
 
+    // Brackets inside strings, templates and regex literals are the handler's
+    // own: its span covers them.
     #[test]
-    fn brackets_in_strings_templates_and_regexes_stay_inside_the_handler() {
+    fn brackets_in_strings_templates_and_regexes_are_part_of_the_handler() {
         let code = [
             "export const run = createServerFn()",
             "  .handler(async () => {",
@@ -626,11 +942,11 @@ mod tests {
         parses(&out, "src/run.ts");
     }
 
-    // A `/` right after a template literal divides. Read as a regex start, it
-    // lost the chain: the function went unregistered on the server and in
-    // the resolver.
+    // A `/` right after a template literal divides. The first finder read it
+    // as a regex start and lost the chain, so the function went unregistered
+    // on the server and in the resolver; the parser knows the difference.
     #[test]
-    fn a_division_after_a_template_literal_keeps_the_chain() {
+    fn a_division_after_a_template_literal_in_a_validator_keeps_the_chain() {
         let code = [
             "export const half = createServerFn({ method: `GET` })",
             "  .inputValidator((n: number) => `${n}`.length / 2)",
@@ -643,7 +959,7 @@ mod tests {
             .map(|f| f.name)
             .collect();
         assert_eq!(found, ["half"]);
-        // Right after an opener, the template's own `prev` is the `(`.
+        // A division right after an opener.
         let code = code.replace("`${n}`.length / 2", "(`4`/2) * n");
         let found: Vec<String> = find_server_fns(&code, "src/half.ts")
             .into_iter()
@@ -1055,10 +1371,11 @@ mod tests {
         assert_eq!(rewrite_server("export const x = 1;", "src/x.ts"), None);
     }
 
-    // A text scan cannot delimit these handler bodies: a regex after a keyword,
-    // a `(` in JSX text. It gave up, and the handler shipped to the browser.
+    // A regex after a keyword, a `(` in JSX text: the first finder could not
+    // delimit these bodies and shipped the handler to the browser. The
+    // handler's span covers them.
     #[test]
-    fn handler_bodies_a_text_scan_cannot_delimit_are_still_replaced() {
+    fn handler_bodies_with_a_keyword_regex_or_jsx_parens_are_replaced() {
         let cases = [
             (
                 "src/re.ts",
@@ -1130,5 +1447,204 @@ mod tests {
             "{out}"
         );
         parses(&out, "src/u.ts");
+    }
+
+    /// The app's modules by path, a relative specifier resolved as a `.ts`
+    /// file next to the importer.
+    struct MapModules(Vec<(&'static str, &'static str)>);
+
+    impl Modules for MapModules {
+        fn read(&self, from: &str, specifier: &str) -> Option<(String, String)> {
+            if !specifier.starts_with('.') {
+                return None;
+            }
+            let dir = Path::new(from).parent()?;
+            let path = format!("{}.ts", slash(&normalize(&dir.join(specifier))));
+            self.0
+                .iter()
+                .find(|(p, _)| *p == path)
+                .map(|(p, code)| (p.to_string(), code.to_string()))
+        }
+    }
+
+    // Start's compiler follows an import to the binding that made it a
+    // Builder (`resolveImportKind`, `findExportInModule` through `export {}`
+    // and `export * from`), and reads a module for `.handler(` alone
+    // (`KindDetectionPatterns.ServerFn`), so a server function whose builder
+    // another module exports is one, named after its own variable, on both
+    // sides. The builder's module declares none.
+    #[test]
+    fn a_builder_another_module_exports_is_resolved_on_both_sides() {
+        let modules = MapModules(vec![
+            (
+                "src/lib/base.ts",
+                "import { createServerFn } from \"@tanstack/react-start\";\nexport const base = createServerFn({ method: \"POST\" }).middleware([]);\nconst guarded = base.validator((d: unknown) => d);\nexport { guarded as checked };\nexport const done = base.handler(async () => 1);\n",
+            ),
+            (
+                "src/lib/again.ts",
+                "export { base } from \"./base\";\nexport * from \"./base\";\n",
+            ),
+            (
+                "src/lib/start.ts",
+                "export { createServerFn } from \"@tanstack/react-start\";\nimport { createServerFn as make } from \"@tanstack/react-start\";\nexport const factory = make;\n",
+            ),
+        ]);
+        // No `createServerFn` in the text: the handler call alone reads it.
+        let code = [
+            "import { base, checked } from \"../lib/base\";",
+            "import * as fns from \"../lib/again\";",
+            "export const x = base.handler(async () => \"x-secret\");",
+            "export const y = checked.validator((d) => d).handler(async () => \"y-secret\");",
+            "export const z = fns.base.handler(async () => \"z-secret\");",
+            "export const w = fns.checked.handler(async () => \"w-secret\");",
+            "",
+        ]
+        .join("\n");
+        let rel = "src/routes/fns.ts";
+        let names: Vec<_> = super::find_server_fns(&code, rel, &modules)
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        assert_eq!(names, ["x", "y", "z", "w"]);
+        let out = super::rewrite_client(&code, rel, &modules)
+            .unwrap()
+            .unwrap();
+        for name in ["x", "y", "z", "w"] {
+            assert!(
+                out.contains(&format!(".handler({});", rpc(rel, name))),
+                "{out}"
+            );
+        }
+        assert!(
+            out.contains(&format!(
+                "export const y = checked.handler({});",
+                rpc(rel, "y")
+            )),
+            "{out}"
+        );
+        assert!(!out.contains("-secret"), "{out}");
+        assert_eq!(lines(&out), lines(&code));
+        parses(&out, rel);
+        let server = super::rewrite_server(&code, rel, &modules).unwrap();
+        for name in ["x", "y", "z", "w"] {
+            assert!(
+                server.contains(&format!(
+                    "export const {name}_createServerFn_handler = createServerRpc("
+                )),
+                "{server}"
+            );
+        }
+        assert!(
+            server.contains("fns.checked.handler(w_createServerFn_handler, "),
+            "{server}"
+        );
+
+        // The factory itself through the app's module: as the module
+        // re-exports it, and as a variable the module binds it to.
+        let code = [
+            "import { createServerFn as fn, factory } from \"../lib/start\";",
+            "export const a = fn().handler(async () => \"a-secret\");",
+            "export const b = factory({ method: \"GET\" }).handler(async () => \"b-secret\");",
+            "",
+        ]
+        .join("\n");
+        let names: Vec<_> = super::find_server_fns(&code, rel, &modules)
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        assert_eq!(names, ["a", "b"]);
+
+        // The builder's own module: `base` and `checked` are builders, not
+        // functions; `done` is one of its own.
+        let (_, base) = modules.read("src/routes/fns.ts", "../lib/base").unwrap();
+        let names: Vec<_> = super::find_server_fns(&base, "src/lib/base.ts", &modules)
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        assert_eq!(names, ["done"]);
+    }
+
+    // An import that is not a builder, a module the app does not hold, and a
+    // cycle of re-exports: none is a server function, and the walk ends.
+    #[test]
+    fn an_import_that_is_no_builder_is_not_a_server_fn() {
+        let modules = MapModules(vec![
+            (
+                "src/other.ts",
+                "export const other = { handler: (f: () => unknown) => f };\nexport const fromPkg = somePackageThing();\n",
+            ),
+            ("src/a.ts", "export { b as a } from \"./b\";\n"),
+            ("src/b.ts", "export { a as b } from \"./a\";\nexport * from \"./a\";\n"),
+        ]);
+        let code = [
+            "import { other, fromPkg } from \"./other\";",
+            "import { missing } from \"./missing\";",
+            "import { a } from \"./a\";",
+            "import { handler } from \"some-package\";",
+            "export const p = other.handler(async () => 1);",
+            "export const q = fromPkg.handler(async () => 1);",
+            "export const r = missing.handler(async () => 1);",
+            "export const s = a.handler(async () => 1);",
+            "export const t = handler.handler(async () => 1);",
+            "",
+        ]
+        .join("\n");
+        assert!(super::find_server_fns(&code, "src/fns.ts", &modules).is_empty());
+        assert_eq!(
+            super::rewrite_client(&code, "src/fns.ts", &modules),
+            Ok(None)
+        );
+        assert_eq!(super::rewrite_server(&code, "src/fns.ts", &modules), None);
+    }
+
+    // `FsModules` resolves a relative specifier as Vite's `tryCleanFsResolve`
+    // does: the file as written, a JS import's TypeScript source, the default
+    // extensions in order, a directory's index; a package is not the app's.
+    #[test]
+    fn fs_modules_resolve_a_relative_import_as_vite_does() {
+        let root = std::env::temp_dir().join(format!("oj-server-fns-fs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for (path, code) in [
+            ("src/lib/base.functions.ts", "export const base = 1;\n"),
+            ("src/lib/plain.mjs", "export const plain = 1;\n"),
+            ("src/lib/plain.ts", "export const shadowed = 1;\n"),
+            ("src/lib/typed.ts", "export const typed = 1;\n"),
+            ("src/lib/wide.tsx", "export const wide = 1;\n"),
+            ("src/lib/dir/index.ts", "export const dir = 1;\n"),
+            ("src/lib/withExt.js", "export const js = 1;\n"),
+        ] {
+            let file = root.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, code).unwrap();
+        }
+        let modules = FsModules { root: &root };
+        let from = "src/routes/index.tsx";
+        let read = |specifier: &str| modules.read(from, specifier).map(|(path, _)| path);
+        assert_eq!(
+            read("../lib/base.functions").as_deref(),
+            Some("src/lib/base.functions.ts")
+        );
+        assert_eq!(
+            read("../lib/withExt.js").as_deref(),
+            Some("src/lib/withExt.js")
+        );
+        assert_eq!(read("../lib/typed.js").as_deref(), Some("src/lib/typed.ts"));
+        assert_eq!(read("../lib/wide.js").as_deref(), Some("src/lib/wide.tsx"));
+        // `.mjs` comes before `.ts` in Vite's extension order.
+        assert_eq!(read("../lib/plain").as_deref(), Some("src/lib/plain.mjs"));
+        assert_eq!(read("../lib/dir").as_deref(), Some("src/lib/dir/index.ts"));
+        assert_eq!(
+            read("./../lib/./dir/index").as_deref(),
+            Some("src/lib/dir/index.ts")
+        );
+        assert_eq!(read("../lib/missing"), None);
+        assert_eq!(read("@tanstack/react-start"), None);
+        assert_eq!(read("some-package/base"), None);
+        let (path, code) = modules.read(from, "../lib/base.functions").unwrap();
+        assert_eq!(
+            (path.as_str(), code.as_str()),
+            ("src/lib/base.functions.ts", "export const base = 1;\n")
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
