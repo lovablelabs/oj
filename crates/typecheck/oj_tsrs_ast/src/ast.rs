@@ -2209,6 +2209,15 @@ pub struct ContentMapperSourceFileInfo {
 }
 
 impl SourceFile {
+    // ContentMapperParseOptions returns the parse options used to acquire this file from the mapped parse cache.
+    // ast.go:2558
+    pub fn content_mapper_parse_options(&self) -> SourceFileParseOptions {
+        match self.content_mapper_info.get() {
+            None => SourceFileParseOptions::default(),
+            Some(info) => info.parse_options.clone(),
+        }
+    }
+
     // SetContentMapperInfo initializes all content-mapper metadata before the source file is published.
     // ast.go:2644
     pub fn set_content_mapper_info(&self, info: ContentMapperSourceFileInfo) {

@@ -9,6 +9,7 @@ use tsrs_core::context::Context;
 use tsrs_core::tspath::Path;
 use tsrs_lsproto::{self as lsproto, HasLocation, HasLocations};
 
+use crate::concurrent::run_concurrently;
 use crate::findallreferences::{
     NonLocalDefinition, SymbolAndEntriesData, SymbolEntryTransformOptions,
 };
@@ -61,14 +62,23 @@ pub trait CrossProjectOrchestrator: Send + Sync {
         ctx: &Context,
         requested_project_trees: &Set<Path>,
     ) -> Box<dyn Iterator<Item = Arc<dyn Project>> + '_>;
+    // tsrs-only: called on each thread that searches a project for the request, which keeps the returned value until
+    // its search is done (the server makes the request's checker data lease that thread's too).
+    fn enter_search_thread(&self, _ctx: &Context) -> Box<dyn std::any::Any> {
+        Box::new(())
+    }
 }
 
 impl LanguageService {
-    // Go runs the per-project searches as goroutines of a `core.WorkGroup`; they run sequentially here, last-queued
-    // first like tsrs_core's WorkGroup (the order only affects which search runs first: results are ordered by
-    // getResultsIterator). Go's `iter.Seq[Resp]` of results is a Vec handed to `combine_results`.
+    // Go runs the per-project searches as goroutines of a `core.WorkGroup`; here each round searches its queued
+    // projects at once, while the session calls (a project's language service, the projects of a definition) stay on
+    // this thread in queue order, so which projects a search sees does not depend on which search finishes first.
+    // Go's `iter.Seq[Resp]` of results is a Vec handed to `combine_results`.
     // crossproject.go:46
-    pub(crate) fn handle_cross_project<Req: lsproto::HasTextDocumentPosition, Resp: Default>(
+    pub(crate) fn handle_cross_project<
+        Req: lsproto::HasTextDocumentPosition + Sync,
+        Resp: Default + Send,
+    >(
         &self,
         ctx: &Context,
         params: &Req,
@@ -164,108 +174,155 @@ impl LanguageService {
 
         // Outer loop - to complete work if more is added after completing existing queue
         loop {
-            // Process existing known projects first
-            while let Some(item) = queue.pop() {
-                if ctx.err().is_some() {
-                    continue;
-                }
-                let outcome =
-                    catch_unwind(AssertUnwindSafe(|| -> Option<Result<Resp, lsproto::Error>> {
-                        // Process the item
-                        let fetched: Arc<LanguageService>;
-                        let ls: &LanguageService = if let Some(ls) = item.ls {
-                            ls
-                        } else {
-                            // Get it now
-                            fetched = orchestrator.get_language_service_for_project_with_file(
-                                ctx,
-                                &item.project,
-                                &item.uri,
-                            )?;
-                            &fetched
-                        };
-                        let (data, ok) = match item.symbol_data {
-                            Some(data) => (data, true),
-                            None => match ls.provide_symbols_and_entries(
-                                ctx,
-                                &item.uri,
-                                item.position,
-                                is_rename,
-                                implementations,
-                            ) {
-                                Some(data) => (data, true),
-                                None => (SymbolAndEntriesData::default(), false),
+            // Process existing known projects first: every queued project is searched at once, like Go's work group
+            // goroutines, and the locations they find queue the next round.
+            while !queue.is_empty() {
+                let mut round = std::mem::take(&mut queue);
+                round.reverse();
+                let mut local: Vec<(usize, ProjectAndTextDocumentPosition)> = Vec::new();
+                let mut remote: Vec<(usize, RemoteItem)> = Vec::new();
+                for (index, item) in round.into_iter().enumerate() {
+                    if ctx.err().is_some() {
+                        continue;
+                    }
+                    if item.ls.is_some() || item.symbol_data.is_some() {
+                        local.push((index, item));
+                        continue;
+                    }
+                    let ls = catch_unwind(AssertUnwindSafe(|| {
+                        orchestrator.get_language_service_for_project_with_file(
+                            ctx,
+                            &item.project,
+                            &item.uri,
+                        )
+                    }));
+                    match ls {
+                        Ok(Some(ls)) => remote.push((
+                            index,
+                            RemoteItem {
+                                project: item.project,
+                                ls,
+                                uri: item.uri,
+                                position: item.position,
+                                for_original_location: item.for_original_location,
                             },
-                        };
-                        if ctx.err().is_some() {
-                            return None;
+                        )),
+                        Ok(None) => {}
+                        Err(payload) => panics_occurred.push(panic_message(&*payload)),
+                    }
+                }
+                let search_remote = |(index, item): (usize, RemoteItem)| {
+                    let found = catch_unwind(AssertUnwindSafe(|| {
+                        search_project(
+                            ctx,
+                            params,
+                            &item.ls,
+                            &item.uri,
+                            item.position,
+                            None,
+                            false,
+                            symbol_and_entries_to_resp,
+                            is_rename,
+                            implementations,
+                            options,
+                        )
+                    }));
+                    (
+                        index,
+                        (
+                            item.project.id(),
+                            item.for_original_location,
+                            found.map_err(|payload| panic_message(&*payload)),
+                        ),
+                    )
+                };
+                let mut outcomes =
+                    run_concurrently(remote, &search_remote, &|search: &mut dyn FnMut()| {
+                        let _search_thread = orchestrator.enter_search_thread(ctx);
+                        search();
+                    });
+                for (index, item) in local {
+                    let found = catch_unwind(AssertUnwindSafe(|| {
+                        search_project(
+                            ctx,
+                            params,
+                            item.ls.unwrap_or(default_ls),
+                            &item.uri,
+                            item.position,
+                            item.symbol_data,
+                            Arc::ptr_eq(&item.project, &default_project),
+                            symbol_and_entries_to_resp,
+                            is_rename,
+                            implementations,
+                            options,
+                        )
+                    }));
+                    outcomes.push((
+                        index,
+                        (
+                            item.project.id(),
+                            item.for_original_location,
+                            found.map_err(|payload| panic_message(&*payload)),
+                        ),
+                    ));
+                }
+                outcomes.sort_by_key(|(index, _)| *index);
+                for (_, (project_id, for_original_location, found)) in outcomes {
+                    if let Some(err) = ctx.err() {
+                        return Err(err.into());
+                    }
+                    let searched = match found {
+                        Ok(searched) => searched,
+                        Err(panic) => {
+                            panics_occurred.push(panic);
+                            continue;
                         }
-                        if ok {
-                            for entry in &data.symbols_and_entries {
-                                // Find the default definition that can be in another project
-                                // Later we will use this load ancestor tree that references this location and expand search
-                                if Arc::ptr_eq(&item.project, &default_project)
-                                    && default_definition.is_none()
-                                {
-                                    default_definition = ls.get_non_local_definition(ctx, entry);
-                                }
-                                ls.for_each_original_definition_location(
-                                    ctx,
-                                    entry,
-                                    &mut |uri, position| {
-                                        // Get default configured project for this file
-                                        let Ok(def_projects) =
-                                            orchestrator.get_projects_for_file(ctx, &uri)
-                                        else {
-                                            return;
-                                        };
-                                        for def_project in def_projects {
-                                            // Optimization: don't enqueue if will be discarded
-                                            if can_search_project(&results, &def_project) {
-                                                enqueue_item(
-                                                    &mut results,
-                                                    &mut queue,
-                                                    ProjectAndTextDocumentPosition {
-                                                        project: def_project,
-                                                        ls: None,
-                                                        uri: uri.clone(),
-                                                        position,
-                                                        symbol_data: None,
-                                                        for_original_location: true,
-                                                    },
-                                                );
-                                            }
-                                        }
+                    };
+                    if default_definition.is_none() {
+                        default_definition = searched.default_definition;
+                    }
+                    for (uri, position) in searched.found {
+                        if let Some(err) = ctx.err() {
+                            return Err(err.into());
+                        }
+                        // Get default configured project for this file
+                        let def_projects = match catch_unwind(AssertUnwindSafe(|| {
+                            orchestrator.get_projects_for_file(ctx, &uri)
+                        })) {
+                            Ok(Ok(def_projects)) => def_projects,
+                            Ok(Err(_)) => continue,
+                            Err(payload) => {
+                                panics_occurred.push(panic_message(&*payload));
+                                continue;
+                            }
+                        };
+                        for def_project in def_projects {
+                            // Optimization: don't enqueue if will be discarded
+                            if can_search_project(&results, &def_project) {
+                                enqueue_item(
+                                    &mut results,
+                                    &mut queue,
+                                    ProjectAndTextDocumentPosition {
+                                        project: def_project,
+                                        ls: None,
+                                        uri: uri.clone(),
+                                        position,
+                                        symbol_data: None,
+                                        for_original_location: true,
                                     },
                                 );
                             }
                         }
-
-                        Some(symbol_and_entries_to_resp(ls, ctx, params, &data, options))
-                    }));
-                match outcome {
-                    Ok(Some(Ok(result))) => {
-                        let response = results.get_mut(&item.project.id()).unwrap();
-                        response.complete = true;
-                        response.result = result;
-                        response.for_original_location = item.for_original_location;
                     }
-                    Ok(Some(Err(err_search))) => {
-                        if err.is_none() {
-                            err = Some(err_search);
+                    match searched.result {
+                        Some(Ok(result)) => {
+                            let response = results.get_mut(&project_id).unwrap();
+                            response.complete = true;
+                            response.result = result;
+                            response.for_original_location = for_original_location;
                         }
-                    }
-                    Ok(None) => {}
-                    Err(payload) => {
-                        let r = payload
-                            .downcast_ref::<String>()
-                            .cloned()
-                            .or_else(|| {
-                                payload.downcast_ref::<&str>().map(std::string::ToString::to_string)
-                            })
-                            .unwrap_or_default();
-                        let stack = std::backtrace::Backtrace::force_capture();
-                        panics_occurred.push(format!("panic handling request: {r}\n{stack}"));
+                        Some(Err(err_search)) if err.is_none() => err = Some(err_search),
+                        Some(Err(_)) | None => {}
                     }
                 }
             }
@@ -398,6 +455,86 @@ impl LanguageService {
         };
         Ok(resp)
     }
+}
+
+// A queued project searched on another thread, with the language service fetched for it on the request thread.
+struct RemoteItem {
+    project: Arc<dyn Project>,
+    ls: Arc<LanguageService>,
+    uri: lsproto::DocumentUri,
+    position: lsproto::Position,
+    for_original_location: bool,
+}
+
+// What searching one project produced: the response (None when cancelled), the original definition locations whose
+// projects are searched next, and, for the default project, the definition used to load more project trees.
+struct ProjectSearch<Resp> {
+    result: Option<Result<Resp, lsproto::Error>>,
+    found: Vec<(lsproto::DocumentUri, lsproto::Position)>,
+    default_definition: Option<NonLocalDefinition>,
+}
+
+// The body of Go's per-project work group function (crossproject.go:89).
+#[expect(clippy::too_many_arguments, reason = "the captured variables of Go's closure")]
+fn search_project<Req, Resp>(
+    ctx: &Context,
+    params: &Req,
+    ls: &LanguageService,
+    uri: &lsproto::DocumentUri,
+    position: lsproto::Position,
+    symbol_data: Option<SymbolAndEntriesData>,
+    is_default_project: bool,
+    symbol_and_entries_to_resp: fn(
+        &LanguageService,
+        &Context,
+        &Req,
+        &SymbolAndEntriesData,
+        SymbolEntryTransformOptions,
+    ) -> Result<Resp, lsproto::Error>,
+    is_rename: bool,
+    implementations: bool,
+    options: SymbolEntryTransformOptions,
+) -> ProjectSearch<Resp> {
+    let mut searched = ProjectSearch { result: None, found: Vec::new(), default_definition: None };
+    if ctx.err().is_some() {
+        return searched;
+    }
+    let (data, ok) = match symbol_data {
+        Some(data) => (data, true),
+        None => {
+            match ls.provide_symbols_and_entries(ctx, uri, position, is_rename, implementations) {
+                Some(data) => (data, true),
+                None => (SymbolAndEntriesData::default(), false),
+            }
+        }
+    };
+    if ctx.err().is_some() {
+        return searched;
+    }
+    if ok {
+        for entry in &data.symbols_and_entries {
+            // Find the default definition that can be in another project
+            // Later we will use this load ancestor tree that references this location and expand search
+            if is_default_project && searched.default_definition.is_none() {
+                searched.default_definition = ls.get_non_local_definition(ctx, entry);
+            }
+            ls.for_each_original_definition_location(ctx, entry, &mut |uri, position| {
+                searched.found.push((uri, position));
+            });
+        }
+    }
+    searched.result = Some(symbol_and_entries_to_resp(ls, ctx, params, &data, options));
+    searched
+}
+
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    let r = payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| payload.downcast_ref::<&str>().map(std::string::ToString::to_string))
+        .unwrap_or_default();
+    let stack = std::backtrace::Backtrace::force_capture();
+    format!("panic handling request: {r}\n{stack}")
 }
 
 // crossproject.go:298

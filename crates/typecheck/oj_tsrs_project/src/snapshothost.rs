@@ -14,10 +14,13 @@ use crate::extendedconfigcache::{ExtendedConfigCache, new_extended_config_cache}
 use crate::filechange::FileChangeSummary;
 use crate::logging::Logger;
 use crate::overlayfs::{FsRef, ToPath, new_cached_file_handle, new_overlay_fs};
-use crate::parsecache::{ParseCache, ParseCacheKey, new_parse_cache, new_parse_cache_key};
+use crate::parsecache::{
+    ContentMappedParseCache, ParseCache, ParseCacheKey, new_content_mapped_parse_cache,
+    new_parse_cache, new_parse_cache_key,
+};
 use crate::programcounter::ProgramCounter;
 use crate::refcountcache::RefCountCacheOptions;
-use crate::session::{SessionInit, SessionOptions, UpdateReason};
+use crate::session::{SessionInit, SessionOptions, UpdateReason, new_content_mapper_host};
 use crate::snapshot::{APISnapshotRequest, Snapshot, SnapshotChange};
 use crate::snapshotfs::new_snapshot_fs;
 use crate::watch::{
@@ -31,9 +34,11 @@ pub struct SnapshotHost {
     pub(crate) fs: Arc<dyn FS>,
 
     pub parse_cache: Arc<ParseCache>,
+    pub content_mapped_parse_cache: Arc<ContentMappedParseCache>,
     pub(crate) extended_config_cache: Arc<ExtendedConfigCache>,
     pub program_counter: ProgramCounter,
-    // (Content mappers are not ported: Go's `contentMapperHost` is always nil here.)
+    pub(crate) content_mapper_host: Option<Arc<dyn tsrs_contentmapper::Host>>,
+
     snapshot_id: AtomicU64,
 }
 
@@ -106,14 +111,19 @@ pub fn new_snapshot_host(init: &SessionInit) -> Arc<SnapshotHost> {
         .parse_cache
         .clone()
         .unwrap_or_else(|| Arc::new(new_parse_cache(RefCountCacheOptions::default())));
+    let content_mapped_parse_cache = init.content_mapped_parse_cache.clone().unwrap_or_else(|| {
+        Arc::new(new_content_mapped_parse_cache(RefCountCacheOptions::default()))
+    });
 
     Arc::new(SnapshotHost {
         options: Arc::clone(&init.options),
         to_path,
         fs: Arc::clone(&init.fs),
         parse_cache,
+        content_mapped_parse_cache,
         extended_config_cache: Arc::new(new_extended_config_cache()),
         program_counter: ProgramCounter::default(),
+        content_mapper_host: new_content_mapper_host(init),
         snapshot_id: AtomicU64::new(0),
     })
 }
@@ -265,11 +275,9 @@ impl SnapshotHost {
     }
 
     // snapshothost.go:196
-    #[expect(
-        clippy::unused_self,
-        reason = "SnapshotHost lifecycle callbacks keep their instance receiver alongside the stateful host operations."
-    )]
-    pub(crate) fn close(&self) {
-        // (Content mappers are not ported: there is no content mapper host to close.)
+    pub fn close(&self) {
+        if let Some(content_mapper_host) = &self.content_mapper_host {
+            let _ = content_mapper_host.close();
+        }
     }
 }

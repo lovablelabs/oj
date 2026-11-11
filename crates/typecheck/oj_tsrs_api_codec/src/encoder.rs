@@ -14,6 +14,7 @@ use rustc_hash::FxHashMap;
 use tsrs_ast::*;
 use tsrs_core::goslices::sort_func;
 use tsrs_core::{P, TextPos, binary_search_unique_func};
+use tsrs_spanmap::{Feature, SpanMap};
 
 use crate::format::*;
 use crate::generated::{
@@ -558,11 +559,10 @@ pub(crate) fn record_extended_data_source_file(
 ) -> Result<(), EncodeError> {
     let sf = node.as_source_file();
     let text_index = cx.strs.add(sf.text(), Kind::SourceFile, node.pos(), node.end());
-    // The API's project system does not content-map files yet (tsrs_project compilerhost.rs), so every file encoded
-    // here has OriginalText() == Text(), no span map, no supplemental/canonical files, no content mapper / virtual
-    // file name and no diagnostic directives. These are exactly the values the pinned encoder writes for a file
-    // without content-mapper info; encoding content-mapper info is not implemented.
-    let original_text_index = text_index;
+    let mut original_text_index = text_index;
+    if sf.original_text() != sf.text() {
+        original_text_index = cx.strs.add(sf.original_text(), Kind::Unknown, 0u32, 0u32);
+    }
     let file_name_index = cx.strs.add(sf.file_name(), Kind::Unknown, 0u32, 0u32);
     let path_index = cx.strs.add(&sf.path().0, Kind::Unknown, 0u32, 0u32);
     let pm = &cx.position_map;
@@ -571,12 +571,37 @@ pub(crate) fn record_extended_data_source_file(
         encode_file_references(sf.type_reference_directives.get(), pm, &mut cx.structured_data);
     let lib_refs =
         encode_file_references(sf.lib_reference_directives.get(), pm, &mut cx.structured_data);
-    let span_map_offset = NO_STRUCTURED_DATA;
-    let supplemental_offset = NO_STRUCTURED_DATA; // encodeStringArray(empty)
-    let canonical_index = NO_STRUCTURED_DATA;
-    let content_mapper_index = NO_STRUCTURED_DATA;
-    let virtual_file_name_index = NO_STRUCTURED_DATA;
-    let diagnostic_directives_offset = NO_STRUCTURED_DATA; // encodeDiagnosticDirectives(empty)
+    let mut span_map_offset = NO_STRUCTURED_DATA;
+    if let Some(span_map) = sf.span_map() {
+        span_map_offset = encode_span_map(
+            &span_map,
+            pm,
+            &PositionMap::compute(sf.original_text()),
+            &mut cx.structured_data,
+        );
+    }
+    let supplemental_file_names: Vec<&str> =
+        sf.supplemental_source_files().iter().map(|file| file.get().file_name()).collect();
+    let supplemental_offset =
+        encode_string_array(&supplemental_file_names, &mut cx.structured_data);
+    let mut canonical_index = NO_STRUCTURED_DATA;
+    if let Some(canonical) = sf.canonical_source_file() {
+        canonical_index = cx.strs.add(canonical.get().file_name(), Kind::Unknown, 0u32, 0u32);
+    }
+    let mut content_mapper_index = NO_STRUCTURED_DATA;
+    if !sf.content_mapper().is_empty() {
+        content_mapper_index = cx.strs.add(sf.content_mapper(), Kind::Unknown, 0u32, 0u32);
+    }
+    let mut virtual_file_name_index = NO_STRUCTURED_DATA;
+    if !sf.virtual_file_name().is_empty() {
+        virtual_file_name_index = cx.strs.add(sf.virtual_file_name(), Kind::Unknown, 0u32, 0u32);
+    }
+    let diagnostic_directives_offset = encode_diagnostic_directives(
+        sf.diagnostic_directives(),
+        pm,
+        &PositionMap::compute(sf.original_text()),
+        &mut cx.structured_data,
+    );
     append_u32s(
         &mut cx.extended_data,
         &[
@@ -783,6 +808,70 @@ fn encode_string_array(strs: &[&str], buf: &mut Vec<u8>) -> u32 {
     msgpack::write_array_header(buf, strs.len());
     for s in strs {
         msgpack::write_string(buf, s);
+    }
+    offset
+}
+
+// encoder.go:817
+fn encode_span_map(
+    m: &SpanMap,
+    virtual_positions: &PositionMap,
+    original_positions: &PositionMap,
+    buf: &mut Vec<u8>,
+) -> u32 {
+    let segments = m.segments();
+    let offset = buf.len() as u32;
+    msgpack::write_array_header(buf, segments.len());
+    for segment in segments {
+        let mut tuple_length = 5;
+        if segment.features != Feature::All {
+            tuple_length = 6;
+        }
+        msgpack::write_array_header(buf, tuple_length);
+        let virtual_start = virtual_positions.utf8_to_utf16(i64::from(segment.virtual_start));
+        let virtual_end = virtual_positions.utf8_to_utf16(i64::from(segment.virtual_end));
+        let original_start = original_positions.utf8_to_utf16(i64::from(segment.original_start));
+        let original_end = original_positions.utf8_to_utf16(i64::from(segment.original_end));
+        msgpack::write_uint(buf, virtual_start as u32);
+        msgpack::write_uint(buf, (virtual_end - virtual_start) as u32);
+        msgpack::write_uint(buf, original_start as u32);
+        msgpack::write_uint(buf, (original_end - original_start) as u32);
+        msgpack::write_uint(buf, segment.kind.0 as u32);
+        if tuple_length == 6 {
+            msgpack::write_uint(buf, segment.features.bits());
+        }
+    }
+    offset
+}
+
+// encoder.go:846
+fn encode_diagnostic_directives(
+    directives: &[MappedDiagnosticDirective],
+    virtual_positions: &PositionMap,
+    original_positions: &PositionMap,
+    buf: &mut Vec<u8>,
+) -> u32 {
+    if directives.is_empty() {
+        return NO_STRUCTURED_DATA;
+    }
+    let offset = buf.len() as u32;
+    msgpack::write_array_header(buf, directives.len());
+    for directive in directives {
+        msgpack::write_array_header(buf, 6);
+        let source = |pos: TextPos| {
+            i64::from(pos.expect_source("diagnostic directives have source positions"))
+        };
+        let original_start =
+            original_positions.utf8_to_utf16(source(directive.original_range.pos()));
+        let original_end = original_positions.utf8_to_utf16(source(directive.original_range.end()));
+        let virtual_start = virtual_positions.utf8_to_utf16(source(directive.virtual_range.pos()));
+        let virtual_end = virtual_positions.utf8_to_utf16(source(directive.virtual_range.end()));
+        msgpack::write_uint(buf, original_start as u32);
+        msgpack::write_uint(buf, (original_end - original_start) as u32);
+        msgpack::write_uint(buf, virtual_start as u32);
+        msgpack::write_uint(buf, (virtual_end - virtual_start) as u32);
+        msgpack::write_uint(buf, directive.policy as u32);
+        msgpack::write_uint(buf, directive.unused_code as u32);
     }
     offset
 }

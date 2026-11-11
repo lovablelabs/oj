@@ -4,7 +4,8 @@ use std::time::Instant;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use tsrs_ast::Diagnostic;
-use tsrs_compiler::Program;
+use tsrs_compiler::{CompilerHost, Program};
+use tsrs_contentmapper as contentmapper;
 use tsrs_core::collections::{Set, SyncMap, SyncSet, new_set_with_size_hint};
 use tsrs_core::context::Context;
 use tsrs_core::tspath::{self, ComparePathsOptions, Path};
@@ -30,7 +31,7 @@ use crate::extendedconfigcache::ExtendedConfigCache;
 use crate::filechange::FileChangeSummary;
 use crate::logging::LogTree;
 use crate::overlayfs::{OverlayMap, ToPath};
-use crate::parsecache::{ParseCache, ParseCacheJournal};
+use crate::parsecache::{ContentMappedParseCache, ParseCache, ParseCacheJournal};
 use crate::project::{
     ConfiguredProjectID, ID, Kind, ModuleResolverFactoryRef, ProgramUpdateKind, Project,
     SyntheticProjectID, inferred_project_id, new_configured_project, new_inferred_project,
@@ -65,8 +66,10 @@ pub enum ProjectEntry {
 pub struct ProjectCollectionBuilder {
     pub(crate) session_options: Arc<SessionOptions>,
     pub(crate) parse_cache: Arc<ParseCache>,
+    pub(crate) content_mapped_parse_cache: Arc<ContentMappedParseCache>,
     /// The parse-cache references this clone's programs take (rolled back if the clone unwinds).
     pub(crate) parse_cache_journal: Arc<ParseCacheJournal>,
+    pub(crate) content_mapper_host: Option<Arc<dyn contentmapper::Host>>,
     pub(crate) to_path: ToPath,
 
     pub(crate) ctx: Context,
@@ -109,7 +112,9 @@ pub fn new_project_collection_builder(
     session_options: Arc<SessionOptions>,
     custom_config_file_name: &str,
     parse_cache: Arc<ParseCache>,
+    content_mapped_parse_cache: Arc<ContentMappedParseCache>,
     extended_config_cache: Arc<ExtendedConfigCache>,
+    content_mapper_host: Option<Arc<dyn contentmapper::Host>>,
     client: Option<Arc<dyn Client>>,
 ) -> ProjectCollectionBuilder {
     let open_files = open_file_paths(&overlays);
@@ -121,7 +126,9 @@ pub fn new_project_collection_builder(
         inferred_content_mappers,
         inferred_content_mapper_extensions,
         parse_cache,
+        content_mapped_parse_cache,
         parse_cache_journal: Arc::default(),
+        content_mapper_host,
         config_file_registry_builder: Arc::new(new_config_file_registry_builder(
             lsproto::get_client_capabilities(ctx)
                 .workspace
@@ -595,8 +602,22 @@ impl ProjectCollectionBuilder {
         let changed_files = to_paths(&summary.changed);
         let deleted_files = to_paths(&summary.deleted);
         let created_files = to_paths(&summary.created);
-        // (Content mappers are not ported: there is no content mapper host, so Go's refresh of content mapper
-        // projects for watch changes is skipped.)
+        if self.content_mapper_host.is_some() {
+            let mut all_watch_changes =
+                Vec::with_capacity(changed_files.len() + deleted_files.len() + created_files.len());
+            all_watch_changes.extend(changed_files.iter().cloned());
+            all_watch_changes.extend(deleted_files.iter().cloned());
+            all_watch_changes.extend(created_files.iter().cloned());
+            self.for_each_project(|entry| {
+                self.refresh_content_mapper_project_for_changes(
+                    entry,
+                    &all_watch_changes,
+                    summary.has_excessive_non_create_watch_events(),
+                    logger,
+                );
+                true
+            });
+        }
 
         let config_change_logger = logger.fork("Checking for changes affecting config files");
         let config_change_result =
@@ -666,6 +687,44 @@ impl ProjectCollectionBuilder {
                 self.ensure_configured_project_and_ancestors_for_file(&file_name, &path, logger);
             self.cleanup_configured_projects(Some(&open_file_result.retain), logger);
         }
+    }
+
+    // projectcollectionbuilder.go:474
+    fn refresh_content_mapper_project_for_changes(
+        &self,
+        entry: &ProjectEntry,
+        paths: &[Path],
+        refresh_all: bool,
+        logger: &LogTree,
+    ) {
+        let value = self.value_of(entry);
+        let (program, content_mapper_watched_files) = {
+            let project = value.value().unwrap();
+            (project.program, project.content_mapper_watched_files.clone())
+        };
+        let (Some(program), Some(content_mapper_watched_files)) =
+            (program, content_mapper_watched_files)
+        else {
+            return;
+        };
+        let mut affected = refresh_all;
+        if !affected && paths.iter().any(|path| content_mapper_watched_files.has(path)) {
+            affected = true;
+        }
+        if !affected {
+            return;
+        }
+        if let Some(content_mapper_project) = program.content_mapper_project() {
+            let _ = content_mapper_project.refresh();
+        }
+        value.change(&mut |project: &mut Project| {
+            project.dirty = true;
+            project.dirty_file_path = Path::default();
+            logger.logf(format_args!(
+                "Marking project as dirty due to content mapper configuration changes: {}",
+                project.id()
+            ));
+        });
     }
 
     // projectcollectionbuilder.go:500
@@ -2000,8 +2059,18 @@ impl ProjectCollectionBuilder {
                             },
                         ),
                     );
-                    // (Content mappers are not ported: no source file is content-mapped, so there are no dynamic
-                    // content mapper watched files.)
+                    if result
+                        .program
+                        .source_files()
+                        .iter()
+                        .any(|file| !file.content_mapper().is_empty())
+                        && let Some(content_mapper_project) =
+                            project.host.as_ref().unwrap().content_mapper_project()
+                    {
+                        let dynamic_watched_files =
+                            content_mapper_project.watched_files().unwrap_or_default();
+                        watched_files.extend(dynamic_watched_files);
+                    }
                     watched_files.sort();
                     watched_files.dedup();
                     let mut content_mapper_watched_files =

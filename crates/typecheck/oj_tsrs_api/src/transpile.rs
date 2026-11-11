@@ -242,7 +242,7 @@ fn transpile_in_current_region(
     );
     all.extend(result.diagnostics);
     let diagnostics: Vec<Value> =
-        all.iter().map(|d| crate::diagnostics::diagnostic_response(d)).collect();
+        all.iter().map(|&d| crate::diagnostics::diagnostic_response(d)).collect();
     drop(all);
     // SAFETY: nothing derived from the program (diagnostics are serialized above) is used after this.
     unsafe { tsrs_compiler::free_unshared_program(program) };

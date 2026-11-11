@@ -809,7 +809,6 @@ impl Watcher {
         // Each cycle replaces the program; its checkers' regions are freed with it (`install_program`), and what the
         // file loader allocates with the data the programs updated from it share.
         program_options.checker_regions = true;
-        // `full_build_files` keeps the parents of the synthetic imports the reused programs keep.
         program_options.reuse_synthetic_imports = true;
         // The harness reads diagnostics of programs that are freed (`install_program`).
         program_options.checker_diagnostic_regions = self.testing.is_none();

@@ -67,8 +67,6 @@ pub trait Script {
     fn original_text(&self) -> &str;
 }
 
-// The language server does not support content mappers yet (phase 2 of notes/contentmappers.md): it never loads a
-// content-mapped file, and its scripts report no span map.
 impl Script for SourceFile {
     fn file_name(&self) -> &str {
         SourceFile::file_name(self)
@@ -80,7 +78,7 @@ impl Script for SourceFile {
         SourceFile::text(self)
     }
     fn span_map(&self) -> Option<&SpanMap> {
-        None
+        SourceFile::span_map(self).map(P::get)
     }
     fn original_text(&self) -> &str {
         SourceFile::original_text(self)

@@ -23,7 +23,7 @@ pub enum FileLike {
 }
 
 impl FileLike {
-    fn file_name(&self) -> &str {
+    pub fn file_name(&self) -> &str {
         match self {
             FileLike::SourceFile(file) => file.get().file_name(),
             FileLike::Renamed { file_name, .. } => file_name,
@@ -59,7 +59,7 @@ impl SourceFileLike for FileLike {
 }
 
 // diagnosticwriter.go:58 (ASTDiagnostic).File
-fn diagnostic_file(d: P<Diagnostic>) -> Option<FileLike> {
+pub fn diagnostic_file(d: P<Diagnostic>) -> Option<FileLike> {
     d.loc()?;
     let file = d.file()?;
     let mut file_name = file.get().file_name();
@@ -86,6 +86,12 @@ fn diagnostic_pos(d: P<Diagnostic>) -> u32 {
 // diagnosticwriter.go:85
 fn diagnostic_len(d: P<Diagnostic>) -> u32 {
     resolve(d).loc.len().expect("rendered diagnostics have source positions")
+}
+
+// The range (ASTDiagnostic).Pos and End read (diagnosticwriter.go:83-84), for a caller that handles a synthetic
+// position itself.
+pub fn diagnostic_loc(d: P<Diagnostic>) -> TextRange {
+    resolve(d).loc
 }
 
 // resolvedLocation describes how a diagnostic on a content-mapped file should be reported.
@@ -135,7 +141,7 @@ fn new_original_text_file(file: P<SourceFile>, file_name: &'static str) -> Origi
 }
 
 // diagnosticwriter.go:144 (ASTDiagnostic).MessageChain
-fn diagnostic_message_chain(d: P<Diagnostic>) -> Vec<P<Diagnostic>> {
+pub fn diagnostic_message_chain(d: P<Diagnostic>) -> Vec<P<Diagnostic>> {
     let chain = d.message_chain();
     let mut result = Vec::with_capacity(chain.len() + 1);
     result.extend_from_slice(chain);

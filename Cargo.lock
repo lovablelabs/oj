@@ -6753,6 +6753,7 @@ dependencies = [
  "oj_tsrs_astnav",
  "oj_tsrs_checker",
  "oj_tsrs_compiler",
+ "oj_tsrs_contentmapper",
  "oj_tsrs_core",
  "oj_tsrs_diagnostics",
  "oj_tsrs_execute",
@@ -6774,6 +6775,7 @@ version = "0.4.11"
 dependencies = [
  "oj_tsrs_ast",
  "oj_tsrs_core",
+ "oj_tsrs_spanmap",
  "rustc-hash 2.1.3",
 ]
 
@@ -7007,6 +7009,7 @@ dependencies = [
  "oj_tsrs_spanmap",
  "oj_tsrs_tsoptions",
  "oj_tsrs_vfs",
+ "rayon",
  "rustc-hash 2.1.3",
 ]
 

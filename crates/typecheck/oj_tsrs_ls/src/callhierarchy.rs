@@ -1,5 +1,5 @@
-use std::cell::OnceCell;
 use std::collections::hash_map::Entry;
+use std::sync::OnceLock;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use tsrs_ast::{
@@ -744,17 +744,17 @@ impl LanguageService {
     }
 }
 
-// Go caches the source file, URI and position with `sync.Once`s.
+// Go caches the source file, URI and position with `sync.Once`s; the searches of other projects read them on their threads.
 // callhierarchy.go:593
 pub struct IncomingEntry<'a> {
     ls: &'a LanguageService,
     node: P<Node>,
 
-    source_file: OnceCell<P<SourceFile>>,
+    source_file: OnceLock<P<SourceFile>>,
 
-    document_uri: OnceCell<lsproto::DocumentUri>,
+    document_uri: OnceLock<lsproto::DocumentUri>,
 
-    position: OnceCell<lsproto::Position>,
+    position: OnceLock<lsproto::Position>,
 }
 
 impl IncomingEntry<'_> {
@@ -825,9 +825,9 @@ impl LanguageService {
         let incoming_entry = IncomingEntry {
             ls: self,
             node: location,
-            source_file: OnceCell::new(),
-            document_uri: OnceCell::new(),
-            position: OnceCell::new(),
+            source_file: OnceLock::new(),
+            document_uri: OnceLock::new(),
+            position: OnceLock::new(),
         };
 
         let mut result = self.handle_cross_project(

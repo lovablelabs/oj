@@ -335,6 +335,7 @@ impl ToBuildInfo<'_> {
         let program = self.program;
         let snapshot = self.snapshot;
         let mut file_infos = Vec::with_capacity(program.get_source_files().len());
+        let mut interface_files = program.uses_canonical_diagnostics().then(Vec::new);
         // The names relative to the tsbuildinfo of the files that are not default lib files, computed up front on the
         // worker pool (a pure function of the path); to_file_id would compute the same name when it gives the file
         // its id below.
@@ -422,9 +423,19 @@ impl ToBuildInfo<'_> {
                     Some(_) => {}
                 }
             }
+            match info.declares_interface {
+                Some(true) => {
+                    if let Some(ids) = &mut interface_files {
+                        ids.push(file_id);
+                    }
+                }
+                Some(false) => {}
+                None => interface_files = None,
+            }
             file_infos.push(new_build_info_file_info(&info));
         }
         self.build_info.file_infos = file_infos;
+        self.build_info.tsrs_interface_files = interface_files;
         self.build_info.file_infos_non_nil = true;
     }
 

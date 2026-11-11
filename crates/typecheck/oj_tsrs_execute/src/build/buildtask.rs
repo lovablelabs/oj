@@ -787,7 +787,6 @@ impl BuildTask {
             // Other CLI builds free it once the task is built (`free_built_program`); the diagnostics stay.
             let frees = watch || orchestrator.frees_built_programs();
             program_options.checker_regions = frees;
-            // `watch_full_build` keeps the parents of the synthetic imports the reused programs keep.
             program_options.reuse_synthetic_imports = watch;
             program_options.checker_diagnostic_regions =
                 watch && orchestrator.opts.testing.is_none();

@@ -674,3 +674,153 @@ fn oj_typecheck_imports_the_jsx_runtime_into_jsx_files_only() {
     assert!(out.contains("from file 'src/b.jsx'"), "{out}");
     assert!(!out.contains("from file 'src/a.mjs'"), "{out}");
 }
+
+/// `oj typecheck --watch` in `root`: the output so far, and the process,
+/// killed on drop.
+struct Watch {
+    child: std::process::Child,
+    output: std::sync::Arc<std::sync::Mutex<String>>,
+}
+
+impl Watch {
+    fn start(root: &Path) -> Watch {
+        use std::io::Read;
+        let mut child = Command::new(env!("CARGO_BIN_EXE_oj"))
+            .args(["typecheck", "--watch"])
+            .current_dir(root)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let output = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let mut stdout = child.stdout.take().unwrap();
+        let sink = std::sync::Arc::clone(&output);
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = stdout.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                sink.lock()
+                    .unwrap()
+                    .push_str(&String::from_utf8_lossy(&buf[..n]));
+            }
+        });
+        Watch { child, output }
+    }
+
+    /// Waits until the last finished compilation's report holds for `done`
+    /// and returns it. One edit can reach the watcher as more than one event
+    /// (a write is a truncate and a write), so compilations are not counted.
+    fn settles(&self, what: &str, done: impl Fn(&str) -> bool) -> String {
+        const DONE: &str = "Watching for file changes.";
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            let output = self.output.lock().unwrap().clone();
+            let mut runs: Vec<&str> = output.split(DONE).collect();
+            runs.pop(); // what follows the last finished compilation
+            if let Some(last) = runs.last().filter(|last| done(last)) {
+                return last.to_string();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what}: the watcher never reported it:\n{output}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+// tsc's watch mode (tsrs_execute's watcher) reuses the program across an
+// edit that keeps a file's imports, also for a file with a synthetic import
+// (the JSX runtime under `jsx: react-jsx`), whose nodes each program owns
+// since tsrs 0.24.0. Every edit must report what a fresh `oj typecheck`
+// does: an error in the edited JSX file, one in a file it imports, an edit
+// that adds an import (a full rebuild), and the fix.
+#[test]
+fn typecheck_watch_rechecks_a_jsx_project_after_each_edit() {
+    let app = App::new("tsc-watch");
+    app.write(
+        "tsconfig.json",
+        r#"{ "compilerOptions": { "strict": true, "noEmit": true, "target": "ES2022", "module": "ESNext", "moduleResolution": "bundler", "jsx": "react-jsx", "skipLibCheck": true }, "include": ["src"] }"#,
+    );
+    app.write(
+        "node_modules/react/package.json",
+        r#"{ "name": "react", "version": "19.0.0", "types": "index.d.ts", "exports": { ".": { "types": "./index.d.ts" }, "./jsx-runtime": { "types": "./jsx-runtime.d.ts" } } }"#,
+    );
+    app.write(
+        "node_modules/react/index.d.ts",
+        "export function useState<T>(v: T): [T, (v: T) => void];\n",
+    );
+    app.write(
+        "node_modules/react/jsx-runtime.d.ts",
+        "export namespace JSX { interface IntrinsicElements { div: { id?: string; children?: unknown }; } type Element = { tag: string }; }\nexport function jsx(t: unknown, p: unknown): JSX.Element;\nexport function jsxs(t: unknown, p: unknown): JSX.Element;\n",
+    );
+    std::fs::remove_file(app.0.join("src/main.ts")).unwrap();
+    app.write("src/a.ts", "export const n: number = 1;\n");
+    let page = |id: &str| {
+        format!(
+            "import {{ n }} from \"./a\";\nexport const App = () => <div id={id}>{{n}}</div>;\n"
+        )
+    };
+    app.write("src/app.tsx", &page("\"x\""));
+
+    const APP_ERROR: &str =
+        "src/app.tsx(2,31): error TS2322: Type 'number' is not assignable to type 'string'.";
+    const A_ERROR: &str =
+        "src/a.ts(1,14): error TS2322: Type 'number' is not assignable to type 'string'.";
+
+    let watch = Watch::start(&app.0);
+    watch.settles("the first compilation", |r| r.contains("Found 0 errors."));
+
+    // An edit that keeps the file's imports: the program is reused.
+    app.write("src/app.tsx", &page("{n}"));
+    watch.settles("an error in the JSX file", |r| {
+        r.contains(APP_ERROR) && r.contains("Found 1 error.")
+    });
+
+    // An edit to the file it imports: the JSX file's own error is gone with
+    // the type it came from, and the imported file's is reported.
+    app.write("src/a.ts", "export const n: string = 1;\n");
+    watch.settles("an error in the imported file", |r| {
+        r.contains(A_ERROR) && r.contains("Found 1 error.") && !r.contains("src/app.tsx")
+    });
+
+    // An edit that adds an import: a full rebuild. The new call's type shows
+    // the rebuilt program is the one checked.
+    app.write(
+        "src/app.tsx",
+        "import { n } from \"./a\";\nimport { useState } from \"react\";\nexport const App = () => <div id={useState(n)}>{n}</div>;\n",
+    );
+    watch.settles("the errors after an added import", |r| {
+        r.contains(A_ERROR)
+            && r.contains("src/app.tsx(3,31): error TS2322")
+            && r.contains("Found 2 errors.")
+    });
+
+    app.write("src/a.ts", "export const n: number = 1;\n");
+    app.write(
+        "src/app.tsx",
+        "import { n } from \"./a\";\nimport { useState } from \"react\";\nexport const App = () => <div id=\"x\">{useState(n)[0]}</div>;\n",
+    );
+    watch.settles("the fix", |r| r.contains("Found 0 errors."));
+
+    // What the watcher ended on is what a fresh run reports.
+    let fresh = Command::new(env!("CARGO_BIN_EXE_oj"))
+        .arg("typecheck")
+        .current_dir(&app.0)
+        .output()
+        .unwrap();
+    assert!(
+        fresh.status.success(),
+        "{}",
+        String::from_utf8_lossy(&fresh.stdout)
+    );
+}

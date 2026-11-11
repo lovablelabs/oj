@@ -111,6 +111,11 @@ impl LanguageService {
         self.host.read_file(file_name)
     }
 
+    // `read_file` for callers that only read the text (see `FileText`).
+    pub(crate) fn read_file_text(&self, file_name: &str) -> Option<crate::host::FileText> {
+        self.host.read_file_text(file_name)
+    }
+
     // languageservice.go:85
     pub(crate) fn use_case_sensitive_file_names(&self) -> bool {
         self.host.use_case_sensitive_file_names()

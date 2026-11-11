@@ -15,6 +15,7 @@ pub mod completions;
 pub mod completions_2;
 pub mod completions_3;
 pub mod completions_4;
+pub mod concurrent;
 pub mod crossproject;
 mod definition;
 mod diagnostics;

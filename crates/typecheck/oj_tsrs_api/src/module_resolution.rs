@@ -595,19 +595,20 @@ impl Session {
             }));
             Box::new(SharedResolver(r))
         } else {
+            let mut extra_extensions = Vec::new();
             let fs: Arc<dyn FS> = if snapshot != 0 {
                 let sd = self.snapshot_data(snapshot)?;
                 let fs = sd.snapshot.fs();
+                extra_extensions = sd.snapshot.content_mapper_extensions();
                 _sd_pin = sd;
                 fs
             } else {
                 self.fs()
             };
             call_host = FsHost { fs, cwd: cwd.clone() };
-            Box::new(tsrs_module::new_resolver(ResolverOptions::new(
-                &call_host,
-                data.compiler_options,
-            )))
+            let mut options = ResolverOptions::new(&call_host, data.compiler_options);
+            options.extra_extensions = extra_extensions;
+            Box::new(tsrs_module::new_resolver(options))
         };
         if !data.callback.is_empty() {
             let conn = self

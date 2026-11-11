@@ -133,7 +133,7 @@ impl Session {
             );
             return Ok(Obj::new()
                 .set("config", Value::Object(JsonMap::new()))
-                .set("error", diagnostic_response(&diag))
+                .set("error", diagnostic_response(diag))
                 .build());
         };
         let (config, errors) = tsrs_tsoptions::parse_config_file_text_to_json(
@@ -143,7 +143,7 @@ impl Session {
         );
         Ok(Obj::new()
             .set("config", options_value_to_json(&config))
-            .set_opt("error", errors.first().map(|d| diagnostic_response(d)))
+            .set_opt("error", errors.first().map(|&d| diagnostic_response(d)))
             .build())
     }
 

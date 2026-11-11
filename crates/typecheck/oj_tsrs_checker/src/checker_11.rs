@@ -866,7 +866,7 @@ impl Checker {
 
     // checker.go:22256
     #[inline]
-    pub(crate) fn get_reduced_apparent_type(&mut self, t: P<Type>) -> P<Type> {
+    pub fn get_reduced_apparent_type(&mut self, t: P<Type>) -> P<Type> {
         // An object type other than a mapped type is its own reduced and apparent type (most property lookups).
         if t.flags() == TypeFlags::Object && !t.object_flags().intersects(ObjectFlags::Mapped) {
             return t;
@@ -1408,6 +1408,50 @@ fn active_mapper_cache_key(t: P<Type>, alias: Option<P<TypeAlias>>) -> CacheHash
 }
 
 impl Checker {
+    /// `T[keyof T & K]` with `T` a tuple of required elements and `K` a literal: the element type, without building
+    /// `keyof <tuple>` and intersecting it (tsgo-opt). Fast preset only (`lazy_tuples`): the skipped instantiations
+    /// would lower the instantiation counter the default mode keeps equal to Go's.
+    fn try_fast_tuple_keyof_indexed_access(
+        &mut self,
+        t: P<Type>,
+        object_type: P<Type>,
+        m: P<TypeMapper>,
+    ) -> Option<P<Type>> {
+        let d = t.as_indexed_access_type();
+        if !d.access_flags.get().is_empty()
+            || !is_tuple_type(object_type)
+            || self.compiler_options.no_unchecked_indexed_access == Tristate::True
+            || object_type
+                .target_tuple_type()
+                .combined_flags()
+                .intersects(ElementFlags::Optional | ElementFlags::Variable)
+        {
+            return None;
+        }
+        let index_type = d.index_type().unwrap();
+        if !index_type.flags().intersects(TypeFlags::Intersection) {
+            return None;
+        }
+        let types = index_type.types();
+        if types.len() != 2 {
+            return None;
+        }
+        let is_keyof_object = |u: P<Type>| {
+            u.flags().intersects(TypeFlags::Index)
+                && u.as_index_type().target.get() == d.object_type()
+                && u.as_index_type().index_flags.get().is_empty()
+        };
+        let key = if is_keyof_object(types[0]) {
+            types[1]
+        } else if is_keyof_object(types[1]) {
+            types[0]
+        } else {
+            return None;
+        };
+        let key_candidate = self.instantiate_type(key, Some(m));
+        self.try_fast_tuple_indexed_access(object_type, key_candidate)
+    }
+
     // checker.go:22551
     fn get_circular_type_names(&mut self) -> Vec<String> {
         let mut type_counts: FxHashMap<P<Type>, usize> = FxHashMap::default();
@@ -1632,6 +1676,12 @@ impl Checker {
             let alias = AliasArg::given_or_pending(alias, pending.as_ref());
             let d = t.as_indexed_access_type();
             let object_type = self.instantiate_type(d.object_type().unwrap(), Some(m));
+            if self.lazy_tuples
+                && let Some(fast) = self.try_fast_tuple_keyof_indexed_access(t, object_type, m)
+            {
+                crate::sitecount::hit("tuple literal index", "keyof T & K");
+                return fast;
+            }
             let index_type = self.instantiate_type(d.index_type().unwrap(), Some(m));
             return self.get_indexed_access_type_ex(
                 object_type,
