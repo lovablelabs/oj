@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `oj typecheck` and the dev server's checker run on tsrs 0.24.0 (from 0.21.0), still TypeScript 7.1.0-beta on the same TypeScript source pin. What reaches oj from those releases: the parser no longer panics on a JSDoc comment whose indentation splits Unicode whitespace (0.24.0). The checker's other changes are behind tsrs's opt-in fast preset or its language server, which oj does not use, and the releases' type-aware lint work for oxlint (`tsrs_lint`) is not vendored.
+- `oj typecheck` and the dev server's checker run on tsrs 0.24.0 (from 0.21.0), still TypeScript 7.1.0-beta on the same TypeScript source pin. What reaches oj from those releases: the parser no longer panics on a JSDoc comment whose indentation splits Unicode whitespace (0.24.0). `oj typecheck --watch` runs the reworked program reuse: after an edit that keeps a file's imports the program is reused, as before, and a file with a synthetic import (the JSX runtime, `tslib`) now owns the nodes reused for it; its reports are unchanged. The checker's other changes are behind tsrs's opt-in fast preset (`--fast`, `TSRS_FAST=1`), most of the rest is its language server, which oj does not use, and the releases' type-aware lint work for oxlint (`tsrs_lint`) is not vendored.
 
 ### Fixed
 
