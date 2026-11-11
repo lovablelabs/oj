@@ -1382,6 +1382,62 @@ fn a_dev_sheet_is_kept_until_the_next_bundle_or_edit() {
     );
 }
 
+/// A plain sheet's `@import`s are inlined for the page, through the config's
+/// aliases and node_modules as Vite's CSS resolvers go, and the files they
+/// pulled in are the sheet's dependencies: an edit of one re-links the
+/// sheets, as Vite's HMR updates the importing sheet. A sheet Tailwind
+/// compiles keeps its imports for Tailwind.
+#[test]
+fn a_plain_sheets_imports_are_inlined_and_its_dependencies_kept() {
+    let app = App::new(&[
+        (
+            "node_modules/@acme/tokens/package.json",
+            r#"{"name":"@acme/tokens","style":"dist/tokens.css"}"#,
+        ),
+        ("node_modules/@acme/tokens/dist/tokens.css", ":root{--t:1}"),
+        ("src/base.css", ".base{margin:0}"),
+        (
+            "src/styles.css",
+            "@import '@acme/tokens';\n@import '@/base.css';\n.own{color:red}",
+        ),
+        (
+            "src/tw.css",
+            "@import 'tailwindcss';\n@import './base.css';",
+        ),
+    ]);
+    let mut start = app.start();
+    start.config.resolve = Some(oj_config::ResolveConfig {
+        alias: Some(oj_config::AliasList(vec![("@".into(), "./src".into())])),
+        ..Default::default()
+    });
+    let styles = Styles::new(&start);
+    let sheet = app.dir.join("src/styles.css");
+    let css = styles
+        .inline_imports(&sheet, &std::fs::read_to_string(&sheet).unwrap())
+        .unwrap()
+        .expect("a sheet with imports is inlined");
+    assert!(
+        css.contains(":root{--t:1}") && css.contains(".base{margin:0}") && !css.contains("@import"),
+        "{css}"
+    );
+    assert!(
+        styles.imports_changed(&[app.dir.join("src/base.css")]),
+        "an imported file is the sheet's dependency"
+    );
+    assert!(
+        !styles.imports_changed(&[app.dir.join("src/other.css")]),
+        "a file no sheet imports is not"
+    );
+    let tw = app.dir.join("src/tw.css");
+    assert_eq!(
+        styles
+            .inline_imports(&tw, &std::fs::read_to_string(&tw).unwrap())
+            .unwrap(),
+        None,
+        "Tailwind resolves the imports of a sheet it compiles"
+    );
+}
+
 /// With only a `?url` sheet emitted (`import appCss from "./styles.css?url"`,
 /// linked by the app's own `head`), late CSS joins that sheet, the first CSS
 /// asset in the bundle, as the StyleX plugin's generateBundle finds it; the

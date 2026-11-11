@@ -215,6 +215,11 @@ pub(crate) struct Styles {
     targets: Vec<String>,
     /// The dev urls' prefix under `base`.
     url_base: String,
+    /// The config's `resolve.alias` and `publicDir`, which a sheet's
+    /// `@import` and `url()` specifiers resolve through, as Vite's CSS
+    /// resolvers do.
+    alias: Vec<(String, String)>,
+    public_dir: Option<PathBuf>,
     /// The sheets the dev client bundle ran through the plugins, after their
     /// "normal" transforms, stamped with the bundle that compiled them: a
     /// page's `<link>` serves one without running the plugins again until the
@@ -222,6 +227,10 @@ pub(crate) struct Styles {
     /// from one transform.
     dev_sheets: Mutex<HashMap<PathBuf, DevSheet>>,
     dev_stamp: std::sync::atomic::AtomicU64,
+    /// The files each plain sheet's `@import`s pulled in when it was last
+    /// inlined (Vite's HMR dependencies of the sheet): an edit of one
+    /// re-links the sheets, as Vite updates the importing sheet.
+    sheet_deps: Mutex<HashMap<PathBuf, Vec<PathBuf>>>,
 }
 
 impl Styles {
@@ -241,8 +250,11 @@ impl Styles {
             minify_ssr: oj_config::build_css_minify(&start.config, true),
             targets: oj_config::build_css_targets(&start.config),
             url_base: start.dev_url_base(),
+            alias: oj_config::resolve_alias(&start.config, "client"),
+            public_dir: oj_config::public_dir(&start.config, &start.root),
             dev_sheets: Mutex::new(HashMap::new()),
             dev_stamp: std::sync::atomic::AtomicU64::new(0),
+            sheet_deps: Mutex::new(HashMap::new()),
         }
     }
 
@@ -305,19 +317,64 @@ impl Styles {
             .map(|s| s.css.clone())
     }
 
+    /// How a sheet's specifiers resolve: Vite's createCSSResolvers, with the
+    /// config's aliases and `publicDir` ahead of the root and node_modules.
+    fn resolve(&self) -> oj_css::CssResolve<'_> {
+        oj_css::CssResolve {
+            root: Some(&self.root),
+            public_dir: self.public_dir.as_deref(),
+            alias: &self.alias,
+            modules: &self.modules,
+            ..oj_css::CssResolve::default()
+        }
+    }
+
     fn inputs(&self) -> oj_server::StyleInputs<'_> {
         oj_server::StyleInputs {
             root: &self.root,
             css: self.css.as_ref(),
-            resolve: oj_css::CssResolve {
-                root: Some(&self.root),
-                modules: &self.modules,
-                ..oj_css::CssResolve::default()
-            },
+            resolve: self.resolve(),
             inline: Box::new(|file, url| {
                 Ok(oj_server::inline_url_under(file, url, self.inline_limit))
             }),
         }
+    }
+
+    /// A plain sheet's `@import`s inlined (see
+    /// [`oj_server::inline_sheet_imports`]), the files they pulled in kept
+    /// as the sheet's dependencies; None for a sheet with nothing to inline.
+    /// A compiled sheet (a CSS module, a preprocessor file) inlines its own
+    /// as part of its compile.
+    pub(crate) fn inline_imports(&self, path: &Path, css: &str) -> Result<Option<String>, String> {
+        let mut deps = Vec::new();
+        let inlined = oj_server::inline_sheet_imports(&self.resolve(), path, css, &mut deps)?;
+        if inlined.is_some() {
+            // As the watcher names them, for `imports_changed`.
+            let deps = deps
+                .into_iter()
+                .map(|d| std::fs::canonicalize(&d).unwrap_or(d))
+                .collect();
+            self.sheet_deps
+                .lock()
+                .unwrap()
+                .insert(path.to_path_buf(), deps);
+        }
+        Ok(inlined)
+    }
+
+    /// Whether `paths` (a watch batch) include a file an inlined sheet's
+    /// `@import` pulled in: the sheets served since must be re-linked.
+    pub(crate) fn imports_changed(&self, paths: &[PathBuf]) -> bool {
+        let deps = self.sheet_deps.lock().unwrap();
+        if deps.is_empty() {
+            return false;
+        }
+        paths.iter().any(|p| {
+            let real = std::fs::canonicalize(p).ok();
+            deps.values()
+                .flatten()
+                .any(|d| d == p || real.as_ref() == Some(d))
+        })
     }
 
     /// A CSS module's or a preprocessor file's compile, from its source
@@ -1392,8 +1449,8 @@ impl StartAssetsPlugin {
             }
             AssetTag::Css => {
                 // A CSS module or a preprocessor file compiles on oj's CSS
-                // pipeline; a plain `.css` is linked as written (a build
-                // emits it compiled).
+                // pipeline; a plain `.css` is linked with its `@import`s
+                // inlined, otherwise as written (a build emits it compiled).
                 let emits = matches!(self.mode, AssetMode::Build { server: false, .. });
                 let stamp = self.styles.dev_stamp();
                 let source = oj_server::read_style_source(slots, path).await?;
@@ -1414,6 +1471,12 @@ impl StartAssetsPlugin {
                     Some(self.styles.compile(path, source.clone()).await?)
                 } else {
                     None
+                };
+                // A plain sheet's `@import`s, as postcss-import inlines them
+                // for Vite in dev and build alike (a compile did its own).
+                let source = match &compiled {
+                    None => self.styles.inline_imports(path, &source)?.unwrap_or(source),
+                    Some(_) => source,
                 };
                 let css = || {
                     compiled
