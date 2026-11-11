@@ -9,6 +9,8 @@
 //
 //   OJ_BIN           the oj binary (default: target/release/oj)
 //   BENCH_OXLINT     the oxlint to run (default: <project>/node_modules/.bin/oxlint)
+//   BENCH_TSGOLINT   the tsgolint binary (default: the one oxlint finds in the
+//                    project, its `oxlint-tsgolint` package)
 //   BENCH_LINT_ARGS  extra oxlint arguments, space separated
 //
 // Both tools run the project's own oxlint and config; only the backend
@@ -40,7 +42,7 @@ for (const [what, file] of [
 
 const mac = process.platform === "darwin";
 const TOOLS = {
-  tsgolint: { OXLINT_TSGOLINT_PATH: undefined },
+  tsgolint: { OXLINT_TSGOLINT_PATH: process.env.BENCH_TSGOLINT },
   oj: { OXLINT_TSGOLINT_PATH: oj },
 };
 
