@@ -57,6 +57,18 @@ How the warm checker works:
 - That needs each file's declaration signature, which the checker records in the background once it has heard nothing (no change, no check) for a second after a check; a burst of edits records once, after it. A check that arrives while it records stops it before the next file. It leaves out the files whose declaration emit is slow: the TanStack Router route tree (`tsr.config.json`'s `generatedRouteTree`, `src/routeTree.gen.ts` by default), whose one declaration types every route, and any file it once took a second or more to emit. A change to one of those re-checks the files that import it.
 - An edit to a tsconfig, `package.json` or a lockfile opens the projects again from scratch.
 
+
+## Linting
+
+`oj lint` is the project's [oxlint](https://oxc.rs/docs/guide/usage/linter) with oj as the backend for its type-aware rules (`typescript/no-floating-promises`, `typescript/no-misused-promises` and the rest of tsgolint's). oxlint lints syntax itself and hands the rules that need types to a backend process, tsgolint by default; oj carries [tsrs](https://github.com/oxc-project/tsrs)'s port of those rules, on the checker `oj typecheck` runs. It takes the arguments oxlint takes, reads the project's oxlint config, and prints and exits as oxlint does.
+
+```sh
+oj lint                    # oxlint --type-aware, on oj's checker
+oj lint --fix src          # oxlint's own flags pass through
+```
+
+oxlint comes from the project (`node_modules/.bin/oxlint`, from the current directory up; `OJ_OXLINT_PATH` names another). A project that runs oxlint itself can point it at oj instead: `OXLINT_TSGOLINT_PATH=$(which oj) oxlint --type-aware`.
+
 ## Quickstart
 
 Install the CLI from crates.io, then run `oj` in any app:
