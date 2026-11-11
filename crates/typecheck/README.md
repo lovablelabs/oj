@@ -4,6 +4,8 @@
 `oj dev-typecheck` and `/@oj/typecheck` under `oj dev --typecheck`). It runs on
 [tsrs](https://github.com/oxc-project/tsrs), the Rust port of the
 TypeScript 7 compiler, whose crates are vendored here as `oj_tsrs_*`.
+`oj_tsrs_lint` is tsrs's type-aware lint backend (the tsgolint rules on the
+same checker), which `oj lint` hands to oxlint.
 
 Vendored: tsrs 0.24.0 (`86de03ae428a956686af29177b50f0fdf4aee059`), TypeScript 7.1.0-beta.
 Licensed Apache-2.0; each crate carries tsrs's `LICENSE` and `NOTICE`.
@@ -35,6 +37,7 @@ The script's docstring lists the patches it applies.
 - `oj_tsrs_fswatch`
 - `oj_tsrs_incremental`
 - `oj_tsrs_ipc`
+- `oj_tsrs_lint`
 - `oj_tsrs_ls`
 - `oj_tsrs_lsproto`
 - `oj_tsrs_module`

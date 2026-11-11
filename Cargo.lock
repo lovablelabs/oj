@@ -6986,6 +6986,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "oj_tsrs_lint"
+version = "0.4.11"
+dependencies = [
+ "oj_tsrs_api_transport",
+ "oj_tsrs_ast",
+ "oj_tsrs_binder",
+ "oj_tsrs_checker",
+ "oj_tsrs_compiler",
+ "oj_tsrs_contentmapper",
+ "oj_tsrs_core",
+ "oj_tsrs_diagnostics",
+ "oj_tsrs_scanner",
+ "oj_tsrs_spanmap",
+ "oj_tsrs_tsoptions",
+ "oj_tsrs_vfs",
+ "regex",
+ "regress",
+ "rustc-hash 2.1.3",
+]
+
+[[package]]
 name = "oj_tsrs_ls"
 version = "0.4.11"
 dependencies = [
@@ -7186,6 +7207,7 @@ version = "0.4.11"
 dependencies = [
  "oj_tsrs_api",
  "oj_tsrs_execute",
+ "oj_tsrs_lint",
  "oj_tsrs_vfs",
  "serde",
  "serde_json",

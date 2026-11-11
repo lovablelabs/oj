@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Raphael Amorim
 
 mod build;
+mod lint;
 mod ssr_dev;
 mod ssr_host;
 mod start_bundle;
@@ -235,6 +236,22 @@ enum Command {
     /// does, for tools that call tsc or tsgo.
     #[command(disable_help_flag = true)]
     Typecheck {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// The project's oxlint with oj as its type-aware backend: takes oxlint's
+    /// command line (`oj lint`, `oj lint --fix src`) and prints and exits as
+    /// oxlint does. The rules that need types (`typescript/no-floating-promises`
+    /// and the rest of tsgolint's) run on oj's built-in checker.
+    #[command(disable_help_flag = true)]
+    Lint {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Internal: the type-aware lint backend, as oxlint runs it
+    /// (`<OXLINT_TSGOLINT_PATH> headless [flags]`, the payload on stdin).
+    #[command(hide = true, disable_help_flag = true)]
+    Headless {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -717,6 +734,8 @@ async fn run(cli: Cli, rolldown: tokio::runtime::Handle) -> anyhow::Result<()> {
             Ok(())
         }
         Command::Typecheck { args } => std::process::exit(oj_typecheck::tsc(args).into()),
+        Command::Lint { args } => std::process::exit(lint::lint(args)),
+        Command::Headless { args } => std::process::exit(lint::headless(args).into()),
         Command::DevTypecheck {
             root,
             changed,

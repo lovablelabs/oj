@@ -57,6 +57,7 @@ tsrs_execute = { package = "oj_tsrs_execute", version = "0.4.11", path = "crates
 tsrs_fswatch = { package = "oj_tsrs_fswatch", version = "0.4.11", path = "crates/typecheck/oj_tsrs_fswatch" }
 tsrs_incremental = { package = "oj_tsrs_incremental", version = "0.4.11", path = "crates/typecheck/oj_tsrs_incremental" }
 tsrs_ipc = { package = "oj_tsrs_ipc", version = "0.4.11", path = "crates/typecheck/oj_tsrs_ipc" }
+tsrs_lint = { package = "oj_tsrs_lint", version = "0.4.11", path = "crates/typecheck/oj_tsrs_lint" }
 tsrs_ls = { package = "oj_tsrs_ls", version = "0.4.11", path = "crates/typecheck/oj_tsrs_ls" }
 tsrs_lsproto = { package = "oj_tsrs_lsproto", version = "0.4.11", path = "crates/typecheck/oj_tsrs_lsproto" }
 tsrs_module = { package = "oj_tsrs_module", version = "0.4.11", path = "crates/typecheck/oj_tsrs_module" }
@@ -322,6 +323,7 @@ oj_tsrs_execute = { opt-level = 3 }
 oj_tsrs_fswatch = { opt-level = 3 }
 oj_tsrs_incremental = { opt-level = 3 }
 oj_tsrs_ipc = { opt-level = 3 }
+oj_tsrs_lint = { opt-level = 3 }
 oj_tsrs_ls = { opt-level = 3 }
 oj_tsrs_lsproto = { opt-level = 3 }
 oj_tsrs_module = { opt-level = 3 }
