@@ -295,6 +295,19 @@ impl Page {
         self.call(Some(&self.session), method, params).await
     }
 
+    /// Every request the page makes from here on takes `ms` longer (Chrome's
+    /// network conditions, which leave its WebSockets alone): a page far
+    /// from its dev server, where a fetch outlasts the page's own timers.
+    #[allow(dead_code)]
+    pub async fn emulate_latency(&self, ms: u64) {
+        self.send("Network.enable", json!({})).await;
+        self.send(
+            "Network.emulateNetworkConditions",
+            json!({ "offline": false, "latency": ms, "downloadThroughput": -1, "uploadThroughput": -1 }),
+        )
+        .await;
+    }
+
     /// Evaluates `expr` in the page and deserializes its value; an exception
     /// in the expression is an Err with its description.
     async fn try_eval(&self, expr: &str) -> Result<Value, String> {
