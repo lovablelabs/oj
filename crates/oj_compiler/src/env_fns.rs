@@ -230,16 +230,18 @@ pub fn reexport_of(code: &str, path: &str, name: &str) -> Option<ReExport> {
 }
 
 /// The `(source, name)` imports from outside `@tanstack/*` the module calls
-/// `createMiddleware` on (`startInstance.createMiddleware()`), a default
-/// import as `default`: the ones whose module declares a Start instance go to
-/// [`rewrite_env_fns_with`].
+/// `createMiddleware` on (`startInstance.createMiddleware()`, however the
+/// chain is laid out or wrapped: a line break before the `.`, parentheses,
+/// `startInstance!`), or keeps in a module variable (`const s =
+/// startInstance`), a default import as `default`: the ones whose module
+/// declares a Start instance go to [`rewrite_env_fns_with`].
 pub fn instance_imports(code: &str, path: &str) -> Vec<(String, String)> {
-    if !code.contains(".createMiddleware") {
+    if !code.contains("createMiddleware") {
         return Vec::new();
     }
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, code, source_type(path)).parse();
-    let mut out = Vec::new();
+    let mut imports = Vec::new();
     for statement in &parsed.program.body {
         let Statement::ImportDeclaration(import) = statement else {
             continue;
@@ -257,34 +259,65 @@ pub fn instance_imports(code: &str, path: &str) -> Vec<(String, String)> {
                 }
                 ImportDeclarationSpecifier::ImportNamespaceSpecifier(_) => continue,
             };
-            if code.contains(&format!("{local}.createMiddleware")) {
-                out.push((
-                    crate::lit_str(import.source.value).to_string(),
-                    imported.to_string(),
-                ));
-            }
+            imports.push((local, crate::lit_str(import.source.value), imported));
         }
     }
-    out
+    if imports.is_empty() {
+        return Vec::new();
+    }
+    let mut called = CalledAsInstance::default();
+    called.visit_program(&parsed.program);
+    // An alias of the import is an instance where the import is one.
+    for (_, init) in module_declarators(&parsed.program) {
+        if let Expression::Identifier(id) = init.get_inner_expression() {
+            called.names.insert(id.name.to_string());
+        }
+    }
+    imports
+        .into_iter()
+        .filter(|(local, _, _)| called.names.contains(*local))
+        .map(|(_, source, imported)| (source.to_string(), imported.to_string()))
+        .collect()
+}
+
+/// The identifiers `createMiddleware` is called on.
+#[derive(Default)]
+struct CalledAsInstance {
+    names: HashSet<String>,
+}
+
+impl<'a> Visit<'a> for CalledAsInstance {
+    fn visit_static_member_expression(&mut self, m: &oxc_ast::ast::StaticMemberExpression<'a>) {
+        if m.property.name == "createMiddleware" {
+            if let Expression::Identifier(id) = m.object.get_inner_expression() {
+                self.names.insert(id.name.to_string());
+            }
+        }
+        walk::walk_static_member_expression(self, m);
+    }
 }
 
 /// Whether `code` (a module) exports `name` as a Start instance: a module
 /// variable initialized with `createStart(..)` (the factory imported from
 /// `@tanstack/*`), exported where it is declared or by an export list, or
-/// `export default createStart(..)` for `default`.
-pub fn declares_start_instance(code: &str, path: &str, name: &str) -> bool {
+/// `export default createStart(..)` for `default`. The `(source, name)`
+/// imports in `reexported` count as TanStack's factories, as in
+/// [`rewrite_env_fns_with`] (`createStart` from a module of the app that
+/// re-exports it: [`foreign_factory_imports`]).
+pub fn declares_start_instance(
+    code: &str,
+    path: &str,
+    name: &str,
+    reexported: &[(String, String)],
+) -> bool {
     if !code.contains("createStart") {
         return false;
     }
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, code, source_type(path)).parse();
-    let mut bindings = Bindings::of(&parsed.program, &[], &[]);
+    let mut bindings = Bindings::of(&parsed.program, reexported, &[]);
     bindings.find_instances(&parsed.program);
-    let is_instance = |expr: &Expression| match expr.without_parentheses() {
-        Expression::Identifier(id) => bindings.instances.iter().any(|i| *i == id.name.as_str()),
-        Expression::CallExpression(call) => bindings.factory(&call.callee) == Some(Factory::Start),
-        _ => false,
-    };
+    let is_instance = |expr: &Expression| bindings.is_instance(expr);
     for statement in &parsed.program.body {
         match statement {
             Statement::ExportDeclaration(export) => {
@@ -501,16 +534,35 @@ impl Bindings {
         self.names.is_empty() && self.namespaces.is_empty() && self.instances.is_empty()
     }
 
-    /// The module variables whose initializer is `createStart(..)`.
+    /// The module variables holding the Start instance: `createStart(..)`,
+    /// or another such variable, to a fixed point. TanStack's compiler
+    /// resolves a binding through its initializer, type wrappers aside.
     fn find_instances(&mut self, program: &Program) {
-        let found: Vec<String> = module_declarators(program)
-            .filter(|(_, init)| {
-                matches!(init.without_parentheses(), Expression::CallExpression(call)
-                    if self.factory(&call.callee) == Some(Factory::Start))
-            })
-            .map(|(name, _)| name.to_string())
-            .collect();
-        self.instances.extend(found);
+        let declarators: Vec<_> = module_declarators(program).collect();
+        loop {
+            let found: Vec<String> = declarators
+                .iter()
+                .filter(|(name, init)| {
+                    !self.instances.iter().any(|i| i == name) && self.is_instance(init)
+                })
+                .map(|(name, _)| name.to_string())
+                .collect();
+            if found.is_empty() {
+                return;
+            }
+            self.instances.extend(found);
+        }
+    }
+
+    /// Whether `expr` is the Start instance: `createStart(..)` or a binding
+    /// holding one, through parentheses and TypeScript's wrappers (`as`,
+    /// `satisfies`, `!`), which TanStack's `unwrapExpression` sees through.
+    fn is_instance(&self, expr: &Expression) -> bool {
+        match expr.get_inner_expression() {
+            Expression::Identifier(id) => self.instances.iter().any(|i| *i == id.name.as_str()),
+            Expression::CallExpression(call) => self.factory(&call.callee) == Some(Factory::Start),
+            _ => false,
+        }
     }
 
     /// The module variables whose initializer is a middleware: a chain on
@@ -558,15 +610,14 @@ impl Bindings {
                 .find(|(local, _)| *local == id.name.as_str())
                 .map(|(_, f)| *f),
             Expression::StaticMemberExpression(m) => {
-                let Expression::Identifier(object) = m.object.without_parentheses() else {
-                    return None;
-                };
                 let property = m.property.name.as_str();
-                if self.namespaces.iter().any(|n| *n == object.name.as_str()) {
-                    return factory_named(property);
+                if let Expression::Identifier(object) = m.object.without_parentheses() {
+                    if self.namespaces.iter().any(|n| *n == object.name.as_str()) {
+                        return factory_named(property);
+                    }
                 }
-                let instance = self.instances.iter().any(|i| *i == object.name.as_str());
-                (instance && property == "createMiddleware").then_some(Factory::Middleware)
+                (property == "createMiddleware" && self.is_instance(&m.object))
+                    .then_some(Factory::Middleware)
             }
             _ => None,
         }
@@ -1309,7 +1360,8 @@ mod tests {
         );
         assert!(instance_imports("export const x = createMiddleware();", "a.ts").is_empty());
 
-        let declares = |code: &str, name: &str| declares_start_instance(code, "start.ts", name);
+        let declares =
+            |code: &str, name: &str| declares_start_instance(code, "start.ts", name, &[]);
         let import = "import { createStart } from \"@tanstack/react-start\";\n";
         assert!(declares(
             &format!("{import}export const startInstance = createStart(() => ({{}}));"),
@@ -1338,6 +1390,115 @@ mod tests {
         assert!(!declares(
             "export const startInstance = { createMiddleware: () => ({}) };",
             "startInstance"
+        ));
+    }
+
+    // TanStack's compiler resolves the instance by its binding, not by how
+    // the source is laid out: `unwrapExpression` sees through parentheses and
+    // TypeScript's wrappers, `resolveBindingKind` through an alias, and a call
+    // on `createStart(..)` itself is a Builder.
+    #[test]
+    fn the_start_instance_is_found_however_the_chain_is_written() {
+        let server =
+            ".server(async ({ next }) => { await import(\"./x.server\"); return next(); })";
+        let instances = [("../start".to_string(), "startInstance".to_string())];
+        for (label, body) in [
+            (
+                "a line break before the call",
+                format!("export const m = startInstance\n  .createMiddleware({{ type: \"function\" }})\n  .middleware([a])\n  {server};\n"),
+            ),
+            (
+                "parentheses",
+                format!("export const m = (startInstance).createMiddleware(){server};\n"),
+            ),
+            (
+                "a non-null assertion",
+                format!("export const m = startInstance!.createMiddleware(){server};\n"),
+            ),
+            (
+                "a cast",
+                format!("export const m = (startInstance as any).createMiddleware(){server};\n"),
+            ),
+            (
+                "an alias",
+                format!("const s = startInstance;\nexport const m = s.createMiddleware(){server};\n"),
+            ),
+        ] {
+            let code = format!("import {{ startInstance }} from \"../start\";\n{body}");
+            assert_eq!(instance_imports(&code, "a.ts"), instances, "{label}");
+            let out = rewrite_env_fns_with(&code, "a.ts", Env::Client, &[], &instances)
+                .unwrap()
+                .unwrap_or_else(|| panic!("{label}: left as written"));
+            assert!(!out.contains("x.server"), "{label}:\n{out}");
+            assert!(out.contains(".createMiddleware("), "{label}:\n{out}");
+            assert_eq!(out.lines().count(), code.lines().count(), "{label}");
+        }
+        // An import nothing calls `createMiddleware` on is not asked about.
+        assert!(instance_imports(
+            "import { startInstance } from \"../start\";\nimport { createMiddleware } from \"@tanstack/react-start\";\nexport const m = createMiddleware().server(() => startInstance);\n",
+            "a.ts"
+        )
+        .is_empty());
+
+        let import = "import { createStart } from \"@tanstack/react-start\";\n";
+        for (label, body) in [
+            (
+                "a cast",
+                "export const startInstance = createStart(() => ({})) as any;",
+            ),
+            (
+                "satisfies",
+                "export const startInstance = createStart(() => ({})) satisfies object;",
+            ),
+            (
+                "a non-null assertion",
+                "export const startInstance = createStart(() => ({}))!;",
+            ),
+            (
+                "an alias",
+                "const s = createStart(() => ({}));\nexport const startInstance = s;",
+            ),
+        ] {
+            let module = format!("{import}{body}");
+            assert!(
+                declares_start_instance(&module, "start.ts", "startInstance", &[]),
+                "{label}"
+            );
+            let code = format!("{module}\nconst m = startInstance.createMiddleware(){server};\n");
+            let out = rewrite_env_fns(&code, "start.ts", Env::Client)
+                .unwrap()
+                .unwrap_or_else(|| panic!("{label}: left as written"));
+            assert!(!out.contains("x.server"), "{label}:\n{out}");
+        }
+        let inline =
+            format!("{import}const m = createStart(() => ({{}})).createMiddleware(){server};\n");
+        let out = rewrite_env_fns(&inline, "start.ts", Env::Client)
+            .unwrap()
+            .unwrap();
+        assert!(
+            out.contains("const m = createStart(() => ({})).createMiddleware();"),
+            "{out}"
+        );
+
+        // `createStart` from a module of the app counts once the caller found
+        // it re-exports TanStack's.
+        let kit = "import { createStart } from \"~/lib/kit\";\nexport const startInstance = createStart(() => ({}));";
+        assert!(!declares_start_instance(
+            kit,
+            "start.ts",
+            "startInstance",
+            &[]
+        ));
+        let reexported = foreign_factory_imports(kit, "start.ts");
+        assert_eq!(
+            reexported,
+            [("~/lib/kit".to_string(), "createStart".to_string())]
+        );
+        assert!(declares_start_instance(
+            kit,
+            "start.ts",
+            "startInstance",
+            &reexported
         ));
     }
 

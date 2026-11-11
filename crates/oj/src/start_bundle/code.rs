@@ -482,16 +482,12 @@ impl StartCodePlugin {
         file: &str,
         importer: &str,
     ) -> anyhow::Result<Vec<(String, String)>> {
-        use oj_compiler::env_fns::{foreign_factory_imports, reexport_of, ReExport};
+        use oj_compiler::env_fns::foreign_factory_imports;
         self.imports_declaring(
             ctx,
             foreign_factory_imports(code, file),
             importer,
-            |text, path, export| match reexport_of(text, path, export) {
-                Some(ReExport::TanStack) => Declares::Yes,
-                Some(via) => Declares::Via(via),
-                None => Declares::No,
-            },
+            reexports_a_factory,
         )
         .await
     }
@@ -508,15 +504,22 @@ impl StartCodePlugin {
         importer: &str,
     ) -> anyhow::Result<Vec<(String, String)>> {
         use oj_compiler::env_fns::{
-            declares_start_instance, instance_imports, reexport_of, ReExport,
+            declares_start_instance, foreign_factory_imports, instance_imports, reexport_of,
+            ReExport,
         };
         self.imports_declaring(
             ctx,
             instance_imports(code, file),
             importer,
             |text, path, export| {
-                if declares_start_instance(text, path, export) {
+                if declares_start_instance(text, path, export, &[]) {
                     return Declares::Yes;
+                }
+                // `createStart` from a module of the app: an instance when
+                // that module re-exports TanStack's.
+                let foreign = foreign_factory_imports(text, path);
+                if !foreign.is_empty() && declares_start_instance(text, path, export, &foreign) {
+                    return Declares::IfFactories(foreign);
                 }
                 match reexport_of(text, path, export) {
                     Some(ReExport::TanStack) | None => Declares::No,
@@ -557,6 +560,19 @@ impl StartCodePlugin {
                         out.push((source, name));
                         break;
                     }
+                    Declares::IfFactories(factories) => {
+                        let found = Box::pin(self.imports_declaring(
+                            ctx,
+                            factories,
+                            &path,
+                            reexports_a_factory,
+                        ))
+                        .await?;
+                        if !found.is_empty() {
+                            out.push((source, name));
+                            break;
+                        }
+                    }
                     Declares::Via(ReExport::From { source, name }) => {
                         queue.push((source, name, path))
                     }
@@ -579,6 +595,19 @@ enum Declares {
     Yes,
     No,
     Via(oj_compiler::env_fns::ReExport),
+    /// It does if one of these `(source, name)` imports of its own is
+    /// TanStack's factory.
+    IfFactories(Vec<(String, String)>),
+}
+
+/// Whether a module's export `name` is TanStack's factory, re-exported.
+fn reexports_a_factory(text: &str, path: &str, name: &str) -> Declares {
+    use oj_compiler::env_fns::{reexport_of, ReExport};
+    match reexport_of(text, path, name) {
+        Some(ReExport::TanStack) => Declares::Yes,
+        Some(via) => Declares::Via(via),
+        None => Declares::No,
+    }
 }
 
 #[cfg(test)]
