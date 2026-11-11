@@ -440,7 +440,7 @@ pub(crate) fn html_entries(root: &Path) -> Vec<String> {
 
 /// Value of attribute `name` in an opening tag: double/single/unquoted, spaces
 /// around `=`, case-insensitive whole-word names (`data-src` is not `src`).
-pub(crate) fn html_tag_attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+pub fn html_tag_attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
     let bytes = tag.as_bytes();
     let len = bytes.len();
     let skip_ws = |mut i: usize| {

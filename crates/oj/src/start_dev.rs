@@ -62,6 +62,9 @@ struct StartState {
     live_reload: PathBuf,
     /// `server.hmr.overlay` (default true), filled into the live-reload client.
     hmr_overlay: bool,
+    /// Vite's `html.cspNonce`: the nonce the live-reload client's tag carries
+    /// (see [`inject_reload_client`]), as the tags Vite injects into a page do.
+    csp_nonce: Option<String>,
     /// How often a page socket sends [`PING_FRAME`] (`OJ_HMR_PING_MS`); none
     /// turns the keepalive and the client's watchdog off.
     hmr_ping: Option<Duration>,
@@ -431,7 +434,7 @@ pub async fn start_dev(
     // the dev server's SSR pipeline (StartHost); it needs the built app's
     // SsrBridge, so it comes up once the server build joins.
     let hmr_overlay;
-    let (engine, public_dir) = {
+    let (engine, public_dir, csp_nonce) = {
         let mut config = oj_config::load(&root).unwrap_or_default();
         oj_server::plugins::adopt_vite_config_values(
             &mut config,
@@ -459,7 +462,7 @@ pub async fn start_dev(
             crate::start_bundle::assets::client_inline_limit(&config),
             init_env,
         )?);
-        (engine, public_dir)
+        (engine, public_dir, oj_config::html_csp_nonce(&config))
     };
     let loopback_port = spawn_engine_loopback(Arc::clone(&engine)).await?;
     oj_server::boot_phase("engine ready");
@@ -602,6 +605,7 @@ pub async fn start_dev(
         gzip: Default::default(),
         live_reload: cache.join("live-reload.js"),
         hmr_overlay,
+        csp_nonce,
         hmr_ping: hmr_ping(oj_env::get().knobs.hmr_ping_ms),
         workspace_root: workspace_root(&root),
         public_dir,
@@ -952,13 +956,92 @@ fn hot_has_now(state: &StartState) -> Option<u64> {
 }
 
 /// The live-reload client's tag, under the dev `base` prefix, with the
-/// document's stamp (see start_reloads).
-fn reload_client(url_base: &str, stamp: &str) -> String {
+/// document's stamp (see start_reloads) and the document's CSP nonce when it
+/// has one (see [`inject_reload_client`]), written as Vite's
+/// `injectNonceAttributeTagHook` writes it on the tags it injects.
+fn reload_client(url_base: &str, stamp: &str, nonce: Option<&str>) -> String {
     // The stamp's query (`g`, then `&h=`) sits in an attribute: `&` escaped.
     let stamp = stamp.replace('&', "&amp;");
+    let nonce = nonce.map_or(String::new(), |n| format!(" nonce=\"{n}\""));
     format!(
-        "<script type=\"module\" src=\"{url_base}/@oj-start/live-reload.js?g={stamp}\"></script>"
+        "<script type=\"module\" src=\"{url_base}/@oj-start/live-reload.js?g={stamp}\"{nonce}></script>"
     )
+}
+
+/// The nonce a document's own `<script>` tags carry, read off the body as it
+/// streams past. Start writes the router's `ssr.nonce` on every script tag it
+/// renders (@tanstack/react-router's `Scripts` and `Asset`, and router-core's
+/// `injectScript` in ssr/ssr-server.ts, which writes it single-quoted), so
+/// the first script tag with one names the nonce the page's policy accepts.
+/// A tag may straddle two chunks: the bytes from an unclosed `<` are kept for
+/// the next one, dropped past [`ScriptNonceScan::CARRY_MAX`] so a stray `<`
+/// in an inline script's text never grows the carry without end.
+#[derive(Default)]
+struct ScriptNonceScan {
+    carry: Vec<u8>,
+    found: Option<String>,
+}
+
+impl ScriptNonceScan {
+    const CARRY_MAX: usize = 4096;
+
+    fn feed(&mut self, chunk: &[u8]) {
+        if self.found.is_some() {
+            return;
+        }
+        let mut buf = std::mem::take(&mut self.carry);
+        buf.extend_from_slice(chunk);
+        let mut at = 0;
+        while let Some(lt) = script_open(&buf, at) {
+            let Some(gt) = buf[lt..].iter().position(|&b| b == b'>') else {
+                self.keep(&buf[lt..]);
+                return;
+            };
+            let tag = String::from_utf8_lossy(&buf[lt..lt + gt]);
+            if let Some(nonce) = oj_server::html_tag_attr(&tag, "nonce").filter(|n| !n.is_empty()) {
+                self.found = Some(nonce.to_string());
+                return;
+            }
+            at = lt + gt + 1;
+        }
+        // A chunk ending inside a tag's name (`<scr`), or in any tag the next
+        // chunk closes: from the last `<` no `>` follows.
+        if let Some(lt) = buf[at..].iter().rposition(|&b| b == b'<') {
+            let rest = &buf[at + lt..];
+            if !rest.contains(&b'>') {
+                self.keep(rest);
+            }
+        }
+    }
+
+    fn keep(&mut self, rest: &[u8]) {
+        if rest.len() <= Self::CARRY_MAX {
+            self.carry = rest.to_vec();
+        }
+    }
+
+    fn nonce(&self) -> Option<&str> {
+        self.found.as_deref()
+    }
+}
+
+/// The offset of the next `<script` start tag at or after `from`: the name
+/// in any case, ended by whitespace, `>` or `/`, or by the buffer (a tag the
+/// next chunk continues).
+fn script_open(buf: &[u8], from: usize) -> Option<usize> {
+    const OPEN: &[u8] = b"<script";
+    let mut i = from;
+    while i + OPEN.len() <= buf.len() {
+        if buf[i..i + OPEN.len()].eq_ignore_ascii_case(OPEN)
+            && buf
+                .get(i + OPEN.len())
+                .is_none_or(|b| b.is_ascii_whitespace() || matches!(b, b'>' | b'/'))
+        {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
 }
 
 /// One rebundle run's inputs, handed from the watcher thread to the coalescing
@@ -3118,7 +3201,7 @@ async fn forward_document(
                 }
                 // A worker-served document needs the live-reload client like the
                 // runner-served ones, or edits never reload the page.
-                return inject_reload_client(resp, &state.base, &stamp);
+                return inject_reload_client(resp, &state.base, &stamp, state.csp_nonce.as_deref());
             }
             // A middleware rewrote `req.url` and passed the request on: the
             // document it named is the one to render, as Vite's own
@@ -3145,8 +3228,7 @@ async fn forward_document(
     ensure_bundle_current(state).await;
     ensure_runner_fresh(state).await;
     forward(
-        &state.engine,
-        &state.base,
+        state,
         &document_stamp(state, hot_has),
         "GET".into(),
         document_url(&raw),
@@ -3235,16 +3317,7 @@ async fn forward_with_body(state: &Arc<StartState>, req: Request) -> Response {
             Ok(body) => body,
             Err(resp) => return resp,
         };
-        return forward(
-            &state.engine,
-            &state.base,
-            &stamp,
-            method,
-            url,
-            &headers,
-            body,
-        )
-        .await;
+        return forward(state, &stamp, method, url, &headers, body).await;
     };
     if let Ok(v) = header::HeaderValue::from_str(&state.loopback_port.to_string()) {
         headers.insert("x-oj-forward-to", v);
@@ -3263,7 +3336,7 @@ async fn forward_with_body(state: &Arc<StartState>, req: Request) -> Response {
             "oj start: request fell through the plugin middleware without reaching the app",
         )
             .into_response(),
-        Ok(resp) => inject_reload_client(resp, &state.base, &stamp),
+        Ok(resp) => inject_reload_client(resp, &state.base, &stamp, state.csp_nonce.as_deref()),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("oj start: {e}")).into_response(),
     }
 }
@@ -3799,20 +3872,28 @@ fn engine_response(resp: StartResponse) -> Response {
     out
 }
 
+/// The request through the engine, the reply given the live-reload client
+/// (with the document's stamp and the state's nonce, see
+/// [`inject_reload_client`]).
 async fn forward(
-    engine: &StartEngine,
-    url_base: &str,
+    state: &StartState,
     stamp: &str,
     method: String,
     url: String,
     req_headers: &header::HeaderMap,
     body: Option<Vec<u8>>,
 ) -> Response {
-    match engine
+    match state
+        .engine
         .handle(engine_request(method, url, req_headers, body, false))
         .await
     {
-        Ok(resp) => inject_reload_client(engine_response(resp), url_base, stamp),
+        Ok(resp) => inject_reload_client(
+            engine_response(resp),
+            &state.base,
+            stamp,
+            state.csp_nonce.as_deref(),
+        ),
         Err(e) => {
             // The runner's 500 page shape (Vite's errorMiddleware): message +
             // stack in an HTML page the overlay can read.
@@ -3872,7 +3953,21 @@ async fn spawn_engine_loopback(engine: Arc<StartEngine>) -> anyhow::Result<u16> 
 /// passed through untouched (TanStack streams its dehydrated data into the
 /// page) and the script tag follows the final chunk; browsers parse a trailing
 /// `<script>` after `</html>` into the body.
-fn inject_reload_client(resp: Response, url_base: &str, stamp: &str) -> Response {
+///
+/// The tag carries a CSP nonce when the document has one: `config_nonce`
+/// (Vite's `html.cspNonce`, which its `injectNonceAttributeTagHook` in
+/// plugins/html.ts puts on the tags it injects), else the nonce the
+/// document's own script tags carry ([`ScriptNonceScan`]). Under a strict
+/// policy (`script-src 'nonce-..' 'strict-dynamic'`) a tag without it is
+/// refused; Vite's own client needs none there, since it arrives as an import
+/// of the app's nonced client entry rather than as a tag of its own. The
+/// app's tags are left as they are: Vite adds no nonce to a Start document.
+fn inject_reload_client(
+    resp: Response,
+    url_base: &str,
+    stamp: &str,
+    config_nonce: Option<&str>,
+) -> Response {
     use tokio_stream::StreamExt;
     let is_html = resp
         .headers()
@@ -3890,10 +3985,40 @@ fn inject_reload_client(resp: Response, url_base: &str, stamp: &str) -> Response
         return resp;
     }
     let (parts, body) = resp.into_parts();
-    let tail = tokio_stream::once(Ok::<_, axum::Error>(axum::body::Bytes::from(
-        reload_client(url_base, stamp),
-    )));
-    let stream = body.into_data_stream().chain(tail);
+    let tag = {
+        let (url_base, stamp) = (url_base.to_string(), stamp.to_string());
+        let config_nonce = config_nonce.map(str::to_string);
+        move |document_nonce: Option<&str>| {
+            reload_client(
+                &url_base,
+                &stamp,
+                config_nonce.as_deref().or(document_nonce),
+            )
+        }
+    };
+    // The tail is made once the body ended, when the scan has seen every tag.
+    let stream = futures_util::stream::unfold(
+        (
+            body.into_data_stream(),
+            ScriptNonceScan::default(),
+            Some(tag),
+        ),
+        |(mut body, mut scan, tag)| async move {
+            let tag = tag?;
+            match body.next().await {
+                Some(chunk) => {
+                    if let Ok(bytes) = &chunk {
+                        scan.feed(bytes);
+                    }
+                    Some((chunk, (body, scan, Some(tag))))
+                }
+                None => {
+                    let tail = axum::body::Bytes::from(tag(scan.nonce()));
+                    Some((Ok::<_, axum::Error>(tail), (body, scan, None)))
+                }
+            }
+        },
+    );
     Response::from_parts(parts, axum::body::Body::from_stream(stream))
 }
 
@@ -5503,22 +5628,109 @@ mod tests {
             b.body(axum::body::Body::from("<html></html>")).unwrap()
         };
         // Under the dev `base`, as Vite's urls are.
-        let tag = reload_client("/app", "1f-3");
+        let tag = reload_client("/app", "1f-3", None);
         assert!(
             tag.contains("src=\"/app/@oj-start/live-reload.js?g=1f-3\""),
             "{tag}"
         );
+        assert!(!tag.contains("nonce"), "{tag}");
         // With the hot changes it has: the query's `&` escaped in the attribute.
-        let hot = reload_client("/app", "1f-3&h=7");
+        let hot = reload_client("/app", "1f-3&h=7", None);
         assert!(
             hot.contains("src=\"/app/@oj-start/live-reload.js?g=1f-3&amp;h=7\""),
             "{hot}"
         );
-        let inject = |r| body_of(inject_reload_client(r, "/app", "1f-3"));
+        let inject = |r| body_of(inject_reload_client(r, "/app", "1f-3", None));
         assert!(inject(resp("text/html", None)).contains(&tag));
         assert!(!inject(resp("text/html", Some("gzip"))).contains(&tag));
         assert!(inject(resp("text/html", Some("identity"))).contains(&tag));
         assert!(!inject(resp("text/javascript", None)).contains(&tag));
+    }
+
+    // The live-reload tag takes the document's CSP nonce: `html.cspNonce`
+    // first, else the one the document's own script tags carry, found while
+    // the body streams (a tag split across chunks included); a document
+    // whose tags have none gets a tag without one.
+    #[test]
+    fn reload_client_tag_carries_the_documents_nonce() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let body_of = |resp: Response| {
+            rt.block_on(async {
+                let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                String::from_utf8_lossy(&bytes).into_owned()
+            })
+        };
+        let streamed = |chunks: &[&str]| {
+            let chunks: Vec<Result<axum::body::Bytes, axum::Error>> = chunks
+                .iter()
+                .map(|c| Ok(axum::body::Bytes::from(c.to_string())))
+                .collect();
+            Response::builder()
+                .header(header::CONTENT_TYPE, "text/html")
+                .body(axum::body::Body::from_stream(tokio_stream::iter(chunks)))
+                .unwrap()
+        };
+        let tail = |html: &str| html[html.rfind("<script").unwrap()..].to_string();
+        let inject = |chunks: &[&str], config: Option<&str>| {
+            tail(&body_of(inject_reload_client(
+                streamed(chunks),
+                "",
+                "1f-3",
+                config,
+            )))
+        };
+        // Start's `<Scripts>` writes the router's nonce double-quoted; its
+        // `injectScript` writes it single-quoted.
+        let page = [
+            "<html><head><link rel=\"modulepreload\" href=\"/a.js\" nonce=\"n1\"></head>",
+            "<body><script nonce=\"n1\" type=\"module\" src=\"/a.js\"></script></body></html>",
+        ];
+        assert!(inject(&page, None).contains(" nonce=\"n1\""));
+        let single = ["<html><body><script nonce='n2'>x()</script></body></html>"];
+        assert!(inject(&single, None).contains(" nonce=\"n2\""));
+        // A tag the stream splits inside its name, and one split inside its
+        // attributes, each as the chunks come.
+        let split_name = [
+            "<html><body><scr",
+            "ipt nonce=\"n3\">x()</script></body></html>",
+        ];
+        assert!(
+            inject(&split_name, None).contains(" nonce=\"n3\""),
+            "{split_name:?}"
+        );
+        let split_attrs = [
+            "<html><body><script type=\"module\" non",
+            "ce=\"n4\" src=\"/a.js\"></script></body></html>",
+        ];
+        assert!(
+            inject(&split_attrs, None).contains(" nonce=\"n4\""),
+            "{split_attrs:?}"
+        );
+        // A `<script` inside text, with no `>` for a while, is no tag; a
+        // document whose scripts carry no nonce gets a tag without one.
+        let none = [
+            "<html><body><script src=\"/a.js\"></script><p>a < b</p>",
+            "</body></html>",
+        ];
+        assert!(!inject(&none, None).contains("nonce"), "{none:?}");
+        // The config's nonce wins over the document's, as Vite's hook puts
+        // `html.cspNonce` on the tags it injects.
+        let configured = inject(&page, Some("cfg"));
+        assert!(configured.contains(" nonce=\"cfg\""), "{configured}");
+        assert!(!configured.contains("n1"), "{configured}");
+        // The tag's name in any case; another tag starting with the name is
+        // no script.
+        let mut scan = ScriptNonceScan::default();
+        scan.feed(b"<SCRIPT NONCE=\"up\">");
+        assert_eq!(scan.nonce(), Some("up"));
+        let mut scan = ScriptNonceScan::default();
+        scan.feed(b"<scripts nonce=\"no\">");
+        assert_eq!(scan.nonce(), None);
     }
 
     // Vite's NODE_ENV rule for the dev server: the shell wins (so
