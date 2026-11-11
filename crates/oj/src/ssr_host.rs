@@ -10,9 +10,11 @@
 //! specifier carries it (`?v=N`). A change bumps the module and everything
 //! that transitively imports it, so the next request's entry specifier is
 //! new, re-linking reaches fresh instances exactly along the invalidated
-//! chain, and untouched subtrees keep their cached instances and state.
-//! Orphaned instances leak in the isolate, so after enough of them the
-//! engine is respawned (a cheap snapshot boot) behind a write lock.
+//! chain, and untouched subtrees keep their cached instances and state (the
+//! generated route tree's imports excepted: the tree configures them, see
+//! `invalidate_seeded`). Orphaned instances leak in the isolate, so after
+//! enough of them the engine is respawned (a cheap snapshot boot) behind a
+//! write lock.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -70,6 +72,13 @@ struct Graph {
 struct Rec {
     mtime: Option<SystemTime>,
     importers: HashSet<String>,
+}
+
+/// Whether a module id is the generated route tree (`routeTree.gen.ts`),
+/// whatever intent tag it carries.
+fn is_route_tree_gen(id: &str) -> bool {
+    let clean = id.split('?').next().unwrap_or(id);
+    crate::start_bundle::dev::is_route_tree_gen(Path::new(clean))
 }
 
 pub(crate) fn mtime_of(id: &str) -> Option<SystemTime> {
@@ -201,6 +210,28 @@ impl VersionGraph {
             .collect();
         let mut stack = seeds.clone();
         let mut graph = self.graph.lock().unwrap();
+        // A regenerated route tree configures the modules it imports as it
+        // evaluates: each route's object takes its `update(...)`, and a
+        // parent's `_addFileChildren(...)` replaces that parent's children
+        // (router-core's route.ts). A route the new tree no longer parents
+        // under keeps the children the old tree gave it for as long as its
+        // module instance lives, so the tree's importees are dropped with a
+        // tree whose own file changed: the next request evaluates fresh
+        // route objects for the new tree to configure. A tree re-imported
+        // only for an edit to a route it imports configures the instances
+        // it did before, which stay. Vite's module runner has no such edge
+        // to follow: a server update with no accept boundary clears every
+        // evaluated module (module-runner/hmrHandler.ts, `full-reload`),
+        // the route files among them.
+        for tree in seeds.iter().filter(|id| is_route_tree_gen(id)) {
+            stack.extend(
+                graph
+                    .recs
+                    .iter()
+                    .filter(|(_, rec)| rec.importers.contains(tree))
+                    .map(|(importee, _)| importee.clone()),
+            );
+        }
         let mut dropped = 0;
         while let Some(id) = stack.pop() {
             let Some(rec) = graph.recs.remove(&id) else {
@@ -814,6 +845,74 @@ mod tests {
         graph.reset_after_respawn();
         assert!(!graph.should_respawn());
         assert!(graph.version_of(&other_id) > 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // The generated route tree's own change drops the route modules it
+    // imports (the tree configures their route objects), not what those
+    // import in turn; any other module's change leaves its imports alone.
+    #[test]
+    fn version_graph_drops_the_route_trees_imports_with_the_tree() {
+        let dir = std::env::temp_dir().join(format!("oj-vgraph-tree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("routes")).unwrap();
+        let tree = dir.join("routeTree.gen.ts");
+        let router = dir.join("router.tsx");
+        let root = dir.join("routes/__root.tsx");
+        let members = dir.join("routes/members.tsx");
+        let card = dir.join("card.tsx");
+        for f in [&tree, &router, &root, &members, &card] {
+            std::fs::write(f, "export const a = 1;").unwrap();
+        }
+        let id = |p: &Path| p.to_string_lossy().into_owned();
+        let graph = VersionGraph::default();
+        // entry -> router -> tree -> {root, members}; members -> card.
+        let _ = graph.edge_specifier(&id(&router), "entry".into());
+        let _ = graph.edge_specifier(&id(&tree), id(&router));
+        let _ = graph.edge_specifier(&id(&root), id(&tree));
+        let _ = graph.edge_specifier(&id(&members), id(&tree));
+        let _ = graph.edge_specifier(&id(&card), id(&members));
+        for f in [&tree, &router, &root, &members, &card] {
+            graph.record_loaded(&id(f));
+        }
+        assert_eq!(graph.invalidate(), 0, "nothing changed yet");
+
+        // The generator rewrote the tree: the routes it imports go with it,
+        // and its importer chain; the card a route imports stays.
+        std::fs::write(&tree, "export const a = 2;").unwrap();
+        let (dropped, _) = graph.invalidate_for(std::slice::from_ref(&tree));
+        assert_eq!(dropped, 4, "tree, router, root and members");
+        for f in [&tree, &router, &root, &members] {
+            assert_eq!(graph.version_of(&id(f)), 1, "{}", f.display());
+        }
+        assert_eq!(
+            graph.version_of(&id(&card)),
+            0,
+            "a route's own import keeps its version"
+        );
+
+        // Loaded again (the next request records the edges anew), then a
+        // route file's own edit: its importer chain bumps, the routes
+        // beside it do not (the tree is no seed here).
+        let _ = graph.edge_specifier(&id(&router), "entry".into());
+        let _ = graph.edge_specifier(&id(&tree), id(&router));
+        let _ = graph.edge_specifier(&id(&root), id(&tree));
+        let _ = graph.edge_specifier(&id(&members), id(&tree));
+        let _ = graph.edge_specifier(&id(&card), id(&members));
+        for f in [&tree, &router, &root, &members, &card] {
+            graph.record_loaded(&id(f));
+        }
+        std::fs::write(&members, "export const a = 3;").unwrap();
+        let (dropped, _) = graph.invalidate_for(std::slice::from_ref(&members));
+        assert_eq!(dropped, 3, "members, tree and router");
+        assert_eq!(graph.version_of(&id(&members)), 2);
+        assert_eq!(graph.version_of(&id(&tree)), 2);
+        assert_eq!(
+            graph.version_of(&id(&root)),
+            1,
+            "a sibling route keeps its version"
+        );
+        assert_eq!(graph.version_of(&id(&card)), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

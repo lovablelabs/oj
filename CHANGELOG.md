@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- TanStack Start dev: a route file renamed while the server runs (`members.$id.tsx` to `members_.$id.tsx`, say, which takes the route out of its layout) renders at its path from the regenerated route tree. The server render kept the old nesting, with the deleted file's route still a child of the layout, and failed on that route's split component (`cannot resolve .../members.$id.tsx?tsr-split=component`, the page switching to client rendering over the error), while the client bundle had moved on; only a restart put the server right. The generated tree configures the route modules it imports as it evaluates (each route's `update(...)`, a parent's `_addFileChildren(...)` replacing its children), and the SSR host re-imports only a changed file and its importers, so a layout the new tree no longer gives children kept the deleted route for as long as its module instance lived. A regenerated tree now drops the modules it imports with it, and the next request evaluates fresh route objects for the new tree to configure, as every server module is fresh under Vite, whose module runner clears every evaluated module on a server update with no accept boundary (`module-runner/hmrHandler.ts`). An edit to a route file still re-imports that file and its importers alone.
+
 ## [0.4.13] - 2026-11-11
 
 ### Changed
