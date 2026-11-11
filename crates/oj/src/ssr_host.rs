@@ -435,7 +435,9 @@ fn serve_module_host(host: Arc<SsrHost>, mut requests: oj_js::HostRequests) {
                     } => {
                         let _ = reply.send(host.resolve_import(&importer, &specifier).await);
                     }
-                    oj_js::HostRequest::Load { specifier, reply } => {
+                    oj_js::HostRequest::Load {
+                        specifier, reply, ..
+                    } => {
                         let _ = reply.send(host.load_import(&specifier).await);
                     }
                 }

@@ -906,12 +906,16 @@ impl StartHost {
         }
     }
 
-    async fn load_inner(&self, specifier: &str) -> Result<Option<HostModule>, String> {
+    async fn load_inner(
+        &self,
+        specifier: &str,
+        requested_json: bool,
+    ) -> Result<Option<HostModule>, String> {
         // Plain file loads (byonm-resolved) the host still claims: json as
         // ESM with named exports, and noExternal dependencies through the
         // transform pipeline (define/env/glob, plugin transforms).
         let Some(id) = versioned_id(specifier) else {
-            return self.load_unversioned(specifier).await;
+            return self.load_unversioned(specifier, requested_json).await;
         };
         self.ensure_plugins_started().await;
 
@@ -929,7 +933,11 @@ impl StartHost {
             && !self.cjs.is_cjs_file(path)
     }
 
-    async fn load_unversioned(&self, specifier: &str) -> Result<Option<HostModule>, String> {
+    async fn load_unversioned(
+        &self,
+        specifier: &str,
+        requested_json: bool,
+    ) -> Result<Option<HostModule>, String> {
         let Ok(u) = url::Url::parse(specifier) else {
             return Ok(None);
         };
@@ -944,6 +952,16 @@ impl StartHost {
             return Ok(None);
         }
         if path_str.ends_with(".json") {
+            // `import data from "./data.json" with { type: "json" }` in a
+            // dependency the runtime loads itself (every module of the app,
+            // and of a claimed dependency, has its static attributes dropped
+            // by the SSR compile): Vite externalizes the package and Node
+            // loads the file as a JSON module (`runExternalModule`), so the
+            // runtime does here. The json plugin's JavaScript module would be
+            // no match for the JSON module the import asks for.
+            if requested_json {
+                return Ok(None);
+            }
             // Vite's json plugin (namedExports) for dependency json too.
             let code = self
                 .bridge
@@ -1303,8 +1321,12 @@ fn serve_module_host(host: Arc<StartHost>, mut requests: oj_js::HostRequests) {
                     } => {
                         let _ = reply.send(host.resolve_inner(&importer, &specifier).await);
                     }
-                    oj_js::HostRequest::Load { specifier, reply } => {
-                        let _ = reply.send(host.load_inner(&specifier).await);
+                    oj_js::HostRequest::Load {
+                        specifier,
+                        requested_json,
+                        reply,
+                    } => {
+                        let _ = reply.send(host.load_inner(&specifier, requested_json).await);
                     }
                 }
             });

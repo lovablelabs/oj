@@ -173,8 +173,9 @@ impl ModuleLoader for EngineModuleLoader {
             async move {
                 if let Some(host) = &host {
                     if specifier.scheme() != "node" {
+                        let requested_json = matches!(requested, RequestedModuleType::Json);
                         if let Some(module) = host
-                            .load(specifier.as_str())
+                            .load(specifier.as_str(), requested_json)
                             .await
                             .map_err(JsErrorBox::generic)?
                         {
