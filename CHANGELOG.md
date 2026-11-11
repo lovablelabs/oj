@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- TanStack Start dev: a `build.rollupOptions.output.codeSplitting` (or `advancedChunks`) group whose `name` or `test` is a function keeps working after the plugin host's engine is respawned. The dev client bundle reads such a function once, when its container opens, as a handle into the engine's registry, and calls the handle on every chunking pass for the life of the server; an engine respawned after a wedged or out-of-memory hook reopened the container with an empty registry, so from then on every client bundle failed with `codeSplitting group #0 name: oj: no config function #0` until the server was restarted, and clearing the cache changed nothing. The respawned engine now derives the registry again from the same config, in the same order, so the handles name the same functions (rolldown's `codeSplitting.groups[].name` is `(moduleId, ctx) => string | void`, which `vite build` calls and Vite's dev server, which does not bundle, never does). Under dev a group whose function the host cannot run at all steps aside for the batch with one warning, as a group whose function throws already did, instead of failing the bundle; a build stays loud.
+
 ## [0.4.13] - 2026-11-11
 
 ### Changed

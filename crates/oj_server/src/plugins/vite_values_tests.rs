@@ -2294,3 +2294,122 @@ fn an_editor_hmr_gate_plugin_turns_the_native_gate_on_unless_oj_config_says_no()
     merge_vite_values(&mut config, parse_vite_values(&serde_json::json!({})));
     assert_eq!(config.server.as_ref().and_then(|s| s.hmr_gate), None);
 }
+
+// A codeSplitting group's `name` and `test` functions reach a Start bundle
+// as `$fn` handles into the container's registry (startFacts), which the
+// bundle reads once, when its container opens, and keeps for the life of
+// the dev server. A revived engine reopens the container from the boot seed
+// with an empty registry, so every chunking pass after the revive called a
+// handle nothing held ("oj: no config function #0") and the client bundle
+// failed until the server was restarted. The handles stay callable: the
+// fresh engine derives the registry again from the same config.
+#[tokio::test]
+async fn config_function_handles_outlive_the_engine_that_handed_them_out() {
+    let root = std::env::temp_dir().join(format!("oj-start-fn-revive-{}", std::process::id()));
+    crate::plugins::test_roots::remove_root(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let config_file = root.join("vite.config.mjs");
+    std::fs::write(
+        &config_file,
+        r#"export default {
+  plugins: [{
+    name: "blocker",
+    load(id) {
+      if (id.includes("__block__")) for (;;) {}
+      return null;
+    },
+  }],
+  build: {
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [{
+            name: (id) => (id.includes("/vendor/") ? "vendor" : undefined),
+            test: (id) => id.includes("node_modules"),
+          }],
+        },
+      },
+    },
+  },
+};
+"#,
+    )
+    .unwrap();
+    let config = serde_json::json!({
+        "config": { "root": root.display().to_string(), "base": "/", "mode": "development", "command": "serve" },
+        "env": { "command": "serve", "mode": "development" },
+        "environment": { "name": "client", "mode": "dev" },
+        "pluginsFormat": "vite",
+        "ojStartMode": true,
+        "ojBundleHost": true,
+    })
+    .to_string();
+    let host = PluginHost::spawn_with_timeouts(
+        &root,
+        &config_file,
+        &config,
+        SpawnTimeouts {
+            probe: Some(std::time::Duration::from_millis(500)),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("the embedded engine spawns");
+    // The dev client bundle's container, as start_bundle::hosts::open opens it.
+    let client = host
+        .open_environment_container("client", true, true)
+        .await
+        .expect("the client container opens");
+    let facts = client.start_facts().await.expect("start facts are served");
+    let group = &facts["codeSplitting"]["groups"][0];
+    assert_eq!(group["name"], serde_json::json!({ "$fn": 0 }), "{facts}");
+    assert_eq!(group["test"], serde_json::json!({ "$fn": 1 }), "{facts}");
+    let ids = ["/app/vendor/a.js".to_string(), "/app/src/b.js".to_string()];
+    let names = client
+        .call_start_fn_batch(0, &ids, 1, None, true)
+        .await
+        .expect("the name function runs on the engine that handed it out");
+    assert_eq!(
+        names,
+        vec![serde_json::json!("vendor"), serde_json::Value::Null]
+    );
+
+    // The engine dies under a wedged hook; the next call revives it.
+    let err = host
+        .load("__block__")
+        .await
+        .expect_err("a synchronous wedge silences the probes");
+    assert!(
+        err.contains("unresponsive") || err.contains("exited"),
+        "the probe names the wedge: {err}"
+    );
+    clear_respawn_spacing(&host);
+
+    let names = client
+        .call_start_fn_batch(0, &ids, 2, None, true)
+        .await
+        .expect("the revived engine runs the name function behind the same handle");
+    assert_eq!(
+        names,
+        vec![serde_json::json!("vendor"), serde_json::Value::Null]
+    );
+    let tests = client
+        .call_start_fn_batch(
+            1,
+            &[
+                "/app/node_modules/x.js".to_string(),
+                "/app/src/b.js".to_string(),
+            ],
+            2,
+            None,
+            true,
+        )
+        .await
+        .expect("and the test function behind its handle");
+    assert_eq!(
+        tests,
+        vec![serde_json::json!(true), serde_json::json!(false)]
+    );
+    host.shutdown();
+    crate::plugins::test_roots::remove_root(&root);
+}
