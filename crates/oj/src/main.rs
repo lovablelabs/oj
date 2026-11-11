@@ -522,10 +522,16 @@ fn main() -> anyhow::Result<()> {
     }
     // `oj typecheck` takes tsc's command line, which clap cannot parse: every
     // argument goes to the tsc driver as it is (`oj typecheck --help` is tsc's).
+    // `oj lint` takes oxlint's command line and `oj headless` what oxlint
+    // passes its backend, the same way: clap would drop a `--` on the way.
     let mut args = std::env::args_os().skip(1);
-    if args.next().is_some_and(|arg| arg == "typecheck") {
-        let args = args.map(|arg| arg.to_string_lossy().into_owned()).collect();
-        std::process::exit(oj_typecheck::tsc(args).into());
+    let command = args.next();
+    let rest = || -> Vec<String> { args.map(|arg| arg.to_string_lossy().into_owned()).collect() };
+    match command.as_ref().and_then(|c| c.to_str()) {
+        Some("typecheck") => std::process::exit(oj_typecheck::tsc(rest()).into()),
+        Some("lint") => std::process::exit(lint::lint(rest())),
+        Some("headless") => std::process::exit(lint::headless(rest()).into()),
+        _ => {}
     }
     // Vite sorts its lockfile-format preference by `npm_config_user_agent`
     // (optimizer/index.ts), which every package-manager launch sets and a

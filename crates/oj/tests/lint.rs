@@ -180,6 +180,19 @@ fn the_backend_refuses_what_it_cannot_run() {
     let (code, _, stderr) = headless(&app.0, &["--nope"], "{}");
     assert_eq!(code, 1);
     assert!(stderr.contains("unknown option: --nope"), "{stderr}");
+
+    // The flags oxlint passes, in tsgolint's single-dash spelling, are the
+    // backend's: with them an empty payload is an empty answer.
+    let empty = r#"{"version":2,"configs":[]}"#;
+    for flags in [&["-fix"][..], &["-fix", "-fix-suggestions"], &["--fix"]] {
+        let (code, frames, stderr) = headless(&app.0, flags, empty);
+        assert_eq!(code, 0, "{flags:?}: {stderr}");
+        assert!(frames.is_empty(), "{flags:?}: {frames:?}");
+    }
+    // `--help` is the backend's usage, not oj's.
+    let (code, _, stderr) = headless(&app.0, &["--help"], empty);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stderr.starts_with("Usage: tsrs-lint headless"), "{stderr}");
 }
 
 /// A stand-in for oxlint: prints its arguments and the backend it was
@@ -245,6 +258,20 @@ fn oj_lint_runs_the_projects_oxlint_with_oj_as_the_type_aware_backend() {
         lines[2].parse::<usize>().unwrap() > 5,
         "the backend wrote {} bytes",
         lines[2]
+    );
+
+    // Every argument is oxlint's, a bare `--` and the flags that would be
+    // oj's own included.
+    let (code, stdout, _) = oj_lint(
+        &app.0,
+        &["--help", "-V", "-f", "json", "--", "src/a file.ts"],
+        &[],
+    );
+    assert_eq!(code, 3, "{stdout}");
+    assert_eq!(
+        stdout.lines().next(),
+        Some("args: --type-aware --help -V -f json -- src/a file.ts"),
+        "{stdout}"
     );
 
     // `--type-aware` given is not given twice, and a nested directory finds
