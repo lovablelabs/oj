@@ -32,6 +32,7 @@ mod css_plugin_slots;
 mod css_postcss_langs;
 mod css_preprocessor_options;
 mod css_url_inline;
+mod define_env_object;
 mod dep_plugin_load;
 mod dev_base;
 mod dev_condition;

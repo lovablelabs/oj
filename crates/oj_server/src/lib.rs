@@ -249,23 +249,6 @@ pub fn is_tanstack_start_app(root: &Path) -> bool {
 
 type Defines = Vec<(String, String)>;
 
-/// Deduplicate a define list keeping the LAST occurrence of each key (later
-/// layers override earlier ones, as in Vite's define merge).
-fn dedup_defines_last_wins(defines: Defines) -> Defines {
-    let mut index: HashMap<String, usize> = HashMap::with_capacity(defines.len());
-    let mut out: Defines = Vec::with_capacity(defines.len());
-    for (k, v) in defines {
-        match index.get(&k) {
-            Some(&i) => out[i].1 = v,
-            None => {
-                index.insert(k.clone(), out.len());
-                out.push((k, v));
-            }
-        }
-    }
-    out
-}
-
 pub struct DevServer {
     pub root: PathBuf,
     pub port: Option<u16>,
@@ -868,8 +851,10 @@ impl ClientDefines<'_> {
             }
         }
         // The oxc replacer refuses duplicate keys outright (silently disabling
-        // every define), so dedupe keeping the last occurrence.
-        dedup_defines_last_wins(defines)
+        // every define), so dedupe keeping the last occurrence; and a
+        // `define` of `import.meta.env.X` joins the `import.meta.env` object,
+        // as Vite's import analysis folds the user's env defines into it.
+        oj_env::fold_env_keys_into_object(defines)
     }
 }
 
@@ -1161,7 +1146,7 @@ async fn fold_plugin_defines(host: &PluginHost, defines: &ClientDefines<'_>) -> 
     let mut merged = defines.build(&prefixed);
     merged.retain(|(k, _)| !overridden.contains(k.as_str()));
     merged.extend(plugin_defines.iter().cloned());
-    Some(merged)
+    Some(oj_env::fold_env_keys_into_object(merged))
 }
 
 /// Which plugin hooks exist, so per-module and per-save RPCs nothing consumes
@@ -2088,7 +2073,7 @@ impl DevServer {
         let installed = InstalledDefines::of(&defines);
         let import_meta_env = Arc::new(oj_compiler::ImportMetaEnv::new(
             defines,
-            dedup_defines_last_wins(oj_config::environment_defines(&config, "ssr")),
+            oj_env::fold_env_keys_into_object(oj_config::environment_defines(&config, "ssr")),
         ));
         let client_resolver = Arc::new(client_resolver(&root, &config));
         let ssr_resolver = Arc::new(ssr_resolver(&root, &config));

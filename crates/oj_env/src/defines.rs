@@ -90,3 +90,141 @@ pub fn import_meta_env_defines_with(
     ));
     defines
 }
+
+/// The define list as a bundler or compiler takes it: one entry per key, the
+/// last occurrence winning (later layers override earlier ones, as in Vite's
+/// define merge; the oxc replacer refuses a duplicate key outright, which
+/// silently disables every define), and the `import.meta.env` object rebuilt
+/// from every `import.meta.env.<KEY>` entry of that final list. Vite folds
+/// the user's `import.meta.env.*` defines into the object it replaces
+/// `import.meta.env` with, in the build (plugins/define.ts `definePlugin`:
+/// `serializeDefine({ ...importMetaEnvKeys, SSR, ...userDefineEnv })`) and in
+/// dev (plugins/importAnalysis.ts `getEnv`), so `import.meta.env["VITE_X"]`,
+/// `const env = import.meta.env` and `{ ...import.meta.env }` see a key the
+/// config's `define` adds, not only `import.meta.env.VITE_X`. The object's
+/// keys are sorted as `serializeDefine` sorts them; the values are the JS
+/// expressions the defines carry, written as they are. A list without an
+/// `import.meta.env` entry gets none.
+pub fn fold_env_keys_into_object(defines: Vec<(String, String)>) -> Vec<(String, String)> {
+    let mut index: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::with_capacity(defines.len());
+    let mut out: Vec<(String, String)> = Vec::with_capacity(defines.len());
+    for (k, v) in defines {
+        match index.get(&k) {
+            Some(&i) => out[i].1 = v,
+            None => {
+                index.insert(k.clone(), out.len());
+                out.push((k, v));
+            }
+        }
+    }
+    let Some(&object) = index.get("import.meta.env") else {
+        return out;
+    };
+    let keys: BTreeMap<&str, &str> = out
+        .iter()
+        .filter_map(|(k, v)| Some((k.strip_prefix("import.meta.env.")?, v.as_str())))
+        .collect();
+    let mut text = String::from("{");
+    for (i, (k, v)) in keys.iter().enumerate() {
+        if i > 0 {
+            text.push(',');
+        }
+        text.push_str(&serde_json::Value::String((*k).to_string()).to_string());
+        text.push(':');
+        text.push_str(v);
+    }
+    text.push('}');
+    out[object].1 = text;
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn get<'a>(defines: &'a [(String, String)], key: &str) -> &'a str {
+        &defines.iter().find(|(k, _)| k == key).unwrap().1
+    }
+
+    #[test]
+    fn a_user_define_joins_the_object() {
+        let loaded = vec![("VITE_A".to_string(), "a".to_string())];
+        let mut defines = import_meta_env_defines(&loaded, "production", false, "/", &["VITE_"]);
+        defines.push((
+            "import.meta.env.VITE_API_URL".into(),
+            "\"https://api.example\"".into(),
+        ));
+        defines.push(("__APP__".into(), "\"app\"".into()));
+        let folded = fold_env_keys_into_object(defines);
+        assert_eq!(
+            get(&folded, "import.meta.env"),
+            r#"{"BASE_URL":"/","DEV":false,"MODE":"production","PROD":true,"SSR":false,"VITE_A":"a","VITE_API_URL":"https://api.example"}"#
+        );
+        assert_eq!(
+            get(&folded, "import.meta.env.VITE_API_URL"),
+            "\"https://api.example\""
+        );
+        assert_eq!(
+            get(&folded, "__APP__"),
+            "\"app\"",
+            "a non-env define is kept as it is"
+        );
+    }
+
+    #[test]
+    fn a_later_layer_wins_in_the_object_and_the_key() {
+        let loaded = vec![("VITE_A".to_string(), "file".to_string())];
+        let mut defines = import_meta_env_defines(&loaded, "development", true, "/", &["VITE_"]);
+        defines.push(("import.meta.env.VITE_A".into(), "\"config\"".into()));
+        defines.push(("import.meta.env.VITE_A".into(), "\"plugin\"".into()));
+        let folded = fold_env_keys_into_object(defines);
+        assert_eq!(
+            folded
+                .iter()
+                .filter(|(k, _)| k == "import.meta.env.VITE_A")
+                .count(),
+            1,
+            "one entry per key"
+        );
+        assert_eq!(get(&folded, "import.meta.env.VITE_A"), "\"plugin\"");
+        assert!(
+            get(&folded, "import.meta.env").contains(r#""VITE_A":"plugin""#),
+            "{}",
+            get(&folded, "import.meta.env")
+        );
+    }
+
+    #[test]
+    fn the_ssr_object_keeps_its_flag_and_an_expression_value_is_written_as_is() {
+        let defines = vec![
+            ("import.meta.env.SSR".to_string(), "true".to_string()),
+            ("import.meta.env".to_string(), r#"{"SSR":true}"#.to_string()),
+            (
+                "import.meta.env.VITE_HOST".to_string(),
+                "window.location.host".to_string(),
+            ),
+        ];
+        let folded = fold_env_keys_into_object(defines);
+        assert_eq!(
+            get(&folded, "import.meta.env"),
+            r#"{"SSR":true,"VITE_HOST":window.location.host}"#
+        );
+    }
+
+    #[test]
+    fn a_list_without_the_object_only_dedups() {
+        let defines = vec![
+            ("__A__".to_string(), "1".to_string()),
+            ("import.meta.env.VITE_X".to_string(), "\"x\"".to_string()),
+            ("__A__".to_string(), "2".to_string()),
+        ];
+        assert_eq!(
+            fold_env_keys_into_object(defines),
+            vec![
+                ("__A__".to_string(), "2".to_string()),
+                ("import.meta.env.VITE_X".to_string(), "\"x\"".to_string()),
+            ]
+        );
+    }
+}

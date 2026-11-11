@@ -44,24 +44,19 @@ impl EnvDefines {
 }
 
 /// The SSR define list: the shared list with the `SSR` flag flipped, then
-/// `overrides` layered over it (a key defined differently per side keeps both).
+/// `overrides` layered over it (a key defined differently per side keeps
+/// both), and the `import.meta.env` object rebuilt over the result, so it
+/// carries `SSR: true` and any `import.meta.env.*` the SSR environment's own
+/// `define` adds, as Vite's define plugin builds the object per environment.
 fn ssr_pairs(client: &[(String, String)], overrides: &[(String, String)]) -> Vec<(String, String)> {
     let mut ssr = client.to_vec();
     for (k, v) in ssr.iter_mut() {
         if k == "import.meta.env.SSR" {
             *v = "true".into();
-        } else if k == "import.meta.env" {
-            *v = v.replace("\"SSR\":false", "\"SSR\":true");
         }
     }
-    for (k, v) in overrides {
-        if let Some(slot) = ssr.iter_mut().find(|(ek, _)| ek == k) {
-            slot.1 = v.clone();
-        } else {
-            ssr.push((k.clone(), v.clone()));
-        }
-    }
-    ssr
+    ssr.extend(overrides.iter().cloned());
+    oj_env::fold_env_keys_into_object(ssr)
 }
 
 /// Folds `more` over `base`, later winning.
@@ -247,6 +242,33 @@ mod tests {
             dev.code.contains("prod = false"),
             "PROD is false in dev:\n{}",
             dev.code
+        );
+    }
+
+    // `environments.ssr.define` of `import.meta.env.X` is in the SSR variant's
+    // object, which also carries the flipped `SSR` flag.
+    #[test]
+    fn an_ssr_only_env_define_joins_the_ssr_object() {
+        let client = vec![
+            (
+                "import.meta.env.MODE".to_string(),
+                "\"development\"".to_string(),
+            ),
+            ("import.meta.env.SSR".to_string(), "false".to_string()),
+            (
+                "import.meta.env".to_string(),
+                r#"{"MODE":"development","SSR":false}"#.to_string(),
+            ),
+        ];
+        let overrides = [(
+            "import.meta.env.VITE_SIDE".to_string(),
+            "\"server\"".to_string(),
+        )];
+        let ssr = ssr_pairs(&client, &overrides);
+        let object = &ssr.iter().find(|(k, _)| k == "import.meta.env").unwrap().1;
+        assert_eq!(
+            object,
+            r#"{"MODE":"development","SSR":true,"VITE_SIDE":"server"}"#
         );
     }
 }

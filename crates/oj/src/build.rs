@@ -4085,7 +4085,10 @@ pub async fn build(
         pairs.extend(oj_config::config_defines(&config));
         pairs.extend(oj_config::environment_defines(&config, "client"));
         pairs.extend(plugin_defines);
-        pairs
+        // Later layers win, and an `import.meta.env.X` they define joins the
+        // `import.meta.env` object, as Vite's define plugin folds the user's
+        // env defines into the object it replaces `import.meta.env` with.
+        oj_env::fold_env_keys_into_object(pairs)
     };
     oj_plugins.push(Pluginable::new_shared(OjCssPlugin {
         collected: Arc::clone(&collected_css),
@@ -5611,7 +5614,9 @@ pub(crate) async fn build_ssr(
                 pairs.extend(oj_config::config_defines(config));
                 pairs.extend(oj_config::environment_defines(config, "ssr"));
                 pairs.extend(plugin_defines);
-                pairs.into_iter().collect()
+                oj_env::fold_env_keys_into_object(pairs)
+                    .into_iter()
+                    .collect()
             }),
             ..Default::default()
         })
@@ -6209,7 +6214,9 @@ async fn build_client_entry(
                 pairs.extend(oj_config::config_defines(config));
                 pairs.extend(oj_config::environment_defines(config, "client"));
                 pairs.extend(plugin_defines);
-                pairs.into_iter().collect()
+                oj_env::fold_env_keys_into_object(pairs)
+                    .into_iter()
+                    .collect()
             }),
             ..Default::default()
         })
@@ -6528,7 +6535,9 @@ async fn build_library(
                         pairs.extend(oj_config::config_defines(config));
                         pairs.extend(oj_config::environment_defines(config, "client"));
                         pairs.extend(plugin_defines.iter().cloned());
-                        pairs.into_iter().collect()
+                        oj_env::fold_env_keys_into_object(pairs)
+                            .into_iter()
+                            .collect()
                     }),
                     ..Default::default()
                 })
