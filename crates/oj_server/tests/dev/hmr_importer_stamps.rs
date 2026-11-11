@@ -86,7 +86,7 @@ fn app() -> App {
 }
 
 /// The `?t=` a module's import of `imported` carries ("" for a bare import).
-fn stamp_of(code: &str, imported: &str) -> String {
+pub(crate) fn stamp_of(code: &str, imported: &str) -> String {
     let re = Regex::new(&format!(r#""{}(\?t=\d+)?""#, regex::escape(imported))).unwrap();
     re.captures(code)
         .map(|c| c.get(1).map_or("", |m| m.as_str()).to_string())
@@ -95,7 +95,12 @@ fn stamp_of(code: &str, imported: &str) -> String {
 
 /// Serves `url` until its import of `imported` carries a stamp other than
 /// `not`: the watcher has taken the edit.
-async fn stamped_after(server: &crate::Server, url: &str, imported: &str, not: &str) -> String {
+pub(crate) async fn stamped_after(
+    server: &crate::Server,
+    url: &str,
+    imported: &str,
+    not: &str,
+) -> String {
     let deadline = tokio::time::Instant::now() + WAIT;
     loop {
         let stamp = stamp_of(&server.text(url).await, imported);
