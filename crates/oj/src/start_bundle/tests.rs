@@ -153,11 +153,18 @@ async fn dev_asset_imports_point_at_the_dev_server() {
 import url from "./logo.png";
 import inline from "./dot.png?inline";
 import icon from "./icon.svg";
+import kept from "./icon.svg?no-inline";
+import sprite from "./sprite.svg";
 import worker from "./w.js?worker&url";
 import "./plain.css";
 import styles from "./card.module.css";
-console.log(raw, url, inline, icon, worker, styles.card);
+console.log(raw, url, inline, icon, kept, sprite, worker, styles.card);
 "#,
+        ),
+        // Over Vite's default `build.assetsInlineLimit` (4096 bytes).
+        (
+            "src/sprite.svg",
+            &format!("<svg>{}</svg>", "<g/>".repeat(2000)),
         ),
         ("src/note.txt", "hello raw"),
         ("src/logo.png", "png-bytes"),
@@ -187,12 +194,26 @@ console.log(raw, url, inline, icon, worker, styles.card);
         code.contains("\"data:image/png;base64,ZG90\""),
         "?inline is a data URI:\n{code}"
     );
+    // Vite's fileToDevUrl (plugins/asset.ts): "if is svg and it's inlined
+    // in build, also inline it in dev", so a small svg is svgToDataURL's
+    // form; `no-inline` and a file over `assetsInlineLimit` keep the url.
+    assert!(
+        code.contains("\"data:image/svg+xml,%3csvg/%3e\""),
+        "a small svg is inlined in dev, as in the build:\n{code}"
+    );
     assert!(
         code.contains(&format!(
             "\"/@oj-start/fs{}\"",
             src.join("icon.svg").display()
         )),
-        "{code}"
+        "`?no-inline` keeps the served url:\n{code}"
+    );
+    assert!(
+        code.contains(&format!(
+            "\"/@oj-start/fs{}\"",
+            src.join("sprite.svg").display()
+        )),
+        "an svg over the inline limit keeps the served url:\n{code}"
     );
     let rel = src
         .join("w.js")

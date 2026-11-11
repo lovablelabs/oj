@@ -19,7 +19,7 @@ use oj_server::needs_css_compile;
 use oj_server::{hmr_ping, send_within, silent_deadline};
 use tokio::sync::broadcast;
 
-use crate::start_chunks::{respond, Chunk};
+use crate::start_chunks::{respond, Chunk, ServedBundles};
 use crate::start_host::{StartEngine, StartRequest, StartResponse};
 
 struct StartState {
@@ -54,7 +54,9 @@ struct StartState {
     /// The dev server's content index; the regen outputs' `Pushed` baseline
     /// is what the worker environments last saw.
     content: Arc<oj_server::ContentIndex>,
-    bundle: std::sync::RwLock<Arc<oj_cache::start_bundle::PinnedBundle>>,
+    /// The client bundle the pages load, and the ones before it whose chunks
+    /// a page still open on an older entry imports (see [`ServedBundles`]).
+    bundle: std::sync::RwLock<ServedBundles>,
     /// Gzip bodies of the live client chunks, by content hash.
     gzip: crate::start_chunks::GzipCache,
     live_reload: PathBuf,
@@ -75,6 +77,8 @@ struct StartState {
     /// Vite's bundled dev `lastBuildError`: sent to every page when a bundle
     /// fails, replayed to each page that connects until one succeeds.
     build_error: std::sync::RwLock<Option<String>>,
+    /// Frames for every open page, sent as they are: the build's failures,
+    /// and the name of a chunk a page asked for that is gone (`chunk_gone`).
     error_tx: broadcast::Sender<String>,
     // The oj_server /__ws broadcast: the channel the editor reads boot +
     // update narration frames from (the start path's own /@oj-start/hmr socket
@@ -542,7 +546,9 @@ pub async fn start_dev(
                 }
             }
             let _ = runner_documents_tx.send(());
-            let _ = engine
+            // The render read to its end, so the deferred content's modules
+            // are warm too.
+            if let Ok(resp) = engine
                 .handle(engine_request(
                     "GET".into(),
                     "/".into(),
@@ -550,7 +556,10 @@ pub async fn start_dev(
                     None,
                     false,
                 ))
-                .await;
+                .await
+            {
+                let _ = resp.body_bytes().await;
+            }
             oj_server::boot_phase("prewarm complete");
             if engine.revalidate().await {
                 reloads.bump();
@@ -589,7 +598,7 @@ pub async fn start_dev(
         plugin_serve: Arc::clone(&built.plugin_serve),
         engine,
         loopback_port,
-        bundle: std::sync::RwLock::new(Arc::new(pinned)),
+        bundle: std::sync::RwLock::new(ServedBundles::new(pinned)),
         gzip: Default::default(),
         live_reload: cache.join("live-reload.js"),
         hmr_overlay,
@@ -1571,7 +1580,7 @@ async fn rebundle_worker(
                     is_ts
                         && (!p.exists()
                             || std::fs::read_to_string(p)
-                                .is_ok_and(|s| s.contains("createServerFn")))
+                                .is_ok_and(|s| oj_compiler::server_fns::may_declare(&s)))
                 });
                 if routes_changed || server_fn_changed {
                     let _ = generate_server_fn_resolver(&r, &c, true);
@@ -1912,9 +1921,16 @@ fn save_stylex_rules(bundler: &ClientBundler, cache: &Path, key: &str) {
 
 /// Serve a fresh client output, with the inputs it was built from.
 fn install_bundle(state: &StartState, cache: &Path, pinned: oj_cache::start_bundle::PinnedBundle) {
-    let pinned = Arc::new(pinned);
-    state.gzip.retain(|h| pinned.has_hash(h));
-    *state.bundle.write().unwrap() = pinned;
+    let current = {
+        let mut served = state
+            .bundle
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        served.install(pinned);
+        served.current()
+    };
+    // With the bundles unlocked: chunk requests are not held up by it.
+    state.gzip.retain_hashes_of(&current);
     load_inputs(state, cache);
 }
 
@@ -3211,8 +3227,9 @@ async fn forward_with_body(state: &Arc<StartState>, req: Request) -> Response {
     // A configureServer middleware may claim the request first; since a
     // streamed body cannot be replayed, the plugin host pipes an unclaimed
     // request on to the engine's loopback shim (x-oj-forward-to) instead of
-    // falling through. Without a middleware the body is read whole and handed
-    // to the engine (the call transport is buffered).
+    // falling through. Without a middleware the request body is read whole
+    // and handed to the engine (the call takes it as one argument); the
+    // response body streams back on either path.
     let Some(port) = state.plugin_serve.mw_port() else {
         let body = match read_body_capped(req.into_body(), start_max_body_bytes()).await {
             Ok(body) => body,
@@ -3251,30 +3268,49 @@ async fn forward_with_body(state: &Arc<StartState>, req: Request) -> Response {
     }
 }
 
+/// Tells the open pages that `name`, which one of them just asked for, is
+/// not a chunk the dev server can serve any more: the one that asked reloads
+/// (see [`crate::start_chunks::chunk_gone_frame`]). Said of any name the
+/// served bundles do not hold, not only of ones they once held: a page left
+/// open across a restart of the dev server names chunks this run never had,
+/// and its socket is not reloaded on connect (a stamp from another run
+/// counts as current, see start_reloads), so this is what brings it back. A
+/// page that asks for a name nothing ever had reloads once for it and stays.
+/// A source map is asked for by the browser's tools, not by a page.
+fn chunk_gone(pages: &broadcast::Sender<String>, name: &str) {
+    if !name.ends_with(".map") {
+        let _ = pages.send(crate::start_chunks::chunk_gone_frame(name));
+    }
+}
+
 async fn serve_client_chunk(
     state: &StartState,
     req: &axum::http::HeaderMap,
     name: &str,
 ) -> Response {
     let name = percent_decode(name);
-    let bundle = state
+    let served = state
         .bundle
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
-    let Some(chunk) = bundle.chunk(&name) else {
+        .chunk(&name);
+    let Some(served) = served else {
+        chunk_gone(&state.error_tx, &name);
         return (
             StatusCode::NOT_FOUND,
             format!("oj start: {name} is not in the client bundle manifest"),
         )
             .into_response();
     };
+    let chunk = served.chunk;
+    let pages = state.error_tx.clone();
     let expected = oj_cache::integrity::ExpectedFile {
         size: chunk.size,
         hash: chunk.hash.clone().unwrap_or_default(),
     };
     let path = chunk.path.clone();
     let what = name.clone();
+    let retained = !served.current;
     let read = move || async move {
         match tokio::task::spawn_blocking(move || {
             oj_cache::integrity::verified_read(
@@ -3286,6 +3322,19 @@ async fn serve_client_chunk(
         .await
         {
             Ok(Ok(bytes)) => Ok(axum::body::Bytes::from(bytes)),
+            // An earlier bundle's chunk file the store has swept (or a build
+            // dir the next bundle rewrote): the page is too old to serve,
+            // and that is a 404, not a server fault.
+            Ok(Err(oj_cache::integrity::VerifyError::Io(e)))
+                if retained && e.kind() == std::io::ErrorKind::NotFound =>
+            {
+                chunk_gone(&pages, &what);
+                Err((
+                    StatusCode::NOT_FOUND,
+                    format!("oj start: {what} is from an earlier bundle and no longer on disk; reload the page"),
+                )
+                    .into_response())
+            }
             Ok(Err(e)) => {
                 eprintln!("oj start: chunk {what} failed verification ({e}); refusing to serve");
                 Err((
@@ -3304,7 +3353,7 @@ async fn serve_client_chunk(
     let ext = name.rsplit('.').next().unwrap_or("");
     let mime = asset_mime(ext);
     // Every chunk but the entry is named by rolldown's `[name]-[hash]`.
-    let immutable = !bundle.is_entry(&name);
+    let immutable = !served.entry;
     match chunk.hash.clone() {
         Some(hash) => {
             let chunk = Chunk {
@@ -3727,8 +3776,10 @@ fn engine_request(
     }
 }
 
+/// The runner's reply as the HTTP response, its body streamed chunk by chunk
+/// as the handler writes them (hyper flushes each one).
 fn engine_response(resp: StartResponse) -> Response {
-    let mut out = Response::new(axum::body::Body::from(resp.body));
+    let mut out = Response::new(axum::body::Body::from_stream(resp.body));
     *out.status_mut() =
         StatusCode::from_u16(resp.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let headers = out.headers_mut();

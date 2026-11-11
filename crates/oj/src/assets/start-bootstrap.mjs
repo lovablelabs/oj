@@ -49,11 +49,19 @@ function bytesToB64(bytes) {
   return btoa(bin);
 }
 
+// The response bodies in flight, by the id `handle` gave them. The ids are
+// random, so a pull meant for an engine replaced since can never land on a
+// newer body of the replacement.
+const bodies = new Map();
+
 /// One request through the app's fetch handler. `req` is
 /// `{ method, url, host, headers: [[k, v]...], bodyBase64 | null }`; the reply
-/// is `{ status, headers: [[k, v]...], setCookies: [...], bodyBase64 | null }`.
-/// The response is read to completion (a TanStack stream's deferred content is
-/// present), so the transport is buffered where the loopback runner streamed.
+/// is `{ status, headers: [[k, v]...], setCookies: [...], body: id | null }`.
+/// The body is not read here: `body` names a reader `pull` drains chunk by
+/// chunk, so each chunk reaches the client as the handler writes it (a
+/// server-sent event, a render's deferred content), as Node's response does
+/// under Vite's middleware for Start (srvx's `streamBody`: one `res.write`
+/// per chunk).
 export async function handle(entry, req) {
   const handler = (await import(entry)).default;
   const headers = new Headers();
@@ -72,11 +80,42 @@ export async function handle(entry, req) {
     if (k !== "set-cookie" && k !== "content-length") outHeaders.push([k, v]);
   });
   const setCookies = out.headers.getSetCookie?.() ?? [];
-  const body = out.body ? new Uint8Array(await out.arrayBuffer()) : null;
-  return {
-    status: out.status,
-    headers: outHeaders,
-    setCookies,
-    bodyBase64: body && body.length ? bytesToB64(body) : null,
-  };
+  let body = null;
+  if (out.body) {
+    body = crypto.randomUUID();
+    bodies.set(body, out.body.getReader());
+  }
+  return { status: out.status, headers: outHeaders, setCookies, body };
+}
+
+/// The next chunk of a body `handle` returned: `{ chunkBase64 }`, or
+/// `{ done: true }` once the stream ended (the reader is forgotten then, as
+/// it is when the read fails).
+export async function pull(id) {
+  const reader = bodies.get(id);
+  if (!reader) throw new Error(`oj start: no response body ${id} in flight`);
+  for (;;) {
+    let next;
+    try {
+      next = await reader.read();
+    } catch (e) {
+      bodies.delete(id);
+      throw e;
+    }
+    if (next.done) {
+      bodies.delete(id);
+      return { done: true };
+    }
+    // An empty chunk is not worth a round trip.
+    if (next.value && next.value.length) return { chunkBase64: bytesToB64(next.value) };
+  }
+}
+
+/// Gives a body up before its end (the client went away): the stream is
+/// cancelled, so the handler's producer stops writing for nobody.
+export async function cancel(id) {
+  const reader = bodies.get(id);
+  bodies.delete(id);
+  if (reader) await reader.cancel().catch(() => {});
+  return true;
 }

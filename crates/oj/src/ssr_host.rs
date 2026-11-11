@@ -43,6 +43,18 @@ const VIRTUAL_SCHEME: &str = "oj-ssr";
 /// for the slow leak.
 const STALE_MODULE_RESPAWN_THRESHOLD: usize = 500;
 
+/// The threshold, or `OJ_START_RESPAWN_STALE` when set (a test respawns on
+/// the first reload with it at 1).
+fn respawn_threshold() -> usize {
+    static THRESHOLD: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *THRESHOLD.get_or_init(|| {
+        oj_env::get()
+            .knobs
+            .start_respawn_stale
+            .unwrap_or(STALE_MODULE_RESPAWN_THRESHOLD)
+    })
+}
+
 /// Versioned module ids plus the importer graph, mirroring the registry the
 /// node runner kept: mtimes recorded at load, dirtiness propagated up the
 /// importers, dirty records dropped so the next request rebuilds them.
@@ -203,7 +215,7 @@ impl VersionGraph {
     }
 
     pub(crate) fn should_respawn(&self) -> bool {
-        self.graph.lock().unwrap().stale >= STALE_MODULE_RESPAWN_THRESHOLD
+        self.graph.lock().unwrap().stale >= respawn_threshold()
     }
 
     /// A fresh isolate has an empty module map: no records are live and no
@@ -317,9 +329,13 @@ impl SsrHost {
         // relative specifier with no exact file on disk (an extensionless
         // import inside a dependency shipping raw TypeScript, which only the
         // pipeline can serve): the Vite-style resolver finishes that edge
-        // with its extension inference, as the Start host does. A dependency
-        // module the pipeline transformed (a raw-TS source) asks the pipeline
-        // first: Vite never externalizes a relative or absolute specifier
+        // with its extension inference, as the Start host does. Any
+        // specifier starting with `.` is relative, as Vite's resolve plugin
+        // reads it (`id[0] === '.'`): a bare `.` or `..` names a directory,
+        // which Node's ESM loader refuses (ERR_UNSUPPORTED_DIR_IMPORT) and
+        // the resolver finishes at its index. A dependency module the
+        // pipeline transformed (a raw-TS source) asks the pipeline first:
+        // Vite never externalizes a relative or absolute specifier
         // (createIsExternal), so its `import "./select.css"` reaches the css
         // pipeline instead of the runtime loading the stylesheet as JS.
         if node_resolves_imports_of(importer) {
@@ -331,7 +347,7 @@ impl SsrHost {
                     return Ok(Some(HostResolved::Url(spec)));
                 }
             }
-            if specifier.starts_with("./") || specifier.starts_with("../") {
+            if specifier.starts_with('.') {
                 if let Some(dir) = Path::new(&importer_id).parent() {
                     if !crate::ssr_dev::normalize_path(&dir.join(specifier)).is_file() {
                         if let Ok(oj_server::StartResolution::Dependency(p)) =
