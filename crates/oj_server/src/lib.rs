@@ -92,8 +92,9 @@ pub mod stylex;
 pub use assets_serve::{asset_data_url, has_word_param, inline_url_under, svg_to_data_url};
 pub use ssr::*;
 pub use style_file::{
-    compile_style_file, needs_css_compile, needs_preprocess_engine, read_style_source,
-    start_dev_inline_style, start_dev_url_base, style_slot, StyleInputs, StyleModule, StyleSlots,
+    compile_style_file, inline_sheet_imports, needs_css_compile, needs_preprocess_engine,
+    read_style_source, start_dev_inline_style, start_dev_url_base, style_slot, StyleInputs,
+    StyleModule, StyleSlots,
 };
 mod middleware;
 pub use middleware::{RouteHook, RouteHookSlot};

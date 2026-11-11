@@ -286,6 +286,22 @@ impl DevBundler {
         self.styles.dev_served_sheet(id, loaded)
     }
 
+    /// A plain sheet's `@import`s inlined for the page's `<link>` (see
+    /// [`Styles::inline_imports`]).
+    pub(crate) fn inline_sheet_imports(
+        &self,
+        path: &Path,
+        css: &str,
+    ) -> Result<Option<String>, String> {
+        self.styles.inline_imports(path, css)
+    }
+
+    /// Whether a batch changed a file some served sheet's `@import` pulled
+    /// in (see [`Styles::imports_changed`]).
+    pub(crate) fn sheet_imports_changed(&self, paths: &[PathBuf]) -> bool {
+        self.styles.imports_changed(paths)
+    }
+
     /// The client environment's plugin host, spawned here when no bundle ran
     /// yet (one restored from cache): a page's `<link>` still goes through
     /// the client plugins.

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- TanStack Start: a plain stylesheet's `@import` of a package's CSS (`@import '@acme/design/dist/tokens.css';` in a `styles.css` the root route imports) reaches the page resolved, in dev and in the build. The dev server served such a sheet as written and the build emitted it as written, and a browser cannot resolve a package specifier, so every rule of the imported sheet was missing; a relative `@import './base.css'` worked only because the browser fetched it itself. Vite's compileCSS runs every sheet whose text contains an `@import` through postcss-import with its CSS resolvers (a bare id through node_modules by the package's `style` entry, the config's aliases first), in dev as in build, so the served sheet, the emitted sheet, the `?inline` module and a CSS module or preprocessor sheet now carry the imported rules in place of the `@import`, through the config's `resolve.alias` and `publicDir` too; a sheet Tailwind compiles is left to Tailwind, which resolves its own. The files a served dev sheet pulled in count as its dependencies: an edit of one re-links the open pages' sheets, as Vite's HMR updates the importing sheet.
+
 ## [0.4.13] - 2026-11-11
 
 ### Changed

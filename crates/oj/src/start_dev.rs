@@ -1864,17 +1864,20 @@ async fn rebundle_worker(
         });
         // Tailwind generates rules from the sources it scans: an update
         // applied in place re-links the sheets instead of reloading. A sheet
-        // the update imported for the first time is linked in the pages.
+        // the update imported for the first time is linked in the pages. A
+        // file a served sheet's `@import` pulled in is no module of the
+        // bundle, so its edit bundles nothing: the sheets are re-linked for
+        // it, as Vite's HMR updates the sheet whose postcss-import dependency
+        // changed.
         let added = if hot {
             hot_styles_added(&cache)
         } else {
             Vec::new()
         };
-        if hot && !reload && (state.css_host.is_some() || !added.is_empty()) {
-            state
-                .bundler
-                .hot
-                .refresh_styles(state.css_host.is_some(), &added);
+        let imports_changed = state.bundler.sheet_imports_changed(&paths);
+        let relink = state.css_host.is_some() || imports_changed;
+        if !reload && ((hot && (relink || !added.is_empty())) || imports_changed) {
+            state.bundler.hot.refresh_styles(relink, &added);
         }
         // The hold was taken at the watcher event. A flush that came while this
         // run built released it, and the reload reaches the pages now, with
@@ -3572,11 +3575,25 @@ async fn css_body(state: &StartState, file: &Path) -> Option<Result<String, Stri
             Err(_) => return None,
         }
     };
+    // A plain sheet's `@import`s are inlined, as Vite's compileCSS runs
+    // every sheet with one through postcss-import (a sheet the pipeline
+    // compiled had its own inlined there): the page gets the imported rules,
+    // where the bare `@import '@scope/pkg/x.css'` as written is one the
+    // browser cannot resolve.
+    let (src, inlined) = if pipeline {
+        (src, false)
+    } else {
+        match state.bundler.inline_sheet_imports(file, &src) {
+            Ok(Some(inlined)) => (inlined, true),
+            Ok(None) => (src, false),
+            Err(e) => return Some(Err(e)),
+        }
+    };
     let compiled = match state.css_host.as_ref().filter(|_| needs_css_compile(&src)) {
         Some(host) => compile_css(host, &src, file).await,
         None => None,
     };
-    if compiled.is_none() && !pipeline && slots.is_none() {
+    if compiled.is_none() && !pipeline && !inlined && slots.is_none() {
         return None;
     }
     let css = compiled.unwrap_or(src);

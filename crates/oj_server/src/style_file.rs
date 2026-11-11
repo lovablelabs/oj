@@ -155,6 +155,13 @@ pub async fn compile_style_file(
     } else {
         source
     };
+    // After the preprocessor and before the module scoping: postcss-import
+    // is the first plugin of Vite's PostCSS chain, so a scoped class or a
+    // `composes` source may come from an imported sheet.
+    let css = match inline_sheet_imports(&inputs.resolve, path, &css, &mut Vec::new())? {
+        Some(inlined) => inlined,
+        None => css,
+    };
     let resolve = oj_css::CssResolve {
         minify: false,
         ..inputs.resolve
@@ -196,6 +203,28 @@ pub fn start_dev_url_base(base: &str) -> String {
 /// under `url_base` (see [`start_dev_url_base`]).
 pub fn start_dev_file_url(url_base: &str, file: &Path) -> String {
     format!("{url_base}/@oj-start/fs{}", file.display())
+}
+
+/// A sheet's plain `@import`s inlined, the files they pulled in appended to
+/// `deps`; None for a sheet with nothing to inline. Vite's compileCSS runs
+/// every sheet whose text contains an `@import` through postcss-import with
+/// its CSS resolvers (css.ts `needInlineImport`, `createCSSResolvers`: a
+/// bare id through node_modules by the package's `style` entry, the
+/// config's aliases first), in dev as in build: a browser cannot resolve a
+/// package specifier, and a sheet served as written loses every rule of the
+/// imported file. A sheet Tailwind compiles is left to it: Tailwind resolves
+/// its own imports, `@import "tailwindcss"` among them, as under its Vite
+/// plugin.
+pub fn inline_sheet_imports(
+    resolve: &oj_css::CssResolve<'_>,
+    path: &Path,
+    css: &str,
+    deps: &mut Vec<PathBuf>,
+) -> Result<Option<String>, String> {
+    if !css.contains("@import") || needs_css_compile(css) {
+        return Ok(None);
+    }
+    oj_css::inline_imports_collecting(css, path, resolve, deps).map(Some)
 }
 
 /// Vite's `?inline` stylesheet under Start dev: the module whose default
@@ -307,6 +336,72 @@ mod tests {
         assert!(needs_css_compile(".btn { @apply px-2; }"));
         assert!(!needs_css_compile(".a { color: red }"));
         assert!(!needs_css_compile("@font-face { src: url(x.woff2) }"));
+    }
+
+    /// A sheet with an `@import` is served with the imported rules in its
+    /// place, a bare id resolved through node_modules (Vite's
+    /// `needInlineImport` and its CSS resolvers); a sheet without one, or
+    /// one Tailwind compiles, is left as it is.
+    #[test]
+    fn plain_imports_inline_bare_and_relative_sheets_only() {
+        let dir = std::env::temp_dir().join(format!("oj-sheet-imports-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::create_dir_all(dir.join("node_modules/@acme/tokens/dist")).unwrap();
+        std::fs::write(
+            dir.join("node_modules/@acme/tokens/package.json"),
+            r#"{"name":"@acme/tokens","style":"dist/tokens.css"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("node_modules/@acme/tokens/dist/tokens.css"),
+            ":root{--t:1}",
+        )
+        .unwrap();
+        std::fs::write(dir.join("src/base.css"), ".base{margin:0}").unwrap();
+        let sheet = dir.join("src/styles.css");
+        let resolve = oj_css::CssResolve {
+            root: Some(&dir),
+            ..oj_css::CssResolve::default()
+        };
+        let mut deps = Vec::new();
+        let css = inline_sheet_imports(
+            &resolve,
+            &sheet,
+            "@import '@acme/tokens/dist/tokens.css';\n@import './base.css';\n.own{color:red}",
+            &mut deps,
+        )
+        .unwrap()
+        .expect("a sheet with imports is inlined");
+        assert!(
+            css.contains(":root{--t:1}") && css.contains(".base{margin:0}"),
+            "{css}"
+        );
+        assert!(!css.contains("@import"), "{css}");
+        assert_eq!(
+            deps,
+            vec![
+                dir.join("node_modules/@acme/tokens/dist/tokens.css"),
+                dir.join("src/base.css")
+            ]
+        );
+        assert_eq!(
+            inline_sheet_imports(&resolve, &sheet, ".own{color:red}", &mut Vec::new()).unwrap(),
+            None,
+            "nothing to inline"
+        );
+        assert_eq!(
+            inline_sheet_imports(
+                &resolve,
+                &sheet,
+                "@import 'tailwindcss';\n@import './base.css';",
+                &mut Vec::new()
+            )
+            .unwrap(),
+            None,
+            "Tailwind resolves a sheet it compiles"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
