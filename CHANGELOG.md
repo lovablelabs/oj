@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.12] - 2026-11-11
+
 ### Added
 
 - `oj lint`: the project's oxlint with oj as the backend for its type-aware rules. oxlint hands the rules that need types (`typescript/no-floating-promises` and the rest of tsgolint's) to a backend process, tsgolint by default; oj now carries tsrs's port of those rules (`tsrs_lint`, vendored as `oj_tsrs_lint`) on the checker `oj typecheck` runs. `oj lint` takes oxlint's arguments, runs the project's `node_modules/.bin/oxlint` (or the one `OJ_OXLINT_PATH` names) with `--type-aware` and `OXLINT_TSGOLINT_PATH` set to oj, and exits as oxlint does. A project that runs oxlint itself can set `OXLINT_TSGOLINT_PATH` to the oj binary for the same backend.
