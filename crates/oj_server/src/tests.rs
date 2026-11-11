@@ -3118,3 +3118,62 @@ fn the_hmr_clock_is_strictly_increasing_across_threads() {
     assert_eq!(all.len(), count, "no stamp is handed out twice");
     assert!(all[0] >= before, "a stamp is never behind the clock");
 }
+
+// Vite's tryNodeResolve resolves a `resolve.dedupe` package from the root, with
+// the list of the environment it resolves for (the top-level list inherited
+// into it; fetchModule passes the same list for an externalized import).
+// TanStack Start's plugin lists its router in the ssr environment's list alone
+// (react-start's `configEnvironment`), so both SSR resolvers read that list, in
+// each spelling the extraction carries, or a dependency's own nested copy of
+// the router gives the render a second router context.
+#[test]
+fn the_ssr_resolvers_dedupe_with_the_ssr_environments_list() {
+    let root = std::env::temp_dir().join(format!("oj-ssr-env-dedupe-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let write = |path: &str, body: &str| {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    };
+    write("package.json", "{}");
+    for dir in [
+        "node_modules/router",
+        "node_modules/host/node_modules/router",
+    ] {
+        write(
+            &format!("{dir}/package.json"),
+            r#"{"name":"router","main":"index.js"}"#,
+        );
+        write(&format!("{dir}/index.js"), "");
+    }
+    write(
+        "node_modules/host/package.json",
+        r#"{"name":"host","main":"index.js"}"#,
+    );
+    write("node_modules/host/index.js", "");
+    let root = root.canonicalize().unwrap();
+    let host = root.join("node_modules/host");
+    let from_host = |config: &str| -> (PathBuf, PathBuf) {
+        let config: oj_config::OjConfig = serde_json::from_str(config).unwrap();
+        (
+            ssr_resolver(&root, &config)
+                .resolve(&host, "router")
+                .unwrap(),
+            ssr_external_resolver(&root, &config)
+                .resolve(&host, "router")
+                .unwrap(),
+        )
+    };
+    let nested = host.join("node_modules/router/index.js");
+    let top = root.join("node_modules/router/index.js");
+    // Without dedupe the host's own copy wins, as under Node.
+    assert_eq!(from_host("{}"), (nested.clone(), nested));
+    for config in [
+        r#"{"ssr":{"resolve":{"dedupe":["router"]}}}"#,
+        r#"{"environments":{"ssr":{"resolve":{"dedupe":["router"]}}}}"#,
+        r#"{"resolve":{"dedupe":["router"]}}"#,
+    ] {
+        assert_eq!(from_host(config), (top.clone(), top.clone()), "{config}");
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}

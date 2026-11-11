@@ -1432,7 +1432,15 @@ pub fn ssr_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
                 oj_config::resolve_conditions(config, "ssr")
             },
             alias: oj_config::resolve_alias(config, "ssr"),
-            dedupe: oj_config::resolve_dedupe(config),
+            // The ssr environment's `resolve.dedupe`, as Vite's tryNodeResolve
+            // takes it for that environment (`environment.config.resolve.dedupe`,
+            // the top-level list inherited into it): a deduped package resolves
+            // from the root for every importer, a dependency whose own
+            // node_modules holds a second copy included. TanStack Start's plugin
+            // lists its router there (react-start's `configEnvironment`), so a
+            // second copy installed under a Start package never gives the
+            // render a second router context.
+            dedupe: oj_config::environment_dedupe(config, "ssr"),
             extensions: oj_config::resolve_extensions(config),
             // The ssr environment's own list only: environments never inherit
             // the top-level mainFields in Vite, and a resolved config carries
@@ -1450,8 +1458,8 @@ pub fn ssr_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
 /// How Vite's module runner resolves a bare import it externalizes
 /// (fetchModule's tryNodeResolve): mainFields `["main"]`, the ssr external
 /// conditions with `import` (getConditions), extensions `.js`, `.cjs` and
-/// `.json`, `resolve.dedupe`, and no alias (an aliased import is never
-/// external).
+/// `.json`, the ssr environment's `resolve.dedupe`, and no alias (an aliased
+/// import is never external).
 pub fn ssr_external_resolver(root: &Path, config: &oj_config::OjConfig) -> OjResolver {
     let mut conditions = oj_config::ssr_external_conditions(config, true);
     conditions.push("import".to_string());
@@ -1460,7 +1468,7 @@ pub fn ssr_external_resolver(root: &Path, config: &oj_config::OjConfig) -> OjRes
         oj_resolver::ResolveSettings {
             conditions,
             alias: Vec::new(),
-            dedupe: oj_config::resolve_dedupe(config),
+            dedupe: oj_config::environment_dedupe(config, "ssr"),
             extensions: Some([".js", ".cjs", ".json"].map(String::from).to_vec()),
             main_fields: Some(vec!["main".to_string()]),
             preserve_symlinks: oj_config::resolve_preserve_symlinks(config),

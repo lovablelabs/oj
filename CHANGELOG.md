@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- TanStack Start dev: an app with a second copy of `@tanstack/react-router` installed under a Start package (`node_modules/@tanstack/react-start-server/node_modules/@tanstack/react-router`, the layout a peer version skew leaves behind) answered every document with a 500 from the first request on, unchanged by edits, while `oj build` succeeded: `useRouter` returned null inside `<HeadContent />`, because the root route imported the app's copy of the router while Start's server package rendered `RouterProvider` from the copy under it, two instances of the package with two router contexts. The Start plugin lists the router (with `react`, `react-dom` and `@tanstack/react-start`) in the ssr environment's `resolve.dedupe`, and Vite resolves a deduped package from the root for every importer (`tryNodeResolve`, and `fetchModule` for an externalized import), so one copy serves the render under Vite. oj's SSR resolvers took the top-level `resolve.dedupe` alone, which that plugin leaves empty; they now take the ssr environment's list, which the config extraction carries along with the environment's conditions (`environments.ssr.resolve.dedupe`, or `ssr.resolve.dedupe`), for the Start runtime and the unbundled SSR path alike.
+
 ## [0.4.13] - 2026-11-11
 
 ### Changed
