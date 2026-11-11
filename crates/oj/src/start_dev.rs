@@ -3800,7 +3800,7 @@ fn engine_response(resp: StartResponse) -> Response {
 }
 
 async fn forward(
-    engine: &Arc<StartEngine>,
+    engine: &StartEngine,
     url_base: &str,
     stamp: &str,
     method: String,

@@ -57,6 +57,9 @@ pub struct Knobs {
 
     /// `OJ_START_MAX_BODY` bytes.
     pub start_max_body: Option<usize>,
+    /// `OJ_START_RESPAWN_STALE`: how many stale module instances the Start
+    /// dev runner accumulates across reloads before it is respawned (500).
+    pub start_respawn_stale: Option<usize>,
 
     /// `OJ_STYLEX_NATIVE_SCOPE=1`: StyleX binding analysis from oj_stylex's own
     /// walk instead of oxc_semantic.
@@ -130,6 +133,9 @@ impl Knobs {
                 .map(|v| v as usize)
                 .filter(|v| *v > 0),
             start_max_body: var("OJ_START_MAX_BODY").and_then(|v| v.trim().parse().ok()),
+            start_respawn_stale: var("OJ_START_RESPAWN_STALE")
+                .and_then(|v| v.trim().parse().ok())
+                .filter(|v| *v > 0),
             stylex_native_scope: var("OJ_STYLEX_NATIVE_SCOPE").as_deref() == Some("1"),
             stylex_stage_timings: var("STYLEX_STAGE_TIMINGS").as_deref() == Some("1"),
             stylex_cache_dir: get("STYLEX_CACHE_DIR")
@@ -252,6 +258,19 @@ mod tests {
         );
         assert_eq!(knobs(&[("BROWSER", "  ")]).browser, None);
         assert_eq!(knobs(&[("OJ_CACHE_DIR", "")]).cache_dir, None);
+        assert_eq!(
+            knobs(&[("OJ_START_RESPAWN_STALE", " 1 ")]).start_respawn_stale,
+            Some(1)
+        );
+        assert_eq!(
+            knobs(&[("OJ_START_RESPAWN_STALE", "0")]).start_respawn_stale,
+            None
+        );
+        assert_eq!(
+            knobs(&[("OJ_START_RESPAWN_STALE", "many")]).start_respawn_stale,
+            None
+        );
+        assert_eq!(knobs(&[]).start_respawn_stale, None);
         assert_eq!(
             knobs(&[("OJ_PLUGIN_MEMORY_MB", "0")]).plugin_memory_mb,
             None
