@@ -185,8 +185,10 @@ The middleware handles, in order:
    middleware first (`x-oj-forward-to` names the engine's loopback shim).
 5. Otherwise `classify` decides: a GET for an extensionless path or `index.html`
    (and not a proxied prefix) is a `Document`, handed to the engine as a GET
-   with `document_url` applied (`.../index.html` becomes `.../`); everything else
-   is `Pass`, handed to the base dev server.
+   with its url as written (`/x/index.html` stays `/x/index.html`: Start's
+   `appType: "custom"` has no html fallback in Vite, so a public file or a
+   server route on that path answers it, and anything else is Start's 404);
+   everything else is `Pass`, handed to the base dev server.
 
 `forward` is the one path to the engine: an `engine.handle(request)` call into
 the bootstrap module. Requests run concurrently on the one isolate (the
