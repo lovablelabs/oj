@@ -137,6 +137,7 @@ impl BuildInfoFileInfo {
                 signature: self.signature.clone(),
                 affects_global_scope: false,
                 implied_node_format: ModuleKind::COMMON_JS,
+                declares_interface: None,
             };
         }
         if let Some(no_signature) = &self.no_signature {
@@ -145,6 +146,7 @@ impl BuildInfoFileInfo {
                 signature: String::new(),
                 affects_global_scope: no_signature.affects_global_scope,
                 implied_node_format: no_signature.implied_node_format,
+                declares_interface: None,
             };
         }
         let file_info = self.file_info.as_ref().unwrap();
@@ -157,6 +159,7 @@ impl BuildInfoFileInfo {
             },
             affects_global_scope: file_info.affects_global_scope,
             implied_node_format: file_info.implied_node_format,
+            declares_interface: None,
         }
     }
 
@@ -647,6 +650,8 @@ pub struct BuildInfo {
     pub tsrs_canonical_check_signature: String,
     // Omitted with TypeScript defaults. Also covers non-incremental build caches and lazy-member overrides.
     pub tsrs_performance: String,
+    // Canonical history: the ids of the files whose text declares an interface. Omitted when any file is unknown.
+    pub tsrs_interface_files: Option<Vec<BuildInfoFileId>>,
 
     // IncrementalProgram info
     pub file_names: Vec<String>,
@@ -690,6 +695,9 @@ impl BuildInfo {
         o.opt_strings("contentMapperIdentities", self.content_mapper_identities.as_deref());
         o.str("tsrsCanonicalCheckSignature", &self.tsrs_canonical_check_signature);
         o.str("tsrsPerformance", &self.tsrs_performance);
+        if let Some(ids) = &self.tsrs_interface_files {
+            o.set("tsrsInterfaceFiles", Value::Array(ids.iter().map(|&id| num(id)).collect()));
+        }
         if !self.file_names.is_empty() {
             o.set("fileNames", strings(&self.file_names));
         }
@@ -771,6 +779,10 @@ impl BuildInfo {
                 }
                 _ => String::new(),
             },
+            tsrs_interface_files: match o.get("tsrsInterfaceFiles") {
+                Some(ids @ Value::Array(_)) => as_uint_list(ids),
+                _ => None,
+            },
             file_names: get_string_array(o, "fileNames")?,
             file_infos: get_array(o, "fileInfos", BuildInfoFileInfo::unmarshal_json)?,
             file_infos_non_nil: matches!(o.get("fileInfos"), Some(Value::Array(_))),
@@ -832,6 +844,12 @@ impl BuildInfo {
         w.opt_strings("contentMapperIdentities", self.content_mapper_identities.as_deref());
         w.str("tsrsCanonicalCheckSignature", &self.tsrs_canonical_check_signature);
         w.str("tsrsPerformance", &self.tsrs_performance);
+        if let Some(ids) = &self.tsrs_interface_files {
+            w.key("tsrsInterfaceFiles");
+            write_array(w.out, ids, |out, &id| {
+                tsrs_core::json::write_compact_int(out, id as i64);
+            });
+        }
         if !self.file_names.is_empty() {
             w.strings("fileNames", &self.file_names);
         }

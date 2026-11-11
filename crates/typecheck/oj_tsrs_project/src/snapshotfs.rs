@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::SystemTime;
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use tsrs_core::collections::{Set, SyncMap, SyncSet};
 use tsrs_core::new_work_group;
 use tsrs_core::tspath::{self, Path};
@@ -222,20 +222,22 @@ fn merge_cached_directory_entries(
 ) -> Entries {
     let mut entries =
         Entries { symlinks: directory_entries.symlinks.clone(), ..Default::default() };
-    let equal_name = |left: &str, right: &str| {
-        tspath::get_canonical_file_name(left, use_case_sensitive_file_names)
-            == tspath::get_canonical_file_name(right, use_case_sensitive_file_names)
-    };
-    let has_name =
-        |names: &[String], name: &str| names.iter().any(|candidate| equal_name(candidate, name));
+    let canonical =
+        |name: &str| tspath::get_canonical_file_name(name, use_case_sensitive_file_names);
+    // Go's `hasName` scans the merged files and directories for every name, which is quadratic in the directory's
+    // size; the canonical names of everything merged so far answer the same question (a package directory can hold
+    // tens of thousands of files).
+    let mut merged_names: FxHashSet<String> = FxHashSet::default();
     #[expect(
         clippy::iter_over_hash_type,
         reason = "Go ranges the cached entry map too, so cached children are appended in map order there as well"
     )]
     for (child_path, child_name) in cached_entries.iter() {
+        let child = canonical(child_name);
         if let Some(symlinks) = &mut entries.symlinks {
-            symlinks.retain(|name| !equal_name(name, child_name));
+            symlinks.retain(|name| canonical(name) != child);
         }
+        merged_names.insert(child);
         if is_cached_file(child_path) {
             entries.files.push(child_name.clone());
         } else {
@@ -243,14 +245,12 @@ fn merge_cached_directory_entries(
         }
     }
     for file_name in &directory_entries.files {
-        if !has_name(&entries.files, file_name) && !has_name(&entries.directories, file_name) {
+        if merged_names.insert(canonical(file_name)) {
             entries.files.push(file_name.clone());
         }
     }
     for directory_name in &directory_entries.directories {
-        if !has_name(&entries.files, directory_name)
-            && !has_name(&entries.directories, directory_name)
-        {
+        if merged_names.insert(canonical(directory_name)) {
             entries.directories.push(directory_name.clone());
         }
     }

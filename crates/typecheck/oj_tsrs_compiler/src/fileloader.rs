@@ -111,8 +111,16 @@ pub struct RedirectsFile {
 #[derive(Clone, Debug)]
 pub struct DuplicateSourceFile {
     pub parse_options: SourceFileParseOptions,
+    // ContentMapperParseOptions are the acquire-time options for a content-mapped parse-cache entry.
+    pub content_mapper_parse_options: SourceFileParseOptions,
     pub hash: u128,
     pub script_kind: ScriptKind,
+    // ContentMapper is the identity of the content mapper that produced this file,
+    // or "" if the file is not content-mapped.
+    pub content_mapper: &'static str,
+    // IsContentMapperFailureStub reports whether the file is an empty placeholder
+    // from a failed transform.
+    pub is_content_mapper_failure_stub: bool,
 }
 
 #[derive(Default)]
@@ -1721,17 +1729,7 @@ impl FileLoader {
     }
 
     fn create_synthetic_import(&self, text: &str, file: P<SourceFile>) -> P<Node> {
-        let external_helpers_module_reference =
-            self.factory.new_string_literal(tsrs_core::alloc_str(text), TokenFlags::None);
-        let import_decl = self.factory.new_import_declaration(
-            None,
-            None,
-            external_helpers_module_reference,
-            None,
-        );
-        external_helpers_module_reference.set_parent(Some(import_decl));
-        import_decl.set_parent(Some(file.as_node()));
-        external_helpers_module_reference
+        new_synthetic_import(&self.factory, text, file)
     }
 
     pub(crate) fn path_for_lib_file(&mut self, name: &str) -> P<LibFile> {
@@ -1861,6 +1859,21 @@ impl FileLoader {
         let id = self.new_task(sub_task);
         self.tasks[t].sub_tasks.push(id);
     }
+}
+
+// fileloader.go:641 createSyntheticImport.
+pub(crate) fn new_synthetic_import(
+    factory: &NodeFactory,
+    text: &str,
+    file: P<SourceFile>,
+) -> P<Node> {
+    let external_helpers_module_reference =
+        factory.new_string_literal(tsrs_core::alloc_str(text), TokenFlags::None);
+    let import_decl =
+        factory.new_import_declaration(None, None, external_helpers_module_reference, None);
+    external_helpers_module_reference.set_parent(Some(import_decl));
+    import_decl.set_parent(Some(file.as_node()));
+    external_helpers_module_reference
 }
 
 // The part of resolveImportsAndModuleAugmentations that decides whether the file a resolved import names is added

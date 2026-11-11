@@ -39,9 +39,10 @@ pub struct SessionOptions {
     pub fs: Arc<dyn FS>,
     /// Go `UseBinaryResponses`: true for the sync `MessagePack` protocol, false for JSON-RPC.
     pub binary_responses: bool,
-    /// Go `RunExternalCode` (false by default). Forwarded to the project session, but API projects get no content
-    /// mapper project yet (see `Session::new`), so content-mapped files are not transformed.
+    /// Go `RunExternalCode` (false by default): allows configured content mappers to execute.
     pub run_external_code: bool,
+    /// Go `ContentMapperSpawner`: launches content mapper processes (None when the host cannot spawn them).
+    pub content_mapper_spawner: Option<Arc<dyn tsrs_contentmapper::Spawner>>,
 }
 
 impl SessionOptions {
@@ -51,7 +52,14 @@ impl SessionOptions {
         fs: Arc<dyn FS>,
         binary_responses: bool,
     ) -> SessionOptions {
-        SessionOptions { cwd, default_library_path, fs, binary_responses, run_external_code: false }
+        SessionOptions {
+            cwd,
+            default_library_path,
+            fs,
+            binary_responses,
+            run_external_code: false,
+            content_mapper_spawner: None,
+        }
     }
 }
 
@@ -146,10 +154,10 @@ impl Session {
             client: None,
             logger: None,
             npm_executor: None,
+            spawner: options.content_mapper_spawner,
+            content_mapper_logger: None,
             parse_cache: None,
-            // Go also passes the server's ContentMapperSpawner here (api/server.go:99). The project system does not
-            // transform content-mapped files yet (phase 2, notes/contentmappers.md): `--runExternalCode` is accepted
-            // and recorded in the session options, and its projects get no content mapper project.
+            content_mapped_parse_cache: None,
         };
         let base_fs = Arc::clone(&init.fs);
         Self::new_session(
@@ -292,6 +300,11 @@ impl Session {
         self.source_files.release_all_leases();
         let all: Vec<_> = self.snapshots.write().unwrap().drain().collect();
         drop(all);
+
+        // Go `ownsSnapshotHost`: only a standalone session (no project session) owns its snapshot host.
+        if self.project_session.is_none() {
+            self.snapshot_host.close();
+        }
         self.batch_pages.lock().unwrap().clear();
     }
 

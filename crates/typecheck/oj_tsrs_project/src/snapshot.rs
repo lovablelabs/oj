@@ -26,7 +26,10 @@ use crate::dirty::Shared;
 use crate::filechange::FileChangeSummary;
 use crate::logging::{LogTree, Logger, new_log_tree};
 use crate::overlayfs::{FileHandle, FsRef, OverlayMap, layer_overlay_file_system};
-use crate::parsecache::{parse_cache_key_for_duplicate, parse_cache_key_for_file};
+use crate::parsecache::{
+    content_mapped_parse_cache_key_for_duplicate, content_mapped_parse_cache_key_for_file,
+    parse_cache_key_for_duplicate, parse_cache_key_for_file,
+};
 use crate::project::{ID, ProgramUpdateKind, Project, SyntheticProjectID};
 use crate::projectcollection::{ProjectCollection, new_project_collection, open_file_paths};
 use crate::projectcollectionbuilder::new_project_collection_builder;
@@ -483,6 +486,12 @@ impl Snapshot {
         ))
     }
 
+    // snapshot.go:313
+    pub fn content_mapper_extensions(&self) -> Vec<String> {
+        let (extensions, _) = self.content_mapper_watch_state();
+        extensions
+    }
+
     // snapshot.go:431
     pub(crate) fn clone_snapshot(
         &self,
@@ -683,7 +692,9 @@ impl Snapshot {
             Arc::clone(&store.options),
             &custom_config_file_name,
             Arc::clone(&store.parse_cache),
+            Arc::clone(&store.content_mapped_parse_cache),
             Arc::clone(&store.extended_config_cache),
+            store.content_mapper_host.clone(),
             client,
         );
 
@@ -771,7 +782,9 @@ impl Snapshot {
         let (api_error, project_collection, config_file_registry) = match built {
             Ok(built) => built,
             Err(panic) => {
-                project_collection_builder.parse_cache_journal.roll_back(&store.parse_cache);
+                project_collection_builder
+                    .parse_cache_journal
+                    .roll_back(&store.parse_cache, &store.content_mapped_parse_cache);
                 std::panic::resume_unwind(panic);
             }
         };
@@ -1001,7 +1014,9 @@ impl Snapshot {
                 continue;
             };
             if store.program_counter.deref(program) {
-                // (Content mappers are not ported: no program has a content mapper project.)
+                if let Some(content_mapper_project) = program.content_mapper_project() {
+                    let _ = content_mapper_project.close();
+                }
                 // This program is no longer referenced by any snapshot.
                 // Mark its checker pool as discarded so its idle-cleanup timer stops
                 // keeping the pool alive, allowing the pool and any idle checkers it
@@ -1010,10 +1025,28 @@ impl Snapshot {
                     checker_pool.discard();
                 }
                 for &file in program.source_files() {
-                    store.parse_cache.deref(&parse_cache_key_for_file(file));
+                    if !file.is_content_mapper_failure_stub()
+                        && !file.is_content_mapper_supplemental()
+                    {
+                        if file.content_mapper().is_empty() {
+                            store.parse_cache.deref(&parse_cache_key_for_file(file));
+                        } else {
+                            store
+                                .content_mapped_parse_cache
+                                .deref(&content_mapped_parse_cache_key_for_file(file));
+                        }
+                    }
                 }
                 for file in program.duplicate_source_files() {
-                    store.parse_cache.deref(&parse_cache_key_for_duplicate(file));
+                    if !file.is_content_mapper_failure_stub {
+                        if file.content_mapper.is_empty() {
+                            store.parse_cache.deref(&parse_cache_key_for_duplicate(file));
+                        } else {
+                            store
+                                .content_mapped_parse_cache
+                                .deref(&content_mapped_parse_cache_key_for_duplicate(file));
+                        }
+                    }
                 }
             }
         }
@@ -1057,6 +1090,16 @@ impl tsrs_ls::Host for Snapshot {
     fn read_file(&self, file_name: &str) -> Option<String> {
         let handle = self.get_file(file_name)?;
         Some(handle.content().to_string())
+    }
+
+    fn read_file_text(&self, file_name: &str) -> Option<tsrs_ls::FileText> {
+        struct HandleText(Arc<dyn FileHandle>);
+        impl AsRef<str> for HandleText {
+            fn as_ref(&self) -> &str {
+                self.0.content()
+            }
+        }
+        Some(tsrs_ls::FileText::new(HandleText(self.get_file(file_name)?)))
     }
 
     // snapshot.go:240

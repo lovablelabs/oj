@@ -92,6 +92,29 @@ impl<K: Hash + Eq + Clone, V: Clone, AcquireArgs> RefCountCache<K, V, AcquireArg
     // acquisitions of the same identity that miss serialize on it.
     //
     // The caller is responsible for calling Deref when a value is returned without error.
+    pub fn acquire_or_error<E>(
+        &self,
+        identity: &K,
+        produce: impl FnOnce() -> Result<V, E>,
+    ) -> Result<V, E> {
+        self.load_or_store_new_locked_entry(identity, |entry, loaded| {
+            if loaded {
+                return Ok(entry.value.clone().unwrap());
+            }
+            match produce() {
+                Err(err) => {
+                    // Undo the speculative entry so failures are not cached.
+                    entry.ref_count = 0;
+                    self.entries.delete(identity);
+                    Err(err)
+                }
+                Ok(value) => {
+                    entry.value = Some(value.clone());
+                    Ok(value)
+                }
+            }
+        })
+    }
 
     // refcountcache.go:105
     // Ref increments the reference count for an existing entry.

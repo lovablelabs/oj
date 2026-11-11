@@ -63,6 +63,8 @@ struct FileChange {
     emit_diagnostics: Option<DiagnosticsCache>,
     semantic_diagnostics: Option<DiagnosticsCache>,
     emit_signature: Option<EmitSignature>,
+    // tsrs-only: the file changed and its old or new text declares an interface, or the old text is unknown.
+    declares_interface_before_or_after: bool,
 }
 
 struct ToProgramSnapshot {
@@ -198,6 +200,7 @@ impl ToProgramSnapshot {
             })
         };
         let new_options = self.snapshot.options();
+        let canonical_diagnostics = self.program.uses_canonical_diagnostics();
         // programtosnapshot.go:91: Go queues the per-file work on a work group and lets each function store into the
         // snapshot's sync maps. Here the per-file work runs on the program's worker pool and only reads shared state;
         // its results are stored in file order afterwards, so the maps are filled in the same order as a sequential run.
@@ -218,6 +221,14 @@ impl ToProgramSnapshot {
             let implied_node_format =
                 self.program.get_source_file_meta_data(file.path()).implied_node_format;
             let affects_global_scope = file_affects_global_scope(file);
+            // tsrs-only: the same version has the same text, so the old state's answer still holds.
+            let declares_interface = canonical_diagnostics.then(|| {
+                old_file_info
+                    .as_ref()
+                    .filter(|old_file_info| old_file_info.version == version)
+                    .and_then(|old_file_info| old_file_info.declares_interface)
+                    .unwrap_or_else(|| contains_interface_declaration(file))
+            });
             let mut signature = String::new();
             let old_references = old.and_then(|old| old.referenced_map.get_references(file.path()));
             let new_references = if keeps_references(file) {
@@ -242,6 +253,7 @@ impl ToProgramSnapshot {
                 emit_diagnostics: None,
                 semantic_diagnostics: None,
                 emit_signature: None,
+                declares_interface_before_or_after: false,
             };
             if let Some(old) = old {
                 if let Some(old_file_info) = old_file_info {
@@ -270,9 +282,14 @@ impl ToProgramSnapshot {
                             change.add_to_change_set = true;
                         }
                     }
+                    change.declares_interface_before_or_after = change.add_to_change_set
+                        && declares_interface.is_some_and(|declares| {
+                            declares || old_file_info.declares_interface != Some(false)
+                        });
                     signature = old_file_info.signature;
                 } else {
                     change.add_to_change_set = true;
+                    change.declares_interface_before_or_after = declares_interface == Some(true);
                 }
                 // Only this file's own entry in the change set matters, and the parallel phase does not write the set.
                 if !change.add_to_change_set && !self.snapshot.changed_files_set.has(file.path()) {
@@ -313,7 +330,13 @@ impl ToProgramSnapshot {
                 signature.clone_from(&version);
             }
             (
-                FileInfo { version, signature, affects_global_scope, implied_node_format },
+                FileInfo {
+                    version,
+                    signature,
+                    affects_global_scope,
+                    implied_node_format,
+                    declares_interface,
+                },
                 new_references,
                 change,
             )
@@ -365,7 +388,6 @@ impl ToProgramSnapshot {
 
         // Hash the actual virtual slots, not the deduplicated reference sets: an export alias can change edge
         // multiplicities without changing any source. The same lazily initialized table serves diagnostic reporting.
-        let canonical_diagnostics = self.program.uses_canonical_diagnostics();
         if canonical_diagnostics {
             let mut hash = xxhash_rust::xxh3::Xxh3::new();
             for &file in files {
@@ -383,20 +405,10 @@ impl ToProgramSnapshot {
         }
         // Source/order/option changes can change a merge's declarations even when its slots remain equal.
         // tsrs-only: a changed file moves a report site only by adding or removing a declaration of a merged
-        // interface, so it counts when its new or old text declares an interface. Without the old text (a program
-        // loaded from build info) every changed file counts. Counting every changed file made a comment edit in
-        // a watch recheck every checked file that declares an interface: 690 -> 70 ms per edit on vscode (#391).
-        let declares_interface_before_or_after = |file: P<SourceFile>| {
-            contains_interface_declaration(file.as_node())
-                || match old_compiler_program {
-                    Some(old_program) => {
-                        old_program.get_source_file_by_path(file.path()).is_some_and(|old_file| {
-                            old_file != file && contains_interface_declaration(old_file.as_node())
-                        })
-                    }
-                    None => true,
-                }
-        };
+        // interface, so it counts when its new or old text declares an interface. The old answer comes from the old
+        // state's file info (build info `tsrsInterfaceFiles`); when it is unknown, the file counts. Counting every
+        // changed file made each edit recheck every checked file that declares an interface: 690 -> 70 ms per
+        // watch edit on vscode (#391).
         let refresh_interface_diagnostics = reporting_policy_changed
             || canonical_diagnostics
                 && old.is_some_and(|old| {
@@ -405,15 +417,15 @@ impl ToProgramSnapshot {
                         || old.options().skip_default_lib_check
                             != new_options.skip_default_lib_check
                         || !deleted_files.is_empty()
-                        || files.iter().zip(&results).any(|(&file, (_, _, change))| {
-                            change.add_to_change_set && declares_interface_before_or_after(file)
-                        })
+                        || results
+                            .iter()
+                            .any(|(_, _, change)| change.declares_interface_before_or_after)
                 });
         for (&file, (info, new_references, mut change)) in files.iter().zip(results) {
             if refresh_interface_diagnostics
                 && change.semantic_diagnostics.is_some()
                 && !self.program.skip_type_checking(file, false)
-                && contains_interface_declaration(file.as_node())
+                && info.declares_interface.unwrap_or_else(|| contains_interface_declaration(file))
             {
                 change.semantic_diagnostics = None;
             }
@@ -546,8 +558,30 @@ impl ToProgramSnapshot {
     }
 }
 
-fn contains_interface_declaration(node: P<Node>) -> bool {
-    ast::is_interface_declaration(node) || node.for_each_child(&mut contains_interface_declaration)
+fn contains_interface_declaration(file: P<SourceFile>) -> bool {
+    fn in_node(node: P<Node>) -> bool {
+        ast::is_interface_declaration(node) || node.for_each_child(&mut in_node)
+    }
+    fn in_statements(statements: &[P<Node>]) -> bool {
+        statements.iter().any(|&statement| {
+            ast::is_interface_declaration(statement)
+                || ast::is_module_declaration(statement) && in_module_body(statement)
+        })
+    }
+    fn in_module_body(module: P<Node>) -> bool {
+        match module.as_module_declaration().body() {
+            Some(body) if ast::is_module_block(body) => in_statements(body.statements()),
+            Some(body) if ast::is_module_declaration(body) => in_module_body(body),
+            _ => false,
+        }
+    }
+    // A declaration file declares interfaces only in its statements and its module bodies. Walking its classes and
+    // type literals too would parse the member lists the fast preset leaves lazy in declaration files.
+    if file.is_declaration_file() {
+        in_statements(file.statements().nodes())
+    } else {
+        in_node(file.as_node())
+    }
 }
 
 // programtosnapshot.go:235

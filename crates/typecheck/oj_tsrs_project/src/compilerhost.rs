@@ -1,10 +1,11 @@
 use std::fmt::Display;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use tsrs_ast::{SourceFile, SourceFileParseOptions};
 use tsrs_compiler::CompilerHost;
+use tsrs_contentmapper as contentmapper;
 use tsrs_core::P;
-use tsrs_core::context::Context;
+use tsrs_core::context::{Context, locale_from_context};
 use tsrs_core::tspath::Path;
 use tsrs_diagnostics::Message;
 use tsrs_tsoptions::ParsedCommandLine;
@@ -13,7 +14,10 @@ use tsrs_vfs::FS;
 use crate::configfileregistry::ConfigFileRegistry;
 use crate::configfileregistrybuilder::ConfigFileRegistryBuilder;
 use crate::logging::LogTree;
-use crate::parsecache::{ParseCache, ParseCacheJournal, new_parse_cache_key};
+use crate::parsecache::{
+    ContentMappedParseCache, ParseCache, ParseCacheJournal, content_mapped_parse_cache_key,
+    new_parse_cache_key,
+};
 use crate::project::{ID, Project};
 use crate::projectcollectionbuilder::ProjectCollectionBuilder;
 use crate::session::SessionOptions;
@@ -23,8 +27,10 @@ use crate::snapshotfs::{FileHandleSource, SnapshotFS, SourceFS, new_source_fs};
 // builder pointer and clears it in `freeze`).
 pub struct HostBuilder {
     parse_cache: Arc<ParseCache>,
+    content_mapped_parse_cache: Arc<ContentMappedParseCache>,
     parse_cache_journal: Arc<ParseCacheJournal>,
     config_file_registry_builder: Arc<ConfigFileRegistryBuilder>,
+    content_mapper_host: Option<Arc<dyn contentmapper::Host>>,
     ctx: Context,
 }
 
@@ -36,10 +42,13 @@ pub struct CompilerHostImpl {
     pub(crate) source_fs: Arc<SourceFS>,
     config_file_registry: RwLock<Option<Arc<ConfigFileRegistry>>>,
 
-    // Go keeps `project *Project`, the project being updated, and reads only its ID.
-    project: RwLock<Option<ID>>,
+    // Go keeps `project *Project`, the project being updated, and reads its ID and (in ContentMapperProject) its
+    // command line with typings files, which the project memoizes before its program is built.
+    project: RwLock<Option<(ID, Option<P<ParsedCommandLine>>)>>,
     builder: RwLock<Option<HostBuilder>>,
     logger: RwLock<LogTree>,
+    // Go: contentMapperProject + contentMapperOnce.
+    content_mapper_project: OnceLock<Option<Arc<dyn contentmapper::Project>>>,
 }
 
 // compilerhost.go:36
@@ -60,14 +69,17 @@ pub fn new_compiler_host(
         )),
         config_file_registry: RwLock::new(None),
 
-        project: RwLock::new(Some(project.id())),
+        project: RwLock::new(Some((project.id(), project.get_command_line_with_typings_files()))),
         builder: RwLock::new(Some(HostBuilder {
             parse_cache: Arc::clone(&builder.parse_cache),
+            content_mapped_parse_cache: Arc::clone(&builder.content_mapped_parse_cache),
             parse_cache_journal: Arc::clone(&builder.parse_cache_journal),
             config_file_registry_builder: Arc::clone(&builder.config_file_registry_builder),
+            content_mapper_host: builder.content_mapper_host.clone(),
             ctx: builder.ctx.clone(),
         })),
         logger: RwLock::new(logger),
+        content_mapper_project: OnceLock::new(),
     })
 }
 
@@ -106,6 +118,14 @@ impl CompilerHostImpl {
         (Arc::clone(&builder.parse_cache), Arc::clone(&builder.parse_cache_journal))
     }
 
+    /// The builder's content-mapped parse cache (Go `c.builder.contentMappedParseCache`).
+    pub(crate) fn builder_content_mapped_parse_cache(&self) -> Arc<ContentMappedParseCache> {
+        let builder = self.builder.read().unwrap();
+        let builder =
+            builder.as_ref().expect("method must not be called after snapshot initialization");
+        Arc::clone(&builder.content_mapped_parse_cache)
+    }
+
     pub(crate) fn builder_ctx(&self) -> Context {
         self.builder.read().unwrap().as_ref().map(|b| b.ctx.clone()).unwrap_or_default()
     }
@@ -142,7 +162,7 @@ impl CompilerHost for CompilerHostImpl {
             Some(builder) => {
                 // acquireConfigForProject will bypass sourceFS, so track the file here.
                 self.source_fs.track(file_name);
-                let project = self.project.read().unwrap().clone().unwrap();
+                let project = self.project.read().unwrap().as_ref().unwrap().0.clone();
                 let logger = self.logger.read().unwrap().clone();
                 builder
                     .config_file_registry_builder
@@ -162,28 +182,86 @@ impl CompilerHost for CompilerHostImpl {
         Some(journal.acquire(&cache, key, fh))
     }
 
-    // compilerhost.go:113. Phase 1 of the content-mapper port (notes/contentmappers.md): the project system's builder
-    // has no content mapper host yet, so `content_mapper_project` is always None and this stops at Go's
-    // ErrProjectUnavailable, after the same file lookup.
+    // compilerhost.go:113
+    // GetContentMappedSourceFile implements compiler.CompilerHost.
     fn get_content_mapped_source_files(
         &self,
         parse_options: SourceFileParseOptions,
-        _mapper: &tsrs_contentmapper::Mapper,
-    ) -> Result<tsrs_contentmapper::SourceFiles, tsrs_contentmapper::Error> {
+        mapper: &contentmapper::Mapper,
+    ) -> Result<contentmapper::SourceFiles, contentmapper::Error> {
         self.ensure_alive();
-        if self.source_fs.get_file_by_path(&parse_options.file_name, &parse_options.path).is_none()
-        {
-            return Ok(tsrs_contentmapper::SourceFiles::default());
-        }
-        let Some(_project) = self.content_mapper_project() else {
-            return Err(tsrs_contentmapper::Error::ProjectUnavailable);
+        let Some(fh) =
+            self.source_fs.get_file_by_path(&parse_options.file_name, &parse_options.path)
+        else {
+            return Ok(contentmapper::SourceFiles::default());
         };
-        unreachable!("the project system creates no content mapper project (phase 2)")
+        let diagnostic_locale = locale_from_context(&self.builder_ctx());
+        let Some(project) = self.content_mapper_project() else {
+            return Err(contentmapper::Error::ProjectUnavailable);
+        };
+        let identity = match project.identity(mapper) {
+            Ok(identity) => identity,
+            Err(err) => {
+                return Err(contentmapper::new_transform_error(
+                    contentmapper::TransformErrorKind::Project,
+                    Some(err),
+                )
+                .into());
+            }
+        };
+        let transform_identity = xxhash_rust::xxh3::xxh3_128(identity.as_bytes());
+        let key = content_mapped_parse_cache_key(
+            parse_options.clone(),
+            fh.hash(),
+            transform_identity,
+            &diagnostic_locale,
+        );
+        let cache = self.builder_content_mapped_parse_cache();
+        let (_, journal) = self.builder_parse_cache_journal();
+        let content = fh.content();
+        let files = journal.acquire_content_mapped(&cache, &key, content.len(), || {
+            let files =
+                contentmapper::transform_and_parse(parse_options, content, mapper, &*project)?;
+            let canonical = files.canonical.unwrap();
+            canonical.hash.set(key.hash);
+            tsrs_binder::bind_source_file(canonical);
+            for &supplemental in &files.supplemental {
+                supplemental.hash.set(key.hash);
+                tsrs_binder::bind_source_file(supplemental);
+            }
+            Ok(files)
+        })?;
+        if let Err(err) =
+            contentmapper::check_supplemental_file_name_collisions(&files, |file_name| {
+                self.fs().file_exists(file_name)
+            })
+        {
+            journal.deref_content_mapped(&cache, &key);
+            return Err(err);
+        }
+        Ok(files)
     }
 
-    // compilerhost.go:153 (Go creates the project from the builder's content mapper host, which phase 1 does not port.)
-    fn content_mapper_project(&self) -> Option<std::sync::Arc<dyn tsrs_contentmapper::Project>> {
-        None
+    // compilerhost.go:153
+    fn content_mapper_project(&self) -> Option<Arc<dyn contentmapper::Project>> {
+        self.content_mapper_project
+            .get_or_init(|| {
+                let builder = self.builder.read().unwrap();
+                let content_mapper_host = builder.as_ref()?.content_mapper_host.as_ref()?;
+                // References into the command line's own list (an arena object): the host keys the project by
+                // their addresses.
+                let command_line: &'static ParsedCommandLine =
+                    self.project.read().unwrap().as_ref()?.1?.get();
+                if command_line.content_mappers().is_empty() {
+                    return None;
+                }
+                content_mapper_host.project(contentmapper::ProjectSpec {
+                    config_file_name: command_line.config_name().to_string(),
+                    mappers: command_line.content_mappers().iter().collect(),
+                    compiler_options: command_line.compiler_options(),
+                })
+            })
+            .clone()
     }
 
     // compilerhost.go:172

@@ -2,6 +2,6 @@
 // workspace manifest, which oj does not vendor.
 
 fn main() {
-    println!("cargo:rustc-env=TSRS_RELEASE_VERSION=0.21.0-ts7.1.0-beta");
+    println!("cargo:rustc-env=TSRS_RELEASE_VERSION=0.24.0-ts7.1.0-beta");
     println!("cargo:rustc-env=TSRS_TYPESCRIPT_COMMIT=3e9236361fa9");
 }

@@ -24,7 +24,10 @@ use crate::compilerhost::CompilerHostImpl;
 use crate::dirty::Cloneable;
 use crate::logging::LogTree;
 use crate::memregions::ProgramOwner;
-use crate::parsecache::{parse_cache_key_for_duplicate, parse_cache_key_for_file};
+use crate::parsecache::{
+    content_mapped_parse_cache_key_for_duplicate, content_mapped_parse_cache_key_for_file,
+    parse_cache_key_for_duplicate, parse_cache_key_for_file,
+};
 use crate::projectcollectionbuilder::ProjectCollectionBuilder;
 use crate::snapshot::{ModuleResolverFactory, ProjectTreeRequest};
 use crate::watch::{
@@ -187,9 +190,9 @@ pub struct Project {
     command_line_with_typings_files: Arc<OnceLock<P<ParsedCommandLine>>>,
     pub program: Option<&'static Program>,
     // The kind of update that was performed on the program last time it was updated.
-    pub(crate) program_update_kind: ProgramUpdateKind,
+    pub program_update_kind: ProgramUpdateKind,
     // The ID of the snapshot that created the program stored in this project.
-    pub(crate) program_last_update: u64,
+    pub program_last_update: u64,
     // Set of projects that this project could be referencing.
     // Only set before actually loading config file to get actual project references
     potential_project_references: Option<Arc<Set<Path>>>,
@@ -453,6 +456,10 @@ impl Project {
         self.id.clone()
     }
 
+    pub(crate) fn id_ref(&self) -> &ID {
+        &self.id
+    }
+
     // project.go:338
     // ConfigFileName panics if Kind() is not KindConfigured.
     pub fn config_file_name(&self) -> &str {
@@ -531,7 +538,7 @@ impl Project {
 
     // project.go:443
     // getCommandLineWithTypingsFiles returns the command line augmented with typing files if ATA is enabled.
-    fn get_command_line_with_typings_files(&self) -> Option<P<ParsedCommandLine>> {
+    pub(crate) fn get_command_line_with_typings_files(&self) -> Option<P<ParsedCommandLine>> {
         if self.typings_files.is_empty() {
             return self.command_line;
         }
@@ -643,25 +650,51 @@ impl Project {
             new_program_result = program;
             program_cloned = cloned;
             let (parse_cache, journal) = host.builder_parse_cache_journal();
+            let content_mapped_parse_cache = host.builder_content_mapped_parse_cache();
             if program_cloned {
                 update_kind = ProgramUpdateKind::Cloned;
                 for &file in new_program_result.source_files() {
                     // Use pointer identity: dirtyFile is the exact instance UpdateProgram acquired,
                     // and it is the only file whose refcount is already accounted for.
-                    // (Content mappers are not ported: no file is a failure stub, supplemental or content-mapped.)
-                    if Some(file) != dirty_file {
+                    if Some(file) != dirty_file
+                        && !file.is_content_mapper_failure_stub()
+                        && !file.is_content_mapper_supplemental()
+                    {
                         // UpdateProgram acquired the changed file only, so we need to ref everything else
-                        journal.ref_(&parse_cache, parse_cache_key_for_file(file));
+                        if file.content_mapper().is_empty() {
+                            journal.ref_(&parse_cache, parse_cache_key_for_file(file));
+                        } else {
+                            journal.ref_content_mapped(
+                                &content_mapped_parse_cache,
+                                content_mapped_parse_cache_key_for_file(file),
+                            );
+                        }
                     }
                 }
                 for file in new_program_result.duplicate_source_files() {
-                    journal.ref_(&parse_cache, parse_cache_key_for_duplicate(file));
+                    if !file.is_content_mapper_failure_stub {
+                        if file.content_mapper.is_empty() {
+                            journal.ref_(&parse_cache, parse_cache_key_for_duplicate(file));
+                        } else {
+                            journal.ref_content_mapped(
+                                &content_mapped_parse_cache,
+                                content_mapped_parse_cache_key_for_duplicate(file),
+                            );
+                        }
+                    }
                 }
             } else if let Some(dirty_file) = dirty_file {
                 // UpdateProgram always acquires the dirty file before deciding whether it can
                 // reuse the old program. If it falls back to a full rebuild, release that
                 // speculative acquire so the rebuilt program is the only remaining owner.
-                journal.deref(&parse_cache, &parse_cache_key_for_file(dirty_file));
+                if dirty_file.content_mapper().is_empty() {
+                    journal.deref(&parse_cache, &parse_cache_key_for_file(dirty_file));
+                } else {
+                    journal.deref_content_mapped(
+                        &content_mapped_parse_cache,
+                        &content_mapped_parse_cache_key_for_file(dirty_file),
+                    );
+                }
             }
         } else {
             let mut typings_location = String::new();
@@ -673,6 +706,8 @@ impl Project {
             opts.typings_location = typings_location;
             opts.create_checker_pool = Some(create_checker_pool);
             opts.create_module_resolver = Some(create_module_resolver);
+            opts.regions = Some(Arc::default());
+            opts.reuse_synthetic_imports = true;
             new_program_result = new_program(opts);
         }
         let cleanup = cleanup_module_resolver.lock().unwrap().take();

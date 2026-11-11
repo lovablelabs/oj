@@ -165,9 +165,18 @@ impl ToSnapshot<'_> {
     // buildinfotosnapshot.go:124
     fn set_file_info_and_emit_signatures(&self) {
         let is_composite = self.snapshot.options().composite.is_true();
+        // tsrs-only: a list with an id outside the file infos leaves every file unknown.
+        let declares_interface = self.build_info.tsrs_interface_files.as_ref().and_then(|ids| {
+            let mut declares = vec![false; self.build_info.file_infos.len()];
+            for &id in ids {
+                *declares.get_mut((id as usize).checked_sub(1)?)? = true;
+            }
+            Some(declares)
+        });
         for (index, build_info_file_info) in self.build_info.file_infos.iter().enumerate() {
             let path = self.to_file_path(index as BuildInfoFileId + 1);
-            let info = build_info_file_info.get_file_info();
+            let mut info = build_info_file_info.get_file_info();
+            info.declares_interface = declares_interface.as_ref().map(|declares| declares[index]);
             // Add default emit signature as file's signature
             if !info.signature.is_empty() && is_composite {
                 self.snapshot.emit_signatures.store(

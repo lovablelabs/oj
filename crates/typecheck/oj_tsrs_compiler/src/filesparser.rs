@@ -1442,8 +1442,11 @@ impl FilesParser {
 fn duplicate_source_file(file: P<SourceFile>) -> DuplicateSourceFile {
     DuplicateSourceFile {
         parse_options: file.parse_options().clone(),
+        content_mapper_parse_options: file.content_mapper_parse_options(),
         hash: file.hash.get(),
         script_kind: file.script_kind.get(),
+        content_mapper: file.content_mapper(),
+        is_content_mapper_failure_stub: file.is_content_mapper_failure_stub(),
     }
 }
 

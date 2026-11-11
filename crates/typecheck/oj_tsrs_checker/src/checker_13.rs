@@ -2527,6 +2527,49 @@ impl Checker {
         result
     }
 
+    /// A literal index into a tuple of required elements is that element's type argument, and `"length"` is the
+    /// arity literal (tsgo-opt `tryFastTupleIndexedAccess`). Any other index returns `None` and takes the slow path
+    /// with its errors. Callers use it only under `lazy_tuples`: unlike the slow path it neither resolves the tuple's
+    /// members nor counts the element instantiation.
+    pub(crate) fn try_fast_tuple_indexed_access(
+        &mut self,
+        object_type: P<Type>,
+        index_type: P<Type>,
+    ) -> Option<P<Type>> {
+        if index_type.flags().intersects(TypeFlags::NumberLiteral) {
+            let Some(LiteralValue::Number(value)) = index_type.as_literal_type().value() else {
+                return None;
+            };
+            let f = value.0;
+            let index = f as usize;
+            #[expect(
+                clippy::float_cmp,
+                reason = "the exact round trip through usize rejects fractions, negatives and NaN"
+            )]
+            if index as f64 == f {
+                let type_arguments = self.get_type_arguments(object_type);
+                if index < type_arguments.len() {
+                    return Some(type_arguments[index]);
+                }
+            }
+        } else if index_type.flags().intersects(TypeFlags::StringLiteral) {
+            let Some(LiteralValue::String(s)) = index_type.as_literal_type().value() else {
+                return None;
+            };
+            if s == "length" {
+                let arity = self.get_type_arguments(object_type).len();
+                return Some(self.get_number_literal_type(Number(arity as f64)));
+            }
+            if let Some(index) = parse_small_tuple_index(s) {
+                let type_arguments = self.get_type_arguments(object_type);
+                if index < type_arguments.len() {
+                    return Some(type_arguments[index]);
+                }
+            }
+        }
+        None
+    }
+
     fn get_indexed_access_type_or_undefined_inner(
         &mut self,
         object_type: P<Type>,
@@ -2539,6 +2582,21 @@ impl Checker {
         let mut access_flags = access_flags;
         if object_type == self.wildcard_type || index_type == self.wildcard_type {
             return Some(self.wildcard_type);
+        }
+        if self.lazy_tuples
+            && access_node.is_none()
+            && alias.is_none()
+            && access_flags.is_empty()
+            && self.compiler_options.no_unchecked_indexed_access != Tristate::True
+            && is_tuple_type(object_type)
+            && !object_type
+                .target_tuple_type()
+                .combined_flags()
+                .intersects(ElementFlags::Optional | ElementFlags::Variable)
+            && let Some(fast) = self.try_fast_tuple_indexed_access(object_type, index_type)
+        {
+            crate::sitecount::hit("tuple literal index", "indexed access");
+            return Some(fast);
         }
         let object_type = self.get_reduced_type(object_type);
         // If the object type has a string index signature and no other members we know that the result will
@@ -4021,4 +4079,21 @@ impl Checker {
         }
         false
     }
+}
+
+/// Go's `parseSmallTupleIndex`: a canonical decimal of at most six digits, the only string form of a tuple element
+/// name.
+fn parse_small_tuple_index(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    if bytes.is_empty() || bytes.len() > 6 || (bytes.len() > 1 && bytes[0] == b'0') {
+        return None;
+    }
+    let mut n = 0usize;
+    for &b in bytes {
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        n = n * 10 + usize::from(b - b'0');
+    }
+    Some(n)
 }

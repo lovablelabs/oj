@@ -23,6 +23,9 @@ pub struct FileInfo {
     pub signature: String,
     pub affects_global_scope: bool,
     pub implied_node_format: ResolutionMode,
+    // tsrs-only: whether this version of the file declares an interface. Recorded under canonical diagnostics
+    // (build info `tsrsInterfaceFiles`); `None` when unknown.
+    pub declares_interface: Option<bool>,
 }
 
 impl FileInfo {

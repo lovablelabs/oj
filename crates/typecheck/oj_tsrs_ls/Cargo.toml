@@ -120,6 +120,7 @@ multiple_crate_versions = "allow"
 cargo_common_metadata = "allow"
 
 [dependencies]
+rayon = { version = "1" }
 tsrs_core = { workspace = true }
 tsrs_diagnostics = { workspace = true }
 tsrs_spanmap = { workspace = true }

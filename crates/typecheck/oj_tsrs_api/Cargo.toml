@@ -134,6 +134,7 @@ tsrs_astnav = { workspace = true }
 tsrs_ls = { workspace = true }
 tsrs_lsproto = { workspace = true }
 tsrs_project = { workspace = true }
+tsrs_contentmapper = { workspace = true }
 rustc-hash = { version = "2" }
 tsrs_scanner = { workspace = true }
 tsrs_printer = { workspace = true }
