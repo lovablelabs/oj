@@ -1126,3 +1126,524 @@ async fn dev_hydrates_a_page_calling_server_fns_declared_in_other_shapes() {
         "import protection flagged a server-only import: {console:?}"
     );
 }
+
+/// A request middleware (`createMiddleware()` with no options) whose server
+/// half loads its server-only module with `await import()`, declared in a
+/// `*.functions.ts` module beside a server function and listed by the app's
+/// `createStart` (src/start.ts). Start's handleCreateMiddleware strips the
+/// `.server(..)` link on the client, and the dynamic import with it.
+const MONITOR_SERVER: &str = r#"import { getRequestHeader } from "@tanstack/react-start/server";
+
+export const record = () => getRequestHeader("x-who") ?? "middleware-dynamic-secret";
+"#;
+
+const MONITOR_FNS: &str = r#"import { createMiddleware, createServerFn } from "@tanstack/react-start";
+
+export const monitored = createMiddleware().server(async ({ next }) => {
+  const { record } = await import("./monitor.server");
+  record();
+  return next();
+});
+
+export const ping = createServerFn({ method: "POST" }).handler(async () => "pong");
+"#;
+
+const START_ENTRY: &str = r#"import { createStart } from "@tanstack/react-start";
+import { monitored } from "./lib/monitor.functions";
+
+export const startInstance = createStart(() => ({
+  requestMiddleware: [monitored],
+}));
+"#;
+
+fn middleware_dynamic_files() -> [(&'static str, String); 4] {
+    [
+        ("src/lib/monitor.server.ts", MONITOR_SERVER.to_string()),
+        ("src/lib/monitor.functions.ts", MONITOR_FNS.to_string()),
+        ("src/start.ts", START_ENTRY.to_string()),
+        (
+            "src/routes/about.tsx",
+            about(
+                "import { ping } from \"../lib/monitor.functions\";",
+                "const extra = <button onClick={() => ping()}>ping</button>;",
+            ),
+        ),
+    ]
+}
+
+/// A server function's handler calling a plain module (`anthropic.ts`) that
+/// loads a server-only module with `await import()` inside a function body.
+/// Only the handler uses the plain module, so Start's dead-code pass drops
+/// its import on the client with the handler.
+const AI_GATE_SERVER: &str = r#"import { getRequestHeader } from "@tanstack/react-start/server";
+
+export const gate = () => getRequestHeader("x-gate") ?? "ai-gate-secret";
+"#;
+
+const ANTHROPIC_DYNAMIC: &str = r#"export async function askModel(question: string) {
+  const { gate } = await import("./ai-gate.server");
+  return `${gate()}:${question}`;
+}
+"#;
+
+const PLAN_FNS: &str = r#"import { createServerFn } from "@tanstack/react-start";
+import { askModel } from "./anthropic";
+
+export const plan = createServerFn({ method: "POST" }).handler(async () => askModel("plan"));
+"#;
+
+/// The same, the other way round: the handler loads the plain module with
+/// `await import()`, and that module imports the server-only one statically.
+const ANTHROPIC_STATIC: &str = r#"import { gate } from "./ai-gate.server";
+
+export async function askModel(question: string) {
+  return `${gate()}:${question}`;
+}
+"#;
+
+const PLAN_FNS_DYNAMIC: &str = r#"import { createServerFn } from "@tanstack/react-start";
+
+export const plan = createServerFn({ method: "POST" }).handler(async () => {
+  const { askModel } = await import("./anthropic");
+  return askModel("plan");
+});
+"#;
+
+fn plan_files(anthropic: &str, fns: &str) -> [(&'static str, String); 4] {
+    [
+        ("src/lib/ai-gate.server.ts", AI_GATE_SERVER.to_string()),
+        ("src/lib/anthropic.ts", anthropic.to_string()),
+        ("src/lib/plan.functions.ts", fns.to_string()),
+        (
+            "src/routes/about.tsx",
+            about(
+                "import { plan } from \"../lib/plan.functions\";",
+                "const extra = <button onClick={() => plan()}>plan</button>;",
+            ),
+        ),
+    ]
+}
+
+/// `oj build` of the fixture with `files`: it passes, import protection says
+/// nothing, and no client asset holds `secret`.
+fn assert_builds_without_the_server_module(name: &str, files: &[(&str, String)], secret: &str) {
+    let Some(app) = app_with(name, files, None) else {
+        return;
+    };
+    let (ok, text) = build(&app.0);
+    assert!(ok, "the build failed:\n{text}");
+    assert!(!text.contains("[import-protection]"), "{text}");
+    assert!(
+        !client_has(&app.0, secret),
+        "the client holds the server module"
+    );
+}
+
+/// `oj dev` of the fixture with `files`: the client entry bundles and import
+/// protection says nothing; with Chrome, the page hydrates too.
+async fn assert_dev_is_clean(name: &str, files: &[(&str, String)]) {
+    let Some(app) = app_with(name, files, None) else {
+        return;
+    };
+    let dev = Server::oj_dev(&app.0);
+    let (status, _) = dev.request("GET", "/@oj-start/client-entry.js", &[]);
+    assert_eq!(status, 200, "the client entry\n{}", dev.output());
+    assert!(
+        !dev.output().contains("[import-protection]"),
+        "import protection flagged a server-only import\n{}",
+        dev.output()
+    );
+    if browser::skip() {
+        return;
+    }
+    let (hydrated, _, console, errors) = visit(&dev).await;
+    assert!(
+        hydrated,
+        "the page did not hydrate: {errors:?} {console:?}\n{}",
+        dev.output()
+    );
+    assert!(
+        !console.iter().any(|c| c.contains("[import-protection]")),
+        "import protection flagged a server-only import: {console:?}"
+    );
+}
+
+#[test]
+fn a_server_module_a_middleware_imports_dynamically_builds() {
+    assert_builds_without_the_server_module(
+        "ip-mw-dynamic",
+        &middleware_dynamic_files(),
+        "middleware-dynamic-secret",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_hydrates_a_page_whose_middleware_imports_a_server_module_dynamically() {
+    assert_dev_is_clean("ip-mw-dynamic-dev", &middleware_dynamic_files()).await;
+}
+
+#[test]
+fn a_plain_module_only_a_handler_uses_takes_its_dynamic_server_import_out_of_the_client() {
+    assert_builds_without_the_server_module(
+        "ip-plain-dynamic",
+        &plan_files(ANTHROPIC_DYNAMIC, PLAN_FNS),
+        "ai-gate-secret",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_hydrates_a_page_whose_handler_calls_a_plain_module_with_a_dynamic_server_import() {
+    assert_dev_is_clean(
+        "ip-plain-dynamic-dev",
+        &plan_files(ANTHROPIC_DYNAMIC, PLAN_FNS),
+    )
+    .await;
+}
+
+#[test]
+fn a_plain_module_a_handler_imports_dynamically_takes_its_server_import_out_of_the_client() {
+    assert_builds_without_the_server_module(
+        "ip-dynamic-plain",
+        &plan_files(ANTHROPIC_STATIC, PLAN_FNS_DYNAMIC),
+        "ai-gate-secret",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_hydrates_a_page_whose_handler_imports_a_plain_module_dynamically() {
+    assert_dev_is_clean(
+        "ip-dynamic-plain-dev",
+        &plan_files(ANTHROPIC_STATIC, PLAN_FNS_DYNAMIC),
+    )
+    .await;
+}
+
+/// A plain module the page itself uses, loading a server-only module with
+/// `await import()` inside a function the page calls on a click: client code
+/// that really does import the denied module. Vite's dev server mocks the
+/// import (the plugin's `behavior.dev`, "mock") and the page hydrates; the
+/// build denies it.
+const LIVE_DYNAMIC: &str = r#"export async function askModel(question: string) {
+  const { gate } = await import("./ai-gate.server");
+  return `${gate()}:${question}`;
+}
+"#;
+
+fn live_dynamic_files() -> [(&'static str, String); 3] {
+    [
+        ("src/lib/ai-gate.server.ts", AI_GATE_SERVER.to_string()),
+        ("src/lib/anthropic.ts", LIVE_DYNAMIC.to_string()),
+        (
+            "src/routes/about.tsx",
+            about(
+                "import { askModel } from \"../lib/anthropic\";",
+                "const extra = <button onClick={() => askModel(\"q\")}>ask</button>;",
+            ),
+        ),
+    ]
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_mocks_a_dynamic_server_import_the_page_itself_makes() {
+    let Some(app) = app_with("ip-live-dynamic-dev", &live_dynamic_files(), None) else {
+        return;
+    };
+    let dev = Server::oj_dev(&app.0);
+    let (status, _) = dev.request("GET", "/@oj-start/client-entry.js", &[]);
+    assert_eq!(status, 200, "the client entry\n{}", dev.output());
+    if browser::skip() {
+        return;
+    }
+    let (hydrated, _, console, errors) = visit(&dev).await;
+    assert!(
+        hydrated,
+        "the page did not hydrate: {errors:?} {console:?}\n{}",
+        dev.output()
+    );
+}
+
+#[test]
+fn a_dynamic_server_import_the_page_itself_makes_fails_the_build() {
+    let Some(app) = app_with("ip-live-dynamic", &live_dynamic_files(), None) else {
+        return;
+    };
+    let (ok, text) = build(&app.0);
+    assert!(!ok, "the build succeeded:\n{text}");
+    assert_denied(
+        &text,
+        &[
+            "[import-protection] Import denied in client environment",
+            "Denied by file pattern: **/*.server.*",
+        ],
+    );
+}
+
+/// The plain module's type imported without the `type` keyword and used in
+/// a type position the client keeps (`export type Plans = Plan[]`): TypeScript
+/// elides an import only types use, so the client never imports the module.
+const ANTHROPIC_TYPED: &str = r#"export interface Plan {
+  steps: string[];
+}
+
+export async function askModel(question: string): Promise<Plan> {
+  const { gate } = await import("./ai-gate.server");
+  return { steps: [gate(), question] };
+}
+"#;
+
+const PLAN_FNS_TYPED: &str = r#"import { createServerFn } from "@tanstack/react-start";
+import { askModel, Plan } from "./anthropic";
+
+export type Plans = Plan[];
+
+export const plan = createServerFn({ method: "POST" }).handler(async (): Promise<Plan> => askModel("plan"));
+"#;
+
+#[test]
+fn a_type_imported_from_a_plain_module_without_the_type_keyword_builds() {
+    assert_builds_without_the_server_module(
+        "ip-typed-import",
+        &plan_files(ANTHROPIC_TYPED, PLAN_FNS_TYPED),
+        "ai-gate-secret",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_hydrates_a_page_whose_functions_module_imports_a_type_without_the_keyword() {
+    assert_dev_is_clean(
+        "ip-typed-import-dev",
+        &plan_files(ANTHROPIC_TYPED, PLAN_FNS_TYPED),
+    )
+    .await;
+}
+
+/// Waits until the output after `mark` names `file` (a rebuild or a hot
+/// update for it), then a little longer for it to settle.
+async fn settled_after_edit(dev: &Server, file: &str, mark: usize) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !dev.output()[mark..].contains(file) && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(3)).await;
+}
+
+/// The functions module edited while its page is open: the update the page
+/// gets compiles the module as the first bundle did, so its handler's import
+/// stays out of the client.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_edit_to_a_functions_module_with_a_page_open_keeps_its_handler_import_out() {
+    let Some(app) = app_with(
+        "ip-fns-edit",
+        &plan_files(ANTHROPIC_DYNAMIC, PLAN_FNS),
+        None,
+    ) else {
+        return;
+    };
+    if browser::skip() {
+        return;
+    }
+    let dev = Server::oj_dev(&app.0);
+    let page = Page::open(&dev.url("/about")).await;
+    let hydrated = page
+        .poll(
+            r##"document.querySelector("#hydrated")?.textContent === "hydrated""##,
+            Duration::from_secs(30),
+        )
+        .await;
+    assert!(
+        hydrated,
+        "the page did not hydrate: {:?}\n{}",
+        page.errors(),
+        dev.output()
+    );
+    let mark = dev.output().len();
+    std::fs::write(
+        app.0.join("src/lib/plan.functions.ts"),
+        format!("// edited\n{PLAN_FNS}"),
+    )
+    .unwrap();
+    settled_after_edit(&dev, "plan.functions.ts", mark).await;
+    let (console, errors) = (page.console(), page.errors());
+    page.close().await;
+    let after = dev.output()[mark..].to_string();
+    assert!(
+        !after.contains("[import-protection]"),
+        "import protection flagged the edited module's handler import\n{after}"
+    );
+    assert!(
+        !console.iter().any(|c| c.contains("[import-protection]")),
+        "the page saw an import-protection mock after the edit: {console:?} {errors:?}"
+    );
+    let (status, _) = dev.request("GET", "/@oj-start/client-entry.js", &[]);
+    assert_eq!(
+        status,
+        200,
+        "the client entry after the edit\n{}",
+        dev.output()
+    );
+}
+
+/// Middlewares made from the app's Start instance, whose `createMiddleware`
+/// is `createStart`'s typed one: a request middleware in src/start.ts itself,
+/// and a function middleware in a `*.functions.ts` module importing the
+/// instance, each loading its server-only module with `await import()` in
+/// its server half. Start's compiler resolves `startInstance.createMiddleware()`
+/// through the binding to `createStart` and strips `.server(..)` on the
+/// client like the factory's.
+const START_WITH_INSTANCE_MIDDLEWARE: &str = r#"import { createStart } from "@tanstack/react-start";
+
+export const startInstance = createStart(() => ({
+  requestMiddleware: [logged],
+}));
+
+const logged = startInstance.createMiddleware().server(async ({ next }) => {
+  const { record } = await import("./lib/monitor.server");
+  record();
+  return next();
+});
+"#;
+
+const INSTANCE_MW_FNS: &str = r#"import { createServerFn } from "@tanstack/react-start";
+import { startInstance } from "../start";
+
+export const monitored = startInstance.createMiddleware({ type: "function" }).server(async ({ next }) => {
+  const { record } = await import("./monitor.server");
+  record();
+  return next();
+});
+
+export const ping = createServerFn({ method: "POST" }).middleware([monitored]).handler(async () => "pong");
+"#;
+
+fn instance_middleware_files() -> [(&'static str, String); 4] {
+    [
+        ("src/lib/monitor.server.ts", MONITOR_SERVER.to_string()),
+        ("src/lib/monitor.functions.ts", INSTANCE_MW_FNS.to_string()),
+        ("src/start.ts", START_WITH_INSTANCE_MIDDLEWARE.to_string()),
+        (
+            "src/routes/about.tsx",
+            about(
+                "import { ping } from \"../lib/monitor.functions\";",
+                "const extra = <button onClick={() => ping()}>ping</button>;",
+            ),
+        ),
+    ]
+}
+
+#[test]
+fn a_middleware_from_the_start_instance_keeps_its_server_half_out_of_the_client() {
+    assert_builds_without_the_server_module(
+        "ip-instance-mw",
+        &instance_middleware_files(),
+        "middleware-dynamic-secret",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_hydrates_a_page_whose_middleware_comes_from_the_start_instance() {
+    assert_dev_is_clean("ip-instance-mw-dev", &instance_middleware_files()).await;
+}
+
+/// The same middlewares as a formatter and TypeScript leave them: the chain
+/// broken before `.createMiddleware` (Prettier's layout for a long chain),
+/// the instance kept in a variable, `createStart` re-exported by a module of
+/// the app and its call under `satisfies`. Start's compiler resolves all of
+/// them (`unwrapExpression`, `resolveBindingKind`, `findExportInModule`).
+const START_KIT: &str = r#"export { createStart } from "@tanstack/react-start";
+"#;
+
+const START_WITH_FORMATTED_INSTANCE: &str = r#"import { createStart } from "./lib/kit";
+
+export const startInstance = createStart(() => ({
+  requestMiddleware: [logged],
+})) satisfies object;
+
+const logged = startInstance
+  .createMiddleware()
+  .server(async ({ next }) => {
+    const { record } = await import("./lib/monitor.server");
+    record();
+    return next();
+  });
+"#;
+
+const FORMATTED_INSTANCE_MW_FNS: &str = r#"import { createServerFn } from "@tanstack/react-start";
+import { startInstance } from "../start";
+
+const instance = startInstance;
+
+export const monitored = instance!
+  .createMiddleware({ type: "function" })
+  .server(async ({ next }) => {
+    const { record } = await import("./monitor.server");
+    record();
+    return next();
+  });
+
+export const ping = createServerFn({ method: "POST" }).middleware([monitored]).handler(async () => "pong");
+"#;
+
+#[test]
+fn a_formatted_middleware_chain_on_the_start_instance_keeps_its_server_half_out_of_the_client() {
+    let mut files = instance_middleware_files().to_vec();
+    files[1].1 = FORMATTED_INSTANCE_MW_FNS.to_string();
+    files[2].1 = START_WITH_FORMATTED_INSTANCE.to_string();
+    files.push(("src/lib/kit.ts", START_KIT.to_string()));
+    assert_builds_without_the_server_module(
+        "ip-instance-mw-formatted",
+        &files,
+        "middleware-dynamic-secret",
+    );
+}
+
+/// A `createStart` of the app's own is no Start instance, whatever else its
+/// module imports: here TanStack's `createMiddleware`, re-exported by a
+/// module of the app, beside it. Start's compiler resolves the binding to
+/// the app's function (`resolveKnownImportKind` matches by the resolved
+/// binding's identity), so the chain is left alone and its `.server(..)`
+/// argument reaches the client.
+const OWN_START: &str = r#"export const createStart = () => ({
+  createMiddleware: () => ({ server: (run: () => string) => ({ run }) }),
+});
+"#;
+
+const OWN_KIT: &str = r#"export { createMiddleware } from "@tanstack/react-start";
+"#;
+
+const OWN_INSTANCE: &str = r#"import { createStart } from "./own-start";
+import { createMiddleware } from "./own-kit";
+
+export const plain = createMiddleware();
+export const startInstance = createStart();
+"#;
+
+const OWN_USER: &str = r#"import { startInstance } from "./own-instance";
+
+export const own = startInstance.createMiddleware().server(() => "own-server-half-kept");
+"#;
+
+#[test]
+fn a_create_start_of_the_apps_own_makes_no_start_instance() {
+    let files = [
+        ("src/lib/own-start.ts", OWN_START.to_string()),
+        ("src/lib/own-kit.ts", OWN_KIT.to_string()),
+        ("src/lib/own-instance.ts", OWN_INSTANCE.to_string()),
+        ("src/lib/own.ts", OWN_USER.to_string()),
+        (
+            "src/routes/about.tsx",
+            about(
+                "import { own } from \"../lib/own\";",
+                "const extra = <p id=\"own\">{own.run()}</p>;",
+            ),
+        ),
+    ];
+    let Some(app) = app_with("ip-own-create-start", &files, None) else {
+        return;
+    };
+    let (ok, text) = build(&app.0);
+    assert!(ok, "the build failed:\n{text}");
+    assert!(
+        client_has(&app.0, "own-server-half-kept"),
+        "the chain on the app's own object lost its .server(..) link"
+    );
+}
