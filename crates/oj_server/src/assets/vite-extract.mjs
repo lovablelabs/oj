@@ -1450,6 +1450,14 @@ function extractSsr(ssr, ssrEnvironment) {
   }
   const res = extractResolve(ssr.resolve);
   if (res) out.resolve = res;
+  // The environment's `resolve.dedupe`: Vite resolves a deduped package from
+  // the root for every importer of the environment (tryNodeResolve's basedir,
+  // and fetchModule's for an externalized import), and TanStack Start's plugin
+  // lists its router there (`configEnvironment` in react-start's vite plugin),
+  // so the Node SSR consumers take it too, or a second copy of the router
+  // installed under a Start package renders with its own router context.
+  const dedupe = Array.isArray(ssr.resolve?.dedupe) ? ssr.resolve.dedupe.filter((x) => typeof x === "string") : [];
+  if (dedupe.length) out.resolve = { ...(out.resolve ?? {}), dedupe };
   return Object.keys(out).length ? out : null;
 }
 // Whether an environment is "runner-backed": its modules execute in a
@@ -1826,10 +1834,13 @@ function warnUnsupported(c, spaBuild = false) {
     warn("build.assetsInlineLimit is a function: dev asks it, a build uses the 4096 byte default");
   }
   if (c.ssr?.resolve && typeof c.ssr.resolve === "object") {
-    // ssr.resolve.conditions/externalConditions ARE applied (the preferred
-    // source for the Node SSR consumers); the remaining subkeys are inert.
-    const inert = Object.keys(c.ssr.resolve).filter((k) => k !== "conditions" && k !== "externalConditions");
-    if (inert.length) warn(`ssr.resolve.${inert.join("/")} is not applied (conditions/externalConditions are)`);
+    // ssr.resolve.conditions/externalConditions/dedupe ARE applied (the
+    // preferred source for the Node SSR consumers); the remaining subkeys are
+    // inert.
+    const inert = Object.keys(c.ssr.resolve).filter(
+      (k) => k !== "conditions" && k !== "externalConditions" && k !== "dedupe",
+    );
+    if (inert.length) warn(`ssr.resolve.${inert.join("/")} is not applied (conditions/externalConditions/dedupe are)`);
   }
   if (c.server?.cors && typeof c.server.cors === "object" && c.server.cors.origin instanceof RegExp) {
     warn("server.cors.origin RegExp is not applied; the localhost default is used");

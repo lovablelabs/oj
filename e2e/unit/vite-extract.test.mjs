@@ -212,7 +212,10 @@ test("warnUnsupported reports only options the user's config sets", () => {
   const inert = captureStderr(() =>
     warnUnsupported({ ssr: { resolve: { conditions: ["workerd"], mainFields: ["module"], extensions: [".ts"] } } }),
   );
-  assert.match(inert, /ssr\.resolve\.mainFields\/extensions is not applied \(conditions\/externalConditions are\)/);
+  assert.match(
+    inert,
+    /ssr\.resolve\.mainFields\/extensions is not applied \(conditions\/externalConditions\/dedupe are\)/,
+  );
 });
 
 test("resolve.externalConditions is extracted, top-level and through the ssr sugar", () => {
@@ -554,4 +557,23 @@ test("NODE_ENV-rule and externalizeDepsPlugin twins are byte-identical across th
       `the two ${what} copies drifted — keep them byte-identical`,
     );
   }
+});
+
+test("ssr.resolve.dedupe is extracted, through the ssr sugar and the environments.ssr spelling", () => {
+  // The top-level block never carries it: Vite's resolved `resolve.dedupe` is
+  // its own field of the extraction.
+  assert.equal(extractResolve({ dedupe: ["@tanstack/react-router"] }), null);
+  const viaSsr = extractSsr({ resolve: { dedupe: ["react", "@tanstack/react-router"] } });
+  assert.deepEqual(viaSsr.resolve, { dedupe: ["react", "@tanstack/react-router"] });
+  // The environment's list (a plugin's configEnvironment adds to it), strings only.
+  const viaEnv = extractSsr(undefined, {
+    resolve: { dedupe: ["@tanstack/react-router", /x/], conditions: ["workerd"] },
+  });
+  assert.deepEqual(viaEnv.resolve, { conditions: ["workerd"], dedupe: ["@tanstack/react-router"] });
+  assert.equal(extractSsr(undefined, { resolve: { dedupe: [] } }), null);
+  // Applied, so not among the inert ssr.resolve subkeys.
+  assert.equal(
+    captureStderr(() => warnUnsupported({ ssr: { resolve: { dedupe: ["react"] } } })),
+    "",
+  );
 });
