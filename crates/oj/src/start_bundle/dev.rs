@@ -833,7 +833,7 @@ pub(crate) fn write_outputs<'a>(
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&dest, bytes)?;
+        write_chunk_file(&dest, bytes)?;
         files.push(serde_json::json!({ "name": name, "size": bytes.len() }));
     }
     let entry = entry.or_else(|| {
@@ -863,6 +863,27 @@ pub(crate) fn write_outputs<'a>(
     std::fs::write(&tmp, serde_json::to_string(css_urls)?)?;
     std::fs::rename(&tmp, cache.join("css-urls.json"))?;
     Ok(())
+}
+
+/// Writes a chunk file by a temp name and a rename, never in place: the
+/// name may already exist, as an earlier bundle's file the dev server still
+/// serves (same bytes, since chunk names are content-hashed) or as the
+/// entry's fixed name, and at a store-restored boot it may be a hard link of
+/// the store's blob (`start_chunks::keep_chunk_files`). Truncating and
+/// rewriting that file would show a reader a partial file for the length of
+/// the write, and would write the new bytes into the blob behind the link; a
+/// rename swaps the whole file in and leaves the old inode to its other
+/// readers and names.
+fn write_chunk_file(dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let Some(parent) = dest.parent() else {
+        return std::fs::write(dest, bytes);
+    };
+    let file_name = dest.file_name().and_then(|n| n.to_str()).unwrap_or("chunk");
+    let tmp = parent.join(format!(".tmp-{file_name}-{}", std::process::id()));
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, dest).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
 }
 
 /// The client-side Start manifest of the dev bundle: the entry at the dev
@@ -1224,5 +1245,49 @@ pub(crate) mod tests {
         assert!(!plain.contains("import.meta.hot"));
         assert!(dev_manifest("", &[], true)
             .ends_with("if (import.meta.hot) import.meta.hot.accept();\n"));
+    }
+
+    /// A chunk file is replaced by a rename, not rewritten in place: a hard
+    /// link of the old file (the store's blob, at a restored boot) keeps its
+    /// bytes, a reader holding the old file keeps a whole one, and no temp
+    /// file is left beside the chunks.
+    #[test]
+    fn a_chunk_file_is_swapped_in_whole_and_never_written_through_a_link() {
+        let dir = std::env::temp_dir().join(format!("oj-chunk-write-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        let chunk = dir.join("assets/shared-AAAA.js");
+        let blob = dir.join("blob");
+        std::fs::write(&blob, b"old bytes").unwrap();
+        std::fs::hard_link(&blob, &chunk).unwrap();
+        let old = std::fs::File::open(&chunk).unwrap();
+
+        write_chunk_file(&chunk, b"new bytes, longer").unwrap();
+
+        assert_eq!(std::fs::read(&chunk).unwrap(), b"new bytes, longer");
+        assert_eq!(
+            std::fs::read(&blob).unwrap(),
+            b"old bytes",
+            "the link's other name kept its bytes"
+        );
+        let mut held = String::new();
+        std::io::Read::read_to_string(&mut &old, &mut held).unwrap();
+        assert_eq!(
+            held, "old bytes",
+            "a reader of the old file still sees all of it"
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(dir.join("assets"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(".tmp-"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+        // A fresh name is written the same way.
+        write_chunk_file(&dir.join("assets/new-BBBB.js"), b"fresh").unwrap();
+        assert_eq!(
+            std::fs::read(dir.join("assets/new-BBBB.js")).unwrap(),
+            b"fresh"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
