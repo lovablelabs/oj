@@ -3,13 +3,15 @@
 
 //! Every environment variable oj reads, from one immutable snapshot: oj's own
 //! settings ([`Knobs`]) and the app's env as Vite resolves it ([`AppEnv`]:
-//! `.env` files, NODE_ENV, `import.meta.env` defines, `%KEY%` in index.html).
+//! `.env` files, NODE_ENV, `import.meta.env` defines, `%KEY%` in index.html),
+//! and the runtime key spec a dev server serves values for at request time.
 
 mod app;
 mod defines;
 mod dotenv;
 mod html;
 mod knobs;
+mod runtime;
 mod snapshot;
 
 pub use app::AppEnv;
@@ -19,6 +21,7 @@ pub use defines::{
 pub use dotenv::{env_files, load, load_with, parse};
 pub use html::{html_env_map, replace_html_env};
 pub use knobs::Knobs;
+pub use runtime::{parse_runtime_env_keys, RuntimeKey};
 pub use snapshot::{get, init, Env};
 
 #[cfg(test)]

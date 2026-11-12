@@ -84,6 +84,8 @@ pub fn is_dev_server_path(path: &str) -> bool {
 }
 mod dev_html;
 mod html;
+mod runtime_env;
+pub use runtime_env::RuntimeEnvConfig;
 pub mod tls;
 pub use html::*;
 mod ssr;
@@ -278,6 +280,8 @@ pub struct DevServer {
     /// Vite's `--mode` for `serve` (default `development`): selects `.env.<mode>`,
     /// `import.meta.env.MODE`, and the mode plugin `config` hooks see.
     pub mode: Option<String>,
+    /// `import.meta.env` keys served at request time ([`runtime_env`]).
+    pub runtime_env: Option<RuntimeEnvConfig>,
     /// The runtime the dep optimizer's rolldown runs on (see
     /// [`rolldown_runtime`]).
     pub rolldown: tokio::runtime::Handle,
@@ -387,6 +391,9 @@ struct ServerState {
     stylex_css: Mutex<Option<(stylex::SheetStamp, String)>>,
     /// The `import.meta.env` / `define` replacements every dev compile applies.
     import_meta_env: Arc<oj_compiler::ImportMetaEnv>,
+    /// The keys `import_meta_env` redirects to `/@oj/env.js`, with their
+    /// values in force; `None` bakes every key as Vite does.
+    runtime_env: Option<Arc<runtime_env::RuntimeEnv>>,
     host_policy: HostPolicy,
     hmr_gate: Option<Arc<HmrGate>>,
     /// Fires when the HMR gate flushes, so the Start server releases the page
@@ -1674,6 +1681,11 @@ fn build_router(
                 }),
             )
             .route("/@oj/routes.js", get(serve_oj_routes))
+            .route(runtime_env::MODULE_PATH, get(runtime_env::serve_env_module))
+            .route(
+                runtime_env::CONTROL_PATH,
+                get(runtime_env::serve_env_control).post(runtime_env::serve_env_control),
+            )
             // `--debug mem`: force a full V8 collection in every live engine so memory
             // probes measure retained heap (issue #202). 404 unless enabled.
             .route("/@oj/debug/gc", get(debug_gc))
@@ -2085,11 +2097,28 @@ impl DevServer {
         // Built once from the final client defines and never replaced; nothing
         // compiles before this point. `environments.ssr.define` layers over the
         // shared define for SSR compiles only (Vite's per-environment define).
+        // The `%KEY%` map keeps the literals: a runtime key's value in force
+        // is laid over it per page (`ServerState::html_env_now`).
         let installed = InstalledDefines::of(&defines);
-        let import_meta_env = Arc::new(oj_compiler::ImportMetaEnv::new(
-            defines,
-            dedup_defines_last_wins(oj_config::environment_defines(&config, "ssr")),
-        ));
+        let runtime_env = self.runtime_env.clone().map(|cfg| {
+            Arc::new(runtime_env::RuntimeEnv::new(
+                cfg,
+                &defines,
+                dev_base(config.base.as_deref()).as_deref(),
+            ))
+        });
+        if let Some(env) = &runtime_env {
+            println!("  {}", env.banner());
+        }
+        let ssr_defines = dedup_defines_last_wins(oj_config::environment_defines(&config, "ssr"));
+        let import_meta_env = Arc::new(match &runtime_env {
+            Some(env) => oj_compiler::ImportMetaEnv::with_runtime(
+                defines,
+                ssr_defines,
+                env.compiler_defines(),
+            ),
+            None => oj_compiler::ImportMetaEnv::new(defines, ssr_defines),
+        });
         let client_resolver = Arc::new(client_resolver(&root, &config));
         let ssr_resolver = Arc::new(ssr_resolver(&root, &config));
         if let Some(host) = &plugin_host {
@@ -2293,6 +2322,7 @@ impl DevServer {
             stylex,
             stylex_css: Mutex::new(None),
             import_meta_env,
+            runtime_env,
             host_policy: HostPolicy::from_config(&server_cfg, self.host.as_deref()),
             hmr_gate,
             gate_flush_tx: broadcast::channel::<()>(16).0,
@@ -2360,6 +2390,11 @@ impl DevServer {
                 ))
             },
         });
+        // The values file lives outside the root (a backend's state dir):
+        // its directory joins the watch, as a served file's would.
+        if let Some(file) = state.runtime_env.as_ref().and_then(|env| env.file()) {
+            watch::ensure_watched_file(&state, file);
+        }
         spawn_state_tasks(&state, watch_rx, watch_ready_tx);
         // A dep re-optimization that changed previously served chunks (or
         // whose batch failed) commits a new map: drop every compiled module

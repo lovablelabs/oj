@@ -850,16 +850,51 @@ pub(crate) fn ensure_watched_file(state: &ServerState, file: &Path) {
 fn watch_served_dir(
     watchers: &mut Watchers,
     watched: &mut std::collections::HashSet<PathBuf>,
+    dir: &Path,
+) -> bool {
+    if watched.contains(dir) {
+        return true;
+    }
+    let ok = watchers
+        .watch(dir, notify::RecursiveMode::NonRecursive)
+        .is_ok();
+    if ok {
+        watched.insert(dir.to_path_buf());
+    }
+    ok
+}
+
+/// A served directory joins the watch. The runtime env values file's
+/// directory may not exist yet (a backend creates it after boot) and
+/// nothing re-sends it, so it is kept in `pending` and retried from the
+/// loop until the watch takes; once it does, the file is read, since a
+/// write that landed meanwhile raised no event.
+fn arm_served_dir(
+    state: &ServerState,
+    watchers: &mut Watchers,
+    watched: &mut std::collections::HashSet<PathBuf>,
+    pending: &mut Option<PathBuf>,
     dir: PathBuf,
 ) {
-    if !watched.contains(&dir)
-        && watchers
-            .watch(&dir, notify::RecursiveMode::NonRecursive)
-            .is_ok()
-    {
-        watched.insert(dir);
+    let runtime_dir = state
+        .runtime_env
+        .as_ref()
+        .and_then(|env| env.file())
+        .and_then(Path::parent)
+        == Some(dir.as_path());
+    if watch_served_dir(watchers, watched, &dir) {
+        if let Some(env) = state.runtime_env.as_ref().filter(|_| runtime_dir) {
+            if env.load_file() {
+                crate::runtime_env::announce(state, env, "file changed");
+            }
+        }
+    } else if runtime_dir {
+        *pending = Some(dir);
     }
 }
+
+/// How often a served directory that failed to watch is retried.
+const ARM_RETRY: Duration = Duration::from_secs(1);
 
 type EventSink = Arc<dyn Fn(notify::Result<notify::Event>) + Send + Sync>;
 
@@ -1467,6 +1502,20 @@ fn handle_batch(
     paths: &[PathBuf],
     created: &std::collections::HashSet<PathBuf>,
 ) {
+    // The runtime env values file is no module: a write to it re-reads the
+    // values and reloads the pages onto them, past the editor gate (the
+    // backend it names is what the pages wait for).
+    let runtime_values: Vec<PathBuf>;
+    let paths = match &state.runtime_env {
+        Some(env) if paths.iter().any(|p| env.is_file(p)) => {
+            if env.load_file() {
+                crate::runtime_env::announce(state, env, "file changed");
+            }
+            runtime_values = paths.iter().filter(|p| !env.is_file(p)).cloned().collect();
+            runtime_values.as_slice()
+        }
+        _ => paths,
+    };
     // Config/.env can't be hot-applied (read once at startup): restart, as
     // Vite does, naming the file relative to the launch dir as Vite's
     // "<file> changed, restarting server" does. Vite restarts from
@@ -1618,20 +1667,49 @@ pub(crate) fn spawn_watcher(
         // against its entries. Scanned after `ready`: events queue meanwhile.
         let mut seen_paths = boot_snapshot(&state.watch_ignored, &state.root, &cache_base);
         let mut changes = ContentChanges::new();
+        let mut pending_dir: Option<PathBuf> = None;
         loop {
-            let first = match rx.recv() {
-                Ok(WatchMsg::Fs(Ok(ev))) => ev,
-                Ok(WatchMsg::Fs(Err(_))) => continue,
-                Ok(WatchMsg::Dir(dir)) => {
-                    watch_served_dir(&mut watchers, &mut served_dirs, dir);
+            let msg = match pending_dir.take() {
+                Some(dir) => match rx.recv_timeout(ARM_RETRY) {
+                    Ok(msg) => {
+                        pending_dir = Some(dir);
+                        msg
+                    }
+                    Err(RecvTimeoutError::Timeout) => {
+                        arm_served_dir(
+                            &state,
+                            &mut watchers,
+                            &mut served_dirs,
+                            &mut pending_dir,
+                            dir,
+                        );
+                        continue;
+                    }
+                    Err(RecvTimeoutError::Disconnected) => break,
+                },
+                None => match rx.recv() {
+                    Ok(msg) => msg,
+                    Err(_) => break,
+                },
+            };
+            let first = match msg {
+                WatchMsg::Fs(Ok(ev)) => ev,
+                WatchMsg::Fs(Err(_)) => continue,
+                WatchMsg::Dir(dir) => {
+                    arm_served_dir(
+                        &state,
+                        &mut watchers,
+                        &mut served_dirs,
+                        &mut pending_dir,
+                        dir,
+                    );
                     continue;
                 }
-                Ok(WatchMsg::Close(ack)) => {
+                WatchMsg::Close(ack) => {
                     drop(watchers);
                     let _ = ack.send(());
                     return;
                 }
-                Err(_) => break,
             };
             let mut batch = Batch::default();
             ingest_event(
@@ -1666,7 +1744,13 @@ pub(crate) fn spawn_watcher(
                     }
                     Ok(WatchMsg::Fs(Err(_))) => {}
                     Ok(WatchMsg::Dir(dir)) => {
-                        watch_served_dir(&mut watchers, &mut served_dirs, dir)
+                        arm_served_dir(
+                            &state,
+                            &mut watchers,
+                            &mut served_dirs,
+                            &mut pending_dir,
+                            dir,
+                        );
                     }
                     Ok(WatchMsg::Close(ack)) => {
                         drop(watchers);

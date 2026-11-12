@@ -11,10 +11,17 @@ pub(crate) struct EnvDefines {
     plain_keys: Vec<String>,
     /// `None` when oxc rejected the list; compiles then skip the replacer.
     config: Option<ReplaceGlobalDefinesConfig>,
+    /// The keys this variant redirects to a served module (the client
+    /// variant of an [`ImportMetaEnv`] with runtime keys).
+    runtime: Option<Arc<RuntimeDefines>>,
 }
 
 impl EnvDefines {
     fn build(pairs: Vec<(String, String)>) -> Arc<Self> {
+        Self::build_with(pairs, None)
+    }
+
+    fn build_with(pairs: Vec<(String, String)>, runtime: Option<Arc<RuntimeDefines>>) -> Arc<Self> {
         let plain_keys = pairs
             .iter()
             // Other import.meta.* defines (import.meta.vitest) are not covered
@@ -23,7 +30,20 @@ impl EnvDefines {
             .map(|(k, _)| k.clone())
             .collect();
         let config = ReplaceGlobalDefinesConfig::new(&pairs).ok();
-        Arc::new(Self { plain_keys, config })
+        Arc::new(Self {
+            plain_keys,
+            config,
+            runtime,
+        })
+    }
+
+    /// The module a compile of `source_text` imports first, when the source
+    /// reads a runtime key through this variant.
+    pub(crate) fn runtime_import(&self, source_text: &str) -> Option<&str> {
+        let runtime = self.runtime.as_ref()?;
+        runtime
+            .read_by(source_text)
+            .then_some(runtime.module_url.as_str())
     }
 
     /// True when `source_text` can mention any define: `import.meta.env` via
@@ -40,6 +60,129 @@ impl EnvDefines {
     /// oxc rejected the define list.
     pub(crate) fn config(&self) -> Option<ReplaceGlobalDefinesConfig> {
         self.config.clone()
+    }
+}
+
+/// `import.meta.env` keys whose values client code reads at request time
+/// from a module the dev server serves, instead of the literal a compile
+/// bakes in. Each `import.meta.env.KEY` define becomes the member expression
+/// `globalThis.<global>.KEY`, and the whole-object `import.meta.env` define
+/// becomes `globalThis.<global>`; a module that reads one of them imports
+/// `module_url` first, which defines that global. A rebind changes what the
+/// module serves and nothing a compile emitted, so compiled modules and
+/// their cache entries survive it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeDefines {
+    pub keys: Vec<String>,
+    pub global: String,
+    pub module_url: String,
+    /// The `import.meta.env` keys the define list bakes as literals, so a
+    /// read of one needs no import. Filled by
+    /// [`ImportMetaEnv::with_runtime`]; empty, every dotted read counts.
+    pub literal_keys: Vec<String>,
+}
+
+impl RuntimeDefines {
+    pub fn new(
+        keys: impl IntoIterator<Item = impl Into<String>>,
+        global: impl Into<String>,
+        module_url: impl Into<String>,
+    ) -> Self {
+        RuntimeDefines {
+            keys: keys.into_iter().map(Into::into).collect(),
+            global: global.into(),
+            module_url: module_url.into(),
+            literal_keys: Vec::new(),
+        }
+    }
+
+    /// `self` knowing which `import.meta.env.*` keys `pairs` bake as
+    /// literals (every one outside the runtime list).
+    fn with_literals(mut self, pairs: &[(String, String)]) -> Self {
+        self.literal_keys = pairs
+            .iter()
+            .filter_map(|(k, _)| k.strip_prefix("import.meta.env."))
+            .filter(|key| !self.keys.iter().any(|k| k == key))
+            .map(str::to_owned)
+            .collect();
+        self
+    }
+
+    /// The expression a redirected `import.meta.env.KEY` compiles to.
+    pub fn member(&self, key: &str) -> String {
+        format!("globalThis.{}.{key}", self.global)
+    }
+
+    /// The expression a redirected whole-object `import.meta.env` compiles to.
+    pub fn object(&self) -> String {
+        format!("globalThis.{}", self.global)
+    }
+
+    /// `pairs` with every runtime key redirected: a key the list lacks is
+    /// added, so a value set later still reaches a module compiled now. Keys
+    /// outside the runtime list, `import.meta.env.MODE` among them, keep
+    /// their literals.
+    pub fn redirect(&self, pairs: Vec<(String, String)>) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = pairs
+            .into_iter()
+            .map(|(k, v)| {
+                if k == "import.meta.env" {
+                    (k, self.object())
+                } else if let Some(key) = k
+                    .strip_prefix("import.meta.env.")
+                    .filter(|key| self.keys.iter().any(|k| k == key))
+                {
+                    let member = self.member(key);
+                    (k, member)
+                } else {
+                    (k, v)
+                }
+            })
+            .collect();
+        for key in &self.keys {
+            let define = format!("import.meta.env.{key}");
+            if !out.iter().any(|(k, _)| *k == define) {
+                out.push((define, self.member(key)));
+            }
+        }
+        if !out.iter().any(|(k, _)| k == "import.meta.env") {
+            out.push(("import.meta.env".into(), self.object()));
+        }
+        out
+    }
+
+    /// Whether `source` reads through the global: `import.meta.env.KEY` for a
+    /// runtime key, `import.meta.env.X` for a key no define bakes (the
+    /// replacer then rewrites its `import.meta.env` to the global, and the
+    /// read must be `undefined`, not a throw), or `import.meta.env` as a
+    /// whole. Only a read of a baked literal (`import.meta.env.MODE`) needs
+    /// no import. A textual scan, so a mention inside a string or comment
+    /// counts too; the import it costs is one tiny module.
+    pub fn read_by(&self, source: &str) -> bool {
+        const NEEDLE: &str = "import.meta.env";
+        let ident = |c: char| c == '$' || c == '_' || c.is_alphanumeric();
+        let mut rest = source;
+        while let Some(at) = rest.find(NEEDLE) {
+            let after = &rest[at + NEEDLE.len()..];
+            rest = after;
+            match after.chars().next() {
+                Some('.') => {
+                    let end = after[1..]
+                        .char_indices()
+                        .find(|(_, c)| !ident(*c))
+                        .map_or(after.len(), |(i, _)| i + 1);
+                    let key = &after[1..end];
+                    if !self.literal_keys.iter().any(|k| k == key) {
+                        return true;
+                    }
+                }
+                // `import.meta.environment`: another property of import.meta.
+                Some(c) if ident(c) => {}
+                // `import.meta.env` as a value: `(`, `[`, `)`, `;`, `?.`, `}`, EOF...
+                _ => return true,
+            }
+        }
+        false
     }
 }
 
@@ -83,6 +226,8 @@ fn merged(base: &[(String, String)], more: Vec<(String, String)>) -> Vec<(String
 /// input is the lazy SSR plugin host's defines, a set-once overlay
 /// ([`merge_ssr`](Self::merge_ssr)).
 pub struct ImportMetaEnv {
+    /// The shared list as given: what the SSR variants are built from, with
+    /// no runtime redirect (server code reads `process.env`).
     client_pairs: Vec<(String, String)>,
     /// `environments.ssr.define`, layered over the shared list for SSR
     /// compiles only.
@@ -91,6 +236,7 @@ pub struct ImportMetaEnv {
     ssr: Arc<EnvDefines>,
     /// The SSR variant with the late overrides folded in, once they arrive.
     late_ssr: OnceLock<Arc<EnvDefines>>,
+    runtime: Option<Arc<RuntimeDefines>>,
 }
 
 impl std::fmt::Debug for ImportMetaEnv {
@@ -104,13 +250,50 @@ impl ImportMetaEnv {
     /// the SSR-only layer. Config parsing costs ~100us for 40 vars, so both
     /// variants are derived here, off the compile path.
     pub fn new(client: Vec<(String, String)>, ssr_overrides: Vec<(String, String)>) -> Self {
+        Self::build(client, ssr_overrides, None)
+    }
+
+    /// [`new`](Self::new) with the client variant's runtime keys redirected
+    /// ([`RuntimeDefines`]); the SSR variants keep the literals.
+    pub fn with_runtime(
+        client: Vec<(String, String)>,
+        ssr_overrides: Vec<(String, String)>,
+        runtime: RuntimeDefines,
+    ) -> Self {
+        Self::build(client, ssr_overrides, Some(Arc::new(runtime)))
+    }
+
+    fn build(
+        client: Vec<(String, String)>,
+        ssr_overrides: Vec<(String, String)>,
+        runtime: Option<Arc<RuntimeDefines>>,
+    ) -> Self {
         let ssr = EnvDefines::build(ssr_pairs(&client, &ssr_overrides));
+        let runtime = runtime.map(|rt| Arc::new(Arc::unwrap_or_clone(rt).with_literals(&client)));
+        let client_defines = match &runtime {
+            Some(rt) => EnvDefines::build_with(rt.redirect(client.clone()), Some(Arc::clone(rt))),
+            None => EnvDefines::build(client.clone()),
+        };
         ImportMetaEnv {
-            client: EnvDefines::build(client.clone()),
+            client: client_defines,
             client_pairs: client,
             ssr_overrides,
             ssr,
             late_ssr: OnceLock::new(),
+            runtime,
+        }
+    }
+
+    /// The runtime redirect the client variant applies, if any.
+    pub fn runtime(&self) -> Option<&RuntimeDefines> {
+        self.runtime.as_deref()
+    }
+
+    /// The client define list as compiles see it (runtime keys redirected).
+    pub fn client_defines(&self) -> Vec<(String, String)> {
+        match &self.runtime {
+            Some(rt) => rt.redirect(self.client_pairs.clone()),
+            None => self.client_pairs.clone(),
         }
     }
 

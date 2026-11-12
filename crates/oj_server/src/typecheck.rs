@@ -422,7 +422,7 @@ pub(crate) async fn serve_typecheck(
     State(state): State<Arc<ServerState>>,
     body: Bytes,
 ) -> Response {
-    if headers.contains_key(header::ORIGIN) || headers.contains_key("x-forwarded-host") {
+    if !crate::runtime_env::local_caller(&headers) {
         return (StatusCode::FORBIDDEN, "").into_response();
     }
     let Some(typecheck) = &state.typecheck else {

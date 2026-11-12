@@ -41,6 +41,7 @@ pub async fn ssr_dev(
         lazy: false,
         typecheck,
         mode: None,
+        runtime_env: None,
         rolldown,
     }
     .build_app()

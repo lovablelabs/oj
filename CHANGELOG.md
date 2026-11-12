@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Runtime env keys for `oj dev`: `OJ_RUNTIME_ENV_KEYS` names `import.meta.env` keys (`VITE_API_URL`, or `VITE_SUPABASE_URL=url` to read another field of the values file) whose values the page takes at request time instead of the literal a compile bakes in. A module that reads one compiles to a read of `globalThis.__oj_env.KEY` and imports `/@oj/env.js` first, which the server renders from the values in force (`Cache-Control: no-store`); `%KEY%` in index.html follows them too. Values come from `OJ_RUNTIME_ENV_FILE`, a JSON object watched while the server runs (a backend publishing `{"pending":true}` until its credentials exist, then the fields), and from `POST /@oj/env` with a JSON object of strings (`null` unsets), which like `/@oj/typecheck` answers only direct local callers; `GET /@oj/env` reports each key's value and where it came from. A set value wins over the file's, the file's over the `.env` literal. A change reloads the connected pages, past an editor's HMR gate, and changes nothing a compile emitted, so compiled modules and their cache entries survive a rebind. While the file is on disk but incomplete, documents answer 503 (`Retry-After: 1`) and modules still serve, so the reload after binding is warm. `OJ_RUNTIME_ENV_READY_FILE`, when named, exists exactly while every key has a value. The file must be a regular file (a symlink is refused). SSR compiles keep the literals (server code reads `process.env`); `oj dev --ssr`, TanStack Start dev and `oj build` warn and do not take the keys yet. A write to the values file that lands before its directory watch is armed (the directory may be created after boot) is read once the watch takes.
+
 ## [0.4.13] - 2026-11-11
 
 ### Changed

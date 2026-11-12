@@ -24,6 +24,18 @@ Vite/Rollup-style plugins run through a persistent Node plugin host. Drop an `oj
 A TypeScript config (including one that imports local `.ts` files) is loaded via Vite's own config loader when Vite is installed, or bundled with the app's esbuild otherwise. From a `vite.config` oj also adopts the app's `base`, `server.port`/`host`, `define`, and `resolve.alias` for any field its own config
 leaves unset, alias entries resolve alongside tsconfig `paths`, in both `oj dev` and `oj build`.
 
+## Runtime env
+
+`import.meta.env` keys a page should take at request time, instead of the literal a compile bakes in: a dev server that outlives the backend it points at (a preview rebound to a database that comes up later), or one serving several backends over its lifetime.
+
+```sh
+OJ_RUNTIME_ENV_KEYS=VITE_API_URL,VITE_API_KEY=anonKey \
+OJ_RUNTIME_ENV_FILE=/run/backend/env.json \
+oj dev
+```
+
+A module that reads one of the keys compiles to `globalThis.__oj_env.KEY` and imports `/@oj/env.js` first, which the server renders from the values in force; `%KEY%` in index.html follows them too. Values come from the file (a JSON object, watched; `KEY=field` reads another field of it) and from `POST /@oj/env` with `{"VITE_API_URL": "/_port_8001"}` (`null` unsets), for direct local callers only, as `/@oj/typecheck`; `GET /@oj/env` reports every key, its value and its source. A change reloads the pages and changes nothing a compile emitted. While the file is on disk but incomplete (a backend publishes `{"pending":true}` until it is ready), documents answer 503 and modules still serve. `OJ_RUNTIME_ENV_READY_FILE` exists exactly while every key has a value. The file must be a regular file (a symlink is refused) and, inside the app root, not under `node_modules` or a `server.watch.ignored` path, which the watcher skips. Plain `oj dev` only for now: `oj dev --ssr`, a TanStack Start app and `oj build` warn and keep the literals.
+
 ## TanStack Start
 
 Point oj at a TanStack Start app and it runs the framework directly, no source changes. It detects Start from the app itself:
