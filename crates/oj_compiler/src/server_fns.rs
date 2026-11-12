@@ -20,7 +20,11 @@
 //! from "./base"`, `export const base = createServerFn()` there), reached
 //! through its re-exports, as the compiler's `resolveImportKind` follows the
 //! import to the binding that made it a Builder; so may the factory itself
-//! (`export { createServerFn } from "@tanstack/react-start"`). TypeScript's
+//! (`export { createServerFn } from "@tanstack/react-start"`). Each module a
+//! resolution reaches is parsed once and a binding is resolved when a chain
+//! names it, as the compiler reads a module into its `moduleCache` once and
+//! memoizes a binding's `resolvedKind`, so the work grows with the modules
+//! reached, not with the paths the imports reach them by. TypeScript's
 //! `as`, `satisfies` and `!` around the chain are looked through
 //! (`unwrapExpression`). A `.handler(..)` call that is not a variable's
 //! initializer (a property of an object literal, a `return`) is not a server
@@ -30,6 +34,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
+use std::rc::Rc;
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
@@ -208,7 +213,8 @@ fn source_type(path: &str) -> SourceType {
 
 /// The server functions of a parsed module.
 fn find_in(program: &Program, code: &str, path: &str, modules: &dyn Modules) -> Vec<ServerFn> {
-    let bindings = Bindings::of(program, path, modules, &[]);
+    let resolver = Resolver::new(modules);
+    let module = resolver.load(path, program);
     let mut out = Vec::new();
     for (decl_start, var) in module_declarations(program) {
         for d in &var.declarations {
@@ -218,10 +224,18 @@ fn find_in(program: &Program, code: &str, path: &str, modules: &dyn Modules) -> 
             let Expression::CallExpression(call) = init.get_inner_expression() else {
                 continue;
             };
-            let Some(("handler", property_end, chain)) = bindings.chain(call) else {
+            let chain = chain_of(call);
+            let names: Vec<&str> = chain.links.iter().map(|l| l.name).collect();
+            let Some(skip) = module.rooted(&resolver, &chain.root, chain.called, &names) else {
                 continue;
             };
-            let Some(args_at) = args_start(code, call, property_end) else {
+            let Some((last, before)) = chain.links[skip..].split_last() else {
+                continue;
+            };
+            if last.name != "handler" {
+                continue;
+            }
+            let Some(args_at) = args_start(code, call, last.name_end) else {
                 continue;
             };
             let first_arg = call.arguments.first().map(|a: &Argument| {
@@ -233,7 +247,14 @@ fn find_in(program: &Program, code: &str, path: &str, modules: &dyn Modules) -> 
                 decl_start,
                 args_at,
                 first_arg,
-                stripped_links: chain,
+                // The `.validator(..)` / `.inputValidator(..)` links the
+                // client drops, as spans from each link's object end to its
+                // end.
+                stripped_links: before
+                    .iter()
+                    .filter(|l| STRIPPED_LINKS.contains(&l.name))
+                    .map(|l| (l.object_end, l.end))
+                    .collect(),
             });
         }
     }
@@ -266,11 +287,6 @@ fn args_start(code: &str, call: &CallExpression, property_end: usize) -> Option<
     (code.as_bytes()[at] == b'(').then_some(at + 1)
 }
 
-/// The last link of a chain on the factory: its name, where the name ends,
-/// and the `.validator(..)` / `.inputValidator(..)` links before it, as spans
-/// from each link's object end to its end.
-type LastLink<'s> = (&'s str, usize, Vec<(usize, usize)>);
-
 /// What a name stands for in a chain: Start's `Root` (the factory) and
 /// `Builder` (a chain on it short of `.handler(..)`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -280,292 +296,429 @@ enum Kind {
     None,
 }
 
-/// The module's names for the factory and for the chains built on it.
-struct Bindings<'m> {
-    modules: &'m dyn Modules,
+/// As much of an expression as its kind depends on, owned, so a module's
+/// variables can be kept after their AST is gone (the compiler keeps a
+/// binding's initializer the same way, in `extractModuleInfo`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Shape {
+    /// A name: `base`, `createServerFn`.
+    Name(String),
+    /// A name's member: `start.createServerFn`, `fns.base`.
+    Member(String, String),
+    /// Calls on a root: the root itself when `called` (`createServerFn(..)`,
+    /// `factory(..)`), then the method calls in `links`, in source order
+    /// (`createServerFn().validator(..).handler(..)` is the called
+    /// `createServerFn` with the links `validator`, `handler`).
+    Chain {
+        root: Box<Shape>,
+        called: bool,
+        links: Vec<String>,
+    },
+    /// Anything else: an object literal, a `new`, an arrow function.
+    Other,
+}
+
+/// `expr` as a shape, looked at without its parentheses.
+fn shape(expr: &Expression) -> Shape {
+    match expr.without_parentheses() {
+        Expression::Identifier(id) => Shape::Name(id.name.to_string()),
+        Expression::StaticMemberExpression(m) => match m.object.without_parentheses() {
+            Expression::Identifier(object) => {
+                Shape::Member(object.name.to_string(), m.property.name.to_string())
+            }
+            _ => Shape::Other,
+        },
+        Expression::CallExpression(call) => {
+            let chain = chain_of(call);
+            Shape::Chain {
+                root: Box::new(chain.root),
+                called: chain.called,
+                links: chain.links.iter().map(|l| l.name.to_string()).collect(),
+            }
+        }
+        _ => Shape::Other,
+    }
+}
+
+/// A method call of a chain: its name, where the name ends, where its
+/// object ends and where the call ends.
+struct Link<'a> {
+    name: &'a str,
+    name_end: usize,
+    object_end: usize,
+    end: usize,
+}
+
+/// A call as the chain it ends: the innermost expression the calls are
+/// made on, whether that root is itself called, and the method calls in
+/// source order, `call` the last of them.
+struct Chain<'a> {
+    root: Shape,
+    called: bool,
+    links: Vec<Link<'a>>,
+}
+
+fn chain_of<'a>(call: &'a CallExpression<'a>) -> Chain<'a> {
+    let mut links = Vec::new();
+    let mut call = call;
+    loop {
+        let callee = call.callee.without_parentheses();
+        let Expression::StaticMemberExpression(m) = callee else {
+            links.reverse();
+            return Chain {
+                root: shape(callee),
+                called: true,
+                links,
+            };
+        };
+        links.push(Link {
+            name: m.property.name.as_str(),
+            name_end: m.property.span.end as usize,
+            object_end: m.object.span().end as usize,
+            end: call.span.end as usize,
+        });
+        match m.object.without_parentheses() {
+            Expression::CallExpression(inner) => call = inner,
+            object => {
+                links.reverse();
+                return Chain {
+                    root: shape(object),
+                    called: false,
+                    links,
+                };
+            }
+        }
+    }
+}
+
+/// A module as the resolution reads it, Start's `ModuleInfo`
+/// (`extractModuleInfo`): its imports, its variables' initializers as shapes
+/// and its exports, owned, so a module that several imports reach is parsed
+/// once and kept. What a name stands for is resolved when a chain asks for
+/// it and memoized, as the compiler resolves a binding
+/// (`resolveIdentifierKind`, `binding.resolvedKind`).
+#[derive(Default)]
+struct Module {
     /// The module's own app-relative path, which its imports resolve from.
     path: String,
-    /// This module and the modules whose exports are being resolved above it,
-    /// so a cycle of re-exports ends.
-    visiting: Vec<String>,
-    /// Local names bound to `createServerFn`: the name itself, what an
-    /// import of it is called locally, and a local that another of the app's
-    /// modules exports it as.
-    factories: Vec<String>,
+    /// Named imports: the local name to the specifier and the imported name.
+    imports: HashMap<String, (String, String)>,
     /// Namespace imports of packages, whose `createServerFn` member is the
     /// factory.
     namespaces: Vec<String>,
     /// Namespace imports of the app's own modules, with the specifier: a
     /// member may be a builder that module exports.
     module_namespaces: Vec<(String, String)>,
-    /// Names holding a chain on the factory that has not reached
-    /// `.handler(..)` yet (Start's `Builder`), which another chain may
-    /// continue: module variables, and imports of such a variable from
-    /// another of the app's modules.
-    builders: Vec<String>,
-    /// What another module exports under a name, once asked: by specifier
-    /// and exported name.
-    exported: RefCell<HashMap<(String, String), Kind>>,
+    /// Module variables, exported or not, by name.
+    variables: HashMap<String, Shape>,
+    /// What the module exports under a name, as the local name it is.
+    exports: HashMap<String, String>,
+    /// `export { local as name } from "./x"`: the exported name to the
+    /// specifier and the name it has there.
+    re_exports: HashMap<String, (String, String)>,
+    /// `export * from "./x"` specifiers, in order.
+    export_all: Vec<String>,
+    /// The kinds resolved so far, `None` while a name is being resolved so
+    /// a cycle through it ends there (the compiler's `visited`).
+    kinds: RefCell<HashMap<String, Kind>>,
 }
 
-impl<'m> Bindings<'m> {
-    fn of(program: &Program, path: &str, modules: &'m dyn Modules, above: &[String]) -> Self {
-        let mut visiting = above.to_vec();
-        visiting.push(path.to_string());
-        let mut out = Bindings {
-            modules,
+impl Module {
+    fn of(program: &Program, path: &str) -> Self {
+        let mut module = Module {
             path: path.to_string(),
-            visiting,
-            factories: vec![FACTORY.to_string()],
-            namespaces: Vec::new(),
-            module_namespaces: Vec::new(),
-            builders: Vec::new(),
-            exported: RefCell::new(HashMap::new()),
+            ..Module::default()
         };
         for statement in &program.body {
-            let Statement::ImportDeclaration(import) = statement else {
-                continue;
-            };
-            let source = crate::lit_str(import.source.value);
-            let own_module = source.starts_with('.');
-            for specifier in import.specifiers.iter().flatten() {
-                match specifier {
-                    ImportDeclarationSpecifier::ImportSpecifier(s) => {
-                        let imported = export_name(&s.imported);
-                        let local = s.local.name.as_str();
-                        if own_module {
-                            match out.exported_kind(source, imported) {
-                                Kind::Factory => out.factories.push(local.to_string()),
-                                Kind::Builder => out.builders.push(local.to_string()),
-                                Kind::None => {}
+            match statement {
+                Statement::ImportDeclaration(import) => {
+                    let source = crate::lit_str(import.source.value);
+                    for specifier in import.specifiers.iter().flatten() {
+                        match specifier {
+                            ImportDeclarationSpecifier::ImportSpecifier(s) => {
+                                module.imports.insert(
+                                    s.local.name.to_string(),
+                                    (source.to_string(), export_name(&s.imported).to_string()),
+                                );
                             }
-                        } else if imported == FACTORY && local != FACTORY {
-                            out.factories.push(local.to_string());
+                            ImportDeclarationSpecifier::ImportNamespaceSpecifier(s) => {
+                                if source.starts_with('.') {
+                                    module
+                                        .module_namespaces
+                                        .push((s.local.name.to_string(), source.to_string()));
+                                } else {
+                                    module.namespaces.push(s.local.name.to_string());
+                                }
+                            }
+                            ImportDeclarationSpecifier::ImportDefaultSpecifier(_) => {}
                         }
                     }
-                    ImportDeclarationSpecifier::ImportNamespaceSpecifier(s) => {
-                        if own_module {
-                            out.module_namespaces
-                                .push((s.local.name.to_string(), source.to_string()));
-                        } else {
-                            out.namespaces.push(s.local.name.to_string());
-                        }
+                }
+                Statement::VariableDeclaration(var) => module.declare(var, false),
+                Statement::ExportDeclaration(export) => {
+                    if let Declaration::VariableDeclaration(var) = &export.declaration {
+                        module.declare(var, true);
                     }
-                    ImportDeclarationSpecifier::ImportDefaultSpecifier(_) => {}
                 }
+                Statement::ExportNamedDeclaration(export) => {
+                    for s in &export.specifiers {
+                        module.exports.insert(
+                            export_name(&s.exported).to_string(),
+                            export_name(&s.local).to_string(),
+                        );
+                    }
+                }
+                Statement::ExportFromDeclaration(export) => {
+                    let source = crate::lit_str(export.source.value);
+                    for s in &export.specifiers {
+                        module.re_exports.insert(
+                            export_name(&s.exported).to_string(),
+                            (source.to_string(), export_name(&s.local).to_string()),
+                        );
+                    }
+                }
+                Statement::ExportAllDeclaration(export) if export.exported.is_none() => {
+                    module
+                        .export_all
+                        .push(crate::lit_str(export.source.value).to_string());
+                }
+                _ => {}
             }
         }
-        // A variable's chain may root at a variable declared after it: to a
-        // fixed point, as the compiler resolves a binding wherever it is.
-        let declarators: Vec<_> = module_declarations(program)
-            .flat_map(|(_, var)| var.declarations.iter())
-            .filter_map(|d| match (&d.id, &d.init) {
-                (BindingPattern::BindingIdentifier(id), Some(init)) => {
-                    Some((id.name.as_str(), init))
-                }
-                _ => None,
-            })
-            .collect();
-        loop {
-            let found: Vec<String> = declarators
-                .iter()
-                .filter(|(name, init)| {
-                    !out.builders.iter().any(|b| b == name)
-                        && out.kind_of_init(init) == Kind::Builder
-                })
-                .map(|(name, _)| name.to_string())
-                .collect();
-            if found.is_empty() {
-                break;
-            }
-            out.builders.extend(found);
-        }
-        out
+        module
     }
 
-    /// What a module variable's initializer makes it: the factory under
-    /// another name, a builder, or neither.
-    fn kind_of_init(&self, init: &Expression) -> Kind {
-        let init = init.get_inner_expression();
-        if self.is_factory(init) {
+    /// The variables `var` declares with an initializer, exported when
+    /// `exported`.
+    fn declare(&mut self, var: &VariableDeclaration, exported: bool) {
+        for d in &var.declarations {
+            let (BindingPattern::BindingIdentifier(id), Some(init)) = (&d.id, &d.init) else {
+                continue;
+            };
+            self.variables
+                .insert(id.name.to_string(), shape(init.get_inner_expression()));
+            if exported {
+                self.exports
+                    .insert(id.name.to_string(), id.name.to_string());
+            }
+        }
+    }
+
+    /// What a local name stands for: the factory's own name, an import
+    /// (the factory from a package, or what the app's module exports under
+    /// the imported name), or a variable's initializer. Resolved once.
+    fn kind_of_name(&self, resolver: &Resolver, name: &str) -> Kind {
+        if name == FACTORY {
             return Kind::Factory;
         }
+        if let Some(kind) = self.kinds.borrow().get(name) {
+            return *kind;
+        }
+        self.kinds.borrow_mut().insert(name.to_string(), Kind::None);
+        let kind = if let Some((source, imported)) = self.imports.get(name) {
+            if source.starts_with('.') {
+                resolver.exported_kind(&self.path, source, imported)
+            } else if imported == FACTORY {
+                Kind::Factory
+            } else {
+                Kind::None
+            }
+        } else if let Some(init) = self.variables.get(name) {
+            self.kind_of_shape(resolver, init)
+        } else {
+            Kind::None
+        };
+        self.kinds.borrow_mut().insert(name.to_string(), kind);
+        kind
+    }
+
+    /// What a variable's initializer makes it: the factory under another
+    /// name, a builder, or neither.
+    fn kind_of_shape(&self, resolver: &Resolver, init: &Shape) -> Kind {
         match init {
-            Expression::Identifier(id) => self.kind_of_name(id.name.as_str()),
-            Expression::CallExpression(call) => {
-                if self.is_factory(&call.callee)
-                    || matches!(self.chain(call), Some((link, _, _)) if link != "handler")
-                {
-                    Kind::Builder
+            Shape::Name(name) => self.kind_of_name(resolver, name),
+            Shape::Member(..) => {
+                if self.is_factory(resolver, init) {
+                    Kind::Factory
                 } else {
                     Kind::None
                 }
             }
-            _ => Kind::None,
+            Shape::Chain {
+                root,
+                called,
+                links,
+            } => {
+                let names: Vec<&str> = links.iter().map(String::as_str).collect();
+                match self.rooted(resolver, root, *called, &names) {
+                    Some(skip) if names[skip..].last() != Some(&"handler") => Kind::Builder,
+                    _ => Kind::None,
+                }
+            }
+            Shape::Other => Kind::None,
         }
     }
 
-    /// What a local name stands for.
-    fn kind_of_name(&self, name: &str) -> Kind {
-        if self.factories.iter().any(|f| f == name) {
-            Kind::Factory
-        } else if self.builders.iter().any(|b| b == name) {
-            Kind::Builder
-        } else {
-            Kind::None
+    /// Whether `shape` is the factory: a name bound to it, or a package
+    /// namespace import's `createServerFn`.
+    fn is_factory(&self, resolver: &Resolver, shape: &Shape) -> bool {
+        match shape {
+            Shape::Name(name) => self.kind_of_name(resolver, name) == Kind::Factory,
+            Shape::Member(object, property) => {
+                property == FACTORY && self.namespaces.iter().any(|n| n == object)
+            }
+            _ => false,
         }
     }
 
-    /// What the module `specifier` names from this one exports as `name`,
-    /// through `export const`, `export { local as name }`, `export { .. }
-    /// from` and `export * from`, as the compiler's `findExportInModule`
-    /// follows them. None for a module that is not the app's, that the parser
-    /// cannot read, that exports no such name, or that is already being
-    /// resolved above this one.
-    fn exported_kind(&self, specifier: &str, name: &str) -> Kind {
-        let key = (specifier.to_string(), name.to_string());
-        if let Some(kind) = self.exported.borrow().get(&key) {
-            return *kind;
+    /// Whether `shape` names a builder: a local bound to one, or a member of
+    /// a namespace import of the app's module that exports one.
+    fn is_builder(&self, resolver: &Resolver, shape: &Shape) -> bool {
+        match shape {
+            Shape::Name(name) => self.kind_of_name(resolver, name) == Kind::Builder,
+            Shape::Member(object, property) => self
+                .module_namespaces
+                .iter()
+                .find(|(local, _)| local == object)
+                .is_some_and(|(_, specifier)| {
+                    resolver.exported_kind(&self.path, specifier, property) == Kind::Builder
+                }),
+            _ => false,
         }
-        let kind = self.resolve_exported(specifier, name);
-        self.exported.borrow_mut().insert(key, kind);
-        kind
     }
 
-    fn resolve_exported(&self, specifier: &str, name: &str) -> Kind {
-        let Some((path, code)) = self.modules.read(&self.path, specifier) else {
-            // A package's `createServerFn`, re-exported by the app's module,
-            // is the factory, as a direct import of it is.
+    /// Whether a chain of `links` on `root` (called itself when `called`)
+    /// is rooted at the factory or at a builder: how many of the links
+    /// belong to the root (`start.createServerFn()` reads as the name
+    /// `start` with a first link `createServerFn`, which is the factory's
+    /// call, not a link of the chain), or None when it is not rooted.
+    fn rooted(
+        &self,
+        resolver: &Resolver,
+        root: &Shape,
+        called: bool,
+        links: &[&str],
+    ) -> Option<usize> {
+        if called {
+            return self.is_factory(resolver, root).then_some(0);
+        }
+        if self.is_builder(resolver, root) {
+            return Some(0);
+        }
+        match (root, links.first()) {
+            (Shape::Name(object), Some(&FACTORY))
+                if self.namespaces.iter().any(|n| n == object) =>
+            {
+                Some(1)
+            }
+            _ => None,
+        }
+    }
+
+    /// What the module exports as `name`, through `export const`, `export {
+    /// local as name }`, `export { .. } from` and `export * from`, as the
+    /// compiler's `findExportInModule` follows them: a local binding first,
+    /// then the re-exports.
+    fn export_kind(&self, resolver: &Resolver, name: &str) -> Kind {
+        if let Some(local) = self.exports.get(name) {
+            return self.kind_of_name(resolver, local);
+        }
+        if let Some((specifier, local)) = self.re_exports.get(name) {
+            return resolver.exported_kind(&self.path, specifier, local);
+        }
+        for specifier in &self.export_all {
+            let kind = resolver.exported_kind(&self.path, specifier, name);
+            if kind != Kind::None {
+                return kind;
+            }
+        }
+        Kind::None
+    }
+}
+
+/// A specifier as a module names it: the module's path and the specifier.
+type ImportKey = (String, String);
+
+/// The modules one resolution has read, shared by every module it reaches,
+/// as the compiler's `moduleCache` is shared by a compile: each module is
+/// parsed once, and what it exports under a name is resolved once. Without
+/// this, following an import meant parsing the module it names and, from
+/// there, every module that one imports, over again for each name asked
+/// and each path the imports reached it by: the modules of a `lib/`
+/// directory that use one another, or a chain of modules each binding two
+/// names to the next's, took a time exponential in their number, and the
+/// scan for the server-function resolver at startup never ended.
+struct Resolver<'m> {
+    modules: &'m dyn Modules,
+    /// The modules read, by app-relative path.
+    loaded: RefCell<HashMap<String, Rc<Module>>>,
+    /// What a specifier named from a module: None for one that is not the
+    /// app's (a package, a missing file) or that the parser cannot read.
+    resolved: RefCell<HashMap<ImportKey, Option<Rc<Module>>>>,
+    /// What a module exports under a name, by path and name; `None` while it
+    /// is being resolved, so a cycle of re-exports ends.
+    exported: RefCell<HashMap<(String, String), Kind>>,
+}
+
+impl<'m> Resolver<'m> {
+    fn new(modules: &'m dyn Modules) -> Self {
+        Resolver {
+            modules,
+            loaded: RefCell::new(HashMap::new()),
+            resolved: RefCell::new(HashMap::new()),
+            exported: RefCell::new(HashMap::new()),
+        }
+    }
+
+    /// `program`, the module at `path`, read and kept.
+    fn load(&self, path: &str, program: &Program) -> Rc<Module> {
+        let module = Rc::new(Module::of(program, path));
+        self.loaded
+            .borrow_mut()
+            .insert(path.to_string(), module.clone());
+        module
+    }
+
+    /// The module `specifier` names from the module at `from`.
+    fn resolve(&self, from: &str, specifier: &str) -> Option<Rc<Module>> {
+        let key = (from.to_string(), specifier.to_string());
+        if let Some(found) = self.resolved.borrow().get(&key) {
+            return found.clone();
+        }
+        let module = self.modules.read(from, specifier).and_then(|(path, code)| {
+            let loaded = self.loaded.borrow().get(&path).cloned();
+            if let Some(module) = loaded {
+                return Some(module);
+            }
+            let allocator = Allocator::default();
+            let parsed = Parser::new(&allocator, &code, source_type(&path)).parse();
+            (!parsed.fatal_error).then(|| self.load(&path, &parsed.program))
+        });
+        self.resolved.borrow_mut().insert(key, module.clone());
+        module
+    }
+
+    /// What the module `specifier` names from the module at `from` exports
+    /// as `name`. None for a module that is not the app's, that the parser
+    /// cannot read, or that exports no such name; but a package's
+    /// `createServerFn`, re-exported by the app's module, is the factory, as
+    /// a direct import of it is.
+    fn exported_kind(&self, from: &str, specifier: &str, name: &str) -> Kind {
+        let Some(module) = self.resolve(from, specifier) else {
             return if !specifier.starts_with('.') && name == FACTORY {
                 Kind::Factory
             } else {
                 Kind::None
             };
         };
-        if self.visiting.contains(&path) {
-            return Kind::None;
+        let key = (module.path.clone(), name.to_string());
+        if let Some(kind) = self.exported.borrow().get(&key) {
+            return *kind;
         }
-        let allocator = Allocator::default();
-        let parsed = Parser::new(&allocator, &code, source_type(&path)).parse();
-        if parsed.fatal_error {
-            return Kind::None;
-        }
-        let bindings = Bindings::of(&parsed.program, &path, self.modules, &self.visiting);
-        for statement in &parsed.program.body {
-            match statement {
-                Statement::ExportDeclaration(export) => {
-                    if let Declaration::VariableDeclaration(var) = &export.declaration {
-                        for d in &var.declarations {
-                            if let (BindingPattern::BindingIdentifier(id), Some(init)) =
-                                (&d.id, &d.init)
-                            {
-                                if id.name == name {
-                                    return bindings.kind_of_init(init);
-                                }
-                            }
-                        }
-                    }
-                }
-                Statement::ExportNamedDeclaration(export) => {
-                    if let Some(s) = export
-                        .specifiers
-                        .iter()
-                        .find(|s| export_name(&s.exported) == name)
-                    {
-                        return bindings.kind_of_name(export_name(&s.local));
-                    }
-                }
-                Statement::ExportFromDeclaration(export) => {
-                    if let Some(s) = export
-                        .specifiers
-                        .iter()
-                        .find(|s| export_name(&s.exported) == name)
-                    {
-                        return bindings.exported_kind(
-                            crate::lit_str(export.source.value),
-                            export_name(&s.local),
-                        );
-                    }
-                }
-                Statement::ExportAllDeclaration(export) if export.exported.is_none() => {
-                    let kind = bindings.exported_kind(crate::lit_str(export.source.value), name);
-                    if kind != Kind::None {
-                        return kind;
-                    }
-                }
-                _ => {}
-            }
-        }
-        Kind::None
-    }
-
-    /// Whether `callee` is the factory: a name bound to it, or a namespace
-    /// import's `createServerFn`.
-    fn is_factory(&self, callee: &Expression) -> bool {
-        match callee.without_parentheses() {
-            Expression::Identifier(id) => self.factories.iter().any(|f| f == id.name.as_str()),
-            Expression::StaticMemberExpression(m) => {
-                m.property.name == FACTORY
-                    && matches!(m.object.without_parentheses(), Expression::Identifier(object)
-                        if self.namespaces.iter().any(|n| n == object.name.as_str()))
-            }
-            _ => false,
-        }
-    }
-
-    /// Whether `node` names a builder: a local bound to one, or a member of
-    /// a namespace import of the app's module that exports one.
-    fn is_builder(&self, node: &Expression) -> bool {
-        match node {
-            Expression::Identifier(id) => self.builders.iter().any(|b| b == id.name.as_str()),
-            Expression::StaticMemberExpression(m) => {
-                let Expression::Identifier(object) = m.object.without_parentheses() else {
-                    return false;
-                };
-                self.module_namespaces
-                    .iter()
-                    .find(|(local, _)| local == object.name.as_str())
-                    .is_some_and(|(_, specifier)| {
-                        self.exported_kind(specifier, m.property.name.as_str()) == Kind::Builder
-                    })
-            }
-            _ => false,
-        }
-    }
-
-    /// `call` as the last link of a chain rooted at the factory, or at a
-    /// name holding a chain on it. None for a call that is the factory's
-    /// own, or no chain on it.
-    fn chain<'b>(&self, call: &'b CallExpression) -> Option<LastLink<'b>> {
-        let Expression::StaticMemberExpression(m) = call.callee.without_parentheses() else {
-            return None;
-        };
-        let name = m.property.name.as_str();
-        let property_end = m.property.span.end as usize;
-        let mut stripped = Vec::new();
-        let mut node = m.object.without_parentheses();
-        loop {
-            match node {
-                Expression::CallExpression(link) => {
-                    if self.is_factory(&link.callee) {
-                        break;
-                    }
-                    let Expression::StaticMemberExpression(inner) =
-                        link.callee.without_parentheses()
-                    else {
-                        return None;
-                    };
-                    if STRIPPED_LINKS.contains(&inner.property.name.as_str()) {
-                        stripped.push((inner.object.span().end as usize, link.span.end as usize));
-                    }
-                    node = inner.object.without_parentheses();
-                }
-                _ if self.is_builder(node) => break,
-                _ => return None,
-            }
-        }
-        stripped.reverse();
-        Some((name, property_end, stripped))
+        self.exported.borrow_mut().insert(key.clone(), Kind::None);
+        let kind = module.export_kind(self, name);
+        self.exported.borrow_mut().insert(key, kind);
+        kind
     }
 }
 
@@ -1451,7 +1604,16 @@ mod tests {
 
     /// The app's modules by path, a relative specifier resolved as a `.ts`
     /// file next to the importer.
-    struct MapModules(Vec<(&'static str, &'static str)>);
+    struct MapModules(Vec<(String, String)>);
+
+    fn map_modules(modules: &[(&str, &str)]) -> MapModules {
+        MapModules(
+            modules
+                .iter()
+                .map(|(path, code)| (path.to_string(), code.to_string()))
+                .collect(),
+        )
+    }
 
     impl Modules for MapModules {
         fn read(&self, from: &str, specifier: &str) -> Option<(String, String)> {
@@ -1467,6 +1629,21 @@ mod tests {
         }
     }
 
+    /// `f`'s result, or a failure when it has not returned after `limit`: a
+    /// resolution that never ends would otherwise hang the test run as it
+    /// hangs a dev server's startup.
+    fn returns_within<T: Send + 'static>(
+        limit: std::time::Duration,
+        f: impl FnOnce() -> T + Send + 'static,
+    ) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(limit)
+            .unwrap_or_else(|_| panic!("find_server_fns did not return within {limit:?}"))
+    }
+
     // Start's compiler follows an import to the binding that made it a
     // Builder (`resolveImportKind`, `findExportInModule` through `export {}`
     // and `export * from`), and reads a module for `.handler(` alone
@@ -1475,7 +1652,7 @@ mod tests {
     // sides. The builder's module declares none.
     #[test]
     fn a_builder_another_module_exports_is_resolved_on_both_sides() {
-        let modules = MapModules(vec![
+        let modules = map_modules(&[
             (
                 "src/lib/base.ts",
                 "import { createServerFn } from \"@tanstack/react-start\";\nexport const base = createServerFn({ method: \"POST\" }).middleware([]);\nconst guarded = base.validator((d: unknown) => d);\nexport { guarded as checked };\nexport const done = base.handler(async () => 1);\n",
@@ -1568,7 +1745,7 @@ mod tests {
     // cycle of re-exports: none is a server function, and the walk ends.
     #[test]
     fn an_import_that_is_no_builder_is_not_a_server_fn() {
-        let modules = MapModules(vec![
+        let modules = map_modules(&[
             (
                 "src/other.ts",
                 "export const other = { handler: (f: () => unknown) => f };\nexport const fromPkg = somePackageThing();\n",
@@ -1595,6 +1772,130 @@ mod tests {
             Ok(None)
         );
         assert_eq!(super::rewrite_server(&code, "src/fns.ts", &modules), None);
+    }
+
+    // Start's compiler reads each of the app's modules once (`moduleCache`,
+    // `getModuleInfo`) and resolves a binding when a chain asks for it, its
+    // kind memoized on the binding (`resolveIdentifierKind`), so following an
+    // import costs it one parse per module. A chain of modules, each binding
+    // two names to the next module's, must resolve in a time bounded the
+    // same way: a resolution that re-reads the next module once per name
+    // doubles its work at every link, and a chain this deep never ends.
+    #[test]
+    fn a_deep_chain_of_imported_bindings_resolves_in_bounded_time() {
+        const DEPTH: usize = 28;
+        let mut modules = Vec::new();
+        for i in 0..DEPTH {
+            let next = i + 1;
+            modules.push((
+                format!("src/lib/m{i}.ts"),
+                format!(
+                    "import {{ a as nextA, b as nextB }} from \"./m{next}\";\nexport const a = nextA;\nexport const b = nextB;\n"
+                ),
+            ));
+        }
+        modules.push((
+            format!("src/lib/m{DEPTH}.ts"),
+            "import { createServerFn } from \"@tanstack/react-start\";\nexport const a = createServerFn();\nexport const b = createServerFn({ method: \"GET\" });\n".to_string(),
+        ));
+        let code = [
+            "import { a, b } from \"../lib/m0\";",
+            "export const x = a.handler(async () => \"x-secret\");",
+            "export const y = b.handler(async () => \"y-secret\");",
+            "",
+        ]
+        .join("\n");
+        let names: Vec<_> = returns_within(std::time::Duration::from_secs(10), move || {
+            super::find_server_fns(&code, "src/routes/fns.ts", &MapModules(modules))
+        })
+        .into_iter()
+        .map(|f| f.name)
+        .collect();
+        assert_eq!(names, ["x", "y"]);
+    }
+
+    // A set of modules importing from one another (a `lib/` directory whose
+    // helpers use each other) is the shape an app reaches on its own. None
+    // of the imports is a chain's root, so Start's compiler never resolves
+    // them (`resolveImportKind` runs for a binding a chain names); a
+    // resolution that follows every import at the module's load walks every
+    // simple path through the set, factorially many, before it answers.
+    #[test]
+    fn a_set_of_mutually_importing_modules_resolves_in_bounded_time() {
+        const COUNT: usize = 14;
+        let mut modules = Vec::new();
+        for i in 0..COUNT {
+            let mut code = String::new();
+            for j in (0..COUNT).filter(|j| *j != i) {
+                code.push_str(&format!("import {{ h{j} }} from \"./m{j}\";\n"));
+            }
+            code.push_str(&format!(
+                "export const h{i} = {{ handler: (f: () => unknown) => f }};\n"
+            ));
+            code.push_str(&format!("export const run{i} = h{i}.handler(() => 1);\n"));
+            modules.push((format!("src/lib/m{i}.ts"), code));
+        }
+        let code = [
+            "import { h0 } from \"../lib/m0\";",
+            "import { createServerFn } from \"@tanstack/react-start\";",
+            "export const p = h0.handler(async () => 1);",
+            "export const x = createServerFn().handler(async () => \"x-secret\");",
+            "",
+        ]
+        .join("\n");
+        let names: Vec<_> = returns_within(std::time::Duration::from_secs(10), move || {
+            super::find_server_fns(&code, "src/routes/fns.ts", &MapModules(modules))
+        })
+        .into_iter()
+        .map(|f| f.name)
+        .collect();
+        assert_eq!(names, ["x"]);
+    }
+
+    // Whatever an app's file holds, the finder answers: the fixture app's
+    // sources cut at every 32nd byte, with their imports resolving against
+    // the app, are found or found to declare nothing, in bounded time.
+    #[test]
+    fn truncated_sources_of_the_fixture_app_are_scanned_in_bounded_time() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../e2e/fixtures/start-app");
+        let mut files = Vec::new();
+        let mut stack = vec![root.join("src")];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if matches!(
+                    path.extension().and_then(|e| e.to_str()),
+                    Some("ts" | "tsx")
+                ) {
+                    if let Ok(code) = std::fs::read_to_string(&path) {
+                        let rel = slash(path.strip_prefix(&root).unwrap());
+                        files.push((rel, code));
+                    }
+                }
+            }
+        }
+        assert!(!files.is_empty(), "fixture sources at {}", root.display());
+        let scanned = returns_within(std::time::Duration::from_secs(60), move || {
+            let modules = FsModules { root: &root };
+            let mut scanned = 0;
+            for (rel, code) in &files {
+                for end in (0..=code.len())
+                    .step_by(32)
+                    .filter(|i| code.is_char_boundary(*i))
+                {
+                    super::find_server_fns(&code[..end], rel, &modules);
+                    scanned += 1;
+                }
+                super::find_server_fns(code, rel, &modules);
+            }
+            scanned
+        });
+        assert!(scanned > 0);
     }
 
     // `FsModules` resolves a relative specifier as Vite's `tryCleanFsResolve`

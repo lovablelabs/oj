@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- TanStack Start dev: `oj dev` on an app whose modules import one another (a `lib/` directory of helpers that use each other, a chain of modules each re-exporting the next's bindings) starts, where it printed `server-fn resolver cache miss` and then sat at a full core for minutes without binding its port, and `oj build` scanned the same tree the same way. The server-function finder follows an import to the module that exports the binding, as Start's compiler does (`resolveImportKind`), but it read that module anew for every name imported from it and for every path the imports reached it by, each read resolving the module's own imports the same way: the walk visited every simple path through the import graph, exponentially many, before it answered for the first file. The finder now reads each module once per resolution and resolves a binding when a chain names it, memoizing the result, as the compiler's `moduleCache` and `resolvedKind` do, so the time a scan takes grows with the modules reached. With a binding resolved where it is named, a variable holding the factory (`const make = createServerFn; export const x = make().handler(..)`) is the factory in its own module too, as it already was through an import, as the compiler's `resolveIdentifierKind` reads it.
+
 ## [0.4.13] - 2026-11-11
 
 ### Changed
