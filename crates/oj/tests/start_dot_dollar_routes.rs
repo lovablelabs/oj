@@ -19,6 +19,19 @@
 //! plugin's own "[import-protection] Import denied" report naming the file
 //! and the pattern. Renaming the segment, or the folder form
 //! (`coach/client/$id.tsx`), is the fix under either server.
+//!
+//! A splat route under a dynamic segment (`$lang.$.tsx` for `/$lang/$`) has
+//! a `$` right before its extension. The router plugin's code splitter
+//! compiles its component out of the same file under
+//! `$lang.$.tsx?tsr-split=component` (`compileCodeSplitVirtualRoute`), where
+//! an inline component becomes `const SplitComponent = ...` exported as
+//! `component`, and the reference route imports it lazily. The split module
+//! takes Start's compiler first (oj's, in place of
+//! `tanstack-start-core::server-fn:client`), so a server function in the
+//! route exercises the dead-binding pass on the split module's code too.
+//! The dev server renders the route, the client bundle holds the split
+//! module with its export, the page hydrates on a hard visit and reaches
+//! the route from another, and the component's state works in both.
 
 #[path = "../../oj_server/tests/dev/browser.rs"]
 #[allow(dead_code)]
@@ -251,4 +264,175 @@ fn a_client_segment_in_a_dot_form_route_name_is_denied_by_start_as_under_vite() 
             dev.output()
         );
     }
+}
+
+/// The home page of the splat app, linking to the splat route.
+const SPLAT_INDEX: &str = r#"import { createFileRoute, Link } from "@tanstack/react-router";
+
+export const Route = createFileRoute("/")({
+  component: () => (
+    <main>
+      <p id="home">home page</p>
+      <Link id="to-splat" to="/$lang/$" params={{ lang: "en", _splat: "docs/intro" }}>splat</Link>
+    </main>
+  ),
+});
+"#;
+
+/// `src/routes/$lang.$.tsx`: a splat under a dynamic segment, its component
+/// written inline (the splitter names it `SplitComponent`), its loader a
+/// server function (Start's compiler runs on the split module too).
+const LANG_SPLAT: &str = r#"import { createFileRoute } from "@tanstack/react-router";
+import { createServerFn } from "@tanstack/react-start";
+import { useState } from "react";
+
+const getGreeting = createServerFn({ method: "GET" }).handler(async () => "server-greeting");
+
+export const Route = createFileRoute("/$lang/$")({
+  loader: () => getGreeting(),
+  component: () => {
+    const { lang, _splat } = Route.useParams();
+    const greeting = Route.useLoaderData();
+    const [count, setCount] = useState(0);
+    return (
+      <main>
+        <p id="splat">{`splat-${lang}-${_splat}-${greeting}`}</p>
+        <button id="count" type="button" onClick={() => setCount((c) => c + 1)}>{`count-${count}`}</button>
+      </main>
+    );
+  },
+});
+"#;
+
+/// Clicks the splat route's button and reports whether its state moved: a
+/// click before hydration is lost, so the caller polls this.
+const COUNTED: &str = r#"(() => {
+  const button = document.getElementById("count");
+  if (!button) return false;
+  button.click();
+  return button.textContent !== "count-0";
+})()"#;
+
+/// The client bundle's chunks (dev serves them from the cache dir) whose
+/// text holds `needle`.
+fn client_chunks_holding(root: &std::path::Path, needle: &str) -> Vec<(String, String)> {
+    let dir = root.join(".oj-cache/v1/start/client-chunks");
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+        if let Ok(text) = std::fs::read_to_string(entry.path()) {
+            if text.contains(needle) {
+                found.push((entry.file_name().to_string_lossy().into_owned(), text));
+            }
+        }
+    }
+    found
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_splat_route_under_a_dynamic_segment_splits_its_component_and_hydrates() {
+    let Some(app) = file_routed_app(
+        "dollar-splat-route",
+        &[
+            ("__root.tsx", ROOT),
+            ("index.tsx", SPLAT_INDEX),
+            ("$lang.$.tsx", LANG_SPLAT),
+        ],
+    ) else {
+        return;
+    };
+    let dev = Server::oj_dev(&app.0);
+
+    let (status, html) = dev.request("GET", "/en/docs/intro", &[]);
+    assert!(
+        status == 200 && html.contains("splat-en-docs/intro-server-greeting"),
+        "GET /en/docs/intro: {status}, no render of the splat route with its loader data\n{html}\n{}",
+        dev.output()
+    );
+    let (status, _) = dev.request("GET", "/@oj-start/client-entry.js", &[]);
+    assert_eq!(status, 200, "the client entry\n{}", dev.output());
+    // The split module is in the bundle, in the chunk that registers it with
+    // the dev runtime (the entry only names it, as the import the route
+    // loads lazily), with the component the splitter moved into it.
+    let split = client_chunks_holding(
+        &app.0,
+        "registerModule(\"src/routes/$lang.$.tsx?tsr-split=component\"",
+    );
+    assert_eq!(
+        split.len(),
+        1,
+        "the split component's chunk: {:?}\n{}",
+        split.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+        dev.output()
+    );
+    assert!(
+        split[0].1.contains("SplitComponent"),
+        "{} holds no SplitComponent:\n{}",
+        split[0].0,
+        split[0].1
+    );
+    let output = dev.output();
+    assert!(
+        !output.contains("is not defined") && !output.contains("[import-protection]"),
+        "{output}"
+    );
+
+    if browser::skip() {
+        return;
+    }
+    // A hard visit hydrates on the split component: its button counts.
+    let page = Page::open(&dev.url("/en/docs/intro")).await;
+    let counted = page.poll(COUNTED, Duration::from_secs(60)).await;
+    let errors = page.errors();
+    page.close().await;
+    assert!(
+        counted,
+        "/en/docs/intro never hydrated: {errors:?}\n{}",
+        start_lines(&dev)
+    );
+    assert_eq!(
+        errors,
+        Vec::<String>::new(),
+        "page errors on the hard visit"
+    );
+
+    // From the home page, the router loads the split chunk for the route.
+    let page = Page::open(&dev.url("/")).await;
+    let hydrated = page
+        .poll(
+            r#"document.getElementById("home") && !!self.__TSR_ROUTER__"#,
+            Duration::from_secs(60),
+        )
+        .await;
+    assert!(
+        hydrated,
+        "/ never hydrated: {:?}\n{}",
+        page.errors(),
+        start_lines(&dev)
+    );
+    page.eval::<bool>(r##"(document.querySelector("#to-splat").click(), true)"##)
+        .await;
+    let navigated = page
+        .poll(
+            r#"document.getElementById("splat")?.textContent === "splat-en-docs/intro-server-greeting" && location.pathname === "/en/docs/intro""#,
+            Duration::from_secs(30),
+        )
+        .await;
+    let counted = navigated && page.poll(COUNTED, Duration::from_secs(30)).await;
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    let errors = page.errors();
+    page.close().await;
+    assert!(
+        navigated,
+        "the router never reached /en/docs/intro: {errors:?}\n{}",
+        start_lines(&dev)
+    );
+    assert!(
+        counted,
+        "the split component's button did not count after the navigation: {errors:?}"
+    );
+    assert_eq!(
+        errors,
+        Vec::<String>::new(),
+        "page errors after the navigation"
+    );
 }
