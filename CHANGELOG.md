@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- TanStack Start dev: a page open across many rebundles keeps loading its chunks. A rebundle renames every chunk whose content changed, and a document served before it imports a route's chunk lazily by the old name when the user first navigates there; the dev server kept the chunks of the last seven bundles behind the current one (the bundle store's window on disk), so a page behind by more, its reload held for the editor's flush while the edits kept coming, or on a hot session, where the pages never reload and every pause in typing rebundles, got a 404 and went blank ("Importing a module script failed" in Safari, "Failed to fetch dynamically imported module" in Chrome) until a hard reload; and a bundle the store could not cache lost its chunk files to the next rebundle at once, since the bundler emptied the chunks directory before writing. The chunks directory is the dev server's now: every bundle's chunk files stay in it for as long as the server retains that bundle, a window that is a budget on disk (256 MiB of chunks beyond the current bundle's, at most 64 bundles) rather than a count the store sets, and a bundle's files leave when it falls out of the window and no served bundle names them. A bundle restored from the store at boot has its chunks linked in; what an earlier run left is removed. Vite's bundled dev keeps every output of the session in memory for the same reason (server/bundledDev.ts `storeOutputFiles` never clears `memoryFiles`).
+
 ## [0.4.13] - 2026-11-11
 
 ### Changed

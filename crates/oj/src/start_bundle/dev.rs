@@ -801,12 +801,17 @@ pub(crate) fn write_outputs<'a>(
 ) -> std::io::Result<()> {
     use rolldown_common::Output;
     let cache = &start.cache;
+    // The chunk files of the bundles before this one stay: a page open on an
+    // older entry imports its chunks lazily by their old names, and the dev
+    // server serves them from here for as long as it retains that bundle
+    // (`start_chunks::ServedBundles`), as Vite's bundled dev keeps every
+    // output of the session (server/bundledDev.ts `storeOutputFiles`: "don't
+    // clear memoryFiles here"). Chunk names are content-hashed, so a name
+    // this bundle shares with an earlier one is the same bytes; the entry's
+    // fixed name is only ever served from the current bundle. The dev server
+    // removes a bundle's files when it forgets the bundle, and what an
+    // earlier run left when it boots.
     let chunks_dir = cache.join("client-chunks");
-    match std::fs::remove_dir_all(&chunks_dir) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e),
-    }
     std::fs::create_dir_all(&chunks_dir)?;
     let mut files = Vec::with_capacity(outputs.len());
     let mut modules = 0usize;

@@ -425,6 +425,11 @@ pub async fn start_dev(
             None => return Err(e),
         },
     };
+    // The chunks dir holds the boot bundle's files and nothing older: a
+    // restored bundle's chunks are linked in from the store, and an earlier
+    // run's leftovers go (see `start_chunks::keep_chunk_files`).
+    let chunks_dir = cache.join("client-chunks");
+    crate::start_chunks::keep_chunk_files(&pinned, &chunks_dir);
     let (built, watch_rx) = built_res??;
     // The gate's hold decides when a change reaches the pages.
     let reloads = Arc::new(crate::start_reloads::Epochs::new(
@@ -616,7 +621,7 @@ pub async fn start_dev(
         plugin_serve: Arc::clone(&built.plugin_serve),
         engine,
         loopback_port,
-        bundle: std::sync::RwLock::new(ServedBundles::new(pinned)),
+        bundle: std::sync::RwLock::new(ServedBundles::new(pinned, chunks_dir)),
         gzip: Default::default(),
         live_reload: cache.join("live-reload.js"),
         hmr_overlay,
@@ -2074,18 +2079,22 @@ fn save_stylex_rules(bundler: &ClientBundler, cache: &Path, key: &str) {
     }
 }
 
-/// Serve a fresh client output, with the inputs it was built from.
+/// Serve a fresh client output, with the inputs it was built from. The
+/// bundle it replaces stays served for the pages open on it; the oldest
+/// retained bundles past the window are forgotten, and their chunk files
+/// that no served bundle names any more leave the chunks dir.
 fn install_bundle(state: &StartState, cache: &Path, pinned: oj_cache::start_bundle::PinnedBundle) {
-    let current = {
+    let (current, forgotten) = {
         let mut served = state
             .bundle
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        served.install(pinned);
-        served.current()
+        let forgotten = served.install(pinned);
+        (served.current(), forgotten)
     };
     // With the bundles unlocked: chunk requests are not held up by it.
     state.gzip.retain_hashes_of(&current);
+    crate::start_chunks::remove_chunk_files(&cache.join("client-chunks"), &forgotten);
     load_inputs(state, cache);
 }
 
