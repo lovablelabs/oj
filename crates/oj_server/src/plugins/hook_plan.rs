@@ -192,6 +192,24 @@ fn normalized_id(id: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
+impl HookFilterPlan {
+    /// Whether an id filter of a present, filtered hook matches `id` (see
+    /// [`BuildHookPlan::names_module`]); a code-only filter names no id.
+    pub fn names(&self, id: &str) -> bool {
+        if !self.present || self.unfiltered {
+            return false;
+        }
+        let id = if id.contains('\\') {
+            std::borrow::Cow::Owned(id.replace('\\', "/"))
+        } else {
+            std::borrow::Cow::Borrowed(id)
+        };
+        self.plugins
+            .iter()
+            .any(|p| !p.id.is_empty() && p.id.iter().any(|f| f.is_match(&id)))
+    }
+}
+
 /// `--debug hook-gate`: gates log/count skipped RPCs so a test can assert a
 /// skip happened (output alone cannot, the host's filters produce identical bytes).
 pub fn hook_gate_debug() -> bool {
@@ -205,6 +223,28 @@ impl BuildHookPlan {
             load: HookFilterPlan::fail_open(),
             resolve_id: HookFilterPlan::fail_open(),
         }
+    }
+
+    /// Whether a plugin's `load` or `transform` filter names the module `id`
+    /// outright: an id filter matches it (a function-form hook, which
+    /// [`HookFilterPlan::wants`] offers every module, names none). What a
+    /// plain asset import consults: Vite asks every `load` for it, and oj
+    /// keeps its url module without a round trip unless a filter names the
+    /// file, so a plugin that takes `.png` by filter is honoured and one that
+    /// takes everything by shape costs no RPC per image.
+    pub fn names_module(&self, id: &str) -> bool {
+        self.load.names(id) || self.transform.names(id)
+    }
+
+    /// Whether a plugin's `load` or `transform` could claim the module `id`
+    /// (a file path with the request's query, as the hooks see it) before
+    /// its source is known: what decides that a request for a file of an
+    /// extension oj does not compile, or an asset under a query oj does not
+    /// know, goes through the plugin pipeline rather than being served as
+    /// the file. Over-approximates like [`HookFilterPlan::wants`]: a code
+    /// filter passes, since the code is what the pipeline would produce.
+    pub fn claims_module(&self, id: &str) -> bool {
+        self.load.wants(id, None) || self.transform.wants(id, None)
     }
 }
 

@@ -53,7 +53,13 @@ pub(crate) async fn ensure_module_as(
         && state.svg_may_be_componentized(file)
         && query_asset_kind(url.split_once('?').map(|(_, q)| q)).is_none();
 
-    if !react_svg && !svgr_candidate && is_asset_path(&state.root, file) {
+    // An asset import is its url module, unless a plugin's `load` claims the
+    // id (an image under a `?w=` query for an image plugin): Vite's plugin
+    // container asks every `load` before vite:asset's answers with the url,
+    // so the plugin's module wins when it returns one. The read below is
+    // the plugin's alone: an asset's bytes are no source.
+    let asset = !react_svg && !svgr_candidate && is_asset_path(&state.root, file);
+    if asset && !plugin_claims_asset(state, file, url) {
         return Ok(register_uncached(
             state,
             url,
@@ -79,6 +85,16 @@ pub(crate) async fn ensure_module_as(
     let is_dep = is_dep_module(url, file);
     let (source, from_disk) = match preloaded {
         Some(source) => (source, false),
+        None if asset => match plugin_load(state, file, url, is_dep).await? {
+            Some(source) => (source, false),
+            None => {
+                return Ok(register_uncached(
+                    state,
+                    url,
+                    url_asset_module(state, file, url)?,
+                ))
+            }
+        },
         None => load_source(state, file, url, is_dep).await?,
     };
     // The svg's own bytes, for the URL module a declined candidate falls
@@ -251,14 +267,18 @@ pub(crate) async fn ensure_module_as(
         file.with_extension("svg.tsx")
     } else if is_svelte {
         file.with_extension("svelte.js")
+    } else if matches!(kind_of_ext(ext), CompileKind::Script)
+        && oxc_span::SourceType::from_path(file).is_err()
+    {
+        // A plugin made a script of a file whose extension names no
+        // language (`.mdx`, `.jpg?w=72`): compiled as the JavaScript Vite's
+        // chain would hand on (vite:esbuild transforms `[jt]sx?` alone), by
+        // a path that keeps the real name for messages and source maps.
+        PathBuf::from(format!("{}.js", file.display()))
     } else {
         file.to_path_buf()
     };
-    let kind = match ext {
-        Some("json") => CompileKind::Json,
-        Some(e) if is_style_ext(e) => CompileKind::Css,
-        _ => CompileKind::Script,
-    };
+    let kind = kind_of_ext(ext);
     let (dep_map, pre_resolved, unresolved_bare) = match kind {
         CompileKind::Script => {
             let dep_map = state.optimized.ready().await;
@@ -339,6 +359,41 @@ pub(crate) async fn ensure_module_as(
         .unwrap()
         .remove(url.split('?').next().unwrap_or(url));
     Ok((key, module))
+}
+
+/// How a file's extension compiles: JSON and stylesheets as themselves,
+/// anything else as a script (what a plugin's output for any other
+/// extension is).
+fn kind_of_ext(ext: Option<&str>) -> CompileKind {
+    match ext {
+        Some("json") => CompileKind::Json,
+        Some(e) if is_style_ext(e) => CompileKind::Css,
+        _ => CompileKind::Script,
+    }
+}
+
+/// Whether a plugin's `load` claims an asset import (see [`plugin_claims`]):
+/// one under a query oj does not know (`?w=72&format=webp`), which only a
+/// plugin can answer, when a `load` could take it; or a plain one whose id a
+/// `load` filter names outright. A plain asset import no filter names stays
+/// oj's url module without a round trip to the host, where Vite offers it
+/// to every `load`: a function-form `load` that answers `null` for every
+/// image would otherwise cost an RPC per image on every page load, since a
+/// url module is not cached.
+fn plugin_claims_asset(state: &ServerState, file: &Path, url: &str) -> bool {
+    if !state.plugins_have_load {
+        return false;
+    }
+    let Some(host) = state.plugins.as_ref() else {
+        return false;
+    };
+    let id = hook_id(file, url);
+    let queried = url.split_once('?').is_some_and(|(_, q)| !q.is_empty());
+    if queried {
+        host.hook_wants_load(&id)
+    } else {
+        host.hook_names_module(&id)
+    }
 }
 
 /// A module with just `code`; every other field empty.
@@ -454,6 +509,38 @@ async fn load_source(
     )
     .map_err(|err| format!("read error for {url}: {err}"))?;
     Ok((source, true))
+}
+
+/// Whether a plugin's `load` or `transform` filter claims the module `file`
+/// is requested as (by its hook id: the path with `url`'s query). Vite's
+/// transformMiddleware hands every module request to the plugin container
+/// whatever its extension (`transformRequest`: resolveId, load, transform),
+/// and only one nothing loads falls to the static middlewares; oj compiles
+/// the extensions it knows and serves the rest as files, so a file a plugin
+/// would make a module of (`.mdx` with an MDX plugin, an image under a
+/// `?w=` query with an image plugin) must be routed through the pipeline by
+/// this predicate (see `serve_file`), and invalidated by HMR as a module.
+pub(crate) fn plugin_claims(state: &ServerState, file: &Path, url: &str) -> bool {
+    if !(state.plugins_have_load || state.plugins_have_transform) {
+        return false;
+    }
+    state
+        .plugins
+        .as_ref()
+        .is_some_and(|host| host.hook_claims_module(&hook_id(file, url)))
+}
+
+/// [`plugin_claims`] for a served url under the root (`/src/a.mdx?q`); an
+/// `/@`-prefixed or `/@fs/` url is never a plugin-claimed file.
+pub(crate) fn plugin_claims_url(state: &ServerState, url: &str) -> bool {
+    let path = url.split('?').next().unwrap_or(url);
+    let Some(rel) = path.strip_prefix('/') else {
+        return false;
+    };
+    if path.starts_with("/@") {
+        return false;
+    }
+    plugin_claims(state, &state.root.join(rel), url)
 }
 
 // Vite parity: plugin `load` runs before the fs read, so a plugin can replace an
@@ -1284,7 +1371,7 @@ impl ImportRewrite<'_> {
         if self.interop_urls.borrow().contains(spec) {
             let path = Path::new(spec.split('?').next().unwrap_or(spec));
             let stamp = state.graph.lock().unwrap().hmr_timestamp(path);
-            return Some(stamp_import_url(&state.root, spec, stamp));
+            return Some(stamp_module_import(state, spec, stamp));
         }
         // Vite's URL for an optimized dep (`/node_modules/.vite/deps/react.js`),
         // written by hand or by tooling that knows Vite's cache: the import
@@ -1401,7 +1488,7 @@ impl ImportRewrite<'_> {
                 .lock()
                 .unwrap()
                 .hmr_timestamp(Path::new(url.split('?').next().unwrap_or(&url)));
-            return Some(stamp_import_url(&state.root, &url, stamp));
+            return Some(stamp_module_import(state, &url, stamp));
         }
         // Vite's import analysis fails an import nothing resolves; oj asked
         // every plugin's resolveId before compiling.
@@ -1609,7 +1696,7 @@ pub(crate) fn pre_resolved_url(state: &ServerState, id: &str) -> String {
     allow_root(&state.fs_allow, path.to_path_buf());
     let url = url_of(&state.root, path);
     let stamp = state.graph.lock().unwrap().hmr_timestamp(Path::new(&url));
-    let url = stamp_import_url(&state.root, &url, stamp);
+    let url = stamp_module_import(state, &url, stamp);
     match query {
         Some(q) if url.contains('?') => format!("{url}&{q}"),
         Some(q) => format!("{url}?{q}"),
