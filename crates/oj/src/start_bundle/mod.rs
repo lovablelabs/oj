@@ -364,6 +364,7 @@ pub(crate) fn write_server_fn_resolver(
     let mut manifest = String::new();
     let mut count = 0;
     let mut module_count = 0;
+    let app_modules = oj_compiler::server_fns::FsModules::new(root);
     for path in &files {
         let Ok(code) = std::fs::read_to_string(path) else {
             continue;
@@ -373,11 +374,7 @@ pub(crate) fn write_server_fn_resolver(
             .unwrap_or(path)
             .to_string_lossy()
             .replace('\\', "/");
-        let fns = oj_compiler::server_fns::find_server_fns(
-            &code,
-            &rel,
-            &oj_compiler::server_fns::FsModules { root },
-        );
+        let fns = oj_compiler::server_fns::find_server_fns(&code, &rel, &app_modules);
         if fns.is_empty() {
             continue;
         }

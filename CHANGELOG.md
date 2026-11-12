@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- TanStack Start: a server function finished on a builder another module exports (`export const authedFn = createServerFn().middleware([auth])`, then `authedFn.handler(..)` in a `*.functions.ts` module) is found when the import is spelled through a tsconfig `paths` alias (`import { authedFn } from "@app/lib/authed"`), through the package.json `imports` map (`#lib/authed`), or as the module's default export (`import authedFn from "./authed"`, `export default authedFn` there). oj followed a relative specifier and a named export alone, so a chain rooted at a builder imported any other way was no server function to it: the client bundle kept the handler, and Start's import protection denied the `*.server.*` module (or `@tanstack/react-start/server`) only the handler used, in dev (no page hydrated) and in the build, while the same app built under Vite, whose Start compiler resolves the import with `this.resolve` and reads the module's `default` export like any other (`resolveImportKind`, `findExportInModule`). The finder now resolves a non-relative specifier with the app's resolver (the tsconfig that owns the importer applying its `paths`, as Vite 8's own resolver does, and Node's `imports` map), a file under the app's root and outside `node_modules` counting as the app's, and reads `export default` for a default import, on every side that must agree on the ids: the client rewrite, the server rewrite and the server-fn resolver's scan.
+
 ## [0.4.13] - 2026-11-11
 
 ### Changed

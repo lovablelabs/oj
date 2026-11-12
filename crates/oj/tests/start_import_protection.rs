@@ -1647,3 +1647,153 @@ fn a_create_start_of_the_apps_own_makes_no_start_instance() {
         "the chain on the app's own object lost its .server(..) link"
     );
 }
+
+/// A builder (`createServerFn().middleware([..])`, the shared "authed"
+/// function of an app) exported by one module and finished with `.handler(..)`
+/// in another, the import spelled as apps spell it: through the tsconfig
+/// `paths` alias (`@app/lib/authed`), through the package.json `imports` map
+/// (`#lib/authed`), and as the module's default export. Start's compiler
+/// resolves each import with Vite's `this.resolve` and reads the module's
+/// exports, `default` included (`resolveImportKind`, `findExportInModule`),
+/// so the handler, and the `*.server.*` module only it uses, leave the
+/// client. The builder module is one file and the fixture's aliases both
+/// point at `src/lib`.
+const AUTHED_BUILDER: &str = r#"import { createServerFn } from "@tanstack/react-start";
+
+export const authedFn = createServerFn({ method: "POST" });
+export default authedFn;
+"#;
+
+const ALIASED_FNS: &str = r##"import { authedFn } from "@app/lib/authed";
+import viaImports from "#lib/authed";
+import { check } from "./auth.server";
+
+export const viaPaths = authedFn.handler(async () => `via-paths:${check()}`);
+export const viaDefault = viaImports.handler(async () => `via-default:${check()}`);
+"##;
+
+const AUTH_SERVER: &str = r#"import { getRequestHeader } from "@tanstack/react-start/server";
+
+export const check = () => getRequestHeader("x-user") ?? "auth-server-secret";
+"#;
+
+const ALIASED_NAMES: [&str; 2] = ["viaPaths", "viaDefault"];
+
+fn aliased_builder_files() -> [(&'static str, String); 4] {
+    [
+        ("src/lib/auth.server.ts", AUTH_SERVER.to_string()),
+        ("src/lib/authed.ts", AUTHED_BUILDER.to_string()),
+        ("src/lib/aliased.functions.ts", ALIASED_FNS.to_string()),
+        (
+            "src/routes/about.tsx",
+            about(
+                "import { viaPaths, viaDefault } from \"../lib/aliased.functions\";",
+                r#"const [result, setResult] = useState("");
+  useEffect(() => {
+    Promise.all([viaPaths(), viaDefault()]).then(
+      (r) => setResult(r.join("|")),
+      (e) => setResult("error " + String(e)),
+    );
+  }, []);
+  const extra = <p id="secret">{result}</p>;"#,
+            ),
+        ),
+    ]
+}
+
+#[test]
+fn a_builder_imported_through_an_alias_or_as_default_keeps_its_handler_out_of_the_client() {
+    let Some(app) = app_with("sf-aliased-builder", &aliased_builder_files(), None) else {
+        return;
+    };
+    let (ok, text) = build(&app.0);
+    assert!(ok, "the build failed:\n{text}");
+    assert!(!text.contains("[import-protection]"), "{text}");
+    assert!(
+        !client_has(&app.0, "auth-server-secret"),
+        "the client holds the server module"
+    );
+    for name in ALIASED_NAMES {
+        assert!(
+            !client_has(
+                &app.0,
+                &format!(
+                    "via-{}:",
+                    if name == "viaPaths" {
+                        "paths"
+                    } else {
+                        "default"
+                    }
+                )
+            ),
+            "the client holds the handler of {name}"
+        );
+        assert!(
+            client_has(
+                &app.0,
+                &oj_compiler::server_fns::server_fn_id("src/lib/aliased.functions.ts", name)
+            ),
+            "the client does not call {name} by its id"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_hydrates_a_page_calling_server_fns_built_on_an_aliased_or_default_builder() {
+    let Some(app) = app_with("sf-aliased-builder-dev", &aliased_builder_files(), None) else {
+        return;
+    };
+    let dev = Server::oj_dev(&app.0);
+    let (status, _) = dev.request("GET", "/@oj-start/client-entry.js", &[]);
+    assert_eq!(status, 200, "the client entry\n{}", dev.output());
+    assert!(
+        !dev.output().contains("[import-protection]"),
+        "import protection flagged a server-only import\n{}",
+        dev.output()
+    );
+    // The server side registered each one under its id, with its handler.
+    for name in ALIASED_NAMES {
+        let id = oj_compiler::server_fns::server_fn_id("src/lib/aliased.functions.ts", name);
+        let (status, body) = dev.call(&id);
+        assert!(
+            status == 200 && body.contains("auth-server-secret"),
+            "{name} answered {status} {body:?}\n{}",
+            dev.output()
+        );
+    }
+    if browser::skip() {
+        return;
+    }
+    let page = Page::open(&dev.url("/about")).await;
+    let hydrated = page
+        .poll(
+            r##"document.querySelector("#hydrated")?.textContent === "hydrated""##,
+            Duration::from_secs(30),
+        )
+        .await;
+    let answered = page
+        .poll(
+            r##"document.querySelector("#secret")?.textContent === "via-paths:auth-server-secret|via-default:auth-server-secret""##,
+            Duration::from_secs(30),
+        )
+        .await;
+    let (console, errors) = (page.console(), page.errors());
+    let result: Option<String> = page
+        .eval("document.querySelector('#secret')?.textContent ?? null")
+        .await;
+    page.close().await;
+    assert!(
+        hydrated,
+        "the page did not hydrate: {errors:?} {console:?}\n{}",
+        dev.output()
+    );
+    assert!(
+        answered,
+        "the page's calls answered {result:?}: {errors:?} {console:?}\n{}",
+        dev.output()
+    );
+    assert!(
+        !console.iter().any(|c| c.contains("[import-protection]")),
+        "import protection flagged a server-only import: {console:?}"
+    );
+}

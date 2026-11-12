@@ -20,7 +20,13 @@
 //! from "./base"`, `export const base = createServerFn()` there), reached
 //! through its re-exports, as the compiler's `resolveImportKind` follows the
 //! import to the binding that made it a Builder; so may the factory itself
-//! (`export { createServerFn } from "@tanstack/react-start"`). TypeScript's
+//! (`export { createServerFn } from "@tanstack/react-start"`). The import
+//! may be that module's default export (`import base from "./base"`, `export
+//! default createServerFn()` there), which the compiler's `findExportInModule`
+//! reads as any other name, and its specifier an alias the app's resolver
+//! knows (a tsconfig `paths` entry, a package.json `imports` entry), which
+//! the compiler resolves with Vite's `this.resolve` (see [`FsModules`]).
+//! TypeScript's
 //! `as`, `satisfies` and `!` around the chain are looked through
 //! (`unwrapExpression`). A `.handler(..)` call that is not a variable's
 //! initializer (a property of an object literal, a `return`) is not a server
@@ -113,9 +119,60 @@ impl Modules for () {
 /// The app's files under `root`, a relative specifier resolved as Vite's
 /// `tryCleanFsResolve` resolves it: the file as written; a `.js`, `.jsx`,
 /// `.mjs` or `.cjs` import's TypeScript source; the default extensions in
-/// Vite's order; then a directory's index.
+/// Vite's order; then a directory's index. Any other specifier is resolved
+/// by the app's resolver, as Start's compiler resolves an import with Vite's
+/// `this.resolve` (start-compiler-plugin, the `resolveId` it hands
+/// `StartCompiler`): a tsconfig `paths` alias (`@app/lib/base`) or a
+/// package.json `imports` entry (`#lib/base`) names the app's module as a
+/// relative specifier does, so a builder imported through one is followed on
+/// both sides and the client calls the id the server registered. A file
+/// outside the root or under `node_modules` is not the app's.
 pub struct FsModules<'a> {
-    pub root: &'a Path,
+    root: &'a Path,
+    resolver: std::sync::OnceLock<oj_resolver::OjResolver>,
+}
+
+impl<'a> FsModules<'a> {
+    pub fn new(root: &'a Path) -> Self {
+        Self {
+            root,
+            resolver: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// `specifier` (not relative) as the app's module it names, or None.
+    fn resolve_aliased(&self, from: &str, specifier: &str) -> Option<String> {
+        // oxc's resolver, with the tsconfig that owns the importer applying
+        // its `paths` as Vite 8's own resolver does (`resolve.tsconfigPaths`,
+        // or vite-tsconfig-paths ahead of it). An app without either cannot
+        // import through `paths` at all, so answering for it changes nothing.
+        let resolver = self.resolver.get_or_init(|| {
+            oj_resolver::OjResolver::with_settings(
+                self.root,
+                oj_resolver::ResolveSettings {
+                    conditions: ["browser", "import", "module", "development", "default"]
+                        .map(String::from)
+                        .to_vec(),
+                    tsconfig_paths: oj_resolver::TsconfigPaths::Native,
+                    ..Default::default()
+                },
+            )
+        });
+        let resolved = resolver
+            .resolve_from(&self.root.join(from), specifier)
+            .ok()?;
+        // The resolver answers with the real path; the root may be given
+        // through a symlink.
+        let rel = match resolved.strip_prefix(self.root) {
+            Ok(rel) => slash(rel),
+            Err(_) => slash(resolved.strip_prefix(self.root.canonicalize().ok()?).ok()?),
+        };
+        if rel.split('/').any(|part| part == "node_modules") {
+            return None;
+        }
+        let ext = Path::new(&rel).extension().and_then(|e| e.to_str())?;
+        EXTENSIONS.contains(&ext).then_some(rel)
+    }
 }
 
 /// Vite's `DEFAULT_EXTENSIONS`, less `.json`, which declares nothing.
@@ -123,11 +180,12 @@ const EXTENSIONS: [&str; 6] = ["mjs", "js", "mts", "ts", "jsx", "tsx"];
 
 impl Modules for FsModules<'_> {
     fn read(&self, from: &str, specifier: &str) -> Option<(String, String)> {
-        if !specifier.starts_with('.') {
-            return None;
-        }
-        let dir = Path::new(from).parent().unwrap_or_else(|| Path::new(""));
-        let rel = resolve_file(self.root, &normalize(&dir.join(specifier)))?;
+        let rel = if specifier.starts_with('.') {
+            let dir = Path::new(from).parent().unwrap_or_else(|| Path::new(""));
+            resolve_file(self.root, &normalize(&dir.join(specifier)))?
+        } else {
+            self.resolve_aliased(from, specifier)?
+        };
         let code = std::fs::read_to_string(self.root.join(&rel)).ok()?;
         Some((rel, code))
     }
@@ -327,31 +385,29 @@ impl<'m> Bindings<'m> {
                 continue;
             };
             let source = crate::lit_str(import.source.value);
-            let own_module = source.starts_with('.');
+            // An import of the app's module (relative, or an alias the
+            // resolver knows) is what that module exports under the name;
+            // a package's is the factory when it is called so. The default
+            // import is the `default` export, as the compiler's
+            // `findExportInModule` reads it.
             for specifier in import.specifiers.iter().flatten() {
                 match specifier {
                     ImportDeclarationSpecifier::ImportSpecifier(s) => {
-                        let imported = export_name(&s.imported);
-                        let local = s.local.name.as_str();
-                        if own_module {
-                            match out.exported_kind(source, imported) {
-                                Kind::Factory => out.factories.push(local.to_string()),
-                                Kind::Builder => out.builders.push(local.to_string()),
-                                Kind::None => {}
-                            }
-                        } else if imported == FACTORY && local != FACTORY {
-                            out.factories.push(local.to_string());
-                        }
+                        let kind = out.exported_kind(source, export_name(&s.imported));
+                        out.bind(s.local.name.as_str(), kind);
+                    }
+                    ImportDeclarationSpecifier::ImportDefaultSpecifier(s) => {
+                        let kind = out.exported_kind(source, "default");
+                        out.bind(s.local.name.as_str(), kind);
                     }
                     ImportDeclarationSpecifier::ImportNamespaceSpecifier(s) => {
-                        if own_module {
+                        if out.is_own_module(source) {
                             out.module_namespaces
                                 .push((s.local.name.to_string(), source.to_string()));
                         } else {
                             out.namespaces.push(s.local.name.to_string());
                         }
                     }
-                    ImportDeclarationSpecifier::ImportDefaultSpecifier(_) => {}
                 }
             }
         }
@@ -416,12 +472,27 @@ impl<'m> Bindings<'m> {
         }
     }
 
+    /// Binds a local name to what its import stands for.
+    fn bind(&mut self, local: &str, kind: Kind) {
+        match kind {
+            Kind::Factory if local != FACTORY => self.factories.push(local.to_string()),
+            Kind::Builder => self.builders.push(local.to_string()),
+            Kind::Factory | Kind::None => {}
+        }
+    }
+
+    /// Whether `specifier` names one of the app's modules: a relative
+    /// path, or an alias `modules` resolves to one.
+    fn is_own_module(&self, specifier: &str) -> bool {
+        specifier.starts_with('.') || self.modules.read(&self.path, specifier).is_some()
+    }
+
     /// What the module `specifier` names from this one exports as `name`,
     /// through `export const`, `export { local as name }`, `export { .. }
-    /// from` and `export * from`, as the compiler's `findExportInModule`
-    /// follows them. None for a module that is not the app's, that the parser
-    /// cannot read, that exports no such name, or that is already being
-    /// resolved above this one.
+    /// from`, `export * from` and, for `default`, `export default`, as the
+    /// compiler's `findExportInModule` follows them. None for a module that
+    /// is not the app's, that the parser cannot read, that exports no such
+    /// name, or that is already being resolved above this one.
     fn exported_kind(&self, specifier: &str, name: &str) -> Kind {
         let key = (specifier.to_string(), name.to_string());
         if let Some(kind) = self.exported.borrow().get(&key) {
@@ -492,6 +563,15 @@ impl<'m> Bindings<'m> {
                     if kind != Kind::None {
                         return kind;
                     }
+                }
+                // `export default base` or `export default createServerFn()`:
+                // the compiler's `extractModuleInfoFromAst` binds the
+                // expression under `default`. A function or class is neither.
+                Statement::ExportDefaultDeclaration(export) if name == "default" => {
+                    return match export.declaration.as_expression() {
+                        Some(expr) => bindings.kind_of_init(expr),
+                        None => Kind::None,
+                    };
                 }
                 _ => {}
             }
@@ -1597,6 +1677,156 @@ mod tests {
         assert_eq!(super::rewrite_server(&code, "src/fns.ts", &modules), None);
     }
 
+    // A builder another module exports as its default: `import base from
+    // "./base"` with `export default createServerFn()`, `export default base`
+    // (a variable holding one) or `export { base as default }` there, as the
+    // compiler's `findExportInModule` reads `default` like any other name.
+    // `export default` of a function is no builder.
+    #[test]
+    fn a_builder_another_module_exports_as_default_is_resolved() {
+        let modules = MapModules(vec![
+            (
+                "src/lib/direct.ts",
+                "import { createServerFn } from \"@tanstack/react-start\";\nexport default createServerFn({ method: \"POST\" });\n",
+            ),
+            (
+                "src/lib/named.ts",
+                "import { createServerFn } from \"@tanstack/react-start\";\nconst base = createServerFn({ method: \"POST\" }).middleware([]);\nexport default base;\n",
+            ),
+            (
+                "src/lib/listed.ts",
+                "import { createServerFn } from \"@tanstack/react-start\";\nconst base = createServerFn();\nexport { base as default };\n",
+            ),
+            (
+                "src/lib/plain.ts",
+                "export default function handler(f: () => unknown) {\n  return f;\n}\n",
+            ),
+        ]);
+        let code = [
+            "import direct from \"../lib/direct\";",
+            "import named from \"../lib/named\";",
+            "import listed from \"../lib/listed\";",
+            "import plain from \"../lib/plain\";",
+            "export const a = direct.handler(async () => \"a-secret\");",
+            "export const b = named.handler(async () => \"b-secret\");",
+            "export const c = listed.handler(async () => \"c-secret\");",
+            "export const d = plain.handler(async () => \"d-kept\");",
+            "",
+        ]
+        .join("\n");
+        let rel = "src/routes/fns.ts";
+        let names: Vec<_> = super::find_server_fns(&code, rel, &modules)
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        assert_eq!(names, ["a", "b", "c"]);
+        let out = super::rewrite_client(&code, rel, &modules)
+            .unwrap()
+            .unwrap();
+        for name in ["a", "b", "c"] {
+            assert!(
+                out.contains(&format!(".handler({});", rpc(rel, name))),
+                "{out}"
+            );
+        }
+        assert!(!out.contains("-secret"), "{out}");
+        assert!(out.contains("d-kept"), "{out}");
+        parses(&out, rel);
+        let server = super::rewrite_server(&code, rel, &modules).unwrap();
+        assert!(
+            server.contains("named.handler(b_createServerFn_handler, "),
+            "{server}"
+        );
+    }
+
+    // A builder imported through an alias the app's resolver knows: a
+    // tsconfig `paths` entry and a package.json `imports` entry, which
+    // Start's compiler resolves with Vite's `this.resolve`. Both sides find
+    // the function, so the client calls the id the server registers.
+    #[test]
+    fn a_builder_imported_through_an_alias_is_resolved_on_both_sides() {
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("oj-server-fns-alias-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for (path, code) in [
+            (
+                "tsconfig.json",
+                "{ \"compilerOptions\": { \"baseUrl\": \".\", \"paths\": { \"@app/*\": [\"./src/*\"] } } }\n",
+            ),
+            (
+                "package.json",
+                "{ \"name\": \"app\", \"type\": \"module\", \"imports\": { \"#lib/*\": \"./src/lib/*\" } }\n",
+            ),
+            (
+                "src/lib/base.ts",
+                "import { createServerFn } from \"@tanstack/react-start\";\nexport const base = createServerFn({ method: \"POST\" });\nexport default base;\n",
+            ),
+            ("src/lib/kit.ts", "export { createServerFn } from \"@tanstack/react-start\";\n"),
+            (
+                "node_modules/pkg/index.js",
+                "export const base = { handler: (f) => f };\n",
+            ),
+        ] {
+            let file = root.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, code).unwrap();
+        }
+        let modules = FsModules::new(&root);
+        let from = "src/routes/fns.ts";
+        let read = |specifier: &str| modules.read(from, specifier).map(|(path, _)| path);
+        assert_eq!(read("@app/lib/base").as_deref(), Some("src/lib/base.ts"));
+        assert_eq!(read("#lib/base").as_deref(), Some("src/lib/base.ts"));
+        assert_eq!(read("#lib/base.ts").as_deref(), Some("src/lib/base.ts"));
+        assert_eq!(read("@app/lib/missing"), None);
+        // A package is not the app's, installed or not.
+        assert_eq!(read("pkg"), None);
+        assert_eq!(read("@tanstack/react-start"), None);
+
+        let code = [
+            "import { base } from \"@app/lib/base\";",
+            "import viaImports from \"#lib/base\";",
+            "import { createServerFn as make } from \"#lib/kit\";",
+            "import * as lib from \"@app/lib/base\";",
+            "import { base as pkgBase } from \"pkg\";",
+            "export const a = base.handler(async () => \"a-secret\");",
+            "export const b = viaImports.handler(async () => \"b-secret\");",
+            "export const c = make().handler(async () => \"c-secret\");",
+            "export const d = lib.base.handler(async () => \"d-secret\");",
+            "export const e = pkgBase.handler(async () => \"e-kept\");",
+            "",
+        ]
+        .join("\n");
+        let names: Vec<_> = super::find_server_fns(&code, from, &modules)
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        assert_eq!(names, ["a", "b", "c", "d"]);
+        let out = super::rewrite_client(&code, from, &modules)
+            .unwrap()
+            .unwrap();
+        for name in ["a", "b", "c", "d"] {
+            assert!(
+                out.contains(&format!(".handler({});", rpc(from, name))),
+                "{out}"
+            );
+        }
+        assert!(!out.contains("-secret"), "{out}");
+        assert!(out.contains("e-kept"), "{out}");
+        parses(&out, from);
+        let server = super::rewrite_server(&code, from, &modules).unwrap();
+        for name in ["a", "b", "c", "d"] {
+            assert!(
+                server.contains(&format!(
+                    "export const {name}_createServerFn_handler = createServerRpc("
+                )),
+                "{server}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     // `FsModules` resolves a relative specifier as Vite's `tryCleanFsResolve`
     // does: the file as written, a JS import's TypeScript source, the default
     // extensions in order, a directory's index; a package is not the app's.
@@ -1617,7 +1847,7 @@ mod tests {
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();
             std::fs::write(file, code).unwrap();
         }
-        let modules = FsModules { root: &root };
+        let modules = FsModules::new(&root);
         let from = "src/routes/index.tsx";
         let read = |specifier: &str| modules.read(from, specifier).map(|(path, _)| path);
         assert_eq!(
