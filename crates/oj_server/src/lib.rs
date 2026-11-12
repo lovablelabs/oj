@@ -481,6 +481,20 @@ struct ServerState {
     ws_token_check: bool,
 }
 
+impl ServerState {
+    /// Whether a plugin may make a plain `.svg` import a component (svgr),
+    /// so the import stays a module request rather than a `?url` asset. A
+    /// `load` hook counts as much as a `transform`: Vite offers every
+    /// plugin's load before `vite:asset`'s (plugins/asset.ts `load`, which
+    /// answers the URL module), and vite-plugin-svgr is a `pre` plugin whose
+    /// `load` reads the file itself, so with `include: "**/*.svg"` it claims
+    /// the plain id and the asset plugin never sees it. Whether the file was
+    /// claimed is decided after the hooks ran, on their output.
+    fn plugins_may_componentize_svg(&self) -> bool {
+        self.plugins_have_transform || self.plugins_have_load
+    }
+}
+
 /// Live plugin-host serve state (configureServer middleware port + whether runner-backed
 /// DevEnvironments serve the documents), read per request: a host whose init outlives the
 /// boot deadlines fills it late via [`spawn_late_plugin_serve`].

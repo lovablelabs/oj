@@ -45,10 +45,11 @@ pub(crate) async fn ensure_module_as(
             .is_some_and(|(_, q)| q.split('&').any(|kv| kv == "react"));
     let is_svelte = ext == Some("svelte");
     let is_stylesheet = ext.is_some_and(is_style_ext);
-    // A plain `.svg` with a transform plugin active may be componentized (svgr):
-    // route it through the transform pipeline; unmatched svg falls back to a URL asset.
+    // A plain `.svg` with a load or transform plugin active may be componentized
+    // (svgr): route it through the plugin hooks; unmatched svg falls back to a
+    // URL asset.
     let svgr_candidate = !react_svg
-        && state.plugins_have_transform
+        && state.plugins_may_componentize_svg()
         && ext == Some("svg")
         && query_asset_kind(url.split_once('?').map(|(_, q)| q)).is_none();
 
@@ -210,7 +211,10 @@ pub(crate) async fn ensure_module_as(
         source
     };
 
-    let source = if react_svg {
+    // A `?react` import a plugin's `load` already componentized (vite-plugin-svgr's
+    // default `include` is `**/*.svg?react`) is its code; only markup takes
+    // oj's own svgr.
+    let source = if react_svg && source.trim_start().starts_with('<') {
         svgr::svg_to_component(&source)
     } else {
         source
@@ -1351,9 +1355,10 @@ impl ImportRewrite<'_> {
             spec,
             true,
         ) {
-            // With a transform plugin active, leave `.svg` unmarked (not `?url`) so
-            // it routes through compile and svgr can componentize it (Vite parity).
-            if state.plugins_have_transform {
+            // With a load or transform plugin active, leave `.svg` unmarked (not
+            // `?url`) so it routes through compile and svgr can componentize it
+            // (Vite parity).
+            if state.plugins_may_componentize_svg() {
                 if let Some(base) = url.strip_suffix(".svg?url") {
                     return Some(format!("{base}.svg"));
                 }

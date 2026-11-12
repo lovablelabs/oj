@@ -444,7 +444,7 @@ async fn serve_bare_asset(
     // componentize it; unmatched svgs fall back to a URL asset there.
     if ext.eq_ignore_ascii_case("svg") && !wants_raw_resource(headers) {
         let url = url_of(&state.root, file);
-        if state.plugins_have_transform {
+        if state.plugins_may_componentize_svg() {
             return serve_compiled(state, file, &url, query, headers).await;
         }
         // No plugin can componentize it: a module import of an svg (relative,
