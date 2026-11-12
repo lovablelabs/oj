@@ -590,8 +590,11 @@ fn the_status_reports_a_literal_as_the_fallback_and_an_invalid_file_with_its_err
         .unwrap()
         .contains("not JSON"));
     let keys = status["keys"].as_array().unwrap();
-    assert_eq!(keys[0]["value"], "\"https://baked.supabase.co\"");
+    // The literal reads back as a value, not as the define's expression.
+    assert_eq!(keys[0]["value"], "https://baked.supabase.co");
     assert_eq!(keys[0]["source"], "fallback");
+    assert_eq!(keys[1]["value"], serde_json::Value::Null);
+    assert_eq!(keys[1]["source"], serde_json::Value::Null);
     assert_eq!(status["readyFile"], serde_json::Value::Null);
 }
 

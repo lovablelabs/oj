@@ -36,6 +36,19 @@ oj dev
 
 A module that reads one of the keys compiles to `globalThis.__oj_env.KEY` and imports `/@oj/env.js` first, which the server renders from the values in force; `%KEY%` in index.html follows them too. Values come from the file (a JSON object, watched; `KEY=field` reads another field of it) and from `POST /@oj/env` with `{"VITE_API_URL": "/_port_8001"}` (`null` unsets), for direct local callers only, as `/@oj/typecheck`; `GET /@oj/env` reports every key, its value and its source. A change reloads the pages and changes nothing a compile emitted. While the file is on disk but incomplete (a backend publishes `{"pending":true}` until it is ready), documents answer 503 and modules still serve. `OJ_RUNTIME_ENV_READY_FILE` exists exactly while every key has a value. The file must be a regular file (a symlink is refused) and, inside the app root, not under `node_modules` or a `server.watch.ignored` path, which the watcher skips. Plain `oj dev` only for now: `oj dev --ssr`, a TanStack Start app and `oj build` warn and keep the literals.
 
+`oj env` is the command line to the same endpoint, for the app's running dev server (found as `oj dev-typecheck` finds it):
+
+```sh
+oj env get                                   # KEY=value lines; `# KEY unset` for a key without one
+oj env get --json                            # the GET /@oj/env status
+oj env set VITE_API_URL=/_port_8001 VITE_API_KEY sb_x   # KEY=VALUE or KEY VALUE pairs
+oj env unset VITE_API_URL                    # back to the file's value or the literal
+oj env get --wait --timeout 60               # returns once every key is bound (exit 3 on timeout)
+oj env get --wait VITE_API_KEY               # or once the named keys do
+```
+
+Each prints the values in force afterwards; a key's `.env` literal shows as its value but does not bind it, for `--wait` as for the server's state. `--root DIR` names the app when the command does not run from it. Exit codes: 0 answered, 1 no dev server for the root or the request was refused (a key outside the list), 2 usage, 3 `--wait` timed out.
+
 ## TanStack Start
 
 Point oj at a TanStack Start app and it runs the framework directly, no source changes. It detects Start from the app itself:
