@@ -187,6 +187,10 @@ await run("flush-during-rebuild", true, async (listener, log) => {
     !log().includes("oj start: rebuilt"),
     "race: the rebuild finished before the flush could land mid-rebuild; timing assumption broken",
   );
+  // The edit landed while the server was still warming its engine (a slow
+  // machine): the boot's revalidation finds it too, and must leave the reload
+  // to the watcher's run instead of sending one past the hold.
+  must(listener.reloads.length === 0, `race: a reload reached the page before the flush (${listener.reloads.length})`);
   const flushed = await (await fetch(`http://localhost:${PORT}/__hmr_flush`, { method: "POST" })).json();
   must(flushed.reload === true, `race: the mid-rebuild flush must consume the hold, got ${JSON.stringify(flushed)}`);
   await settles(() => log().includes("oj start: rebuilt"), { timeoutMs: 60000 });
