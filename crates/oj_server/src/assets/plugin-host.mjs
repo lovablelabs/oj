@@ -4857,15 +4857,47 @@ function ssrFixStacktrace(server, e) {
 
 async function setupConfigureServer() {
   const stack = [];
+  // connect's `proto.handle` (the stack Vite's `server.middlewares` is), for
+  // a middleware mounted on a route (`use("/api", fn)`): the route matches
+  // the request path case-insensitively and only at a segment boundary
+  // (`/api` takes `/api/x`, `/api.json` and `/api?q`, not `/apiary`); the
+  // handler sees `req.url` with the route stripped (`/x`, a leading slash
+  // added when nothing is left) and the browser's url in `req.originalUrl`;
+  // and the strip is undone before the next entry runs, so a root middleware,
+  // and oj's fall-through report below, see the url whole again.
   function runStack(req, res, done) {
     let i = 0;
+    let removed = "";
+    let slashAdded = false;
+    req.originalUrl = req.originalUrl || req.url;
     const next = (err) => {
+      if (slashAdded) {
+        req.url = req.url.slice(1);
+        slashAdded = false;
+      }
+      if (removed) {
+        req.url = removed + req.url;
+        removed = "";
+      }
       while (i < stack.length) {
         const entry = stack[i++];
-        const path = entry.route === "/" ? null : entry.route;
+        const route = entry.route === "/" ? "" : entry.route;
         const fn = entry.handle;
-        if (path && !req.url.startsWith(path)) continue;
+        if (route) {
+          const pathname = req.url.split(/[?#]/, 1)[0] || "/";
+          if (!pathname.toLowerCase().startsWith(route.toLowerCase())) continue;
+          const c = pathname.length > route.length ? pathname[route.length] : "";
+          if (c && c !== "/" && c !== ".") continue;
+        }
         if (fn.length >= 4 !== (err != null)) continue;
+        if (route) {
+          removed = req.url.slice(0, route.length);
+          req.url = req.url.slice(route.length);
+          if (req.url[0] !== "/") {
+            req.url = `/${req.url}`;
+            slashAdded = true;
+          }
+        }
         try {
           return err != null ? fn(err, req, res, next) : fn(req, res, next);
         } catch (e) {
@@ -4925,10 +4957,18 @@ async function setupConfigureServer() {
     return runStack(req, res, done);
   }
   // connect stack entries are { route, handle } (plugins walk .stack reading
-  // handle.name); mirror that shape.
+  // handle.name); mirror that shape. connect's `proto.use` drops a route's
+  // trailing slash (`use("/api/", fn)` mounts on `/api`, which takes `/api`
+  // itself too); a bare `/` is the root, as `use(fn)` is. Returns the app,
+  // for a chained `use(a).use(b)`.
   middlewares.use = (a, b) => {
-    if (typeof a === "function") stack.push({ route: "/", handle: a });
-    else stack.push({ route: a, handle: b });
+    if (typeof a === "function") {
+      stack.push({ route: "/", handle: a });
+      return middlewares;
+    }
+    const route = typeof a === "string" && a.endsWith("/") ? a.slice(0, -1) : a;
+    stack.push({ route: route || "/", handle: b });
+    return middlewares;
   };
   middlewares.stack = stack;
   const noop = () => {};
