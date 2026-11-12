@@ -208,6 +208,8 @@ mod host_filter_tests;
 #[cfg(test)]
 mod import_protection_pass_tests;
 #[cfg(test)]
+mod plugin_context_tests;
+#[cfg(test)]
 pub(crate) mod test_roots;
 #[cfg(test)]
 mod vite_values_tests;

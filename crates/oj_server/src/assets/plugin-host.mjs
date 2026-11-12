@@ -1989,6 +1989,23 @@ try {
   }
 } catch {}
 
+// Whether the app's Vite has the Environment API: `this.environment` on the
+// plugin context, and the `hotUpdate`, `configEnvironment` and
+// `applyToEnvironment` hooks, all of which arrived in Vite 6
+// (server/pluginContainer.ts EnvironmentPluginContainer, whose PluginContext
+// carries `environment`; plugin.ts resolveEnvironmentPlugins). Vite 5's
+// PluginContext is `meta`, `ssr` and the rollup members, its
+// handleHMRUpdate runs `handleHotUpdate` alone, and its resolveConfig knows
+// neither environment hook. A plugin that supports both lines feature-detects
+// on `this.environment` (@tailwindcss/vite: present, it calls Vite 6's
+// createIdResolver off `vite`, absent the resolved config's createResolver),
+// so a Vite 5 app's plugins get the Vite 5 shape, whatever oj itself speaks.
+// Decided once, off the version read above; no app Vite is the line oj tracks.
+const viteHasEnvironmentApi = (() => {
+  const major = Number.parseInt(String(viteVersion), 10);
+  return !Number.isFinite(major) || major >= 6;
+})();
+
 // Vite logs a hook's this.warn through the logger with the plugin's name
 // (`warning: <message>` then `  Plugin: <name>`, buildErrorMessage) so the
 // terminal says which plugin spoke. The per-plugin ctx (ctxFor) sets _plugin.
@@ -2043,7 +2060,8 @@ function contextOf(c) {
 }
 function pluginContext(c) {
   return {
-    environment: c.environment,
+    // Vite 6+ only, as Vite 5's context has no such member (viteHasEnvironmentApi).
+    ...(viteHasEnvironmentApi ? { environment: c.environment } : {}),
     meta: { viteVersion, rollupVersion, rolldownVersion, watchMode: command === "serve", framework: "oj" },
     parse: (code, opts) => (viteParseAst ? viteParseAst(code, opts) : {}),
     get pluginName() {
@@ -2560,7 +2578,8 @@ async function hostConfig(rc, list, { replay = false, container = main } = {}) {
   // Vite's resolveConfig orders them `{ client, ssr, ...custom }`, whatever
   // order the config declared them in.
   envNames.splice(0, envNames.length, "client", "ssr", ...envNames.filter((n) => n !== "client" && n !== "ssr"));
-  const configEnvHooks = hooksOf(list, "configEnvironment");
+  // Vite 5's resolveConfig has no configEnvironment step (viteHasEnvironmentApi).
+  const configEnvHooks = viteHasEnvironmentApi ? hooksOf(list, "configEnvironment") : [];
   // Plugin by plugin, then environment by environment, as
   // runConfigEnvironmentHook loops.
   if (configEnvHooks.length) {
@@ -2717,7 +2736,10 @@ async function environmentPlugins(environment, candidates, c = main) {
   const ignoredEnvironmentPluginHooks = ["config", "configEnvironment", "configureServer", "configResolved"];
   const next = [];
   for (const p of candidates) {
-    if (typeof p.applyToEnvironment !== "function") {
+    // Vite 5 resolves no plugins per environment: a plugin's
+    // applyToEnvironment is unknown to it, so the plugin stays active
+    // everywhere (viteHasEnvironmentApi).
+    if (!viteHasEnvironmentApi || typeof p.applyToEnvironment !== "function") {
       next.push(p);
       continue;
     }
@@ -6388,12 +6410,15 @@ async function importProtectionChanged(c, filesJson) {
 
 // Vite 6+ (handleHMRUpdate): a plugin's `hotUpdate`, with this.environment,
 // in every environment; the legacy `handleHotUpdate` in its stead runs once,
-// in the client environment's pass, and only for an `update`.
+// in the client environment's pass, and only for an `update`. Under a Vite 5
+// app only `handleHotUpdate` runs: Vite 5's handleHMRUpdate knows no other,
+// and a plugin's `hotUpdate` is its Vite 6 half (viteHasEnvironmentApi).
 function hotUpdatePlugins(c, type) {
   const out = [];
   for (const p of c.plugins) {
-    const legacy = p.hotUpdate == null && !c.startAfter && (type === undefined || type === "update");
-    const hook = p.hotUpdate != null ? p.hotUpdate : legacy ? p.handleHotUpdate : null;
+    const modern = viteHasEnvironmentApi && p.hotUpdate != null;
+    const legacy = !modern && !c.startAfter && (type === undefined || type === "update");
+    const hook = modern ? p.hotUpdate : legacy ? p.handleHotUpdate : null;
     const fn = hookHandler(hook);
     if (fn) out.push({ p, fn, rank: hookOrderRank(hook) });
   }

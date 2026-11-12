@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Dev server and build: a plugin that supports Vite 5 and Vite 6 alike runs its Vite 5 path under an app on Vite 5. `@tailwindcss/vite` picks the path by `this.environment` (present, it calls `createIdResolver` off the app's `vite`, which Vite 5 does not export; absent, the resolved config's `createResolver`), and oj handed every plugin Vite 6's context whatever Vite the app installed, so under Vite 5.4 the transform of the app's stylesheet threw "createIdResolver is not a function" (a 500) and the page had no styles. The plugin context now follows the app's Vite major, read once off the installed package: under Vite 5 it has no `environment` (Vite 5's PluginContext is `meta`, `ssr` and the rollup members), a plugin's `handleHotUpdate` runs and its `hotUpdate` does not (Vite 5's handleHMRUpdate knows no other), and its `configEnvironment` and `applyToEnvironment` hooks are not run, as Vite 5's resolveConfig does not know them. Vite 6 and later, and an app without a Vite of its own, keep the Environment API shape.
+
 ## [0.4.13] - 2026-11-11
 
 ### Changed
