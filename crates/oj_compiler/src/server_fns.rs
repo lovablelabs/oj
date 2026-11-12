@@ -39,7 +39,7 @@
 //! function, as the compiler's `getVariableDeclaratorForExpressionPath` finds
 //! none for it.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
@@ -146,6 +146,11 @@ pub struct FsModules<'a> {
     resolver: std::sync::OnceLock<oj_resolver::OjResolver>,
     /// The app-relative paths read, in order, once each.
     reads: std::sync::Mutex<Vec<String>>,
+    /// The relative imports no file answered, app-relative as written (no
+    /// extension added), once each.
+    misses: std::sync::Mutex<Vec<String>>,
+    /// How many files were read, a file read twice counted twice.
+    loads: std::sync::atomic::AtomicUsize,
 }
 
 impl<'a> FsModules<'a> {
@@ -154,7 +159,20 @@ impl<'a> FsModules<'a> {
             root,
             resolver: std::sync::OnceLock::new(),
             reads: std::sync::Mutex::new(Vec::new()),
+            misses: std::sync::Mutex::new(Vec::new()),
+            loads: std::sync::atomic::AtomicUsize::new(0),
         }
+    }
+
+    /// The relative imports asked for that no file answered, app-relative
+    /// as written: a file created there changes the answers given.
+    pub fn misses(&self) -> Vec<String> {
+        self.misses.lock().map(|m| m.clone()).unwrap_or_default()
+    }
+
+    /// How many files were read, a file read twice counted twice.
+    pub fn loads(&self) -> usize {
+        self.loads.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// The app-relative paths of the modules read so far: what the answers
@@ -205,18 +223,36 @@ impl Modules for FsModules<'_> {
     fn read(&self, from: &str, specifier: &str) -> Option<(String, String)> {
         let rel = if specifier.starts_with('.') {
             let dir = Path::new(from).parent().unwrap_or_else(|| Path::new(""));
-            resolve_file(self.root, &normalize(&dir.join(specifier)))?
+            let base = normalize(&dir.join(specifier));
+            let Some(rel) = resolve_file(self.root, &base) else {
+                push_once(&self.misses, slash(&base));
+                return None;
+            };
+            rel
         } else {
             self.resolve_aliased(from, specifier)?
         };
         let code = std::fs::read_to_string(self.root.join(&rel)).ok()?;
-        if let Ok(mut reads) = self.reads.lock() {
-            if !reads.contains(&rel) {
-                reads.push(rel.clone());
-            }
-        }
+        self.loads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        push_once(&self.reads, rel.clone());
         Some((rel, code))
     }
+}
+
+fn push_once(list: &std::sync::Mutex<Vec<String>>, item: String) {
+    if let Ok(mut list) = list.lock() {
+        if !list.contains(&item) {
+            list.push(item);
+        }
+    }
+}
+
+/// The file a relative import written as `base` (app-relative, no extension
+/// added) is answered by under `root`, app-relative, or None while no file
+/// answers: what [`FsModules::misses`] lists, asked again.
+pub fn resolve_relative(root: &Path, base: &str) -> Option<String> {
+    resolve_file(root, Path::new(base))
 }
 
 /// `rel` (app-relative, normalized) as the file Vite would load, app-relative
@@ -306,6 +342,13 @@ fn find_in(program: &Program, code: &str, path: &str, modules: &dyn Modules) -> 
                 continue;
             };
             let chain = chain_of(call);
+            // Only a chain ending in `.handler(..)` declares a server
+            // function, so nothing is resolved for any other call: a
+            // `z.object(..)` or a `db.query()` reads no module and builds no
+            // resolver.
+            if chain.links.last().is_none_or(|last| last.name != "handler") {
+                continue;
+            }
             let names: Vec<&str> = chain.links.iter().map(|l| l.name).collect();
             let Some(skip) = module.rooted(&resolver, &chain.root, chain.called, &names) else {
                 continue;
@@ -313,9 +356,6 @@ fn find_in(program: &Program, code: &str, path: &str, modules: &dyn Modules) -> 
             let Some((last, before)) = chain.links[skip..].split_last() else {
                 continue;
             };
-            if last.name != "handler" {
-                continue;
-            }
             let Some(args_at) = args_start(code, call, last.name_end) else {
                 continue;
             };
@@ -498,9 +538,9 @@ struct Module {
     re_exports: HashMap<String, (String, String)>,
     /// `export * from "./x"` specifiers, in order.
     export_all: Vec<String>,
-    /// The kinds resolved so far, `None` while a name is being resolved so
+    /// The kinds resolved so far; a name being resolved is marked so, and
     /// a cycle through it ends there (the compiler's `visited`).
-    kinds: RefCell<HashMap<String, Kind>>,
+    kinds: RefCell<HashMap<String, Memo>>,
 }
 
 impl Module {
@@ -611,19 +651,15 @@ impl Module {
         if name == FACTORY {
             return Kind::Factory;
         }
-        if let Some(kind) = self.kinds.borrow().get(name) {
-            return *kind;
-        }
-        self.kinds.borrow_mut().insert(name.to_string(), Kind::None);
-        let kind = if let Some((source, imported)) = self.imports.get(name) {
-            resolver.exported_kind(&self.path, source, imported)
-        } else if let Some(init) = self.variables.get(name) {
-            self.kind_of_shape(resolver, init)
-        } else {
-            Kind::None
-        };
-        self.kinds.borrow_mut().insert(name.to_string(), kind);
-        kind
+        resolver.memoized(&self.kinds, name.to_string(), || {
+            if let Some((source, imported)) = self.imports.get(name) {
+                resolver.exported_kind(&self.path, source, imported)
+            } else if let Some(init) = self.variables.get(name) {
+                self.kind_of_shape(resolver, init)
+            } else {
+                Kind::None
+            }
+        })
     }
 
     /// What a variable's initializer makes it: the factory under another
@@ -756,9 +792,21 @@ struct Resolver<'m> {
     /// What a specifier named from a module: None for one that is not the
     /// app's (a package, a missing file) or that the parser cannot read.
     resolved: RefCell<HashMap<ImportKey, Option<Rc<Module>>>>,
-    /// What a module exports under a name, by path and name; `None` while it
-    /// is being resolved, so a cycle of re-exports ends.
-    exported: RefCell<HashMap<(String, String), Kind>>,
+    /// What a module exports under a name, by path and name; one being
+    /// resolved is marked so, and a cycle of re-exports ends there.
+    exported: RefCell<HashMap<(String, String), Memo>>,
+    /// How many questions are being answered, one inside the other.
+    depth: Cell<usize>,
+    /// The outermost question a None was cut at since the question being
+    /// answered began, by its depth; `usize::MAX` for none.
+    cut: Cell<usize>,
+}
+
+/// A memoized answer: known, or being resolved at a depth.
+#[derive(Clone, Copy)]
+enum Memo {
+    Resolving(usize),
+    Known(Kind),
 }
 
 impl<'m> Resolver<'m> {
@@ -768,6 +816,8 @@ impl<'m> Resolver<'m> {
             loaded: RefCell::new(HashMap::new()),
             resolved: RefCell::new(HashMap::new()),
             exported: RefCell::new(HashMap::new()),
+            depth: Cell::new(0),
+            cut: Cell::new(usize::MAX),
         }
     }
 
@@ -813,12 +863,47 @@ impl<'m> Resolver<'m> {
             };
         };
         let key = (module.path.clone(), name.to_string());
-        if let Some(kind) = self.exported.borrow().get(&key) {
-            return *kind;
+        self.memoized(&self.exported, key, || module.export_kind(self, name))
+    }
+
+    /// `compute`'s answer for `key`, kept in `memo`. A question asked again
+    /// while it is being answered (a cycle of imports or re-exports) is
+    /// answered None, which ends the cycle; an answer that leaned on such a
+    /// None is not kept unless the question that cut it is its own or one
+    /// asked inside it. `export * from` is why: with `m` re-exporting all of
+    /// `n` and `o`, and `n` all of `m`, asking `m` asks `n`, which is cut at
+    /// `m` and finds nothing, though `n` does export what `o` declares. Kept,
+    /// that None answered a later import from `n`.
+    fn memoized<K: std::hash::Hash + Eq + Clone>(
+        &self,
+        memo: &RefCell<HashMap<K, Memo>>,
+        key: K,
+        compute: impl FnOnce() -> Kind,
+    ) -> Kind {
+        match memo.borrow().get(&key) {
+            Some(Memo::Known(kind)) => return *kind,
+            Some(Memo::Resolving(depth)) => {
+                self.cut.set(self.cut.get().min(*depth));
+                return Kind::None;
+            }
+            None => {}
         }
-        self.exported.borrow_mut().insert(key.clone(), Kind::None);
-        let kind = module.export_kind(self, name);
-        self.exported.borrow_mut().insert(key, kind);
+        let depth = self.depth.get();
+        self.depth.set(depth + 1);
+        memo.borrow_mut()
+            .insert(key.clone(), Memo::Resolving(depth));
+        let outer = self.cut.replace(usize::MAX);
+        let kind = compute();
+        self.depth.set(depth);
+        // Cut by a question still being answered further out.
+        let open = kind == Kind::None && self.cut.get() < depth;
+        if open {
+            memo.borrow_mut().remove(&key);
+            self.cut.set(outer.min(self.cut.get()));
+        } else {
+            memo.borrow_mut().insert(key, Memo::Known(kind));
+            self.cut.set(outer);
+        }
         kind
     }
 }
@@ -2280,12 +2365,92 @@ mod tests {
         // Every module but `l0b`, which nothing imports.
         assert_eq!(reads.len(), depth * 2 - 1, "{reads:?}");
         assert!(!reads.iter().any(|r| r.contains("unused")), "{reads:?}");
+        // A file is read once for each import naming it, two for a module
+        // of a layer: not once for each of the million paths to it.
+        assert!(
+            modules.loads() <= reads.len() * 2,
+            "{} reads of {} files",
+            modules.loads(),
+            reads.len()
+        );
 
         // Rooted at the factory: nothing else is read.
         let modules = FsModules::new(&root);
         let code = "import { createServerFn } from \"@tanstack/react-start\";\nimport { base } from \"@app/lib/l0a\";\nexport const a = createServerFn().handler(async () => base);\n";
         assert_eq!(super::find_server_fns(code, from, &modules).len(), 1);
         assert_eq!(modules.reads(), Vec::<String>::new());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // A call that does not end in `.handler(..)` declares nothing, so its
+    // root is not resolved: no module is read for it, none is listed as
+    // missing, and the resolver a package or alias specifier needs is not
+    // built. Resolved first, every `z.object(..)` of a server-function file
+    // built one, for each file transformed.
+    #[test]
+    fn a_call_that_is_not_a_handler_resolves_nothing() {
+        let root = temp_app(
+            "not-a-handler",
+            &[
+                ("tsconfig.json", ALIAS_TSCONFIG),
+                ("package.json", ALIAS_PACKAGE),
+                ("src/lib/db.ts", "export const db = { query: () => 1 };\n"),
+            ],
+        );
+        let code = "import { createServerFn } from \"@tanstack/react-start\";\nimport { z } from \"zod\";\nimport { db } from \"./db\";\nimport { kit } from \"@app/lib/db\";\nimport { gone } from \"./gone\";\nconst Input = z.object({ id: z.string() });\nconst rows = db.query();\nconst made = kit.make().validator(Input);\nconst lost = gone.build();\nexport const a = createServerFn().validator(Input).handler(async () => rows);\n";
+        let modules = FsModules::new(&root);
+        let names: Vec<_> = super::find_server_fns(code, "src/lib/fns.ts", &modules)
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        assert_eq!(names, ["a"]);
+        assert_eq!(modules.reads(), Vec::<String>::new());
+        assert_eq!(modules.misses(), Vec::<String>::new());
+        assert_eq!(modules.loads(), 0);
+        assert!(modules.resolver.get().is_none());
+
+        // A handler on each of them does resolve its root.
+        let code = format!("{code}export const b = db.handler(async () => 1);\nexport const c = gone.handler(async () => 1);\n");
+        assert_eq!(
+            super::find_server_fns(&code, "src/lib/fns.ts", &modules).len(),
+            1
+        );
+        assert_eq!(modules.reads(), ["src/lib/db.ts"]);
+        assert_eq!(modules.misses(), ["src/lib/gone"]);
+        assert_eq!(super::resolve_relative(&root, "src/lib/gone"), None);
+        std::fs::write(root.join("src/lib/gone.tsx"), "export const gone = 1;\n").unwrap();
+        assert_eq!(
+            super::resolve_relative(&root, "src/lib/gone").as_deref(),
+            Some("src/lib/gone.tsx")
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // `m` re-exports all of `n` and of `o`, and `n` all of `m`: both export
+    // what `o` declares, whichever is asked first. Asking `m` asks `n`, which
+    // is cut at `m`; that answer is not `n`'s, and kept as if it were, the
+    // second of two imports found nothing, in the order they were written.
+    #[test]
+    fn a_builder_behind_a_cycle_of_export_stars_is_found_from_every_module_of_it() {
+        let files = [
+            ("src/lib/m.ts", "export * from \"./n\";\nexport * from \"./o\";\n"),
+            ("src/lib/n.ts", "export * from \"./m\";\n"),
+            (
+                "src/lib/o.ts",
+                "import { createServerFn } from \"@tanstack/react-start\";\nexport const base = createServerFn();\n",
+            ),
+            ("src/lib/via.ts", "import { base } from \"./n\";\nexport const built = base.validator(() => 1);\n"),
+        ];
+        let root = temp_app("star-cycle", &files);
+        for (first, second) in [("./m", "./n"), ("./n", "./m")] {
+            let code = format!("import {{ base as one, absent }} from \"{first}\";\nimport {{ base as two }} from \"{second}\";\nimport {{ built }} from \"./via\";\nexport const a = one.handler(async () => 1);\nexport const b = two.handler(async () => 2);\nexport const c = built.handler(async () => 3);\nexport const d = absent.handler(async () => 4);\n");
+            let modules = FsModules::new(&root);
+            let names: Vec<_> = super::find_server_fns(&code, "src/lib/fns.ts", &modules)
+                .into_iter()
+                .map(|f| f.name)
+                .collect();
+            assert_eq!(names, ["a", "b", "c"], "{first} first");
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -433,12 +433,25 @@ pub(crate) fn write_server_fn_resolver(
     // functions in a file that was not edited.
     let mut reads = app_modules.reads();
     reads.sort();
+    let mut misses: Vec<String> = app_modules
+        .misses()
+        .into_iter()
+        .map(|base| format!("{SERVER_FN_MISS}{base}"))
+        .collect();
+    misses.sort();
+    reads.extend(misses);
     std::fs::write(cache.join(server_fn_reads_file(dev)), reads.join("\n"))?;
     Ok(count)
 }
 
+/// What a line of the reads file starts with when it names a relative import
+/// no file answered, app-relative as written.
+pub(crate) const SERVER_FN_MISS: &str = "?";
+
 /// Beside the resolver, the app-relative paths of the modules its scan read
-/// for an imported builder or factory, one per line.
+/// for an imported builder or factory, one per line; then, each after
+/// [`SERVER_FN_MISS`], the relative imports it asked for that no file
+/// answered, which a file created there would.
 pub(crate) fn server_fn_reads_file(dev: bool) -> &'static str {
     if dev {
         "server-fn-resolver.reads"
