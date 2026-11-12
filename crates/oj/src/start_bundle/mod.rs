@@ -428,7 +428,23 @@ pub(crate) fn write_server_fn_resolver(
          return action;\n}}\n"
     );
     std::fs::write(cache.join(server_fn_resolver_file(dev)), out)?;
+    // The modules the scan read to answer (a builder's module, the modules
+    // re-exporting it): an edit to one may change which calls are server
+    // functions in a file that was not edited.
+    let mut reads = app_modules.reads();
+    reads.sort();
+    std::fs::write(cache.join(server_fn_reads_file(dev)), reads.join("\n"))?;
     Ok(count)
+}
+
+/// Beside the resolver, the app-relative paths of the modules its scan read
+/// for an imported builder or factory, one per line.
+pub(crate) fn server_fn_reads_file(dev: bool) -> &'static str {
+    if dev {
+        "server-fn-resolver.reads"
+    } else {
+        "server-fn-resolver.build.reads"
+    }
 }
 
 /// The resolver's file in the Start cache: dev's, or the build's.

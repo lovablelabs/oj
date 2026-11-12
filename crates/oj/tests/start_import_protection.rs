@@ -1656,20 +1656,26 @@ fn a_create_start_of_the_apps_own_makes_no_start_instance() {
 /// resolves each import with Vite's `this.resolve` and reads the module's
 /// exports, `default` included (`resolveImportKind`, `findExportInModule`),
 /// so the handler, and the `*.server.*` module only it uses, leave the
-/// client. The builder module is one file and the fixture's aliases both
-/// point at `src/lib`.
+/// client. A namespace import of the aliased module names what it exports,
+/// the factory it re-exports included (`kit.make(..)`, the compiler's
+/// `resolveCalleeKind`). The builder module is one file and the fixture's
+/// aliases both point at `src/lib`.
 const AUTHED_BUILDER: &str = r#"import { createServerFn } from "@tanstack/react-start";
 
+export { createServerFn as make } from "@tanstack/react-start";
 export const authedFn = createServerFn({ method: "POST" });
 export default authedFn;
 "#;
 
 const ALIASED_FNS: &str = r##"import { authedFn } from "@app/lib/authed";
 import viaImports from "#lib/authed";
+import * as kit from "@app/lib/authed";
 import { check } from "./auth.server";
 
 export const viaPaths = authedFn.handler(async () => `via-paths:${check()}`);
 export const viaDefault = viaImports.handler(async () => `via-default:${check()}`);
+export const viaKit = kit.make({ method: "POST" }).handler(async () => `via-kit:${check()}`);
+export const viaMember = kit.authedFn.handler(async () => `via-member:${check()}`);
 "##;
 
 const AUTH_SERVER: &str = r#"import { getRequestHeader } from "@tanstack/react-start/server";
@@ -1677,7 +1683,13 @@ const AUTH_SERVER: &str = r#"import { getRequestHeader } from "@tanstack/react-s
 export const check = () => getRequestHeader("x-user") ?? "auth-server-secret";
 "#;
 
-const ALIASED_NAMES: [&str; 2] = ["viaPaths", "viaDefault"];
+/// Each function and the text only its handler holds.
+const ALIASED_NAMES: [(&str, &str); 4] = [
+    ("viaPaths", "via-paths:"),
+    ("viaDefault", "via-default:"),
+    ("viaKit", "via-kit:"),
+    ("viaMember", "via-member:"),
+];
 
 fn aliased_builder_files() -> [(&'static str, String); 4] {
     [
@@ -1687,10 +1699,10 @@ fn aliased_builder_files() -> [(&'static str, String); 4] {
         (
             "src/routes/about.tsx",
             about(
-                "import { viaPaths, viaDefault } from \"../lib/aliased.functions\";",
+                "import { viaPaths, viaDefault, viaKit, viaMember } from \"../lib/aliased.functions\";",
                 r#"const [result, setResult] = useState("");
   useEffect(() => {
-    Promise.all([viaPaths(), viaDefault()]).then(
+    Promise.all([viaPaths(), viaDefault(), viaKit(), viaMember()]).then(
       (r) => setResult(r.join("|")),
       (e) => setResult("error " + String(e)),
     );
@@ -1713,19 +1725,9 @@ fn a_builder_imported_through_an_alias_or_as_default_keeps_its_handler_out_of_th
         !client_has(&app.0, "auth-server-secret"),
         "the client holds the server module"
     );
-    for name in ALIASED_NAMES {
+    for (name, handler_text) in ALIASED_NAMES {
         assert!(
-            !client_has(
-                &app.0,
-                &format!(
-                    "via-{}:",
-                    if name == "viaPaths" {
-                        "paths"
-                    } else {
-                        "default"
-                    }
-                )
-            ),
+            !client_has(&app.0, handler_text),
             "the client holds the handler of {name}"
         );
         assert!(
@@ -1752,11 +1754,11 @@ async fn dev_hydrates_a_page_calling_server_fns_built_on_an_aliased_or_default_b
         dev.output()
     );
     // The server side registered each one under its id, with its handler.
-    for name in ALIASED_NAMES {
+    for (name, handler_text) in ALIASED_NAMES {
         let id = oj_compiler::server_fns::server_fn_id("src/lib/aliased.functions.ts", name);
         let (status, body) = dev.call(&id);
         assert!(
-            status == 200 && body.contains("auth-server-secret"),
+            status == 200 && body.contains(&format!("{handler_text}auth-server-secret")),
             "{name} answered {status} {body:?}\n{}",
             dev.output()
         );
@@ -1773,7 +1775,7 @@ async fn dev_hydrates_a_page_calling_server_fns_built_on_an_aliased_or_default_b
         .await;
     let answered = page
         .poll(
-            r##"document.querySelector("#secret")?.textContent === "via-paths:auth-server-secret|via-default:auth-server-secret""##,
+            r##"document.querySelector("#secret")?.textContent === "via-paths:auth-server-secret|via-default:auth-server-secret|via-kit:auth-server-secret|via-member:auth-server-secret""##,
             Duration::from_secs(30),
         )
         .await;
