@@ -45,6 +45,11 @@ pub(crate) struct Facts {
     pub react_refresh: bool,
     pub cloudflare: Option<CloudflareEnv>,
     pub worker: WorkerOptions,
+    /// A build's `output.entryFileNames` and `output.chunkFileNames` once
+    /// the plugins' `outputOptions` hooks ran: a pattern or a function
+    /// handle, `None` where neither the config nor a plugin names them.
+    pub entry_file_names: Option<Value>,
+    pub chunk_file_names: Option<Value>,
     /// How many resolveId hooks run before Vite's core resolver, and after.
     pub resolve_id_pre: u64,
     pub resolve_id_post: u64,
@@ -73,6 +78,8 @@ impl Facts {
                 .unwrap_or(false),
             cloudflare: v.get("cloudflare").and_then(CloudflareEnv::from_json),
             worker: WorkerOptions::from_json(v.get("worker").unwrap_or(&Value::Null)),
+            entry_file_names: v.get("entryFileNames").filter(|e| !e.is_null()).cloned(),
+            chunk_file_names: v.get("chunkFileNames").filter(|e| !e.is_null()).cloned(),
             resolve_id_pre: v["resolveIdPhases"]["pre"].as_u64().unwrap_or(0),
             resolve_id_post: v["resolveIdPhases"]["post"].as_u64().unwrap_or(0),
         }

@@ -232,3 +232,106 @@ fn a_plugin_transforms_starts_manifest_in_the_server_bundle() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// Where the client's chunks are written is the app's to say, as under
+/// `vite build`: `output.chunkFileNames` of the client environment (a
+/// function of the chunk here), then every plugin's `outputOptions` hook,
+/// each taking the options the last one returned: a plugin wrapping
+/// `chunkFileNames` to give some chunks a directory of their own.
+const FILE_NAMES_PROBE: &str = r#"
+import { writeFileSync as writeNames } from "node:fs";
+function fileNamesProbe(): Plugin {
+  let root = "";
+  return {
+    name: "file-names-probe",
+    apply: "build",
+    configResolved(c) {
+      root = c.root;
+    },
+    outputOptions(options) {
+      if (this.environment.name !== "client") return null;
+      const original = options.chunkFileNames;
+      writeNames(
+        `${root}/output-options.json`,
+        JSON.stringify({ entry: options.entryFileNames, chunk: typeof original }),
+      );
+      return {
+        ...options,
+        chunkFileNames: (chunk) => {
+          const pattern = typeof original === "function" ? original(chunk) : original;
+          return chunk.isDynamicEntry ? pattern.replace("assets/", "assets/lazy/") : pattern;
+        },
+      };
+    },
+  };
+}
+"#;
+
+#[test]
+fn chunk_file_names_come_from_the_config_and_the_output_options_hooks() {
+    let Some(root) = app("chunk-file-names") else {
+        return;
+    };
+    let config = root.join("vite.config.ts");
+    let source = std::fs::read_to_string(&config).unwrap();
+    let client = r#"    client: { define: { __FIXTURE_SIDE__: JSON.stringify("client-side") } },"#;
+    assert!(
+        source.contains(client),
+        "the fixture's client environment moved"
+    );
+    let source = source
+        .replacen(
+            client,
+            r#"    client: {
+      define: { __FIXTURE_SIDE__: JSON.stringify("client-side") },
+      build: {
+        rolldownOptions: {
+          output: { chunkFileNames: (chunk) => `assets/${chunk.name.replace(/^_/, "app-")}-[hash].js` },
+        },
+      },
+    },"#,
+            1,
+        )
+        .replacen("  plugins: [\n", "  plugins: [\n    fileNamesProbe(),\n", 1);
+    std::fs::write(&config, format!("{source}{FILE_NAMES_PROBE}")).unwrap();
+    build(&root);
+
+    // The hook took Vite's entry pattern and the config's function.
+    let options: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(root.join("output-options.json")).unwrap())
+            .unwrap();
+    assert_eq!(options["entry"], "assets/[name]-[hash].js", "{options}");
+    assert_eq!(options["chunk"], "function", "{options}");
+
+    let names = |dir: &str| -> Vec<String> {
+        std::fs::read_dir(root.join(dir))
+            .map(|d| {
+                d.flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    // The fixture's lazy chunk (`_fixture-throws`): renamed by the config's
+    // function, moved by the hook's.
+    let lazy = names("dist/client/assets/lazy");
+    assert!(
+        lazy.iter()
+            .any(|f| f.starts_with("app-fixture-throws-") && f.ends_with(".js")),
+        "the lazy chunk under assets/lazy: {lazy:?}, beside {:?}",
+        names("dist/client/assets")
+    );
+    // The entry keeps its place and imports the chunk where it was written.
+    let assets = names("dist/client/assets");
+    let entry = assets
+        .iter()
+        .find(|f| f.starts_with("client-") && f.ends_with(".js"))
+        .unwrap_or_else(|| panic!("the client entry: {assets:?}"));
+    let code = std::fs::read_to_string(root.join("dist/client/assets").join(entry)).unwrap();
+    assert!(
+        code.contains(&format!("./lazy/{}", lazy[0])),
+        "the entry imports ./lazy/{}",
+        lazy[0]
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
