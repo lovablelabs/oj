@@ -258,6 +258,141 @@ async fn a_rewrite_of_what_every_page_fetched_is_still_dropped() {
     assert_eq!(flush(&server).await, 0, "the flush released a rewrite of X");
 }
 
+/// Rewrites the module the way an atomic save does: the bytes go to a
+/// temporary file beside it, renamed over the module (a new inode, the
+/// same path).
+fn rename_over(app: &App, v: &str) {
+    let path = app.root.join(COLOR);
+    let tmp = path.with_extension("js.tmp");
+    std::fs::write(&tmp, color(v)).unwrap();
+    std::fs::rename(&tmp, &path).unwrap();
+}
+
+/// A rewrite that changed nothing (the bytes the pages have, written again:
+/// a new mtime or inode under the same content) is dropped as no change,
+/// and a real write a moment later is still held. The watcher loses no
+/// event to a per-path throttle, so the second write reaches the gate,
+/// which judges it by the bytes it reads at batch time: `gap` past the 10ms
+/// quiet window, the write forms its own batch; inside it, both land in one
+/// batch and the file already holds the new bytes when it is read. A
+/// watcher that silenced a path it had reported moments before would make
+/// the no-op swallow the edit, every read stale until a restart.
+async fn a_noop_rewrite_then_a_write(gap: Duration, rewrite: fn(&App, &str)) {
+    let (app, server) = gated_app().await;
+    release(&app, &server, "X", 1).await;
+
+    rewrite(&app, "X");
+    tokio::time::sleep(gap).await;
+    app.write(&[(COLOR, &color("Y"))]);
+    wait_pending(
+        &server,
+        1,
+        &format!(
+            "the edit to Y, {}ms after a no-op rewrite of X",
+            gap.as_millis()
+        ),
+    )
+    .await;
+    assert_eq!(flush(&server).await, 1, "the flush released Y");
+    assert!(
+        page_fetch(&server, 2).await.contains("\"Y\""),
+        "the page shows Y"
+    );
+}
+
+fn write_in_place(app: &App, v: &str) {
+    app.write(&[(COLOR, &color(v))]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_write_right_after_a_noop_rewrite_is_still_held() {
+    a_noop_rewrite_then_a_write(Duration::from_millis(20), write_in_place).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_write_inside_the_quiet_window_of_a_noop_rewrite_is_still_held() {
+    a_noop_rewrite_then_a_write(Duration::from_millis(5), write_in_place).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_write_right_after_a_noop_rename_is_still_held() {
+    a_noop_rewrite_then_a_write(Duration::from_millis(20), rename_over).await;
+}
+
+/// The no-op alone, as a rename: nothing is held, neither the module (the
+/// bytes the pages have) nor the temporary file that was renamed away.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_noop_rename_alone_is_dropped() {
+    let (app, server) = gated_app().await;
+    release(&app, &server, "X", 1).await;
+
+    rename_over(&app, "X");
+    tokio::time::sleep(SETTLED).await;
+    let status = server.text("/__hmr_gate").await;
+    assert_eq!(
+        pending(&server).await,
+        0,
+        "a rename over X with X was held: {status}"
+    );
+    assert_eq!(
+        flush(&server).await,
+        0,
+        "the flush released a rename over X"
+    );
+}
+
+/// A known file deleted under the gate is held: its importers need the
+/// reload. Gone at batch time like an atomic save's temporary file, but not
+/// born in the batch, which is what tells the two apart.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_deleted_module_is_held() {
+    let (app, server) = gated_app().await;
+    release(&app, &server, "X", 1).await;
+
+    std::fs::remove_file(app.root.join(COLOR)).unwrap();
+    wait_pending(&server, 1, "the deletion of the module").await;
+    assert_eq!(flush(&server).await, 1, "the flush released the deletion");
+}
+
+/// A file created under the gate and still there at batch time is held: an
+/// import that failed to resolve may find it now. Born in the batch like an
+/// atomic save's temporary file, but not gone.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_created_module_is_held() {
+    let (app, server) = gated_app().await;
+    release(&app, &server, "X", 1).await;
+
+    app.write(&[("src/new.js", "export const fresh = true;\n")]);
+    wait_pending(&server, 1, "the new module").await;
+    assert_eq!(flush(&server).await, 1, "the flush released the new module");
+}
+
+/// An atomic save with new content holds the target alone, not the
+/// temporary file renamed away beside it, and the flush releases the new
+/// bytes.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_atomic_save_of_new_content_holds_the_target_alone() {
+    let (app, server) = gated_app().await;
+    release(&app, &server, "X", 1).await;
+
+    rename_over(&app, "Y");
+    tokio::time::sleep(SETTLED).await;
+    let status: serde_json::Value =
+        serde_json::from_str(&server.text("/__hmr_gate").await).unwrap();
+    let held: Vec<&String> = status["pending"].as_object().unwrap().keys().collect();
+    // The watcher spells the root as the file system does (`/private/var`
+    // for `/var`): the file name is what the paths share.
+    assert!(
+        held.len() == 1 && held[0].ends_with("/src/color.js"),
+        "the save held the target alone: {status}"
+    );
+    assert_eq!(flush(&server).await, 1, "the flush released the save");
+    assert!(
+        page_fetch(&server, 2).await.contains("\"Y\""),
+        "the page shows Y"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_edit_reverted_before_any_page_fetched_it_drops_its_hold() {
     let (app, server) = gated_app().await;
