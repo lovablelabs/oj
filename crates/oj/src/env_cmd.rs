@@ -27,6 +27,9 @@ pub const USAGE: i32 = 2;
 /// `--wait` ran out of time; the last status was still printed.
 pub const TIMED_OUT: i32 = 3;
 
+/// How long one request to the dev server may take.
+const REQUEST: Duration = Duration::from_secs(30);
+
 /// How often `--wait` asks again.
 const POLL: Duration = Duration::from_millis(250);
 
@@ -41,7 +44,9 @@ pub enum EnvCommand {
         keys: Vec<String>,
     },
     /// Set values, as `KEY=VALUE` or `KEY VALUE` pairs. A set value wins
-    /// over the values file's until `unset`.
+    /// over the values file's until `unset`. A value that starts with `-`
+    /// is written `KEY=-value`, or after `--` (`set -- KEY -value`), with
+    /// the flags before it.
     Set {
         #[command(flatten)]
         opts: Opts,
@@ -68,12 +73,13 @@ pub struct Opts {
     /// `KEY=value` lines.
     #[arg(long)]
     pub json: bool,
-    /// Return once every key asked about has a runtime value (set, or from
-    /// the values file: a `.env` literal does not count), asking again until
-    /// then; exit 3 when `--timeout` passes first.
+    /// Return once the keys have a runtime value (set, or from the values
+    /// file: a `.env` literal does not count), asking again until then: the
+    /// keys `get` names, else every key (after `set` too, which waits for
+    /// the ones it did not set); exit 3 when `--timeout` passes first.
     #[arg(long)]
     pub wait: bool,
-    /// How long `--wait` waits, in seconds.
+    /// How long `--wait` waits, in seconds (`inf` for no limit).
     #[arg(long, default_value = "30", value_name = "SECONDS")]
     pub timeout: f64,
 }
@@ -95,8 +101,16 @@ pub async fn run(command: EnvCommand, default_root: fn() -> PathBuf) -> i32 {
             (opts, Vec::new(), Some(updates))
         }
     };
+    if opts.timeout.is_nan() || opts.timeout < 0.0 {
+        eprintln!("oj env: --timeout takes a number of seconds, zero or more");
+        return USAGE;
+    }
+    // None: no limit (`inf`, or more seconds than a clock holds).
+    let deadline = Duration::try_from_secs_f64(opts.timeout)
+        .ok()
+        .and_then(|timeout| Instant::now().checked_add(timeout));
     let root = opts.root.clone().unwrap_or_else(default_root);
-    let mut status = match oj_server::env_via_server(&root, updates.as_ref()).await {
+    let mut status = match oj_server::env_via_server(&root, updates.as_ref(), REQUEST).await {
         Ok(status) => status,
         Err(e) => {
             eprintln!("oj env: {e}");
@@ -112,9 +126,9 @@ pub async fn run(command: EnvCommand, default_root: fn() -> PathBuf) -> i32 {
     }
     let mut code = OK;
     if opts.wait {
-        let deadline = Instant::now() + Duration::from_secs_f64(opts.timeout.max(0.0));
         while !bound(&status, &only) {
-            if Instant::now() >= deadline {
+            let left = deadline.map(|d| d.saturating_duration_since(Instant::now()));
+            if left.is_some_and(|left| left.is_zero()) {
                 eprintln!(
                     "oj env: still {} after {}s",
                     status["state"].as_str().unwrap_or("unbound"),
@@ -123,8 +137,10 @@ pub async fn run(command: EnvCommand, default_root: fn() -> PathBuf) -> i32 {
                 code = TIMED_OUT;
                 break;
             }
-            tokio::time::sleep(POLL).await;
-            status = match oj_server::env_via_server(&root, None).await {
+            tokio::time::sleep(left.map_or(POLL, |left| left.min(POLL))).await;
+            // A request does not outlast the wait it is part of.
+            let request = left.map_or(REQUEST, |left| left.max(POLL).min(REQUEST));
+            status = match oj_server::env_via_server(&root, None, request).await {
                 Ok(status) => status,
                 Err(e) => {
                     eprintln!("oj env: {e}");
@@ -212,7 +228,7 @@ pub(crate) fn render(status: &serde_json::Value, only: &[String]) -> String {
             Some(value) => {
                 out.push_str(name);
                 out.push('=');
-                out.push_str(value);
+                out.push_str(&dotenv_value(value));
             }
             None => {
                 out.push_str("# ");
@@ -222,6 +238,27 @@ pub(crate) fn render(status: &serde_json::Value, only: &[String]) -> String {
         }
         out.push('\n');
     }
+    out
+}
+
+/// `value` as a dotenv file holds it on one line: as it is, unless it holds a
+/// line break, which only a double-quoted value can (`\n`, with `\` and `"`
+/// escaped beside it).
+fn dotenv_value(value: &str) -> String {
+    if !value.contains(['\n', '\r']) {
+        return value.to_string();
+    }
+    let mut out = String::from("\"");
+    for c in value.chars() {
+        match c {
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
     out
 }
 
@@ -310,6 +347,18 @@ mod tests {
     fn render_prints_dotenv_lines_and_comments_out_unset_keys() {
         let status = status("partial", &[("A", Some("1")), ("B", None), ("C", Some(""))]);
         assert_eq!(render(&status, &[]), "A=1\n# B unset\nC=\n");
+    }
+
+    #[test]
+    fn a_value_with_a_line_break_stays_on_one_dotenv_line() {
+        let status = status(
+            "bound",
+            &[("A", Some("one\ntwo \"q\" \\ \r")), ("B", Some("x=\"y\""))],
+        );
+        assert_eq!(
+            render(&status, &[]),
+            "A=\"one\\ntwo \\\"q\\\" \\\\ \\r\"\nB=x=\"y\"\n"
+        );
     }
 
     #[test]

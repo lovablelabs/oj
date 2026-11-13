@@ -54,6 +54,9 @@ impl EnvDefines {
                 .plain_keys
                 .iter()
                 .any(|k| source_text.contains(k.as_str()))
+            // With runtime keys, a read broken across lines too: it is
+            // redirected or left reading nothing, never baked.
+            || (self.runtime.is_some() && spaced_env_read(source_text))
     }
 
     /// The prebuilt replacer config (an `Arc` bump to clone), or `None` when
@@ -182,8 +185,47 @@ impl RuntimeDefines {
                 _ => return true,
             }
         }
-        false
+        spaced_env_read(source)
     }
+}
+
+/// Whether `source` writes `import.meta.env` with whitespace between its
+/// parts (`import.meta\n  .env.KEY`, as a formatter breaks a long chain):
+/// the replacer reads the tree and redirects it all the same, so the module
+/// needs the import; which key follows is not looked at.
+fn spaced_env_read(source: &str) -> bool {
+    let bytes = source.as_bytes();
+    let skip_ws = |mut at: usize| {
+        while bytes.get(at).is_some_and(u8::is_ascii_whitespace) {
+            at += 1;
+        }
+        at
+    };
+    // `at` just past a word: the next word after `.`, whitespace allowed.
+    let member = |at: usize, word: &str| {
+        let dot = skip_ws(at);
+        (bytes.get(dot) == Some(&b'.'))
+            .then(|| skip_ws(dot + 1))
+            .filter(|start| source[*start..].starts_with(word))
+            .map(|start| start + word.len())
+    };
+    let mut rest = 0;
+    while let Some(found) = source[rest..].find("import") {
+        let after = rest + found + "import".len();
+        rest = after;
+        let Some(meta) = member(after, "meta") else {
+            continue;
+        };
+        let Some(env) = member(meta, "env") else {
+            continue;
+        };
+        // The unspaced form was scanned key by key above.
+        let ident = |b: &u8| *b == b'$' || *b == b'_' || b.is_ascii_alphanumeric();
+        if env - after > ".meta.env".len() && !bytes.get(env).is_some_and(ident) {
+            return true;
+        }
+    }
+    false
 }
 
 /// The SSR define list: the shared list with the `SSR` flag flipped, then

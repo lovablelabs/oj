@@ -36,6 +36,13 @@ fn defines() -> Vec<(String, String)> {
 }
 
 fn env_with(file: Option<PathBuf>, ready: Option<PathBuf>) -> RuntimeEnv {
+    let env = booting_env(file, ready);
+    env.serving();
+    env
+}
+
+/// As built, before the server listens.
+fn booting_env(file: Option<PathBuf>, ready: Option<PathBuf>) -> RuntimeEnv {
     RuntimeEnv::new(
         RuntimeEnvConfig {
             keys: supabase_keys(),
@@ -243,17 +250,29 @@ fn read_file_reports_absent_oversize_and_non_regular_files() {
     ));
 }
 
+// A mounted volume publishes its files as symlinks (a Kubernetes secret or
+// config map): refused, such a file was invalid for good and every document
+// answered the hold page.
 #[cfg(unix)]
 #[test]
-fn a_symlinked_values_file_is_refused() {
+fn a_symlinked_values_file_is_read_through_the_link() {
     let dir = tempfile::tempdir().unwrap();
     let keys = vec![key("VITE_A", "a")];
     let target = dir.path().join("real.json");
     std::fs::write(&target, r#"{"a":"x"}"#).unwrap();
     let link = dir.path().join("env.json");
     std::os::unix::fs::symlink(&target, &link).unwrap();
+    let (values, state) = read_file(&link, &keys);
+    assert_eq!(state, FileState::Complete);
+    assert_eq!(values["VITE_A"], "x");
+    // A link to nothing is no file; one to a directory is no regular file.
+    let dangling = dir.path().join("dangling.json");
+    std::os::unix::fs::symlink(dir.path().join("nope.json"), &dangling).unwrap();
+    assert_eq!(read_file(&dangling, &keys).1, FileState::Absent);
+    let to_dir = dir.path().join("dir.json");
+    std::os::unix::fs::symlink(dir.path(), &to_dir).unwrap();
     assert!(matches!(
-        read_file(&link, &keys).1,
+        read_file(&to_dir, &keys).1,
         FileState::Invalid(e) if e.contains("not a regular file")
     ));
 }
@@ -415,9 +434,10 @@ fn binding_states_follow_the_file_and_the_sets() {
     assert_eq!(env.state(), Binding::Pending);
     assert!(env.values().is_empty());
 
-    // Removed: back to the literals.
+    // Removed: back to the literals. No value was in force, but documents
+    // serve again, so the pages are told.
     std::fs::remove_file(&file).unwrap();
-    assert!(!env.load_file(), "nothing was in force");
+    assert!(env.load_file(), "documents stopped waiting");
     assert_eq!(env.state(), Binding::Unbound);
 }
 
@@ -809,4 +829,305 @@ fn the_banner_names_the_keys_and_the_source() {
     std::fs::write(&file, "nope").unwrap();
     let banner = env_with(Some(file), None).banner();
     assert!(banner.contains("(invalid, not JSON"), "{banner}");
+}
+
+// ---- second review ---------------------------------------------------------------------
+
+// The header rule alone let any machine that reaches the port set the
+// values: `curl -X POST http://<lan-ip>:5173/@oj/env` has no Origin. The
+// connection must come from this machine, and a browser's request is refused
+// whatever its origin (a page's own same-origin GET has no Origin either).
+#[test]
+fn only_this_machine_and_no_browser_may_control_the_values() {
+    let headers = HeaderMap::new();
+    let ip = |s: &str| Some(s.parse::<std::net::IpAddr>().unwrap());
+    assert!(control_caller(&headers, None), "the router driven directly");
+    assert!(control_caller(&headers, ip("127.0.0.1")));
+    assert!(control_caller(&headers, ip("::1")));
+    assert!(control_caller(&headers, ip("::ffff:127.0.0.1")));
+    // No address of this machine: documentation ranges, and the unspecified.
+    for remote in [
+        "192.0.2.20",
+        "203.0.113.5",
+        "::ffff:192.0.2.20",
+        "2001:db8::1",
+        "0.0.0.0",
+    ] {
+        assert!(!control_caller(&headers, ip(remote)), "{remote}");
+    }
+    for (name, value) in [
+        ("sec-fetch-site", "same-origin"),
+        ("sec-fetch-site", "none"),
+        ("origin", "http://localhost:5199"),
+        ("x-forwarded-host", "preview.example"),
+        // A proxy on this machine relaying a caller that is not.
+        ("x-forwarded-for", "203.0.113.5"),
+        ("forwarded", "for=203.0.113.5"),
+        ("x-real-ip", "203.0.113.5"),
+        ("via", "1.1 tunnel"),
+    ] {
+        let mut browser = HeaderMap::new();
+        browser.insert(name, value.parse().unwrap());
+        assert!(
+            !control_caller(&browser, ip("127.0.0.1")),
+            "{name}: {value}"
+        );
+    }
+}
+
+// The file removed while pending: no value changed, yet documents serve
+// again, and a tab on the hold page must be told. A change that leaves the
+// documents waiting, or that moves nothing, tells nobody.
+#[test]
+fn leaving_pending_reloads_the_pages_though_no_value_changed() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("env.json");
+    std::fs::write(&file, r#"{"pending":true}"#).unwrap();
+    let env = env_with(Some(file.clone()), None);
+    assert!(env.pending());
+    assert!(!env.load_file(), "still pending, nothing moved");
+
+    std::fs::write(&file, "not json").unwrap();
+    assert!(!env.load_file(), "invalid holds the documents too");
+    assert!(env.pending());
+
+    std::fs::remove_file(&file).unwrap();
+    assert!(env.load_file(), "documents serve again");
+    assert_eq!(env.state(), Binding::Unbound);
+    assert_eq!(env.generation(), 0, "no value changed");
+    assert!(!env.load_file(), "and only once");
+
+    // The same through a set that covers what the file lacks.
+    std::fs::write(&file, r#"{"pending":true}"#).unwrap();
+    assert!(!env.load_file());
+    assert!(env.pending());
+    assert!(env
+        .set(updates(&[
+            ("VITE_SUPABASE_URL", Some("/a")),
+            ("VITE_SUPABASE_PUBLISHABLE_KEY", Some("k")),
+            ("VITE_SUPABASE_PROJECT_ID", Some("p")),
+        ]))
+        .unwrap());
+    assert_eq!(env.state(), Binding::Bound);
+}
+
+// A stopped server serves no value: the ready file it wrote goes with it.
+#[test]
+fn the_ready_file_goes_when_the_server_does() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("env.json");
+    let ready = dir.path().join("ready");
+    std::fs::write(&file, bound_json()).unwrap();
+    let env = env_with(Some(file.clone()), Some(ready.clone()));
+    assert!(ready.exists());
+    drop(env);
+    assert!(!ready.exists(), "left behind, it said ready with no server");
+
+    // One that was never written is not this server's to remove.
+    std::fs::write(&file, r#"{"pending":true}"#).unwrap();
+    let env = env_with(Some(file), Some(ready.clone()));
+    std::fs::write(&ready, "someone else's\n").unwrap();
+    drop(env);
+    assert!(ready.exists());
+}
+
+// A classic worker cannot hold a static import: it loads the script form of
+// the module, which has no export. One of unknown type tries that, and a
+// module worker keeps the import.
+#[test]
+fn a_classic_worker_loads_the_values_with_import_scripts() {
+    let env = env();
+    let compiled =
+        "import \"/@oj/env.js\";\nself.postMessage(globalThis.__oj_env.VITE_SUPABASE_URL);\n";
+    let body = |url: &str| worker_body(&env, url, compiled.to_string());
+    assert_eq!(body("/src/w.js?worker_file&type=module"), compiled);
+    assert_eq!(body("/src/w.js"), compiled);
+    assert_eq!(
+        body("/src/w.js?type=classic"),
+        compiled,
+        "not a worker file"
+    );
+    let classic = body("/src/w.js?worker_file&type=classic");
+    assert!(
+        classic.starts_with("importScripts(\"/@oj/env.js?classic\");\nself.postMessage("),
+        "{classic}"
+    );
+    assert!(!classic.contains("import \""), "{classic}");
+    assert_eq!(classic.lines().count(), compiled.lines().count());
+
+    // In a block, so no name is left in the worker's scope, where the
+    // worker's own top-level `env` would be a redeclaration.
+    let script = env.classic_js();
+    assert!(!script.contains("export"), "{script}");
+    assert!(script.starts_with("{\nconst env = {"), "{script}");
+    assert!(script.trim_end().ends_with('}'), "{script}");
+    assert!(
+        script.contains("Object.defineProperty(globalThis, \"__oj_env\""),
+        "{script}"
+    );
+    let parses = |code: &str, kind: oxc_span::SourceType| {
+        let allocator = oxc_allocator::Allocator::default();
+        let parsed = oxc_parser::Parser::new(&allocator, code, kind).parse();
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "{:?}\n{code}",
+            parsed.diagnostics
+        );
+    };
+    parses(
+        &format!("{script}const env = 1;\n"),
+        oxc_span::SourceType::cjs(),
+    );
+
+    // A worker of unknown type gets the script itself, on the import's
+    // line: a module worker runs it as a classic one does (`importScripts`
+    // throws there, which left every value undefined).
+    let unknown = body("/src/w.js?worker_file&type=ignore");
+    assert_eq!(
+        unknown.lines().count(),
+        compiled.lines().count(),
+        "{unknown}"
+    );
+    assert!(unknown.starts_with("{ const env = {"), "{unknown}");
+    assert!(!unknown.contains("importScripts"), "{unknown}");
+    assert!(!unknown.contains("import \""), "{unknown}");
+    assert!(
+        unknown.contains("\"VITE_SUPABASE_URL\": \"https://baked.supabase.co\""),
+        "{unknown}"
+    );
+    parses(&unknown, oxc_span::SourceType::cjs());
+    parses(&unknown, oxc_span::SourceType::mjs());
+}
+
+// The module carries the generation it was rendered at and asks for the one
+// in force once the page has loaded: a page handed the old values with no
+// socket open yet reloads by itself.
+#[test]
+fn the_module_checks_the_generation_it_was_rendered_at() {
+    let env = env();
+    let js = env.module_js();
+    parse_module(&js);
+    assert!(js.contains("fetch(\"/@oj/env.js?generation\""), "{js}");
+    assert!(js.contains("g === \"0\""), "{js}");
+    // Once for a generation in a tab: a stale copy of the module cannot
+    // reload the page over and over.
+    assert!(
+        js.contains("sessionStorage.getItem(\"__oj_env_reloaded\") === g"),
+        "{js}"
+    );
+    env.set(updates(&[("VITE_SUPABASE_URL", Some("/a"))]))
+        .unwrap();
+    assert!(env.module_js().contains("g === \"1\""));
+}
+
+#[test]
+fn a_write_beside_the_values_file_is_told_from_one_elsewhere() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("env.json");
+    let env = env_with(Some(file.clone()), None);
+    assert!(env.beside_file(&dir.path().join("..data")));
+    assert!(env.beside_file(&file));
+    assert!(!env.beside_file(&dir.path().join("sub/env.json")));
+    assert!(!env.beside_file(dir.path()));
+    assert!(!super::RuntimeEnv::beside_file(
+        &env_with(None, None),
+        &file
+    ));
+}
+
+// A directory missing at boot has no real path yet: once it is watched the
+// file is known by the path the watcher names it with.
+#[cfg(unix)]
+#[test]
+fn the_watchers_name_for_the_file_is_taken_again_once_its_directory_exists() {
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().canonicalize().unwrap().join("real");
+    let link = dir.path().join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let env = env_with(Some(link.join("state/env.json")), None);
+    let watched = real.join("state/env.json");
+    assert!(!env.is_file(&watched), "no directory, no real path");
+    std::fs::create_dir_all(real.join("state")).unwrap();
+    env.armed();
+    assert!(env.is_file(&watched));
+    assert!(env.beside_file(&real.join("state/other")));
+}
+
+// What a restarted server hands the next: its set values, taken for the
+// keys still listed and counted as set, so a config or `.env` edit does not
+// put a key back on the file's value. Anything else of it is ignored.
+#[test]
+fn set_values_handed_over_a_restart_are_set_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("env.json");
+    std::fs::write(&file, bound_json()).unwrap();
+    let env = env_with(Some(file), None);
+    env.restore_set(r#"{"VITE_SUPABASE_URL":"/_port_9000","VITE_GONE":"x"}"#);
+    let status = env.status();
+    assert_eq!(status["keys"][0]["value"], "/_port_9000", "{status}");
+    assert_eq!(status["keys"][0]["source"], "set");
+    assert_eq!(status["keys"][1]["source"], "file");
+    assert_eq!(env.state(), Binding::Bound);
+
+    let env = env_with(None, None);
+    for bad in ["", "not json", "[1]", r#"{"VITE_SUPABASE_URL":1}"#] {
+        env.restore_set(bad);
+        assert!(env.values().is_empty(), "{bad}");
+    }
+}
+
+// A server bound to one of the machine's own addresses is reached there by
+// `oj env`, so its connection comes from that address, not from loopback.
+#[test]
+fn an_address_of_this_machine_is_a_local_caller() {
+    let headers = HeaderMap::new();
+    // The address this machine reaches the network from, when it has one.
+    let own = std::net::UdpSocket::bind("0.0.0.0:0")
+        .and_then(|s| s.connect("192.0.2.1:9").and_then(|()| s.local_addr()))
+        .map(|a| a.ip())
+        .ok()
+        .filter(|ip| !ip.is_loopback() && !ip.is_unspecified());
+    if let Some(own) = own {
+        assert!(control_caller(&headers, Some(own)), "{own}");
+    }
+    assert!(!control_caller(
+        &headers,
+        Some("192.0.2.77".parse().unwrap())
+    ));
+}
+
+// Ready says a server answers with every value: it is not written before
+// the server listens (a consumer saw it and was refused the connection, and
+// a boot that failed left it behind).
+#[test]
+fn the_ready_file_waits_for_the_server_to_listen() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("env.json");
+    let ready = dir.path().join("ready");
+    std::fs::write(&file, bound_json()).unwrap();
+    let env = booting_env(Some(file.clone()), Some(ready.clone()));
+    assert_eq!(env.state(), Binding::Bound);
+    assert!(!ready.exists(), "bound, but nothing listens yet");
+    env.load_file();
+    assert!(!ready.exists());
+    env.serving();
+    assert!(ready.exists());
+}
+
+// The file is read no further than the size limit, whatever it was when
+// first looked at.
+#[test]
+fn the_values_file_is_read_no_further_than_the_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let keys = vec![key("VITE_A", "a")];
+    let file = dir.path().join("env.json");
+    let filler = "x".repeat(MAX_FILE_BYTES as usize);
+    std::fs::write(&file, format!(r#"{{"a":"{filler}"}}"#)).unwrap();
+    assert!(matches!(
+        read_file(&file, &keys).1,
+        FileState::Invalid(e) if e.contains("larger than")
+    ));
+    let fits = "x".repeat(MAX_FILE_BYTES as usize - 8);
+    std::fs::write(&file, format!(r#"{{"a":"{fits}"}}"#)).unwrap();
+    assert_eq!(read_file(&file, &keys).1, FileState::Complete);
 }

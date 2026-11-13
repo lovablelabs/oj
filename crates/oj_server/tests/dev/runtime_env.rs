@@ -15,7 +15,7 @@ use axum::http::Request;
 use oj_env::RuntimeKey;
 use oj_server::RuntimeEnvConfig;
 
-use crate::listen::{close, frame_matching};
+use crate::listen::{close, frame_matching, next_text_within};
 use crate::{App, Response, Server};
 
 const INDEX: &str = r#"<!doctype html><html><head><meta name="backend" content="%VITE_BACKEND_URL%"></head><body><script type="module" src="/src/main.js"></script></body></html>"#;
@@ -70,7 +70,10 @@ async fn serve_with(app: &App, file: Option<PathBuf>, ready: Option<PathBuf>) ->
         file,
         ready_file: ready,
     });
-    crate::serve(dev).await
+    let server = crate::serve(dev).await;
+    // As `bind_listener` does: the ready file is a listening server's.
+    server.built.runtime_env_serving();
+    server
 }
 
 async fn post(server: &Server, body: &str, headers: &[(&str, &str)]) -> Response {
@@ -612,19 +615,37 @@ async fn a_values_directory_created_after_boot_is_watched_once_it_exists() {
     assert!(server.text("/@oj/env.js").await.contains("/_port_8001"));
 }
 
+// A change made with no page connected is kept for nobody: the next page to
+// load reads the values in force, and a reload kept for its socket reloaded
+// it for nothing. A page handed the old values just before the change, its
+// socket not open yet, finds out by itself: the module it loaded asks for
+// the generation in force.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_change_with_no_page_connected_reaches_the_next_page_to_connect() {
+async fn a_change_with_no_page_connected_is_found_by_the_generation_not_a_kept_reload() {
     let app = app();
     let server = serve_with(&app, None, None).await;
+    let before = server.text("/@oj/env.js").await;
+    assert!(before.contains("g === \"0\""), "{before}");
+    assert_eq!(server.text("/@oj/env.js?generation").await, "0");
+
     let res = post(&server, r#"{"VITE_BACKEND_URL":"/_port_9000"}"#, &[]).await;
     assert_eq!(res.status, 200, "{}", res.body);
-    // The page was still booting: its socket opens after the change.
+    let res = server.get("/@oj/env.js?generation").await;
+    assert_eq!(res.body, "1", "what the page handed generation 0 compares");
+    assert_eq!(header(&res, "cache-control"), Some("no-store"));
+    assert!(server.text("/@oj/env.js").await.contains("g === \"1\""));
+
+    // A page loading now: its socket gets no reload.
     let listening = server.listen().await;
     let (mut socket, _) = server.ws(listening.addr, "/__ws", None).await;
-    frame_matching(&mut socket, "the buffered reload", |f| {
-        f["type"] == "full-reload" && f["reason"] == "runtime env"
-    })
-    .await;
+    let mut frames = Vec::new();
+    while let Some(text) = next_text_within(&mut socket, Duration::from_millis(700)).await {
+        frames.push(text);
+    }
+    assert!(
+        !frames.iter().any(|f| f.contains("full-reload")),
+        "{frames:?}"
+    );
     close(socket).await;
 }
 
@@ -644,6 +665,14 @@ async fn the_pending_page_carries_the_client_so_the_binding_reloads_it() {
         res.body
     );
     assert!(res.body.contains("runtime env pending"), "{}", res.body);
+    // And asks again by itself: a binding made before its socket opened
+    // sent the reload to nobody.
+    assert!(
+        res.body
+            .contains(r#"<meta http-equiv="refresh" content="2">"#),
+        "{}",
+        res.body
+    );
     assert_eq!(server.get("/@oj/client.js").await.status, 200);
 }
 
@@ -758,4 +787,188 @@ async fn a_module_reading_an_unset_key_imports_the_env_module() {
         main.contains("globalThis.__oj_env.VITE_SENTRY_DSN"),
         "{main}"
     );
+}
+
+// ---- second review ---------------------------------------------------------------------
+
+// A caller on another machine: with `--host 0.0.0.0` a plain `curl` to the
+// port has no Origin and no forwarded host, and set the values for every
+// page. Refused by where its connection comes from; this machine's is not.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_control_endpoint_refuses_a_caller_on_another_machine() {
+    let app = app();
+    let server = serve_with(&app, None, None).await;
+    let body = r#"{"VITE_BACKEND_URL":"/evil"}"#;
+    let from = |ip: &str| oj_server::tls::ClientConn {
+        addr: std::net::SocketAddr::new(ip.parse().unwrap(), 40000),
+        encrypted: false,
+    };
+    for remote in ["192.0.2.20", "::ffff:203.0.113.5", "2001:db8::1"] {
+        let res = oj_server::tls::with_client_conn(from(remote), post(&server, body, &[])).await;
+        assert_eq!(res.status, 403, "{remote}: {}", res.body);
+        let res = oj_server::tls::with_client_conn(from(remote), server.get("/@oj/env")).await;
+        assert_eq!(res.status, 403, "{remote} may not read them either");
+    }
+    assert!(!server.text("/@oj/env.js").await.contains("/evil"));
+
+    // A browser on this machine, the page's own same-origin request included.
+    let res = oj_server::tls::with_client_conn(
+        from("127.0.0.1"),
+        server.request(
+            Request::get("/@oj/env")
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::empty())
+                .unwrap(),
+        ),
+    )
+    .await;
+    assert_eq!(res.status, 403);
+
+    for local in ["127.0.0.1", "::1", "::ffff:127.0.0.1"] {
+        let res = oj_server::tls::with_client_conn(from(local), post(&server, body, &[])).await;
+        assert_eq!(res.status, 200, "{local}: {}", res.body);
+    }
+    assert!(server.text("/@oj/env.js").await.contains("/evil"));
+}
+
+// The values file removed while documents wait: nothing bound and no value
+// changed, but the page serves again, and the tab on the hold page is told.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_values_file_removed_while_pending_reloads_the_waiting_page() {
+    let app = app();
+    let file = values_dir(&app).join("env.json");
+    std::fs::write(&file, PENDING).unwrap();
+    let server = serve_with(&app, Some(file.clone()), None).await;
+    assert_eq!(server.get("/").await.status, 503);
+    let listening = server.listen().await;
+    let (mut socket, _) = server.ws(listening.addr, "/__ws", None).await;
+
+    let seen = settle(
+        &server,
+        || {
+            let _ = std::fs::remove_file(&file);
+        },
+        |s| s["state"] == "unbound",
+    )
+    .await;
+    assert_eq!(seen["generation"], 0, "no value changed: {seen}");
+    frame_matching(&mut socket, "the reload off the hold page", |f| {
+        f["type"] == "full-reload" && f["reason"] == "runtime env"
+    })
+    .await;
+    assert_eq!(server.get("/").await.status, 200);
+    close(socket).await;
+}
+
+// The values directory removed and created again (a backend's state dir
+// wiped on restart): the watch on the directory that was sees nothing of
+// the new one, so it is watched again, and the file's removal is seen.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_values_directory_removed_and_created_again_is_followed() {
+    let app = app();
+    let dir = values_dir(&app).join("state");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("env.json");
+    std::fs::write(&file, BOUND).unwrap();
+    let server = serve_with(&app, Some(file.clone()), None).await;
+    assert_eq!(status(&server).await["state"], "bound");
+
+    std::fs::remove_dir_all(&dir).unwrap();
+    let gone = settle(&server, || {}, |s| s["state"] == "unbound").await;
+    assert_eq!(gone["file"]["state"], "absent", "{gone}");
+
+    std::fs::create_dir_all(&dir).unwrap();
+    let again = settle(
+        &server,
+        || std::fs::write(&file, BOUND.replace("8001", "8002")).unwrap(),
+        |s| s["state"] == "bound",
+    )
+    .await;
+    assert_eq!(again["file"]["state"], "complete", "{again}");
+    assert!(server.text("/@oj/env.js").await.contains("/_port_8002"));
+}
+
+// A values file that is a symlink into a directory swapped as a whole, as a
+// mounted secret is: the write replaces what the name points at and raises
+// no event for the name itself.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_symlinked_values_file_follows_a_swap_of_what_it_points_at() {
+    let app = app();
+    let dir = values_dir(&app).join("mount");
+    std::fs::create_dir_all(dir.join("v1")).unwrap();
+    std::fs::write(dir.join("v1/env.json"), BOUND).unwrap();
+    std::os::unix::fs::symlink("v1", dir.join("..data")).unwrap();
+    let file = dir.join("env.json");
+    std::os::unix::fs::symlink("..data/env.json", &file).unwrap();
+    let server = serve_with(&app, Some(file), None).await;
+    assert_eq!(status(&server).await["state"], "bound");
+    assert!(server.text("/@oj/env.js").await.contains("/_port_8001"));
+
+    std::fs::create_dir_all(dir.join("v2")).unwrap();
+    std::fs::write(dir.join("v2/env.json"), BOUND.replace("8001", "8002")).unwrap();
+    let swap = || {
+        let tmp = dir.join("..data_tmp");
+        let _ = std::fs::remove_file(&tmp);
+        std::os::unix::fs::symlink("v2", &tmp).unwrap();
+        std::fs::rename(&tmp, dir.join("..data")).unwrap();
+    };
+    settle(&server, swap, |s| {
+        s["keys"][0]["value"]
+            .as_str()
+            .is_some_and(|v| v.contains("8002"))
+    })
+    .await;
+    assert!(server.text("/@oj/env.js").await.contains("/_port_8002"));
+}
+
+// A classic worker's file: `importScripts` of the script form, no static
+// import, which a classic worker cannot hold.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_classic_worker_loads_the_values_without_an_import() {
+    let app = App::new(&[
+        (
+            "package.json",
+            r#"{"name":"runtime-env-classic-worker","private":true}"#,
+        ),
+        (".env", "VITE_BACKEND_URL=https://baked.test\n"),
+        ("index.html", INDEX),
+        (
+            "src/main.js",
+            "new Worker(new URL(\"./worker.js\", import.meta.url));\n",
+        ),
+        (
+            "src/worker.js",
+            "self.postMessage(import.meta.env.VITE_BACKEND_URL);\n",
+        ),
+    ]);
+    let server = serve_with(&app, None, None).await;
+    let worker = server.text("/src/worker.js?worker_file&type=classic").await;
+    assert!(
+        worker.contains("importScripts(\"/@oj/env.js?classic\");"),
+        "{worker}"
+    );
+    assert!(!worker.contains("import \""), "{worker}");
+    assert!(
+        worker.contains("globalThis.__oj_env.VITE_BACKEND_URL"),
+        "{worker}"
+    );
+    let script = server.text("/@oj/env.js?classic").await;
+    assert!(!script.contains("export"), "{script}");
+    assert!(script.contains("\"https://baked.test\""), "{script}");
+    // A worker whose type oj cannot read gets the script inline, which a
+    // module worker runs too.
+    let unknown = server.text("/src/worker.js?worker_file&type=ignore").await;
+    assert!(
+        !unknown.contains("importScripts(\"/@oj/env.js"),
+        "{unknown}"
+    );
+    assert!(!unknown.contains("import \"/@oj/env.js\""), "{unknown}");
+    assert!(
+        unknown.contains("{ const env = {") && unknown.contains("\"https://baked.test\""),
+        "{unknown}"
+    );
+    // The module worker's file is as it was.
+    let module = server.text("/src/worker.js?worker_file&type=module").await;
+    assert!(module.contains("import \"/@oj/env.js\";"), "{module}");
 }

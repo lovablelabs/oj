@@ -142,8 +142,12 @@ struct Inner {
 pub(crate) struct RuntimeEnv {
     keys: Vec<RuntimeKey>,
     file: Option<PathBuf>,
-    /// `file` with its directory canonicalized, as the watcher reports paths.
-    file_canonical: Option<PathBuf>,
+    /// `file` with its directory canonicalized, as the watcher reports
+    /// paths; taken again once the directory exists ([`Self::armed`]), since
+    /// a directory missing at boot has no real path yet.
+    file_canonical: Mutex<Option<PathBuf>>,
+    /// Whether the server listens yet ([`Self::serving`]).
+    serving: std::sync::atomic::AtomicBool,
     ready_file: Option<PathBuf>,
     /// `import.meta.env.*` defines outside the runtime keys, name and the
     /// JavaScript expression the define replaces reads with.
@@ -179,11 +183,12 @@ impl RuntimeEnv {
         // Absolute, so the watcher's absolute event paths match the file and
         // a later chdir (a plugin host moves to the app root) changes nothing.
         let file = cfg.file.as_deref().map(absolute);
-        let file_canonical = file.as_ref().map(|f| canonical_parent(f));
+        let file_canonical = Mutex::new(file.as_ref().map(|f| canonical_parent(f)));
         let env = RuntimeEnv {
             keys: cfg.keys,
             file,
             file_canonical,
+            serving: std::sync::atomic::AtomicBool::new(false),
             ready_file: cfg.ready_file.as_deref().map(absolute),
             statics,
             fallbacks,
@@ -233,7 +238,27 @@ impl RuntimeEnv {
 
     /// Whether a watcher path is the values file.
     pub(crate) fn is_file(&self, path: &Path) -> bool {
-        self.file.as_deref() == Some(path) || self.file_canonical.as_deref() == Some(path)
+        self.file.as_deref() == Some(path)
+            || self.file_canonical.lock().unwrap().as_deref() == Some(path)
+    }
+
+    /// Whether a watcher path is in the values file's directory: a write
+    /// there may replace what the file names without touching its own name
+    /// (a mounted volume swaps the directory a symlink points into).
+    pub(crate) fn beside_file(&self, path: &Path) -> bool {
+        let dir = |file: Option<&Path>| file.and_then(Path::parent).map(Path::to_path_buf);
+        let parent = path.parent();
+        parent.is_some()
+            && (parent == dir(self.file.as_deref()).as_deref()
+                || parent == dir(self.file_canonical.lock().unwrap().as_deref()).as_deref())
+    }
+
+    /// The values file's directory came under watch: its real path is known
+    /// now, when it did not exist at boot.
+    pub(crate) fn armed(&self) {
+        if let Some(file) = &self.file {
+            *self.file_canonical.lock().unwrap() = Some(canonical_parent(file));
+        }
     }
 
     /// Salts compile cache keys: a compile embeds which keys are redirected.
@@ -247,14 +272,15 @@ impl RuntimeEnv {
         hasher.finalize().to_hex()[..16].to_string()
     }
 
-    /// Re-reads the values file. True when the values in force changed.
+    /// Re-reads the values file. True when the pages must reload: the
+    /// values in force changed, or documents stopped waiting.
     pub(crate) fn load_file(&self) -> bool {
         let Some(file) = &self.file else {
             return false;
         };
         let (values, state) = read_file(file, &self.keys);
         let mut inner = self.inner.lock().unwrap();
-        let before = effective(&inner, &self.keys);
+        let before = (effective(&inner, &self.keys), state_of(&inner, &self.keys));
         if inner.file_state.is_some() && inner.file_state.as_ref() != Some(&state) {
             // An invalid or incomplete file holds every document: say so,
             // since the values map it leaves empty shows nothing.
@@ -270,7 +296,7 @@ impl RuntimeEnv {
     }
 
     /// Applies `updates` (a `None` unsets): what `POST /@oj/env` carries.
-    /// Refuses a key outside the list. True when the values in force changed.
+    /// Refuses a key outside the list. True when the pages must reload.
     pub(crate) fn set(&self, updates: BTreeMap<String, Option<String>>) -> Result<bool, String> {
         let unknown: Vec<&str> = updates
             .keys()
@@ -289,7 +315,7 @@ impl RuntimeEnv {
             ));
         }
         let mut inner = self.inner.lock().unwrap();
-        let before = effective(&inner, &self.keys);
+        let before = (effective(&inner, &self.keys), state_of(&inner, &self.keys));
         for (key, value) in updates {
             match value {
                 Some(value) => {
@@ -300,25 +326,50 @@ impl RuntimeEnv {
                 }
             }
         }
+        *carried().lock().unwrap() =
+            (!inner.set_values.is_empty()).then(|| serde_json::json!(inner.set_values).to_string());
         Ok(self.settle(&mut inner, before))
     }
 
+    /// Takes the set values a restarted server handed this one
+    /// ([`carried_set`]): the ones for keys still listed, anything else of
+    /// it ignored. Nothing is announced: no page is connected yet.
+    pub(crate) fn restore_set(&self, carried: &str) {
+        let Ok(updates) = parse_updates(carried.as_bytes()) else {
+            return;
+        };
+        let listed = updates
+            .into_iter()
+            .filter(|(key, _)| self.keys.iter().any(|k| k.key == *key))
+            .collect();
+        let _ = self.set(listed);
+    }
+
     /// After a change to either layer: bumps the generation when the values
-    /// in force moved and brings the ready file in line.
-    fn settle(&self, inner: &mut Inner, before: BTreeMap<String, String>) -> bool {
-        let changed = effective(inner, &self.keys) != before;
+    /// in force moved and brings the ready file in line. True when the pages
+    /// must reload: the values moved, or documents no longer wait (the file
+    /// was removed while pending, so nothing bound and no value changed, yet
+    /// a tab on the hold page would sit there with nothing to tell it).
+    fn settle(&self, inner: &mut Inner, before: (BTreeMap<String, String>, Binding)) -> bool {
+        let changed = effective(inner, &self.keys) != before.0;
         if changed {
             inner.generation += 1;
         }
-        self.publish_ready(state_of(inner, &self.keys));
-        changed
+        let state = state_of(inner, &self.keys);
+        self.publish_ready(state);
+        changed || (before.1 == Binding::Pending && state != Binding::Pending)
     }
 
     fn publish_ready(&self, state: Binding) {
         let Some(ready) = &self.ready_file else {
             return;
         };
-        let result = if state == Binding::Bound {
+        // Ready says a server answers with every value: not before it
+        // listens, and not once it was told to stop.
+        let serving = self.serving.load(std::sync::atomic::Ordering::SeqCst)
+            && !STOPPING.load(std::sync::atomic::Ordering::SeqCst);
+        let result = if state == Binding::Bound && serving {
+            ready_files().lock().unwrap().insert(ready.clone());
             std::fs::write(ready, b"1\n")
         } else {
             match std::fs::remove_file(ready) {
@@ -329,6 +380,13 @@ impl RuntimeEnv {
         if let Err(e) = result {
             eprintln!("oj: runtime env ready file {}: {e}", ready.display());
         }
+    }
+
+    /// The server listens: the ready file may say so from here on.
+    pub(crate) fn serving(&self) {
+        self.serving
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.publish_ready(self.state());
     }
 
     pub(crate) fn state(&self) -> Binding {
@@ -416,6 +474,17 @@ impl RuntimeEnv {
     /// assignment to a field (a test shim) stays a no-op on the next load
     /// instead of throwing in strict module code.
     pub(crate) fn module_js(&self) -> String {
+        self.render(Form::Module)
+    }
+
+    /// The `/@oj/env.js` body for a classic worker, which `importScripts`
+    /// it: the object installed as the global, with no export and no name
+    /// left in the worker's scope.
+    pub(crate) fn classic_js(&self) -> String {
+        self.render(Form::Script)
+    }
+
+    fn render(&self, form: Form) -> String {
         let inner = self.inner.lock().unwrap();
         let mut fields: Vec<String> = self
             .statics
@@ -434,11 +503,84 @@ impl RuntimeEnv {
                 (None, _) => {}
             }
         }
-        format!(
-            "const env = {{\n{}\n}};\nObject.defineProperty(globalThis, {global}, {{ value: env, configurable: true, enumerable: false, writable: false }});\nexport default env;\n",
-            fields.join(",\n"),
+        // A page that loaded these values just before they changed may have
+        // had no socket open for the reload: once loaded, it asks for the
+        // generation in force and reloads when it is another. Only a number
+        // counts, so an answer that is not the server's reloads nothing, and
+        // a generation is reloaded for once in a tab: a copy of this module
+        // served from a cache (an app's service worker) would otherwise
+        // reload the page for as long as it is stale.
+        let check = format!(
+            "if (typeof window !== \"undefined\" && typeof fetch === \"function\") {{\n  const check = () => fetch({url}, {{ cache: \"no-store\" }}).then((r) => (r.ok ? r.text() : \"\")).then((g) => {{\n    if (!/^\\d+$/.test(g) || g === {generation}) return;\n    try {{ if (sessionStorage.getItem({guard}) === g) return; sessionStorage.setItem({guard}, g); }} catch {{}}\n    location.reload();\n  }}, () => {{}});\n  if (document.readyState === \"complete\") check(); else window.addEventListener(\"load\", check, {{ once: true }});\n}}\n",
+            url = json_str(&format!("{}?{GENERATION_QUERY}", self.module_url)),
+            generation = json_str(&inner.generation.to_string()),
+            guard = json_str("__oj_env_reloaded"),
+        );
+        let install = format!(
+            "Object.defineProperty(globalThis, {global}, {{ value: env, configurable: true, enumerable: false, writable: false }});\n",
             global = json_str(GLOBAL),
-        )
+        );
+        let object = format!("const env = {{\n{}\n}};\n", fields.join(",\n"));
+        match form {
+            Form::Module => format!("{object}{install}{check}export default env;\n"),
+            // In a block: a script's top-level `const` is the worker's
+            // global, where the worker's own `env` would be a redeclaration.
+            Form::Script => format!("{{\n{object}{install}}}\n"),
+        }
+    }
+}
+
+/// How the values are served: the module a compile imports, or the script a
+/// classic worker loads.
+#[derive(Clone, Copy)]
+enum Form {
+    Module,
+    Script,
+}
+
+/// The set values of this process's server, as the JSON object a restart
+/// hands the next image.
+fn carried() -> &'static Mutex<Option<String>> {
+    static SET: Mutex<Option<String>> = Mutex::new(None);
+    &SET
+}
+
+/// What a restart passes on as `OJ_RUNTIME_ENV_SET`: the values set over
+/// `POST /@oj/env`, which live nowhere else. Without it a config or `.env`
+/// edit, which restarts the server, silently put every key back on the
+/// file's value or its literal.
+pub(crate) fn carried_set() -> Option<String> {
+    carried().lock().unwrap().clone()
+}
+
+/// The ready files this process wrote, for [`clear_ready_files`].
+fn ready_files() -> &'static Mutex<std::collections::BTreeSet<PathBuf>> {
+    static FILES: std::sync::OnceLock<Mutex<std::collections::BTreeSet<PathBuf>>> =
+        std::sync::OnceLock::new();
+    FILES.get_or_init(Default::default)
+}
+
+/// Set once the server is told to stop: a value bound after that writes no
+/// ready file.
+static STOPPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Removes every ready file this process wrote: a stopped server serves no
+/// value, so nothing is ready. Called when the server is told to stop; a
+/// process killed outright leaves the file, which the next start removes.
+pub fn clear_ready_files() {
+    STOPPING.store(true, std::sync::atomic::Ordering::SeqCst);
+    for file in std::mem::take(&mut *ready_files().lock().unwrap()) {
+        let _ = std::fs::remove_file(file);
+    }
+}
+
+impl Drop for RuntimeEnv {
+    fn drop(&mut self) {
+        if let Some(ready) = &self.ready_file {
+            if ready_files().lock().unwrap().remove(ready) {
+                let _ = std::fs::remove_file(ready);
+            }
+        }
     }
 }
 
@@ -513,14 +655,15 @@ fn state_of(inner: &Inner, keys: &[RuntimeKey]) -> Binding {
     }
 }
 
-/// Reads the values file: a regular file of at most [`MAX_FILE_BYTES`]
+/// Reads the values file: a regular file, or a symlink to one (a mounted
+/// volume publishes its files as symlinks), of at most [`MAX_FILE_BYTES`]
 /// holding a JSON object, each key's field a string (an empty one is a
 /// value: a backend with no project id publishes `""`). A field missing or
 /// null leaves the key pending; any other shape makes the whole file
 /// invalid, since a value of the wrong type is a writer bug rather than a
 /// backend still starting.
 pub(crate) fn read_file(file: &Path, keys: &[RuntimeKey]) -> (BTreeMap<String, String>, FileState) {
-    let meta = match std::fs::symlink_metadata(file) {
+    let meta = match std::fs::metadata(file) {
         Ok(meta) => meta,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return (BTreeMap::new(), FileState::Absent)
@@ -539,11 +682,32 @@ pub(crate) fn read_file(file: &Path, keys: &[RuntimeKey]) -> (BTreeMap<String, S
             FileState::Invalid(format!("larger than {MAX_FILE_BYTES} bytes")),
         );
     }
-    let bytes = match std::fs::read(file) {
-        Ok(bytes) => bytes,
-        Err(e) => return (BTreeMap::new(), FileState::Invalid(e.to_string())),
+    // What was looked at above may not be what the name leads to now (a
+    // link moved in between): the file opened is looked at again, and read
+    // no further than the limit.
+    let read = || -> std::io::Result<Option<Vec<u8>>> {
+        use std::io::Read as _;
+        let opened = std::fs::File::open(file)?;
+        if !opened.metadata()?.is_file() {
+            return Ok(None);
+        }
+        let mut bytes = Vec::new();
+        opened.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes)?;
+        Ok(Some(bytes))
     };
-    parse_values(&bytes, keys)
+    match read() {
+        Ok(Some(bytes)) if bytes.len() as u64 > MAX_FILE_BYTES => (
+            BTreeMap::new(),
+            FileState::Invalid(format!("larger than {MAX_FILE_BYTES} bytes")),
+        ),
+        Ok(Some(bytes)) => parse_values(&bytes, keys),
+        Ok(None) => (
+            BTreeMap::new(),
+            FileState::Invalid("not a regular file".into()),
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (BTreeMap::new(), FileState::Absent),
+        Err(e) => (BTreeMap::new(), FileState::Invalid(e.to_string())),
+    }
 }
 
 pub(crate) fn parse_values(
@@ -614,23 +778,105 @@ pub(crate) fn local_caller(headers: &HeaderMap) -> bool {
     !headers.contains_key(header::ORIGIN) && !headers.contains_key("x-forwarded-host")
 }
 
+/// Who may read or set the runtime values: a [`local_caller`] that is not a
+/// browser's request at all (every browser request carries `Sec-Fetch-Site`,
+/// the page's own same-origin `fetch` included, which has no `Origin`) and
+/// whose connection comes from this machine. The header rule alone let any
+/// machine that reaches the port (`--host 0.0.0.0`) set the values with a
+/// plain `curl`; the other endpoints under it only read.
+pub(crate) fn control_caller(headers: &HeaderMap, peer: Option<std::net::IpAddr>) -> bool {
+    // What a proxy on this machine adds for the caller it relays: its
+    // connection is local, the caller's is not.
+    const RELAYED: [&str; 5] = [
+        "sec-fetch-site",
+        "forwarded",
+        "x-forwarded-for",
+        "x-real-ip",
+        "via",
+    ];
+    local_caller(headers)
+        && !RELAYED.iter().any(|name| headers.contains_key(*name))
+        // None: a test driving the router directly, with no connection.
+        && peer.is_none_or(this_machine)
+}
+
+/// Whether `ip` is an address of this machine: loopback, or one of its own
+/// interfaces' (a server bound to its LAN address is reached there by
+/// `oj env`, whose connection then comes from that address). Only an
+/// address of this machine can be bound.
+fn this_machine(ip: std::net::IpAddr) -> bool {
+    let ip = ip.to_canonical();
+    ip.is_loopback() || (!ip.is_unspecified() && std::net::UdpSocket::bind((ip, 0)).is_ok())
+}
+
 fn no_store() -> [(header::HeaderName, &'static str); 1] {
     [(header::CACHE_CONTROL, "no-store")]
 }
 
-/// `GET /@oj/env.js`.
-pub(crate) async fn serve_env_module(State(state): State<Arc<ServerState>>) -> Response {
+/// `GET /@oj/env.js`; with `?classic`, the script a classic worker loads.
+pub(crate) async fn serve_env_module(uri: Uri, State(state): State<Arc<ServerState>>) -> Response {
     let Some(env) = &state.runtime_env else {
         return StatusCode::NOT_FOUND.into_response();
     };
+    let query = |name: &str| {
+        uri.query()
+            .is_some_and(|q| q.split('&').any(|kv| kv == name))
+    };
+    if query(GENERATION_QUERY) {
+        return (
+            [
+                (header::CONTENT_TYPE, "text/plain"),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            env.generation().to_string(),
+        )
+            .into_response();
+    }
+    let classic = query(CLASSIC_QUERY);
     (
         [
             (header::CONTENT_TYPE, "text/javascript"),
             (header::CACHE_CONTROL, "no-store"),
         ],
-        env.module_js(),
+        if classic {
+            env.classic_js()
+        } else {
+            env.module_js()
+        },
     )
         .into_response()
+}
+
+/// The query asking for the generation of the values in force alone: what
+/// a page compares the one it loaded with.
+pub(crate) const GENERATION_QUERY: &str = "generation";
+
+/// The query naming the classic-worker form of the module.
+pub(crate) const CLASSIC_QUERY: &str = "classic";
+
+/// A compiled worker file's body for its worker type. A compile imports the
+/// module with a static `import`, which only a module worker may hold: a
+/// classic worker loads the script with `importScripts`, and one of unknown
+/// type (`new Worker(url, options)` with options oj cannot read) gets the
+/// script itself, on the import's line, which either kind of worker runs,
+/// as vite:worker inlines its env for it.
+pub(crate) fn worker_body(env: &RuntimeEnv, url: &str, body: String) -> String {
+    let worker_type = url.split_once('?').and_then(|(_, query)| {
+        let mut kvs = query.split('&');
+        kvs.any(|kv| kv == "worker_file")
+            .then(|| query.split('&').find_map(|kv| kv.strip_prefix("type=")))
+            .flatten()
+    });
+    let script = json_str(&format!("{}?{CLASSIC_QUERY}", env.module_url));
+    let load = match worker_type {
+        Some("classic") => format!("importScripts({script});"),
+        // One line, so the map stands: the values are JSON, which holds no
+        // line break outside the ones this rendering puts between fields.
+        Some("ignore") => env.classic_js().replace('\n', " ").trim_end().to_string(),
+        _ => return body,
+    };
+    // Same line count, so the map stands.
+    body.replacen(&format!("import {};", json_str(&env.module_url)), &load, 1)
 }
 
 /// `GET /@oj/env` (the status) and `POST /@oj/env` (a JSON object of
@@ -644,7 +890,8 @@ pub(crate) async fn serve_env_control(
     let Some(env) = &state.runtime_env else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    if !local_caller(&headers) {
+    let peer = crate::tls::client_conn().map(|conn| conn.addr.ip());
+    if !control_caller(&headers, peer) {
         return (StatusCode::FORBIDDEN, no_store(), "").into_response();
     }
     if method == axum::http::Method::POST {
@@ -700,11 +947,14 @@ pub(crate) fn announce(state: &ServerState, env: &RuntimeEnv, how: &str) {
         env.state().name(),
         env.generation()
     );
-    // Buffered for a page still booting, as a dep re-optimization's reload is.
-    hmr::send_or_buffer(
-        state,
-        hmr::full_reload_frame("runtime env", None, env.file()),
-    );
+    // Only the pages connected: one loading now compares the generation it
+    // was handed with the one in force once it has loaded (the module's
+    // check), and the hold page asks again by itself, so no frame is kept
+    // for the next socket. A frame kept reloaded the next page to connect
+    // though it had loaded the values in force.
+    let _ = state
+        .reload_tx
+        .send(hmr::full_reload_frame("runtime env", None, env.file()));
 }
 
 impl ServerState {
@@ -719,7 +969,8 @@ impl ServerState {
 
     /// The 503 a document gets while the runtime env is pending: a page
     /// carrying the HMR client, so the reload that follows the binding
-    /// reaches it as it reaches every other page.
+    /// reaches it as it reaches every other page, and asking again by itself
+    /// every two seconds, for a binding made before its socket opened.
     pub(crate) fn runtime_env_hold(&self) -> Option<Response> {
         let env = self.runtime_env.as_ref()?;
         if !env.pending() {
@@ -731,7 +982,7 @@ impl ServerState {
             .map(|n| format!(" nonce=\"{}\"", dev_html::escape_html(n)))
             .unwrap_or_default();
         let body = format!(
-            "<!doctype html><html><head><meta charset=\"utf-8\"><title>oj: runtime env pending</title><script type=\"module\" src=\"{}\"{nonce}></script></head><body><p>oj: runtime env pending. The page loads once the backend publishes its values.</p></body></html>\n",
+            "<!doctype html><html><head><meta charset=\"utf-8\"><title>oj: runtime env pending</title><meta http-equiv=\"refresh\" content=\"2\"><script type=\"module\" src=\"{}\"{nonce}></script></head><body><p>oj: runtime env pending. The page loads once the backend publishes its values.</p></body></html>\n",
             dev_html::escape_html(&self.oj_paths.client),
         );
         Some(
@@ -760,11 +1011,12 @@ pub const NOT_CONFIGURED: &str = "the dev server runs without OJ_RUNTIME_ENV_KEY
 pub async fn env_via_server(
     root: &Path,
     updates: Option<&BTreeMap<String, Option<String>>>,
+    timeout: Duration,
 ) -> Result<serde_json::Value, String> {
     let url = typecheck::advertised(root)?.http_url(CONTROL_PATH, "oj env")?;
     let client = reqwest::Client::builder()
         .no_proxy()
-        .timeout(Duration::from_secs(30))
+        .timeout(timeout.min(Duration::from_secs(30)))
         .build()
         .map_err(|e| e.to_string())?;
     let request = match updates {

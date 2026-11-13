@@ -34,16 +34,16 @@ OJ_RUNTIME_ENV_FILE=/run/backend/env.json \
 oj dev
 ```
 
-A module that reads one of the keys compiles to `globalThis.__oj_env.KEY` and imports `/@oj/env.js` first, which the server renders from the values in force; `%KEY%` in index.html follows them too. Values come from the file (a JSON object, watched; `KEY=field` reads another field of it) and from `POST /@oj/env` with `{"VITE_API_URL": "/_port_8001"}` (`null` unsets), for direct local callers only, as `/@oj/typecheck`; `GET /@oj/env` reports every key, its value and its source. A change reloads the pages and changes nothing a compile emitted. While the file is on disk but incomplete (a backend publishes `{"pending":true}` until it is ready), documents answer 503 and modules still serve. `OJ_RUNTIME_ENV_READY_FILE` exists exactly while every key has a value. The file must be a regular file (a symlink is refused) and, inside the app root, not under `node_modules` or a `server.watch.ignored` path, which the watcher skips. Plain `oj dev` only for now: `oj dev --ssr`, a TanStack Start app and `oj build` warn and keep the literals.
+A module that reads one of the keys compiles to `globalThis.__oj_env.KEY` and imports `/@oj/env.js` first, which the server renders from the values in force; `%KEY%` in index.html follows them too. Values come from the file (a JSON object, watched; `KEY=field` reads another field of it) and from `POST /@oj/env` with `{"VITE_API_URL": "/_port_8001"}` (`null` unsets), for a caller on this machine that is not a browser (a connection from another machine, a request with `Origin`, `Sec-Fetch-Site` or `X-Forwarded-Host` is refused); `GET /@oj/env` reports every key, its value and its source, under the same rule. A change reloads the pages and changes nothing a compile emitted. While the file is on disk but incomplete (a backend publishes `{"pending":true}` until it is ready), documents answer 503 with a page that asks again every two seconds, and modules still serve. `OJ_RUNTIME_ENV_READY_FILE` exists exactly while every key has a value in a running server: a server told to stop removes it (one killed outright leaves it, and the next start removes it). The file is a regular file or a symlink to one (a mounted secret), its directory watched and watched again when it is removed and created; inside the app root, it must not be under `node_modules` or a `server.watch.ignored` path, which the watcher skips. A classic worker loads the values with `importScripts`. Plain `oj dev` only for now: `oj dev --ssr`, a TanStack Start app and `oj build` warn and keep the literals.
 
 `oj env` is the command line to the same endpoint, for the app's running dev server (found as `oj dev-typecheck` finds it):
 
 ```sh
 oj env get                                   # KEY=value lines; `# KEY unset` for a key without one
 oj env get --json                            # the GET /@oj/env status
-oj env set VITE_API_URL=/_port_8001 VITE_API_KEY sb_x   # KEY=VALUE or KEY VALUE pairs
+oj env set VITE_API_URL=/_port_8001 VITE_API_KEY sb_x   # KEY=VALUE or KEY VALUE pairs (a value starting with `-`: KEY=-v, or after `--`)
 oj env unset VITE_API_URL                    # back to the file's value or the literal
-oj env get --wait --timeout 60               # returns once every key is bound (exit 3 on timeout)
+oj env get --wait --timeout 60               # returns once every key is bound (exit 3 on timeout; `inf` waits without one)
 oj env get --wait VITE_API_KEY               # or once the named keys do
 ```
 

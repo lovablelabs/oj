@@ -1053,6 +1053,34 @@ mod env_command_tests {
     }
 
     #[test]
+    fn env_set_takes_a_value_that_starts_with_a_hyphen_and_an_unbounded_timeout() {
+        // As `KEY=-value`, the flags wherever they are; or after `--`.
+        let env_cmd::EnvCommand::Set { opts, pairs } = parse(&[
+            "oj",
+            "env",
+            "set",
+            "A=-1",
+            "B=--x",
+            "--timeout",
+            "inf",
+            "--wait",
+        ]) else {
+            panic!("not set");
+        };
+        assert_eq!(pairs, ["A=-1", "B=--x"]);
+        assert!(opts.timeout.is_infinite() && opts.wait);
+        let env_cmd::EnvCommand::Set { opts, pairs } =
+            parse(&["oj", "env", "set", "--json", "--", "A", "-1", "B", "--wait"])
+        else {
+            panic!("not set");
+        };
+        assert_eq!(pairs, ["A", "-1", "B", "--wait"]);
+        assert!(opts.json && !opts.wait);
+        // Bare, it reads as a flag: refused, not taken for another key.
+        assert!(Cli::try_parse_from(["oj", "env", "set", "A", "-1"]).is_err());
+    }
+
+    #[test]
     fn env_get_takes_optional_keys_and_defaults_the_wait() {
         let env_cmd::EnvCommand::Get { opts, keys } = parse(&["oj", "env", "get", "--json"]) else {
             panic!("not get");

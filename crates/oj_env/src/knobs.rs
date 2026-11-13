@@ -80,6 +80,11 @@ pub struct Knobs {
     /// `OJ_RUNTIME_ENV_READY_FILE`, when non-empty: written while every
     /// runtime key has a value, removed otherwise.
     pub runtime_env_ready_file: Option<PathBuf>,
+    /// `OJ_RUNTIME_ENV_SET`: the values set over `POST /@oj/env`, as a JSON
+    /// object, handed by a dev server to the image it restarts as (a config
+    /// or `.env` edit), so a set value outlives the restart. Not for a user
+    /// to set.
+    pub runtime_env_set: Option<String>,
 }
 
 impl Knobs {
@@ -159,6 +164,7 @@ impl Knobs {
             runtime_env_ready_file: get("OJ_RUNTIME_ENV_READY_FILE")
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from),
+            runtime_env_set: var("OJ_RUNTIME_ENV_SET").filter(|v| !v.is_empty()),
         }
     }
 }
@@ -283,6 +289,14 @@ mod tests {
         assert_eq!(
             knobs(&[("OJ_RUNTIME_ENV_FILE", "/persist/env.json")]).runtime_env_file,
             Some(PathBuf::from("/persist/env.json"))
+        );
+        assert_eq!(knobs(&[]).runtime_env_set, None);
+        assert_eq!(knobs(&[("OJ_RUNTIME_ENV_SET", "")]).runtime_env_set, None);
+        assert_eq!(
+            knobs(&[("OJ_RUNTIME_ENV_SET", "{\"A\":\"1\"}")])
+                .runtime_env_set
+                .as_deref(),
+            Some("{\"A\":\"1\"}")
         );
         assert_eq!(knobs(&[]).runtime_env_ready_file, None);
         assert_eq!(

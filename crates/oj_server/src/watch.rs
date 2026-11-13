@@ -673,6 +673,8 @@ pub fn restart_process(root: &Path, reason: &str) -> ! {
         eprintln!("oj: restart killed {killed} child process(es)");
     }
     crate::otel::shutdown();
+    // Nothing serves until the next image is up: its ready file says so.
+    crate::runtime_env::clear_ready_files();
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("oj"));
     let args: Vec<String> = std::env::args().skip(1).collect();
     // The next boot gets the env oj was launched with, not whatever the live
@@ -690,6 +692,11 @@ pub fn restart_process(root: &Path, reason: &str) -> ! {
         use std::os::unix::process::CommandExt;
         let mut cmd = std::process::Command::new(&exe);
         cmd.args(&args).env_clear().envs(launch_env);
+        // The values set over `/@oj/env` live in this image alone.
+        match crate::runtime_env::carried_set() {
+            Some(set) => cmd.env("OJ_RUNTIME_ENV_SET", set),
+            None => cmd.env_remove("OJ_RUNTIME_ENV_SET"),
+        };
         if let Some(dir) = launch_dir {
             cmd.current_dir(dir);
         }
@@ -701,6 +708,10 @@ pub fn restart_process(root: &Path, reason: &str) -> ! {
     {
         let mut cmd = std::process::Command::new(&exe);
         cmd.args(&args).env_clear().envs(launch_env);
+        match crate::runtime_env::carried_set() {
+            Some(set) => cmd.env("OJ_RUNTIME_ENV_SET", set),
+            None => cmd.env_remove("OJ_RUNTIME_ENV_SET"),
+        };
         if let Some(dir) = launch_dir {
             cmd.current_dir(dir);
         }
@@ -882,19 +893,100 @@ fn arm_served_dir(
         .and_then(|env| env.file())
         .and_then(Path::parent)
         == Some(dir.as_path());
-    if watch_served_dir(watchers, watched, &dir) {
-        if let Some(env) = state.runtime_env.as_ref().filter(|_| runtime_dir) {
-            if env.load_file() {
-                crate::runtime_env::announce(state, env, "file changed");
-            }
+    let armed = watch_served_dir(watchers, watched, &dir);
+    if let Some(env) = state.runtime_env.as_ref().filter(|_| runtime_dir) {
+        if armed {
+            env.armed();
         }
-    } else if runtime_dir {
+        // Armed or not: a directory that went away took the file with it.
+        if env.load_file() {
+            crate::runtime_env::announce(state, env, "file changed");
+        }
+    }
+    if !armed && runtime_dir {
         *pending = Some(dir);
     }
 }
 
-/// How often a served directory that failed to watch is retried.
+/// How often the runtime env values directory is looked at: retried while
+/// it failed to watch, and watched again when it is not the directory that
+/// was (removed and created again, a watch on the old one sees nothing).
 const ARM_RETRY: Duration = Duration::from_secs(1);
+
+/// What tells a directory from another at the same path.
+fn dir_identity(dir: &Path) -> Option<(u64, u64)> {
+    let meta = std::fs::metadata(dir).ok().filter(|m| m.is_dir())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        // The creation time too, where the filesystem keeps one: a directory
+        // made right after another was removed may be given its inode.
+        let born = meta
+            .created()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_nanos() as u64);
+        Some((meta.dev(), meta.ino() ^ born.rotate_left(32)))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        Some((0, 0))
+    }
+}
+
+/// The runtime env values directory, looked at every [`ARM_RETRY`] whatever
+/// else the watcher is doing (a retry that waited for a quiet second never
+/// came while files under the root kept changing).
+struct ValuesDir {
+    dir: PathBuf,
+    identity: Option<(u64, u64)>,
+    next: std::time::Instant,
+}
+
+impl ValuesDir {
+    fn of(state: &ServerState) -> Option<ValuesDir> {
+        let file = state.runtime_env.as_ref()?.file()?;
+        // Inside the root the root's watch covers it; `node_modules` is
+        // never watched ([`ensure_watched_file`]).
+        if file.starts_with(&state.root)
+            || file.components().any(|c| c.as_os_str() == "node_modules")
+        {
+            return None;
+        }
+        Some(ValuesDir {
+            dir: file.parent()?.to_path_buf(),
+            identity: None,
+            next: std::time::Instant::now(),
+        })
+    }
+
+    fn check(
+        &mut self,
+        state: &ServerState,
+        watchers: &mut Watchers,
+        watched: &mut std::collections::HashSet<PathBuf>,
+        pending: &mut Option<PathBuf>,
+    ) {
+        let now = std::time::Instant::now();
+        if now < self.next {
+            return;
+        }
+        self.next = now + ARM_RETRY;
+        let identity = dir_identity(&self.dir);
+        let retry = pending.take().is_some();
+        if !retry && identity == self.identity {
+            return;
+        }
+        self.identity = identity;
+        // An FSEvents stream follows the path; an inotify watch followed the
+        // directory that is gone.
+        if !cfg!(target_os = "macos") {
+            watched.remove(&self.dir);
+        }
+        arm_served_dir(state, watchers, watched, pending, self.dir.clone());
+    }
+}
 
 type EventSink = Arc<dyn Fn(notify::Result<notify::Event>) + Send + Sync>;
 
@@ -1507,7 +1599,9 @@ fn handle_batch(
     // backend it names is what the pages wait for).
     let runtime_values: Vec<PathBuf>;
     let paths = match &state.runtime_env {
-        Some(env) if paths.iter().any(|p| env.is_file(p)) => {
+        // Any write in its directory: a mounted volume replaces what the
+        // file's name points at without an event for the name.
+        Some(env) if paths.iter().any(|p| env.is_file(p) || env.beside_file(p)) => {
             if env.load_file() {
                 crate::runtime_env::announce(state, env, "file changed");
             }
@@ -1668,29 +1762,29 @@ pub(crate) fn spawn_watcher(
         let mut seen_paths = boot_snapshot(&state.watch_ignored, &state.root, &cache_base);
         let mut changes = ContentChanges::new();
         let mut pending_dir: Option<PathBuf> = None;
+        let mut values_dir = ValuesDir::of(&state);
         loop {
-            let msg = match pending_dir.take() {
-                Some(dir) => match rx.recv_timeout(ARM_RETRY) {
-                    Ok(msg) => {
-                        pending_dir = Some(dir);
-                        msg
+            let msg = match &values_dir {
+                Some(values) => {
+                    let wait = values
+                        .next
+                        .saturating_duration_since(std::time::Instant::now());
+                    match rx.recv_timeout(wait) {
+                        Ok(msg) => Some(msg),
+                        Err(RecvTimeoutError::Timeout) => None,
+                        Err(RecvTimeoutError::Disconnected) => break,
                     }
-                    Err(RecvTimeoutError::Timeout) => {
-                        arm_served_dir(
-                            &state,
-                            &mut watchers,
-                            &mut served_dirs,
-                            &mut pending_dir,
-                            dir,
-                        );
-                        continue;
-                    }
-                    Err(RecvTimeoutError::Disconnected) => break,
-                },
+                }
                 None => match rx.recv() {
-                    Ok(msg) => msg,
+                    Ok(msg) => Some(msg),
                     Err(_) => break,
                 },
+            };
+            if let Some(values) = &mut values_dir {
+                values.check(&state, &mut watchers, &mut served_dirs, &mut pending_dir);
+            }
+            let Some(msg) = msg else {
+                continue;
             };
             let first = match msg {
                 WatchMsg::Fs(Ok(ev)) => ev,

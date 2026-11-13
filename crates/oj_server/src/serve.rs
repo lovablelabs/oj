@@ -671,6 +671,10 @@ async fn serve_compiled_from(
         ));
         body
     };
+    // A classic worker cannot hold the runtime env module's static import.
+    if let Some(env) = &state.runtime_env {
+        body = crate::runtime_env::worker_body(env, url, body);
+    }
     // A `?worker_file&type=<type>` module gets vite:worker's env prelude; its
     // map moves down by the prelude's lines.
     let prelude = worker_file_prelude(

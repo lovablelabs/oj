@@ -463,3 +463,56 @@ proptest::proptest! {
         prop_assert!(!server.contains(GLOBAL), "{}", server);
     }
 }
+
+// ---- second review ---------------------------------------------------------------------
+
+// A chain a formatter broke across lines: the replacer reads the tree and
+// redirects it, so the module needs the import though the source never
+// holds `import.meta.env` unbroken. Without it the read threw when no other
+// module had loaded the env module first.
+#[test]
+fn a_read_broken_across_lines_imports_the_env_module() {
+    let env = env(&["VITE_URL"]);
+    let rt = env.runtime().unwrap().clone();
+    for src in [
+        "import.meta\n  .env.VITE_URL",
+        "import.meta\n  .env\n  .VITE_URL",
+        "import . meta . env . VITE_URL",
+        "import.meta .env",
+        "x(import.meta\n.env)",
+    ] {
+        assert!(rt.read_by(src), "{src:?}");
+    }
+    for src in [
+        "import.meta.url",
+        "import.meta\n  .url",
+        "import.meta .environment",
+        "import meta from \"./env\";",
+        "important.meta .env",
+        "await import(\"./meta.env\")",
+    ] {
+        // `important.meta .env` holds `import` only as part of a longer word
+        // that is not followed by `.meta`.
+        assert!(!rt.read_by(src), "{src:?}");
+    }
+
+    // With nothing else in the module to bring the replacer in, and with
+    // another define that does: redirected, and imported.
+    for src in [
+        "export const url = import.meta\n  .env.VITE_URL;\n",
+        "export const mode = process.env.NODE_ENV;\nexport const url = import.meta\n  .env.VITE_URL;\n",
+    ] {
+        let out = compiled("/src/broken.js", src, &dev(&env));
+        assert!(out.starts_with("import \"/@oj/env.js\";"), "{out}");
+        assert!(out.contains("globalThis.__oj_env.VITE_URL"), "{out}");
+        assert!(!out.contains("import.meta"), "{out}");
+    }
+    // Without runtime keys the gate is as it was.
+    let plain = Arc::new(ImportMetaEnv::new(client(), vec![]));
+    let out = compiled(
+        "/src/broken.js",
+        "export const url = import.meta\n  .env.VITE_URL;\n",
+        &dev(&plain),
+    );
+    assert!(!out.contains(GLOBAL), "{out}");
+}

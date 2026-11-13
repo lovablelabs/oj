@@ -426,3 +426,135 @@ fn the_root_defaults_to_the_directory_the_command_runs_in() {
     let (code, _, err) = oj_env_in(app.root.parent().unwrap(), &["get"]);
     assert_eq!((code, err.as_str()), (1, "oj env: no dev server found\n"));
 }
+
+// ---- second review ---------------------------------------------------------------------
+
+/// `oj dev` with the keys, the values file and a ready file.
+fn serve_with_ready(app: &App, ready: &Path) -> Server {
+    let values = app.values.to_string_lossy().into_owned();
+    let ready = ready.to_string_lossy().into_owned();
+    Server::oj_dev_with(
+        &app.root,
+        &[
+            ("OJ_RUNTIME_ENV_KEYS", KEYS),
+            ("OJ_RUNTIME_ENV_FILE", values.as_str()),
+            ("OJ_RUNTIME_ENV_READY_FILE", ready.as_str()),
+        ],
+    )
+}
+
+// The ready file says every key has a value in a running server: a server
+// told to stop removes it. Left behind, it said ready with nothing serving.
+#[test]
+fn the_ready_file_goes_when_the_server_is_stopped() {
+    let app = App::new("ready-stop");
+    let ready = app.values.with_file_name("ready");
+    app.publish(BOUND);
+    let server = serve_with_ready(&app, &ready);
+    let (code, _, err) = oj_env(&app, &["get", "--wait", "--timeout", "20"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(ready.exists(), "bound: ready");
+    drop(server);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while ready.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!ready.exists(), "the stopped server left its ready file");
+}
+
+// A value that starts with a hyphen, as `KEY=-value` or after `--`;
+// `--timeout inf` waits without a limit (it panicked), and a timeout that
+// is no duration is a usage error.
+#[test]
+fn a_hyphen_value_an_unbounded_wait_and_a_bad_timeout() {
+    let app = App::new("hyphen");
+    app.publish(PENDING);
+    let _server = app.serve();
+    let (code, _, err) = oj_env(&app, &["set", "VITE_BACKEND_KEY=--y"]);
+    assert_eq!(code, 0, "{err}");
+    let root = app.root.to_string_lossy().into_owned();
+    let args = [
+        "set",
+        "--json",
+        "--root",
+        &root,
+        "--",
+        "VITE_BACKEND_URL",
+        "-x",
+    ];
+    let (code, out, err) = oj_env_in(&std::env::temp_dir(), &args);
+    assert_eq!(code, 0, "{err}");
+    let status = json(&out);
+    assert_eq!(status["keys"][0]["value"], "-x", "{out}");
+    assert_eq!(status["keys"][1]["value"], "--y", "{out}");
+
+    let (code, out, err) = oj_env(&app, &["get", "--wait", "--timeout", "inf"]);
+    assert_eq!((code, err.as_str()), (0, ""), "{out}");
+    assert_eq!(out, "VITE_BACKEND_URL=-x\nVITE_BACKEND_KEY=--y\n");
+
+    for bad in ["nan", "-1"] {
+        let (code, _, err) = oj_env(&app, &["get", "--wait", &format!("--timeout={bad}")]);
+        assert_eq!(code, 2, "{bad}: {err}");
+        assert!(err.contains("--timeout"), "{err}");
+    }
+}
+
+// A wait ends when its timeout does: the status it asks for meanwhile is
+// not waited on past it.
+#[test]
+fn a_short_wait_ends_on_time() {
+    let app = App::new("short-wait");
+    app.publish(PENDING);
+    let _server = app.serve();
+    let started = Instant::now();
+    let (code, _, err) = oj_env(&app, &["get", "--wait", "--timeout", "1"]);
+    assert_eq!(code, 3, "{err}");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+// A value set over `/@oj/env` lives in the server alone. An `.env` edit
+// restarts the server: the value is handed to the next image, where it is
+// still the set value, and the ready file is gone while nothing serves.
+#[test]
+fn a_set_value_outlives_a_restart_of_the_server() {
+    let app = App::new("restart");
+    app.publish(BOUND);
+    let server = app.serve();
+    let (code, _, err) = oj_env(&app, &["set", "VITE_BACKEND_URL=/_port_9000"]);
+    assert_eq!(code, 0, "{err}");
+
+    let mark = server.output().len();
+    app.write(
+        ".env",
+        "VITE_BACKEND_URL=https://baked.test\nVITE_EDITED=1\n",
+    );
+    let deadline = Instant::now() + Duration::from_secs(40);
+    while !server.output()[mark..].contains("restarting dev server") {
+        assert!(
+            Instant::now() < deadline,
+            "the server did not restart:\n{}",
+            server.output()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // The next image answers once it is up; until then there is no server.
+    let status = loop {
+        let (code, out, err) = oj_env(&app, &["get", "--json"]);
+        if code == 0 && server.output()[mark..].contains("runtime env:") {
+            break json(&out);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the server did not come back: {err}\n{}",
+            server.output()
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    assert_eq!(status["keys"][0]["value"], "/_port_9000", "{status}");
+    assert_eq!(status["keys"][0]["source"], "set", "{status}");
+    assert_eq!(status["keys"][1]["source"], "file", "{status}");
+}
