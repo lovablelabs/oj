@@ -921,7 +921,7 @@ async function loadUserResolvedViteConfig() {
   });
   // The file under oj's CLI-level values, as resolveConfig merges a loaded
   // file under the inline config before any config hook runs.
-  const fileConfig = plainCopy(userViteConfig);
+  const fileConfig = withNitroDefaults(plainCopy(userViteConfig));
   // Vite's configEnv reads `isSsrBuild` off the inline config alone, before
   // the file loads: a build's `build.ssr` from the file joins the config
   // through the first config hook instead, so the hooks see it in the config
@@ -981,7 +981,34 @@ function withoutPlugins(rc, drop) {
 async function resolveUserViteConfig(plugins) {
   const vite = await appViteForResolve();
   if (!vite) return null;
-  return viteResolve(vite, inlineMerge(vite)(plainCopy(userViteConfig), cliInlineConfig()), plugins);
+  return viteResolve(vite, inlineMerge(vite)(withNitroDefaults(plainCopy(userViteConfig)), cliInlineConfig()), plugins);
+}
+// What nitro/vite's config hooks read from the user config (the config
+// Vite's resolve starts from, or the host's own without Vite), where oj's host
+// differs from Vite under Node. Nitro picks its default preset from the
+// runtime it is loaded in: the in-process host runs plugins on oj's embedded
+// Deno, where `vite build` runs on Node, so default to Nitro's Node preset as
+// Vite under Node would (an explicit preset, NITRO_PRESET or a detected
+// provider still wins). And TanStack Start's config hook, which oj runs
+// natively, names the server entry as the ssr environment's input, from
+// which Nitro registers its ssr service (the server render it bundles into
+// its own).
+function withNitroDefaults(config) {
+  if (!usesNitro()) return config;
+  if (ojEngineBoot && typeof globalThis.Deno !== "undefined" && config.nitro?.defaultPreset === undefined) {
+    config.nitro = { ...config.nitro, defaultPreset: "node-server" };
+  }
+  if (env.command === "build" && typeof initial.startServerEntry === "string") {
+    const ssr = config.environments?.ssr ?? {};
+    if (!bundlerOptions(ssr.build).input) {
+      const input = { index: initial.startServerEntry };
+      config.environments = {
+        ...config.environments,
+        ssr: { ...ssr, build: { ...ssr.build, rollupOptions: { ...ssr.build?.rollupOptions, input } } },
+      };
+    }
+  }
+  return config;
 }
 const inlineMerge = (vite) => (typeof vite.mergeConfig === "function" ? vite.mergeConfig : mergeConfigLite);
 async function viteResolve(vite, base, plugins) {
@@ -1721,6 +1748,13 @@ async function loadViteConfig(configPath) {
 }
 
 let allPlugins = [];
+// Where Nitro's build went, from the Nitro instance itself: `{ outputDir,
+// preview }` once it has compiled, else null (see nitroBuildReporter).
+let nitroBuild = null;
+// Whether the app uses nitro/vite (its main plugin is there).
+function usesNitro() {
+  return allPlugins.some((p) => p && p.name === "nitro:main");
+}
 // The React-family plugins oj reimplements natively. They run no hooks here but
 // stay visible in the resolved `config.plugins` (Vite lists every applied
 // plugin), so compat probes for vite:react-babel / vite:react-swc find them.
@@ -1792,6 +1826,9 @@ try {
     list = mod.default ?? mod.plugins;
   }
   allPlugins = await flattenPlugins(list);
+  if (env.command === "build" && usesNitro()) {
+    allPlugins.push(nitroBuildReporter());
+  }
   nativePlugins = allPlugins.filter((p) => OJ_NATIVE_PLUGIN_NAMES.has(p && p.name));
   main.rawPlugins = allPlugins;
   noteStartCompilerPosition(allPlugins);
@@ -2534,6 +2571,9 @@ async function hostConfig(rc, list, { replay = false, container = main } = {}) {
   // enforce order like Vite's resolved plugin array.
   const configPlugins = withCssPostShim(list.concat(nativePlugins));
   config.plugins = configPlugins;
+  // Without the app's Vite (none resolvable from the root) the host runs the
+  // config hooks itself, Nitro's among them, on this config.
+  if (rebase) withNitroDefaults(config);
   let delta = {};
   config = await runConfigHook(config, list, {
     // What the plugins themselves contributed (Vite merges it into the
@@ -2669,7 +2709,23 @@ async function resolveEnvironment(c, name) {
   environment.getTopLevelConfig = () => resolvedConfig;
   if (name !== "client") await reportEnvironmentResolve(name, own.resolve, environment.config.consumer);
   c.plugins = await environmentPlugins(environment, c.topLevelPlugins, c);
+  // Vite's `vite:rollup-options-plugins`: a build runs the environment's
+  // `build.rolldownOptions.plugins` after the normal plugins, ahead of the
+  // post ones. Only for Nitro's environment, which oj bundles from its config
+  // alone; oj's own builds don't run them yet.
+  if (command === "build" && name === "nitro" && usesNitro()) {
+    const extra = await flattenPlugins(bundlerOptions(environment.config.build).plugins);
+    if (extra.length) {
+      const at = c.plugins.findIndex((p) => p.enforce === "post");
+      c.plugins.splice(at === -1 ? c.plugins.length : at, 0, ...extra);
+    }
+  }
   environment.plugins = c.plugins;
+}
+// An environment's bundler options: `rolldownOptions`, with `rollupOptions`
+// (their older name, which Vite keeps as an alias) underneath.
+function bundlerOptions(build) {
+  return { ...build?.rollupOptions, ...build?.rolldownOptions };
 }
 // Hands oj the options a non-client environment's `this.resolve` fallback
 // resolves with: its own entry of the resolved config, which Vite fills per
@@ -3128,6 +3184,8 @@ function ojResolveServerUrls() {
   return { local, network, networkInterfaceNames };
 }
 let appVite = null;
+// Why the app's Vite would not load (resolving or importing it), if so.
+let appViteLoadError = null;
 async function loadAppVite() {
   if (appVite) return appVite;
   try {
@@ -3135,6 +3193,7 @@ async function loadAppVite() {
       (main.resolvedConfig && main.resolvedConfig.root) || (initial.config && initial.config.root) || process.cwd();
     appVite = await import(appViteEntry(root));
   } catch (e) {
+    appViteLoadError = e;
     process.stderr.write(`${OJ} plugin host: could not load app vite: ${(e && e.message) || e}\n`);
   }
   return appVite;
@@ -5128,9 +5187,19 @@ async function setupConfigureServer() {
   // degrading to the Node SSR runner silently (the per-failure causes are on
   // stderr above).
   if (runnerDeclared && ownsServer && !runnerEnvironmentsBuilt) {
-    process.stderr.write(
-      `${OJ} warning: a plugin declared a custom dev environment but none came up; documents are served by the Node SSR runner\n`,
-    );
+    if (appViteLoadError) {
+      // The environments are the app's own Vite's: without it the plugin's
+      // dev server (Nitro's routes, middleware and WebSockets among it) never
+      // starts, though oj's runner still renders the pages.
+      const e = appViteLoadError;
+      process.stderr.write(
+        `${OJ} error: a plugin declared a custom dev environment but none came up: it runs on the app's own vite, which failed to load (${(e && e.message) || e}; is vite in the app's devDependencies?). Documents are served by the Node SSR runner meanwhile, without the plugin's dev server (its routes, middleware and WebSockets).\n`,
+      );
+    } else {
+      process.stderr.write(
+        `${OJ} warning: a plugin declared a custom dev environment but none came up; documents are served by the Node SSR runner\n`,
+      );
+    }
   }
   // Vite's createServer always exposes `server.environments` with at least
   // client and ssr (a DevEnvironment per config.environments entry, defaults
@@ -5223,6 +5292,51 @@ async function setupConfigureServer() {
   }
   // Setup is over: later registrations are the session's own discoveries.
   bootRegistrationsOpen = false;
+  // Vite's initServer, before the socket listens: the client buildStart. It
+  // sets up state the server environments' transforms share (vite:css's CSS
+  // modules cache, which vite:css-post reads for any stylesheet a module
+  // runner imports). Of it only Vite's own plugins run here: the host's
+  // container runs its plugins' buildStart itself, once. As in Vite, a container a plugin
+  // already started (Cloudflare's configureServer does) is not started again.
+  // Vite has no public call for part of a container's buildStart, so this
+  // takes its container's own (EnvironmentPluginContainer.buildStart's).
+  if (runnerEnvironmentsBuilt) {
+    try {
+      const pc = server.environments.client?.pluginContainer;
+      if (!pc || pc._started) {
+        // Started already, or no client container to start.
+      } else if (typeof pc.hookParallel !== "function" || typeof pc._getPluginContext !== "function") {
+        process.stderr.write(
+          `${OJ} warning: the app's vite has no pluginContainer.hookParallel/_getPluginContext; its own client buildStart hooks don't run, so state they set up (vite:css's CSS modules cache) is missing for server environments\n`,
+        );
+      } else {
+        pc._started = true;
+        // The environments hold the host's instances, or stand-ins made over
+        // them (their prototype), or copies under the same name.
+        const hosted = new Set([...allPlugins, ...main.plugins]);
+        const names = new Set([...hosted].map((p) => p && p.name).filter(Boolean));
+        const isHosted = (p) => {
+          if (names.has(p?.name)) return true;
+          for (let q = p; q && q !== Object.prototype; q = Object.getPrototypeOf(q)) if (hosted.has(q)) return true;
+          return false;
+        };
+        // A buildStart a plugin asks for meanwhile waits for this one.
+        pc._buildStartPromise = pc.hookParallel(
+          "buildStart",
+          (p) => pc._getPluginContext(p),
+          () => [pc.options],
+          (p) => !isHosted(p),
+        );
+        try {
+          await pc._buildStartPromise;
+        } finally {
+          pc._buildStartPromise = undefined;
+        }
+      }
+    } catch (e) {
+      process.stderr.write(`${OJ} plugin host: client buildStart failed: ${(e && e.message) || e}\n`);
+    }
+  }
   ojConfigureServerDone = true;
   // The middleware server exists as soon as configureServer registered
   // anything, like Vite's connect stack exists at createServer — never
@@ -5744,8 +5858,11 @@ async function openWorkerContainer(parent, bundleChain) {
 // every environment: oj's builds, the `buildEnvironments` reverse RPC) run
 // just before the first post-order hook. `builder.environments` lists every
 // configured environment; Rust names the ones it builds (`builtJson`: name ->
-// { outDir, input }) and builds any of them a hook asks for, once. A throwing
-// hook fails the build, as in Vite, unless a config-phase hook was skipped.
+// { outDir, assetsDir, input }) and builds any of them a hook asks for, once.
+// Nitro's `nitro` environment Rust bundles from its config alone, the
+// `buildEnvironment` reverse RPC, which answers its output; any other
+// environment a plugin builds is refused. A throwing hook fails the build, as
+// in Vite, unless a config-phase hook was skipped.
 async function buildApp(builtJson) {
   const built = JSON.parse(builtJson || "{}");
   const names = new Set(["client", "ssr", ...Object.keys(main.resolvedConfig?.environments ?? {})]);
@@ -5758,6 +5875,10 @@ async function buildApp(builtJson) {
       config.build = {
         ...config.build,
         outDir: ojBuild.outDir,
+        // Where oj wrote the hashed files: one directory for every bundle,
+        // the client's assetsDir (Nitro's post hook caches the client's as
+        // immutable).
+        assetsDir: ojBuild.assetsDir ?? "assets",
         rollupOptions: { ...config.build?.rollupOptions, input: ojBuild.input },
         rolldownOptions: { ...config.build?.rolldownOptions, input: ojBuild.input },
       };
@@ -5775,10 +5896,16 @@ async function buildApp(builtJson) {
     async build(environment) {
       const name = typeof environment === "string" ? environment : environment?.name;
       if (!built[name]) {
-        const own = Object.keys(built).join(" and ");
-        throw new Error(
-          `oj build builds the ${own} environments; the "${name}" environment a plugin builds is not supported yet`,
-        );
+        const nitro = name === "nitro" && usesNitro();
+        if (!nitro || !environments[name]) {
+          const own = Object.keys(built).join(" and ");
+          throw new Error(
+            `oj build builds the ${own} environments; the "${name}" environment a plugin builds is not supported yet`,
+          );
+        }
+        const output = await asyncRpc("buildEnvironment", [name]);
+        environments[name].isBuilt = true;
+        return output;
       }
       await buildEnvironments();
     },
@@ -5806,7 +5933,23 @@ async function buildApp(builtJson) {
     }
   }
   if (!ran) await buildEnvironments();
-  return null;
+  return nitroBuild && JSON.stringify(nitroBuild);
+}
+
+// A plugin carrying a Nitro module, the public way a Vite plugin extends
+// nitro/vite's Nitro (its `nitro` key). Prerendering builds a second Nitro
+// from the same modules into the same output: only the first, the app's own,
+// is reported.
+function nitroBuildReporter() {
+  let app = null;
+  const setup = (nitro) => {
+    if (app) return;
+    app = nitro;
+    nitro.hooks.hook("compiled", () => {
+      nitroBuild = { outputDir: nitro.options.output.dir, preview: nitro.options.commands?.preview ?? null };
+    });
+  };
+  return { name: "oj:nitro-build", nitro: { name: "oj:nitro-build", setup } };
 }
 
 // Vite's resolved `build.emitAssets`: `build.ssrEmitAssets` for ssr, then the
@@ -6131,7 +6274,12 @@ async function startFacts(c) {
     serverWatch: cfg.server?.watch === null ? null : factValue(cfg.server?.watch ?? {}, fns),
     reactRefresh: names.includes("vite:react-refresh"),
     cloudflare: await cloudflareEnvironmentFacts(cfg, fns),
+    nitro: nitroFacts(cfg),
     worker: workerFacts(cfg, fns),
+    // Where a build writes the client's hashed files: the client
+    // environment's resolved `build.assetsDir`, which a plugin's
+    // configEnvironment hook may set (nitro/vite: Nitro's `buildAssetsDir`).
+    clientAssetsDir: stringOr(envOf("client").build?.assetsDir ?? cfg.build?.assetsDir),
     // How many resolveId hooks run on each side of the core resolver.
     resolveIdPhases: pluginsWithHook(c, "resolveId").reduce(
       (n, { p, rank }) => {
@@ -6202,6 +6350,56 @@ async function cloudflareEnvironmentFacts(c, fns) {
     rootOutDir: stringOr(userViteConfig?.build?.outDir),
   };
 }
+// nitro/vite (its `nitro:main` plugin and the `nitro` environment its config
+// hook declares), or null: where its configEnvironment hook put the client
+// (Nitro's public directory) and the ssr service. `configured` is false when
+// the plugin is there but its config hook failed (an unknown preset), which
+// fails the build instead of building oj's own server.
+function nitroFacts(c) {
+  if (!usesNitro()) return null;
+  if (!c.environments?.nitro) return { configured: false };
+  return {
+    configured: true,
+    clientOutDir: stringOr(c.environments.client?.build?.outDir),
+    ssrOutDir: stringOr(c.environments.ssr?.build?.outDir),
+  };
+}
+
+// The build options of the current environment, for an environment oj
+// builds from its config alone (a plugin's own, as Nitro's): Vite's resolved
+// `build` and its bundler options, functions as handles.
+function environmentBuildFacts(c) {
+  const fns = (c.startFns ??= []);
+  const cfg = c.environment.config ?? {};
+  const build = cfg.build ?? {};
+  const options = bundlerOptions(build);
+  const output = (Array.isArray(options.output) ? options.output[0] : options.output) ?? {};
+  const value = (v) => (v === undefined ? null : factValue(v, fns));
+  return JSON.stringify({
+    consumer: cfg.consumer,
+    input: value(options.input),
+    outDir: stringOr(build.outDir),
+    minify: value(build.minify),
+    sourcemap: value(build.sourcemap),
+    target: value(build.target),
+    platform: stringOr(options.platform),
+    conditions: value(cfg.resolve?.conditions),
+    mainFields: value(cfg.resolve?.mainFields),
+    define: value(cfg.define),
+    inject: value(options.transform?.inject),
+    output: {
+      dir: stringOr(output.dir),
+      format: stringOr(output.format),
+      entryFileNames: value(output.entryFileNames),
+      chunkFileNames: value(output.chunkFileNames),
+      assetFileNames: stringOr(output.assetFileNames),
+      minifyInternalExports: output.minifyInternalExports ?? null,
+      banner: stringOr(output.banner),
+      footer: stringOr(output.footer),
+    },
+  });
+}
+
 // A config function a fact handed out (`$fn`), called with JSON arguments
 // (an `external` function: `(id, importer, isResolved)`).
 async function callStartFn(c, index, argsJson) {
@@ -6831,6 +7029,7 @@ async function run(hook, args, c) {
   if (hook === "resolveIdPhase")
     return gateOnBuildStart(c).then(() => resolveIdPhase(c, args[0], args[1], args[2], args[3]));
   if (hook === "startFacts") return startFacts(c);
+  if (hook === "environmentBuildFacts") return environmentBuildFacts(c);
   if (hook === "callStartFn") return callStartFn(c, args[0], args[1]);
   if (hook === "callStartFnBatch") return callStartFnBatch(c, args[0], args[1], args[2], args[3], args[4]);
   if (hook === "scanResolveId") return gateOnBuildStart(main).then(() => scanResolveId(args[0], args[1], args[2]));

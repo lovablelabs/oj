@@ -427,6 +427,52 @@ console.log(a, b);
     assert!(std::fs::read_dir(client.join("assets")).unwrap().count() >= 3);
 }
 
+/// The client's `build.assetsDir` (nitro/vite sets Nitro's `buildAssetsDir`)
+/// places every emitted file and names every URL, a sheet's `url()`s and the
+/// late CSS a plugin appends included.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_emitter_writes_under_the_clients_assets_dir() {
+    let app = App::new(&[
+        ("src/font.woff2", "font"),
+        ("src/style.css", ".a { background: url(./font.woff2) }"),
+    ]);
+    let start = app.start();
+    let client = app.dir.join("dist/client");
+    let emitter = Emitter::in_assets_dir(
+        &client,
+        "_vercel/immutable/app",
+        "/base/",
+        Arc::new(Styles::new(&start)),
+    );
+    let url = emitter.emit(&app.dir.join("src/style.css")).await.unwrap();
+    let file = url.strip_prefix("/base/").unwrap();
+    assert!(file.starts_with("_vercel/immutable/app/style-"), "{url}");
+    let sheet = std::fs::read_to_string(client.join(file)).unwrap();
+    assert!(
+        sheet.contains("url(/base/_vercel/immutable/app/font-")
+            || sheet.contains("url(\"/base/_vercel/immutable/app/font-"),
+        "{sheet}"
+    );
+    emitter.append_generated_css("x.css", ".x{}").unwrap();
+    assert!(std::fs::read_to_string(client.join(file))
+        .unwrap()
+        .ends_with("\n.x{}"));
+    assert!(
+        !client.join("assets").exists(),
+        "nothing under Vite's default"
+    );
+
+    let root = App::new(&[]);
+    let root_client = root.dir.join("dist/client");
+    let emitter =
+        Emitter::in_assets_dir(&root_client, "", "/", Arc::new(Styles::new(&root.start())));
+    emitter.append_generated_css("x.css", ".x{}").unwrap();
+    assert!(
+        root_client.join("x.css").exists(),
+        "an empty assetsDir is the client's root"
+    );
+}
+
 /// The StyleX sheet joins the first stylesheet the client emitted, under the
 /// name and link it already has, as the plugin's generateBundle appends it;
 /// with none it is the plugin's unlinked `assets/stylex.css`.
