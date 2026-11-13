@@ -105,6 +105,11 @@ fn read_static(root: &Path, vite: &Path, command: &str, mode: &str) -> Result<Va
             return Err(reason);
         }
     }
+    // Any version: oj stands in for the whole package. Absent, the import
+    // fails in evaluation as it does under Vite, instead of serving TLS.
+    if config.basic_ssl.is_some() && installed_version(root, "@vitejs/plugin-basic-ssl").is_none() {
+        return Err("@vitejs/plugin-basic-ssl is not installed".into());
+    }
     let allow = fs_allow(root)?;
 
     let malformed = || "the template is malformed".to_string();
@@ -740,6 +745,14 @@ mod tests {
         let literal = format!("{react}export default {{ plugins: [react()] }};\n");
         assert_eq!(decline(&literal), None);
         let ssl = "import basicSsl from \"@vitejs/plugin-basic-ssl\";\n";
+        assert_eq!(
+            decline(&format!(
+                "{react}{ssl}export default {{ plugins: [react(), basicSsl()] }};\n"
+            ))
+            .as_deref(),
+            Some("@vitejs/plugin-basic-ssl is not installed")
+        );
+        install(&root, "@vitejs/plugin-basic-ssl", "2.3.0");
         assert!(decline(&format!(
             "{react}{ssl}export default {{ plugins: [react(), basicSsl(opts)] }};\n"
         ))
