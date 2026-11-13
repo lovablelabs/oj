@@ -2705,10 +2705,15 @@ fn server_fn_inputs_changed(root: &Path, cache: &Path, changed: &[PathBuf]) -> b
     changed.iter().any(|p| {
         let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default();
         let ext = p.extension().and_then(|e| e.to_str()).unwrap_or_default();
-        // A deleted JSON file may be one a tsconfig extended.
+        // A JSON file a config names, present or deleted (one it extended):
+        // a temp an editor's safe-write or GNU sed put beside the sources
+        // and removed before the batch settled is named by nothing, and is
+        // no input.
         if is_resolution_config(name)
             || (ext == "json"
-                && (!p.exists() || configs.get_or_init(|| resolution_configs(root)).contains(p)))
+                && configs
+                    .get_or_init(|| named_resolution_configs(root))
+                    .contains(p))
         {
             return true;
         }
@@ -2773,6 +2778,19 @@ fn is_resolution_config(name: &str) -> bool {
 /// path, whatever they are called and wherever they are. A config extended
 /// from a package is keyed by the lockfile.
 fn resolution_configs(root: &Path) -> Vec<PathBuf> {
+    resolution_configs_with(root, false)
+}
+
+/// [`resolution_configs`] and, besides, every file a config names by a
+/// relative `extends` or `references` path whether or not it exists (as the
+/// file itself, as `<name>.json`, as `<dir>/tsconfig.json`): the set a
+/// deleted JSON file is checked against, since the file a config extended is
+/// gone by then.
+fn named_resolution_configs(root: &Path) -> Vec<PathBuf> {
+    resolution_configs_with(root, true)
+}
+
+fn resolution_configs_with(root: &Path, with_missing: bool) -> Vec<PathBuf> {
     fn named(dir: &Path, deep: bool, out: &mut Vec<PathBuf>) {
         for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
             let p = e.path();
@@ -2788,6 +2806,7 @@ fn resolution_configs(root: &Path) -> Vec<PathBuf> {
         }
     }
     let mut pending = Vec::new();
+    let mut missing = Vec::new();
     named(root, false, &mut pending);
     named(&root.join("src"), true, &mut pending);
     static NAMED: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
@@ -2810,14 +2829,23 @@ fn resolution_configs(root: &Path) -> Vec<PathBuf> {
                     continue;
                 }
                 let path = crate::ssr_dev::normalize_path(&dir.join(target));
-                let found = [
+                let candidates = [
                     path.clone(),
                     PathBuf::from(format!("{}.json", path.display())),
                     path.join("tsconfig.json"),
-                ]
-                .into_iter()
-                .find(|candidate| candidate.is_file());
-                pending.extend(found);
+                ];
+                let found = candidates.iter().find(|candidate| candidate.is_file());
+                if with_missing {
+                    missing.extend(candidates.iter().filter(|c| !c.is_file()).cloned());
+                }
+                pending.extend(found.cloned());
+            }
+        }
+    }
+    if with_missing {
+        for path in missing {
+            if !out.contains(&path) {
+                out.push(path);
             }
         }
     }
@@ -6786,6 +6814,17 @@ mod tests {
         // An existing JSON file no tsconfig names.
         std::fs::write(root.join("config/other.json"), "{}\n").unwrap();
         assert!(!changed("config/other.json"));
+        // A JSON file that came and went inside the batch (an editor's
+        // safe-write temp, GNU sed's), gone once the batch settles: named by
+        // no config, it is no input, wherever it was. It turned every edit
+        // batched with such a temp into a resolver regeneration, and the hot
+        // update into a rebuild.
+        assert!(!changed("src/content/sedf1aa6r.json"));
+        assert!(!changed("config/draft.json"));
+        // The extended file deleted: an input still, the tsconfig names it.
+        std::fs::remove_file(root.join("config/base.json")).unwrap();
+        assert!(changed("config/base.json"));
+        std::fs::write(root.join("config/base.json"), base).unwrap();
 
         // The module stops exporting a builder.
         std::fs::write(
@@ -6957,7 +6996,13 @@ mod tests {
         assert!(!changed("shared/authed.js"));
         assert!(!changed("shared/other.js"));
         assert!(changed("src/lib/authed.js"));
-        assert!(changed("config/gone.json"));
+        // The extended file, deleted: the tsconfig names it. A deleted JSON
+        // nothing names (a temp an editor wrote and removed) is no input.
+        let extended = std::fs::read(root.join("config/base.json")).unwrap();
+        std::fs::remove_file(root.join("config/base.json")).unwrap();
+        assert!(changed("config/base.json"));
+        std::fs::write(root.join("config/base.json"), extended).unwrap();
+        assert!(!changed("config/gone.json"));
         assert!(!changed("config/base.json.bak"));
 
         // The alias's target is created.
