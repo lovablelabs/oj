@@ -390,7 +390,12 @@ pub(crate) fn inject_module_preloads(html: String, state: &ServerState, file: &P
         .map(|p| {
             format!(
                 "<link rel=\"modulepreload\" href=\"{}\"{nonce} />\n",
-                preload_href(&state.root, p, &entries, state.plugins_have_transform)
+                preload_href(
+                    &state.root,
+                    p,
+                    &entries,
+                    state.svg_url_may_be_componentized(p)
+                )
             )
         })
         .collect();
@@ -440,7 +445,7 @@ pub(crate) fn html_entries(root: &Path) -> Vec<String> {
 
 /// Value of attribute `name` in an opening tag: double/single/unquoted, spaces
 /// around `=`, case-insensitive whole-word names (`data-src` is not `src`).
-pub(crate) fn html_tag_attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+pub fn html_tag_attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
     let bytes = tag.as_bytes();
     let len = bytes.len();
     let skip_ws = |mut i: usize| {

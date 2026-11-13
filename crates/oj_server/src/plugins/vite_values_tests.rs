@@ -698,8 +698,33 @@ async fn addon_keeper_tolerates_unloadable_addons() {
     );
 }
 
+// The cap is V8's own figure for the machine, as Node's and Deno's is: a
+// 4GB old space once the memory allows it with the young generation on top,
+// less on a small machine, and `--max-old-space-size=N` that same young
+// generation above N. A machine whose memory cannot be read keeps 4096MB.
+#[test]
+fn the_heap_cap_is_v8s_for_the_machine() {
+    const GB: u64 = 1 << 30;
+    let big = heap_cap_mb(Some(64 * GB), None);
+    let young = big - 4096;
+    assert!(
+        (1..=1024).contains(&young),
+        "a 4GB old space and a young generation: {big}MB"
+    );
+    assert_eq!(heap_cap_mb(Some(16 * GB), None), big);
+    let small = heap_cap_mb(Some(2 * GB), None);
+    assert!(
+        (512..2048).contains(&small),
+        "a 2GB machine's heap fits its memory: {small}MB"
+    );
+    assert_eq!(heap_cap_mb(Some(64 * GB), Some(8192)), 8192 + young);
+    assert_eq!(heap_cap_mb(Some(64 * GB), Some(1024)), 1024 + young);
+    assert_eq!(heap_cap_mb(None, None), 4096);
+    assert_eq!(heap_cap_mb(None, Some(2048)), 2048);
+}
+
 // Heap cap mirrors NODE_OPTIONS --max-old-space-size (last wins, underscore
-// accepted, like Node), OJ_PLUGIN_MEMORY_MB above it, 4096 beneath.
+// accepted, like Node), V8's default for the machine beneath.
 #[test]
 fn node_options_heap_cap_parses_like_node() {
     assert_eq!(max_old_space_mb("--max-old-space-size=8192"), Some(8192));
@@ -763,7 +788,7 @@ return null;
         .await
         .expect_err("the heap cap fails the allocating hook");
     assert!(
-        err.contains("memory limit") && err.contains("OJ_PLUGIN_MEMORY_MB"),
+        err.contains("memory limit") && err.contains("--max-old-space-size"),
         "the failure names the cap and its knob: {err}"
     );
     assert!(
@@ -1492,6 +1517,7 @@ fn parse_reads_all_fields() {
     let json = serde_json::json!({
         "base": "/app/",
         "publicDir": "/abs/shared/public",
+        "cacheDir": "/abs/shared/node_modules/.vite",
         "port": 3010,
         "host": "0.0.0.0",
         "define": { "__X__": "1" },
@@ -1501,6 +1527,10 @@ fn parse_reads_all_fields() {
     let v = parse_vite_values(&json);
     assert_eq!(v.base.as_deref(), Some("/app/"));
     assert_eq!(v.public_dir, Some("/abs/shared/public".into()));
+    assert_eq!(
+        v.cache_dir.as_deref(),
+        Some("/abs/shared/node_modules/.vite")
+    );
     assert_eq!(v.port, Some(3010));
     assert_eq!(v.host.as_deref(), Some("0.0.0.0"));
     assert!(v.define.unwrap().contains_key("__X__"));
@@ -1513,6 +1543,7 @@ fn parse_tolerates_nulls_and_missing() {
     let v = parse_vite_values(&serde_json::json!({ "base": null, "port": null }));
     assert!(v.base.is_none());
     assert!(v.public_dir.is_none());
+    assert!(v.cache_dir.is_none());
     assert!(v.port.is_none());
     assert!(v.define.is_none());
 }
@@ -1523,6 +1554,7 @@ fn merge_adopts_only_unset_fields() {
     let v = ViteValues {
         base: Some("/vite-base/".into()),
         public_dir: Some("shared/public".into()),
+        cache_dir: None,
         port: Some(3010),
         host: Some("localhost".into()),
         origin: Some("https://cdn.example".into()),
@@ -1581,6 +1613,7 @@ fn merge_never_overrides_config() {
     let v = ViteValues {
         base: Some("/vite-base/".into()),
         public_dir: Some("shared/public".into()),
+        cache_dir: None,
         port: None,
         host: None,
         origin: None,

@@ -5,6 +5,9 @@ pub struct ViteValues {
     pub base: Option<String>,
     /// `publicDir`: a path, or `false` (no public directory).
     pub public_dir: Option<oj_config::BoolOrString>,
+    /// `cacheDir` as Vite resolved it (absolute): the optimizer's dir, whose
+    /// dep URLs a page may name.
+    pub cache_dir: Option<String>,
     pub port: Option<u16>,
     pub host: Option<String>,
     pub origin: Option<String>,
@@ -1200,6 +1203,7 @@ pub(crate) fn parse_vite_values(json: &serde_json::Value) -> ViteValues {
             Some(serde_json::Value::Bool(false)) => Some(oj_config::BoolOrString::Bool(false)),
             _ => None,
         },
+        cache_dir: str_field(json, "cacheDir"),
         port: json.get("port").and_then(|v| v.as_u64()).map(|p| p as u16),
         host: str_field(json, "host"),
         origin: str_field(json, "origin"),
@@ -1381,6 +1385,9 @@ pub(crate) fn merge_vite_values(config: &mut oj_config::OjConfig, v: ViteValues)
     }
     if config.public_dir.is_none() {
         config.public_dir = v.public_dir;
+    }
+    if config.cache_dir.is_none() {
+        config.cache_dir = v.cache_dir;
     }
     if let Some(vdef) = v.define {
         let def = config.define.get_or_insert_with(Default::default);

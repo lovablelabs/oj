@@ -59,6 +59,9 @@ async fn serve_internal_route(
     if let Some(resp) = crate::stylex::serve_route(state, path) {
         return Some(resp);
     }
+    if path.starts_with(state.vite_deps_prefix.as_str()) {
+        return Some(serve_vite_dep_url(state, headers, path).await);
+    }
     if let Some(name) = path.strip_prefix("/@oj-deps/") {
         if name.contains('/') || name.contains("..") {
             return Some((StatusCode::FORBIDDEN, "oj: bad optimized dep path").into_response());
@@ -421,6 +424,29 @@ async fn serve_file(
         let url = format!("{}?react", url_of(&state.root, file));
         return serve_compiled(state, file, &url, None, headers).await;
     }
+    // A module import of a file oj does not compile that a plugin's `load`
+    // or `transform` filter claims (`.mdx` with an MDX plugin, an image under
+    // a `?w=` query with an image plugin): Vite's transformMiddleware takes
+    // every module request (`sec-fetch-dest: script`, `?import`) through
+    // `transformRequest`, so the plugin's module is what the page gets,
+    // whatever the extension; the same url fetched as a resource (`<img
+    // src>`) is still the file, as its static middlewares serve it. A svg
+    // has its own route below (svgr, else its url module).
+    if !ext.eq_ignore_ascii_case("svg") && ext != "html" && wants_module_import(headers, query) {
+        let url = url_of(&state.root, file);
+        // The id the hooks see: the url with its query, minus the HMR stamp
+        // and the `import` flag Vite's middleware strips (removeImportQuery).
+        let query = without_import_flag(query);
+        let id = match &query {
+            Some(q) => strip_hmr_timestamp(&format!("{url}?{q}")),
+            None => url.clone(),
+        };
+        if plugin_claims(state, file, &id) {
+            return vary_on_fetch_dest(
+                serve_compiled(state, file, &url, query.as_deref(), headers).await,
+            );
+        }
+    }
     if ext.eq_ignore_ascii_case("svg") || is_importable_asset(&state.root, &file.to_string_lossy())
     {
         return vary_on_fetch_dest(serve_bare_asset(state, headers, file, ext, query).await);
@@ -441,7 +467,7 @@ async fn serve_bare_asset(
     // componentize it; unmatched svgs fall back to a URL asset there.
     if ext.eq_ignore_ascii_case("svg") && !wants_raw_resource(headers) {
         let url = url_of(&state.root, file);
-        if state.plugins_have_transform {
+        if state.svg_may_be_componentized(file) {
             return serve_compiled(state, file, &url, query, headers).await;
         }
         // No plugin can componentize it: a module import of an svg (relative,
@@ -585,6 +611,17 @@ fn js_module_response(js: Result<String, String>) -> Response {
         Ok(js) => js_response(js),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("oj: {e}")).into_response(),
     }
+}
+
+/// `query` without the bare `import` flag (`?import`, `?w=72&import`), as
+/// Vite's transform middleware strips it before the plugins see the id;
+/// `None` once nothing else is left.
+fn without_import_flag(query: Option<&str>) -> Option<String> {
+    let kept: Vec<&str> = query?
+        .split('&')
+        .filter(|kv| *kv != "import" && *kv != "import=")
+        .collect();
+    (!kept.is_empty()).then(|| kept.join("&"))
 }
 
 /// Whether the query has the bare `flag` key (`?direct`, `?import`, `?react`).

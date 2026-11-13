@@ -209,7 +209,19 @@ impl DevAssetUrls {
     /// (see [`asset_export_url`]). An error is a function `assetsInlineLimit`
     /// that threw, which fails the request as in Vite.
     pub(crate) fn file_url(&self, env: &str, file: &Path, url: &str) -> Result<String, String> {
-        Ok(match self.inline_url(env, file, url)? {
+        self.file_url_with(env, file, url, None)
+    }
+
+    /// [`Self::file_url`] with the file's bytes when the caller has read
+    /// them already (`content`), so inlining reads nothing.
+    pub(crate) fn file_url_with(
+        &self,
+        env: &str,
+        file: &Path,
+        url: &str,
+        content: Option<&[u8]>,
+    ) -> Result<String, String> {
+        Ok(match self.inline_url_with(env, file, url, content)? {
             Some(data) => data,
             None => self.join(&asset_export_url(url)),
         })
@@ -222,13 +234,29 @@ impl DevAssetUrls {
         file: &Path,
         url: &str,
     ) -> Result<Option<String>, String> {
+        self.inline_url_with(env, file, url, None)
+    }
+
+    fn inline_url_with(
+        &self,
+        env: &str,
+        file: &Path,
+        url: &str,
+        content: Option<&[u8]>,
+    ) -> Result<Option<String>, String> {
+        let read = || -> Option<std::borrow::Cow<'_, [u8]>> {
+            match content {
+                Some(bytes) => Some(std::borrow::Cow::Borrowed(bytes)),
+                None => std::fs::read(file).ok().map(std::borrow::Cow::Owned),
+            }
+        };
         if has_word_param(url, "inline") {
-            if let Ok(content) = std::fs::read(file) {
+            if let Some(content) = read() {
                 return Ok(Some(asset_data_url(file, &content)));
             }
         }
         if file.extension().is_some_and(|e| e == "svg") {
-            if let Ok(content) = std::fs::read(file) {
+            if let Some(content) = read() {
                 if self.should_inline(env, file, url, &content)? {
                     return Ok(Some(svg_to_data_url(&content)));
                 }

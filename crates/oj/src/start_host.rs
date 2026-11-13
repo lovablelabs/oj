@@ -1170,7 +1170,7 @@ impl StartHost {
             oj_compiler::server_fns::rewrite_server(
                 &raw,
                 &rel,
-                &oj_compiler::server_fns::FsModules { root: &self.root },
+                &oj_compiler::server_fns::FsModules::new(&self.root),
             )
             .unwrap_or(raw)
         } else {

@@ -287,6 +287,10 @@ struct ServerState {
     root: PathBuf,
     /// Vite's `publicDir`; None when the config disables it (`publicDir: false`).
     public_dir: Option<PathBuf>,
+    /// The URL prefix Vite would serve this app's optimized deps under
+    /// (`/node_modules/.vite/deps/` for the default `cacheDir`), which oj
+    /// answers with re-exports of its own pre-bundles. See `vite_dep_id`.
+    vite_deps_prefix: String,
     reload_tx: broadcast::Sender<String>,
     graph: Mutex<ModuleGraph>,
     resolver: Arc<OjResolver>,
@@ -475,6 +479,42 @@ struct ServerState {
     /// socket (Vite's `webSocketToken`); non-browser clients (no `Origin`) connect freely.
     ws_token: String,
     ws_token_check: bool,
+}
+
+impl ServerState {
+    /// Whether a plugin may make a plain `.svg` import a component (svgr),
+    /// so the import stays a module request rather than a `?url` asset. A
+    /// `load` hook counts as much as a `transform`: Vite offers every
+    /// plugin's load before `vite:asset`'s (plugins/asset.ts `load`, which
+    /// answers the URL module), and vite-plugin-svgr is a `pre` plugin whose
+    /// `load` reads the file itself, so with `include: "**/*.svg"` it claims
+    /// the plain id and the asset plugin never sees it. Whether the file was
+    /// claimed is decided after the hooks ran, on their output.
+    ///
+    /// A load hook is asked the way Vite's container asks it: by its filter
+    /// (`getCachedFilterForPlugin`), so a plugin whose `load` filter cannot
+    /// match the svg's id (a virtual-module plugin) leaves it the URL asset,
+    /// with no round trip to the host; and only if Vite runs the hook before
+    /// `vite:asset` (a hook with `order: "pre"`, else an `enforce: "pre"`
+    /// plugin), since a later plugin's `load` never sees a plain svg there.
+    /// A function-form `load` on a `pre` plugin (lovable-tagger's) is offered
+    /// every id, as under Vite.
+    pub(crate) fn svg_may_be_componentized(&self, file: &Path) -> bool {
+        if self.plugins_have_transform {
+            return true;
+        }
+        self.plugins_have_load
+            && self
+                .plugins
+                .as_ref()
+                .is_some_and(|host| host.hook_wants_load_before_asset(&file.to_string_lossy()))
+    }
+
+    /// [`Self::svg_may_be_componentized`] for a served url (the importer's
+    /// rewrite and the page's preloads see urls, not files).
+    pub(crate) fn svg_url_may_be_componentized(&self, url: &str) -> bool {
+        self.svg_may_be_componentized(&rewrite::file_of_url(&self.root, url))
+    }
 }
 
 /// Live plugin-host serve state (configureServer middleware port + whether runner-backed
@@ -2219,6 +2259,10 @@ impl DevServer {
             engine_registry: engine_registry.clone(),
             root: root.clone(),
             public_dir,
+            vite_deps_prefix: optimize::vite_deps_url_prefix(
+                &root,
+                &oj_config::cache_dir(&config, &root),
+            ),
             reload_tx: reload_tx.clone(),
             graph: Mutex::new(ModuleGraph::new()),
             require_resolver: Arc::new(client_resolver.require_variant()),

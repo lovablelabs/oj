@@ -143,3 +143,78 @@ export default [{
         "deleted chunk was not written:\n{all_js}"
     );
 }
+
+/// An asset in generateBundle's bundle is Rollup's OutputAsset: beside `name`
+/// and `names` it carries `originalFileNames`, the source paths it was
+/// emitted for (root-relative for an imported file, as Vite's asset plugin
+/// emits them) and an empty array when there are none, with
+/// `originalFileName` its first entry or null. A plugin that guards what a
+/// build ships reads them without a check:
+/// `output.originalFileNames.some((file) => ...)`.
+#[tokio::test]
+async fn generate_bundle_assets_carry_their_original_file_names() {
+    let root = scratch("gbf-original-file-names");
+    let picture = "x".repeat(6000);
+    write_files(
+        &root,
+        &[
+            ("package.json", r#"{"name":"gb-assets","version":"1.0.0"}"#),
+            ("src/picture.png", &picture),
+            ("src/style.css", ".a { color: red; }\n"),
+            (
+                "src/entry.js",
+                "import \"./style.css\";\nimport picture from \"./picture.png\";\nconsole.log(picture);\n",
+            ),
+            (
+                "index.html",
+                r#"<!doctype html><html><head><title>t</title></head><body><script type="module" src="/src/entry.js"></script></body></html>"#,
+            ),
+            (
+                "oj.plugins.mjs",
+                r#"export default [{
+  name: "gb-assets",
+  generateBundle(options, bundle) {
+    const assets = Object.values(bundle)
+      .filter((output) => output.type === "asset")
+      .map((output) => ({
+        fileName: output.fileName,
+        names: output.names,
+        originalFileName: output.originalFileName,
+        isArray: Array.isArray(output.originalFileNames),
+        originalFileNames: output.originalFileNames,
+        guarded: output.originalFileNames.some((file) => file.endsWith("picture.png")),
+      }));
+    this.emitFile({ type: "asset", fileName: "gb-assets.json", source: JSON.stringify(assets) });
+  },
+}];
+"#,
+            ),
+        ],
+    );
+    build_app(&root).await.expect("the app builds");
+    let raw = fs::read_to_string(root.join("dist/gb-assets.json"))
+        .expect("generateBundle wrote gb-assets.json");
+    let assets: Vec<serde_json::Value> =
+        serde_json::from_str(&raw).expect("gb-assets.json is json");
+    assert!(
+        !assets.is_empty() && assets.iter().all(|a| a["isArray"] == true),
+        "every asset has an originalFileNames array: {raw}"
+    );
+    let picture = assets
+        .iter()
+        .find(|a| a["fileName"].as_str().is_some_and(|f| f.ends_with(".png")))
+        .unwrap_or_else(|| panic!("the picture is an asset of the bundle: {raw}"));
+    assert_eq!(
+        picture["originalFileNames"],
+        serde_json::json!(["src/picture.png"]),
+        "{raw}"
+    );
+    assert_eq!(picture["originalFileName"], "src/picture.png", "{raw}");
+    assert_eq!(picture["guarded"], true, "{raw}");
+    for asset in assets
+        .iter()
+        .filter(|a| a["originalFileNames"] == serde_json::json!([]))
+    {
+        assert!(asset["originalFileName"].is_null(), "{raw}");
+    }
+}
