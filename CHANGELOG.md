@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `oj build` of a TanStack Start app: the client's chunks are written where the app says, as under `vite build`. The client environment's `output.chunkFileNames` and `output.entryFileNames` (`build.rolldownOptions.output`, a pattern or a function of the chunk) are honored, and so are the plugins' `outputOptions` hooks, each taking the options the last one returned over Vite's `<assetsDir>/[name]-[hash].js`: a plugin wrapping `chunkFileNames` to give some chunks a directory of their own (`assets/i18n-data/<group>.<locale>-[hash].js` for per-locale message modules) now places them there. oj wrote every client chunk as `assets/[name]-[hash].js` and ran no `outputOptions` hook, so such chunks landed flat in `assets/` under their bare names, where a preload manifest or import map built from the configured layout did not find them. A function is called in the plugin host with the chunk as Rollup's `PreRenderedChunk` (`name`, `isEntry`, `isDynamicEntry`, `facadeModuleId`, `moduleIds`, `exports`). The server bundle's names and `assetFileNames` are unchanged.
+
 ## [0.4.13] - 2026-11-13
 
 ### Changed
