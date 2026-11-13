@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `oj build`: Vite's `.vite/manifest.json` is written for a TanStack Start app's client, and a chunk is keyed in it as Vite keys it. With `build.manifest` on the client environment (`environments.client.build.manifest`, or the top-level option), `vite build` writes the manifest into `dist/client`, and a script reading a route's chunk closure from it (`imports` for what the page loads, `dynamicImports` for the rest) found no file under oj: the Start build never wrote one. It is written now, from the plugin host's resolved config, with a row per chunk and per stylesheet (keyed by its source, and listed under `css` by the chunks holding its module). In every build's manifest a chunk with a facade module is keyed by that module's path relative to the root and carries it as `src`, a dynamic entry as well as an entry (Vite's `getChunkOriginalFileName`: `src/routes/a.tsx?tsr-split=component`, `../store/node_modules/dep/index.mjs` for a source outside the root, a virtual id without its NUL); oj keyed only entries so and gave every other chunk `_<file name>`, so a lookup by source path missed every lazily imported module. Not in the Start manifest yet: rows for images and fonts, and the entry's key is oj's own client entry module.
+
 ## [0.4.13] - 2026-11-13
 
 ### Changed
