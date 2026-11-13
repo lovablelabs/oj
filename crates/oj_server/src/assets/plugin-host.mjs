@@ -886,6 +886,24 @@ async function appViteForResolve() {
     return null;
   }
 }
+// Whether this host runs without Start's `tanstack-start-core:config` plugin.
+const leavesOutStartConfig = () =>
+  startLeavesOutReimplemented && allPlugins.some((p) => p?.name === "tanstack-start-core:config");
+// Where Start's config hook puts an environment's build (its
+// getOutputDirectory): the directory the config declares for it, else
+// `client` or `server` under the top-level `build.outDir`.
+function startOutDir(config, name) {
+  const directory = name === "client" ? "client" : name === "ssr" ? "server" : null;
+  if (!directory) return null;
+  const declared = config?.environments?.[name]?.build?.outDir;
+  if (typeof declared === "string") return declared;
+  const rootOutDir = config?.build?.outDir;
+  return join(typeof rootOutDir === "string" ? rootOutDir : "dist", directory);
+}
+const startOutDirEnvironments = (config) => ({
+  client: { build: { outDir: startOutDir(config, "client") } },
+  ssr: { build: { outDir: startOutDir(config, "ssr") } },
+});
 // The recording resolve: the config hooks run once, on the host's own
 // instances, under Vite, each recorded for the host to replay.
 async function loadUserResolvedViteConfig() {
@@ -939,6 +957,18 @@ async function loadUserResolvedViteConfig() {
     };
     own.add(fileBuildSsr);
     plugins.unshift(fileBuildSsr);
+  }
+  // Start's config plugin is one of those left out, and its config hook is
+  // where the environments' output directories come from: a plugin after it
+  // (@cloudflare/vite-plugin) keeps the directory it finds declared.
+  if (leavesOutStartConfig()) {
+    const startOutDirs = {
+      name: "oj:start-out-dirs",
+      enforce: "pre",
+      config: { order: "pre", handler: (config) => ({ environments: startOutDirEnvironments(config) }) },
+    };
+    own.add(startOutDirs);
+    plugins.unshift(startOutDirs);
   }
   const hooksDone = {
     name: "oj:config-hooks-done",
@@ -6198,7 +6228,12 @@ async function cloudflareEnvironmentFacts(c, fns) {
     // the user's own config (`environments.<name>.build.outDir`, else
     // `<build.outDir>/<name>`), which a resolved base here already fills with
     // Vite's defaults; read the user's config as the plugin would.
-    outDir: stringOr(userViteConfig?.environments?.[name]?.build?.outDir),
+    // Start's config hook runs before the plugin's and declares its server
+    // environment's directory (`<build.outDir>/server`), which the plugin
+    // then keeps.
+    outDir:
+      stringOr(userViteConfig?.environments?.[name]?.build?.outDir) ??
+      (leavesOutStartConfig() ? startOutDir(userViteConfig, name) : null),
     rootOutDir: stringOr(userViteConfig?.build?.outDir),
   };
 }

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `oj build` of a TanStack Start app on `@cloudflare/vite-plugin` writes the Worker to `dist/server`, where `vite build` puts it; it went to a directory named after the Worker's environment (`dist/ssr`). Start's config hook declares the output directories (`<build.outDir>/client` and `<build.outDir>/server`, or the ones the config sets for the environments) before the Cloudflare plugin reads them, and oj runs without that hook, so the plugin fell back to its own default. oj now declares the same directories ahead of the plugins' config hooks: the Worker, its `wrangler.json`, the `.wrangler/deploy/config.json` redirect and the resolved config the plugins read all name `dist/server`. A deploy step or script that read `dist/ssr` from an oj build needs the new path.
+
 ## [0.4.13] - 2026-11-13
 
 ### Changed
