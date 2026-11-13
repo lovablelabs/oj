@@ -1522,10 +1522,24 @@ fn handle_batch(
     let hot: Vec<PathBuf> = paths.iter().filter(|p| !restarts(p)).cloned().collect();
     // Behind the editor's gate, a rewrite of the bytes the pages already have
     // (as the last release brought them, and nothing else served since)
-    // reaches no page (HmrGate::drop_unchanged). The watchers, watchChange
-    // and invalidation below still see it.
+    // reaches no page (HmrGate::drop_unchanged), and neither does a file born
+    // and gone within the batch: the temporary file of an atomic save,
+    // renamed over its target before the quiet window closed. No page fetched
+    // it and nothing can import it now, so holding it would only make the
+    // editor's next flush reload every page for a path that no longer exists
+    // (its target's own rewrite is judged on its own). Vite never hears of
+    // such a file: chokidar's `atomic` handling, on by default off polling,
+    // hides an editor's temporary names and folds the save into one `change`
+    // of the target (chokidar's `_isIgnored` and `_emit`). The watchers,
+    // watchChange and invalidation below still see both.
     let hot = match &state.hmr_gate {
-        Some(gate) => gate.drop_unchanged(&state.content, &hot),
+        Some(gate) => {
+            let hot: Vec<PathBuf> = hot
+                .into_iter()
+                .filter(|p| !(created.contains(p) && std::fs::symlink_metadata(p).is_err()))
+                .collect();
+            gate.drop_unchanged(&state.content, &hot)
+        }
         None => hot,
     };
     let dispatch = state.hmr_enabled

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Dev server: under the editor's HMR gate, the temporary file of an atomic save (written beside its target and renamed over it, so it is born and gone within one watcher batch) is no longer held as a change. The gate held every path the batch named, so a save that changed nothing (the same bytes renamed into place) left one held change for a path that no longer existed, and the editor's next flush reloaded every page for it; a save with new content held the temporary file beside the real edit. Vite never hears of such a file: chokidar's `atomic` handling, on by default off polling, hides an editor's temporary names and folds the save into one `change` of the target. Tests also pin that a rewrite with the bytes the pages already have, followed by a real write milliseconds later (inside or just past the watcher's 10ms quiet window, in place or by rename), still holds the edit: the watcher throttles no path, so the second event is never lost to the first.
+
 ## [0.4.13] - 2026-11-13
 
 ### Changed
