@@ -492,6 +492,23 @@ impl Emitter {
         self.css_urls.lock().unwrap().clone()
     }
 
+    /// Every client stylesheet emitted so far: its source module and the
+    /// file it was written as, relative to the client's output directory.
+    pub fn sheet_files(&self) -> Vec<(PathBuf, String)> {
+        let mut files: Vec<(PathBuf, String)> = self
+            .sheets
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(source, url)| {
+                let file = url.strip_prefix(self.base.as_str()).unwrap_or(url);
+                (source.clone(), file.trim_start_matches('/').to_string())
+            })
+            .collect();
+        files.sort();
+        files
+    }
+
     /// Puts the linked sheets in the client bundle's execution order, the
     /// order Vite's css-post collects them in: they were linked as their
     /// loads finished, which rolldown runs concurrently.

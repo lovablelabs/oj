@@ -247,6 +247,24 @@ pub fn build_out_dir(config: &OjConfig) -> String {
         .unwrap_or_else(|| "dist".to_string())
 }
 
+/// `build.manifest` of the `env_name` environment: its own
+/// (`environments.<env_name>.build.manifest`) before the top level's, as
+/// Vite resolves an environment's build options. The file to write, if any.
+pub fn environment_manifest_name(config: &OjConfig, env_name: &str) -> Option<String> {
+    let own = config
+        .environments
+        .as_ref()
+        .and_then(|e| e.get(env_name))
+        .and_then(|e| e.get("build"))
+        .and_then(|b| b.get("manifest"));
+    match own {
+        Some(serde_json::Value::Bool(true)) => Some(".vite/manifest.json".to_string()),
+        Some(serde_json::Value::Bool(false)) => None,
+        Some(serde_json::Value::String(name)) => Some(name.clone()),
+        _ => build_manifest_name(config),
+    }
+}
+
 /// `environments.<env_name>.build.<field>` as a bool.
 pub fn environment_build_bool(config: &OjConfig, env_name: &str, field: &str) -> Option<bool> {
     config
@@ -381,6 +399,25 @@ mod build_option_defaults_tests {
 #[cfg(test)]
 mod build_manifest_css_minify_tests {
     use super::*;
+
+    #[test]
+    fn an_environments_manifest_comes_before_the_top_levels() {
+        let cfg = |json: &str| -> OjConfig { serde_json::from_str(json).unwrap() };
+        let own = cfg(r#"{"environments":{"client":{"build":{"manifest":true}}}}"#);
+        assert_eq!(
+            environment_manifest_name(&own, "client").as_deref(),
+            Some(".vite/manifest.json")
+        );
+        assert_eq!(environment_manifest_name(&own, "ssr"), None);
+        let off = cfg(
+            r#"{"build":{"manifest":"m.json"},"environments":{"client":{"build":{"manifest":false}}}}"#,
+        );
+        assert_eq!(environment_manifest_name(&off, "client"), None);
+        assert_eq!(
+            environment_manifest_name(&off, "ssr").as_deref(),
+            Some("m.json")
+        );
+    }
 
     #[test]
     fn manifest_css_minify_and_assets_dir_follow_vite_defaults() {

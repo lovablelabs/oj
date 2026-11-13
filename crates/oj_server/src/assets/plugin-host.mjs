@@ -6209,6 +6209,9 @@ async function startFacts(c) {
   const facts = JSON.stringify({
     entryFileNames: fileNames.entry === undefined ? null : factValue(fileNames.entry, fns),
     chunkFileNames: fileNames.chunk === undefined ? null : factValue(fileNames.chunk, fns),
+    // `build.manifest` of this environment (its own before the top level's):
+    // true, a file name, or off.
+    manifest: self.build?.manifest ?? cfg.build?.manifest ?? null,
     alias: factValue(cfg.resolve?.alias ?? userResolveAlias ?? null, fns),
     external: external === undefined ? null : factValue(external, fns),
     codeSplitting: codeSplitting === undefined ? null : factValue(codeSplitting, fns),
