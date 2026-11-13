@@ -385,10 +385,9 @@ pub(crate) fn write_server_fn_resolver(
         // edited, as the engine keeps the errored module (Vite's too).
         let var = format!("__m{module_count}");
         module_count += 1;
-        let spec = oj_compiler::glob::relative_import(cache, path);
+        let spec = server_fn_module(cache, path);
         modules.push_str(&format!(
-            "let {var};\nconst {var}_load = async () => ({var} ??= await import({}));\n",
-            json(&spec)
+            "let {var};\nconst {var}_load = async () => ({var} ??= await import({spec}));\n"
         ));
         // In dev each function answers to oj's id and to the one Start's
         // plugin gives it in Vite dev, which a file imported outside oj's
@@ -481,6 +480,12 @@ pub(crate) fn server_fn_resolver_file(dev: bool) -> &'static str {
     } else {
         "server-fn-resolver.build.mjs"
     }
+}
+
+/// The specifier the resolver in `cache` imports the module at `path`
+/// under, quoted as it is written there.
+pub(crate) fn server_fn_module(cache: &Path, path: &Path) -> String {
+    json(&oj_compiler::glob::relative_import(cache, path))
 }
 
 fn json(s: &str) -> String {

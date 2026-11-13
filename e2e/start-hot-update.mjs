@@ -101,7 +101,7 @@ try {
   // not match, and a matching one that came and went before the batch
   // settled (GNU sed's temp, an editor's safe-write).
   const hotCount = () => log.split("oj start: hot updated").length - 1;
-  for (const [label, create] of [
+  for (const [label, create, scans] of [
     ["a create no glob pattern matches", () => fs.writeFileSync(draft, "draft")],
     [
       // Miniflare writes its state on SSR requests; @cloudflare/vite-plugin
@@ -124,6 +124,8 @@ try {
     // before the batch settled: a source file (it may have declared a server
     // function) and a file named as a tsconfig. The resolver is made again
     // and is the same one, so the edit beside them is still patched in.
+    // Each is checked to have reached the resolver (the `true`): a temp the
+    // watcher never reported would pass for one the resolver shrugged off.
     [
       "a source temp gone before the batch settled",
       () => {
@@ -131,6 +133,7 @@ try {
         fs.writeFileSync(temp, "export const tmp = 1;\n");
         return () => fs.rmSync(temp);
       },
+      true,
     ],
     [
       "a tsconfig-named temp gone before the batch settled",
@@ -139,6 +142,7 @@ try {
         fs.writeFileSync(temp, "{}");
         return () => fs.rmSync(temp);
       },
+      true,
     ],
   ]) {
     const before = hotCount();
@@ -156,6 +160,10 @@ try {
       `${label}: the dev server did not report the batch`,
     );
     must(hotCount() > before, `${label} turned the edit into a rebuild:\n${log.slice(mark)}`);
+    must(
+      !scans || log.slice(mark).includes("oj start: server-fn resolver"),
+      `${label}: the batch never reached the server-fn resolver:\n${log.slice(mark)}`,
+    );
     must((await page.evaluate(() => window.__hotProbe)) === "kept", `${label} reloaded the page`);
   }
 
@@ -242,6 +250,33 @@ try {
   must(
     (await page.textContent("h1.fixture-heading")).includes("~"),
     "the reload after an unaccepted edit missed the edit",
+  );
+
+  // `tsconfig.json` saved as it was reloads the page, alone or beside an
+  // edit a module accepts: Vite's reloadOnTsconfigChange clears its caches
+  // and sends a full reload for the file whatever it holds.
+  const tsconfig = path.join(app, "tsconfig.json");
+  const tsconfigText = fs.readFileSync(tsconfig, "utf8");
+  for (const [label, edit] of [
+    ["alone", () => {}],
+    [
+      "beside a component edit",
+      () => fs.writeFileSync(widget, originals.get(widget).replace('"jsxglob:"', '"jsxts:"')),
+    ],
+  ]) {
+    await page.evaluate(() => (window.__hotProbe = "kept"));
+    fs.writeFileSync(tsconfig, tsconfigText);
+    edit();
+    await page
+      .waitForFunction(() => window.__hotProbe === undefined, null, { timeout: 30000 })
+      .catch(() => {
+        throw new Error(`tsconfig.json saved as it was, ${label}, did not reload the page`);
+      });
+    await page.waitForSelector('[data-testid="client-mounted"]', { timeout: 60000 });
+  }
+  must(
+    (await page.textContent('[data-testid="glob-jsx"]')).includes("jsxts:"),
+    "the reload for tsconfig.json missed the edit beside it",
   );
   must(errors.length === 0, `page errors: ${errors.join(" | ")}`);
   console.log(
