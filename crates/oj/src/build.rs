@@ -4313,18 +4313,10 @@ pub async fn build(
                 filename.clone(),
                 chunk.imports.iter().map(|i| i.to_string()).collect(),
             );
-            // Entry chunks are keyed by their source path; shared/non-entry
-            // chunks by `_<filename>` (Vite's manifest shape).
-            let src = if chunk.is_entry {
-                chunk.facade_module_id.as_ref().and_then(|f| {
-                    Path::new(f.as_ref())
-                        .strip_prefix(&root)
-                        .ok()
-                        .map(|p| p.to_string_lossy().replace('\\', "/"))
-                })
-            } else {
-                None
-            };
+            // A chunk with a facade module (an entry or a dynamic entry) is
+            // keyed by that module's path; a shared chunk by `_<filename>`
+            // (Vite's manifest shape).
+            let src = chunk_source_key(chunk.facade_module_id.as_ref().map(|f| f.as_ref()), &root);
             let key = src.clone().unwrap_or_else(|| {
                 format!(
                     "_{}",
@@ -7419,6 +7411,96 @@ fn manifest_asset_rows(
     }
 }
 
+/// The manifest key of a chunk that has a facade module, an entry or a
+/// dynamic entry alike: the module's id relative to the root (Vite's
+/// `getChunkOriginalFileName`, `path.relative(root, facadeModuleId)` with
+/// the NULs of a virtual id dropped). A source outside the root keeps its
+/// `../` steps, and a query stays (`src/routes/a.tsx?tsr-split=component`).
+/// A chunk with no facade is keyed `_<file name>` by the caller.
+pub(crate) fn chunk_source_key(facade: Option<&str>, root: &Path) -> Option<String> {
+    let facade = facade?;
+    let id = facade.replace('\0', "");
+    if !Path::new(&id).is_absolute() {
+        return Some(id);
+    }
+    Some(relative_to(root, &id))
+}
+
+/// Node's `path.relative(from, to)` for two absolute paths, `/`-separated.
+fn relative_to(from: &Path, to: &str) -> String {
+    let from: Vec<String> = from
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect();
+    let to: Vec<&str> = to
+        .split(['/', '\\'])
+        .filter(|part| !part.is_empty())
+        .collect();
+    let shared = from
+        .iter()
+        .zip(&to)
+        .take_while(|(a, b)| a.as_str() == **b)
+        .count();
+    let mut parts: Vec<&str> = vec![".."; from.len() - shared];
+    parts.extend(&to[shared..]);
+    parts.join("/")
+}
+
+/// A client bundle's `.vite/manifest.json` (`build.manifest`): a row per
+/// chunk and per asset of `bundle`, as [`build_manifest`] lays them out,
+/// with the stylesheets a caller emitted outside the bundle (`sheets`: each
+/// source file and the file it was written as). A sheet is a row keyed by
+/// its source, and is listed under `css` by every chunk holding its module.
+pub(crate) fn vite_manifest(
+    bundle: &[rolldown_common::Output],
+    root: &Path,
+    sheets: &[(PathBuf, String)],
+) -> serde_json::Value {
+    use rolldown_common::Output;
+    let mut entries = manifest_entries_from_bundle(bundle, root);
+    let mut assets = Vec::new();
+    manifest_asset_rows(bundle, &mut entries, &mut assets);
+    for out in bundle {
+        let Output::Chunk(chunk) = out else { continue };
+        let css: Vec<String> = sheets
+            .iter()
+            .filter(|(source, _)| {
+                chunk.module_ids.iter().any(|id| {
+                    let id: &str = id.as_ref();
+                    Path::new(id.split(['?', '#']).next().unwrap_or(id)) == source
+                })
+            })
+            .map(|(_, file)| file.clone())
+            .collect();
+        if css.is_empty() {
+            continue;
+        }
+        if let Some(entry) = entries
+            .iter_mut()
+            .find(|e| e.file == chunk.filename.as_str())
+        {
+            entry.css = css;
+        }
+    }
+    for (source, file) in sheets {
+        let Some(key) = chunk_source_key(source.to_str(), root) else {
+            continue;
+        };
+        if entries.iter().any(|e| e.key == key) || assets.iter().any(|a| a.key == key) {
+            continue;
+        }
+        assets.push(ManifestAsset {
+            key,
+            file: file.clone(),
+            name: None,
+        });
+    }
+    build_manifest(&entries, &assets)
+}
+
 // Build Vite-manifest entries directly from a bundle (chunks only; CSS is added
 // later in the output stage). Used to expose `.vite/manifest.json` inside the
 // generateBundle bundle for plugins that read it (e.g. @crxjs).
@@ -7431,16 +7513,7 @@ fn manifest_entries_from_bundle(
     for out in bundle {
         let Output::Chunk(chunk) = out else { continue };
         let filename = chunk.filename.to_string();
-        let src = if chunk.is_entry {
-            chunk.facade_module_id.as_ref().and_then(|f| {
-                Path::new(f.as_ref())
-                    .strip_prefix(root)
-                    .ok()
-                    .map(|p| p.to_string_lossy().replace('\\', "/"))
-            })
-        } else {
-            None
-        };
+        let src = chunk_source_key(chunk.facade_module_id.as_ref().map(|f| f.as_ref()), root);
         let key = src.clone().unwrap_or_else(|| {
             format!(
                 "_{}",
@@ -9112,6 +9185,35 @@ mod tests {
         .expect("ssr build");
         let seen = fs::read_to_string(root.join("mode.txt")).expect("plugin configResolved ran");
         assert_eq!(seen.trim(), "staging");
+    }
+
+    // Vite's getChunkOriginalFileName: the facade module's id relative to
+    // the root, for an entry and a dynamic entry alike.
+    #[test]
+    fn a_chunk_is_keyed_by_its_facade_relative_to_the_root() {
+        let root = Path::new("/work/app");
+        let key = |facade: &str| chunk_source_key(Some(facade), root);
+        assert_eq!(
+            key("/work/app/src/main.tsx").as_deref(),
+            Some("src/main.tsx")
+        );
+        assert_eq!(
+            key("/work/app/src/routes/a.tsx?tsr-split=component").as_deref(),
+            Some("src/routes/a.tsx?tsr-split=component")
+        );
+        assert_eq!(
+            key("/work/store/node_modules/dep/index.mjs").as_deref(),
+            Some("../store/node_modules/dep/index.mjs")
+        );
+        assert_eq!(
+            key("/elsewhere/x.js").as_deref(),
+            Some("../../elsewhere/x.js")
+        );
+        assert_eq!(
+            key("\0virtual:i18n-data/_eager/de").as_deref(),
+            Some("virtual:i18n-data/_eager/de")
+        );
+        assert_eq!(chunk_source_key(None, root), None);
     }
 
     #[test]

@@ -45,6 +45,9 @@ pub(crate) struct Facts {
     pub react_refresh: bool,
     pub cloudflare: Option<CloudflareEnv>,
     pub worker: WorkerOptions,
+    /// The environment's `build.manifest`: the file to write, if any
+    /// (`true` is `.vite/manifest.json`).
+    pub manifest: Option<String>,
     /// How many resolveId hooks run before Vite's core resolver, and after.
     pub resolve_id_pre: u64,
     pub resolve_id_post: u64,
@@ -73,6 +76,11 @@ impl Facts {
                 .unwrap_or(false),
             cloudflare: v.get("cloudflare").and_then(CloudflareEnv::from_json),
             worker: WorkerOptions::from_json(v.get("worker").unwrap_or(&Value::Null)),
+            manifest: match v.get("manifest") {
+                Some(Value::Bool(true)) => Some(".vite/manifest.json".to_string()),
+                Some(Value::String(name)) if !name.is_empty() => Some(name.clone()),
+                _ => None,
+            },
             resolve_id_pre: v["resolveIdPhases"]["pre"].as_u64().unwrap_or(0),
             resolve_id_post: v["resolveIdPhases"]["post"].as_u64().unwrap_or(0),
         }

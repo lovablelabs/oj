@@ -232,3 +232,85 @@ fn a_plugin_transforms_starts_manifest_in_the_server_bundle() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// `build.manifest` on the client environment writes Vite's
+/// `.vite/manifest.json` beside the client's files: a row per chunk, keyed
+/// by its facade module's path when it has one (the entry, a dynamic entry)
+/// and `_<file>` otherwise, and a row per stylesheet keyed by its source.
+#[test]
+fn the_client_environments_manifest_is_written() {
+    let Some(root) = app("vite-manifest") else {
+        return;
+    };
+    let config = root.join("vite.config.ts");
+    let source = std::fs::read_to_string(&config).unwrap();
+    let client = r#"    client: { define: { __FIXTURE_SIDE__: JSON.stringify("client-side") } },"#;
+    assert!(
+        source.contains(client),
+        "the fixture's client environment moved"
+    );
+    let source = source.replacen(
+        client,
+        r#"    client: { define: { __FIXTURE_SIDE__: JSON.stringify("client-side") }, build: { manifest: true } },"#,
+        1,
+    );
+    std::fs::write(&config, source).unwrap();
+    build(&root);
+
+    let raw = std::fs::read_to_string(root.join("dist/client/.vite/manifest.json"))
+        .expect("dist/client/.vite/manifest.json is written");
+    let manifest: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&raw).unwrap();
+    let on_disk = |row: &serde_json::Value| {
+        row["file"]
+            .as_str()
+            .is_some_and(|f| root.join("dist/client").join(f).is_file())
+    };
+    assert!(
+        manifest.values().all(on_disk),
+        "every row names a file of dist/client:\n{raw}"
+    );
+
+    let entries: Vec<_> = manifest.values().filter(|r| r["isEntry"] == true).collect();
+    assert_eq!(entries.len(), 1, "one entry row:\n{raw}");
+    assert!(
+        entries[0]["file"]
+            .as_str()
+            .unwrap()
+            .starts_with("assets/client-"),
+        "{raw}"
+    );
+
+    // The fixture's lazy chunk has a facade module (a plugin's virtual
+    // module): keyed by it, as a dynamic entry, and the entry's row names it
+    // by that key.
+    let (lazy_key, lazy) = manifest
+        .iter()
+        .find(|(_, r)| r["isDynamicEntry"] == true)
+        .unwrap_or_else(|| panic!("a dynamic entry row:\n{raw}"));
+    assert!(
+        !lazy_key.starts_with('_') && lazy["src"] == lazy_key.as_str(),
+        "the dynamic entry is keyed by its source: {lazy_key}: {lazy}"
+    );
+    assert!(
+        manifest.values().any(|r| r["dynamicImports"]
+            .as_array()
+            .is_some_and(|d| d.iter().any(|k| k == lazy_key.as_str()))),
+        "a chunk imports {lazy_key} dynamically:\n{raw}"
+    );
+
+    // The stylesheet: a row of its own by source, and under `css` of the
+    // chunk that imports it.
+    let sheet = &manifest["styles/app.css"];
+    let file = sheet["file"].as_str().unwrap_or_default();
+    assert!(
+        file.starts_with("assets/app-") && file.ends_with(".css"),
+        "styles/app.css is a row: {sheet}\n{raw}"
+    );
+    assert!(
+        manifest.values().any(|r| r["css"]
+            .as_array()
+            .is_some_and(|c| c.iter().any(|f| f == file))),
+        "a chunk lists {file} under css:\n{raw}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

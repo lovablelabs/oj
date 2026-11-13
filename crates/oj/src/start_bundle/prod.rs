@@ -523,6 +523,23 @@ pub(crate) async fn build(
                     .map_err(|e| anyhow::anyhow!(e))?;
             }
         }
+        // Vite's `build.manifest` for the client environment: its chunks and
+        // stylesheets by source, for what reads a route's chunk closure off
+        // `.vite/manifest.json`.
+        // The plugin host has the resolved value; with no host the config's own.
+        let manifest_name = match &client_host {
+            Some(h) => h.facts.manifest.clone(),
+            None => oj_config::environment_manifest_name(&start.config, "client"),
+        };
+        if let Some(name) = manifest_name {
+            let manifest =
+                crate::build::vite_manifest(&output.assets, &start.root, &emitter.sheet_files());
+            let dest = client_dir.join(&name);
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&dest, serde_json::to_string_pretty(&manifest)?)?;
+        }
         let css = emitter.css_urls();
         let root_route = serde_json::json!({
             "preloads": [client_url],
