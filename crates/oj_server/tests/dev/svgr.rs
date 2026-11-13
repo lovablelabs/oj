@@ -174,6 +174,40 @@ async fn svgr_plugin_configured_for_plain_svgs_serves_named_components() {
     );
 }
 
+// The CRA migration idiom imports the same file twice: `ReactComponent`
+// from the plain id and the URL from `?url`. The plugin's filter
+// (`**/*.svg`) does not match the query form, so under Vite `vite:asset`
+// answers `?url` with the URL. oj strips only the `?url` it added itself
+// from a plain import; one the import asked for stays, and is the URL.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_explicit_url_import_stays_the_url_beside_the_component() {
+    crate::require_fixture!("vite-plugin-svgr", "@svgr/core", "vite");
+    let app = svgr_app(
+        CRA_OPTIONS,
+        "import { ReactComponent as Logo } from \"./logo.svg\";\nimport logoUrl from \"./logo.svg?url\";\nwindow.__LOGO = [Logo, logoUrl];\n",
+    );
+    let server = app.serve().await;
+    let main = server.text("/src/main.tsx").await;
+    assert!(
+        main.contains("\"/src/logo.svg\"") && main.contains("\"/src/logo.svg?url\""),
+        "the plain import stays plain, the ?url import keeps its query:\n{main}"
+    );
+    let url = imported(&server, "/src/logo.svg?url").await;
+    assert_eq!(url.status, 200, "{}", url.body);
+    assert!(
+        url.body.starts_with("export default \"data:image/svg+xml,")
+            && !url.body.contains("ReactComponent"),
+        "the ?url import is the URL, not the component:\n{}",
+        url.body
+    );
+    let component = imported(&server, "/src/logo.svg").await;
+    assert!(
+        component.body.contains("as ReactComponent"),
+        "the plain import is the component:\n{}",
+        component.body
+    );
+}
+
 // The plugin's own default (`**/*.svg?react`): a plain import stays the URL
 // (inlined, the file being small), as nothing claimed it, and `?react` is the
 // plugin's component, served as its `load` made it: oj's own `?react` svgr
