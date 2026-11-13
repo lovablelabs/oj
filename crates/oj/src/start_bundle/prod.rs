@@ -212,6 +212,7 @@ fn client_plugins(
                 start.jsx_config(),
             )
             .with_module_parsed()
+            .with_sheets(matches!(target, CodeTarget::Client).then(|| Arc::clone(emitter)))
             .compiling(
                 StartCodePlugin::new(&start.root, target.clone())
                     .with_route_tree(start.route_tree())
@@ -532,8 +533,11 @@ pub(crate) async fn build(
             None => oj_config::environment_manifest_name(&start.config, "client"),
         };
         if let Some(name) = manifest_name {
-            let manifest =
-                crate::build::vite_manifest(&output.assets, &start.root, &emitter.sheet_files());
+            let manifest = crate::build::vite_manifest(
+                &output.assets,
+                &start.root,
+                &crate::build::ChunkSheets::new(emitter.sheet_files()),
+            );
             let dest = client_dir.join(&name);
             if let Some(parent) = dest.parent() {
                 std::fs::create_dir_all(parent)?;

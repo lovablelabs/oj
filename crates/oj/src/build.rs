@@ -3206,7 +3206,7 @@ impl Plugin for OjUserPlugin {
         if !self.host.has_generate_bundle().await {
             return Ok(());
         }
-        let bundle_json = serialize_bundle_with_vite_manifest(args.bundle, &self.emit.root);
+        let bundle_json = serialize_bundle_with_vite_manifest(args.bundle, &self.emit.root, None);
         let mutated = self
             .host
             .generate_bundle(&bundle_json, args.is_write)
@@ -3357,15 +3357,75 @@ pub(crate) fn serialize_rendered_chunk(chunk: &rolldown_common::RollupRenderedCh
 }
 
 pub(crate) fn serialize_bundle(bundle: &[rolldown_common::Output]) -> String {
+    serde_json::Value::Object(bundle_map(bundle, None)).to_string()
+}
+
+/// [`serialize_bundle`] for a bundle whose stylesheets were emitted outside
+/// it: every chunk carries Vite's `viteMetadata`, `importedCss` the sheets
+/// of the modules it holds.
+pub(crate) fn serialize_bundle_with_sheets(
+    bundle: &[rolldown_common::Output],
+    sheets: &ChunkSheets,
+) -> String {
+    serde_json::Value::Object(bundle_map(bundle, Some(sheets))).to_string()
+}
+
+/// The stylesheets a build emitted outside its bundle, by source module:
+/// what a chunk "imported" is the sheets of the modules it holds, which is
+/// what Vite's css plugin records as a chunk's `viteMetadata.importedCss`.
+pub(crate) struct ChunkSheets(std::collections::HashMap<PathBuf, String>);
+
+impl ChunkSheets {
+    /// `sheets`: each source file and the file it was written as, relative
+    /// to the output directory (`assets/app-<hash>.css`).
+    pub fn new(sheets: Vec<(PathBuf, String)>) -> Self {
+        Self(sheets.into_iter().collect())
+    }
+
+    /// The sheets of `chunk`'s modules, in module order, each once.
+    pub fn of(&self, chunk: &rolldown_common::OutputChunk) -> Vec<String> {
+        let mut files: Vec<String> = Vec::new();
+        if self.0.is_empty() {
+            return files;
+        }
+        for id in &chunk.module_ids {
+            let id: &str = id.as_ref();
+            let path = Path::new(id.split(['?', '#']).next().unwrap_or(id));
+            if let Some(file) = self.0.get(path) {
+                if !files.contains(file) {
+                    files.push(file.clone());
+                }
+            }
+        }
+        files
+    }
+
+    fn rows(&self) -> Vec<(&PathBuf, &String)> {
+        let mut rows: Vec<_> = self.0.iter().collect();
+        rows.sort();
+        rows
+    }
+}
+
+fn bundle_map(
+    bundle: &[rolldown_common::Output],
+    sheets: Option<&ChunkSheets>,
+) -> serde_json::Map<String, serde_json::Value> {
     use rolldown_common::{Output, StrOrBytes};
     let mut map = serde_json::Map::new();
     for out in bundle {
         match out {
             Output::Chunk(c) => {
                 let modules = rendered_modules(&c.modules);
+                // Vite's css plugin sets this on every chunk (Sets there:
+                // the plugin host makes them so).
+                let vite_metadata = sheets.map(|sheets| {
+                    serde_json::json!({ "importedCss": sheets.of(c), "importedAssets": [] })
+                });
                 map.insert(
                     c.filename.to_string(),
                     serde_json::json!({
+                        "viteMetadata": vite_metadata,
                         "type": "chunk",
                         "fileName": c.filename.to_string(),
                         "name": c.name.to_string(),
@@ -3406,7 +3466,7 @@ pub(crate) fn serialize_bundle(bundle: &[rolldown_common::Output]) -> String {
             }
         }
     }
-    serde_json::Value::Object(map).to_string()
+    map
 }
 
 pub(crate) fn apply_bundle_mutations(bundle: &mut Vec<rolldown_common::Output>, json: &str) {
@@ -7457,7 +7517,7 @@ fn relative_to(from: &Path, to: &str) -> String {
 pub(crate) fn vite_manifest(
     bundle: &[rolldown_common::Output],
     root: &Path,
-    sheets: &[(PathBuf, String)],
+    sheets: &ChunkSheets,
 ) -> serde_json::Value {
     use rolldown_common::Output;
     let mut entries = manifest_entries_from_bundle(bundle, root);
@@ -7465,16 +7525,7 @@ pub(crate) fn vite_manifest(
     manifest_asset_rows(bundle, &mut entries, &mut assets);
     for out in bundle {
         let Output::Chunk(chunk) = out else { continue };
-        let css: Vec<String> = sheets
-            .iter()
-            .filter(|(source, _)| {
-                chunk.module_ids.iter().any(|id| {
-                    let id: &str = id.as_ref();
-                    Path::new(id.split(['?', '#']).next().unwrap_or(id)) == source
-                })
-            })
-            .map(|(_, file)| file.clone())
-            .collect();
+        let css = sheets.of(chunk);
         if css.is_empty() {
             continue;
         }
@@ -7485,7 +7536,7 @@ pub(crate) fn vite_manifest(
             entry.css = css;
         }
     }
-    for (source, file) in sheets {
+    for (source, file) in sheets.rows() {
         let Some(key) = chunk_source_key(source.to_str(), root) else {
             continue;
         };
@@ -7549,29 +7600,32 @@ fn manifest_entries_from_bundle(
 pub(crate) fn serialize_bundle_with_vite_manifest(
     bundle: &[rolldown_common::Output],
     root: &Path,
+    sheets: Option<&ChunkSheets>,
 ) -> String {
-    let base = serialize_bundle(bundle);
-    let mut entries = manifest_entries_from_bundle(bundle, root);
-    let mut assets = Vec::new();
-    manifest_asset_rows(bundle, &mut entries, &mut assets);
-    let manifest = build_manifest(&entries, &assets).to_string();
-    let mut val: serde_json::Value =
-        serde_json::from_str(&base).unwrap_or_else(|_| serde_json::json!({}));
-    if let Some(obj) = val.as_object_mut() {
-        obj.insert(
-            ".vite/manifest.json".to_string(),
-            serde_json::json!({
-                "type": "asset",
-                "fileName": ".vite/manifest.json",
-                "name": "manifest.json",
-                "names": ["manifest.json"],
-                "originalFileName": null,
-                "originalFileNames": [],
-                "source": manifest,
-            }),
-        );
+    let mut map = bundle_map(bundle, sheets);
+    let manifest = match sheets {
+        Some(sheets) => vite_manifest(bundle, root, sheets),
+        None => {
+            let mut entries = manifest_entries_from_bundle(bundle, root);
+            let mut assets = Vec::new();
+            manifest_asset_rows(bundle, &mut entries, &mut assets);
+            build_manifest(&entries, &assets)
+        }
     }
-    val.to_string()
+    .to_string();
+    map.insert(
+        ".vite/manifest.json".to_string(),
+        serde_json::json!({
+            "type": "asset",
+            "fileName": ".vite/manifest.json",
+            "name": "manifest.json",
+            "names": ["manifest.json"],
+            "originalFileName": null,
+            "originalFileNames": [],
+            "source": manifest,
+        }),
+    );
+    serde_json::Value::Object(map).to_string()
 }
 
 fn build_manifest(entries: &[ManifestEntry], assets: &[ManifestAsset]) -> serde_json::Value {

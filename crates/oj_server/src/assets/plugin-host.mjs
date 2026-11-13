@@ -2657,6 +2657,15 @@ initStage("config-hooks-done");
 // The plugins every environment resolves its own set from (the top-level
 // resolved plugins, before applyToEnvironment).
 main.topLevelPlugins = main.plugins;
+// A Start build writes a stylesheet per source and links them from the root
+// route itself, whatever `build.cssCodeSplit` says, so the option reads as
+// the build behaves. Start's manifest plugin, hosted in a build, takes
+// `false` to mean Vite wrote one `style.css` for it to link and fails the
+// build when the bundle has none.
+function splitsStartCss(config) {
+  if (!ojStartMode || command !== "build" || !config || config.build?.cssCodeSplit !== false) return;
+  config.build = { ...config.build, cssCodeSplit: true };
+}
 async function resolveEnvironment(c, name) {
   const { environment, resolvedConfig } = c;
   environment.name = name;
@@ -2665,6 +2674,7 @@ async function resolveEnvironment(c, name) {
   // The environment's own consumer: the client's config is the resolved
   // config itself, whose consumer every other environment would inherit.
   environment.config.consumer = own.consumer ?? (name === "client" ? "client" : "server");
+  splitsStartCss(environment.config);
   environment.logger = resolvedConfig.logger;
   environment.getTopLevelConfig = () => resolvedConfig;
   if (name !== "client") await reportEnvironmentResolve(name, own.resolve, environment.config.consumer);
@@ -6723,8 +6733,23 @@ async function gateOnBuildStart(c) {
   }
 }
 
+// A chunk's `viteMetadata` as Vite's css plugin sets it: `importedCss` and
+// `importedAssets` are Sets (they cross from the bundle as arrays).
+function reviveViteMetadata(bundle) {
+  for (const output of Object.values(bundle)) {
+    const metadata = output && output.viteMetadata;
+    if (!metadata) {
+      if (output && output.viteMetadata === null) delete output.viteMetadata;
+      continue;
+    }
+    metadata.importedCss = new Set(metadata.importedCss ?? []);
+    metadata.importedAssets = new Set(metadata.importedAssets ?? []);
+  }
+  return bundle;
+}
+
 async function generateBundle(c, bundleJson, isWrite) {
-  const bundle = JSON.parse(bundleJson || "{}");
+  const bundle = reviveViteMetadata(JSON.parse(bundleJson || "{}"));
   const outputOptions = c.environment.config?.build ?? {};
   // Without `build.emitAssets` (the default off the client) vite:asset's
   // generateBundle deletes the bundle's assets, an ssr-manifest.json and JS
@@ -6781,7 +6806,7 @@ async function renderChunk(c, code, chunkJson) {
 }
 
 async function writeBundle(c, bundleJson, isWrite) {
-  const bundle = JSON.parse(bundleJson || "{}");
+  const bundle = reviveViteMetadata(JSON.parse(bundleJson || "{}"));
   const outputOptions = c.environment.config?.build ?? {};
   for (const { p, fn } of pluginsWithHook(c, "writeBundle")) {
     await runHookOrThrow(c, p, fn, [outputOptions, bundle, isWrite]);
