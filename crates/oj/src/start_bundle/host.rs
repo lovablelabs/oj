@@ -187,6 +187,9 @@ pub(crate) struct StartHostPlugin {
     /// Start's compiler, run in its Vite slot: between the host's
     /// "before-compile" and "after-compile" transforms (`compilePhaseOf`).
     compile: Option<Arc<super::code::StartCodePlugin>>,
+    /// The client build's emitter: the stylesheets it wrote, for the
+    /// `viteMetadata.importedCss` of the chunks the bundle hooks see.
+    sheets: Option<Arc<super::assets::Emitter>>,
 }
 
 impl std::fmt::Debug for StartHostPlugin {
@@ -220,6 +223,7 @@ impl StartHostPlugin {
             warned_virtual: Mutex::new(HashSet::new()),
             map_warnings: Arc::default(),
             compile: None,
+            sheets: None,
         }
     }
 
@@ -231,6 +235,19 @@ impl StartHostPlugin {
     pub fn compiling(mut self, compile: super::code::StartCodePlugin) -> Self {
         self.compile = Some(Arc::new(compile));
         self
+    }
+
+    /// The bundle hooks' chunks carry Vite's `viteMetadata`, `importedCss`
+    /// the sheets `emitter` wrote for the modules a chunk holds.
+    pub fn with_sheets(mut self, emitter: Option<Arc<super::assets::Emitter>>) -> Self {
+        self.sheets = emitter;
+        self
+    }
+
+    fn chunk_sheets(&self) -> Option<crate::build::ChunkSheets> {
+        self.sheets
+            .as_ref()
+            .map(|emitter| crate::build::ChunkSheets::new(emitter.sheet_files()))
     }
 
     /// Reports rolldown's moduleParsed to the host (a build), its code as JS.
@@ -810,8 +827,11 @@ impl Plugin for StartHostPlugin {
         if !self.host.has_generate_bundle().await {
             return Ok(());
         }
-        let bundle_json =
-            crate::build::serialize_bundle_with_vite_manifest(args.bundle, &self.root);
+        let bundle_json = crate::build::serialize_bundle_with_vite_manifest(
+            args.bundle,
+            &self.root,
+            self.chunk_sheets().as_ref(),
+        );
         let mutated = self
             .host
             .generate_bundle(&bundle_json, args.is_write)
@@ -831,7 +851,10 @@ impl Plugin for StartHostPlugin {
         if !self.host.has_write_bundle().await {
             return Ok(());
         }
-        let bundle_json = crate::build::serialize_bundle(args.bundle);
+        let bundle_json = match self.chunk_sheets() {
+            Some(sheets) => crate::build::serialize_bundle_with_sheets(args.bundle, &sheets),
+            None => crate::build::serialize_bundle(args.bundle),
+        };
         self.host
             .write_bundle(&bundle_json, true)
             .await

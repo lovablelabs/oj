@@ -314,3 +314,162 @@ fn the_client_environments_manifest_is_written() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// The chunks a bundle hook sees carry Vite's `viteMetadata`: `importedCss`
+/// and `importedAssets` are Sets, and a chunk holding a stylesheet's module
+/// names the sheet's file, as Vite's css plugin records it. A plugin
+/// collecting each chunk's stylesheets reads it without a check.
+const CHUNK_CSS_PROBE: &str = r#"
+import { writeFileSync as writeChunkCss } from "node:fs";
+function chunkCssProbe(): Plugin {
+  let root = "";
+  return {
+    name: "chunk-css-probe",
+    apply: "build",
+    configResolved(c) {
+      root = c.root;
+    },
+    generateBundle(_options, bundle) {
+      if (this.environment.name !== "client") return;
+      const chunks = Object.values(bundle).filter((output) => output.type === "chunk");
+      writeChunkCss(
+        `${root}/chunk-css.json`,
+        JSON.stringify({
+          sets: chunks.every(
+            (chunk) =>
+              chunk.viteMetadata.importedCss instanceof Set && chunk.viteMetadata.importedAssets instanceof Set,
+          ),
+          css: Object.fromEntries(chunks.map((chunk) => [chunk.fileName, [...chunk.viteMetadata.importedCss]])),
+          codeSplit: this.environment.config.build.cssCodeSplit,
+        }),
+      );
+    },
+  };
+}
+"#;
+
+fn chunk_css_app(name: &str, top_level: &str) -> Option<(PathBuf, serde_json::Value)> {
+    let app = app(name)?;
+    let config = app.join("vite.config.ts");
+    let source = std::fs::read_to_string(&config).unwrap();
+    let source = source
+        .replacen("  plugins: [\n", "  plugins: [\n    chunkCssProbe(),\n", 1)
+        .replacen(
+            "  publicDir: \"public\",\n",
+            &format!("{top_level}  publicDir: \"public\",\n"),
+            1,
+        );
+    std::fs::write(&config, format!("{source}{CHUNK_CSS_PROBE}")).unwrap();
+    build(&app);
+    let probe = serde_json::from_str(
+        &std::fs::read_to_string(app.join("chunk-css.json"))
+            .expect("the client's generateBundle ran"),
+    )
+    .unwrap();
+    Some((app, probe))
+}
+
+/// The page of a built app links `sheet` once, from the manifest in its
+/// server bundle.
+fn bundle_text(root: &Path) -> String {
+    let mut bundle = String::new();
+    for dir in ["dist", "dist/chunks"] {
+        for entry in std::fs::read_dir(root.join(dir)).unwrap().flatten() {
+            if entry.path().extension().is_some_and(|e| e == "mjs") {
+                bundle.push_str(&std::fs::read_to_string(entry.path()).unwrap());
+            }
+        }
+    }
+    bundle
+}
+
+#[test]
+fn a_chunk_names_the_stylesheets_of_its_modules() {
+    let Some((app, probe)) = chunk_css_app("chunk-css", "") else {
+        return;
+    };
+    assert_eq!(probe["sets"], true, "every chunk has the two Sets: {probe}");
+    let sheets: Vec<&str> = probe["css"]
+        .as_object()
+        .unwrap()
+        .values()
+        .flat_map(|css| css.as_array().unwrap())
+        .filter_map(|f| f.as_str())
+        .collect();
+    assert!(
+        !sheets.is_empty()
+            && sheets.iter().all(|f| {
+                f.starts_with("assets/")
+                    && f.ends_with(".css")
+                    && app.join("dist/client").join(f).is_file()
+            }),
+        "the chunks name the client's stylesheet files: {probe}"
+    );
+    // Start's manifest takes a route's stylesheets from its chunks; in the
+    // manifest the server serves, the root links the sheet, once, and no
+    // other route does.
+    let manifest = served_manifest(&app);
+    let href = format!("/{}", sheets[0]);
+    assert_eq!(
+        manifest["routes"]["__root__"]["css"],
+        serde_json::json!([href]),
+        "{manifest}"
+    );
+    for (id, route) in manifest["routes"].as_object().unwrap() {
+        assert!(
+            id == "__root__" || route["css"].as_array().is_none_or(|css| css.is_empty()),
+            "{id} links a sheet the root links: {manifest}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&app);
+}
+
+/// What `tsrStartManifest()` returns in the built server: the manifest
+/// chunk, evaluated.
+fn served_manifest(root: &Path) -> serde_json::Value {
+    let chunk = std::fs::read_dir(root.join("dist/chunks"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| {
+            p.file_name()
+                .is_some_and(|f| f.to_string_lossy().starts_with("manifest-sheets-"))
+        })
+        .expect("the server bundle's manifest chunk");
+    let out = Command::new("node")
+        .arg("--input-type=module")
+        .arg("-e")
+        .arg("const m = await import(process.argv[1]); console.log(JSON.stringify(m.tsrStartManifest()));")
+        .arg(format!("file://{}", chunk.display()))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "the manifest chunk evaluates: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).unwrap()
+}
+
+/// `build.cssCodeSplit: false` builds: the sheets are written and linked as
+/// with the option on, which is how the environment's config reads.
+#[test]
+fn a_build_with_css_code_split_off_links_its_stylesheets() {
+    let Some((app, probe)) =
+        chunk_css_app("css-code-split-off", "  build: { cssCodeSplit: false },\n")
+    else {
+        return;
+    };
+    assert_eq!(probe["codeSplit"], true, "{probe}");
+    let sheet = std::fs::read_dir(app.join("dist/client/assets"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .find(|f| f.ends_with(".css"))
+        .expect("the client emitted a stylesheet");
+    assert!(
+        bundle_text(&app).contains(&format!("/assets/{sheet}")),
+        "the manifest links /assets/{sheet}"
+    );
+    let _ = std::fs::remove_dir_all(&app);
+}

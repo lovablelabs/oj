@@ -98,16 +98,21 @@ export const tsrStartManifest = () => {{
   const manifest = startManifest();
   const routes = (manifest.routes ??= {{}});
   const root = (routes.__root__ ??= {{}});
-  const css = root.css ?? [];
-  const linked = new Set(css.map(hrefOf));
-  root.css = [...css, ...sheets.filter((href) => !linked.has(href))];
-  const assets = root.assets ?? [];
-  const tagged = new Set(assets.map((asset) => asset?.attrs?.href));
+  // The root links every sheet, in the order oj linked them; what Start
+  // listed for a route (from the chunks' `importedCss`) is one of them, so
+  // it goes from that route and stays with the root alone.
+  const ours = new Set(sheets);
+  const others = (list) => (list ?? []).filter((sheet) => !ours.has(hrefOf(sheet)));
+  const otherAssets = (list) => (list ?? []).filter((asset) => !ours.has(asset?.attrs?.href));
+  for (const [id, route] of Object.entries(routes)) {{
+    if (id === "__root__" || !route) continue;
+    if (route.css) route.css = others(route.css);
+    if (route.assets) route.assets = otherAssets(route.assets);
+  }}
+  root.css = [...sheets, ...others(root.css)];
   root.assets = [
-    ...assets,
-    ...sheets
-      .filter((href) => !tagged.has(href))
-      .map((href) => ({{ tag: "link", attrs: {{ rel: "stylesheet", href }} }})),
+    ...otherAssets(root.assets),
+    ...sheets.map((href) => ({{ tag: "link", attrs: {{ rel: "stylesheet", href }} }})),
   ];
   manifest.clientEntry ??= clientEntry;
   return manifest;
