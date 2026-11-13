@@ -1647,3 +1647,235 @@ fn a_create_start_of_the_apps_own_makes_no_start_instance() {
         "the chain on the app's own object lost its .server(..) link"
     );
 }
+
+/// A builder (`createServerFn().middleware([..])`, the shared "authed"
+/// function of an app) exported by one module and finished with `.handler(..)`
+/// in another, the import spelled as apps spell it: through the tsconfig
+/// `paths` alias (`@app/lib/authed`), through the package.json `imports` map
+/// (`#lib/authed`), and as the module's default export. Start's compiler
+/// resolves each import with Vite's `this.resolve` and reads the module's
+/// exports, `default` included (`resolveImportKind`, `findExportInModule`),
+/// so the handler, and the `*.server.*` module only it uses, leave the
+/// client. A namespace import of the aliased module names what it exports,
+/// the factory it re-exports included (`kit.make(..)`, the compiler's
+/// `resolveCalleeKind`). The builder module is one file and the fixture's
+/// aliases both point at `src/lib`.
+const AUTHED_BUILDER: &str = r#"import { createServerFn } from "@tanstack/react-start";
+
+export { createServerFn as make } from "@tanstack/react-start";
+export const authedFn = createServerFn({ method: "POST" });
+export default authedFn;
+"#;
+
+const ALIASED_FNS: &str = r##"import { authedFn } from "@app/lib/authed";
+import viaImports from "#lib/authed";
+import * as kit from "@app/lib/authed";
+import { check } from "./auth.server";
+
+export const viaPaths = authedFn.handler(async () => `via-paths:${check()}`);
+export const viaDefault = viaImports.handler(async () => `via-default:${check()}`);
+export const viaKit = kit.make({ method: "POST" }).handler(async () => `via-kit:${check()}`);
+export const viaMember = kit.authedFn.handler(async () => `via-member:${check()}`);
+"##;
+
+const AUTH_SERVER: &str = r#"import { getRequestHeader } from "@tanstack/react-start/server";
+
+export const check = () => getRequestHeader("x-user") ?? "auth-server-secret";
+"#;
+
+/// Each function and the text only its handler holds.
+const ALIASED_NAMES: [(&str, &str); 4] = [
+    ("viaPaths", "via-paths:"),
+    ("viaDefault", "via-default:"),
+    ("viaKit", "via-kit:"),
+    ("viaMember", "via-member:"),
+];
+
+fn aliased_builder_files() -> [(&'static str, String); 4] {
+    [
+        ("src/lib/auth.server.ts", AUTH_SERVER.to_string()),
+        ("src/lib/authed.ts", AUTHED_BUILDER.to_string()),
+        ("src/lib/aliased.functions.ts", ALIASED_FNS.to_string()),
+        (
+            "src/routes/about.tsx",
+            about(
+                "import { viaPaths, viaDefault, viaKit, viaMember } from \"../lib/aliased.functions\";",
+                r#"const [result, setResult] = useState("");
+  useEffect(() => {
+    Promise.all([viaPaths(), viaDefault(), viaKit(), viaMember()]).then(
+      (r) => setResult(r.join("|")),
+      (e) => setResult("error " + String(e)),
+    );
+  }, []);
+  const extra = <p id="secret">{result}</p>;"#,
+            ),
+        ),
+    ]
+}
+
+#[test]
+fn a_builder_imported_through_an_alias_or_as_default_keeps_its_handler_out_of_the_client() {
+    let Some(app) = app_with("sf-aliased-builder", &aliased_builder_files(), None) else {
+        return;
+    };
+    let (ok, text) = build(&app.0);
+    assert!(ok, "the build failed:\n{text}");
+    assert!(!text.contains("[import-protection]"), "{text}");
+    assert!(
+        !client_has(&app.0, "auth-server-secret"),
+        "the client holds the server module"
+    );
+    for (name, handler_text) in ALIASED_NAMES {
+        assert!(
+            !client_has(&app.0, handler_text),
+            "the client holds the handler of {name}"
+        );
+        assert!(
+            client_has(
+                &app.0,
+                &oj_compiler::server_fns::server_fn_id("src/lib/aliased.functions.ts", name)
+            ),
+            "the client does not call {name} by its id"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_hydrates_a_page_calling_server_fns_built_on_an_aliased_or_default_builder() {
+    let Some(app) = app_with("sf-aliased-builder-dev", &aliased_builder_files(), None) else {
+        return;
+    };
+    let dev = Server::oj_dev(&app.0);
+    let (status, _) = dev.request("GET", "/@oj-start/client-entry.js", &[]);
+    assert_eq!(status, 200, "the client entry\n{}", dev.output());
+    assert!(
+        !dev.output().contains("[import-protection]"),
+        "import protection flagged a server-only import\n{}",
+        dev.output()
+    );
+    // The server side registered each one under its id, with its handler.
+    for (name, handler_text) in ALIASED_NAMES {
+        let id = oj_compiler::server_fns::server_fn_id("src/lib/aliased.functions.ts", name);
+        let (status, body) = dev.call(&id);
+        assert!(
+            status == 200 && body.contains(&format!("{handler_text}auth-server-secret")),
+            "{name} answered {status} {body:?}\n{}",
+            dev.output()
+        );
+    }
+    if browser::skip() {
+        return;
+    }
+    let page = Page::open(&dev.url("/about")).await;
+    let hydrated = page
+        .poll(
+            r##"document.querySelector("#hydrated")?.textContent === "hydrated""##,
+            Duration::from_secs(30),
+        )
+        .await;
+    let answered = page
+        .poll(
+            r##"document.querySelector("#secret")?.textContent === "via-paths:auth-server-secret|via-default:auth-server-secret|via-kit:auth-server-secret|via-member:auth-server-secret""##,
+            Duration::from_secs(30),
+        )
+        .await;
+    let (console, errors) = (page.console(), page.errors());
+    let result: Option<String> = page
+        .eval("document.querySelector('#secret')?.textContent ?? null")
+        .await;
+    page.close().await;
+    assert!(
+        hydrated,
+        "the page did not hydrate: {errors:?} {console:?}\n{}",
+        dev.output()
+    );
+    assert!(
+        answered,
+        "the page's calls answered {result:?}: {errors:?} {console:?}\n{}",
+        dev.output()
+    );
+    assert!(
+        !console.iter().any(|c| c.contains("[import-protection]")),
+        "import protection flagged a server-only import: {console:?}"
+    );
+}
+
+/// A builder's module that is no source file under `src/` (a `.js` file of a
+/// `shared/` directory), edited while `oj dev` runs. Start's compiler, on a
+/// hot update, forgets the changed module and invalidates the modules
+/// importing it (`hotUpdate` in start-compiler-plugin), so a `.handler(..)`
+/// call in an importer becomes a server function once what it is called on
+/// becomes a builder, and stops being one when it no longer is. Under oj the
+/// server-fn resolver is regenerated for that edit, and the server's copy of
+/// the importer compiled again: the function's id answers after the edit,
+/// with no restart.
+const LATE_FNS: &str = r#"import { gate } from "../../shared/gate";
+
+export const late = gate.handler(async () => "late-answer");
+"#;
+
+const GATE_PLAIN: &str = "export const gate = { handler: (fn) => fn };\n";
+
+const GATE_BUILDER: &str = r#"import { createServerFn } from "@tanstack/react-start";
+
+export const gate = createServerFn({ method: "POST" });
+"#;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_follows_an_edit_to_a_builder_module_outside_src() {
+    let files = [
+        ("shared/gate.js", GATE_PLAIN.to_string()),
+        ("src/lib/late.functions.ts", LATE_FNS.to_string()),
+        (
+            "src/routes/about.tsx",
+            about(
+                "import { late } from \"../lib/late.functions\";",
+                r#"const [result, setResult] = useState("");
+  useEffect(() => {
+    Promise.resolve(late()).then(setResult, (e) => setResult("error " + String(e)));
+  }, []);
+  const extra = <p id="secret">{result}</p>;"#,
+            ),
+        ),
+    ];
+    let Some(app) = app_with("sf-late-builder-dev", &files, None) else {
+        return;
+    };
+    let dev = Server::oj_dev(&app.0);
+    let (status, _) = dev.request("GET", "/@oj-start/client-entry.js", &[]);
+    assert_eq!(status, 200, "the client entry\n{}", dev.output());
+    let id = oj_compiler::server_fns::server_fn_id("src/lib/late.functions.ts", "late");
+    let (status, body) = dev.call(&id);
+    assert_ne!(
+        status,
+        200,
+        "no server function yet, answered {body:?}\n{}",
+        dev.output()
+    );
+
+    let answers = |want: bool| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let (status, body) = dev.call(&id);
+            let is = status == 200 && body.contains("late-answer");
+            if is == want || std::time::Instant::now() > deadline {
+                return (is, status, body);
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    };
+    std::fs::write(app.0.join("shared/gate.js"), GATE_BUILDER).unwrap();
+    let (is, status, body) = answers(true);
+    assert!(
+        is,
+        "after the module exports a builder, answered {status} {body:?}\n{}",
+        dev.output()
+    );
+    std::fs::write(app.0.join("shared/gate.js"), GATE_PLAIN).unwrap();
+    let (is, status, body) = answers(false);
+    assert!(
+        !is,
+        "after the module exports no builder, answered {status} {body:?}\n{}",
+        dev.output()
+    );
+}
