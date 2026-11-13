@@ -457,18 +457,63 @@ pub(crate) const PLUGIN_HOST_RESPAWN_LIMIT: u32 = 3;
 pub(crate) const PLUGIN_HOST_RESPAWN_SPACING: std::time::Duration =
     std::time::Duration::from_secs(5);
 
-/// Plugin-host heap cap, Node parity: `OJ_PLUGIN_MEMORY_MB`, then NODE_OPTIONS
-/// `--max-old-space-size`, then 4096MB. Near-limit fails the call with MemoryLimit and revives on a fresh heap.
+/// V8's young generation at its largest (three 64MB semi-space units). Node
+/// sizes the old space and reports a heap limit this much above it:
+/// `--max-old-space-size=4096` reads back as 4288MB.
+pub(crate) const YOUNG_GENERATION_MB: usize = 192;
+
+/// Plugin-host heap cap, Node parity: `OJ_PLUGIN_MEMORY_MB` (the whole heap),
+/// then NODE_OPTIONS `--max-old-space-size` (the old space, as Node reads it),
+/// then Node's own default. Near-limit fails the call with MemoryLimit and revives on a fresh heap.
 pub(crate) fn plugin_host_memory_mb() -> usize {
     let knobs = &oj_env::get().knobs;
     if let Some(mb) = knobs.plugin_memory_mb {
         return mb;
     }
-    knobs
-        .node_options
-        .as_deref()
-        .and_then(max_old_space_mb)
-        .unwrap_or(4096)
+    match knobs.node_options.as_deref().and_then(max_old_space_mb) {
+        Some(old_space) => old_space + YOUNG_GENERATION_MB,
+        None => default_heap_mb(available_memory_bytes()),
+    }
+}
+
+/// The heap limit Node starts with on a machine with `memory` bytes: V8 gives
+/// the old space 4GB once there is 15GB of memory (`Heap::MaxOldGenerationSize`),
+/// and the young generation sits on top. A smaller machine, or one whose
+/// memory cannot be read, keeps 4096MB for the whole heap (Node's own figure
+/// there is lower, and a build that fits today must still fit).
+pub(crate) fn default_heap_mb(memory: Option<u64>) -> usize {
+    match memory {
+        Some(bytes) if bytes >> 30 >= 15 => 4096 + YOUNG_GENERATION_MB,
+        _ => 4096,
+    }
+}
+
+/// The memory this process may use: the cgroup ceiling when one is set and
+/// below the machine's, else the machine's physical memory (what Node passes
+/// to V8: `uv_get_constrained_memory`, then `uv_get_total_memory`).
+fn available_memory_bytes() -> Option<u64> {
+    let limit = crate::memory_cache::detect_memory_limit().map(|l| l as u64);
+    match (physical_memory_bytes(), limit) {
+        (Some(physical), Some(limit)) => Some(physical.min(limit)),
+        (physical, limit) => physical.or(limit),
+    }
+}
+
+#[cfg(unix)]
+fn physical_memory_bytes() -> Option<u64> {
+    // SAFETY: sysconf reads two system constants and touches no memory of ours.
+    let (pages, size) = unsafe {
+        (
+            libc::sysconf(libc::_SC_PHYS_PAGES),
+            libc::sysconf(libc::_SC_PAGESIZE),
+        )
+    };
+    (pages > 0 && size > 0).then(|| pages as u64 * size as u64)
+}
+
+#[cfg(not(unix))]
+fn physical_memory_bytes() -> Option<u64> {
+    None
 }
 
 /// The last `--max-old-space-size` in NODE_OPTIONS (last wins, like Node;

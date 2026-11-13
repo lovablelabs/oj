@@ -346,7 +346,7 @@ impl CssEngine {
 }
 
 /// The one heap cap for every embedded engine: OJ_PLUGIN_MEMORY_MB, then
-/// NODE_OPTIONS --max-old-space-size, then 4096MB.
+/// NODE_OPTIONS --max-old-space-size, then Node's default (see `plugin_host_memory_mb`).
 fn shared_memory_limit() -> usize {
     crate::plugins::plugin_host_memory_mb() * 1024 * 1024
 }

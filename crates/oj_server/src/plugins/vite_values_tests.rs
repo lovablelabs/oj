@@ -698,8 +698,24 @@ async fn addon_keeper_tolerates_unloadable_addons() {
     );
 }
 
+// With no knob and no NODE_OPTIONS the cap is the heap limit Node starts
+// with: 4288MB (a 4GB old space and the young generation) from 15GB of
+// memory up, which `node -p "v8.getHeapStatistics().heap_size_limit"` prints
+// there. Below that, or with the memory unreadable, the 4096MB it was.
+#[test]
+fn the_default_heap_cap_is_nodes() {
+    const GB: u64 = 1 << 30;
+    assert_eq!(default_heap_mb(Some(64 * GB)), 4288);
+    assert_eq!(default_heap_mb(Some(16 * GB)), 4288);
+    assert_eq!(default_heap_mb(Some(15 * GB)), 4288);
+    assert_eq!(default_heap_mb(Some(15 * GB - 1)), 4096);
+    assert_eq!(default_heap_mb(Some(4 * GB)), 4096);
+    assert_eq!(default_heap_mb(None), 4096);
+    assert_eq!(YOUNG_GENERATION_MB, 192);
+}
+
 // Heap cap mirrors NODE_OPTIONS --max-old-space-size (last wins, underscore
-// accepted, like Node), OJ_PLUGIN_MEMORY_MB above it, 4096 beneath.
+// accepted, like Node), OJ_PLUGIN_MEMORY_MB above it, Node's default beneath.
 #[test]
 fn node_options_heap_cap_parses_like_node() {
     assert_eq!(max_old_space_mb("--max-old-space-size=8192"), Some(8192));
