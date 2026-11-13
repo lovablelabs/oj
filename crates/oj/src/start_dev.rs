@@ -2446,9 +2446,36 @@ fn codegen_store(
     marker: Option<&str>,
     env: &[(String, String)],
 ) -> oj_cache::start_codegen::StartCodegenStore {
+    let scan_format: &[u8] = if kind.starts_with("server-fn") {
+        SERVER_FN_SCAN_FORMAT
+    } else {
+        b""
+    };
+    codegen_store_with(root, cache, kind, script, marker, env, scan_format)
+}
+
+/// What the server-fn resolver's reads file holds, as part of its cache
+/// key: a resolver kept before the file listed the tsconfig files (the `=`
+/// lines) is under another key, so it is made again and not restored with
+/// a file that tells the removal of a tsconfig from nothing. The version
+/// alone does not tell them apart: builds of one version wrote both.
+const SERVER_FN_SCAN_FORMAT: &[u8] = b"scan:2\0";
+
+/// [`codegen_store`] with the reads file's format given (`b""`: none, the
+/// key of a resolver kept before the format was part of it).
+fn codegen_store_with(
+    root: &Path,
+    cache: &Path,
+    kind: &str,
+    script: Option<&str>,
+    marker: Option<&str>,
+    env: &[(String, String)],
+    scan_format: &[u8],
+) -> oj_cache::start_codegen::StartCodegenStore {
     let mut extra = script
         .and_then(|s| std::fs::read(cache.join(s)).ok())
         .unwrap_or_default();
+    extra.extend_from_slice(scan_format);
     // The route tree's footer names the start entry, so which file (if any)
     // resolves keys the output; its content does not.
     if kind == "route-tree" {
@@ -2640,11 +2667,10 @@ fn server_fn_resolver(root: &Path, cache: &Path, dev: bool) -> anyhow::Result<bo
     let configs: String = resolution_configs(root)
         .iter()
         .map(|config| {
-            let shown = config.strip_prefix(root).unwrap_or(config);
             format!(
                 "\n{}{}",
                 crate::start_bundle::SERVER_FN_CONFIG,
-                shown.to_string_lossy().replace('\\', "/")
+                app_relative(root, config)
             )
         })
         .collect();
@@ -2770,11 +2796,7 @@ fn server_fn_trigger(root: &Path, cache: &Path, changed: &[PathBuf]) -> ServerFn
         if trigger == ServerFnTrigger::Scan {
             continue;
         }
-        let rel = p
-            .strip_prefix(root)
-            .unwrap_or(p)
-            .to_string_lossy()
-            .replace('\\', "/");
+        let rel = app_relative(root, p);
         // A JSON file a tsconfig extends, there now or listed by the last
         // scan (one removed since). Any other JSON file, removed or not, is
         // none of the resolver's.
@@ -2782,7 +2804,14 @@ fn server_fn_trigger(root: &Path, cache: &Path, changed: &[PathBuf]) -> ServerFn
             || (ext == "json"
                 && (scan_lines(&reads)
                     .any(|line| matches!(line, ScanLine::Config(c) if c == rel))
-                    || configs.get_or_init(|| resolution_configs(root)).contains(p)));
+                    || configs
+                        .get_or_init(|| {
+                            resolution_configs(root)
+                                .iter()
+                                .map(|config| app_relative(root, config))
+                                .collect::<Vec<_>>()
+                        })
+                        .contains(&rel)));
         let read = || {
             scan_lines(&reads).any(|line| match line {
                 ScanLine::Read(read) => read == rel,
@@ -2809,6 +2838,34 @@ fn server_fn_trigger(root: &Path, cache: &Path, changed: &[PathBuf]) -> ServerFn
         }
     }
     trigger
+}
+
+/// `path` as the reads file names a file: relative to `root` with `/`
+/// between its parts, or whole when it is not under it. The watcher may
+/// name a file another way than `root` is written (the root reached through
+/// a symlink, `/var` for `/private/var`, a Windows path with or without its
+/// `\\?\` prefix), so a path that is not under `root` as written is tried
+/// again by its real path: its directory's, since the file may be gone.
+fn app_relative(root: &Path, path: &Path) -> String {
+    let shown = |rel: &Path| rel.to_string_lossy().replace('\\', "/");
+    if let Ok(rel) = path.strip_prefix(root) {
+        return shown(rel);
+    }
+    let real = match (path.parent(), path.file_name()) {
+        (Some(dir), Some(name)) => std::fs::canonicalize(dir).ok().map(|dir| dir.join(name)),
+        _ => None,
+    };
+    let real_root = std::fs::canonicalize(root).ok();
+    let under = |path: &Path| {
+        path.strip_prefix(root)
+            .ok()
+            .or_else(|| path.strip_prefix(real_root.as_deref()?).ok())
+            .map(shown)
+    };
+    real.as_deref()
+        .and_then(under)
+        .or_else(|| under(path))
+        .unwrap_or_else(|| shown(path))
 }
 
 /// An extension Vite resolves an import to ([`oj_compiler::server_fns`]).
@@ -7172,6 +7229,134 @@ mod tests {
         assert!(answers_import("src/lib/authed.js", "src/lib/authed.ts"));
         assert!(answers_import("src/lib/data.json", "src/lib/data.json"));
         assert!(!answers_import("src/lib/authed.js", "src/lib/authed.json"));
+    }
+
+    // A resolver kept before its reads file listed the tsconfig files is
+    // not restored: builds of one version wrote both, so the version in the
+    // key does not tell them apart, and restored, its reads file told the
+    // removal of a tsconfig from nothing until something else regenerated
+    // it. What is restored from here on lists them.
+    #[test]
+    fn a_resolver_kept_without_its_tsconfig_list_is_made_again() {
+        let (root, cache) = aliased_builder_app("resolver-old-scan");
+        let file = crate::start_bundle::server_fn_resolver_file(true);
+        let reads_file = crate::start_bundle::server_fn_reads_file(true);
+        let (dest, reads_dest) = (cache.join(file), cache.join(reads_file));
+        let outputs = [(file, dest.as_path()), (reads_file, reads_dest.as_path())];
+        let reads = || std::fs::read_to_string(&reads_dest).unwrap();
+
+        // As kept before: the scan's own lines, under the key without the
+        // format.
+        crate::start_bundle::write_server_fn_resolver(&root, &cache, true).unwrap();
+        assert_eq!(
+            reads().lines().collect::<Vec<_>>(),
+            ["src/lib/authed.ts", "src/lib/barrel.ts"]
+        );
+        let old = codegen_store_with(&root, &cache, "server-fn", None, None, &[], b"");
+        let inputs = server_fn_inputs(&root, &reads_dest);
+        assert!(old.persist(&inputs, &outputs).is_some());
+        assert!(
+            old.restore(&inputs, &outputs).is_ok(),
+            "kept under the old key"
+        );
+
+        assert!(
+            !server_fn_resolver(&root, &cache, true).unwrap(),
+            "the old one was restored"
+        );
+        let listed = ["src/lib/authed.ts", "src/lib/barrel.ts", "=tsconfig.json"];
+        assert_eq!(reads().lines().collect::<Vec<_>>(), listed);
+
+        // Restored, the reads file is the one kept: the list is in it.
+        std::fs::remove_file(&reads_dest).unwrap();
+        std::fs::remove_file(&dest).unwrap();
+        assert!(server_fn_resolver(&root, &cache, true).unwrap());
+        assert_eq!(reads().lines().collect::<Vec<_>>(), listed);
+        assert!(resolver_maps(&cache, "first"));
+        // And says what a removed tsconfig was.
+        std::fs::remove_file(root.join("tsconfig.json")).unwrap();
+        assert_eq!(
+            server_fn_trigger(&root, &cache, &[root.join("tsconfig.json")]),
+            ServerFnTrigger::Scan
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // A changed path is matched with what the reads file lists however the
+    // watcher spells it: the root reached through a symlink (macOS names a
+    // temp dir `/var/..` and `/private/var/..`), either way round, and a
+    // file that is gone, whose directory still has a real path. Matched as
+    // written, an edit of a module the scan read, or the removal of an
+    // extended tsconfig, was nothing to the resolver.
+    #[cfg(unix)]
+    #[test]
+    fn a_changed_path_is_matched_however_the_root_is_spelled() {
+        let dir = tmp("resolver-spelled");
+        let real = dir.canonicalize().unwrap().join("app");
+        let link = dir.join("link");
+        std::fs::create_dir_all(real.join("src/lib")).unwrap();
+        std::fs::create_dir_all(real.join("config")).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        for (root, other) in [(&real, &link), (&link, &real)] {
+            let rel = |path: &str| app_relative(root, &other.join(path));
+            assert_eq!(rel("src/lib/barrel.ts"), "src/lib/barrel.ts");
+            assert_eq!(rel("src/lib/gone.ts"), "src/lib/gone.ts", "no such file");
+            assert_eq!(rel("tsconfig.json"), "tsconfig.json");
+            assert_eq!(
+                app_relative(root, &root.join("src/lib/barrel.ts")),
+                "src/lib/barrel.ts"
+            );
+        }
+        // Not under the root at all: whole, however it is tried.
+        let outside = dir.canonicalize().unwrap().join("elsewhere/x.ts");
+        assert_eq!(
+            app_relative(&real, &outside),
+            outside.to_string_lossy().replace('\\', "/")
+        );
+        assert_eq!(
+            app_relative(&real, Path::new("relative/x.ts")),
+            "relative/x.ts"
+        );
+
+        // Through the trigger: the app at its real path, the watcher naming
+        // files through the link.
+        let cache = real.join(".oj-cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        write_app(
+            &real,
+            &[
+                ("tsconfig.json", "{ \"extends\": \"./config/base.json\" }\n"),
+                (
+                    "config/base.json",
+                    "{ \"compilerOptions\": { \"baseUrl\": \"..\", \"paths\": { \"@app/*\": [\"./src/*\"] } } }\n",
+                ),
+                ("package.json", "{ \"name\": \"app\", \"type\": \"module\" }\n"),
+                (
+                    "src/lib/authed.ts",
+                    "import { createServerFn } from \"@tanstack/react-start\";\nexport const authedFn = createServerFn({ method: \"POST\" });\n",
+                ),
+                ("src/lib/barrel.ts", "export * from \"./authed\";\n"),
+                (
+                    "src/lib/fns.ts",
+                    "import { authedFn } from \"./barrel\";\nexport const first = authedFn.handler(async () => 1);\n",
+                ),
+                ("src/lib/plain.ts", "export const plain = 1;\n"),
+            ],
+        );
+        generate_server_fn_resolver(&real, &cache, true).unwrap();
+        let through_link = |path: &str| server_fn_trigger(&real, &cache, &[link.join(path)]);
+        assert_eq!(through_link("src/lib/barrel.ts"), ServerFnTrigger::Scan);
+        assert_eq!(through_link("src/lib/barrel.js"), ServerFnTrigger::Scan);
+        assert_eq!(through_link("config/base.json"), ServerFnTrigger::Scan);
+        assert_eq!(through_link("src/lib/plain.ts"), ServerFnTrigger::None);
+        assert_eq!(through_link("config/other.json"), ServerFnTrigger::None);
+        std::fs::remove_file(real.join("config/base.json")).unwrap();
+        assert_eq!(
+            through_link("config/base.json"),
+            ServerFnTrigger::Scan,
+            "removed, and listed by the scan"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // Which edits regenerate the resolver in dev: a file that may declare a
